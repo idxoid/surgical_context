@@ -1,5 +1,6 @@
 import os
 import sys
+import hashlib
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from sidecar.silence import install as _silence; _silence()
@@ -47,6 +48,43 @@ def _collect_files(project_path: str) -> list[str]:
     return files
 
 
+def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor: SymbolExtractor):
+    """Index a single file: symbols → calls → embeddings → imports → inheritance."""
+    with open(file_path, 'rb') as f:
+        file_hash = hashlib.sha256(f.read()).hexdigest()
+    symbols = extractor.extract(file_path)
+    for sym in symbols:
+        line_count = sym.end_line - sym.start_line + 1
+        sym.token_estimate = max(1, line_count * 8)
+    db.upsert_file_structure(file_path, file_hash, symbols)
+
+    calls = extractor.extract_calls(file_path)
+    if calls:
+        db.link_calls(calls)
+
+    with open(file_path, encoding='utf-8') as f:
+        source = f.read()
+    lines = source.splitlines()
+    symbol_docs = [
+        {
+            "uid": s.uid,
+            "name": s.name,
+            "file_path": s.file_path,
+            "code": "\n".join(lines[s.start_line - 1:s.end_line]),
+        }
+        for s in extractor.extract_from_source(source, file_path)
+    ]
+    lance.upsert_symbol_embeddings(symbol_docs)
+
+    imports = extractor.extract_imports(file_path)
+    if imports:
+        db.link_imports(imports)
+
+    inheritance = extractor.extract_inheritance(file_path)
+    if inheritance:
+        db.link_inheritance(inheritance)
+
+
 def run_indexing(project_path: str):
     db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
     lance = LanceDBClient()
@@ -57,60 +95,40 @@ def run_indexing(project_path: str):
     files_to_index = _collect_files(project_path)
     if not files_to_index:
         print(f"❌ No files found at {project_path}")
+        db.close()
         return
 
-    # Phase 1: symbol nodes
+    # Compute current file hashes
+    current_hashes = {}
     for file_path in files_to_index:
-        print(f"📄 Symbols: {file_path}")
-        symbols = extractor.extract(file_path)
-        # Compute token_estimate for each symbol (empirical: ~8 tokens/line)
-        for sym in symbols:
-            line_count = sym.end_line - sym.start_line + 1
-            sym.token_estimate = max(1, line_count * 8)
         with open(file_path, 'rb') as f:
-            file_hash = f.read().hex()
-        db.upsert_file_structure(file_path, file_hash, symbols)
+            current_hashes[file_path] = hashlib.sha256(f.read()).hexdigest()
 
-    # Phase 2: CALLS edges
-    for file_path in files_to_index:
-        print(f"🔗 Calls: {file_path}")
-        calls = extractor.extract_calls(file_path)
-        if calls:
-            db.link_calls(calls)
+    # Query stored hashes from Neo4j
+    stored_hashes = db.get_file_hashes(files_to_index)
 
-    # Phase 3: symbol body embeddings
-    print("🧠 Embedding symbol bodies...")
-    all_symbols = []
-    for file_path in files_to_index:
-        with open(file_path, encoding='utf-8') as f:
-            source = f.read()
-        lines = source.splitlines()
-        for s in extractor.extract_from_source(source, file_path):
-            all_symbols.append({
-                "uid": s.uid,
-                "name": s.name,
-                "file_path": s.file_path,
-                "code": "\n".join(lines[s.start_line - 1:s.end_line]),
-            })
-    lance.upsert_symbol_embeddings(all_symbols)
+    # Filter to changed files only
+    changed_files = [p for p in files_to_index if current_hashes[p] != stored_hashes.get(p)]
 
-    # Phase 4: resolve pending DocAnchors
+    if not changed_files:
+        print("✅ All files up-to-date, nothing to re-index.")
+        db.close()
+        return
+
+    print(f"🔄 {len(changed_files)}/{len(files_to_index)} files changed, re-indexing...")
+
+    # Delete stale symbols for changed files
+    for file_path in changed_files:
+        db.delete_symbols_for_file(file_path)
+
+    # Re-index only changed files
+    for file_path in changed_files:
+        print(f"📄 Indexing: {file_path}")
+        index_file(file_path, db, lance, extractor)
+
+    # Resolve pending DocAnchors (runs over entire DB)
     from sidecar.indexer.anchor import resolve_pending_anchors
     resolve_pending_anchors(db, lance)
-
-    # Phase 5: IMPORTS edges (File → File)
-    print("📂 Imports: extracting cross-module dependencies...")
-    for file_path in files_to_index:
-        imports = extractor.extract_imports(file_path)
-        if imports:
-            db.link_imports(imports)
-
-    # Phase 6: DEPENDS_ON edges (Symbol → Symbol)
-    print("🔗 Dependencies: extracting type/interface usage...")
-    for file_path in files_to_index:
-        inheritance = extractor.extract_inheritance(file_path)
-        if inheritance:
-            db.link_inheritance(inheritance)
 
     db.close()
     print("✅ Indexing complete.")

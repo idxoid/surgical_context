@@ -27,6 +27,10 @@ class IndexRequest(BaseModel):
     project_path: str
 
 
+class IndexFileRequest(BaseModel):
+    file_path: str
+
+
 class IndexDocsRequest(BaseModel):
     docs_path: str
 
@@ -60,6 +64,24 @@ def index(req: IndexRequest):
     from sidecar.indexer.code import run_indexing
     run_indexing(req.project_path)
     return {"status": "indexed", "path": req.project_path}
+
+
+@app.post("/index/file")
+def index_file_endpoint(req: IndexFileRequest):
+    if not os.path.isfile(req.file_path):
+        raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
+
+    from sidecar.indexer.code import index_file
+    from sidecar.indexer.anchor import resolve_pending_anchors
+    from sidecar.parser.extractor import SymbolExtractor
+    db = get_db()
+    try:
+        db.delete_symbols_for_file(req.file_path)
+        index_file(req.file_path, db, vector_db, SymbolExtractor())
+        resolve_pending_anchors(db, vector_db)
+    finally:
+        db.close()
+    return {"status": "indexed", "file_path": req.file_path}
 
 
 @app.post("/index/docs")

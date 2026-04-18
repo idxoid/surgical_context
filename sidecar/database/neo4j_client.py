@@ -15,6 +15,25 @@ class Neo4jClient:
         with self.driver.session() as session:
             session.execute_write(self._upsert_nodes, file_path, file_hash, symbols)
 
+    def get_file_hashes(self, file_paths: list[str]) -> dict[str, str]:
+        """Return {path: hash} for all known files in the given list."""
+        if not file_paths:
+            return {}
+        with self.driver.session() as session:
+            result = session.run(
+                "MATCH (f:File) WHERE f.path IN $paths RETURN f.path AS path, f.hash AS hash",
+                paths=file_paths
+            )
+            return {r["path"]: r["hash"] for r in result}
+
+    def delete_symbols_for_file(self, file_path: str):
+        """Detach-delete all Symbol nodes owned by a File."""
+        with self.driver.session() as session:
+            session.run("""
+                MATCH (f:File {path: $path})-[:CONTAINS]->(s:Symbol)
+                DETACH DELETE s
+            """, path=file_path)
+
     @staticmethod
     def _upsert_nodes(tx, file_path, file_hash, symbols):
         # 1. Создаем/обновляем узел файла
