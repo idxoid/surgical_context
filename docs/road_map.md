@@ -105,7 +105,7 @@ Goal: Connect the semantic layer via documentation.
 
 ---
 
-## Phase 3.5: Arbitration & Indexing Robustness 🟡 IN PROGRESS
+## Phase 3.5: Arbitration & Indexing Robustness ✅ COMPLETE
 Goal: Make retrieval correct and fast on a live developer's laptop. This is what separates "demo" from "daily driver." Token-budget BFS is tuned against the eval harness from Phase 2.5 (now complete).
 
 > **Spec:** [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — best-first traversal replacing hardcoded `*1..2`, with scoring function, algorithm, contract additions, and tuning protocol.
@@ -121,12 +121,12 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] "Skip but keep trying" semantics: oversized symbols skipped, cheaper ones fill space
 - [x] Cypher neighbor queries with caller_count
 
-### Incremental Indexing (DEFERRED — depends on tuning)
-- [ ] File-level dirty tracking: compare `File.hash` / mtime before re-parsing
-- [ ] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed
-- [ ] `POST /index/file` endpoint for single-file updates (triggered by file save in client)
-- [ ] Delete-on-remove: prune Symbol nodes when file deleted or symbol removed
-- [ ] Background debounce queue: batch rapid-fire saves
+### Incremental Indexing ✅ COMPLETE
+- [x] File-level dirty tracking: compare `File.hash` before re-parsing
+- [x] `POST /index/file` endpoint for single-file updates (triggered by file save in client)
+- [x] Delete-on-remove: prune Symbol nodes when file changes (`delete_symbols_for_file`)
+- [ ] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed (optimization, deferred)
+- [ ] Background debounce queue: batch rapid-fire saves (deferred)
 
 ### Graph Completeness ✅ COMPLETE
 - [x] `IMPORTS` edge between Files to enable correct cross-module call resolution
