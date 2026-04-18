@@ -63,6 +63,10 @@ def run_indexing(project_path: str):
     for file_path in files_to_index:
         print(f"📄 Symbols: {file_path}")
         symbols = extractor.extract(file_path)
+        # Compute token_estimate for each symbol (empirical: ~8 tokens/line)
+        for sym in symbols:
+            line_count = sym.end_line - sym.start_line + 1
+            sym.token_estimate = max(1, line_count * 8)
         with open(file_path, 'rb') as f:
             file_hash = f.read().hex()
         db.upsert_file_structure(file_path, file_hash, symbols)

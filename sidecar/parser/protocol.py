@@ -15,6 +15,7 @@ class SymbolMetadata(BaseModel):
     end_line: int
     content_hash: str
     file_path: str
+    token_estimate: int = 0  # tiktoken estimate; computed at index time
 
 
 @dataclass

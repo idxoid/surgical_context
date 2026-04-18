@@ -31,12 +31,14 @@ class Neo4jClient:
                 SET s.name = $name,
                     s.kind = $kind,
                     s.hash = $content_hash,
-                    s.range = [$start, $end]
+                    s.range = [$start, $end],
+                    s.token_estimate = $token_estimate
                 MERGE (f)-[:CONTAINS]->(s)
-            """, 
-            file_path=file_path, uid=s.uid, name=s.name, 
-            kind=s.kind, content_hash=s.content_hash, 
-            start=s.start_line, end=s.end_line)
+            """,
+            file_path=file_path, uid=s.uid, name=s.name,
+            kind=s.kind, content_hash=s.content_hash,
+            start=s.start_line, end=s.end_line,
+            token_estimate=s.token_estimate)
 
     def link_calls(self, calls: list[dict]):
         with self.driver.session() as session:

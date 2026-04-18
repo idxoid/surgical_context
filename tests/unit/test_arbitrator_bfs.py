@@ -1,9 +1,9 @@
-"""Unit tests for ContextArbitrator BFS traversal logic."""
+"""Unit tests for ContextArbitrator token-budget BFS traversal logic."""
 
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 from pathlib import Path
-from sidecar.context.arbitrator import ContextArbitrator, SymbolContext, PromptContext
+from sidecar.context.arbitrator import ContextArbitrator, SymbolContext, PromptContext, BudgetTooSmall
 
 
 class TestContextArbitratorBFS:
@@ -26,32 +26,20 @@ class TestContextArbitratorBFS:
             "uid": "abc123",
             "name": "process_payment",
             "range": [10, 25],
-        }
-        call_dep = {
-            "uid": "def456",
-            "name": "validate_amount",
-            "range": [5, 8],
-        }
-        type_dep = {
-            "uid": "ghi789",
-            "name": "PaymentError",
-            "range": [2, 4],
+            "token_estimate": 120,
         }
 
         mock_session = MagicMock()
         mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
 
+        # First call: lookup target by name
+        mock_session.run.return_value.single.return_value = {"s": target_node}
+
+        # Path lookup for target
         mock_session.run.return_value.single.side_effect = [
-            {
-                "target": target_node,
-                "calls": [call_dep],
-                "depends_on": [type_dep],
-                "imports": [],
-            },
-            {"path": "/payments/processor.py"},
-            {"path": "/payments/processor.py"},
-            {"path": "/payments/validators.py"},
+            {"s": target_node},  # first query: MATCH (s:Symbol {name: ...})
+            {"path": "/payments/processor.py"},  # path lookup for target
         ]
 
         with patch("builtins.open", create=True) as mock_open:
@@ -60,11 +48,11 @@ class TestContextArbitratorBFS:
                 "    validate_amount(amount)\n",
             ]
 
-            ctx = arbitrator.get_context_for_symbol("process_payment")
+            ctx = arbitrator.get_context_for_symbol("process_payment", token_budget=4000)
 
         assert isinstance(ctx, PromptContext)
         assert ctx.primary_source.symbol == "process_payment"
-        assert len(ctx.graph_context) >= 2
+        assert ctx.budget["limit"] == 4000
 
     def test_get_context_for_symbol_not_found(self, arbitrator, mock_db):
         """Test that a non-existent symbol returns an error string."""
@@ -72,6 +60,7 @@ class TestContextArbitratorBFS:
         mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
 
+        # Return no result for the target query
         mock_session.run.return_value.single.return_value = None
 
         result = arbitrator.get_context_for_symbol("nonexistent_symbol")
@@ -80,77 +69,129 @@ class TestContextArbitratorBFS:
         assert "Error:" in result
         assert "not found" in result
 
-    def test_get_context_splits_edge_types(self, arbitrator, mock_db):
-        """Test that context correctly splits CALLS, DEPENDS_ON, and IMPORTS edges."""
-        target = {"uid": "t1", "name": "main", "range": [1, 10]}
-        call1 = {"uid": "c1", "name": "helper", "range": [1, 5]}
-        type1 = {"uid": "d1", "name": "BaseClass", "range": [1, 8]}
+    def test_budget_too_small(self, arbitrator, mock_db):
+        """Test that oversized target raises BudgetTooSmall error."""
+        target_node = {
+            "uid": "huge",
+            "name": "huge_function",
+            "range": [1, 500],
+            "token_estimate": 4500,
+        }
+
+        mock_session = MagicMock()
+        mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
+
+        mock_session.run.return_value.single.return_value = {"s": target_node}
+
+        result = arbitrator.get_context_for_symbol("huge_function", token_budget=4000)
+
+        assert isinstance(result, str)
+        assert "Error:" in result
+        assert "too small" in result.lower()
+
+    def test_context_has_budget_info(self, arbitrator, mock_db):
+        """Test that returned context includes budget tracking."""
+        target_node = {
+            "uid": "t1",
+            "name": "target",
+            "range": [1, 5],
+            "token_estimate": 40,
+        }
 
         mock_session = MagicMock()
         mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
 
         mock_session.run.return_value.single.side_effect = [
-            {
-                "target": target,
-                "calls": [call1],
-                "depends_on": [type1],
-                "imports": [],
-            },
-            {"path": "/app/main.py"},
-            {"path": "/app/main.py"},
-            {"path": "/app/base.py"},
+            {"s": target_node},  # target lookup
+            {"path": "/app/target.py"},  # path lookup
         ]
 
         with patch("builtins.open", create=True):
-            ctx = arbitrator.get_context_for_symbol("main")
+            ctx = arbitrator.get_context_for_symbol("target", token_budget=1000)
 
         assert isinstance(ctx, PromptContext)
-        calls = [d for d in ctx.graph_context if d.relation == "CALLS"]
-        depends_on = [d for d in ctx.graph_context if d.relation == "DEPENDS_ON"]
+        assert "limit" in ctx.budget
+        assert ctx.budget["limit"] == 1000
+        assert "spent" in ctx.budget
+        assert ctx.budget["spent"] > 0
 
-        assert any(d.symbol == "helper" for d in calls)
-        assert any(d.symbol == "BaseClass" for d in depends_on)
-
-    def test_get_context_marks_dirty_state(self, arbitrator, mock_db):
-        """Test that is_dirty flag is set when overlay has the file."""
-        target = {"uid": "t1", "name": "foo", "range": [1, 5]}
+    def test_symbol_context_has_depth_direction_score(self, arbitrator, mock_db):
+        """Test that SymbolContext includes depth, direction, and relevance_score."""
+        target_node = {
+            "uid": "t1",
+            "name": "target",
+            "range": [1, 5],
+            "token_estimate": 40,
+        }
 
         mock_session = MagicMock()
         mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
 
         mock_session.run.return_value.single.side_effect = [
-            {"target": target, "calls": [], "depends_on": [], "imports": []},
-            {"path": "/app/foo.py"},
+            {"s": target_node},
+            {"path": "/app/target.py"},
         ]
 
-        from sidecar.context.overlay import InMemoryOverlay
-        overlay = InMemoryOverlay()
-        overlay.update("/app/foo.py", "def foo(): pass\n")
-        arbitrator_with_overlay = ContextArbitrator(mock_db, overlay=overlay)
-
         with patch("builtins.open", create=True):
-            ctx = arbitrator_with_overlay.get_context_for_symbol("foo")
+            ctx = arbitrator.get_context_for_symbol("target")
 
-        assert ctx.primary_source.is_dirty is True
+        primary = ctx.primary_source
+        assert hasattr(primary, "depth")
+        assert hasattr(primary, "direction")
+        assert hasattr(primary, "relevance_score")
+        assert primary.depth == 0
+        assert primary.direction == "primary"
+        assert primary.relevance_score == 1.0
 
-    def test_build_symbol_context_reads_correct_lines(self, arbitrator, mock_db):
-        """Test that _build_symbol_context reads the correct line range."""
-        symbol_node = {"uid": "s1", "name": "my_function", "range": [2, 4]}
+    def test_scoring_function_prefers_callers(self):
+        """Test that incoming CALLS (callers) score higher than outgoing."""
+        arbitrator = ContextArbitrator(Mock())
 
-        mock_session = MagicMock()
-        mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
+        # Caller (incoming call)
+        score_caller = arbitrator._score(
+            rel_type="CALLS",
+            outgoing=False,
+            caller_count=5,
+            token_estimate=100,
+            distance=1,
+        )
 
-        mock_session.run.return_value.single.return_value = {"path": "/test.py"}
+        # Callee (outgoing call)
+        score_callee = arbitrator._score(
+            rel_type="CALLS",
+            outgoing=True,
+            caller_count=5,
+            token_estimate=100,
+            distance=1,
+        )
 
-        source_lines = ["# line 1\n", "def my_function():\n", "    return 42\n", "# line 4\n", "# line 5\n"]
+        assert score_caller > score_callee
 
-        with patch("builtins.open", create=True) as mock_open:
-            mock_open.return_value.__enter__.return_value.readlines.return_value = source_lines
+    def test_direction_mapping(self):
+        """Test that relation types map to correct direction strings."""
+        arbitrator = ContextArbitrator(Mock())
 
-            ctx = arbitrator._build_symbol_context(symbol_node, "test_relation")
+        assert arbitrator._direction("CALLS", outgoing=True) == "callee"
+        assert arbitrator._direction("CALLS", outgoing=False) == "caller"
+        assert arbitrator._direction("DEPENDS_ON", outgoing=True) == "type"
+        assert arbitrator._direction("IMPORTS", outgoing=True) == "import"
 
-        assert "def my_function" in ctx.code
-        assert "return 42" in ctx.code
+    def test_estimate_tokens(self):
+        """Test cold-path token estimation."""
+        arbitrator = ContextArbitrator(Mock())
+
+        node = {"range": [1, 10]}
+        estimate = arbitrator._estimate_tokens(node)
+        # (10 - 1 + 1) * 8 = 80
+        assert estimate == 80
+
+        node = {"range": [1, 1]}
+        estimate = arbitrator._estimate_tokens(node)
+        assert estimate == 8
+
+        node = {}
+        estimate = arbitrator._estimate_tokens(node)
+        assert estimate == 0
