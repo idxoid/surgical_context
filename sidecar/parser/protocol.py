@@ -1,6 +1,7 @@
 """LanguageAdapter protocol — ADR-005 plugin architecture."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from pydantic import BaseModel
 
@@ -14,6 +15,22 @@ class SymbolMetadata(BaseModel):
     end_line: int
     content_hash: str
     file_path: str
+
+
+@dataclass
+class ImportEdge:
+    """An import statement from one file to another or external package."""
+    source_file: str
+    target_module_name: str
+    import_type: str  # "direct" | "relative" | "from_package"
+
+
+@dataclass
+class InheritanceEdge:
+    """Class inheritance or interface implementation."""
+    subclass_uid: str
+    superclass_name: str
+    is_interface: bool
 
 
 class LanguageAdapter(ABC):
@@ -59,3 +76,27 @@ class LanguageAdapter(ABC):
             callee_name is unresolved at this stage — matched by name in Neo4j during indexing.
         """
         pass
+
+    def extract_imports(self, source_code: str, file_path: str) -> list[ImportEdge]:
+        """
+        Parse source code and extract import/require statements.
+
+        Optional — adapters override only if language has imports.
+
+        Returns:
+            List of ImportEdge(source_file, target_module_name, import_type) tuples.
+            target_module_name is unresolved — matched during indexing.
+        """
+        return []
+
+    def extract_inheritance(self, source_code: str, file_path: str) -> list[InheritanceEdge]:
+        """
+        Parse source code and extract class inheritance / interface implementation.
+
+        Optional — adapters override only if language has inheritance.
+
+        Returns:
+            List of InheritanceEdge(subclass_uid, superclass_name, is_interface) tuples.
+            superclass_name is unresolved — matched by name during indexing.
+        """
+        return []

@@ -94,6 +94,20 @@ def run_indexing(project_path: str):
     from sidecar.indexer.anchor import resolve_pending_anchors
     resolve_pending_anchors(db, lance)
 
+    # Phase 5: IMPORTS edges (File → File)
+    print("📂 Imports: extracting cross-module dependencies...")
+    for file_path in files_to_index:
+        imports = extractor.extract_imports(file_path)
+        if imports:
+            db.link_imports(imports)
+
+    # Phase 6: DEPENDS_ON edges (Symbol → Symbol)
+    print("🔗 Dependencies: extracting type/interface usage...")
+    for file_path in files_to_index:
+        inheritance = extractor.extract_inheritance(file_path)
+        if inheritance:
+            db.link_inheritance(inheritance)
+
     db.close()
     print("✅ Indexing complete.")
 
