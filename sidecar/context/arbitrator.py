@@ -79,8 +79,11 @@ class ContextArbitrator:
         """Returns PromptContext or an error string prefixed with 'Error:'."""
         query = """
         MATCH (s:Symbol {name: $name})
-        OPTIONAL MATCH (s)-[:CALLS]->(dep:Symbol)
-        RETURN s as target, collect(dep) as dependencies
+        OPTIONAL MATCH (s)-[:CALLS]->(call_dep:Symbol)
+        OPTIONAL MATCH (s)-[:DEPENDS_ON]->(type_dep:Symbol)
+        OPTIONAL MATCH (f:File)-[:CONTAINS]->(s), (f)-[:IMPORTS]->(import_file:File), (import_file)-[:CONTAINS]->(import_dep:Symbol)
+        WITH s, collect(DISTINCT call_dep) as calls, collect(DISTINCT type_dep) as depends_on, collect(DISTINCT import_dep) as imports
+        RETURN s as target, calls, depends_on, imports
         """
         with self.db.driver.session() as session:
             result = session.run(query, name=symbol_name).single()
@@ -89,10 +92,16 @@ class ContextArbitrator:
             return f"Error: Symbol '{symbol_name}' not found in graph."
 
         target = result['target']
-        deps = result['dependencies']
+        call_deps = [dep for dep in result['calls'] if dep]
+        type_deps = [dep for dep in result['depends_on'] if dep]
+        import_deps = [dep for dep in result['imports'] if dep]
 
         primary = self._build_symbol_context(target, "target")
-        graph_context = [self._build_symbol_context(dep, "CALLS") for dep in deps]
+        graph_context = (
+            [self._build_symbol_context(dep, "CALLS") for dep in call_deps] +
+            [self._build_symbol_context(dep, "DEPENDS_ON") for dep in type_deps] +
+            [self._build_symbol_context(dep, "IMPORTS") for dep in import_deps]
+        )
 
         return PromptContext(primary_source=primary, graph_context=graph_context)
 
