@@ -110,19 +110,23 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 
 > **Spec:** [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — best-first traversal replacing hardcoded `*1..2`, with scoring function, algorithm, contract additions, and tuning protocol.
 
-### Incremental Indexing
+### Context Budgeting & Ranking ✅ COMPLETE (Token-Budget BFS)
+- [x] Token budget parameter on `/ask` (default 4000)
+- [x] Priority-queue best-first expansion (greedy by relevance score)
+- [x] Re-rank: callers (1.2) > callees (1.0) — callers drive intent
+- [x] Scoring function: relation_prior + fan-in bonus - token cost - distance penalty
+- [x] `depth` and `direction` fields in SymbolContext
+- [x] `relevance_score` per symbol (score that selected it)
+- [x] `budget` metadata block: limit, spent, reserved, pruned
+- [x] "Skip but keep trying" semantics: oversized symbols skipped, cheaper ones fill space
+- [x] Cypher neighbor queries with caller_count
+
+### Incremental Indexing (DEFERRED — depends on tuning)
 - [ ] File-level dirty tracking: compare `File.hash` / mtime before re-parsing
 - [ ] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed
 - [ ] `POST /index/file` endpoint for single-file updates (triggered by file save in client)
 - [ ] Delete-on-remove: prune Symbol nodes when file deleted or symbol removed
 - [ ] Background debounce queue: batch rapid-fire saves
-
-### Context Budgeting & Ranking
-- [ ] Token budget parameter on `/ask` (default e.g. 4000); greedy prune by relevance
-- [ ] Re-rank graph deps: prefer **callers** over **callees** when both present (callers usually drive intent)
-- [ ] Deduplicate symbols reachable via multiple paths (COVERS + CALLS)
-- [ ] `relevance_score` per doc chunk propagated through the Prompt Contract
-- [ ] Depth-per-dep field — replace the hardcoded `*1..2` BFS with a budget-driven traversal
 
 ### Graph Completeness ✅ COMPLETE
 - [x] `IMPORTS` edge between Files to enable correct cross-module call resolution
@@ -130,7 +134,7 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] Unit tests: 18 tests verify `CALLS`, `IMPORTS`, `DEPENDS_ON` edge extraction for Python and TypeScript
 - [x] Arbitrator BFS expanded to traverse all three edge types for context gathering
 
-### Embedding Quality
+### Embedding Quality (DEFERRED — Phase 5)
 - [ ] Benchmark `all-MiniLM-L6-v2` vs a code-native model (e.g. `bge-code`, `unixcoder`) on the golden set
 - [ ] Embedding cache keyed by content hash to avoid recomputation on re-index
 
