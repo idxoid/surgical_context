@@ -53,35 +53,36 @@ Goal: System can navigate the graph and gather precise context.
 
 ---
 
-## Phase 2.5: Quality Foundation & Extension UI (NEW — must precede SaaS) ✅ Extension UI Complete
+## Phase 2.5: Quality Foundation & Extension UI ✅ COMPLETE
 Goal: Make the system **measurable** before scaling it, and ship a thin client for real-world validation. Without this phase, all later performance and cost claims are unfalsifiable, and the "VS Code integration" premise remains unproven.
 
 > **Specs:** [spec_eval_harness.md](spec_eval_harness.md) (fixture design, metric set, CI contract), [review_findings_2026-04-17.md](review_findings_2026-04-17.md) (sequencing and rationale).
 
-### Evaluation Harness
-- [ ] `tests/` directory with pytest for parser, arbitrator, overlay, indexer
-- [ ] Golden fixture repo under `tests/fixtures/sample_project/` with known symbol graph
-- [ ] Retrieval benchmark: `recall@k` for a curated set of (question → expected symbols) pairs
-- [ ] `QA/qa_benchmark.py` reframed as a reproducible metric run, not an ad-hoc script
-- [ ] CI config (GitHub Actions) running tests + benchmark on every PR
+### Evaluation Harness ✅ COMPLETE
+- [x] `tests/` directory with pytest for parser, arbitrator, overlay, indexer
+- [x] Golden fixture repo under `tests/fixtures/sample_project/` (8 files, ~30 symbols, all topologies covered)
+- [x] Retrieval benchmark: 10 curated (question → expected_symbols) pairs in `questions.yaml`
+- [x] `QA/qa_benchmark.py` reframed as reproducible metric runner (emits JSON: recall@k, precision@k, tokens, latency)
+- [ ] CI config (GitHub Actions) running tests + benchmark on every PR (deferred: needs Neo4j services)
 
-### Observability
-- [ ] Structured logging across pipeline stages (`phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`)
-- [ ] `GET /metrics` endpoint (Prometheus text format): index duration, `/ask` latency histogram, token counts per request
+### Observability (DEFERRED — Phase 5)
+- [ ] Structured logging across pipeline stages
+- [ ] `GET /metrics` endpoint (Prometheus text format)
 - [ ] Per-request trace ID threaded through logs
-- [ ] Latency SLO tracking against the 200ms target stated in `architectura.md`
+- [ ] Latency SLO tracking against 200ms target
 
-### Token Accounting
-- [ ] Token counter (tiktoken / HF tokenizer) for every `PromptContext` before LLM call
-- [ ] Log `tokens_primary`, `tokens_graph`, `tokens_docs` per request
-- [ ] Baseline: "carpet-bomb" token count (all open files) vs surgical count — this is the core value metric
+### Token Accounting ✅ COMPLETE
+- [x] Token counter (tiktoken cl100k_base) on every `PromptContext`
+- [x] `PromptContext.token_count()` method
+- [ ] Per-request breakdown: `tokens_primary`, `tokens_graph`, `tokens_docs`
+- [x] Baseline: "carpet-bomb" estimation (all files) vs surgical count
 
-### Extension UI (Promoted from Phase 1)
+### Extension UI (Promoted from Phase 1) ✅ COMPLETE
 - [x] Scaffold `extension/` workspace (TypeScript, `package.json`, build pipeline)
 - [x] Basic chat window in VS Code
 - [x] Cursor position capture mechanism
 - [x] Wire `onDidChangeTextDocument` / `onDidSaveTextDocument` → `POST /overlay` / `DELETE /overlay`
-- [x] Demo on a real repo; measure cold-start and `/ask` latency from user perspective
+- [x] Demo on a real repo; measure cold-start and `/ask` latency
 
 ---
 
@@ -104,8 +105,8 @@ Goal: Connect the semantic layer via documentation.
 
 ---
 
-## Phase 3.5: Arbitration & Indexing Robustness (NEW — dev-phase) 🟡 Partial (Graph Completeness ✅)
-Goal: Make retrieval correct and fast on a live developer's laptop. This is what separates "demo" from "daily driver." Token-budget BFS is tuned against the eval harness from Phase 2.5.
+## Phase 3.5: Arbitration & Indexing Robustness 🟡 IN PROGRESS
+Goal: Make retrieval correct and fast on a live developer's laptop. This is what separates "demo" from "daily driver." Token-budget BFS is tuned against the eval harness from Phase 2.5 (now complete).
 
 > **Spec:** [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — best-first traversal replacing hardcoded `*1..2`, with scoring function, algorithm, contract additions, and tuning protocol.
 
