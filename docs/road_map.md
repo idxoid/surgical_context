@@ -104,7 +104,7 @@ Goal: Connect the semantic layer via documentation.
 
 ---
 
-## Phase 3.5: Arbitration & Indexing Robustness (NEW — dev-phase) 🔴 Not started
+## Phase 3.5: Arbitration & Indexing Robustness (NEW — dev-phase) 🟡 Partial (Graph Completeness ✅)
 Goal: Make retrieval correct and fast on a live developer's laptop. This is what separates "demo" from "daily driver." Token-budget BFS is tuned against the eval harness from Phase 2.5.
 
 > **Spec:** [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — best-first traversal replacing hardcoded `*1..2`, with scoring function, algorithm, contract additions, and tuning protocol.
@@ -123,10 +123,11 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [ ] `relevance_score` per doc chunk propagated through the Prompt Contract
 - [ ] Depth-per-dep field — replace the hardcoded `*1..2` BFS with a budget-driven traversal
 
-### Graph Completeness
-- [ ] `IMPORTS` edge between Files to enable correct cross-module call resolution
-- [ ] `DEPENDS_ON` edge for type / interface / import usage (currently planned but unbuilt — often more signal than `CALLS`)
-- [ ] Unit test: known fixture has expected `CALLS`, `IMPORTS`, `DEPENDS_ON` edges after indexing
+### Graph Completeness ✅ COMPLETE
+- [x] `IMPORTS` edge between Files to enable correct cross-module call resolution
+- [x] `DEPENDS_ON` edge for type / interface / import usage (Symbol→Symbol edge type for inheritance/interface dependencies)
+- [x] Unit tests: 18 tests verify `CALLS`, `IMPORTS`, `DEPENDS_ON` edge extraction for Python and TypeScript
+- [x] Arbitrator BFS expanded to traverse all three edge types for context gathering
 
 ### Embedding Quality
 - [ ] Benchmark `all-MiniLM-L6-v2` vs a code-native model (e.g. `bge-code`, `unixcoder`) on the golden set

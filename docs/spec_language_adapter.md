@@ -1,6 +1,6 @@
 # Spec — Language Adapter Protocol (ADR-005)
 
-> **Status:** Proposed (target: Phase 1 polish). Blocks multi-language support. Once formalized, new languages add a single adapter file — no core edits.
+> **Status:** ✅ Implemented. Multi-language support is pluggable via the adapter registry. New languages add a single adapter file — no core edits. Phase 3.5 Graph Completeness extends adapters with `extract_imports()` and `extract_inheritance()` for richer dependency tracking.
 
 ## 1. Problem
 
@@ -394,23 +394,24 @@ def test_go_extract_symbols():
     assert symbols[0].name == "main"
 ```
 
-## 7. Migration Path
+## 7. Implementation Status
 
-### Phase 1 (Current)
+### Phase 1 ✅ Complete
 
-Adapt existing `LANGUAGE_CONFIGS` → protocol:
-1. Create `sidecar/parser/protocol.py` with `LanguageAdapter` ABC.
-2. Create `sidecar/parser/adapters/` directory.
-3. Implement `PythonAdapter` and `TypeScriptAdapter` from current queries.
-4. Refactor `SymbolExtractor` to use registry.
-5. Add unit tests for adapter loading.
+Adapter protocol and registry fully implemented:
+1. ✅ `sidecar/parser/protocol.py` with `LanguageAdapter` ABC and data classes.
+2. ✅ `sidecar/parser/adapters/` directory with `python_adapter.py` and `typescript_adapter.py`.
+3. ✅ `SymbolExtractor` refactored to use registry and auto-detect language.
+4. ✅ 10 unit tests + 10 integration tests for adapter loading and language detection.
 
-### Phase 3.5
+### Phase 3.5 ✅ Complete
 
-Extend adapters with `extract_imports()` and `extract_inheritance()`:
-1. Add queries to Python and TypeScript adapters.
-2. Update indexer Phase 2 to create `IMPORTS` and `INHERITS` edges.
-3. Update Phase 3.5 token-budget BFS to weight these edges.
+Graph Completeness extends adapters:
+1. ✅ `extract_imports()` implemented in Python (text-based) and TypeScript (regex-based) adapters.
+2. ✅ `extract_inheritance()` implemented in both adapters for class/interface hierarchies.
+3. ✅ Indexer Phase 5 & 6 create `IMPORTS` (File→File) and `DEPENDS_ON` (Symbol→Symbol) edges.
+4. ✅ Arbitrator BFS expanded to traverse all three edge types (CALLS, IMPORTS, DEPENDS_ON).
+5. ✅ 18 new tests verify complete import/inheritance extraction.
 
 ### Phase 5+
 
