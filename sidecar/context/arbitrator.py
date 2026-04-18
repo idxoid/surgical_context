@@ -69,6 +69,17 @@ class PromptContext:
             ],
         }
 
+    def token_count(self) -> int:
+        """Count tokens in the assembled prompt using cl100k_base encoding (GPT-3.5/4)."""
+        try:
+            import tiktoken
+        except ImportError:
+            raise ImportError("tiktoken is required for token counting")
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        prompt_text = self.to_system_prompt()
+        return len(enc.encode(prompt_text))
+
 
 class ContextArbitrator:
     def __init__(self, neo4j_client, overlay=None):
