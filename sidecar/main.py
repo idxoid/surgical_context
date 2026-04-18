@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from sidecar.context.arbitrator import ContextArbitrator
+from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.overlay import InMemoryOverlay
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
@@ -114,7 +115,6 @@ def clear_overlay(file_path: str):
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    from sidecar.context.arbitrator import DocChunk
     db = get_db()
     try:
         arb = ContextArbitrator(db, overlay)
@@ -122,15 +122,8 @@ def ask(req: AskRequest):
         if isinstance(ctx, str):
             raise HTTPException(status_code=404, detail=ctx)
 
-        raw_chunks = vector_db.search(f"{req.symbol} {req.question}", limit=3)
-        ctx.documentation = [
-            DocChunk(
-                source_file=d["file_path"],
-                chunk_id=f"{d['file_path']}::search",
-                content=d["chunk"],
-            )
-            for d in raw_chunks
-        ]
+        doc_resolver = DocResolver(vector_db)
+        ctx.documentation = doc_resolver.search(f"{req.symbol} {req.question}", limit=3)
 
         response = ollama.chat(model=OLLAMA_MODEL, messages=[
             {"role": "system", "content": f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"},
