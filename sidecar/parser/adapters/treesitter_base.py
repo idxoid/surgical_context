@@ -3,7 +3,7 @@
 from abc import abstractmethod
 from hashlib import sha256
 
-import tree_sitter_languages
+from tree_sitter import Parser, Language
 
 from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata
 
@@ -37,8 +37,18 @@ class TreeSitterAdapter(LanguageAdapter):
 
     def __init__(self):
         """Initialize parser and language objects for this language."""
-        self.parser = tree_sitter_languages.get_parser(self.ts_language_name)
-        self.language = tree_sitter_languages.get_language(self.ts_language_name)
+        lang_name = self.ts_language_name
+        if lang_name == "python":
+            from tree_sitter_python import language as lang_ptr
+            self.language = Language(lang_ptr(), lang_name)
+        elif lang_name == "typescript":
+            from tree_sitter_typescript import language_typescript as lang_ptr
+            self.language = Language(lang_ptr(), lang_name)
+        else:
+            raise ValueError(f"Unsupported language: {lang_name}")
+
+        self.parser = Parser()
+        self.parser.set_language(self.language)
 
     def extract_symbols(self, source_code: str, file_path: str) -> list[SymbolMetadata]:
         """Extract functions, classes, and module-level constants from source code."""

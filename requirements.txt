@@ -1,4 +1,6 @@
-tree-sitter-languages==1.10.2
+tree-sitter==0.21.1
+tree-sitter-python==0.21.0
+tree-sitter-typescript==0.21.0
 neo4j==5.18.0
 lancedb==0.6.2
 pydantic==2.6.3
