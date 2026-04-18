@@ -1,0 +1,56 @@
+{
+  "name": "surgical-context",
+  "displayName": "Surgical Context",
+  "description": "Symbol-level code Q&A powered by a local Python sidecar",
+  "version": "0.1.0",
+  "publisher": "local-dev",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "surgicalContext.openChat",
+        "title": "Surgical Context: Open Chat"
+      },
+      {
+        "command": "surgicalContext.askAboutCursor",
+        "title": "Surgical Context: Ask About Symbol at Cursor"
+      },
+      {
+        "command": "surgicalContext.indexProject",
+        "title": "Surgical Context: Index Project"
+      },
+      {
+        "command": "surgicalContext.checkHealth",
+        "title": "Surgical Context: Check Sidecar Health"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "surgicalContext.askAboutCursor",
+        "key": "ctrl+shift+/",
+        "mac": "cmd+shift+/",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "vscode:prepublish": "node esbuild.js --production"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.82.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "esbuild": "^0.21.0"
+  }
+}

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "surgical-context"
+version = "0.1.0"
+description = "AI-powered VS Code extension for surgical code analysis"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+respect-gitignore = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B", "F811"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+explicit_package_bases = true
+namespace_packages = true
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+  "ollama",
+  "tree_sitter_languages",
+  "sentence_transformers",
+  "lancedb",
+  "claude_api",
+  "pyarrow",
+]
+ignore_missing_imports = true

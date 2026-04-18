@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # Основной навигатор: Графовая база данных
+  neo4j:
+    image: neo4j:5.12-community
+    container_name: surgical-neo4j
+    ports:
+      - "7474:7474" # HTTP UI (Browser)
+      - "7687:7687" # Bolt Protocol (Python Driver)
+    volumes:
+      - ./data/neo4j:/data
+      - ./logs/neo4j:/logs
+      - ./import/neo4j:/var/lib/neo4j/import
+      - ./plugins/neo4j:/plugins
+    environment:
+      # ВАЖНО: Пароль должен совпадать с тем, что вы прописали в Python-клиенте
+      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+      # Включаем APOC для расширенных функций и процедур
+      - NEO4J_PLUGINS=["apoc"]
+      # Позволяем APOC выполнять внешние запросы и читать файлы
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Опционально: Интерфейс для векторной базы (если используете Qdrant/Milvus вместо LanceDB)
+  # Если вы используете LanceDB (локально в бинарнике), этот блок не нужен.
+  
+networks:
+  default:
+    name: surgical-network

@@ -1,0 +1,252 @@
+# Cross-Module Interactions — Spec
+
+## Module Map
+
+```
+sidecar/indexer/code.py
+  ├── sidecar/parser/extractor.py        SymbolExtractor
+  │     └── sidecar/parser/registry.py   LanguageAdapterRegistry (adapters/*)
+  ├── sidecar/database/neo4j_client.py   Neo4jClient
+  ├── sidecar/database/lancedb_client.py LanceDBClient
+  └── sidecar/indexer/anchor.py          resolve_pending_anchors()
+
+sidecar/indexer/docs.py
+  ├── sidecar/database/lancedb_client.py LanceDBClient
+  ├── sidecar/database/neo4j_client.py   Neo4jClient
+  └── sidecar/indexer/anchor.py          link_docs_to_symbols()
+
+sidecar/indexer/anchor.py
+  ├── sidecar/database/neo4j_client.py   Neo4jClient  (passed in)
+  └── sidecar/database/lancedb_client.py LanceDBClient (passed in)
+
+sidecar/context/arbitrator.py
+  ├── sidecar/database/neo4j_client.py   Neo4jClient  (passed in)
+  └── sidecar/context/overlay.py         InMemoryOverlay (passed in, optional)
+
+sidecar/context/overlay.py
+  └── sidecar/parser/extractor.py        SymbolExtractor
+
+sidecar/main.py  (FastAPI)
+  ├── sidecar/indexer/code.py            run_indexing()
+  ├── sidecar/indexer/docs.py            index_docs()
+  ├── sidecar/context/arbitrator.py      ContextArbitrator
+  ├── sidecar/context/overlay.py         InMemoryOverlay  [singleton]
+  └── sidecar/database/lancedb_client.py LanceDBClient    [singleton]
+
+run_demo.py
+  ├── sidecar/indexer/code.py            run_indexing()
+  ├── sidecar/indexer/docs.py            index_docs()
+  ├── sidecar/context/arbitrator.py      ContextArbitrator
+  ├── sidecar/database/neo4j_client.py   Neo4jClient
+  └── sidecar/database/lancedb_client.py LanceDBClient
+
+sidecar/ai/  (stubs — not wired into active flows)
+  ├── engine.py                          AIEngine (commented implementations)
+  ├── auth.py                            GitHubAuth (device flow OAuth)
+  └── session.py                         SessionManager (token persistence)
+```
+
+---
+
+## Flow 1: Code Indexing
+
+**Trigger:** `POST /index` or `python indexer_main.py <path>` or `run_demo.py`
+
+```
+run_indexing(project_path)
+│
+├─ [collect] _collect_files(project_path)
+│     pathspec (.gitignore) → list of .py/.ts/.tsx files
+│
+├─ [Phase 1] for each file:
+│     SymbolExtractor.extract(file_path)
+│       → REGISTRY.get_adapter(language).extract_symbols()
+│       → tree-sitter query from adapter → tree-sitter parse → SymbolMetadata list
+│     Neo4jClient.upsert_file_structure(file_path, hash, symbols)
+│       → MERGE File node
+│       → MERGE Symbol nodes (uid, name, kind, hash, range)
+│       → MERGE (File)-[:CONTAINS]->(Symbol)
+│
+├─ [Phase 2] for each file:
+│     SymbolExtractor.extract_calls(file_path)
+│       → REGISTRY.get_adapter(language).extract_calls_from_source()
+│       → call query from adapter → tree-sitter parse → [{caller_uid, callee_name}]
+│     Neo4jClient.link_calls(calls)
+│       → MERGE (caller)-[:CALLS]->(callee)   [matched by name]
+│
+├─ [Phase 3] for each file:
+│     SymbolExtractor.extract_from_source(source, file_path)
+│       → SymbolMetadata list with start/end lines
+│     LanceDBClient.upsert_symbol_embeddings([{uid, name, file_path, code}])
+│       → SentenceTransformer.encode(code)
+│       → delete-then-insert in `symbols` table
+│
+└─ [Phase 4]
+      resolve_pending_anchors(neo4j, lance)
+        → LanceDBClient.get_pending()  →  {chunk_id: [name,...]}
+        → Neo4j: MATCH (s:Symbol) RETURN s.uid, s.name  →  name_to_uid
+        → for each resolvable name: _add_covers_edge(chunk_id, uid)
+        → LanceDBClient.set_pending(chunk_id, still_pending)
+```
+
+**Data written:**
+- Neo4j: `File`, `Symbol` nodes; `CONTAINS`, `CALLS` edges
+- LanceDB `symbols` table: code body embeddings
+- Neo4j: additional `COVERS` edges (pending resolution)
+
+---
+
+## Flow 2: Doc Indexing
+
+**Trigger:** `POST /index/docs` or `run_demo.py` or `python sidecar/doc_indexer.py <path>`
+
+```
+index_docs(docs_path)
+│
+├─ glob("**/*.md")
+│
+├─ for each .md file:
+│     _chunk_text(text)
+│       → _split_by_sections()   [on ^#{1,3} headings]
+│       → _word_split_chunk()    [fallback: 400 words, 80 overlap]
+│     LanceDBClient.upsert_chunks(file_path, chunks)
+│       → SentenceTransformer.encode(chunks)
+│       → delete all rows where file_path=X
+│       → insert rows: {id="{path}::{i}", file_path, chunk, pending=[], vector}
+│
+└─ link_docs_to_symbols(neo4j, lance)
+      │
+      ├─ lance._table.to_pandas()   →  all doc rows
+      ├─ Neo4j: MATCH (s:Symbol) RETURN s.uid, s.name  →  name_to_uid
+      │
+      └─ for each chunk:
+            [semantic] lance.search_symbols(chunk_text, limit=5, threshold=0.4)
+              → embed chunk → ANN on `symbols` table → filter by distance
+              → _write_anchor(chunk_id, file_path)      [MERGE DocAnchor + [:FROM]]
+              → _add_covers_edge(chunk_id, hit.uid)     [MERGE [:COVERS]]
+            │
+            [identifier] _extract_identifiers(chunk_text)
+              → _IDENTIFIER_RE  (CamelCase | UPPER_CASE | snake_case)
+              → skip names already matched by semantic search
+              → if name in name_to_uid → _add_covers_edge immediately
+              → else → pending.append(name)
+            │
+            lance.set_pending(chunk_id, pending)
+```
+
+**Data written:**
+- LanceDB `docs` table: chunks with embeddings, `pending` list
+- Neo4j: `DocAnchor` nodes; `FROM`, `COVERS` edges
+
+---
+
+## Flow 3: /ask — Surgical Context Assembly
+
+**Trigger:** `POST /ask {symbol, question}`
+
+```
+ask(req)
+│
+├─ Neo4jClient()                          [new connection per request]
+│
+├─ ContextArbitrator(db, overlay)
+│     get_context_for_symbol(symbol)
+│       │
+│       ├─ Neo4j: MATCH (s:Symbol {name}) OPTIONAL MATCH (s)-[:CALLS]->(dep)
+│       │         RETURN s, collect(dep)
+│       │
+│       ├─ _read_code(target_node)
+│       │     Neo4j: MATCH (f:File)-[:CONTAINS]->(s {uid}) RETURN f.path
+│       │     InMemoryOverlay.has(file_path) ?
+│       │       yes → overlay.read_lines(file_path, start, end)
+│       │       no  → open(file_path).readlines()[start-1:end]
+│       │
+│       └─ for each dep: _read_code(dep_node)   [same logic]
+│
+├─ LanceDBClient.search(symbol + question, limit=3)
+│     → embed query → ANN on `docs` table
+│     → [{file_path, chunk}]
+│
+├─ context += doc chunks as "--- DOCUMENTATION ---" section
+│
+└─ ollama.chat(OLLAMA_MODEL, [{system: context}, {user: question}])
+      → {"symbol": ..., "answer": ...}
+```
+
+**Reads from:**
+- Neo4j: Symbol + File topology
+- InMemoryOverlay (if file is dirty) OR Local FS
+- LanceDB `docs` table
+
+---
+
+## Flow 4: /overlay — Dirty State Update
+
+**Trigger:** `POST /overlay {file_path, content}` (called on every keypress from VS Code)
+
+```
+update_overlay(req)
+│
+├─ InMemoryOverlay.update(file_path, content)
+│     _files[file_path] = content
+│
+└─ InMemoryOverlay.get_symbols(file_path)
+      SymbolExtractor.extract_from_source(content, file_path)
+        → tree-sitter parse (language="python" hardcoded)
+        → {name: (start_line, end_line)}
+```
+
+**Effect on Flow 3:** Next `/ask` call picks up dirty content via `overlay.has(file_path)` check in `_read_code()`. No Neo4j write — overlay is ephemeral.
+
+---
+
+## Shared State and Ownership
+
+| Object | Owned by | Lifetime | Shared across |
+|---|---|---|---|
+| `InMemoryOverlay` | `sidecar/main.py` | Process | All `/overlay` + `/ask` requests |
+| `LanceDBClient` (vector_db) | `sidecar/main.py` | Process | `/search`, `/ask`, `/index/docs` |
+| `Neo4jClient` | Per request | Request | Closed in `finally` |
+| `SymbolExtractor` | `InMemoryOverlay.__init__` | Process | All overlay parses |
+| `SentenceTransformer` | `LanceDBClient.__init__` | Process | All embeds |
+
+---
+
+## Data Flow Between Stores
+
+```
+Local FS  ──[read by]──▶  SymbolExtractor  ──▶  Neo4j (topology)
+                                           ──▶  LanceDB symbols (embeddings)
+
+Docs FS   ──[read by]──▶  doc_indexer      ──▶  LanceDB docs (chunks + pending)
+                                           ──▶  Neo4j (DocAnchor nodes + edges)
+
+LanceDB docs.pending  ──[resolved by]──▶  Neo4j COVERS edges
+LanceDB symbols.vector ──[queried by]──▶  DocAnchor semantic matching
+
+Neo4j topology  ──[traversed by]──▶  ContextArbitrator  ──▶  LLM prompt
+LanceDB docs    ──[searched by]──▶   ContextArbitrator  ──▶  LLM prompt
+Local FS        ──[read by]──▶       ContextArbitrator  ──▶  LLM prompt
+InMemoryOverlay ──[read by]──▶       ContextArbitrator  ──▶  LLM prompt
+```
+
+---
+
+## Unused Modules (Pre-MVP Stubs)
+
+| Module | Status | Notes |
+|---|---|---|
+| `sidecar/ai/auth.py` | Not wired | GitHub Device Flow OAuth. Not called from any current entry point. |
+| `sidecar/ai/session.py` | Not wired | Persists GitHub token to `~/.config/surgical_sidecar/session.json`. Not called from any current entry point. |
+| `sidecar/ai/engine.py` | Not wired | Two commented implementations (OpenAI SDK, Anthropic SDK). Active code uses `claude_api` browser session cookie — unofficial scraper, broken. Will be replaced by Anthropic SDK in Phase 5. |
+
+---
+
+## silence.py
+
+`sidecar/silence.py` — installed at startup in `indexer_main.py` and `run_demo.py` via:
+```python
+from sidecar.silence import install as _silence; _silence()
+```
+
+Wraps `sys.stderr` with a filter that drops known noisy lines from HuggingFace Hub, CUDA init warnings, and BertModel load reports. No functional effect on any module — purely output hygiene.
