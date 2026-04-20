@@ -147,21 +147,26 @@ Goal: Reduce token overhead and prepare for multi-model / multi-user environment
 > **Reference:** [architectural_review.md](architectural_review.md#phase-4-near-term-wins) — detailed evaluation of all improvement ideas by impact/effort.
 
 ### Context Deduplication ✅ CANDIDATE
-- [ ] Implement `ContextDeduplicator` component between GraphExpander and PromptCompiler
-- [ ] Normalize symbol identity by UID; remove transitive duplicates
-- [ ] Collapse overlapping doc chunks and line ranges
-- [ ] Target: 15–40% token reduction on real repos (currently uniform 883t baseline suggests opportunity)
+> **Spec:** [spec_context_deduplicator.md](spec_context_deduplicator.md) — insertion point, dedup rules, budget recalculation, test matrix.
+- [ ] Implement `ContextDeduplicator` — pure transform between GraphExpander and PromptCompiler
+- [ ] Normalize symbol identity by UID; keep lowest-depth copy on duplicates
+- [ ] Collapse overlapping line ranges within same file
+- [ ] Deduplicate doc chunks with >85% content overlap
+- [ ] Update `budget["dedup_saved"]` for observability
+- [ ] Target: 15–40% token reduction (currently uniform 883t baseline signals opportunity)
 
 ### Embedding Versioning ✅ CANDIDATE
-- [ ] Add `EmbeddingMetadata` table to LanceDB: model_name, model_version, chunk_hash, embedding_hash
-- [ ] Enforce: no cross-model queries without explicit migration flag
-- [ ] Prevents silent quality degradation when upgrading embedding models
+> **Spec:** [spec_embedding_versioning.md](spec_embedding_versioning.md) — metadata schema, model registry, cross-model guard, migration CLI.
+- [ ] Add `embedding_metadata` JSON column to `docs` and `symbols` LanceDB tables
+- [ ] Model registry in `sidecar/database/embedding_registry.py` — known models + dimensions
+- [ ] Write path: record model_name, model_version, chunk_hash, embedding_hash per row
+- [ ] Read path: guard against cross-model queries (raise `EmbeddingModelMismatch`)
+- [ ] Migration CLI: `python -m sidecar.database.embedding_migration status / migrate`
 
-### Graph Richness (Optional — Phase 5 planning)
-- [ ] Evaluate typed semantic edges: CALLS_DIRECT vs CALLS_DYNAMIC vs CALLS_INFERRED
-- [ ] Design reverse dependency index: Symbol/File → AFFECTS → Symbol/File
-- [ ] Assessment: feasibility of dynamic dispatch detection in Python/TypeScript parsers
-- [ ] Decision point: prioritize for Phase 5 vs defer to Phase 6
+### Graph Richness (Phase 5 planning)
+- [ ] Feasibility assessment: dynamic dispatch detection in Python/TypeScript parsers
+- [ ] Spec review: [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md), [spec_affects_index.md](spec_affects_index.md)
+- [ ] Decision gate: prioritize typed edges vs AFFECTS index for Phase 5 first milestone
 
 ---
 
@@ -185,9 +190,14 @@ Goal: Transition from local tool to Enterprise solution (ADR-003).
 - [ ] Parallel parsing for `git pull` indexing speed
 
 ### Graph Richness & Scaling
-- [ ] Implement reverse dependency AFFECTS index for cache invalidation
-- [ ] Typed semantic edges: distinguish CALLS_DIRECT from CALLS_DYNAMIC for accurate ranking
-- [ ] Proposal: evaluate executor probability model for runtime-aware context (deferred to Phase 6 unless empirical data available)
+> **Specs:** [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md) — edge types, detection logic, BFS prior table, migration. [spec_affects_index.md](spec_affects_index.md) — AFFECTS materialization, cascade invalidation, `/impact` endpoint.
+- [ ] Typed semantic edges: CALLS_DIRECT / CALLS_DYNAMIC / CALLS_INFERRED / IMPLEMENTS / OVERRIDES / REFERENCES
+- [ ] One-time migration: existing `CALLS` edges → `CALLS_DIRECT` (conservative default)
+- [ ] Update BFS `RELATION_PRIOR` table with new edge type priors
+- [ ] Reverse dependency AFFECTS index: Symbol→Symbol, File→File (materialized, depth ≤ 4)
+- [ ] `POST /index/file` triggers AFFECTS rebuild for modified symbols
+- [ ] `GET /impact?symbol=<name>` endpoint for downstream dependency analysis
+- [ ] Proposal: evaluate execution semantics (ExecutionEdge with runtime probability) — deferred to Phase 6 unless empirical call-trace data available
 
 ---
 
