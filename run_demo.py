@@ -25,26 +25,30 @@ Lets
   Loop: ask multiple questions without re-indexing:
       python run_demo.py --no-index --loop
 """
+
 import argparse
 import os
 import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sidecar.silence import install as _silence; _silence()
+from sidecar.silence import install as _silence
 
-ROOT          = os.path.dirname(os.path.abspath(__file__))
-LANCEDB_PATH  = os.path.join(ROOT, "data", "lancedb")
-NEO4J_URI     = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
-NEO4J_USER    = os.getenv("NEO4J_USER",     "neo4j")
+_silence()
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+LANCEDB_PATH = os.path.join(ROOT, "data", "lancedb")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
-OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL",   "llama3")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 
-SEP  = "=" * 70
+SEP = "=" * 70
 SEP2 = "-" * 70
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
+
 
 def _prompt(label: str, default: str = "") -> str:
     hint = f" [{default}]" if default else ""
@@ -58,6 +62,7 @@ def _prompt(label: str, default: str = "") -> str:
 
 # ── pipeline steps ────────────────────────────────────────────────────────
 
+
 def clean_dbs():
     if os.path.exists(LANCEDB_PATH):
         shutil.rmtree(LANCEDB_PATH)
@@ -65,6 +70,7 @@ def clean_dbs():
     print("  LanceDB cleared.")
 
     from sidecar.database.neo4j_client import Neo4jClient
+
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     with db.driver.session() as s:
         s.run("MATCH (n) DETACH DELETE n")
@@ -74,6 +80,7 @@ def clean_dbs():
 
 def index_code():
     from sidecar.indexer.code import run_indexing
+
     for rel in ["sidecar"]:
         abs_p = os.path.join(ROOT, rel)
         if os.path.isdir(abs_p):
@@ -85,6 +92,7 @@ def index_code():
 
 def index_docs():
     from sidecar.indexer.docs import index_docs as _index_docs
+
     abs_p = os.path.join(ROOT, "docs")
     print(f"  Indexing docs: {abs_p}")
     _index_docs(abs_p)
@@ -95,7 +103,7 @@ def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.database.neo4j_client import Neo4jClient
 
-    db    = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+    db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     lance = LanceDBClient()
 
     try:
@@ -118,6 +126,7 @@ def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"
         db.close()
 
     import json
+
     if fmt == "json":
         context_body = json.dumps(ctx.to_dict(), indent=2)
         label = "CONTEXT  (JSON)"
@@ -126,8 +135,7 @@ def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"
         label = "CONTEXT  (text)"
 
     system_msg = (
-        "You are a Surgical Code Assistant. Use ONLY the provided context.\n\n"
-        + context_body
+        "You are a Surgical Code Assistant. Use ONLY the provided context.\n\n" + context_body
     )
 
     print(f"\n{SEP}")
@@ -144,18 +152,23 @@ def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"
         return
 
     import ollama
+
     print(f"\n{SEP}")
     print(f"LLM ANSWER  ({OLLAMA_MODEL})")
     print(SEP)
-    response = ollama.chat(model=OLLAMA_MODEL, messages=[
-        {"role": "system", "content": system_msg},
-        {"role": "user",   "content": question},
-    ])
+    response = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": question},
+        ],
+    )
     print(response["message"]["content"])
     print(f"\n{SEP}")
 
 
 # ── main ──────────────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -163,12 +176,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--symbol",   default="", help="Target symbol name")
+    parser.add_argument("--symbol", default="", help="Target symbol name")
     parser.add_argument("--question", default="", help="Question to ask")
-    parser.add_argument("--no-index", action="store_true", help="Skip clean + index (DBs already populated)")
-    parser.add_argument("--no-llm",   action="store_true", help="Print assembled prompt only, skip LLM call")
-    parser.add_argument("--loop",     action="store_true", help="Keep asking questions without re-indexing")
-    parser.add_argument("--fmt",      choices=["json", "text"], default="json", help="Prompt format sent to LLM (default: json)")
+    parser.add_argument(
+        "--no-index", action="store_true", help="Skip clean + index (DBs already populated)"
+    )
+    parser.add_argument(
+        "--no-llm", action="store_true", help="Print assembled prompt only, skip LLM call"
+    )
+    parser.add_argument(
+        "--loop", action="store_true", help="Keep asking questions without re-indexing"
+    )
+    parser.add_argument(
+        "--fmt",
+        choices=["json", "text"],
+        default="json",
+        help="Prompt format sent to LLM (default: json)",
+    )
     args = parser.parse_args()
 
     print(SEP)
@@ -186,12 +210,12 @@ def main():
     first = True
     while True:
         if first:
-            symbol   = args.symbol   or _prompt("Symbol",   "ContextArbitrator")
+            symbol = args.symbol or _prompt("Symbol", "ContextArbitrator")
             question = args.question or _prompt("Question", "How does dirty state work?")
             first = False
         else:
             print(f"\n{SEP2}")
-            symbol   = _prompt("Symbol   (Enter to keep previous)", symbol)
+            symbol = _prompt("Symbol   (Enter to keep previous)", symbol)
             question = _prompt("Question")
             if not question:
                 break

@@ -47,36 +47,36 @@ class PythonAdapter(TreeSitterAdapter):
     def extract_imports(self, source_code: str, file_path: str) -> list[ImportEdge]:
         """Extract import statements from Python source."""
         imports = []
-        for line in source_code.split('\n'):
+        for line in source_code.split("\n"):
             line = line.strip()
-            if line.startswith('import '):
-                parts = line[7:].split(',')
+            if line.startswith("import "):
+                parts = line[7:].split(",")
                 for part in parts:
                     module = part.strip()
                     if module:
-                        imports.append(ImportEdge(file_path, module, 'direct'))
-            elif line.startswith('from '):
-                match = line.split(' import ')
+                        imports.append(ImportEdge(file_path, module, "direct"))
+            elif line.startswith("from "):
+                match = line.split(" import ")
                 if len(match) == 2:
                     module = match[0][5:].strip()
-                    if module == '.':
-                        imports.append(ImportEdge(file_path, '.', 'relative'))
+                    if module == ".":
+                        imports.append(ImportEdge(file_path, ".", "relative"))
                     else:
-                        imports.append(ImportEdge(file_path, module, 'from_package'))
+                        imports.append(ImportEdge(file_path, module, "from_package"))
         return imports
 
     def extract_inheritance(self, source_code: str, file_path: str) -> list[InheritanceEdge]:
         """Extract class inheritance from Python source."""
         edges = []
-        lines = source_code.split('\n')
-        for i, line in enumerate(lines):
+        lines = source_code.split("\n")
+        for _i, line in enumerate(lines):
             line = line.strip()
-            if line.startswith('class '):
-                match = line[6:].split(':')[0].strip()
-                if '(' in match:
-                    class_name = match.split('(')[0].strip()
-                    bases_str = match.split('(')[1].rstrip(')')
-                    for base in bases_str.split(','):
+            if line.startswith("class "):
+                match = line[6:].split(":")[0].strip()
+                if "(" in match:
+                    class_name = match.split("(")[0].strip()
+                    bases_str = match.split("(")[1].rstrip(")")
+                    for base in bases_str.split(","):
                         base_name = base.strip()
                         if base_name:
                             subclass_uid = self._uid(file_path, class_name)

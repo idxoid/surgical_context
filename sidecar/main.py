@@ -63,6 +63,7 @@ def index(req: IndexRequest):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.project_path}")
 
     from sidecar.indexer.code import run_indexing
+
     run_indexing(req.project_path)
     return {"status": "indexed", "path": req.project_path}
 
@@ -72,9 +73,10 @@ def index_file_endpoint(req: IndexFileRequest):
     if not os.path.isfile(req.file_path):
         raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
 
-    from sidecar.indexer.code import index_file
     from sidecar.indexer.anchor import resolve_pending_anchors
+    from sidecar.indexer.code import index_file
     from sidecar.parser.extractor import SymbolExtractor
+
     db = get_db()
     try:
         db.delete_symbols_for_file(req.file_path)
@@ -91,6 +93,7 @@ def index_docs_endpoint(req: IndexDocsRequest):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.docs_path}")
 
     from sidecar.indexer.docs import index_docs
+
     index_docs(req.docs_path)
     return {"status": "indexed", "path": req.docs_path}
 
@@ -125,10 +128,16 @@ def ask(req: AskRequest):
         doc_resolver = DocResolver(vector_db)
         ctx.documentation = doc_resolver.search(f"{req.symbol} {req.question}", limit=3)
 
-        response = ollama.chat(model=OLLAMA_MODEL, messages=[
-            {"role": "system", "content": f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"},
-            {"role": "user", "content": req.question},
-        ])
+        response = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}",
+                },
+                {"role": "user", "content": req.question},
+            ],
+        )
         return {
             "symbol": req.symbol,
             "answer": response["message"]["content"],
@@ -140,4 +149,5 @@ def ask(req: AskRequest):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=8000)

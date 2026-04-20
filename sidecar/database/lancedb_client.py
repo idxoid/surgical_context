@@ -9,21 +9,25 @@ EMBED_MODEL = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
 DOCS_TABLE = "docs"
 SYMBOLS_TABLE = "symbols"
 
-DOCS_SCHEMA = pa.schema([
-    pa.field("id", pa.string()),
-    pa.field("file_path", pa.string()),
-    pa.field("chunk", pa.string()),
-    pa.field("pending", pa.list_(pa.string())),
-    pa.field("vector", pa.list_(pa.float32(), 384)),
-])
+DOCS_SCHEMA = pa.schema(
+    [
+        pa.field("id", pa.string()),
+        pa.field("file_path", pa.string()),
+        pa.field("chunk", pa.string()),
+        pa.field("pending", pa.list_(pa.string())),
+        pa.field("vector", pa.list_(pa.float32(), 384)),
+    ]
+)
 
-SYMBOLS_SCHEMA = pa.schema([
-    pa.field("uid", pa.string()),
-    pa.field("name", pa.string()),
-    pa.field("file_path", pa.string()),
-    pa.field("code", pa.string()),
-    pa.field("vector", pa.list_(pa.float32(), 384)),
-])
+SYMBOLS_SCHEMA = pa.schema(
+    [
+        pa.field("uid", pa.string()),
+        pa.field("name", pa.string()),
+        pa.field("file_path", pa.string()),
+        pa.field("code", pa.string()),
+        pa.field("vector", pa.list_(pa.float32(), 384)),
+    ]
+)
 
 
 class LanceDBClient:
@@ -52,7 +56,7 @@ class LanceDBClient:
                 "pending": [],
                 "vector": vec,
             }
-            for i, (chunk, vec) in enumerate(zip(chunks, vectors))
+            for i, (chunk, vec) in enumerate(zip(chunks, vectors, strict=False))
         ]
         try:
             self._table.delete(f"file_path = '{file_path}'")
@@ -64,9 +68,7 @@ class LanceDBClient:
         """Returns {chunk_id: [name, ...]} for all chunks with pending identifiers."""
         df = self._table.to_pandas()
         return {
-            row["id"]: list(row["pending"])
-            for _, row in df.iterrows()
-            if len(row["pending"]) > 0
+            row["id"]: list(row["pending"]) for _, row in df.iterrows() if len(row["pending"]) > 0
         }
 
     def set_pending(self, chunk_id: str, pending: list[str]):
@@ -79,13 +81,17 @@ class LanceDBClient:
             self._table.delete(f"id = '{chunk_id}'")
         except Exception:
             pass
-        self._table.add([{
-            "id": chunk_id,
-            "file_path": row["file_path"],
-            "chunk": row["chunk"],
-            "pending": pending,
-            "vector": row["vector"].tolist(),
-        }])
+        self._table.add(
+            [
+                {
+                    "id": chunk_id,
+                    "file_path": row["file_path"],
+                    "chunk": row["chunk"],
+                    "pending": pending,
+                    "vector": row["vector"].tolist(),
+                }
+            ]
+        )
 
     def search(self, query: str, limit: int = 5) -> list[dict]:
         vec = self._embed([query])[0]
@@ -106,7 +112,7 @@ class LanceDBClient:
                 "code": s["code"],
                 "vector": vec,
             }
-            for s, vec in zip(symbols, vectors)
+            for s, vec in zip(symbols, vectors, strict=False)
         ]
         uids = [s["uid"] for s in symbols]
         for uid in uids:
@@ -124,10 +130,12 @@ class LanceDBClient:
         for r in results:
             distance = r.get("_distance", 1.0)
             if distance <= threshold:
-                out.append({
-                    "uid": r["uid"],
-                    "name": r["name"],
-                    "file_path": r["file_path"],
-                    "distance": distance,
-                })
+                out.append(
+                    {
+                        "uid": r["uid"],
+                        "name": r["name"],
+                        "file_path": r["file_path"],
+                        "distance": distance,
+                    }
+                )
         return out

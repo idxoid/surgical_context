@@ -7,7 +7,7 @@ SIMILARITY_THRESHOLD = 0.4
 
 # CamelCase, UPPER_CASE_WITH_UNDERSCORE, snake_case_with_underscore
 _IDENTIFIER_RE = re.compile(
-    r'\b([A-Z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9_]*_[A-Z0-9_]+|[a-z][a-z0-9]*_[a-z0-9_]+)\b'
+    r"\b([A-Z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9_]*_[A-Z0-9_]+|[a-z][a-z0-9]*_[a-z0-9_]+)\b"
 )
 
 
@@ -16,20 +16,28 @@ def _extract_identifiers(text: str) -> list[str]:
 
 
 def _write_anchor(tx, chunk_id: str, file_path: str):
-    tx.run("""
+    tx.run(
+        """
         MERGE (a:DocAnchor {chunk_id: $chunk_id})
         WITH a
         MERGE (f:File {path: $file_path})
         MERGE (a)-[:FROM]->(f)
-    """, chunk_id=chunk_id, file_path=file_path)
+    """,
+        chunk_id=chunk_id,
+        file_path=file_path,
+    )
 
 
 def _add_covers_edge(tx, chunk_id: str, uid: str):
-    tx.run("""
+    tx.run(
+        """
         MATCH (a:DocAnchor {chunk_id: $chunk_id})
         MATCH (s:Symbol {uid: $uid})
         MERGE (a)-[:COVERS]->(s)
-    """, chunk_id=chunk_id, uid=uid)
+    """,
+        chunk_id=chunk_id,
+        uid=uid,
+    )
 
 
 def link_docs_to_symbols(neo4j: Neo4jClient, lance: LanceDBClient):
@@ -42,9 +50,9 @@ def link_docs_to_symbols(neo4j: Neo4jClient, lance: LanceDBClient):
         name_to_uid = {r["name"]: r["uid"] for r in result}
 
     for _, row in rows.iterrows():
-        chunk_id   = row["id"]
+        chunk_id = row["id"]
         chunk_text = row["chunk"]
-        file_path  = row["file_path"]
+        file_path = row["file_path"]
 
         hits = lance.search_symbols(chunk_text, limit=5, threshold=SIMILARITY_THRESHOLD)
         matched_names = {h["name"] for h in hits}

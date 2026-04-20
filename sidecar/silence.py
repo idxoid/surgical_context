@@ -1,4 +1,5 @@
 """Suppress known noisy stderr lines from third-party native libs."""
+
 import io
 import sys
 
@@ -7,7 +8,7 @@ _SUPPRESSED = (
     "UserWarning: CUDA initialization",
     "return torch._C._cuda_getDeviceCount",
     "FutureWarning: Language(path, name) is deprecated",
-    "warn(\"{} is deprecated",
+    'warn("{} is deprecated',
     "Loading weights:",
     "BertModel LOAD REPORT",
     "embeddings.position_ids",
@@ -17,6 +18,7 @@ _SUPPRESSED = (
     "Key                     | Status",
     "------------------------+",
 )
+
 
 class _FilteredStderr(io.TextIOWrapper):
     def __init__(self, wrapped):

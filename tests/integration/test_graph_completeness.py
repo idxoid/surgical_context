@@ -107,4 +107,6 @@ interface IInterface {}
         inheritance = ts_adapter.extract_inheritance(source, "test.ts")
         assert len(inheritance) > 0
         # At least one should have is_interface flag
-        assert any(edge.is_interface for edge in inheritance) or any(not edge.is_interface for edge in inheritance)
+        assert any(edge.is_interface for edge in inheritance) or any(
+            not edge.is_interface for edge in inheritance
+        )

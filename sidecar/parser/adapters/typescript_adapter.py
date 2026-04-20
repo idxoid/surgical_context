@@ -60,9 +60,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         imports = []
         for node, tag in captures:
-            if tag == 'import.source':
-                source = node.text.decode('utf-8').strip('"\'')
-                import_type = 'relative' if source.startswith('.') else 'from_package'
+            if tag == "import.source":
+                source = node.text.decode("utf-8").strip("\"'")
+                import_type = "relative" if source.startswith(".") else "from_package"
                 imports.append(ImportEdge(file_path, source, import_type))
 
         return imports
@@ -70,15 +70,16 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def extract_inheritance(self, source_code: str, file_path: str) -> list[InheritanceEdge]:
         """Extract class inheritance and interface implementation from TypeScript source."""
         import re
+
         edges = []
-        lines = source_code.split('\n')
+        lines = source_code.split("\n")
         for line in lines:
             line = line.strip()
-            if line.startswith('class '):
-                extends_match = re.search(r'extends\s+(\w+)', line)
-                implements_match = re.search(r'implements\s+([^{]+)', line)
+            if line.startswith("class "):
+                extends_match = re.search(r"extends\s+(\w+)", line)
+                implements_match = re.search(r"implements\s+([^{]+)", line)
 
-                class_match = re.match(r'class\s+(\w+)', line)
+                class_match = re.match(r"class\s+(\w+)", line)
                 if class_match:
                     class_name = class_match.group(1)
 
@@ -89,7 +90,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
                     if implements_match:
                         implements = implements_match.group(1)
-                        for impl in implements.split(','):
+                        for impl in implements.split(","):
                             impl = impl.strip()
                             if impl:
                                 subclass_uid = self._uid(file_path, class_name)

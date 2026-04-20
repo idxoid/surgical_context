@@ -1,9 +1,8 @@
 """ContextArbitrator — thin orchestrator facade composing pure components."""
 
-from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.deduplicator import ContextDeduplicator
 from sidecar.context.code_resolver import CodeResolver
-from sidecar.context.doc_resolver import DocResolver
+from sidecar.context.deduplicator import ContextDeduplicator
+from sidecar.context.graph_expander import GraphExpander
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext
 

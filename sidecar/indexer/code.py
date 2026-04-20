@@ -1,21 +1,27 @@
+import hashlib
 import os
 import sys
-import hashlib
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from sidecar.silence import install as _silence; _silence()
+
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.parser.extractor import SymbolExtractor
 from sidecar.parser.registry import REGISTRY
+from sidecar.silence import install as _silence
+
+_silence()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_INDEXED_EXTENSIONS = {ext for adapter in REGISTRY.supported_adapters() for ext in adapter.file_extensions}
+_INDEXED_EXTENSIONS = {
+    ext for adapter in REGISTRY.supported_adapters() for ext in adapter.file_extensions
+}
 
 
 def _load_gitignore(root: str):
     """Return a pathspec matcher for the nearest .gitignore, or None."""
     import pathspec
+
     gitignore = os.path.join(root, ".gitignore")
     if not os.path.exists(gitignore):
         gitignore = os.path.join(ROOT, ".gitignore")
@@ -31,13 +37,10 @@ def _collect_files(project_path: str) -> list[str]:
     for root, dirs, filenames in os.walk(project_path):
         if spec:
             rel_root = os.path.relpath(root, ROOT)
-            dirs[:] = [
-                d for d in dirs
-                if not spec.match_file(os.path.join(rel_root, d))
-            ]
+            dirs[:] = [d for d in dirs if not spec.match_file(os.path.join(rel_root, d))]
         for name in filenames:
             _, ext = os.path.splitext(name)
-            if ext not in _INDEXED_EXTENSIONS or name.startswith('.'):
+            if ext not in _INDEXED_EXTENSIONS or name.startswith("."):
                 continue
             full = os.path.join(root, name)
             if spec:
@@ -50,7 +53,7 @@ def _collect_files(project_path: str) -> list[str]:
 
 def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor: SymbolExtractor):
     """Index a single file: symbols → calls → embeddings → imports → inheritance."""
-    with open(file_path, 'rb') as f:
+    with open(file_path, "rb") as f:
         file_hash = hashlib.sha256(f.read()).hexdigest()
     symbols = extractor.extract(file_path)
     for sym in symbols:
@@ -62,7 +65,7 @@ def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor:
     if calls:
         db.link_calls(calls)
 
-    with open(file_path, encoding='utf-8') as f:
+    with open(file_path, encoding="utf-8") as f:
         source = f.read()
     lines = source.splitlines()
     symbol_docs = [
@@ -70,7 +73,7 @@ def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor:
             "uid": s.uid,
             "name": s.name,
             "file_path": s.file_path,
-            "code": "\n".join(lines[s.start_line - 1:s.end_line]),
+            "code": "\n".join(lines[s.start_line - 1 : s.end_line]),
         }
         for s in extractor.extract_from_source(source, file_path)
     ]
@@ -101,7 +104,7 @@ def run_indexing(project_path: str):
     # Compute current file hashes
     current_hashes = {}
     for file_path in files_to_index:
-        with open(file_path, 'rb') as f:
+        with open(file_path, "rb") as f:
             current_hashes[file_path] = hashlib.sha256(f.read()).hexdigest()
 
     # Query stored hashes from Neo4j
@@ -128,13 +131,16 @@ def run_indexing(project_path: str):
 
     # Resolve pending DocAnchors (runs over entire DB)
     from sidecar.indexer.anchor import resolve_pending_anchors
+
     resolve_pending_anchors(db, lance)
 
     db.close()
     print("✅ Indexing complete.")
 
+
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Index a project into Neo4j")
     parser.add_argument("path", nargs="?", default=ROOT, help="Project path to index")
     args = parser.parse_args()

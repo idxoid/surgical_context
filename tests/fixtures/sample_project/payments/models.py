@@ -1,7 +1,8 @@
 """Data models for the payment system."""
 
 from dataclasses import dataclass
-from payments.config import MAX_AMOUNT, CURRENCY
+
+from payments.config import MAX_AMOUNT
 
 
 @dataclass

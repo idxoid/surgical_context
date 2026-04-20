@@ -1,6 +1,6 @@
 """PromptCompiler — deterministic PromptContext assembly."""
 
-from sidecar.context.types import Subgraph, SymbolContext, PromptContext, DocChunk
+from sidecar.context.types import DocChunk, PromptContext, Subgraph, SymbolContext
 
 
 class PromptCompiler:

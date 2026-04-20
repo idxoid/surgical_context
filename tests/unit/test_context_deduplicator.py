@@ -1,6 +1,7 @@
 """Unit tests for ContextDeduplicator."""
 
 import pytest
+
 from sidecar.context.deduplicator import ContextDeduplicator
 from sidecar.context.types import Subgraph, SubgraphNode
 
@@ -228,12 +229,26 @@ class TestContextDeduplicator:
     def test_budget_updated_after_dedup(self, deduplicator, primary_node):
         """Token estimates sum correctly, dedup_saved accurate."""
         node1 = SubgraphNode(
-            uid="a", name="a", file_path="/app.py", range=[1, 5],
-            token_estimate=40, relation="rel", direction="dir", depth=1, relevance_score=0.8,
+            uid="a",
+            name="a",
+            file_path="/app.py",
+            range=[1, 5],
+            token_estimate=40,
+            relation="rel",
+            direction="dir",
+            depth=1,
+            relevance_score=0.8,
         )
         node2 = SubgraphNode(
-            uid="b", name="b", file_path="/app.py", range=[10, 15],
-            token_estimate=40, relation="rel", direction="dir", depth=2, relevance_score=0.6,
+            uid="b",
+            name="b",
+            file_path="/app.py",
+            range=[10, 15],
+            token_estimate=40,
+            relation="rel",
+            direction="dir",
+            depth=2,
+            relevance_score=0.6,
         )
 
         subgraph = Subgraph(
@@ -251,12 +266,26 @@ class TestContextDeduplicator:
     def test_no_duplicates_noop(self, deduplicator, primary_node):
         """Unique subgraph → identical output, dedup_saved == 0."""
         node1 = SubgraphNode(
-            uid="x", name="x", file_path="/a.py", range=[1, 5],
-            token_estimate=30, relation="rel", direction="dir", depth=1, relevance_score=0.8,
+            uid="x",
+            name="x",
+            file_path="/a.py",
+            range=[1, 5],
+            token_estimate=30,
+            relation="rel",
+            direction="dir",
+            depth=1,
+            relevance_score=0.8,
         )
         node2 = SubgraphNode(
-            uid="y", name="y", file_path="/b.py", range=[10, 20],
-            token_estimate=50, relation="rel", direction="dir", depth=1, relevance_score=0.7,
+            uid="y",
+            name="y",
+            file_path="/b.py",
+            range=[10, 20],
+            token_estimate=50,
+            relation="rel",
+            direction="dir",
+            depth=1,
+            relevance_score=0.7,
         )
 
         subgraph = Subgraph(
@@ -274,16 +303,37 @@ class TestContextDeduplicator:
     def test_multiple_duplicates_chain(self, deduplicator, primary_node):
         """Three copies of same uid → lowest-depth one kept."""
         node_d1 = SubgraphNode(
-            uid="util", name="util", file_path="/util.py", range=[1, 5],
-            token_estimate=30, relation="rel", direction="dir", depth=1, relevance_score=0.9,
+            uid="util",
+            name="util",
+            file_path="/util.py",
+            range=[1, 5],
+            token_estimate=30,
+            relation="rel",
+            direction="dir",
+            depth=1,
+            relevance_score=0.9,
         )
         node_d2 = SubgraphNode(
-            uid="util", name="util", file_path="/util.py", range=[1, 5],
-            token_estimate=30, relation="rel", direction="dir", depth=2, relevance_score=0.8,
+            uid="util",
+            name="util",
+            file_path="/util.py",
+            range=[1, 5],
+            token_estimate=30,
+            relation="rel",
+            direction="dir",
+            depth=2,
+            relevance_score=0.8,
         )
         node_d3 = SubgraphNode(
-            uid="util", name="util", file_path="/util.py", range=[1, 5],
-            token_estimate=30, relation="rel", direction="dir", depth=3, relevance_score=0.7,
+            uid="util",
+            name="util",
+            file_path="/util.py",
+            range=[1, 5],
+            token_estimate=30,
+            relation="rel",
+            direction="dir",
+            depth=3,
+            relevance_score=0.7,
         )
 
         subgraph = Subgraph(

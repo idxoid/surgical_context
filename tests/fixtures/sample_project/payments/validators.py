@@ -5,6 +5,7 @@ from payments.config import MAX_AMOUNT, MIN_AMOUNT
 
 class PaymentError(Exception):
     """Raised when a payment validation fails."""
+
     pass
 
 

@@ -1,6 +1,6 @@
 """Specialized order handling."""
 
-from payments.models import Order, LineItem
+from payments.models import Order
 from payments.validators import validate_amount
 
 

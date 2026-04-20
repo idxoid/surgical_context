@@ -16,7 +16,7 @@ def execute_query(connection: object, query: str, params: dict) -> dict:
     Second hop in the call chain.
     Called by save_payment.
     """
-    conn = db_connect("postgres://localhost/payments")
+    db_connect("postgres://localhost/payments")
     return {"rows": 1, "success": True}
 
 

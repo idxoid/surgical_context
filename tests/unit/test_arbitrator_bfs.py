@@ -1,11 +1,12 @@
 """Unit tests for ContextArbitrator orchestration and BFS traversal."""
 
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import Mock, MagicMock, patch
-from pathlib import Path
+
 from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.types import SymbolContext, PromptContext, BudgetTooSmall
+from sidecar.context.types import PromptContext
 
 
 class TestContextArbitratorBFS:

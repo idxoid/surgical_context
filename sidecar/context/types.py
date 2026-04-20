@@ -86,8 +86,8 @@ class PromptContext:
         """Count tokens in the assembled prompt using cl100k_base encoding (GPT-3.5/4)."""
         try:
             import tiktoken
-        except ImportError:
-            raise ImportError("tiktoken is required for token counting")
+        except ImportError as e:
+            raise ImportError("tiktoken is required for token counting") from e
 
         enc = tiktoken.get_encoding("cl100k_base")
         prompt_text = self.to_system_prompt()
@@ -96,12 +96,14 @@ class PromptContext:
 
 class BudgetTooSmall(ValueError):
     """Raised when target symbol alone exceeds token_budget."""
+
     pass
 
 
 @dataclass
 class SubgraphNode:
     """Internal: graph node with metadata from expansion."""
+
     uid: str
     name: str
     file_path: str
@@ -116,6 +118,7 @@ class SubgraphNode:
 @dataclass
 class Subgraph:
     """Internal: result of graph expansion (before code resolution)."""
+
     primary: SubgraphNode
     nodes: list[SubgraphNode]
     budget: dict

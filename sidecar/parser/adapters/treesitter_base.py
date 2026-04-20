@@ -3,7 +3,7 @@
 from abc import abstractmethod
 from hashlib import sha256
 
-from tree_sitter import Parser, Language
+from tree_sitter import Language, Parser
 
 from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata
 
@@ -40,9 +40,11 @@ class TreeSitterAdapter(LanguageAdapter):
         lang_name = self.ts_language_name
         if lang_name == "python":
             from tree_sitter_python import language as lang_ptr
+
             self.language = Language(lang_ptr(), lang_name)
         elif lang_name == "typescript":
             from tree_sitter_typescript import language_typescript as lang_ptr
+
             self.language = Language(lang_ptr(), lang_name)
         else:
             raise ValueError(f"Unsupported language: {lang_name}")
@@ -59,40 +61,44 @@ class TreeSitterAdapter(LanguageAdapter):
         # Collect var.name nodes keyed by their parent var.def node id
         var_names: dict[int, str] = {}
         for node, tag in captures:
-            if tag == 'var.name':
-                var_names[node.parent.id] = node.text.decode('utf-8')
+            if tag == "var.name":
+                var_names[node.parent.id] = node.text.decode("utf-8")
 
         symbols = []
         for node, tag in captures:
-            if tag in ('func.def', 'class.def'):
-                name_node = node.child_by_field_name('name')
+            if tag in ("func.def", "class.def"):
+                name_node = node.child_by_field_name("name")
                 if not name_node:
                     continue
-                name = name_node.text.decode('utf-8')
-                content = node.text.decode('utf-8')
-                symbols.append(SymbolMetadata(
-                    uid=self._uid(file_path, name),
-                    name=name,
-                    kind="function" if tag == 'func.def' else "class",
-                    start_line=node.start_point[0] + 1,
-                    end_line=node.end_point[0] + 1,
-                    content_hash=self._hash(content),
-                    file_path=file_path
-                ))
-            elif tag == 'var.def':
+                name = name_node.text.decode("utf-8")
+                content = node.text.decode("utf-8")
+                symbols.append(
+                    SymbolMetadata(
+                        uid=self._uid(file_path, name),
+                        name=name,
+                        kind="function" if tag == "func.def" else "class",
+                        start_line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        content_hash=self._hash(content),
+                        file_path=file_path,
+                    )
+                )
+            elif tag == "var.def":
                 name = var_names.get(node.id)
                 if not name or not name.isupper():
                     continue
-                content = node.text.decode('utf-8')
-                symbols.append(SymbolMetadata(
-                    uid=self._uid(file_path, name),
-                    name=name,
-                    kind="variable",
-                    start_line=node.start_point[0] + 1,
-                    end_line=node.end_point[0] + 1,
-                    content_hash=self._hash(content),
-                    file_path=file_path
-                ))
+                content = node.text.decode("utf-8")
+                symbols.append(
+                    SymbolMetadata(
+                        uid=self._uid(file_path, name),
+                        name=name,
+                        kind="variable",
+                        start_line=node.start_point[0] + 1,
+                        end_line=node.end_point[0] + 1,
+                        content_hash=self._hash(content),
+                        file_path=file_path,
+                    )
+                )
         return symbols
 
     def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
@@ -103,19 +109,23 @@ class TreeSitterAdapter(LanguageAdapter):
 
         calls = []
         for node, tag in captures:
-            if tag == 'call.name':
-                call_name = source_code[node.start_byte:node.end_byte]
+            if tag == "call.name":
+                call_name = source_code[node.start_byte : node.end_byte]
                 parent = node.parent
                 while parent and parent.type not in self.parent_types:
                     parent = parent.parent
                 if parent:
-                    parent_name_node = parent.child_by_field_name('name')
+                    parent_name_node = parent.child_by_field_name("name")
                     if parent_name_node:
-                        caller_name = source_code[parent_name_node.start_byte:parent_name_node.end_byte]
-                        calls.append({
-                            "caller_uid": self._uid(file_path, caller_name),
-                            "callee_name": call_name
-                        })
+                        caller_name = source_code[
+                            parent_name_node.start_byte : parent_name_node.end_byte
+                        ]
+                        calls.append(
+                            {
+                                "caller_uid": self._uid(file_path, caller_name),
+                                "callee_name": call_name,
+                            }
+                        )
         return calls
 
     def _uid(self, file_path: str, name: str) -> str:

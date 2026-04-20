@@ -1,6 +1,7 @@
 """Unit tests for InMemoryOverlay — dirty state handling."""
 
 import pytest
+
 from sidecar.context.overlay import InMemoryOverlay
 
 

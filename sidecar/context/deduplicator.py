@@ -1,6 +1,6 @@
 """ContextDeduplicator — removes redundant symbols and doc chunks from expanded subgraphs."""
 
-from sidecar.context.types import Subgraph, SubgraphNode, DocChunk
+from sidecar.context.types import Subgraph, SubgraphNode
 
 
 class ContextDeduplicator:
@@ -25,7 +25,9 @@ class ContextDeduplicator:
 
         return Subgraph(primary=subgraph.primary, nodes=nodes, budget=updated_budget)
 
-    def _deduplicate_nodes(self, nodes: list[SubgraphNode], primary_uid: str = None) -> list[SubgraphNode]:
+    def _deduplicate_nodes(
+        self, nodes: list[SubgraphNode], primary_uid: str = None
+    ) -> list[SubgraphNode]:
         """Keep only one copy of each UID; prefer lowest depth, then highest relevance_score.
         Never include primary_uid in result (primary is stored separately)."""
         seen: dict[str, SubgraphNode] = {}
@@ -113,7 +115,12 @@ class ContextDeduplicator:
         for doc in docs:
             is_duplicate = False
             for existing in kept:
-                if self._overlap_ratio(str(existing.get("content", "")), str(doc.get("content", ""))) > 0.85:
+                if (
+                    self._overlap_ratio(
+                        str(existing.get("content", "")), str(doc.get("content", ""))
+                    )
+                    > 0.85
+                ):
                     is_duplicate = True
                     break
             if not is_duplicate:
@@ -128,5 +135,7 @@ class ContextDeduplicator:
         chunk_size = max(40, len(shorter) // 10)
         if chunk_size == 0:
             return 0.0
-        matches = sum(1 for i in range(len(shorter) - chunk_size + 1) if shorter[i : i + chunk_size] in longer)
+        matches = sum(
+            1 for i in range(len(shorter) - chunk_size + 1) if shorter[i : i + chunk_size] in longer
+        )
         return matches / max(1, len(shorter) // chunk_size)

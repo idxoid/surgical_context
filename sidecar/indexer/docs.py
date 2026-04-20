@@ -13,7 +13,7 @@ NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
-_HEADING_RE = re.compile(r'^#{1,3} .+', re.MULTILINE)
+_HEADING_RE = re.compile(r"^#{1,3} .+", re.MULTILINE)
 
 
 def _split_by_sections(text: str) -> list[str]:
@@ -33,7 +33,7 @@ def _word_split_chunk(text: str) -> list[str]:
         return [text]
     chunks, i = [], 0
     while i < len(words):
-        chunks.append(" ".join(words[i:i + CHUNK_SIZE]))
+        chunks.append(" ".join(words[i : i + CHUNK_SIZE]))
         i += CHUNK_SIZE - CHUNK_OVERLAP
     return chunks
 
@@ -69,4 +69,5 @@ def index_docs(docs_path: str):
 
 if __name__ == "__main__":
     import sys
+
     index_docs(sys.argv[1] if len(sys.argv) > 1 else "./docs")

@@ -1,7 +1,9 @@
 """Shared pytest fixtures and configuration for evaluation harness."""
 
-import pytest
 from pathlib import Path
+
+import pytest
+
 from sidecar.parser.adapters.python_adapter import PythonAdapter
 from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
 
@@ -12,7 +14,7 @@ def pytest_addoption(parser):
         "--run-integration",
         action="store_true",
         default=False,
-        help="Run integration tests that require live Neo4j/LanceDB"
+        help="Run integration tests that require live Neo4j/LanceDB",
     )
 
 

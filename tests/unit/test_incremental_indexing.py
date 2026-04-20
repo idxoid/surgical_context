@@ -1,7 +1,7 @@
 """Unit tests for incremental indexing with hash-based skip logic."""
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, patch
+
 from sidecar.database.neo4j_client import Neo4jClient
 
 
@@ -25,7 +25,7 @@ class TestIncrementalIndexing:
             {"path": "/file2.py", "hash": "hash2"},
         ]
 
-        with patch.object(db.driver, 'session') as mock_ctx:
+        with patch.object(db.driver, "session") as mock_ctx:
             mock_ctx.return_value.__enter__.return_value = mock_session
             mock_session.run.return_value = mock_records
             result = db.get_file_hashes(["/file1.py", "/file2.py"])
@@ -36,7 +36,7 @@ class TestIncrementalIndexing:
         db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
         mock_session = MagicMock()
 
-        with patch.object(db.driver, 'session') as mock_ctx:
+        with patch.object(db.driver, "session") as mock_ctx:
             mock_ctx.return_value.__enter__.return_value = mock_session
             db.delete_symbols_for_file("/test.py")
             mock_session.run.assert_called_once()
@@ -76,9 +76,9 @@ class TestIncrementalIndexing:
             "/file3.py": "hash3",
         }
         current_hashes = {
-            "/file1.py": "hash1",     # unchanged
-            "/file2.py": "hash2_new", # changed
-            "/file4.py": "hash4",     # new (not in stored)
+            "/file1.py": "hash1",  # unchanged
+            "/file2.py": "hash2_new",  # changed
+            "/file4.py": "hash4",  # new (not in stored)
         }
 
         changed_files = [p for p in current_hashes if current_hashes[p] != stored_hashes.get(p)]
@@ -87,6 +87,7 @@ class TestIncrementalIndexing:
     def test_sha256_hash_is_deterministic(self):
         """Test that sha256 hash is deterministic for same content."""
         import hashlib
+
         content = b"def test(): pass"
         hash1 = hashlib.sha256(content).hexdigest()
         hash2 = hashlib.sha256(content).hexdigest()
@@ -97,6 +98,7 @@ class TestIncrementalIndexing:
     def test_sha256_hash_differs_for_different_content(self):
         """Test that different content produces different hashes."""
         import hashlib
+
         hash1 = hashlib.sha256(b"content1").hexdigest()
         hash2 = hashlib.sha256(b"content2").hexdigest()
         assert hash1 != hash2

@@ -1,9 +1,9 @@
 """Main payment processing logic."""
 
-from payments.validators import validate_amount, PaymentError, validate_order
 from payments.database import save_payment
 from payments.decorators import retry
 from payments.models import Order
+from payments.validators import PaymentError, validate_amount, validate_order
 
 
 @retry(max_attempts=3)
@@ -15,7 +15,9 @@ def process_payment(order: Order, amount: float, payment_method: str) -> bool:
     """
     try:
         validate_amount(amount)
-        validate_order({"order_id": order.order_id, "customer_id": order.customer_id, "items": order.items})
+        validate_order(
+            {"order_id": order.order_id, "customer_id": order.customer_id, "items": order.items}
+        )
         success = save_payment(f"pay_{order.order_id}", amount, order.order_id)
         if success:
             order.status = "paid"

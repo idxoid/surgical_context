@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 class SymbolMetadata(BaseModel):
     """Extracted code symbol (function, class, or module-level constant)."""
+
     uid: str
     name: str
     kind: str  # "function" | "class" | "variable"
@@ -21,6 +22,7 @@ class SymbolMetadata(BaseModel):
 @dataclass
 class ImportEdge:
     """An import statement from one file to another or external package."""
+
     source_file: str
     target_module_name: str
     import_type: str  # "direct" | "relative" | "from_package"
@@ -29,6 +31,7 @@ class ImportEdge:
 @dataclass
 class InheritanceEdge:
     """Class inheritance or interface implementation."""
+
     subclass_uid: str
     superclass_name: str
     is_interface: bool

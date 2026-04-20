@@ -20,7 +20,7 @@ class CodeResolver:
         try:
             with open(file_path, encoding="utf-8") as f:
                 lines = f.readlines()
-            code = "".join(lines[start_line - 1:end_line])
+            code = "".join(lines[start_line - 1 : end_line])
             return code, False
-        except (FileNotFoundError, IOError):
+        except (OSError, FileNotFoundError):
             return "", False

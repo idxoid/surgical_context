@@ -19,7 +19,7 @@ class InMemoryOverlay:
 
     def read_lines(self, file_path: str, start: int, end: int) -> str:
         lines = self._files[file_path].splitlines(keepends=True)
-        return "".join(lines[start - 1:end])
+        return "".join(lines[start - 1 : end])
 
     def get_symbols(self, file_path: str):
         content = self._files[file_path]

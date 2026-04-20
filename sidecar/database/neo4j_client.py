@@ -1,4 +1,3 @@
-
 from neo4j import GraphDatabase
 
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
@@ -22,29 +21,37 @@ class Neo4jClient:
         with self.driver.session() as session:
             result = session.run(
                 "MATCH (f:File) WHERE f.path IN $paths RETURN f.path AS path, f.hash AS hash",
-                paths=file_paths
+                paths=file_paths,
             )
             return {r["path"]: r["hash"] for r in result}
 
     def delete_symbols_for_file(self, file_path: str):
         """Detach-delete all Symbol nodes owned by a File."""
         with self.driver.session() as session:
-            session.run("""
+            session.run(
+                """
                 MATCH (f:File {path: $path})-[:CONTAINS]->(s:Symbol)
                 DETACH DELETE s
-            """, path=file_path)
+            """,
+                path=file_path,
+            )
 
     @staticmethod
     def _upsert_nodes(tx, file_path, file_hash, symbols):
         # 1. Создаем/обновляем узел файла
-        tx.run("""
+        tx.run(
+            """
             MERGE (f:File {path: $path})
             SET f.hash = $hash, f.last_indexed = timestamp()
-        """, path=file_path, hash=file_hash)
+        """,
+            path=file_path,
+            hash=file_hash,
+        )
 
         # 2. Обновляем символы и связи CONTAINS
         for s in symbols:
-            tx.run("""
+            tx.run(
+                """
                 MATCH (f:File {path: $file_path})
                 MERGE (s:Symbol {uid: $uid})
                 SET s.name = $name,
@@ -54,10 +61,15 @@ class Neo4jClient:
                     s.token_estimate = $token_estimate
                 MERGE (f)-[:CONTAINS]->(s)
             """,
-            file_path=file_path, uid=s.uid, name=s.name,
-            kind=s.kind, content_hash=s.content_hash,
-            start=s.start_line, end=s.end_line,
-            token_estimate=s.token_estimate)
+                file_path=file_path,
+                uid=s.uid,
+                name=s.name,
+                kind=s.kind,
+                content_hash=s.content_hash,
+                start=s.start_line,
+                end=s.end_line,
+                token_estimate=s.token_estimate,
+            )
 
     def link_calls(self, calls: list[dict]):
         with self.driver.session() as session:
@@ -68,12 +80,16 @@ class Neo4jClient:
         for call in calls:
             # Ищем вызываемого (callee) по имени.
             # Это упрощенная логика, которую мы позже заменим на разрешение импортов.
-            tx.run("""
+            tx.run(
+                """
                 MATCH (caller:Symbol {uid: $caller_uid})
                 MATCH (callee:Symbol {name: $callee_name})
                 WHERE caller <> callee
                 MERGE (caller)-[:CALLS]->(callee)
-            """, caller_uid=call['caller_uid'], callee_name=call['callee_name'])
+            """,
+                caller_uid=call["caller_uid"],
+                callee_name=call["callee_name"],
+            )
 
     def link_imports(self, imports: list[ImportEdge]):
         with self.driver.session() as session:
@@ -82,12 +98,17 @@ class Neo4jClient:
     @staticmethod
     def _create_import_relations(tx, imports):
         for imp in imports:
-            tx.run("""
+            tx.run(
+                """
                 MATCH (source:File {path: $source_file})
                 MATCH (target:File)
                 WHERE target.path CONTAINS $target_module
                 MERGE (source)-[:IMPORTS {type: $import_type}]->(target)
-            """, source_file=imp.source_file, target_module=imp.target_module_name, import_type=imp.import_type)
+            """,
+                source_file=imp.source_file,
+                target_module=imp.target_module_name,
+                import_type=imp.import_type,
+            )
 
     def link_inheritance(self, inheritance_edges: list[InheritanceEdge]):
         with self.driver.session() as session:
@@ -96,8 +117,13 @@ class Neo4jClient:
     @staticmethod
     def _create_inheritance_relations(tx, inheritance_edges):
         for edge in inheritance_edges:
-            tx.run("""
+            tx.run(
+                """
                 MATCH (subclass:Symbol {uid: $subclass_uid})
                 MATCH (superclass:Symbol {name: $superclass_name})
                 MERGE (subclass)-[:DEPENDS_ON {is_interface: $is_interface}]->(superclass)
-            """, subclass_uid=edge.subclass_uid, superclass_name=edge.superclass_name, is_interface=edge.is_interface)
+            """,
+                subclass_uid=edge.subclass_uid,
+                superclass_name=edge.superclass_name,
+                is_interface=edge.is_interface,
+            )

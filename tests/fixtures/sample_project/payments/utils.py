@@ -1,6 +1,6 @@
 """Utility functions for the payment system."""
 
-from payments.config import MAX_AMOUNT, CURRENCY
+from payments.config import CURRENCY, MAX_AMOUNT
 from payments.validators import validate_amount
 
 

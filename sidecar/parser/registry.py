@@ -56,7 +56,7 @@ def bootstrap_adapters() -> LanguageAdapterRegistry:
         module_name = module_file.stem  # e.g., "python_adapter"
         try:
             mod = importlib.import_module(f"sidecar.parser.adapters.{module_name}")
-            if hasattr(mod, 'make_adapter'):
+            if hasattr(mod, "make_adapter"):
                 adapter = mod.make_adapter()
                 registry.register(adapter)
         except Exception:

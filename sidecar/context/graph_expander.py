@@ -1,9 +1,9 @@
 """GraphExpander — Neo4j-only graph traversal and BFS."""
 
 import math
-from heapq import heappush, heappop
+from heapq import heappop, heappush
 
-from sidecar.context.types import SubgraphNode, Subgraph
+from sidecar.context.types import Subgraph, SubgraphNode
 
 
 class GraphExpander:
@@ -116,7 +116,17 @@ class GraphExpander:
                     next_n["token_estimate"],
                     distance=distance + 1,
                 )
-                heappush(frontier, (-next_score, next_n["uid"], next_n, next_n["rel_type"], next_n["outgoing"], distance + 1))
+                heappush(
+                    frontier,
+                    (
+                        -next_score,
+                        next_n["uid"],
+                        next_n,
+                        next_n["rel_type"],
+                        next_n["outgoing"],
+                        distance + 1,
+                    ),
+                )
 
         budget_info = {
             "limit": token_budget,
@@ -127,7 +137,9 @@ class GraphExpander:
 
         return Subgraph(primary=primary, nodes=chosen, budget=budget_info)
 
-    def _score(self, rel_type: str, outgoing: bool, caller_count: int, token_estimate: int, distance: int) -> float:
+    def _score(
+        self, rel_type: str, outgoing: bool, caller_count: int, token_estimate: int, distance: int
+    ) -> float:
         """Compute relevance score for a candidate symbol."""
         if rel_type == "CALLS":
             relation = "CALLS_out" if outgoing else "CALLS_in"
@@ -178,16 +190,18 @@ class GraphExpander:
         with self.db.driver.session() as session:
             result = session.run(query, uid=uid, visited=list(visited))
             for record in result:
-                neighbors.append({
-                    "uid": record["uid"],
-                    "name": record["name"],
-                    "file_path": record["file_path"],
-                    "token_estimate": record["token_estimate"],
-                    "range": record["range"],
-                    "rel_type": record["rel_type"],
-                    "outgoing": record["outgoing"],
-                    "caller_count": record["caller_count"],
-                })
+                neighbors.append(
+                    {
+                        "uid": record["uid"],
+                        "name": record["name"],
+                        "file_path": record["file_path"],
+                        "token_estimate": record["token_estimate"],
+                        "range": record["range"],
+                        "rel_type": record["rel_type"],
+                        "outgoing": record["outgoing"],
+                        "caller_count": record["caller_count"],
+                    }
+                )
         return neighbors
 
     def _estimate_tokens(self, node: dict) -> int:
