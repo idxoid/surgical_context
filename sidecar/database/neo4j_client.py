@@ -97,15 +97,19 @@ class Neo4jClient:
     @staticmethod
     def _create_import_relations(tx, imports):
         for imp in imports:
+            # Convert dotted module name to file path suffix for matching
+            # e.g. "sidecar.database.neo4j_client" → "sidecar/database/neo4j_client.py"
+            path_suffix = imp.target_module_name.replace(".", "/") + ".py"
             tx.run(
                 """
                 MATCH (source:File {path: $source_file})
                 MATCH (target:File)
-                WHERE target.path CONTAINS $target_module
+                WHERE target.path ENDS WITH $path_suffix
+                  AND source <> target
                 MERGE (source)-[:IMPORTS {type: $import_type}]->(target)
             """,
                 source_file=imp.source_file,
-                target_module=imp.target_module_name,
+                path_suffix=path_suffix,
                 import_type=imp.import_type,
             )
 

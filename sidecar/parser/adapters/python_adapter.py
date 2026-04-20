@@ -44,26 +44,41 @@ class PythonAdapter(TreeSitterAdapter):
             (import_statement name: (identifier) @import.name)
         """
 
+    # Known stdlib and third-party top-level packages to skip
+    _EXTERNAL_PREFIXES = {
+        "os", "sys", "re", "io", "abc", "ast", "math", "time", "json",
+        "uuid", "enum", "copy", "typing", "hashlib", "pathlib", "logging",
+        "dataclasses", "collections", "functools", "itertools", "contextlib",
+        "threading", "multiprocessing", "subprocess", "shutil", "tempfile",
+        "unittest", "argparse", "heapq", "struct", "string", "textwrap",
+        # third-party
+        "neo4j", "lancedb", "fastapi", "pydantic", "uvicorn", "ollama",
+        "yaml", "tiktoken", "numpy", "pandas", "sentence_transformers",
+        "tree_sitter", "tree_sitter_languages", "pathspec",
+    }
+
     def extract_imports(self, source_code: str, file_path: str) -> list[ImportEdge]:
-        """Extract import statements from Python source."""
+        """Extract only intra-project import statements (skips stdlib and third-party)."""
         imports = []
         for line in source_code.split("\n"):
             line = line.strip()
             if line.startswith("import "):
                 parts = line[7:].split(",")
                 for part in parts:
-                    module = part.strip()
-                    if module:
+                    module = part.strip().split(" as ")[0].strip()
+                    if module and not self._is_external(module):
                         imports.append(ImportEdge(file_path, module, "direct"))
             elif line.startswith("from "):
                 match = line.split(" import ")
                 if len(match) == 2:
                     module = match[0][5:].strip()
-                    if module == ".":
-                        imports.append(ImportEdge(file_path, ".", "relative"))
-                    else:
+                    if module and module != "." and not self._is_external(module):
                         imports.append(ImportEdge(file_path, module, "from_package"))
         return imports
+
+    def _is_external(self, module: str) -> bool:
+        top = module.split(".")[0]
+        return top in self._EXTERNAL_PREFIXES
 
     def extract_inheritance(self, source_code: str, file_path: str) -> list[InheritanceEdge]:
         """Extract class inheritance from Python source."""

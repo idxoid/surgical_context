@@ -8,23 +8,23 @@ class TestPythonImports:
     def adapter(self):
         return PythonAdapter()
 
-    def test_extract_direct_imports(self, adapter):
-        source = "import os\nimport sys"
+    def test_filters_stdlib_imports(self, adapter):
+        source = "import os\nimport sys\nimport re"
         imports = adapter.extract_imports(source, "test.py")
-        assert len(imports) >= 2
+        assert len(imports) == 0
+
+    def test_filters_third_party_imports(self, adapter):
+        source = "from pathlib import Path\nimport neo4j\nimport fastapi"
+        imports = adapter.extract_imports(source, "test.py")
+        assert len(imports) == 0
+
+    def test_keeps_internal_imports(self, adapter):
+        source = "from sidecar.database.neo4j_client import Neo4jClient\nimport sidecar.context.types"
+        imports = adapter.extract_imports(source, "test.py")
+        assert len(imports) == 2
         names = {imp.target_module_name for imp in imports}
-        assert "os" in names or "sys" in names
-
-    def test_extract_from_imports(self, adapter):
-        source = "from pathlib import Path"
-        imports = adapter.extract_imports(source, "test.py")
-        assert len(imports) > 0
-        assert any(imp.target_module_name == "pathlib" for imp in imports)
-
-    def test_extract_relative_imports(self, adapter):
-        source = "from . import utils"
-        imports = adapter.extract_imports(source, "test.py")
-        assert any(imp.import_type == "relative" for imp in imports)
+        assert "sidecar.database.neo4j_client" in names
+        assert "sidecar.context.types" in names
 
     def test_extract_inheritance_single(self, adapter):
         source = "class Child(Parent):\n    pass"

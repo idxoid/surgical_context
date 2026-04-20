@@ -77,14 +77,20 @@ Without this layer, claims in §1.3 are unfalsifiable and cannot be used to just
 
 **Syntactic (AST):**
 - Symbol extraction: functions, classes, line coordinates, content hash.
-- Call graph: direct function calls resolved within the same project.
+- Call graph: typed function calls — `CALLS_DIRECT` (static), `CALLS_DYNAMIC` (dispatch), `CALLS_INFERRED` (string-based). Resolved within the same project.
 - UID: `sha256(file_path:name)` — deterministic, collision-resistant.
+- AFFECTS index: reverse dependency materialization (depth ≤ 4) for cascade-aware incremental reindexing.
 
 **Semantic (Docs):**
 - Chunking: section-aware (split on `#`/`##`/`###` headings); word-window fallback (400 words, 80 overlap) for oversized sections.
-- Embedding: `all-MiniLM-L6-v2` (384-dim) via `sentence-transformers`.
+- Embedding: `all-MiniLM-L6-v2` (384-dim) via `sentence-transformers`. Similarity threshold: 1.5 (cosine distance scale 0–2).
 - Symbol body embeddings: `symbols` LanceDB table (`uid, name, file_path, code, vector`) for semantic DocAnchor matching.
-- Entity linking → DocAnchor nodes in Neo4j with `[:COVERS]` edges + lazy `pending` resolution.
+- Entity linking → DocAnchor nodes in Neo4j with rich FROM/COVERS relationships:
+  - `[:FROM {type: "doc"}]` — source doc file
+  - `[:FROM {type: "code"}]` — code files containing covered symbols
+  - `[:FROM {type: "spec"|"architecture"|"concept"|"idea"}]` — referenced project docs
+  - `[:COVERS]` — code symbols mentioned in chunk
+  - Lazy `pending` resolution for forward references (symbols indexed after docs)
 
 ### 3.3. Load — Incremental Upsert
 - **Neo4j:** `MERGE` on uid — only changed nodes/edges are written.
@@ -109,13 +115,15 @@ Without this layer, claims in §1.3 are unfalsifiable and cannot be used to just
 
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol, question}`.
-2. `ContextArbitrator` fetches target + `[:CALLS]` deps from Neo4j (single query).
-3. Code assembly: read from `InMemoryOverlay` (if dirty) or disk for each symbol.
-4. Vector search in LanceDB `docs` table for top-3 relevant doc chunks.
-5. Doc chunks attached to `PromptContext.documentation`.
-6. `PromptContext.to_system_prompt()` → flat text system message → Ollama/llama3.
-7. Response returned as `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
-8. Streaming: not yet implemented — response blocks until LLM completes (planned Phase 5).
+2. **Intent classification** (Phase 6+): detect query intent (navigation, debugging, refactor, exploration, new feature, design question) → choose tier priority order.
+3. **Graph expansion** (`GraphExpander`): BFS from target symbol through typed edges (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) constrained by token budget + depth limit. Returns priority-scored subgraph.
+4. **Deduplication** (`ContextDeduplicator`): remove redundant symbols and overlapping doc chunks.
+5. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol.
+6. **Doc retrieval** (`DocResolver`): semantic search in LanceDB `docs` table → top-k chunks. Matched chunks have `[:COVERS]` edges to code symbols.
+7. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas), fill budget in order.
+8. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
+9. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
+10. **Streaming** (Phase 6): SSE instead of blocking (planned).
 
 ### 4.2. Cold Start
 1. FS scan for `.py`/`.ts`/`.tsx` files (gitignore-aware, dirs pruned).
@@ -159,7 +167,7 @@ Scenario: user edits `process_payment`, hasn't saved.
 | CONTAINS | (File)→(Symbol) | Symbol belongs to file |
 | CALLS | (Symbol)→(Symbol) | Direct function call |
 | DEPENDS_ON | (Symbol)→(Symbol) | Type/interface usage (planned) |
-| FROM | (DocAnchor)→(File) | Doc chunk originates from this file |
+| FROM | (DocAnchor)→(File) | Doc chunk origin — `type` property: `"doc"` (source doc file), `"code"` (code file containing covered symbols), `"spec"` / `"architecture"` / `"concept"` / `"idea"` (referenced project docs) |
 | COVERS | (DocAnchor)→(Symbol) | Doc chunk describes this code symbol |
 | MODIFIED_IN | (Symbol)→(Commit) | Symbol change history (planned) |
 

@@ -11,8 +11,12 @@
 **Properties:** `chunk_id` only (ADR-001 — no content, no file paths on nodes).
 
 **Edges:**
-- `(DocAnchor)-[:FROM]->(File)` — which doc file this chunk came from
-- `(DocAnchor)-[:COVERS]->(Symbol)` — which code symbols this chunk describes
+- `(DocAnchor)-[:FROM {type: "doc"}]->(File)` — the doc file this chunk was extracted from
+- `(DocAnchor)-[:FROM {type: "code"}]->(File)` — code files containing symbols this chunk covers (set when COVERS edges are created)
+- `(DocAnchor)-[:FROM {type: "spec"|"architecture"|"concept"|"idea"|...}]->(File)` — other project docs referenced inline in the chunk
+- `(DocAnchor)-[:COVERS]->(Symbol)` — code symbols this chunk describes
+
+`FROM` edges carry a `type` property classifying the relationship. `File` nodes receive a `doc_type` property (`"code"`, `"spec"`, `"architecture"`, `"concept"`, `"idea"`, `"documentation"`, `"roadmap"`, `"review"`) derived from filename patterns.
 
 The `chunk_id` is the key back into LanceDB `docs` table to retrieve the actual text.
 
@@ -25,10 +29,10 @@ Two complementary methods run for every chunk:
 ### 1. Semantic matching (vector search)
 
 ```python
-lance.search_symbols(chunk_text, limit=5, threshold=0.4)
+lance.search_symbols(chunk_text, limit=5, threshold=1.5)
 ```
 
-Embeds the chunk text and searches the LanceDB `symbols` table (code body embeddings). Returns symbols whose cosine distance ≤ `SIMILARITY_THRESHOLD = 0.4`. Creates `[:COVERS]` edges immediately.
+Embeds the chunk text and searches the LanceDB `symbols` table (code body embeddings). Returns symbols whose cosine distance ≤ `SIMILARITY_THRESHOLD = 1.5` (all-MiniLM-L6-v2 cosine distance scale 0–2). Creates `[:COVERS]` and `[:FROM {type: "code"}]` edges immediately.
 
 ### 2. Identifier extraction (regex)
 
@@ -74,11 +78,53 @@ DocAnchor nodes store **only** `chunk_id`. File path is navigable via `[:FROM]->
 
 ---
 
+## Cross-Document Reference Linking
+
+When a chunk contains inline references to other project docs (markdown links or bare filenames like `spec_arbitrator.md`, `architectura.md`), `_link_related_docs()` creates typed FROM edges:
+
+```python
+# In chunk text: "see [spec_arbitrator.md](docs/spec_arbitrator.md) for details"
+(DocAnchor)-[:FROM {type: "spec"}]->(File {path: "docs/spec_arbitrator.md"})
+```
+
+**Doc type classification** (`_classify_doc_type`):
+
+| Filename pattern | `doc_type` |
+|---|---|
+| `spec_*.md` | `spec` |
+| `architectura*.md` | `architecture` |
+| `concept*.md` | `concept` |
+| `idea_*.md` | `idea` |
+| `road_map*.md` | `roadmap` |
+| `review_*.md` | `review` |
+| other | `documentation` |
+
+**Example navigation queries:**
+
+```cypher
+-- All specs referenced by a doc chunk
+MATCH (da:DocAnchor)-[:FROM {type: "spec"}]->(f:File)
+WHERE da.chunk_id = $chunk_id RETURN f.path
+
+-- All doc chunks covering a symbol, with their source types
+MATCH (da:DocAnchor)-[:COVERS]->(s:Symbol {name: $name})
+MATCH (da)-[:FROM]->(f:File)
+RETURN da.chunk_id, f.path, f.doc_type ORDER BY f.doc_type
+
+-- Deep: code file → covering docs → referenced specs
+MATCH (code:File)-[:CONTAINS]->(s:Symbol)<-[:COVERS]-(da:DocAnchor)
+      -[:FROM {type: "spec"}]->(spec:File)
+WHERE code.path = $file_path
+RETURN DISTINCT spec.path
+```
+
+---
+
 ## Limitations (current)
 
-- `_IDENTIFIER_RE` may match common English words that happen to be snake_case or CamelCase (e.g. `re_compile`, `In_Progress`). Tightened pattern reduces noise but false positives remain.
-- Semantic threshold `0.4` is a fixed constant — not tunable per project.
-- `[:COVERS]` edges are additive — re-indexing docs does not remove stale edges from deleted chunks. Orphaned DocAnchor nodes accumulate until a full graph wipe.
+- `_IDENTIFIER_RE` may match common English words that happen to be snake_case or CamelCase. False positives remain.
+- `[:COVERS]` and `[:FROM]` edges are additive — re-indexing docs does not remove stale edges from deleted chunks. Orphaned DocAnchor nodes accumulate until a full graph wipe.
+- `_link_related_docs` only matches filenames; it does not follow transitive doc references (spec references architecture which references concept).
 
 ---
 
@@ -86,4 +132,5 @@ DocAnchor nodes store **only** `chunk_id`. File path is navigable via `[:FROM]->
 
 - Remove orphaned DocAnchor nodes on re-index (detect chunk IDs no longer present in LanceDB)
 - Configurable `SIMILARITY_THRESHOLD` via env var or config file
-- Bidirectional discovery: given a Symbol, find all DocAnchor nodes that `[:COVERS]` it (already queryable via Cypher, not yet surfaced in `/ask`)
+- Transitive doc reference linking (depth > 1)
+- Bidirectional discovery surfaced in `/ask` response

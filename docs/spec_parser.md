@@ -61,12 +61,14 @@ def extract_from_source(self, source_code: str, file_path: str) -> List[SymbolMe
 ```python
 def extract_calls(self, file_path: str) -> List[dict]
     # Read file from disk, extract call edges
-    # Returns: [{"caller_uid": str, "callee_name": str}, ...]
+    # Returns: [{"caller_uid": str, "callee_name": str, "rel_type": str}, ...]
+    # where rel_type ∈ {"CALLS_DIRECT", "CALLS_DYNAMIC", "CALLS_INFERRED"}
 ```
 
 ```python
 def extract_calls_from_source(self, source_code: str, file_path: str) -> List[dict]
     # Parse in-memory source, extract call edges
+    # Returns same format as extract_calls()
     # Delegates to adapter.extract_calls_from_source()
 ```
 
@@ -104,7 +106,10 @@ def extract_symbols(self, source_code: str, file_path: str) -> List[SymbolMetada
     # Parse and return symbols
 
 def extract_calls_from_source(self, source_code: str, file_path: str) -> List[dict]
-    # Parse and return call edges
+    # Parse and return call edges with type classification
+    # Returns: [{"caller_uid": str, "callee_name": str, "rel_type": str}, ...]
+    # rel_type: "CALLS_DIRECT" (static/overload-safe), "CALLS_DYNAMIC" (dispatch), "CALLS_INFERRED" (string-based)
+    # Default (not overridden): "CALLS_DIRECT"
 ```
 
 ### TreeSitterAdapter Base Class

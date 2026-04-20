@@ -1,11 +1,13 @@
-# Indexer — Spec
+# Code Indexer — Spec
 
 ## Overview
 
-`indexer_main.py` — full project indexing pipeline. Walks a directory, extracts symbols and calls, embeds symbol bodies, resolves pending DocAnchors.
+`sidecar/indexer/code.py` — full project code indexing pipeline. Walks a directory, extracts symbols and typed function calls, embeds symbol bodies, resolves pending DocAnchors, and rebuilds the AFFECTS reverse-dependency index.
 
-Entry point: `python indexer_main.py [path]` (defaults to repo root).  
-Also called programmatically from `POST /index` and `run_demo.py`.
+Entry points:
+- CLI: `python sidecar/indexer/code.py [path]` (defaults to repo root)
+- Programmatic: `run_indexing(path)`, `index_file(path, db, lance, extractor)`
+- API: `POST /index` via `sidecar/main.py`
 
 ---
 
@@ -42,14 +44,21 @@ db.upsert_file_structure(file_path, file_hash, symbols)
 
 All nodes created before any edges — ensures Phase 2 finds all callee nodes.
 
-### Phase 2 — Call linking (per file)
+### Phase 2 — Typed call linking (per file, Phase 5+)
 
 ```python
 calls = extractor.extract_calls(file_path)
 db.link_calls(calls)
 ```
 
-`MERGE (caller)-[:CALLS]->(callee)` edges. Callee matched by name.
+Creates typed call edges: `MERGE (caller)-[:{rel_type}]->(callee)` where `rel_type` ∈ {`CALLS_DIRECT`, `CALLS_DYNAMIC`, `CALLS_INFERRED`}.
+
+**Call types** (from `sidecar/parser/adapters/python_adapter.py`):
+- `CALLS_DIRECT` — static/deterministic calls (default, dunders like `__init__`)
+- `CALLS_DYNAMIC` — dispatch via `self.method()` or other receivers (confidence: 0.7)
+- `CALLS_INFERRED` — string-based patterns (`getattr`, `eval`, globals, etc.) (confidence: 0.4)
+
+**Pre-Phase 5:** all edges were `CALLS_DIRECT`. Backward-compatible: edges default to `CALLS_DIRECT` if no `rel_type` provided.
 
 ### Phase 3 — Symbol body embeddings
 
@@ -66,19 +75,41 @@ resolve_pending_anchors(db, lance)
 
 Checks LanceDB `docs.pending` against symbols now present in Neo4j. Creates `[:COVERS]` edges for any identifiers that have become resolvable since the last doc index run.
 
+### Phase 5 — AFFECTS index rebuild (per changed symbol, Phase 5+)
+
+```python
+from sidecar.indexer.affects import AFFECTSIndexer
+indexer = AFFECTSIndexer(db)
+indexer.rebuild_affects(changed_uids)
+```
+
+After all symbols for a file are upserted, delete stale `AFFECTS` edges and recompute reverse-dependency paths (depth ≤ 4). Enables cascade-aware incremental reindexing.
+
+Called synchronously at end of `index_file()` — blocks until AFFECTS edges are rebuilt. Future: batch across files.
+
 ---
 
-## File Hash
+## File Hash & Incremental Indexing
 
-Currently: `open(file_path, 'rb').read().hex()` — full file bytes as hex string. Used to set `File.hash` in Neo4j for future cache-invalidation logic (changed hash = re-extract). Not yet used for skipping unchanged files.
+**Implementation** (Phase 5+): `hashlib.sha256(file_bytes).hexdigest()` — stored in `File.hash` in Neo4j.
+
+**Incremental logic** (`run_indexing`):
+1. Compute SHA256 hash for all files in project
+2. Query Neo4j for stored hashes (via `db.get_file_hashes()`)
+3. Filter to changed files only (`current_hash != stored_hash`)
+4. Delete symbols for changed files
+5. Re-index only changed files
+6. Resolve pending DocAnchors (full pass)
+
+This reduces indexing time for large repos with few changes. Full re-index still supported via `delete_symbols_for_file()` + re-upsert.
 
 ---
 
 ## Limitations (current)
 
-- File hash is full byte read — not a proper SHA256 digest. Will be standardized in a future pass.
-- No incremental indexing — every run re-extracts all symbols and re-links all calls.
-- Phase 1 and 2 each open every file individually — 2× file reads per file. Could be merged.
+- AFFECTS rebuild is synchronous per file — scales linearly. Future: batch across files or use background workers.
+- No parallel file processing — single-threaded walk. Future: `concurrent.futures.ThreadPoolExecutor`.
+- Phase 1 and 2 each open every file individually (2× reads). Could merge into single tree-sitter parse.
 
 ---
 

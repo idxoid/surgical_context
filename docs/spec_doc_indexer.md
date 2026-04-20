@@ -2,9 +2,9 @@
 
 ## Overview
 
-`sidecar/doc_indexer.py` — walks a directory for `*.md` files, chunks them, embeds into LanceDB, then links chunks to code symbols in Neo4j via DocAnchor nodes.
+`sidecar/indexer/docs.py` — walks a directory for `*.md` files, chunks them, embeds into LanceDB, then links chunks to code symbols in Neo4j via DocAnchor nodes with rich FROM/COVERS relationships.
 
-Entry point: `index_docs(docs_path: str)`, also callable as `python -m sidecar.doc_indexer <path>`.
+Entry point: `index_docs(docs_path: str)`, also callable as `python sidecar/indexer/docs.py <path>` or `POST /index/docs` via `sidecar/main.py`.
 
 ---
 
@@ -44,10 +44,20 @@ index_docs(docs_path)
   1. glob("**/*.md")
   2. for each file:
        chunks = _chunk_text(file_text)
-       lance.upsert_chunks(file_path, chunks)   # embed + store
-  3. link_docs_to_symbols(neo4j, lance)          # DocAnchor phase
-  4. neo4j.close()
+       lance.upsert_chunks(file_path, chunks)        # embed + store in LanceDB
+  3. link_docs_to_symbols(neo4j, lance)              # DocAnchor + FROM/COVERS phase
+  4. resolve_pending_anchors(neo4j, lance)           # resolve forward refs
+  5. neo4j.close()
 ```
+
+**DocAnchor linking flow** (`sidecar/indexer/anchor.py`):
+- For each chunk:
+  1. `_write_anchor()` — create DocAnchor node, set `File.doc_type`, create `FROM {type: "doc"}` edge
+  2. Semantic search: `lance.search_symbols(chunk_text, threshold=1.5)` → hits
+  3. For each hit: `_add_covers_edge()` — create `COVERS` + `FROM {type: "code"}` edge to symbol's file
+  4. Identifier extraction: regex match CamelCase, UPPER_CASE, snake_case names
+  5. For each extracted name: if found in Neo4j, create `COVERS` + `FROM {type: "code"}`; else add to pending
+  6. `_link_related_docs()` — extract doc references (spec_*.md, architectura.md, etc.), create typed `FROM {type: "spec"|"architecture"|...}` edges
 
 ---
 
@@ -62,11 +72,30 @@ Index is positional within the file. Re-indexing the same file deletes all previ
 
 ---
 
+## FROM Relationship Hierarchy (Phase 5+)
+
+Each DocAnchor can have multiple FROM edges with different `type` properties:
+
+| Type | Target | Created by | Meaning |
+|---|---|---|---|
+| `"doc"` | File (doc source) | `_write_anchor()` | This chunk came from this doc file |
+| `"code"` | File (code owner) | `_add_covers_edge()` | Code file containing a COVERS'd symbol |
+| `"spec"` | File (spec doc) | `_link_related_docs()` | Spec referenced inline in the chunk |
+| `"architecture"` | File (architecture doc) | `_link_related_docs()` | Architecture doc referenced inline |
+| `"concept"` | File (concept doc) | `_link_related_docs()` | Concept doc referenced inline |
+| `"idea"` | File (idea doc) | `_link_related_docs()` | Idea doc referenced inline |
+
+This enables rich knowledge graph queries: given a code symbol, find all doc chunks that mention it AND the specs/architecture they reference.
+
+---
+
 ## Limitations (current)
 
 - Only `*.md` files are indexed. Other doc formats (`.rst`, `.txt`, `.adoc`) are ignored.
 - Section split only handles `#`, `##`, `###` — deeper headings (`####`+) are treated as body text.
-- Chunk IDs are positional — if a section moves within a file, its chunk ID changes and the old DocAnchor `[:COVERS]` edges become orphaned until re-indexing.
+- Chunk IDs are positional — if a section moves within a file, its chunk ID changes and old DocAnchor edges become orphaned until re-indexing.
+- Doc reference extraction uses simple regex (`[text](docs/file.md)` or bare filenames) — does not follow transitive references.
+- Semantic threshold `SIMILARITY_THRESHOLD = 1.5` is fixed — not tunable per query (designed for all-MiniLM-L6-v2 model, cosine distance scale 0–2).
 
 ---
 
@@ -75,3 +104,5 @@ Index is positional within the file. Re-indexing the same file deletes all previ
 - Support `.rst` and `.txt` doc formats
 - Handle `####`–`######` heading levels
 - Stable chunk IDs based on heading text hash rather than position
+- Transitive doc reference linking (spec → architecture → concepts)
+- Configurable similarity threshold per retrieval query (Phase 6+)

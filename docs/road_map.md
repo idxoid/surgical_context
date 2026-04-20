@@ -206,8 +206,9 @@ Goal: Cost savings and UX refinement.
 
 ### Smart Routing & Demo Upgrade
 - [ ] Round-Robin model router (ADR-004)
-- [ ] Query intent classifier (navigation | debugging | refactor | semantic | exploration)
-  - **Note:** Per Phase 4 evaluation, this is lower priority than deduplication. Implement only after precision improves.
+- [ ] Query intent classifier — adaptive tier prioritization per intent type
+  - **Spec:** [spec_intent_classifier.md](spec_intent_classifier.md) — 6 intent types (navigation, debugging, refactor, exploration, new feature, design question), each with a priority ordering of content tiers (code → cross-refs → specs → architecture → concepts → ideas)
+  - **Note:** Per Phase 5 evaluation, this is lower priority than deduplication & AFFECTS index. Implement only after doc-code linking precision improves.
 - [ ] Streaming LLM responses (SSE) instead of blocking
 - [ ] Official Anthropic SDK activation (`sidecar/ai/engine.py`) with prompt caching on `graph_context` block
 - [ ] Upgrade demo from Ollama/llama3 to Claude Sonnet 4.6 (per [review_findings_2026-04-17.md](review_findings_2026-04-17.md) recommendation #5)
@@ -240,6 +241,6 @@ Goal: Cost savings and UX refinement.
 | Missing incremental index | High | Full re-scan on every save breaks the <200ms SLO | Phase 3.5 file-level dirty tracking ✅ |
 | Embedding leakage to cloud | Medium | Vector inversion can recover source text — contradicts ADR-001 spirit | Security ADR in Phase 5 before any cloud vector sync |
 | Neo4j/SaaS Sync | Medium | Network latency on cloud requests | Phase 5 design — local cache + merge |
-| Intent classification immaturity | Medium | Query intent classifier premature before precision improves | Phase 6 only; Phase 4 focuses on deduplication first |
+| Intent classification immaturity | Medium | Query intent classifier premature before precision improves | Phase 6 design complete (spec: [spec_intent_classifier.md](spec_intent_classifier.md)); defer implementation until Phase 5 completion |
 | Model Router | Medium | Misclassification sends complex task to cheap model | Phase 6 — escalation fallback on empty/error |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ |
