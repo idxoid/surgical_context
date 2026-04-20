@@ -11,6 +11,7 @@ description = "AI-powered VS Code extension for surgical code analysis"
 target-version = "py312"
 line-length = 100
 respect-gitignore = true
+exclude = ["tests/fixtures/sample_project/payments/broken.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
