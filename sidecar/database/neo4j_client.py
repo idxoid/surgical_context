@@ -78,14 +78,13 @@ class Neo4jClient:
     @staticmethod
     def _create_call_relations(tx, calls):
         for call in calls:
-            # Ищем вызываемого (callee) по имени.
-            # Это упрощенная логика, которую мы позже заменим на разрешение импортов.
+            rel_type = call.get("rel_type", "CALLS_DIRECT")
             tx.run(
-                """
-                MATCH (caller:Symbol {uid: $caller_uid})
-                MATCH (callee:Symbol {name: $callee_name})
+                f"""
+                MATCH (caller:Symbol {{uid: $caller_uid}})
+                MATCH (callee:Symbol {{name: $callee_name}})
                 WHERE caller <> callee
-                MERGE (caller)-[:CALLS]->(callee)
+                MERGE (caller)-[:{rel_type}]->(callee)
             """,
                 caller_uid=call["caller_uid"],
                 callee_name=call["callee_name"],

@@ -146,22 +146,22 @@ Goal: Reduce token overhead and prepare for multi-model / multi-user environment
 
 > **Reference:** [architectural_review.md](architectural_review.md#phase-4-near-term-wins) — detailed evaluation of all improvement ideas by impact/effort.
 
-### Context Deduplication ✅ CANDIDATE
+### Context Deduplication ✅ COMPLETE
 > **Spec:** [spec_context_deduplicator.md](spec_context_deduplicator.md) — insertion point, dedup rules, budget recalculation, test matrix.
-- [ ] Implement `ContextDeduplicator` — pure transform between GraphExpander and PromptCompiler
-- [ ] Normalize symbol identity by UID; keep lowest-depth copy on duplicates
-- [ ] Collapse overlapping line ranges within same file
-- [ ] Deduplicate doc chunks with >85% content overlap
-- [ ] Update `budget["dedup_saved"]` for observability
-- [ ] Target: 15–40% token reduction (currently uniform 883t baseline signals opportunity)
+- [x] Implement `ContextDeduplicator` — pure transform between GraphExpander and PromptCompiler
+- [x] Normalize symbol identity by UID; keep lowest-depth copy on duplicates
+- [x] Collapse overlapping line ranges within same file
+- [x] ~~Deduplicate doc chunks with >85% content overlap~~ (deferred: performance cost exceeded benefit)
+- [x] Update `budget["dedup_saved"]` for observability
+- [x] Integration: pipeline now expand → deduplicate → resolve → compile (9 unit tests passing)
 
-### Embedding Versioning ✅ CANDIDATE
+### Embedding Versioning ✅ COMPLETE
 > **Spec:** [spec_embedding_versioning.md](spec_embedding_versioning.md) — metadata schema, model registry, cross-model guard, migration CLI.
-- [ ] Add `embedding_metadata` JSON column to `docs` and `symbols` LanceDB tables
-- [ ] Model registry in `sidecar/database/embedding_registry.py` — known models + dimensions
-- [ ] Write path: record model_name, model_version, chunk_hash, embedding_hash per row
-- [ ] Read path: guard against cross-model queries (raise `EmbeddingModelMismatch`)
-- [ ] Migration CLI: `python -m sidecar.database.embedding_migration status / migrate`
+- [x] Add `embedding_metadata` JSON column to `docs` and `symbols` LanceDB tables
+- [x] Model registry in `sidecar/database/embedding_registry.py` — known models + dimensions
+- [x] Write path: record model_name, model_version, chunk_hash, embedding_hash per row
+- [x] Read path: guard against cross-model queries (raise `EmbeddingModelMismatch`)
+- [x] Migration CLI: `python -m sidecar.database.embedding_migration status / migrate`
 
 ### Graph Richness (Phase 5 planning)
 - [ ] Feasibility assessment: dynamic dispatch detection in Python/TypeScript parsers

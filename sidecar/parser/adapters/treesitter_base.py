@@ -102,7 +102,7 @@ class TreeSitterAdapter(LanguageAdapter):
         return symbols
 
     def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
-        """Extract function call edges from source code."""
+        """Extract function call edges from source code with call type classification."""
         tree = self.parser.parse(bytes(source_code, "utf8"))
         query = self.language.query(self.call_query)
         captures = query.captures(tree.root_node)
@@ -124,6 +124,7 @@ class TreeSitterAdapter(LanguageAdapter):
                             {
                                 "caller_uid": self._uid(file_path, caller_name),
                                 "callee_name": call_name,
+                                "rel_type": "CALLS_DIRECT",
                             }
                         )
         return calls

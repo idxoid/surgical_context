@@ -76,8 +76,10 @@ class LanguageAdapter(ABC):
             file_path: absolute path (used to look up enclosing symbols)
 
         Returns:
-            List of dicts: {"caller_uid": str, "callee_name": str}.
-            callee_name is unresolved at this stage — matched by name in Neo4j during indexing.
+            List of dicts with keys:
+            - caller_uid: str
+            - callee_name: str (unresolved — matched by name in Neo4j during indexing)
+            - rel_type: str ("CALLS_DIRECT" | "CALLS_DYNAMIC" | "CALLS_INFERRED")
         """
         pass
 
