@@ -99,7 +99,8 @@ def index_docs():
 
 
 def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"):
-    from sidecar.context.arbitrator import ContextArbitrator, DocChunk
+    from sidecar.context.arbitrator import ContextArbitrator
+    from sidecar.context.types import DocChunk
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.database.neo4j_client import Neo4jClient
 
