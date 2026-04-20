@@ -11,10 +11,19 @@ class GraphExpander:
 
     PREAMBLE_TOKENS = 100
     RELATION_PRIOR = {
-        "CALLS_out": 1.0,
-        "CALLS_in": 1.2,
+        "CALLS_DIRECT_out": 1.0,
+        "CALLS_DIRECT_in": 1.2,
+        "CALLS_DYNAMIC_out": 0.7,
+        "CALLS_DYNAMIC_in": 0.9,
+        "CALLS_INFERRED_out": 0.4,
+        "CALLS_INFERRED_in": 0.5,
+        "IMPLEMENTS": 1.1,
+        "OVERRIDES": 1.1,
+        "REFERENCES": 0.3,
         "DEPENDS_ON": 0.8,
         "IMPORTS": 0.6,
+        "CALLS_out": 1.0,
+        "CALLS_in": 1.2,
     }
     WEIGHTS = {
         "rel": 1.0,
@@ -141,8 +150,11 @@ class GraphExpander:
         self, rel_type: str, outgoing: bool, caller_count: int, token_estimate: int, distance: int
     ) -> float:
         """Compute relevance score for a candidate symbol."""
-        if rel_type == "CALLS":
-            relation = "CALLS_out" if outgoing else "CALLS_in"
+        if rel_type in ("CALLS_DIRECT", "CALLS_DYNAMIC", "CALLS_INFERRED", "CALLS"):
+            base = rel_type if rel_type != "CALLS" else "CALLS_DIRECT"
+            relation = f"{base}_out" if outgoing else f"{base}_in"
+        elif rel_type in ("IMPLEMENTS", "OVERRIDES", "REFERENCES"):
+            relation = rel_type
         elif rel_type == "DEPENDS_ON":
             relation = "DEPENDS_ON"
         elif rel_type == "IMPORTS":
@@ -161,20 +173,26 @@ class GraphExpander:
 
     def _direction(self, rel_type: str, outgoing: bool) -> str:
         """Map relation type to direction string for context metadata."""
-        if rel_type == "CALLS":
+        if rel_type in ("CALLS", "CALLS_DIRECT", "CALLS_DYNAMIC", "CALLS_INFERRED"):
             return "callee" if outgoing else "caller"
         elif rel_type == "DEPENDS_ON":
             return "type"
         elif rel_type == "IMPORTS":
             return "import"
+        elif rel_type == "IMPLEMENTS":
+            return "interface"
+        elif rel_type == "OVERRIDES":
+            return "override"
+        elif rel_type == "REFERENCES":
+            return "reference"
         return "sibling"
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         """Fetch immediate neighbors of a symbol, returning unvisited only."""
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|DEPENDS_ON]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES]-(n:Symbol)
         WHERE NOT n.uid IN $visited
-        OPTIONAL MATCH ()-[:CALLS]->(n)
+        OPTIONAL MATCH ()-[:CALLS|CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED]->(n)
         OPTIONAL MATCH (fn:File)-[:CONTAINS]->(n)
         WITH n, fn, r, startNode(r) = s AS outgoing, count(*) AS caller_count
         RETURN n.uid AS uid,
