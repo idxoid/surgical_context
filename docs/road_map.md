@@ -65,11 +65,12 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 - [x] `QA/qa_benchmark.py` reframed as reproducible metric runner (emits JSON: recall@k, precision@k, tokens, latency)
 - [ ] CI config (GitHub Actions) running tests + benchmark on every PR (deferred: needs Neo4j services)
 
-### Observability (DEFERRED — Phase 5)
-- [ ] Structured logging across pipeline stages
+### Observability (DEFERRED — Phase 5+)
+- [ ] Structured logging across pipeline stages (Phase 5 prerequisite)
 - [ ] `GET /metrics` endpoint (Prometheus text format)
 - [ ] Per-request trace ID threaded through logs
 - [ ] Latency SLO tracking against 200ms target
+- [ ] Distributed tracing via OpenTelemetry (Phase 6, scale phase only)
 
 ### Token Accounting ✅ COMPLETE
 - [x] Token counter (tiktoken cl100k_base) on every `PromptContext`
@@ -140,7 +141,31 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 
 ---
 
-## Phase 4: SaaS and Team Synchronization (DEFERRED — post-MVP)
+## Phase 4: Quality & Scaling (NEXT ITERATION)
+Goal: Reduce token overhead and prepare for multi-model / multi-user environments.
+
+> **Reference:** [architectural_review.md](architectural_review.md#phase-4-near-term-wins) — detailed evaluation of all improvement ideas by impact/effort.
+
+### Context Deduplication ✅ CANDIDATE
+- [ ] Implement `ContextDeduplicator` component between GraphExpander and PromptCompiler
+- [ ] Normalize symbol identity by UID; remove transitive duplicates
+- [ ] Collapse overlapping doc chunks and line ranges
+- [ ] Target: 15–40% token reduction on real repos (currently uniform 883t baseline suggests opportunity)
+
+### Embedding Versioning ✅ CANDIDATE
+- [ ] Add `EmbeddingMetadata` table to LanceDB: model_name, model_version, chunk_hash, embedding_hash
+- [ ] Enforce: no cross-model queries without explicit migration flag
+- [ ] Prevents silent quality degradation when upgrading embedding models
+
+### Graph Richness (Optional — Phase 5 planning)
+- [ ] Evaluate typed semantic edges: CALLS_DIRECT vs CALLS_DYNAMIC vs CALLS_INFERRED
+- [ ] Design reverse dependency index: Symbol/File → AFFECTS → Symbol/File
+- [ ] Assessment: feasibility of dynamic dispatch detection in Python/TypeScript parsers
+- [ ] Decision point: prioritize for Phase 5 vs defer to Phase 6
+
+---
+
+## Phase 5: SaaS and Team Synchronization (DEFERRED — post-MVP)
 Goal: Transition from local tool to Enterprise solution (ADR-003).
 
 > **Blocked on Phase 2.5 and 3.5.** Do not begin SaaS work until: evaluation harness is green, token savings are measured, incremental indexing works locally.
@@ -159,14 +184,20 @@ Goal: Transition from local tool to Enterprise solution (ADR-003).
 ### Performance
 - [ ] Parallel parsing for `git pull` indexing speed
 
+### Graph Richness & Scaling
+- [ ] Implement reverse dependency AFFECTS index for cache invalidation
+- [ ] Typed semantic edges: distinguish CALLS_DIRECT from CALLS_DYNAMIC for accurate ranking
+- [ ] Proposal: evaluate executor probability model for runtime-aware context (deferred to Phase 6 unless empirical data available)
+
 ---
 
-## Phase 5: Optimization and Launch (DEFERRED — post-MVP)
+## Phase 6: Optimization and Launch (DEFERRED — post-MVP)
 Goal: Cost savings and UX refinement.
 
 ### Smart Routing & Demo Upgrade
 - [ ] Round-Robin model router (ADR-004)
-- [ ] Query complexity classifier (Intent Classifier)
+- [ ] Query intent classifier (navigation | debugging | refactor | semantic | exploration)
+  - **Note:** Per Phase 4 evaluation, this is lower priority than deduplication. Implement only after precision improves.
 - [ ] Streaming LLM responses (SSE) instead of blocking
 - [ ] Official Anthropic SDK activation (`sidecar/ai/engine.py`) with prompt caching on `graph_context` block
 - [ ] Upgrade demo from Ollama/llama3 to Claude Sonnet 4.6 (per [review_findings_2026-04-17.md](review_findings_2026-04-17.md) recommendation #5)
@@ -189,13 +220,16 @@ Goal: Cost savings and UX refinement.
 
 | Task | Priority | Risk | Mitigation |
 |---|---|---|---|
-| Eval harness unblocker | **High** | No measurable proof of token/quality gains — all Phase 4+ claims unverified | Phase 2.5: ship fixture + CI (spec: [spec_eval_harness.md](spec_eval_harness.md)) |
-| Unmeasured quality claims | **High** | "60–80% reduction" cannot be verified without eval harness | Phase 2.5 blocks Phase 4 (ADR-006) |
-| Missing extension UI | **High** | "VS Code integration" premise unproven; `run_demo.py` doesn't validate product | Phase 2.5: promote extension scaffold from Phase 1 (per [review_findings_2026-04-17.md](review_findings_2026-04-17.md) rec #6) |
+| Eval harness unblocker | **High** | No measurable proof of token/quality gains — all Phase 4+ claims unverified | Phase 2.5: ship fixture + CI ✅ (spec: [spec_eval_harness.md](spec_eval_harness.md)) |
+| Unmeasured quality claims | **High** | "60–80% reduction" cannot be verified without eval harness | Phase 2.5 blocks Phase 4 ✅ (ADR-006) |
+| Missing extension UI | **High** | "VS Code integration" premise unproven; `run_demo.py` doesn't validate product | Phase 2.5: promote extension scaffold from Phase 1 ✅ (per [review_findings_2026-04-17.md](review_findings_2026-04-17.md) rec #6) |
+| Token overhead limit | High | 883t baseline across all queries suggests dedup opportunity | Phase 4: ContextDeduplicator (target 15–40% reduction) |
+| Embedding model drift | High | Switching embedding models without versioning causes silent quality loss | Phase 4: embedding metadata tracking + migration flag |
 | Tree-sitter multi-language | High | Complexity of supporting many languages | ADR-005 LanguageAdapter protocol (spec: [spec_language_adapter.md](spec_language_adapter.md)); formalize in Phase 1 polish, defer extra languages to Phase 3.5 |
-| Rigid BFS depth | High | Real questions span modules via `IMPORTS`, inheritance, type flow | Phase 3.5 token-budget BFS + `IMPORTS` / `INHERITS` edges (spec: [spec_token_budget_bfs.md](spec_token_budget_bfs.md)) |
-| Missing incremental index | High | Full re-scan on every save breaks the <200ms SLO | Phase 3.5 file-level dirty tracking |
-| Embedding leakage to cloud | Medium | Vector inversion can recover source text — contradicts ADR-001 spirit | Security ADR in Phase 4 before any cloud vector sync |
-| Neo4j/SaaS Sync | Medium | Network latency on cloud requests | Phase 4 design — local cache + merge |
-| Model Router | Medium | Misclassification sends complex task to cheap model | Phase 5 — escalation fallback on empty/error |
-| Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish |
+| Rigid BFS depth | High | Real questions span modules via `IMPORTS`, inheritance, type flow | Phase 3.5 token-budget BFS ✅ + `IMPORTS` / `INHERITS` edges ✅ (spec: [spec_token_budget_bfs.md](spec_token_budget_bfs.md)) |
+| Missing incremental index | High | Full re-scan on every save breaks the <200ms SLO | Phase 3.5 file-level dirty tracking ✅ |
+| Embedding leakage to cloud | Medium | Vector inversion can recover source text — contradicts ADR-001 spirit | Security ADR in Phase 5 before any cloud vector sync |
+| Neo4j/SaaS Sync | Medium | Network latency on cloud requests | Phase 5 design — local cache + merge |
+| Intent classification immaturity | Medium | Query intent classifier premature before precision improves | Phase 6 only; Phase 4 focuses on deduplication first |
+| Model Router | Medium | Misclassification sends complex task to cheap model | Phase 6 — escalation fallback on empty/error |
+| Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ |
