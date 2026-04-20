@@ -71,22 +71,14 @@ class AFFECTSIndexer:
         """
         query = """
         MATCH (s:Symbol {uid: $uid})
-        CALL {
-            WITH s
-            MATCH path = (dependent)-[*1..{max_depth}]-(s)
-            WHERE all(rel IN relationships(path)
-                      WHERE type(rel) IN ['CALLS_DIRECT', 'CALLS_DYNAMIC', 'CALLS_INFERRED',
-                                         'DEPENDS_ON', 'IMPLEMENTS', 'OVERRIDES'])
-            RETURN DISTINCT dependent.uid AS uid
-        }
-        RETURN collect(uid) AS affected_uids
+        MATCH path = (dependent)-[*1..4]-(s)
+        WHERE all(rel IN relationships(path)
+                  WHERE type(rel) IN ['CALLS_DIRECT', 'CALLS_DYNAMIC', 'CALLS_INFERRED',
+                                     'DEPENDS_ON', 'IMPLEMENTS', 'OVERRIDES'])
+        RETURN collect(DISTINCT dependent.uid) AS affected_uids
         """
 
-        result = session.run(
-            query,
-            uid=symbol_uid,
-            max_depth=self.MAX_AFFECTS_DEPTH,
-        ).single()
+        result = session.run(query, uid=symbol_uid).single()
 
         return result["affected_uids"] if result else []
 
