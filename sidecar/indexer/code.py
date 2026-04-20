@@ -52,7 +52,7 @@ def _collect_files(project_path: str) -> list[str]:
 
 
 def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor: SymbolExtractor):
-    """Index a single file: symbols → calls → embeddings → imports → inheritance."""
+    """Index a single file: symbols → calls → embeddings → imports → inheritance → AFFECTS rebuild."""
     with open(file_path, "rb") as f:
         file_hash = hashlib.sha256(f.read()).hexdigest()
     symbols = extractor.extract(file_path)
@@ -86,6 +86,14 @@ def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor:
     inheritance = extractor.extract_inheritance(file_path)
     if inheritance:
         db.link_inheritance(inheritance)
+
+    # Rebuild AFFECTS index for modified symbols (synchronous, blocking)
+    changed_uids = [s.uid for s in symbols]
+    if changed_uids:
+        from sidecar.indexer.affects import AFFECTSIndexer
+
+        indexer = AFFECTSIndexer(db)
+        indexer.rebuild_affects(changed_uids)
 
 
 def run_indexing(project_path: str):

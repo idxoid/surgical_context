@@ -147,6 +147,58 @@ def ask(req: AskRequest):
         db.close()
 
 
+@app.get("/impact")
+def impact(symbol: str):
+    """Return downstream dependents affected by a change to the given symbol."""
+    db = get_db()
+    try:
+        from sidecar.indexer.affects import AFFECTSIndexer
+
+        # Look up symbol UID by name
+        query = "MATCH (s:Symbol {name: $name}) RETURN s.uid AS uid LIMIT 1"
+        with db.driver.session() as session:
+            result = session.run(query, name=symbol).single()
+
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
+
+        symbol_uid = result["uid"]
+
+        # Get affected symbols
+        indexer = AFFECTSIndexer(db)
+        affected_symbols = indexer.get_affected_symbols(symbol_uid)
+
+        # Get file containing the symbol
+        query = """
+        MATCH (s:Symbol {uid: $uid})
+        OPTIONAL MATCH (f:File)-[:CONTAINS]->(s)
+        RETURN coalesce(f.path, '<unknown>') AS file_path
+        """
+        with db.driver.session() as session:
+            result = session.run(query, uid=symbol_uid).single()
+
+        symbol_file = result["file_path"] if result else "<unknown>"
+
+        # Get affected files
+        if symbol_file != "<unknown>":
+            affected_files = indexer.get_affected_files(symbol_file)
+        else:
+            affected_files = []
+
+        return {
+            "symbol": symbol,
+            "symbol_uid": symbol_uid,
+            "file_path": symbol_file,
+            "affected_symbols": affected_symbols,
+            "affected_files": affected_files,
+            "affected_count": len(affected_symbols),
+            "affected_file_count": len(affected_files),
+            "max_depth": AFFECTSIndexer.MAX_AFFECTS_DEPTH,
+        }
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     import uvicorn
 
