@@ -3,7 +3,7 @@ import re
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 
-SIMILARITY_THRESHOLD = 0.4
+SIMILARITY_THRESHOLD = 1.5
 
 # CamelCase, UPPER_CASE_WITH_UNDERSCORE, snake_case_with_underscore
 _IDENTIFIER_RE = re.compile(
