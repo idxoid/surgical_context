@@ -1,10 +1,35 @@
-const BASE = 'http://localhost:8000';
+import * as vscode from 'vscode';
+import { SSECallbacks, parseSSEStream } from './utils';
+
+function getBaseUrl(): string {
+  const config = vscode.workspace.getConfiguration('surgicalContext');
+  return config.get<string>('backendUrl', 'http://localhost:8000');
+}
+
+function getHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const config = vscode.workspace.getConfiguration('surgicalContext');
+  const workspaceId = config.get<string>('workspaceId', 'local/default@main');
+  if (workspaceId) {
+    headers['X-Workspace'] = workspaceId;
+  }
+  return headers;
+}
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${getBaseUrl()}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Sidecar ${path} → ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(`${getBaseUrl()}${path}`, {
+    method: 'GET',
+    headers: getHeaders(),
   });
   if (!res.ok) throw new Error(`Sidecar ${path} → ${res.status}`);
   return res.json() as Promise<T>;
@@ -78,6 +103,54 @@ export interface SearchResponse {
   results: Array<{ symbol: string; score: number; snippet: string }>;
 }
 
+export interface UnifiedSearchResponse {
+  trace_id: string;
+  workspace_id: string;
+  results: Array<{
+    type: 'doc' | 'symbol';
+    title: string;
+    file_path: string;
+    content: string;
+    score: number;
+    scores: Record<string, number | null>;
+    provenance: string[];
+    metadata: Record<string, unknown>;
+  }>;
+  total: number;
+}
+
+export interface ImpactResponse {
+  symbol: string;
+  symbol_uid: string;
+  file_path: string;
+  affected_symbols: Array<Record<string, unknown>>;
+  affected_files: string[];
+  affected_count: number;
+  affected_file_count: number;
+  max_depth: number;
+}
+
+export interface CloudStatusResponse {
+  cloud_enabled: boolean;
+  using_aura: boolean;
+  using_fallback: boolean;
+  health: Record<string, unknown>;
+}
+
+export interface AuditAction {
+  timestamp: string;
+  user_id: string;
+  action: string;
+  symbol?: string;
+  intent?: string;
+  mode?: string;
+}
+
+export interface AuditActionsResponse {
+  actions: AuditAction[];
+  total: number;
+}
+
 export interface IndexFileResponse {
   status: string;
   file_path: string;
@@ -107,7 +180,7 @@ export const SidecarClient = {
 
   async health(): Promise<boolean> {
     try {
-      const res = await fetch(`${BASE}/health`);
+      const res = await fetch(`${getBaseUrl()}/health`);
       return res.ok;
     } catch {
       return false;
@@ -120,14 +193,77 @@ export const SidecarClient = {
 
   async deleteOverlay(file_path: string): Promise<void> {
     try {
-      await fetch(`${BASE}/overlay?file_path=${encodeURIComponent(file_path)}`, { method: 'DELETE' });
+      await fetch(`${getBaseUrl()}/overlay?file_path=${encodeURIComponent(file_path)}`, {
+        method: 'DELETE',
+        headers: getHeaders(),
+      });
     } catch {
       // silently ignore
     }
   },
 
-  ask(symbol: string, question: string): Promise<AskResponse> {
-    return post('/ask', { symbol, question });
+  ask(symbol: string, question: string, tokenBudget = 4000): Promise<AskResponse> {
+    return post('/ask', { symbol, question, token_budget: tokenBudget });
+  },
+
+  async askStream(
+    symbol: string,
+    question: string,
+    callbacks: SSECallbacks,
+    tokenBudget = 4000
+  ): Promise<AbortController> {
+    const controller = new AbortController();
+
+    try {
+      const res = await fetch(`${getBaseUrl()}/ask/stream`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ symbol, question, token_budget: tokenBudget }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Sidecar /ask/stream → ${res.status}`);
+      }
+
+      await parseSSEStream(res, callbacks);
+    } catch (error) {
+      if (!(error instanceof Error && error.name === 'AbortError')) {
+        callbacks.onError?.(error instanceof Error ? error.message : 'Unknown error');
+      }
+    }
+
+    return controller;
+  },
+
+  impact(symbol: string): Promise<ImpactResponse> {
+    return get(`/impact?symbol=${encodeURIComponent(symbol)}`);
+  },
+
+  cloudStatus(): Promise<CloudStatusResponse> {
+    return get('/status/cloud');
+  },
+
+  auditActions(userId?: string, limit = 100): Promise<AuditActionsResponse> {
+    const params = new URLSearchParams();
+    if (userId) params.append('user_id', userId);
+    params.append('limit', limit.toString());
+    return get(`/audit/actions?${params.toString()}`);
+  },
+
+  unifiedSearch(
+    query: string,
+    symbol?: string,
+    limit = 5,
+    tokenBudget = 2000
+  ): Promise<UnifiedSearchResponse> {
+    return post('/search/unified', {
+      query,
+      symbol: symbol || null,
+      limit,
+      include_graph: true,
+      token_budget: tokenBudget,
+    });
   },
 
   indexFile(file_path: string): Promise<IndexFileResponse> {

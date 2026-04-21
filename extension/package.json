@@ -11,36 +11,192 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onView:surgicalContext.chat",
+    "onCommand:surgicalContext.askCurrentSymbol",
+    "onCommand:surgicalContext.openInspector",
+    "onCommand:surgicalContext.showImpact",
+    "onCommand:surgicalContext.openDashboard"
   ],
   "main": "./dist/extension.js",
+  "icon": "media/icon.svg",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "surgicalContext",
+          "title": "Surgical Context",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "surgicalContext": [
+        {
+          "id": "surgicalContext.chat",
+          "name": "Chat",
+          "type": "webview"
+        },
+        {
+          "id": "surgicalContext.impact",
+          "name": "Impact",
+          "type": "webview"
+        },
+        {
+          "id": "surgicalContext.status",
+          "name": "Status",
+          "type": "tree"
+        }
+      ]
+    },
     "commands": [
       {
-        "command": "surgicalContext.openChat",
-        "title": "Surgical Context: Open Chat"
+        "command": "surgicalContext.askCurrentSymbol",
+        "title": "Surgical Context: Ask About Current Symbol",
+        "category": "Surgical Context"
       },
       {
-        "command": "surgicalContext.askAboutCursor",
-        "title": "Surgical Context: Ask About Symbol at Cursor"
+        "command": "surgicalContext.askSelection",
+        "title": "Surgical Context: Ask About Selection",
+        "category": "Surgical Context"
       },
       {
-        "command": "surgicalContext.indexProject",
-        "title": "Surgical Context: Index Project"
+        "command": "surgicalContext.openInspector",
+        "title": "Surgical Context: Open Context Inspector",
+        "category": "Surgical Context"
       },
       {
-        "command": "surgicalContext.checkHealth",
-        "title": "Surgical Context: Check Sidecar Health"
+        "command": "surgicalContext.showImpact",
+        "title": "Surgical Context: Show Impact",
+        "category": "Surgical Context"
+      },
+      {
+        "command": "surgicalContext.findDocs",
+        "title": "Surgical Context: Find Related Docs",
+        "category": "Surgical Context"
+      },
+      {
+        "command": "surgicalContext.openDashboard",
+        "title": "Surgical Context: Open Dashboard",
+        "category": "Surgical Context"
+      },
+      {
+        "command": "surgicalContext.reindexCurrentFile",
+        "title": "Surgical Context: Reindex Current File",
+        "category": "Surgical Context"
+      },
+      {
+        "command": "surgicalContext.toggleOverlaySync",
+        "title": "Surgical Context: Toggle Overlay Sync",
+        "category": "Surgical Context"
+      },
+      {
+        "command": "surgicalContext.searchWorkspace",
+        "title": "Surgical Context: Search Workspace",
+        "category": "Surgical Context"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "surgicalContext.askCurrentSymbol",
+          "when": "editorTextFocus && resourceExtname =~ /\\.(ts|tsx|py|js)$/",
+          "group": "1_modification"
+        },
+        {
+          "command": "surgicalContext.showImpact",
+          "when": "editorTextFocus && resourceExtname =~ /\\.(ts|tsx|py|js)$/",
+          "group": "1_modification"
+        },
+        {
+          "command": "surgicalContext.findDocs",
+          "when": "editorTextFocus && resourceExtname =~ /\\.(ts|tsx|py|js)$/",
+          "group": "1_modification"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "surgicalContext.askCurrentSymbol",
+          "when": "resourceExtname =~ /\\.(ts|tsx|py|js)$/",
+          "group": "navigation"
+        },
+        {
+          "command": "surgicalContext.showImpact",
+          "when": "resourceExtname =~ /\\.(ts|tsx|py|js)$/",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "surgicalContext.askCurrentSymbol",
+          "when": "view == surgicalContext.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "surgicalContext.openInspector",
+          "when": "view == surgicalContext.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "surgicalContext.showImpact",
+          "when": "view == surgicalContext.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "surgicalContext.openDashboard",
+          "when": "view == surgicalContext.chat",
+          "group": "navigation"
+        }
+      ]
+    },
     "keybindings": [
       {
-        "command": "surgicalContext.askAboutCursor",
-        "key": "ctrl+shift+/",
-        "mac": "cmd+shift+/",
+        "command": "surgicalContext.askCurrentSymbol",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "surgicalContext.showImpact",
+        "key": "ctrl+alt+i",
+        "mac": "cmd+alt+i",
         "when": "editorTextFocus"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Surgical Context",
+      "properties": {
+        "surgicalContext.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Base URL of the Surgical Context sidecar backend"
+        },
+        "surgicalContext.workspaceId": {
+          "type": "string",
+          "default": "local/default@main",
+          "description": "Workspace scope identifier for multi-workspace support"
+        },
+        "surgicalContext.overlaySync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send unsaved editor content to the sidecar so asks use the latest in-memory code"
+        },
+        "surgicalContext.chat.autoOpenInspector": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open the Context Inspector after a completed ask"
+        },
+        "surgicalContext.dashboard.autoRefreshSeconds": {
+          "type": "number",
+          "default": 30,
+          "description": "Interval in seconds for dashboard metrics polling"
+        },
+        "surgicalContext.experimental.searchPanel": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the experimental search webview surface"
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "node esbuild.js",
