@@ -1,9 +1,9 @@
 import logging
 import os
-from typing import Any
+from typing import Any, Generator, cast
 
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from sidecar.ai.engine import AIEngine
@@ -11,9 +11,18 @@ from sidecar.api.sse import format_sse
 from sidecar.auth import AuditLog, UserAuth
 from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.overlay import InMemoryOverlay
+from sidecar.context.types import RESOLVER_VERSION, PromptContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
 from sidecar.indexer.job_log import IndexJobLog
+from sidecar.observability import (
+    RequestTrace,
+    default_metrics,
+    estimate_cost_usd,
+    estimate_text_tokens,
+    new_trace_id,
+)
+from sidecar.search import UnifiedSearchResult, dedupe_and_rank
 from sidecar.workspace import WorkspaceResolver
 
 logging.basicConfig(level=logging.INFO)
@@ -59,6 +68,12 @@ class SearchRequest(BaseModel):
     limit: int = 5
 
 
+class UnifiedSearchRequest(SearchRequest):
+    symbol: str | None = None
+    include_graph: bool = True
+    token_budget: int = 2000
+
+
 class HealthResponse(BaseModel):
     status: str
 
@@ -88,13 +103,25 @@ class SearchResponse(BaseModel):
     results: list[dict[str, Any]]
 
 
+class UnifiedSearchResponse(BaseModel):
+    trace_id: str
+    workspace_id: str
+    results: list[dict[str, Any]]
+    total: int
+
+
 class AskResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     symbol: str
     answer: str
     context: dict[str, Any]
     user: str
     cloud: bool
     workspace_id: str
+    trace_id: str
+    model_route: dict[str, Any]
+    metrics: dict[str, Any]
 
 
 class ImpactResponse(BaseModel):
@@ -165,9 +192,59 @@ def _resolve_workspace(x_workspace: Any = None) -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _start_trace(endpoint: str, x_trace_id: Any = None, workspace_id: str = "") -> RequestTrace:
+    return RequestTrace(
+        trace_id=new_trace_id(_header_value(x_trace_id)),
+        endpoint=endpoint,
+        workspace_id=workspace_id,
+    )
+
+
+def _model_route(token_count: int, intent: str) -> dict[str, Any]:
+    route = getattr(ai_engine, "route", None)
+    if callable(route):
+        return cast(dict[str, Any], route(token_count=token_count, intent=intent))
+    return {
+        "provider": getattr(ai_engine, "model_preference", MODEL_PREFERENCE),
+        "model": getattr(ai_engine, "ollama_model", "unknown"),
+        "preference": getattr(ai_engine, "model_preference", MODEL_PREFERENCE),
+        "reason": "route_method_unavailable",
+    }
+
+
+def _last_model_route(default: dict[str, Any]) -> dict[str, Any]:
+    last_route = getattr(ai_engine, "last_route", None)
+    return cast(dict[str, Any], last_route) if isinstance(last_route, dict) else default
+
+
+def _attach_trace_metadata(ctx: PromptContext, trace: RequestTrace) -> None:
+    ctx.trace_id = trace.trace_id
+    ctx.workspace_id = trace.workspace_id
+    ctx.stage_timings_ms = dict(trace.stage_timings_ms)
+    ctx.token_counts = dict(trace.token_counts)
+    ctx.model_route = dict(trace.model_route)
+    ctx.estimated_cost_usd = trace.estimated_cost_usd
+    ctx.cost_basis = trace.cost_basis
+    ctx.resolver_version = RESOLVER_VERSION
+
+
+def _request_metrics(trace: RequestTrace) -> dict[str, Any]:
+    return {
+        "stage_timings_ms": dict(trace.stage_timings_ms),
+        "token_counts": dict(trace.token_counts),
+        "estimated_cost_usd": trace.estimated_cost_usd,
+        "cost_basis": trace.cost_basis,
+    }
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def metrics():
+    return PlainTextResponse(default_metrics.render_prometheus(), media_type="text/plain")
 
 
 @app.post("/index", response_model=StatusPathResponse)
@@ -265,6 +342,106 @@ def search(
     return {"results": vector_db.search(req.query, req.limit)}
 
 
+@app.post("/search/unified", response_model=UnifiedSearchResponse)
+def unified_search(
+    req: UnifiedSearchRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+    x_trace_id: str = Header(None),
+):
+    """Blend doc vectors, symbol vectors, and optional graph neighbors into one ranked list."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    trace = _start_trace("/search/unified", x_trace_id, workspace_id)
+    status = "ok"
+    results: list[UnifiedSearchResult] = []
+    try:
+        with trace.stage("vector_docs"):
+            docs = vector_db.search(req.query, req.limit)
+        for rank, doc in enumerate(docs):
+            score = doc.get("score")
+            results.append(
+                {
+                    "type": "doc",
+                    "title": doc.get("id") or doc["file_path"],
+                    "file_path": doc["file_path"],
+                    "content": doc["chunk"],
+                    "score": float(score if score is not None else 1 / (rank + 1)),
+                    "scores": {"semantic": score},
+                    "provenance": ["vector:docs"],
+                    "metadata": {"rank": rank + 1, "distance": doc.get("distance")},
+                }
+            )
+
+        search_symbols = getattr(vector_db, "search_symbols", None)
+        if callable(search_symbols):
+            with trace.stage("vector_symbols"):
+                symbols = search_symbols(req.query, req.limit, threshold=1.0)
+            for rank, symbol in enumerate(symbols):
+                score = symbol.get("score")
+                if score is None and symbol.get("distance") is not None:
+                    score = max(0.0, 1.0 - float(symbol["distance"]))
+                results.append(
+                    {
+                        "type": "symbol",
+                        "title": symbol["name"],
+                        "file_path": symbol["file_path"],
+                        "content": "",
+                        "score": float(score if score is not None else 1 / (rank + 1)),
+                        "scores": {"semantic": score},
+                        "provenance": ["vector:symbols"],
+                        "metadata": {"uid": symbol.get("uid"), "rank": rank + 1},
+                    }
+                )
+
+        if req.include_graph and req.symbol:
+            with trace.stage("graph_neighbors"):
+                with db_session(user_id=user_id) as db:
+                    arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
+                    ctx = arb.get_context_for_symbol(
+                        req.symbol,
+                        question=req.query,
+                        token_budget=req.token_budget,
+                    )
+            if not isinstance(ctx, str):
+                for symbol, provenance in [
+                    (ctx.primary_source, "graph:primary"),
+                    *[(dep, "graph:neighbor") for dep in ctx.graph_context],
+                ]:
+                    results.append(
+                        {
+                            "type": "symbol",
+                            "title": symbol.symbol,
+                            "file_path": symbol.file_path,
+                            "content": symbol.code,
+                            "score": symbol.relevance_score,
+                            "scores": {"relevance": symbol.relevance_score},
+                            "provenance": [provenance],
+                            "metadata": {
+                                "relation": symbol.relation,
+                                "direction": symbol.direction,
+                                "depth": symbol.depth,
+                                "is_dirty": symbol.is_dirty,
+                            },
+                        }
+                    )
+
+        ranked = dedupe_and_rank(results, req.limit)
+        trace.token_counts["query"] = estimate_text_tokens(req.query)
+        return {
+            "trace_id": trace.trace_id,
+            "workspace_id": workspace_id,
+            "results": ranked,
+            "total": len(ranked),
+        }
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        default_metrics.record_trace(trace, status)
+
+
 @app.post("/overlay", response_model=OverlayResponse)
 def update_overlay(
     req: OverlayRequest,
@@ -298,40 +475,79 @@ def ask(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    x_trace_id: str = Header(None),
 ):
     """Ask about a symbol (with multi-user audit logging)."""
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
-    with db_session(user_id=user_id) as db:
-        arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
-        ctx = arb.get_context_for_symbol(
-            req.symbol, question=req.question, token_budget=req.token_budget
-        )
-        if isinstance(ctx, str):
-            audit_log.log_error(user_id, "query", ctx)
-            raise HTTPException(status_code=404, detail=ctx)
+    trace = _start_trace("/ask", x_trace_id, workspace_id)
+    status = "ok"
+    try:
+        with db_session(user_id=user_id) as db:
+            with trace.stage("context"):
+                arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
+                ctx = arb.get_context_for_symbol(
+                    req.symbol, question=req.question, token_budget=req.token_budget
+                )
+            if isinstance(ctx, str):
+                status = "not_found"
+                audit_log.log_error(user_id, "query", ctx)
+                logger.info("trace_id=%s endpoint=/ask status=not_found", trace.trace_id)
+                raise HTTPException(status_code=404, detail=ctx)
 
-        system_prompt = f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"
+            with trace.stage("prompt"):
+                system_prompt = (
+                    "You are a Surgical Code Assistant. Use ONLY the provided context.\n\n"
+                    f"{ctx.to_system_prompt()}"
+                )
+                context_tokens = ctx.token_count()
+                trace.token_counts = {
+                    "context": context_tokens,
+                    "user": estimate_text_tokens(req.question),
+                }
+                trace.model_route = _model_route(context_tokens, ctx.intent)
 
-        # Use AIEngine to route between Claude and Ollama based on context size and intent
-        answer = ai_engine.chat(
-            system_prompt=system_prompt,
-            user_message=req.question,
-            token_count=ctx.token_count(),
-            intent=ctx.intent,
-        )
+            with trace.stage("llm"):
+                answer = ai_engine.chat(
+                    system_prompt=system_prompt,
+                    user_message=req.question,
+                    token_count=context_tokens,
+                    intent=ctx.intent,
+                )
+            trace.model_route = _last_model_route(trace.model_route)
 
-        # Log query action
-        audit_log.log_query(user_id, req.symbol, req.question, ctx.intent, ctx.mode)
+            output_tokens = estimate_text_tokens(answer)
+            trace.token_counts["output_estimate"] = output_tokens
+            trace.estimated_cost_usd, trace.cost_basis = estimate_cost_usd(
+                trace.model_route,
+                input_tokens=context_tokens + trace.token_counts["user"],
+                output_tokens=output_tokens,
+            )
 
-        return {
-            "symbol": req.symbol,
-            "answer": answer,
-            "context": ctx.to_dict(),
-            "user": user_id,
-            "cloud": db.is_cloud(),
-            "workspace_id": workspace_id,
-        }
+            with trace.stage("audit"):
+                audit_log.log_query(user_id, req.symbol, req.question, ctx.intent, ctx.mode)
+
+            _attach_trace_metadata(ctx, trace)
+            logger.info("trace_id=%s endpoint=/ask status=ok", trace.trace_id)
+            return {
+                "symbol": req.symbol,
+                "answer": answer,
+                "context": ctx.to_dict(),
+                "user": user_id,
+                "cloud": db.is_cloud(),
+                "workspace_id": workspace_id,
+                "trace_id": trace.trace_id,
+                "model_route": trace.model_route,
+                "metrics": _request_metrics(trace),
+            }
+    except HTTPException:
+        raise
+    except Exception:
+        status = "error"
+        logger.exception("trace_id=%s endpoint=/ask status=error", trace.trace_id)
+        raise
+    finally:
+        default_metrics.record_trace(trace, status)
 
 
 @app.post("/ask/stream")
@@ -340,35 +556,87 @@ def ask_stream(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    x_trace_id: str = Header(None),
 ):
     """Streaming version of /ask endpoint (SSE)."""
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
+    trace = _start_trace("/ask/stream", x_trace_id, workspace_id)
 
-    def response_generator():
-        with db_session(user_id=user_id) as db:
-            arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
-            ctx = arb.get_context_for_symbol(
-                req.symbol, question=req.question, token_budget=req.token_budget
+    def response_generator() -> Generator[str, None, None]:
+        status = "ok"
+        answer_parts: list[str] = []
+        yield format_sse("trace", {"type": "trace", "trace_id": trace.trace_id})
+        try:
+            with db_session(user_id=user_id) as db:
+                with trace.stage("context"):
+                    arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
+                    ctx = arb.get_context_for_symbol(
+                        req.symbol, question=req.question, token_budget=req.token_budget
+                    )
+                if isinstance(ctx, str):
+                    status = "not_found"
+                    audit_log.log_error(user_id, "query", ctx)
+                    yield format_sse(
+                        "error",
+                        {"type": "error", "error": ctx, "trace_id": trace.trace_id},
+                    )
+                    return
+
+                with trace.stage("prompt"):
+                    system_prompt = (
+                        "You are a Surgical Code Assistant. Use ONLY the provided context.\n\n"
+                        f"{ctx.to_system_prompt()}"
+                    )
+                    context_tokens = ctx.token_count()
+                    trace.token_counts = {
+                        "context": context_tokens,
+                        "user": estimate_text_tokens(req.question),
+                    }
+                    trace.model_route = _model_route(context_tokens, ctx.intent)
+
+                with trace.stage("llm"):
+                    for chunk in ai_engine.stream_chat(
+                        system_prompt=system_prompt,
+                        user_message=req.question,
+                        token_count=context_tokens,
+                        intent=ctx.intent,
+                    ):
+                        answer_parts.append(chunk)
+                        yield format_sse("chunk", {"type": "chunk", "content": chunk})
+                trace.model_route = _last_model_route(trace.model_route)
+
+                output_tokens = estimate_text_tokens("".join(answer_parts))
+                trace.token_counts["output_estimate"] = output_tokens
+                trace.estimated_cost_usd, trace.cost_basis = estimate_cost_usd(
+                    trace.model_route,
+                    input_tokens=context_tokens + trace.token_counts["user"],
+                    output_tokens=output_tokens,
+                )
+
+                with trace.stage("audit"):
+                    audit_log.log_query(user_id, req.symbol, req.question, ctx.intent, ctx.mode)
+
+                _attach_trace_metadata(ctx, trace)
+                yield format_sse(
+                    "context",
+                    {
+                        "type": "context",
+                        "trace_id": trace.trace_id,
+                        "context": ctx.to_dict(),
+                        "metrics": _request_metrics(trace),
+                    },
+                )
+                yield format_sse("done", {"type": "done", "trace_id": trace.trace_id})
+        except Exception as exc:
+            status = "error"
+            logger.exception("trace_id=%s endpoint=/ask/stream status=error", trace.trace_id)
+            yield format_sse(
+                "error",
+                {"type": "error", "error": str(exc), "trace_id": trace.trace_id},
             )
-            if isinstance(ctx, str):
-                yield format_sse("error", {"type": "error", "error": ctx})
-                return
-
-            system_prompt = f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"
-
-            # Stream response chunks
-            for chunk in ai_engine.stream_chat(
-                system_prompt=system_prompt,
-                user_message=req.question,
-                token_count=ctx.token_count(),
-                intent=ctx.intent,
-            ):
-                yield format_sse("chunk", {"type": "chunk", "content": chunk})
-
-            # Send context metadata at end
-            yield format_sse("context", {"type": "context", "context": ctx.to_dict()})
-            yield format_sse("done", {"type": "done"})
+        finally:
+            default_metrics.record_trace(trace, status)
 
     return StreamingResponse(response_generator(), media_type="text/event-stream")
 

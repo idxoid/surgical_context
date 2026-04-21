@@ -82,7 +82,7 @@ class GraphExpander:
         visited = {target_uid}
         chosen = []
         spent = reserved
-        frontier = []
+        frontier: list[tuple[float, str, dict, str, bool, int]] = []
         pruned = 0
 
         neighbors = self._get_neighbors(target_uid, visited, distance=1)
@@ -259,4 +259,4 @@ class GraphExpander:
         if "range" not in node:
             return 0
         start, end = node["range"]
-        return max(1, (end - start + 1) * 8)
+        return max(1, int((int(end) - int(start) + 1) * 8))

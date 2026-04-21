@@ -26,7 +26,7 @@ def get_table_metadata(db, table_name: str) -> dict:
     if df.empty:
         return {"total_rows": 0, "models": {}}
 
-    metadata_counts = {}
+    metadata_counts: dict[str, int] = {}
 
     for _, row in df.iterrows():
         meta_str = row.get("embedding_metadata", "{}")

@@ -58,7 +58,8 @@ class LanceDBClient:
             self._sym_table = self._db.open_table(SYMBOLS_TABLE)
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        return self._model.encode(texts, show_progress_bar=False).tolist()
+        result = self._model.encode(texts, show_progress_bar=False)
+        return list(list(row) for row in result)
 
     def upsert_chunks(self, file_path: str, chunks: list[str]):
         vectors = self._embed(chunks)
@@ -148,7 +149,20 @@ class LanceDBClient:
                 except json.JSONDecodeError:
                     pass
 
-        return [{"file_path": r["file_path"], "chunk": r["chunk"]} for r in results]
+        output = []
+        for r in results:
+            distance = r.get("_distance")
+            score = None if distance is None else max(0.0, 1.0 - float(distance))
+            output.append(
+                {
+                    "id": r.get("id"),
+                    "file_path": r["file_path"],
+                    "chunk": r["chunk"],
+                    "distance": distance,
+                    "score": score,
+                }
+            )
+        return output
 
     def upsert_symbol_embeddings(self, symbols: list[dict]):
         """symbols: list of {uid, name, file_path, code}"""
@@ -221,6 +235,7 @@ class LanceDBClient:
                         "name": r["name"],
                         "file_path": r["file_path"],
                         "distance": distance,
+                        "score": max(0.0, 1.0 - float(distance)),
                     }
                 )
         return out

@@ -12,14 +12,14 @@ logger = logging.getLogger(__name__)
 class AuditLog:
     """Simple audit log for tracking user actions."""
 
-    def __init__(self, log_file: str = None):
+    def __init__(self, log_file: str | None = None):
         """
         Initialize audit log.
 
         Args:
             log_file: Path to audit log file (env: AUDIT_LOG_PATH or default)
         """
-        self.log_file = log_file or os.getenv("AUDIT_LOG_PATH", ".surgical_context/audit.jsonl")
+        self.log_file: str = log_file or os.getenv("AUDIT_LOG_PATH") or ".surgical_context/audit.jsonl"
         Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
 
     def log_action(
@@ -27,7 +27,7 @@ class AuditLog:
         user_id: str,
         action: str,
         resource: str,
-        details: dict = None,
+        details: dict[str, str | int] | None = None,
         status: str = "success",
     ):
         """
@@ -99,7 +99,7 @@ class AuditLog:
         """Log error action."""
         self.log_action(user_id, action, "error", {"error": error_msg}, status="error")
 
-    def get_recent_actions(self, user_id: str = None, limit: int = 100) -> list[dict]:
+    def get_recent_actions(self, user_id: str | None = None, limit: int = 100) -> list[dict[str, str | int]]:
         """Get recent audit log entries."""
         entries = []
         try:

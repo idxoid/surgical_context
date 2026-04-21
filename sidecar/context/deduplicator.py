@@ -26,7 +26,7 @@ class ContextDeduplicator:
         return Subgraph(primary=subgraph.primary, nodes=nodes, budget=updated_budget)
 
     def _deduplicate_nodes(
-        self, nodes: list[SubgraphNode], primary_uid: str = None
+        self, nodes: list[SubgraphNode], primary_uid: str | None = None
     ) -> list[SubgraphNode]:
         """Keep only one copy of each UID; prefer lowest depth, then highest relevance_score.
         Never include primary_uid in result (primary is stored separately)."""
@@ -48,7 +48,7 @@ class ContextDeduplicator:
         """Merge nodes with overlapping line ranges in the same file."""
         from collections import defaultdict
 
-        by_file: dict[str, list[SubgraphNode]] = defaultdict(list)
+        by_file: dict[str | None, list[SubgraphNode]] = defaultdict(list)
         for node in nodes:
             if node.file_path != "<unknown>":
                 by_file[node.file_path].append(node)
@@ -111,7 +111,7 @@ class ContextDeduplicator:
         if not docs:
             return docs
 
-        kept = []
+        kept: list[dict] = []
         for doc in docs:
             is_duplicate = False
             for existing in kept:

@@ -45,6 +45,7 @@ class AIEngine:
         self.ollama_model = os.getenv("OLLAMA_MODEL", "llama3")
 
         # Initialize Anthropic client if using Claude
+        self.anthropic: Anthropic | None = None
         if model_preference in ("claude", "auto"):
             api_key = os.getenv("ANTHROPIC_API_KEY")
             if not api_key and model_preference == "claude":
@@ -53,10 +54,7 @@ class AIEngine:
                 )
             if api_key:
                 self.anthropic = Anthropic(api_key=api_key)
-            else:
-                self.anthropic = None
-        else:
-            self.anthropic = None
+        self.last_route = self.route(0, "exploration")
 
     def chat(
         self,
@@ -79,11 +77,36 @@ class AIEngine:
         """
         # Determine which model to use
         use_claude = self._should_use_claude(token_count, intent)
+        self.last_route = self.route(token_count, intent)
 
         if use_claude and self.anthropic:
             return self._chat_claude(system_prompt, user_message, token_count)
         else:
             return self._chat_ollama(system_prompt, user_message)
+
+    def route(self, token_count: int = 0, intent: str = "exploration") -> dict:
+        """Return the effective model route without making a model request."""
+        wants_claude = self._should_use_claude(token_count, intent)
+        if wants_claude and self.anthropic:
+            return {
+                "provider": "claude",
+                "model": self.claude_model,
+                "preference": self.model_preference,
+                "reason": "router_selected_claude",
+            }
+        if wants_claude and not self.anthropic:
+            return {
+                "provider": "ollama",
+                "model": self.ollama_model,
+                "preference": self.model_preference,
+                "reason": "claude_unavailable_fallback",
+            }
+        return {
+            "provider": "ollama",
+            "model": self.ollama_model,
+            "preference": self.model_preference,
+            "reason": "router_selected_ollama",
+        }
 
     def _should_use_claude(self, token_count: int, intent: str) -> bool:
         """Determine which model to use."""
@@ -99,12 +122,13 @@ class AIEngine:
         try:
             # Detect where graph context starts in system_prompt
             # Graph context is the section between "--- DEPENDENCIES ---" and "--- DOCUMENTATION ---"
-            cache_control = None
+            cache_control: dict[str, str] | None = None
             if "--- DEPENDENCIES ---" in system_prompt:
                 # Enable cache control for the graph context block
                 # This saves costs on repeated large context queries
                 cache_control = {"type": "ephemeral"}
 
+            assert self.anthropic is not None, "anthropic client must be initialized"
             message = self.anthropic.messages.create(
                 model=self.claude_model,
                 max_tokens=2048,
@@ -112,18 +136,25 @@ class AIEngine:
                     {
                         "type": "text",
                         "text": system_prompt,
-                        "cache_control": cache_control,
+                        "cache_control": cache_control,  # type: ignore[typeddict-item]
                     }
                 ],
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            return message.content[0].text
+            text_blocks = [block.text for block in message.content if hasattr(block, "text")]
+            return text_blocks[0] if text_blocks else ""
         except Exception as e:
             # Fallback to Ollama if Claude fails
             import logging
 
             logging.warning(f"Claude request failed: {e}. Falling back to Ollama.")
+            self.last_route = {
+                "provider": "ollama",
+                "model": self.ollama_model,
+                "preference": self.model_preference,
+                "reason": "claude_error_fallback",
+            }
             return self._chat_ollama(system_prompt, user_message)
 
     def _chat_ollama(self, system_prompt: str, user_message: str) -> str:
@@ -136,7 +167,7 @@ class AIEngine:
                     {"role": "user", "content": user_message},
                 ],
             )
-            return response["message"]["content"]
+            return str(response["message"]["content"])
         except Exception as e:
             raise RuntimeError(f"Ollama request failed: {e}") from e
 
@@ -160,6 +191,7 @@ class AIEngine:
             Text chunks from LLM response
         """
         use_claude = self._should_use_claude(token_count, intent)
+        self.last_route = self.route(token_count, intent)
 
         if use_claude and self.anthropic:
             yield from self._stream_claude(system_prompt, user_message, token_count)
@@ -169,10 +201,11 @@ class AIEngine:
     def _stream_claude(self, system_prompt: str, user_message: str, token_count: int):
         """Stream Claude response."""
         try:
-            cache_control = None
+            cache_control: dict[str, str] | None = None
             if "--- DEPENDENCIES ---" in system_prompt:
                 cache_control = {"type": "ephemeral"}
 
+            assert self.anthropic is not None, "anthropic client must be initialized"
             with self.anthropic.messages.stream(
                 model=self.claude_model,
                 max_tokens=2048,
@@ -180,7 +213,7 @@ class AIEngine:
                     {
                         "type": "text",
                         "text": system_prompt,
-                        "cache_control": cache_control,
+                        "cache_control": cache_control,  # type: ignore[typeddict-item]
                     }
                 ],
                 messages=[{"role": "user", "content": user_message}],
@@ -191,6 +224,12 @@ class AIEngine:
             import logging
 
             logging.warning(f"Claude streaming failed: {e}. Falling back to Ollama.")
+            self.last_route = {
+                "provider": "ollama",
+                "model": self.ollama_model,
+                "preference": self.model_preference,
+                "reason": "claude_error_fallback",
+            }
             yield from self._stream_ollama(system_prompt, user_message)
 
     def _stream_ollama(self, system_prompt: str, user_message: str):

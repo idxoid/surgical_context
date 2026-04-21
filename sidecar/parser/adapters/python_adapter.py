@@ -291,8 +291,8 @@ class PythonAdapter(TreeSitterAdapter):
         class_name = class_name_node.text.decode("utf-8")
         for candidate in candidates:
             if f".{class_name}.{method_name}" in candidate.qualified_name:
-                return candidate.uid
-        return candidates[0].uid if len(candidates) == 1 else None
+                return str(candidate.uid)
+        return str(candidates[0].uid) if len(candidates) == 1 else None
 
     def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
         """Return local import alias -> best-effort target qualified name."""

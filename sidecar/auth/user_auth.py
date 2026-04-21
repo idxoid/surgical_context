@@ -15,22 +15,22 @@ logger = logging.getLogger(__name__)
 class UserAuth:
     """Simple user identification and signed token generation."""
 
-    def __init__(self, secret_key: str = None):
+    def __init__(self, secret_key: str | None = None):
         """
         Initialize user auth.
 
         Args:
             secret_key: Secret for JWT signing (env: AUTH_SECRET_KEY or auto-generated)
         """
-        self.secret_key = secret_key or os.getenv("AUTH_SECRET_KEY", self._generate_secret())
-        self.users = {}  # In-memory user store (in production: use a DB)
+        self.secret_key: str = secret_key or os.getenv("AUTH_SECRET_KEY") or self._generate_secret()
+        self.users: dict[str, dict[str, str]] = {}  # In-memory user store (in production: use a DB)
 
     @staticmethod
     def _generate_secret() -> str:
         """Generate a random secret key."""
         return hashlib.sha256(os.urandom(32)).hexdigest()
 
-    def identify_user(self, user_id: str = None, email: str = None) -> str:
+    def identify_user(self, user_id: str | None = None, email: str | None = None) -> str:
         """
         Identify user by ID or email.
 
@@ -110,7 +110,8 @@ class UserAuth:
         payload = self._decode_token(token)
         if not payload:
             return "anonymous"
-        return payload.get("user_id", "anonymous")
+        user_id = payload.get("user_id", "anonymous")
+        return str(user_id) if user_id else "anonymous"
 
     def list_users(self) -> list[dict]:
         """List all known users."""
@@ -129,7 +130,7 @@ class UserAuth:
             hashlib.sha256,
         ).hexdigest()
 
-    def _decode_token(self, token: str) -> dict | None:
+    def _decode_token(self, token: str) -> dict[str, str] | None:
         """Return verified token payload, or None when malformed/tampered."""
         try:
             payload_segment, separator, signature = token.rpartition(".")
@@ -140,6 +141,6 @@ class UserAuth:
                 return None
             padding = "=" * (-len(payload_segment) % 4)
             payload_text = base64.urlsafe_b64decode(f"{payload_segment}{padding}").decode("utf-8")
-            return json.loads(payload_text)
+            return dict(json.loads(payload_text))
         except Exception:
             return None
