@@ -1,13 +1,14 @@
 # Surgical Context — Road Map
 
-> **Status:** ✅ Phase 5 COMPLETE & VALIDATED. Phase 6.1 COMPLETE (Intent Classifier).
-> Next: Phase 6.2 (Orchestrator Integration).
+> **Status:** ✅ Phase 5 COMPLETE & VALIDATED. ✅ Phase 6 PROGRESSING: 6.1–6.2 COMPLETE.
+> Next: Phase 6.3 (Streaming & Model Routing).
 >
-> **Phase 6.1 Results:**
+> **Phase 6.1–6.2 Results:**
 > - Intent Classifier: 6 types (navigation, debugging, refactor, exploration, new_feature, design_question)
 > - Tier Priority Orders: IntentConfig maps each intent to 6-tier priority (code, cross_refs, specs, architecture, concept, idea)
 > - PromptCompiler.compile_with_intent(): tier-aware assembly with graceful degradation
-> - Test Coverage: 17 intent classifier tests + 19 compiler tests (all 97 unit tests passing)
+> - ContextArbitrator Integration: question parameter drives intent detection, mode field in response
+> - Test Coverage: 17 intent classifier + 19 compiler + 11 orchestrator tests = 47 new tests (108 total unit tests passing)
 > - Doc Type Inference: pattern-based (spec_*, idea_*, concept, architecture)
 >
 > **Phase 5 Graph Validation Metrics (full codebase):**
@@ -260,12 +261,13 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 - [x] Doc type inference from filename patterns (spec_*, idea_*, concept, architecture)
 - [x] Unit tests: 17 intent classifier tests + 19 compiler tests (all passing)
 
-### Phase 6.2: Graceful Degradation in Orchestrator (NEXT)
-- [ ] Integrate `IntentClassifier` with `ContextArbitrator`
-- [ ] Call intent detection in `get_context_for_symbol(question)`
-- [ ] Pass intent to `compile_with_intent()` instead of `compile()`
-- [ ] Surface `mode` and `intent` in `/ask` response JSON
-- [ ] Extend Phase 5 validation tests for intent classification accuracy
+### Phase 6.2: Graceful Degradation in Orchestrator ✅ COMPLETE
+- [x] Integrate `IntentClassifier` with `ContextArbitrator`
+- [x] Call intent detection in `get_context_for_symbol(question)` with optional question parameter
+- [x] Pass intent to `compile_with_intent()` instead of `compile()`
+- [x] Surface `mode` and `intent` in `/ask` response JSON (via PromptContext.to_dict())
+- [x] Add integration tests: 11 tests for intent classification + mode field handling
+- [x] Backward compatibility: question parameter optional (defaults to empty string → exploration intent)
 
 ### Phase 6.3: Streaming & Model Routing (PLANNED)
 - [ ] Streaming LLM responses (SSE) instead of blocking
