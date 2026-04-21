@@ -87,7 +87,7 @@ class PromptCompiler:
         }
 
         # Organize docs by tier
-        docs_by_tier = {
+        docs_by_tier: dict[str, list[str]] = {
             "specs": [],
             "architecture": [],
             "concept": [],
@@ -96,7 +96,7 @@ class PromptCompiler:
         for doc in docs:
             tier = infer_doc_type(doc.source_file)
             if tier in docs_by_tier:
-                docs_by_tier[tier].append(doc)
+                docs_by_tier[tier].append(doc)  # type: ignore
 
         # Calculate doc tier tokens
         for tier_name, doc_list in docs_by_tier.items():

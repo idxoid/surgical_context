@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 
 class SessionManager:
@@ -13,7 +14,7 @@ class SessionManager:
         with open(self.config_file, "w") as f:
             json.dump({"github_token": token}, f)
 
-    def get_token(self) -> str:
+    def get_token(self) -> str | Any:
         if not self.config_file.exists():
             return None
         with open(self.config_file) as f:

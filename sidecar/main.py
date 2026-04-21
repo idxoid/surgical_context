@@ -155,7 +155,7 @@ def _resolve_request_user(
     if require_auth:
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
-    return user_auth.identify_user(_header_value(x_user_id))
+    return user_auth.identify_user(_header_value(x_user_id))  # type: ignore
 
 
 def _resolve_workspace(x_workspace: Any = None) -> str:
@@ -433,7 +433,7 @@ def impact(
 
 
 @app.post("/auth/token", response_model=AuthTokenResponse)
-def auth_token(user_id: str = None):
+def auth_token(user_id: str = None):  # type: ignore
     """Generate JWT token for multi-user mode."""
     user_id = user_auth.identify_user(user_id)
     token = user_auth.generate_token(user_id)
@@ -464,7 +464,7 @@ def cloud_status(x_user_id: str = Header(None), authorization: str = Header(None
 
 @app.get("/audit/actions", response_model=AuditActionsResponse)
 def audit_actions(
-    user_id: str = None,
+    user_id: str = None,  # type: ignore
     limit: int = 100,
     x_user_id: str = Header(None),
     authorization: str = Header(None),
