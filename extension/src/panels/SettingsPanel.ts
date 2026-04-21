@@ -27,6 +27,16 @@ export class SettingsPanel {
       undefined,
       this.disposables
     );
+
+    // Trigger initial load
+    this.loadInitialSettings();
+  }
+
+  private loadInitialSettings(): void {
+    // Small delay to ensure webview is ready
+    setTimeout(() => {
+      this.panel.webview.postMessage({ type: 'settings.loaded' } as any);
+    }, 100);
   }
 
   public static createOrReveal(extensionUri: vscode.Uri): void {
