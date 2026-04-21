@@ -74,9 +74,9 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 ### P3 — Scale and Learning
 - [ ] Add retrieval caching only after UID, workspace, and graph-version keys are stable.
 - [ ] Add feedback signals only after prompt-contract observability and privacy/redaction rules exist.
-- [ ] Move AFFECTS rebuild and large-repo indexing work to a background queue with backpressure and batching.
-- [ ] Coalesce IDE event storms (mass refactor, find/replace, stash pop) into bounded batch updates.
-- [ ] Add embedding recomputation controls: content-hash cache, worker throttle, and opt-in low-priority background mode.
+- [x] Move AFFECTS rebuild and large-repo indexing work to a background queue with backpressure and batching.
+- [x] Coalesce IDE event storms (mass refactor, find/replace, stash pop) into bounded batch updates.
+- [x] Add embedding recomputation controls: content-hash cache, worker throttle, and opt-in low-priority background mode.
 
 ---
 
@@ -202,8 +202,8 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] Delete-on-remove: prune Symbol nodes when file changes (`delete_symbols_for_file`)
 - [x] Transactional recovery: write-ahead indexing job log, retry state, and dead-letter queue for partial Neo4j/LanceDB failure
 - [ ] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed (optimization, deferred)
-- [ ] Background debounce queue: batch rapid-fire saves (deferred)
-- [ ] Backpressure for mass IDE events: bounded queue, batch coalescing, and stale job cancellation
+- [x] Background debounce queue: batch rapid-fire saves (`sidecar/indexer/queue.py`, `POST /index/files`)
+- [x] Backpressure for mass IDE events: bounded queue, batch coalescing, and stale job cancellation
 
 ### Graph Completeness ✅ COMPLETE
 - [x] `IMPORTS` edge between Files to enable correct cross-module call resolution
@@ -213,7 +213,7 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 
 ### Embedding Quality (DEFERRED — Phase 5)
 - [ ] Benchmark `all-MiniLM-L6-v2` vs a code-native model (e.g. `bge-code`, `unixcoder`) on the golden set
-- [ ] Embedding cache keyed by content hash to avoid recomputation on re-index
+- [x] Embedding cache keyed by content hash to avoid recomputation on re-index
 
 ---
 
@@ -479,10 +479,10 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 
 ### 10.3 Performance & Reliability (carried forward from Phase 7)
 - [ ] Parallel parsing for `git pull` indexing (ThreadPoolExecutor, 4 workers default)
-- [ ] Durable indexing queue with retries and dead-letter records for partial graph/vector writes
-- [ ] Backpressure and batch coalescing for mass save/refactor events from the IDE
+- [x] Durable indexing queue with retries and dead-letter records for partial graph/vector writes
+- [x] Backpressure and batch coalescing for mass save/refactor events from the IDE
 - [ ] Git branch-switch cache invalidation via workspace graph/vector versions
-- [ ] Embedding recomputation throttle and content-hash cache to reduce local CPU/GPU load
+- [x] Embedding recomputation throttle and content-hash cache to reduce local CPU/GPU load
 - [ ] Graceful degradation on Neo4j outage (local cache + retry)
 - [ ] Rate limiting per user
 - [ ] Circuit breaker for cloud sync failures
@@ -521,9 +521,9 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 | Model Router misclassification | Medium | Misclassification sends complex task to cheap model | Phase 6 — escalation fallback on empty/error; Phase 7 RBAC | 🟡 Pending Phase 6+ |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
 | **Incremental index split-brain** | **Critical** | Neo4j can commit symbol/edge changes while LanceDB embedding writes fail or the process is killed. Graph/vector stores then disagree silently. | Durable job log + retry/dead-letter states implemented; next: idempotent replay worker or rollback strategy | 🟡 Mitigated |
-| **IDE event storm** | **High** | Mass refactor, find/replace across many files, or `git stash pop` can flood the sidecar with parse/embed/index work. | P3: bounded queue, backpressure, batch coalescing, stale job cancellation | ❌ Open |
+| **IDE event storm** | **High** | Mass refactor, find/replace across many files, or `git stash pop` can flood the sidecar with parse/embed/index work. | Bounded sidecar queue + VS Code save batching implemented; next: branch-sync enqueue integration | 🟡 Mitigated |
 | **Git branch cache invalidation** | **High** | Checkout changes many ASTs at once; full reindex is slow, stale graph/vector versions are wrong. | Git state tracker + changed-file detection implemented; next: queue integration and vector cache keys | 🟡 Mitigated |
-| **Local embedding compute cost** | **Medium** | Re-embedding changed symbols on every save can consume CPU/GPU and degrade editor responsiveness. | P3: content-hash embedding cache, throttled worker, low-priority background mode | ❌ Open |
+| **Local embedding compute cost** | **Medium** | Re-embedding changed symbols on every save can consume CPU/GPU and degrade editor responsiveness. | Content-hash embedding cache + configurable encode batch/throttle/low-priority mode implemented | ✅ Resolved |
 | **UID instability** | **Critical** | Old `sha256(file_path:name)` broke on rename/move and collided on overloads + nested funcs. | Stable UID v2 implemented; migration CLI remains cleanup | 🟡 Mitigated |
 | **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Python scoped/imported/dynamic resolver implemented; TS deep resolver remains cleanup | 🟡 Mitigated |
 | **No workspace isolation on Aura** | **Critical** | Multi-user cloud collapses branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped Cypher implemented for graph reads/writes | 🟡 Mitigated |

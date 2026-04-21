@@ -16,6 +16,7 @@ from sidecar.context.types import RESOLVER_VERSION, PromptContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
 from sidecar.indexer.job_log import IndexJobLog
+from sidecar.indexer.queue import EnqueueResult, IndexBatchQueue, IndexWorkItem
 from sidecar.observability import (
     RequestTrace,
     default_metrics,
@@ -31,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 MODEL_PREFERENCE = os.getenv("MODEL_PREFERENCE", "auto")  # "claude" | "ollama" | "auto"
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes", "on"}
+INDEX_QUEUE_MAX_PENDING = int(os.getenv("INDEX_QUEUE_MAX_PENDING", "500"))
+INDEX_QUEUE_DEBOUNCE_MS = int(os.getenv("INDEX_QUEUE_DEBOUNCE_MS", "500"))
+INDEX_QUEUE_BATCH_SIZE = int(os.getenv("INDEX_QUEUE_BATCH_SIZE", "50"))
 
 app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
@@ -43,10 +47,17 @@ workspace_resolver = WorkspaceResolver()
 
 class IndexRequest(BaseModel):
     project_path: str
+    queue: bool = True
 
 
 class IndexFileRequest(BaseModel):
     file_path: str
+    queue: bool = True
+
+
+class IndexFilesRequest(BaseModel):
+    file_paths: list[str]
+    queue: bool = True
 
 
 class IndexDocsRequest(BaseModel):
@@ -82,13 +93,34 @@ class HealthResponse(BaseModel):
 class StatusPathResponse(BaseModel):
     status: str
     path: str
+    queued: int = 0
+    coalesced: int = 0
+    rejected: int = 0
+    queue_depth: int = 0
 
 
 class IndexFileResponse(BaseModel):
     status: str
     file_path: str
-    job_id: int
+    job_id: int = 0
     workspace_id: str
+    queue_depth: int = 0
+    reason: str = ""
+
+
+class IndexFilesResponse(BaseModel):
+    status: str
+    workspace_id: str
+    results: list[dict[str, Any]]
+    queued: int
+    coalesced: int
+    rejected: int
+    queue_depth: int
+
+
+class IndexQueueStatusResponse(BaseModel):
+    status: str
+    queue: dict[str, Any]
 
 
 class OverlayResponse(BaseModel):
@@ -238,6 +270,133 @@ def _request_metrics(trace: RequestTrace) -> dict[str, Any]:
     }
 
 
+def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
+    from sidecar.indexer.anchor import resolve_pending_anchors
+    from sidecar.indexer.code import hash_file, index_file
+    from sidecar.parser.extractor import SymbolExtractor
+
+    job_log = IndexJobLog()
+    file_hash = hash_file(file_path)
+    with job_log.track_file_job(file_path, file_hash=file_hash) as tracked_job_id:
+        with db_session(user_id=user_id) as db:
+            db.delete_symbols_for_file(file_path, workspace_id=workspace_id)
+            index_file(
+                file_path,
+                db,
+                vector_db,
+                SymbolExtractor(),
+                workspace_id=workspace_id,
+            )
+            resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
+    return tracked_job_id
+
+
+def _enqueue_index_file(file_path: str, workspace_id: str, user_id: str) -> EnqueueResult:
+    result = index_queue.enqueue_file(file_path, workspace_id=workspace_id, user_id=user_id)
+    default_metrics.increment(
+        "sidecar_index_queue_events_total",
+        labels={"status": result.status, "workspace": workspace_id},
+    )
+    return result
+
+
+def _enqueue_index_files(
+    file_paths: list[str],
+    workspace_id: str,
+    user_id: str,
+) -> list[EnqueueResult]:
+    return [_enqueue_index_file(path, workspace_id, user_id) for path in file_paths]
+
+
+def _summarize_enqueue_results(results: list[EnqueueResult]) -> dict[str, int]:
+    queued = sum(1 for result in results if result.status == "queued")
+    coalesced = sum(1 for result in results if result.status == "coalesced")
+    rejected = sum(1 for result in results if not result.accepted)
+    queue_depth = max(
+        (result.queue_depth for result in results), default=index_queue.snapshot()["pending"]
+    )
+    return {
+        "queued": queued,
+        "coalesced": coalesced,
+        "rejected": rejected,
+        "queue_depth": queue_depth,
+    }
+
+
+def _process_index_batch(items: list[IndexWorkItem]) -> None:
+    """Process a coalesced file batch and resolve doc anchors once per workspace."""
+    if not items:
+        return
+
+    from collections import defaultdict
+
+    from sidecar.indexer.anchor import resolve_pending_anchors
+    from sidecar.indexer.code import hash_file, index_file
+    from sidecar.parser.extractor import SymbolExtractor
+
+    grouped: dict[tuple[str, str], list[IndexWorkItem]] = defaultdict(list)
+    for item in items:
+        grouped[(item.user_id, item.workspace_id)].append(item)
+
+    job_log = IndexJobLog()
+    extractor = SymbolExtractor()
+    for (user_id, workspace_id), group in grouped.items():
+        existing_paths = [item.file_path for item in group if os.path.isfile(item.file_path)]
+        missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
+        for path in missing_paths:
+            logger.warning("Skipping queued index for missing file: %s", path)
+            default_metrics.increment(
+                "sidecar_index_queue_skipped_total",
+                labels={"reason": "missing_file", "workspace": workspace_id},
+            )
+        if not existing_paths:
+            continue
+
+        current_hashes = {path: hash_file(path) for path in existing_paths}
+        completed = 0
+        with db_session(user_id=user_id) as db:
+            get_file_hashes = getattr(db, "get_file_hashes", None)
+            stored_hashes = (
+                get_file_hashes(existing_paths, workspace_id=workspace_id)
+                if callable(get_file_hashes)
+                else {}
+            )
+            for path in existing_paths:
+                file_hash = current_hashes[path]
+                if stored_hashes.get(path) == file_hash:
+                    default_metrics.increment(
+                        "sidecar_index_queue_skipped_total",
+                        labels={"reason": "unchanged_hash", "workspace": workspace_id},
+                    )
+                    continue
+                try:
+                    with job_log.track_file_job(path, file_hash=file_hash):
+                        db.delete_symbols_for_file(path, workspace_id=workspace_id)
+                        index_file(path, db, vector_db, extractor, workspace_id=workspace_id)
+                        completed += 1
+                except Exception:
+                    logger.exception("Queued indexing failed for %s", path)
+                    default_metrics.increment(
+                        "sidecar_index_queue_failures_total",
+                        labels={"workspace": workspace_id},
+                    )
+            if completed:
+                resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
+                default_metrics.increment(
+                    "sidecar_index_queue_completed_files_total",
+                    value=completed,
+                    labels={"workspace": workspace_id},
+                )
+
+
+index_queue = IndexBatchQueue(
+    _process_index_batch,
+    max_pending=INDEX_QUEUE_MAX_PENDING,
+    debounce_ms=INDEX_QUEUE_DEBOUNCE_MS,
+    batch_size=INDEX_QUEUE_BATCH_SIZE,
+)
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     return {"status": "ok"}
@@ -255,10 +414,23 @@ def index(
     authorization: str = Header(None),
     x_workspace: str = Header(None),
 ):
-    _resolve_request_user(x_user_id, authorization)
+    user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
     if not os.path.isdir(req.project_path):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.project_path}")
+
+    if req.queue:
+        from sidecar.indexer.code import _collect_files
+
+        files = _collect_files(req.project_path)
+        results = _enqueue_index_files(files, workspace_id, user_id)
+        summary = _summarize_enqueue_results(results)
+        status = "queued"
+        if not files:
+            status = "no_files"
+        elif summary["rejected"]:
+            status = "partial_queued"
+        return {"status": status, "path": req.project_path, **summary}
 
     from sidecar.indexer.code import run_indexing
 
@@ -273,31 +445,29 @@ def index_file_endpoint(
     authorization: str = Header(None),
     x_workspace: str = Header(None),
 ):
-    _resolve_request_user(x_user_id, authorization)
+    user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
     if not os.path.isfile(req.file_path):
         raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
 
-    from sidecar.indexer.anchor import resolve_pending_anchors
-    from sidecar.indexer.code import hash_file, index_file
-    from sidecar.parser.extractor import SymbolExtractor
+    if req.queue:
+        result = _enqueue_index_file(req.file_path, workspace_id, user_id)
+        if not result.accepted:
+            raise HTTPException(status_code=429, detail=result.to_dict())
+        return {
+            "status": result.status,
+            "file_path": req.file_path,
+            "job_id": 0,
+            "workspace_id": workspace_id,
+            "queue_depth": result.queue_depth,
+            "reason": result.reason,
+        }
 
-    job_log = IndexJobLog()
     job_id = 0
-    file_hash = hash_file(req.file_path)
     try:
-        with job_log.track_file_job(req.file_path, file_hash=file_hash) as job_id:
-            with db_session() as db:
-                db.delete_symbols_for_file(req.file_path, workspace_id=workspace_id)
-                index_file(
-                    req.file_path,
-                    db,
-                    vector_db,
-                    SymbolExtractor(),
-                    workspace_id=workspace_id,
-                )
-                resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
+        job_id = _index_file_now(req.file_path, workspace_id, user_id)
     except Exception as exc:
+        job_log = IndexJobLog()
         job = job_log.get_job(job_id) if job_id else None
         detail = {
             "error": str(exc),
@@ -311,6 +481,83 @@ def index_file_endpoint(
         "job_id": job_id,
         "workspace_id": workspace_id,
     }
+
+
+@app.post("/index/files", response_model=IndexFilesResponse)
+def index_files_endpoint(
+    req: IndexFilesRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    missing = [
+        EnqueueResult(
+            accepted=False,
+            status="skipped",
+            file_path=file_path,
+            workspace_id=workspace_id,
+            queue_depth=index_queue.snapshot()["pending"],
+            reason="file_not_found",
+        )
+        for file_path in req.file_paths
+        if not os.path.isfile(file_path)
+    ]
+    valid_paths = [file_path for file_path in req.file_paths if os.path.isfile(file_path)]
+
+    if req.queue:
+        results = [*missing, *_enqueue_index_files(valid_paths, workspace_id, user_id)]
+        summary = _summarize_enqueue_results(results)
+        status = "queued" if not summary["rejected"] else "partial_queued"
+        return {
+            "status": status,
+            "workspace_id": workspace_id,
+            "results": [result.to_dict() for result in results],
+            **summary,
+        }
+
+    sync_results = missing
+    for file_path in valid_paths:
+        try:
+            job_id = _index_file_now(file_path, workspace_id, user_id)
+            sync_results.append(
+                EnqueueResult(
+                    accepted=True,
+                    status="indexed",
+                    file_path=file_path,
+                    workspace_id=workspace_id,
+                    queue_depth=index_queue.snapshot()["pending"],
+                    generation=job_id,
+                )
+            )
+        except Exception as exc:
+            sync_results.append(
+                EnqueueResult(
+                    accepted=False,
+                    status="failed",
+                    file_path=file_path,
+                    workspace_id=workspace_id,
+                    queue_depth=index_queue.snapshot()["pending"],
+                    reason=str(exc),
+                )
+            )
+    summary = _summarize_enqueue_results(sync_results)
+    return {
+        "status": "indexed" if not summary["rejected"] else "partial_indexed",
+        "workspace_id": workspace_id,
+        "results": [result.to_dict() for result in sync_results],
+        **summary,
+    }
+
+
+@app.get("/index/queue", response_model=IndexQueueStatusResponse)
+def index_queue_status(
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
+    _resolve_request_user(x_user_id, authorization)
+    return {"status": "ok", "queue": index_queue.snapshot()}
 
 
 @app.post("/index/docs", response_model=StatusPathResponse)

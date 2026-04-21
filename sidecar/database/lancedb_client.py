@@ -1,10 +1,13 @@
 import json
 import os
+import time
+from collections import OrderedDict
 
 import lancedb
 import pyarrow as pa
 from sentence_transformers import SentenceTransformer
 
+from sidecar.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
 from sidecar.database.embedding_registry import (
     EmbeddingMetadata,
     EmbeddingModelMismatch,
@@ -15,6 +18,21 @@ from sidecar.database.embedding_registry import (
 
 DB_PATH = os.getenv("LANCEDB_PATH", "./data/lancedb")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
+EMBED_CACHE_ENABLED = os.getenv("EMBED_CACHE_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
+EMBED_THROTTLE_MS = int(os.getenv("EMBED_THROTTLE_MS", "0"))
+EMBED_LOW_PRIORITY = os.getenv("EMBED_LOW_PRIORITY", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+EMBED_LOW_PRIORITY_THROTTLE_MS = int(os.getenv("EMBED_LOW_PRIORITY_THROTTLE_MS", "25"))
 DOCS_TABLE = "docs"
 SYMBOLS_TABLE = "symbols"
 
@@ -48,6 +66,12 @@ class LanceDBClient:
         self._model_metadata = get_model_metadata(EMBED_MODEL)
         if self._model_metadata is None:
             raise ValueError(f"Unknown embedding model: {EMBED_MODEL}")
+        self._embedding_cache_enabled = EMBED_CACHE_ENABLED
+        self._embedding_cache = EmbeddingCache() if self._embedding_cache_enabled else None
+        self._embed_batch_size = max(1, EMBED_BATCH_SIZE)
+        throttle_ms = max(EMBED_THROTTLE_MS, EMBED_LOW_PRIORITY_THROTTLE_MS if EMBED_LOW_PRIORITY else 0)
+        self._embed_throttle_seconds = throttle_ms / 1000
+        self._embedding_stats = {"cache_hits": 0, "cache_misses": 0, "encoded": 0}
         if DOCS_TABLE not in self._db.table_names():
             self._table = self._db.create_table(DOCS_TABLE, schema=DOCS_SCHEMA)
         else:
@@ -58,8 +82,67 @@ class LanceDBClient:
             self._sym_table = self._db.open_table(SYMBOLS_TABLE)
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        result = self._model.encode(texts, show_progress_bar=False)
-        return list(list(row) for row in result)
+        if not texts:
+            return []
+
+        vectors: list[list[float] | None] = [None] * len(texts)
+        missing_by_hash: OrderedDict[str, str] = OrderedDict()
+        cache_keys: dict[str, EmbeddingCacheKey] = {}
+
+        for index, text in enumerate(texts):
+            content_hash = compute_chunk_hash(text)
+            key = EmbeddingCacheKey(
+                model_name=EMBED_MODEL,
+                model_version=self._model_metadata.version,
+                content_hash=content_hash,
+            )
+            cache_keys[content_hash] = key
+            cached = self._embedding_cache.get(key) if self._embedding_cache else None
+            if cached is not None:
+                vectors[index] = cached
+                self._embedding_stats["cache_hits"] += 1
+            else:
+                missing_by_hash.setdefault(content_hash, text)
+                self._embedding_stats["cache_misses"] += 1
+
+        encoded_by_hash: dict[str, list[float]] = {}
+        missing_items = list(missing_by_hash.items())
+        for start in range(0, len(missing_items), self._embed_batch_size):
+            batch = missing_items[start : start + self._embed_batch_size]
+            encoded = self._model.encode([text for _, text in batch], show_progress_bar=False)
+            for (content_hash, _), row in zip(batch, encoded, strict=False):
+                vector = [float(value) for value in row]
+                encoded_by_hash[content_hash] = vector
+                self._embedding_stats["encoded"] += 1
+                if self._embedding_cache:
+                    self._embedding_cache.set(
+                        cache_keys[content_hash],
+                        vector,
+                        embedding_hash=compute_embedding_hash(vector),
+                    )
+            if self._embed_throttle_seconds and start + self._embed_batch_size < len(missing_items):
+                time.sleep(self._embed_throttle_seconds)
+
+        for index, text in enumerate(texts):
+            if vectors[index] is None:
+                vectors[index] = encoded_by_hash[compute_chunk_hash(text)]
+
+        output = []
+        for maybe_vector in vectors:
+            if maybe_vector is None:
+                raise RuntimeError("Embedding vector was not populated")
+            output.append(maybe_vector)
+        return output
+
+    def embedding_cache_stats(self) -> dict:
+        cache_stats = self._embedding_cache.stats() if self._embedding_cache else {"enabled": False}
+        return {
+            "enabled": self._embedding_cache_enabled,
+            "batch_size": self._embed_batch_size,
+            "throttle_ms": int(self._embed_throttle_seconds * 1000),
+            "runtime": dict(self._embedding_stats),
+            "cache": cache_stats,
+        }
 
     def upsert_chunks(self, file_path: str, chunks: list[str]):
         vectors = self._embed(chunks)

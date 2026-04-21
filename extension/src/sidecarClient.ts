@@ -78,6 +78,31 @@ export interface SearchResponse {
   results: Array<{ symbol: string; score: number; snippet: string }>;
 }
 
+export interface IndexFileResponse {
+  status: string;
+  file_path: string;
+  job_id?: number;
+  workspace_id: string;
+  queue_depth?: number;
+  reason?: string;
+}
+
+export interface IndexFilesResponse {
+  status: string;
+  workspace_id: string;
+  results: Array<{
+    accepted: boolean;
+    status: string;
+    file_path: string;
+    queue_depth: number;
+    reason?: string;
+  }>;
+  queued: number;
+  coalesced: number;
+  rejected: number;
+  queue_depth: number;
+}
+
 export const SidecarClient = {
 
   async health(): Promise<boolean> {
@@ -105,8 +130,16 @@ export const SidecarClient = {
     return post('/ask', { symbol, question });
   },
 
+  indexFile(file_path: string): Promise<IndexFileResponse> {
+    return post('/index/file', { file_path, queue: true });
+  },
+
+  indexFiles(file_paths: string[]): Promise<IndexFilesResponse> {
+    return post('/index/files', { file_paths, queue: true });
+  },
+
   index(project_path: string): Promise<{ status: string }> {
-    return post('/index', { project_path });
+    return post('/index', { project_path, queue: true });
   },
 
   indexDocs(docs_path: string): Promise<{ status: string }> {

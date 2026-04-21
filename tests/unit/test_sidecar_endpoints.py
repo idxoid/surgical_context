@@ -156,6 +156,39 @@ def import_main_with_fakes(monkeypatch):
     main = importlib.import_module("sidecar.main")
     monkeypatch.setattr(main, "ContextArbitrator", FakeContextArbitrator)
     monkeypatch.setattr(main, "db_session", fake_db_session)
+
+    class FakeIndexQueue:
+        def __init__(self):
+            self.pending: dict[tuple[str, str], int] = {}
+
+        def enqueue_file(self, file_path, workspace_id, user_id="anonymous"):
+            key = (workspace_id, file_path)
+            if key in self.pending:
+                self.pending[key] += 1
+                status = "coalesced"
+            else:
+                self.pending[key] = 1
+                status = "queued"
+            return main.EnqueueResult(
+                accepted=True,
+                status=status,
+                file_path=file_path,
+                workspace_id=workspace_id,
+                queue_depth=len(self.pending),
+                generation=self.pending[key],
+            )
+
+        def snapshot(self):
+            return {
+                "pending": len(self.pending),
+                "processing": 0,
+                "max_pending": 500,
+                "batch_size": 50,
+                "debounce_ms": 500,
+                "last_error": "",
+            }
+
+    monkeypatch.setattr(main, "index_queue", FakeIndexQueue())
     return main
 
 
@@ -280,11 +313,51 @@ def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "sidecar.parser.extractor", fake_extractor)
     monkeypatch.setattr(main, "IndexJobLog", lambda: IndexJobLog(f"{tmp_path}/jobs.sqlite3"))
 
-    body = main.index_file_endpoint(main.IndexFileRequest(file_path=str(source_file)))
+    body = main.index_file_endpoint(main.IndexFileRequest(file_path=str(source_file), queue=False))
 
     assert body["status"] == "indexed"
     assert body["file_path"] == str(source_file)
     assert body["job_id"] > 0
+
+
+def test_index_file_endpoint_queues_by_default(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+
+    source_file = tmp_path / "app.py"
+    source_file.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
+
+    body = main.index_file_endpoint(main.IndexFileRequest(file_path=str(source_file)))
+
+    assert body["status"] == "queued"
+    assert body["file_path"] == str(source_file)
+    assert body["job_id"] == 0
+    assert body["queue_depth"] == 1
+
+
+def test_index_files_endpoint_coalesces_duplicate_paths(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+
+    source_file = tmp_path / "app.py"
+    source_file.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
+
+    body = main.index_files_endpoint(
+        main.IndexFilesRequest(file_paths=[str(source_file), str(source_file)])
+    )
+
+    assert body["status"] == "queued"
+    assert body["queued"] == 1
+    assert body["coalesced"] == 1
+    assert body["rejected"] == 0
+    assert body["queue_depth"] == 1
+
+
+def test_index_queue_status_endpoint(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    body = main.index_queue_status()
+
+    assert body["status"] == "ok"
+    assert body["queue"]["pending"] == 0
 
 
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):
