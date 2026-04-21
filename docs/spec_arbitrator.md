@@ -2,27 +2,32 @@
 
 ## Overview
 
-`sidecar/arbitrator.py` — assembles the LLM prompt for a given symbol name. Handles dirty-state (unsaved file) via In-Memory Overlay. Does not call the LLM directly.
+`sidecar/context/arbitrator.py` assembles the JSON Prompt Contract for a target symbol. It is an orchestrator only: it does graph expansion, code/doc resolution, deduplication, and prompt compilation, but it does not call the LLM.
 
 ---
 
 ## Class: ContextArbitrator
 
 ```python
-ContextArbitrator(neo4j_client: Neo4jClient, overlay: InMemoryOverlay | None = None)
+ContextArbitrator(neo4j_client, overlay: InMemoryOverlay | None = None, vector_db=None)
 ```
 
-### get_context_for_symbol(symbol_name: str) → PromptContext | str
+### get_context_for_symbol(symbol_name, question="", token_budget=4000) -> PromptContext | str
 
-Returns a `PromptContext` dataclass, or `"Error: Symbol '...' not found in graph."` string if the symbol does not exist. Callers check `isinstance(result, str)` to detect errors.
+Returns a `PromptContext`, or an error string like `Error: Symbol '...' not found in graph.` Callers translate that string into endpoint-level errors.
 
-**Steps:**
+**Pipeline:**
 
-1. **Graph query** — Cypher `MATCH (s:Symbol {name: $name}) OPTIONAL MATCH (s)-[:CALLS]->(dep:Symbol)` — fetches target node and all direct `[:CALLS]` dependencies in one round-trip.
+1. **Intent classification** — `IntentClassifier.classify_intent(question)` selects the retrieval priority profile.
+2. **Graph expansion** — `GraphExpander.expand(symbol_name, token_budget)` performs priority-queue BFS over typed symbol edges and returns a `Subgraph` with budget metadata.
+3. **Deduplication** — `ContextDeduplicator.deduplicate(subgraph)` removes redundant graph nodes before code is read.
+4. **Code resolution** — `CodeResolver(overlay).resolve(file_path, start, end)` reads dirty overlay content first, then falls back to disk.
+5. **Doc resolution** — if `vector_db` is present, `DocResolver(vector_db).search(f"{symbol_name} {question}", limit=3)` returns LanceDB doc chunks before compilation.
+6. **Prompt compilation** — `PromptCompiler.compile_with_intent(...)` builds `PromptContext` with intent-aware doc tier selection.
 
-2. **Code assembly** — for target + each dependency, calls `_build_symbol_context(node, relation)`.
+---
 
-3. **Returns** `PromptContext(primary_source=SymbolContext, graph_context=[SymbolContext, ...])`. The `documentation` list is empty — callers populate it from LanceDB after this call.
+## Data Objects
 
 ### PromptContext
 
@@ -32,10 +37,17 @@ class PromptContext:
     primary_source: SymbolContext
     graph_context: list[SymbolContext]
     documentation: list[DocChunk]
+    budget: dict
+    mode: str
+    intent: str
+    tier_tokens: dict
 
-    def to_system_prompt(self) -> str   # flat text for LLM system message
-    def to_dict(self) -> dict           # JSON Prompt Contract shape
+    def to_system_prompt(self) -> str
+    def to_dict(self) -> dict
+    def token_count(self) -> int
 ```
+
+`to_dict()` is the API-facing JSON Prompt Contract. It includes `mode`, `intent`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, selected code/doc chunks, and graph budget fields.
 
 ### SymbolContext
 
@@ -44,7 +56,10 @@ class PromptContext:
 class SymbolContext:
     symbol: str
     file_path: str
-    relation: str      # "target" | "CALLS"
+    relation: str
+    direction: str
+    depth: int
+    relevance_score: float
     is_dirty: bool
     code: str
 ```
@@ -59,37 +74,31 @@ class DocChunk:
     content: str
 ```
 
-### _build_symbol_context(symbol_node, relation) → SymbolContext
-
-Resolves file path via Cypher `MATCH (f:File)-[:CONTAINS]->(s:Symbol {uid}) RETURN f.path`.  
-Reads `symbol_node['range']` = `[start_line, end_line]`.
-
-**Overlay check:** if `overlay` is set and `overlay.has(file_path)` is true, reads from `InMemoryOverlay.read_lines()` instead of disk. Sets `is_dirty=True` accordingly.
-
 ---
 
 ## Overlay Priority Rule
 
 | State | Source |
 |---|---|
-| File is dirty (in overlay) | `InMemoryOverlay` |
-| File is clean | Local FS via `open()` |
+| File is dirty | `InMemoryOverlay` |
+| File is clean | Local filesystem |
 
-The graph always provides the line coordinates (`range`). Only the code text source switches.
+The graph supplies symbol file paths and line ranges. Only the source of text changes when a dirty overlay exists.
 
 ---
 
-## Limitations (current)
+## Current Limitations
 
-- BFS depth is fixed at 1 — only direct `[:CALLS]` edges are followed.
-- Symbol lookup is by `name` — if two symbols share a name across different files, both are returned and both code blocks are included.
-- No deduplication of dependencies.
+- The initial symbol lookup still starts from `Symbol.name` and `LIMIT 1`; duplicate names remain a correctness risk until stable UID v2 and scoped call resolution land.
+- Workspace and Git branch identity are not yet part of the prompt contract.
+- Doc chunks do not yet expose retrieval scores, provenance details, or pruning reasons in `to_dict()`.
+- Backpressure and batching for mass file-change events live outside the arbitrator and remain roadmap work.
 
 ---
 
 ## Planned Extensions
 
-- Configurable BFS depth parameter
-- Deduplicate by `uid`
-- Include `[:COVERS]` DocAnchor chunks in assembled context (currently appended separately in `/ask`)
-- ~~Return structured JSON prompt object~~ ✅ Done — `PromptContext.to_dict()` implements the contract
+- Stable symbol identity and scoped target lookup.
+- Workspace/branch-aware graph expansion.
+- Prompt-contract observability: scores, provenance, pruning reasons, resolver version, model route, and trace ID.
+- Unified ranking across graph nodes and semantic doc chunks.

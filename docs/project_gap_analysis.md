@@ -12,7 +12,7 @@ The active gap list now lives in [road_map.md](road_map.md), under **Current Sta
 
 | Priority | Canonical home | Focus |
 |---|---|---|
-| P0 | [road_map.md](road_map.md) | Docs truth, sidecar DB lifecycle, doc arbitration, API contracts, transactional indexing recovery |
+| P0 | [road_map.md](road_map.md) | Auth boundaries, API coverage, sidecar safety checks, and keeping docs synced to code |
 | P1 | [road_map.md](road_map.md) | Stable UID, scoped call resolution, workspace/branch isolation, Git branch invalidation |
 | P2 | [road_map.md](road_map.md) | Metrics, prompt-contract observability, extension context inspector, unified search |
 | P3 | [road_map.md](road_map.md) | Retrieval cache, feedback loop, backpressure, embedding throttling, background indexing/rebuild queue |

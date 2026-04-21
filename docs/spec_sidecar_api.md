@@ -19,6 +19,7 @@ All via environment variables with defaults:
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | `password` | Neo4j password |
 | `OLLAMA_MODEL` | `llama3` | Ollama model for `/ask` |
+| `MODEL_PREFERENCE` | `auto` | AI routing preference: `auto`, `claude`, or `ollama` |
 
 ---
 
@@ -69,6 +70,29 @@ Index a documentation directory into LanceDB + DocAnchor graph.
 
 ---
 
+### POST /index/file
+Incrementally index one saved source file.
+
+**Request:**
+```json
+{ "file_path": "/absolute/path/to/project/app.py" }
+```
+
+**Response:**
+```json
+{
+  "status": "indexed",
+  "file_path": "/absolute/path/to/project/app.py",
+  "job_id": 42
+}
+```
+
+**Errors:** `400` if the file does not exist; `500` with `job_id` and `job_status` if the graph/vector update fails.
+
+**Behavior:** Hashes the file, creates a durable indexing job record, deletes previous symbols for the file, re-indexes symbols/calls/embeddings, resolves pending DocAnchors, then marks the job `succeeded`. Failures are captured for retry/dead-letter handling.
+
+---
+
 ### POST /ask
 Assemble surgical context for a symbol and query the LLM.
 
@@ -89,16 +113,34 @@ Assemble surgical context for a symbol and query the LLM.
     "primary_source": { "symbol": "...", "file_path": "...", "is_dirty": false, "code": "..." },
     "graph_context": [{ "symbol": "...", "file_path": "...", "relation": "CALLS", "is_dirty": false, "code": "..." }],
     "documentation": [{ "chunk_id": "...", "source_file": "...", "content": "..." }]
-  }
+  },
+  "user": "alice",
+  "cloud": true
 }
 ```
 
 **Errors:** `404` if symbol not found in graph.
 
 **Behavior:**
-1. `ContextArbitrator.get_context_for_symbol(symbol)` — BFS graph traversal, overlay-aware code assembly
-2. `LanceDBClient.search(symbol + question, limit=3)` — top-3 doc chunks appended to context
-3. `ollama.chat()` — stateless single turn, system prompt contains full context
+1. Identify the user from `X-User-Id` and open a request-scoped Neo4j session via `db_session(user_id=...)`.
+2. `ContextArbitrator.get_context_for_symbol(symbol, question, token_budget)` runs intent classification, graph expansion, deduplication, code resolution, and doc retrieval.
+3. `AIEngine.chat()` routes to the configured local/cloud model based on model preference, context size, and intent.
+4. Audit logging records successful and failed query actions.
+
+---
+
+### POST /ask/stream
+Streaming version of `/ask` using server-sent events.
+
+**Request:** same as `/ask`.
+
+**Event types:**
+- `chunk` — one generated model chunk.
+- `context` — final JSON Prompt Contract.
+- `error` — JSON error payload.
+- `done` — terminal event.
+
+**Behavior:** Uses the same arbitration and model-routing path as `/ask`, but frames every SSE payload through JSON-safe `format_sse()`.
 
 ---
 
@@ -150,15 +192,87 @@ Clear overlay for a file (called on save or editor close).
 
 ---
 
+### GET /impact
+Return downstream symbols and files affected by changing a symbol.
+
+**Query param:** `symbol=process_payment`
+
+**Response:**
+```json
+{
+  "symbol": "process_payment",
+  "symbol_uid": "...",
+  "file_path": "/repo/payments.py",
+  "affected_symbols": [],
+  "affected_files": [],
+  "affected_count": 0,
+  "affected_file_count": 0,
+  "max_depth": 4
+}
+```
+
+---
+
+### POST /auth/token
+Generate a JWT token for a user id.
+
+**Query param:** `user_id=alice`
+
+**Response:**
+```json
+{ "token": "...", "user_id": "alice", "expires_in_hours": 24 }
+```
+
+---
+
+### GET /auth/users
+List active users tracked by the auth helper.
+
+**Response:**
+```json
+{ "users": [] }
+```
+
+---
+
+### GET /status/cloud
+Report Aura/fallback health from a request-scoped DB session.
+
+**Response:**
+```json
+{
+  "cloud_enabled": true,
+  "using_aura": true,
+  "using_fallback": false,
+  "health": {}
+}
+```
+
+---
+
+### GET /audit/actions
+Return recent audit log entries.
+
+**Query params:** `user_id` optional, `limit` default `100`.
+
+**Response:**
+```json
+{ "actions": [], "total": 0 }
+```
+
+---
+
 ## Singletons
 
-`overlay` (`InMemoryOverlay`) and `vector_db` (`LanceDBClient`) are process-level singletons.  
-`Neo4jClient` is created per request in `/ask` and closed in a `finally` block.
+`overlay` (`InMemoryOverlay`), `vector_db` (`LanceDBClient`), `ai_engine` (`AIEngine`), `user_auth`, and `audit_log` are process-level singletons.
+
+Neo4j access goes through `db_session(...)`, which creates a request-scoped client and closes it after the endpoint finishes. This avoids mutating shared request identity on the global database object.
 
 ---
 
 ## Planned Extensions
 
-- Stream LLM responses (SSE or chunked transfer) instead of blocking until full answer
-- Anthropic API model routing (`sidecar/ai_engine.py` — implementation stubbed, deferred Phase 5)
-- `/ask` depth parameter for BFS traversal (currently depth 1)
+- Enforce bearer-token auth boundaries on protected endpoints.
+- Add `GET /metrics` with request timing, token/cost tracking, and queue state.
+- Add prompt-contract observability: scores, provenance, pruning reasons, model route, resolver version, and trace ID.
+- Add backpressure and batching around `/index/file` for mass editor events.

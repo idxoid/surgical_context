@@ -50,7 +50,7 @@
 This section merges the project gap analysis into the canonical roadmap. The next work is less about adding novelty and more about making retrieval trustworthy, explainable, and safe under real team usage.
 
 ### P0 — Truth, Safety, and API Hardening
-- [ ] Maintain `docs/README.md` as the current-truth entry point; archive or label historical analysis when status changes.
+- [x] Refresh `docs/README.md` as the current-truth entry point; archive or label historical analysis when status changes.
 - [x] Fix sidecar DB lifecycle: remove mutable request identity from the global client; use request-scoped user context.
 - [x] Move doc resolution inside the arbitration pipeline before `PromptCompiler.compile_with_intent()`.
 - [x] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.

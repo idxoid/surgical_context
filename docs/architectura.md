@@ -1,6 +1,6 @@
 # Surgical Context — Architecture
 
-> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, and a VS Code extension scaffold are present. The main open gaps are stable symbol identity, scoped call resolution, workspace/branch isolation, request-scoped DB handling, stronger auth, and prompt-contract observability. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, request-scoped DB sessions, durable index job logging, and a VS Code extension scaffold are present. The main open gaps are stable symbol identity, scoped call resolution, workspace/branch isolation, stronger auth boundaries, prompt-contract observability, and backpressure for mass indexing events. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 
 ## Section 1: Executive Summary & Goals
 
@@ -104,6 +104,7 @@ Without runtime metrics and prompt-contract observability, production claims in 
 - **Neo4j:** `MERGE` on uid — only changed nodes/edges are written.
 - **Current caveat:** changed files are handled by deleting their existing symbols and re-upserting extracted symbols; stable symbol identity is a post-MVP hardening item.
 - **LanceDB:** delete-then-insert per file on re-index.
+- **Recovery:** `/index/file` writes an indexing job record before mutating stores, then marks success, failed, or dead-letter state so partial graph/vector failures are visible and retryable.
 
 ### 3.4. Dirty State Handling ✅ Implemented
 `InMemoryOverlay` holds `{file_path: raw_content}`:
@@ -230,12 +231,13 @@ Current `/index` collects files, compares hashes against stored `File.hash`, and
 1. Client saves a file → `POST /index/file { path }`.
 2. Sidecar hashes the file; compares to stored `File.hash`. Unchanged → no-op.
 3. Re-parse file; compute hash for each extracted symbol.
-4. Current implementation deletes symbols for changed files, then re-upserts extracted symbols.
-5. Remove Symbol nodes whose names no longer appear in the file.
+4. Create a durable indexing job record for retry/dead-letter tracking.
+5. Current implementation deletes symbols for changed files, then re-upserts extracted symbols.
 6. Re-link calls/imports/inheritance for the changed file.
 7. Re-embed modified symbols into LanceDB `symbols` table.
-8. Rebuild AFFECTS for modified symbols synchronously.
-9. Debounce from editor save events remains a client-side/product hardening item.
+8. Resolve pending DocAnchors after the code update.
+9. Mark the indexing job `succeeded`, `failed`, or `dead_letter`.
+10. Debounce, stale-job cancellation, and backpressure for mass editor events remain product hardening items.
 
 ---
 
