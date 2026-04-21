@@ -121,7 +121,7 @@ def ask(req: AskRequest):
     db = get_db()
     try:
         arb = ContextArbitrator(db, overlay)
-        ctx = arb.get_context_for_symbol(req.symbol, token_budget=req.token_budget)
+        ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
         if isinstance(ctx, str):
             raise HTTPException(status_code=404, detail=ctx)
 
