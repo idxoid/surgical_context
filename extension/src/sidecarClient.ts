@@ -176,6 +176,32 @@ export interface IndexFilesResponse {
   queue_depth: number;
 }
 
+export interface MetricsResponse {
+  requests_total: number;
+  requests_successful: number;
+  requests_failed: number;
+  latency_p50_ms: number;
+  latency_p95_ms: number;
+  latency_p99_ms: number;
+  tokens_used_total: number;
+  cost_usd_total: number;
+  cache_hit_rate: number;
+}
+
+export interface IndexQueueResponse {
+  queue_depth: number;
+  pending_jobs: number;
+  processing: number;
+  completed_total: number;
+}
+
+export interface FeedbackEvent {
+  message_id: string;
+  rating: 'up' | 'down';
+  comment?: string;
+  context?: Record<string, unknown>;
+}
+
 export const SidecarClient = {
 
   async health(): Promise<boolean> {
@@ -284,5 +310,27 @@ export const SidecarClient = {
 
   search(query: string, limit = 10): Promise<SearchResponse> {
     return post('/search', { query, limit });
+  },
+
+  metrics(): Promise<MetricsResponse> {
+    return get('/metrics');
+  },
+
+  indexQueueStatus(): Promise<IndexQueueResponse> {
+    return get('/index/queue');
+  },
+
+  async submitFeedback(event: FeedbackEvent): Promise<void> {
+    try {
+      await post('/feedback', {
+        message_id: event.message_id,
+        rating: event.rating,
+        comment: event.comment || '',
+        context: event.context || {},
+      });
+    } catch (error) {
+      console.error('Failed to submit feedback:', error);
+      // Don't throw, feedback is non-critical
+    }
   },
 };

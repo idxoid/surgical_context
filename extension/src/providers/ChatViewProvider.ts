@@ -127,8 +127,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'feedback.submit':
-        // TODO: implement feedback logging
-        console.log(`Feedback: ${message.rating} on ${message.messageId}`);
+        SidecarClient.submitFeedback({
+          message_id: message.messageId,
+          rating: message.rating,
+        });
         break;
 
       case 'composer.changed':

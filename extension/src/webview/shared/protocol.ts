@@ -41,7 +41,7 @@ export type HostToWebviewMessage =
   | { type: 'impact.loaded'; symbol: string; impact: ImpactResponse }
   | { type: 'impact.loadFailed'; error: string }
   | { type: 'dashboard.loading' }
-  | { type: 'dashboard.metricsLoaded'; health: 'up' | 'down'; cloudStatus: 'connected' | 'fallback-local' | 'offline'; auditActions: AuditAction[] }
+  | { type: 'dashboard.metricsLoaded'; health: 'up' | 'down'; cloudStatus: 'connected' | 'fallback-local' | 'offline'; auditActions: AuditAction[]; metrics?: unknown }
   | { type: 'dashboard.metricsFailed'; error: string }
   | { type: 'settings.loaded'; settings: SettingsData }
   | { type: 'settings.saved'; message: string }

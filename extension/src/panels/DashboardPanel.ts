@@ -59,10 +59,11 @@ export class DashboardPanel {
     try {
       this.postMessage({ type: 'dashboard.loading' });
 
-      const [health, cloudStatus, auditActionsResponse] = await Promise.all([
+      const [health, cloudStatus, auditActionsResponse, metricsData] = await Promise.all([
         SidecarClient.health().then(ok => ({ ok })),
         SidecarClient.cloudStatus(),
         SidecarClient.auditActions(undefined, 10),
+        SidecarClient.metrics().catch(() => null),
       ]);
 
       const auditActions = auditActionsResponse.actions.map(action => ({
@@ -77,6 +78,7 @@ export class DashboardPanel {
         health: health.ok ? 'up' : 'down',
         cloudStatus: cloudStatus.using_fallback ? 'fallback-local' : cloudStatus.using_aura ? 'connected' : 'offline',
         auditActions,
+        metrics: metricsData,
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
