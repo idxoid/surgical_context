@@ -1,29 +1,43 @@
 import os
+import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from sidecar.ai.engine import AIEngine
+from sidecar.auth import UserAuth, AuditLog
 from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.overlay import InMemoryOverlay
+from sidecar.database.aura_client import AuraClient
 from sidecar.database.lancedb_client import LanceDBClient
-from sidecar.database.neo4j_client import Neo4jClient
 
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 MODEL_PREFERENCE = os.getenv("MODEL_PREFERENCE", "auto")  # "claude" | "ollama" | "auto"
 
 app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
 vector_db = LanceDBClient()
 ai_engine = AIEngine(model_preference=MODEL_PREFERENCE)
+user_auth = UserAuth()
+audit_log = AuditLog()
+
+# Global Aura connection (cloud-first with local fallback)
+_aura_client = None
 
 
-def get_db() -> Neo4jClient:
-    return Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+def get_db(user_id: str = "anonymous") -> AuraClient:
+    """Get or create Aura client (cloud-first with local fallback)."""
+    global _aura_client
+    if _aura_client is None:
+        _aura_client = AuraClient(user_id=user_id)
+    else:
+        # Update user context
+        _aura_client.user_id = user_id
+    return _aura_client
 
 
 class IndexRequest(BaseModel):
@@ -119,12 +133,15 @@ def clear_overlay(file_path: str):
 
 
 @app.post("/ask")
-def ask(req: AskRequest):
-    db = get_db()
+def ask(req: AskRequest, x_user_id: str = Header(None)):
+    """Ask about a symbol (with multi-user audit logging)."""
+    user_id = user_auth.identify_user(x_user_id)
+    db = get_db(user_id=user_id)
     try:
         arb = ContextArbitrator(db, overlay)
         ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
         if isinstance(ctx, str):
+            audit_log.log_error(user_id, "query", ctx)
             raise HTTPException(status_code=404, detail=ctx)
 
         doc_resolver = DocResolver(vector_db)
@@ -140,10 +157,15 @@ def ask(req: AskRequest):
             intent=ctx.intent,
         )
 
+        # Log query action
+        audit_log.log_query(user_id, req.symbol, req.question, ctx.intent, ctx.mode)
+
         return {
             "symbol": req.symbol,
             "answer": answer,
             "context": ctx.to_dict(),
+            "user": user_id,
+            "cloud": db.is_cloud(),
         }
     finally:
         db.close()
@@ -235,6 +257,41 @@ def impact(symbol: str):
         }
     finally:
         db.close()
+
+
+@app.post("/auth/token")
+def auth_token(user_id: str = None):
+    """Generate JWT token for multi-user mode."""
+    user_id = user_auth.identify_user(user_id)
+    token = user_auth.generate_token(user_id)
+    logger.info(f"✅ Token issued for user: {user_id}")
+    return {"token": token, "user_id": user_id, "expires_in_hours": 24}
+
+
+@app.get("/auth/users")
+def list_users():
+    """List all active users."""
+    return {"users": user_auth.list_users()}
+
+
+@app.get("/status/cloud")
+def cloud_status():
+    """Get cloud (Aura) connection status."""
+    db = get_db()
+    health = db.health_check()
+    return {
+        "cloud_enabled": True,
+        "using_aura": db.is_cloud(),
+        "using_fallback": db.is_fallback(),
+        "health": health,
+    }
+
+
+@app.get("/audit/actions")
+def audit_actions(user_id: str = None, limit: int = 100):
+    """Get recent audit log entries."""
+    actions = audit_log.get_recent_actions(user_id=user_id, limit=limit)
+    return {"actions": actions, "total": len(actions)}
 
 
 if __name__ == "__main__":
