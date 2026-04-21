@@ -3,6 +3,7 @@ import { SidecarClient } from './sidecarClient';
 import { ChatPanel } from './chatPanel';
 import { OverlayManager } from './overlayManager';
 import { ChatViewProvider } from './providers/ChatViewProvider';
+import { InspectorPanel } from './panels/InspectorPanel';
 import { stateManager } from './state/ExtensionState';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -54,8 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('surgicalContext.openInspector', async () => {
-      vscode.window.showInformationMessage('Context Inspector coming in Phase 3');
-      // TODO: Implement InspectorPanel
+      InspectorPanel.createOrReveal(context.extensionUri);
     }),
 
     vscode.commands.registerCommand('surgicalContext.showImpact', async (symbol?: string) => {

@@ -1,4 +1,4 @@
-import { ChatMessage, PromptContextDto } from './protocol';
+import { ChatMessage } from './protocol';
 
 export function escapeHtml(text: string): string {
   const map: Record<string, string> = {

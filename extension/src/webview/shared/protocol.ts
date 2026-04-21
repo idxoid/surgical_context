@@ -23,13 +23,14 @@ export type HostToWebviewMessage =
   | { type: 'surface.init'; state: ChatSurfaceState }
   | { type: 'chat.requestStarted'; requestId: string; symbol?: string }
   | { type: 'chat.streamChunk'; requestId: string; chunk: string }
-  | { type: 'chat.requestCompleted'; requestId: string; answer: string; context: PromptContextDto }
+  | { type: 'chat.requestCompleted'; requestId: string; answer: string; context: PromptContextPayload }
   | { type: 'chat.requestFailed'; requestId: string; error: string }
   | { type: 'chat.requestStopped'; requestId: string }
   | { type: 'chat.contextSummary'; summary: ContextSummaryDto }
   | { type: 'workspace.updated'; activeFile: string | null; symbol: string | null; isDirty: boolean }
   | { type: 'backend.updated'; sidecarHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'offline' }
-  | { type: 'toast.show'; level: 'info' | 'warning' | 'error'; message: string };
+  | { type: 'toast.show'; level: 'info' | 'warning' | 'error'; message: string }
+  | { type: 'inspector.loaded'; context: PromptContextPayload | null };
 
 // ============ Data Transfer Objects ============
 
@@ -47,46 +48,6 @@ export interface ChatSurfaceState {
   };
 }
 
-export interface PromptContextDto {
-  mode: string;
-  intent: string;
-  metadata: {
-    query_intent?: string;
-    tiers_used?: string[];
-    tier_tokens?: Record<string, number>;
-    tokens_primary?: number;
-    tokens_graph?: number;
-    tokens_docs?: number;
-    assembly?: {
-      trace_id?: string;
-      workspace_id?: string;
-      stage_timings_ms?: Record<string, number>;
-      token_counts?: Record<string, number>;
-      estimated_cost_usd?: number;
-    };
-  };
-  primary_source: {
-    symbol: string;
-    file_path: string;
-    is_dirty?: boolean;
-    code: string;
-  };
-  graph_context: Array<{
-    symbol: string;
-    file_path: string;
-    relation: string;
-    is_dirty?: boolean;
-    code: string;
-    depth?: number;
-    relevance_score?: number;
-  }>;
-  documentation: Array<{
-    chunk_id: string;
-    source_file: string;
-    content: string;
-    relevance_score?: number;
-  }>;
-}
 
 export interface ContextSummaryDto {
   primaryLabel: string;
@@ -101,7 +62,57 @@ export interface ChatMessage {
   type: 'user' | 'assistant';
   content: string;
   timestamp: number;
-  context?: PromptContextDto;
+  context?: PromptContextPayload;
   status?: 'streaming' | 'done' | 'error';
   error?: string;
+}
+
+// Context types matching sidecar API
+export interface PromptContextPayload {
+  mode: string;
+  intent: string;
+  metadata: {
+    tiers_used?: string[];
+    tier_tokens?: Record<string, number>;
+    tokens_primary?: number;
+    tokens_graph?: number;
+    tokens_docs?: number;
+    pruning_reasons?: string[];
+    assembly?: {
+      trace_id?: string;
+      workspace_id?: string;
+      resolver_version?: string;
+      stage_timings_ms?: Record<string, number>;
+      token_counts?: Record<string, number>;
+      model_route?: Record<string, unknown>;
+      estimated_cost_usd?: number;
+      cost_basis?: string;
+    };
+  };
+  primary_source: ContextSymbol;
+  graph_context: ContextSymbol[];
+  documentation: ContextDoc[];
+  budget?: Record<string, unknown>;
+}
+
+export interface ContextSymbol {
+  symbol: string;
+  file_path: string;
+  relation?: string;
+  direction?: string;
+  depth?: number;
+  relevance_score?: number;
+  scores?: Record<string, number | null>;
+  provenance?: string[];
+  is_dirty?: boolean;
+  code?: string;
+}
+
+export interface ContextDoc {
+  chunk_id: string;
+  source_file: string;
+  content: string;
+  score?: number | null;
+  scores?: Record<string, number | null>;
+  provenance?: string[];
 }

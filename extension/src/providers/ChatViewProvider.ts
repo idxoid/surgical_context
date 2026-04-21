@@ -4,12 +4,14 @@ import { OverlayManager } from '../overlayManager';
 import { SSECallbacks } from '../utils';
 import { getWebviewContent } from '../utils';
 import { stateManager } from '../state/ExtensionState';
+import { InspectorPanel } from '../panels/InspectorPanel';
 import {
   WebviewToHostMessage,
   HostToWebviewMessage,
   ChatSurfaceState,
   ContextSummaryDto,
 } from '../webview/shared/protocol';
+import { PromptContextPayload } from '../sidecarClient';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'surgicalContext.chat';
@@ -213,11 +215,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       },
       onContext: (context: unknown) => {
-        // Context received, notify webview
+        const contextPayload = context as PromptContextPayload;
+        // Store context in state
+        stateManager.setState({ lastContext: contextPayload });
+        // Notify webview
         this.postMessage({
           type: 'chat.contextSummary',
-          summary: this.buildContextSummary(context as any),
+          summary: this.buildContextSummary(contextPayload),
         });
+        // Auto-open inspector if setting enabled
+        const config = vscode.workspace.getConfiguration('surgicalContext');
+        if (config.get<boolean>('chat.autoOpenInspector', false)) {
+          InspectorPanel.createOrReveal(this.extensionUri);
+        }
       },
       onDone: () => {
         // Request completed
