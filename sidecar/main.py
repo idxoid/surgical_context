@@ -291,6 +291,23 @@ def _request_metrics(trace: RequestTrace) -> dict[str, Any]:
     }
 
 
+def _degraded_llm_answer(exc: Exception) -> str:
+    return (
+        "The language model is currently unreachable, so this is a degraded "
+        "context-only response. The assembled context is still included below "
+        f"for inspection. Error: {exc}"
+    )
+
+
+def _mark_degraded_route(route: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    return {
+        **route,
+        "degraded": True,
+        "reason": "llm_unreachable_context_only",
+        "error": str(exc),
+    }
+
+
 def _candidate_record(symbol: Any) -> dict[str, Any]:
     return {
         "symbol": getattr(symbol, "symbol", ""),
@@ -841,6 +858,7 @@ def ask(
 
             with trace.stage("llm"):
                 response_cache_hit = False
+                degraded_response = False
                 prompt_hash = hashlib.sha256(
                     f"{system_prompt}\n{req.question}".encode()
                 ).hexdigest()
@@ -858,19 +876,29 @@ def ask(
                         "cache_layer": "l3_response",
                     }
                 else:
-                    answer = ai_engine.chat(
-                        system_prompt=system_prompt,
-                        user_message=req.question,
-                        token_count=context_tokens,
-                        intent=ctx.intent,
-                    )
-                    default_cache.put_response(
-                        prompt_hash,
-                        workspace_id,
-                        answer,
-                        {"intent": ctx.intent, "mode": ctx.mode},
-                    )
-            if not response_cache_hit:
+                    try:
+                        answer = ai_engine.chat(
+                            system_prompt=system_prompt,
+                            user_message=req.question,
+                            token_count=context_tokens,
+                            intent=ctx.intent,
+                        )
+                    except RuntimeError as exc:
+                        degraded_response = True
+                        answer = _degraded_llm_answer(exc)
+                        trace.model_route = _mark_degraded_route(trace.model_route, exc)
+                        default_metrics.increment(
+                            "sidecar_llm_degraded_total",
+                            labels={"endpoint": "/ask", "workspace": workspace_id},
+                        )
+                    else:
+                        default_cache.put_response(
+                            prompt_hash,
+                            workspace_id,
+                            answer,
+                            {"intent": ctx.intent, "mode": ctx.mode},
+                        )
+            if not response_cache_hit and not degraded_response:
                 trace.model_route = _last_model_route(trace.model_route)
 
             output_tokens = estimate_text_tokens(answer)

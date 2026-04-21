@@ -133,6 +133,7 @@ Assemble surgical context for a symbol and query the LLM.
 4. `AIEngine.chat()` routes to the configured local/cloud model based on model preference, context size, and intent.
 5. Audit logging records successful and failed query actions.
 6. A privacy-scoped retrieval snapshot is written with an opaque `feedback_token`. The snapshot stores selected candidate metadata and hashes, not raw prompts, code bodies, answers, or free-text comments.
+7. If the selected model is unreachable, `/ask` returns HTTP 200 with a degraded context-only answer, `model_route.degraded=true`, and the full assembled `context`.
 
 ---
 

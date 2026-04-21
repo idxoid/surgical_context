@@ -120,7 +120,7 @@ Goal: System can navigate the graph and gather precise context.
 ### Data Contract
 - [x] JSON Prompt Contract: typed `PromptContext` with `to_dict()` + `to_system_prompt()` (`sidecar/context/arbitrator.py`)
 - [x] Local LLM integration via Ollama (`sidecar/main.py` — llama3, configurable via `OLLAMA_MODEL`)
-- [ ] Fallback behavior when Ollama is unreachable (clear error, degraded `/ask` that still returns `context`)
+- [x] Fallback behavior when Ollama is unreachable (clear error, degraded `/ask` that still returns `context`)
 
 ### Dirty State
 - [x] In-Memory Overlay: parse unsaved changes and merge with graph (`sidecar/context/overlay.py`, `POST /overlay`, `DELETE /overlay`)

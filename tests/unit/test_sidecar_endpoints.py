@@ -228,6 +228,31 @@ def test_ask_endpoint_includes_trace_metrics_and_model_route(monkeypatch):
     assert body["context"]["metadata"]["assembly"]["trace_id"] == "trace-test"
 
 
+def test_ask_endpoint_degrades_when_llm_unreachable(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    def fail_chat(*args, **kwargs):
+        raise RuntimeError("Ollama request failed: connection refused")
+
+    monkeypatch.setattr(main.ai_engine, "chat", fail_chat)
+
+    body = main.ask(
+        main.AskRequest(
+            symbol="process_payment",
+            question="How does this work when Ollama is offline?",
+        ),
+        x_trace_id="trace-degraded",
+    )
+
+    assert body["trace_id"] == "trace-degraded"
+    assert "degraded context-only response" in body["answer"]
+    assert "Ollama request failed" in body["answer"]
+    assert body["context"]["primary_source"]["symbol"] == "process_payment"
+    assert body["feedback_token"].startswith("fbk_")
+    assert body["model_route"]["degraded"] is True
+    assert body["model_route"]["reason"] == "llm_unreachable_context_only"
+
+
 def test_ask_endpoint_persists_private_feedback_snapshot(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
     question = "How does this work?"
