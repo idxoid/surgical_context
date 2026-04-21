@@ -1160,3 +1160,44 @@ textarea:focus {
 .retry-button:hover {
   background: var(--vscode-button-hoverBackground);
 }
+
+/* Toast Notifications */
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  border: 1px solid var(--vscode-panel-border);
+  z-index: 10000;
+  max-width: 400px;
+  opacity: 0;
+  transform: translateY(100px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  word-wrap: break-word;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-info {
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-notebookStatusSuccessIcon-foreground);
+}
+
+.toast-warning {
+  background: var(--vscode-editor-background);
+  color: #FF9800;
+  border-color: #FF9800;
+}
+
+.toast-error {
+  background: var(--vscode-editor-background);
+  color: #F44336;
+  border-color: #F44336;
+}

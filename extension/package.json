@@ -162,6 +162,69 @@
         "when": "editorTextFocus"
       }
     ],
+    "walkthroughs": [
+      {
+        "id": "surgicalContext.getStarted",
+        "title": "Get Started with Surgical Context",
+        "description": "Learn how to use Surgical Context for AI-powered code analysis",
+        "steps": [
+          {
+            "id": "openChat",
+            "title": "Open the Chat Panel",
+            "description": "The Chat panel in the sidebar is where you ask questions about code. You can also access it with Ctrl+Alt+A / Cmd+Alt+A.\n\n[Open Chat View](command:workbench.view.extension.surgicalContext)",
+            "media": {
+              "image": "media/icon.svg",
+              "altText": "Surgical Context icon"
+            }
+          },
+          {
+            "id": "selectSymbol",
+            "title": "Select a Code Symbol",
+            "description": "Position your cursor on any function, class, variable, or method name in your code editor. The Chat panel will show the selected symbol.",
+            "media": {
+              "image": "media/icon.svg",
+              "altText": "Surgical Context icon"
+            }
+          },
+          {
+            "id": "askQuestion",
+            "title": "Ask a Question",
+            "description": "In the Chat panel, type your question about the selected symbol. Press Enter to send, or Shift+Enter for a new line.\n\nExamples:\n- \"What does this function do?\"\n- \"Where is this used?\"\n- \"What are the dependencies?\"",
+            "media": {
+              "image": "media/icon.svg",
+              "altText": "Surgical Context icon"
+            }
+          },
+          {
+            "id": "viewContext",
+            "title": "Inspect the Context",
+            "description": "After getting an answer, click \"Inspect Context\" to see the evidence behind the response. The Inspector shows:\n- Primary source code\n- Related symbols in the call graph\n- Documentation\n- Token usage breakdown",
+            "media": {
+              "image": "media/icon.svg",
+              "altText": "Surgical Context icon"
+            }
+          },
+          {
+            "id": "showImpact",
+            "title": "See Impact",
+            "description": "Use Ctrl+Alt+I / Cmd+Alt+I to see what depends on a symbol. The Impact panel shows all the code that would be affected by changes to this symbol.",
+            "media": {
+              "image": "media/icon.svg",
+              "altText": "Surgical Context icon"
+            }
+          },
+          {
+            "id": "viewDashboard",
+            "title": "Monitor Health",
+            "description": "Open the Dashboard to see system health, indexing status, and recent activity. Use the Dashboard to track sidecar health and cloud connectivity.\n\n[Open Dashboard](command:surgicalContext.openDashboard)",
+            "media": {
+              "image": "media/icon.svg",
+              "altText": "Surgical Context icon"
+            }
+          }
+        ]
+      }
+    ],
     "configuration": {
       "title": "Surgical Context",
       "properties": {

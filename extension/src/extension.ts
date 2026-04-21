@@ -11,21 +11,36 @@ import { DashboardPanel } from './panels/DashboardPanel';
 import { stateManager } from './state/ExtensionState';
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Create persistent status bar item
+  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBarItem.command = 'surgicalContext.checkHealth';
+  statusBarItem.text = '$(loading~spin) Surgical Context';
+  statusBarItem.tooltip = 'Click to check sidecar health';
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
+
   // Verify sidecar is reachable and update state (non-blocking)
   SidecarClient.health().then(ok => {
     stateManager.setState({
       sidecarHealth: ok ? 'up' : 'down',
     });
+    statusBarItem.text = ok ? '$(check) Surgical Context' : '$(warning) Surgical Context';
+    statusBarItem.backgroundColor = ok ? undefined : new vscode.ThemeColor('statusBarItem.warningBackground');
     vscode.window.setStatusBarMessage(
-      ok ? '$(check) Surgical Context: sidecar ready' : '$(warning) Surgical Context: sidecar unreachable',
+      ok ? '✓ Surgical Context sidecar is ready' : '⚠ Surgical Context sidecar is unreachable',
       5000
     );
+  }).catch(err => {
+    statusBarItem.text = '$(error) Surgical Context';
+    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
   });
 
   // Poll cloud status
   SidecarClient.cloudStatus().then(status => {
     const cloudStatus = status.using_fallback ? 'fallback-local' : status.using_aura ? 'connected' : 'offline';
     stateManager.setState({ cloudStatus });
+  }).catch(err => {
+    console.warn('Failed to fetch cloud status:', err);
   });
 
   // Instantiate managers

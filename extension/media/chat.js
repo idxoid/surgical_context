@@ -483,6 +483,18 @@
     }
     showToast(message, level) {
       console.log(`[${level}] ${message}`);
+      const toast = document.createElement("div");
+      toast.className = `toast toast-${level}`;
+      toast.setAttribute("role", "status");
+      toast.setAttribute("aria-live", "polite");
+      toast.textContent = message;
+      const container = document.body || document.documentElement;
+      container.appendChild(toast);
+      setTimeout(() => toast.classList.add("show"), 10);
+      setTimeout(() => {
+        toast.classList.remove("show");
+        setTimeout(() => container.removeChild(toast), 300);
+      }, 4e3);
     }
     persistState() {
       const composer = document.getElementById("composer-input");

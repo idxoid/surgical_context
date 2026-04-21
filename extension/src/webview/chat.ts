@@ -394,8 +394,27 @@ class ChatPanel {
   }
 
   private showToast(message: string, level: 'info' | 'warning' | 'error'): void {
-    // TODO: implement toast UI
     console.log(`[${level}] ${message}`);
+
+    // Create toast element
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${level}`;
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    toast.textContent = message;
+
+    // Add to DOM
+    const container = document.body || document.documentElement;
+    container.appendChild(toast);
+
+    // Animate in
+    setTimeout(() => toast.classList.add('show'), 10);
+
+    // Auto-remove after 4 seconds
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => container.removeChild(toast), 300);
+    }, 4000);
   }
 
   private persistState(): void {
