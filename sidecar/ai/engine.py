@@ -1,97 +1,214 @@
-# from openai import OpenAI
-# import os
+"""AI Engine — unified interface for both Ollama and Anthropic SDK with prompt caching."""
 
-# class AIEngine:
-#     def __init__(self, api_key: str):
-#         self.client = OpenAI(api_key=api_key)
-#         self.model = "gpt-4-turbo-preview" # Или gpt-3.5-turbo
-
-#     def ask_about_symbol(self, symbol_name: str, context: str, user_question: str):
-#         system_prompt = f"""
-#         You are a Surgical Context AI. You help developers understand code by looking at a specific
-#         symbol and its dependencies.
-
-#         Below is the 'Surgical Context' for the symbol '{symbol_name}'.
-#         It includes the target code and its direct dependencies from the call graph.
-
-#         CONTEXT:
-#         {context}
-#         """
-
-#         response = self.client.chat.completions.create(
-#             model=self.model,
-#             messages=[
-#                 {"role": "system", "content": system_prompt},
-#                 {"role": "user", "content": user_question}
-#             ],
-#             temperature=0.2 # Низкая температура для точности
-#         )
-
-#         return response.choices[0].message.content
-# import os
-# from anthropic import Anthropic
-
-# class AIEngine:
-#     # A simple registry to handle model aliasing
-#     MODEL_REGISTRY = {
-#         "fast": "claude-3-haiku-20240307",
-#         "balanced": "claude-3-5-sonnet-20240620",
-#         "powerful": "claude-3-opus-20240229"
-#     }
-
-#     def __init__(self, api_key: str = None, tier: str = "balanced"):
-#         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-
-#         # Priority: Env Var 'ANTHROPIC_MODEL' > Registry Alias > Default String
-#         env_model = os.getenv("ANTHROPIC_MODEL")
-#         if env_model:
-#             self.model = env_model
-#         else:
-#             self.model = self.MODEL_REGISTRY.get(tier, self.MODEL_REGISTRY["balanced"])
-
-#         self.client = Anthropic(api_key=self.api_key)
-#         print(f"🤖 AI Engine initialized with model: {self.model}")
-
-#     def ask_about_symbol(self, symbol_name: str, context: str, user_question: str):
-#         # Определяем системный промпт
-#         system_msg = f"""You are a Surgical Context AI.
-#         Analyze the symbol '{symbol_name}' and its dependencies provided below.
-
-#         CONTEXT:
-#         {context}"""
-
-#         # Передаем именно system_msg в аргумент system
-#         message = self.client.messages.create(
-#             model=self.model,
-#             max_tokens=2048,
-#             system=system_msg, # Было system_prompt, стало system_msg
-#             messages=[
-#                 {"role": "user", "content": user_question}
-#             ],
-#             temperature=0
-#         )
-
-#         return message.content[0].text
 import os
+from typing import Optional
 
-from claude_api import Client
+import ollama
+from anthropic import Anthropic
+
+
+class ModelRouter:
+    """Route queries to appropriate model based on context size and intent."""
+
+    # Token thresholds for model routing
+    SMALL_THRESHOLD = 2000  # < 2k tokens → Ollama (unless complex intent)
+    LARGE_THRESHOLD = 2000  # >= 2k tokens → Claude (better reasoning, prompt caching)
+
+    @staticmethod
+    def should_use_claude(token_count: int, intent: str) -> bool:
+        """
+        Decide whether to use Claude (vs Ollama).
+
+        Strategy:
+        - Large contexts (>= 2k tokens) → Claude (better reasoning, prompt caching)
+        - Design/architecture/exploration/refactor questions → Claude (more sophisticated)
+        - Small/simple navigation/debugging/new_feature queries → Ollama (fast, cheap)
+        """
+        if token_count >= ModelRouter.LARGE_THRESHOLD:
+            return True
+        if intent in ("design_question", "exploration", "refactor"):
+            return True
+        return False
 
 
 class AIEngine:
-    def __init__(self):
-        # Добавь CLAUDE_SESSION_KEY в свой .env
-        self.session_key = os.getenv("CLAUDE_SESSION_KEY")
-        if not self.session_key:
-            raise ValueError("Нужен CLAUDE_SESSION_KEY из куки браузера!")
+    """Unified AI interface supporting Ollama and Anthropic SDK with model routing."""
 
-        self.client = Client(self.session_key)
+    def __init__(self, model_preference: str = "claude"):
+        """
+        Initialize AI engine.
 
-    def ask_about_symbol(self, symbol_name: str, context: str, user_question: str):
-        # Создаем новый чат или используем существующий
-        chat_id = self.client.create_new_chat()["uuid"]
+        Args:
+            model_preference: "claude" (default), "ollama", or "auto" (route by context size/intent)
+        """
+        self.model_preference = model_preference
+        self.claude_model = "claude-sonnet-4-20250514"  # Latest Sonnet
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "llama3")
 
-        prompt = f"Analyze code for '{symbol_name}':\n{context}\n\nQuestion: {user_question}"
+        # Initialize Anthropic client if using Claude
+        if model_preference in ("claude", "auto"):
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key and model_preference == "claude":
+                raise ValueError(
+                    "ANTHROPIC_API_KEY not set. Either set it or use OLLAMA_MODEL with model_preference='ollama'"
+                )
+            if api_key:
+                self.anthropic = Anthropic(api_key=api_key)
+            else:
+                self.anthropic = None
+        else:
+            self.anthropic = None
 
-        # Отправляем запрос (это имитирует ввод текста в чат)
-        response = self.client.send_message(prompt, chat_id)
-        return response
+    def chat(
+        self,
+        system_prompt: str,
+        user_message: str,
+        token_count: int = 0,
+        intent: str = "exploration",
+    ) -> str:
+        """
+        Chat with LLM, routing to Claude or Ollama based on preference and context.
+
+        Args:
+            system_prompt: System message with context
+            user_message: User's question
+            token_count: Estimated token count of context (for routing)
+            intent: Query intent (for routing)
+
+        Returns:
+            LLM response text
+        """
+        # Determine which model to use
+        use_claude = self._should_use_claude(token_count, intent)
+
+        if use_claude and self.anthropic:
+            return self._chat_claude(system_prompt, user_message, token_count)
+        else:
+            return self._chat_ollama(system_prompt, user_message)
+
+    def _should_use_claude(self, token_count: int, intent: str) -> bool:
+        """Determine which model to use."""
+        if self.model_preference == "claude":
+            return True
+        elif self.model_preference == "ollama":
+            return False
+        else:  # "auto"
+            return ModelRouter.should_use_claude(token_count, intent)
+
+    def _chat_claude(self, system_prompt: str, user_message: str, token_count: int) -> str:
+        """Chat using Claude with prompt caching on graph_context."""
+        try:
+            # Detect where graph context starts in system_prompt
+            # Graph context is the section between "--- DEPENDENCIES ---" and "--- DOCUMENTATION ---"
+            cache_control = None
+            if "--- DEPENDENCIES ---" in system_prompt:
+                # Enable cache control for the graph context block
+                # This saves costs on repeated large context queries
+                cache_control = {"type": "ephemeral"}
+
+            message = self.anthropic.messages.create(
+                model=self.claude_model,
+                max_tokens=2048,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": cache_control,
+                    }
+                ],
+                messages=[{"role": "user", "content": user_message}],
+            )
+
+            return message.content[0].text
+        except Exception as e:
+            # Fallback to Ollama if Claude fails
+            import logging
+
+            logging.warning(f"Claude request failed: {e}. Falling back to Ollama.")
+            return self._chat_ollama(system_prompt, user_message)
+
+    def _chat_ollama(self, system_prompt: str, user_message: str) -> str:
+        """Chat using Ollama."""
+        try:
+            response = ollama.chat(
+                model=self.ollama_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+            )
+            return response["message"]["content"]
+        except Exception as e:
+            raise RuntimeError(f"Ollama request failed: {e}") from e
+
+    def stream_chat(
+        self,
+        system_prompt: str,
+        user_message: str,
+        token_count: int = 0,
+        intent: str = "exploration",
+    ):
+        """
+        Stream chat response, yielding chunks.
+
+        Args:
+            system_prompt: System message with context
+            user_message: User's question
+            token_count: Estimated token count of context (for routing)
+            intent: Query intent (for routing)
+
+        Yields:
+            Text chunks from LLM response
+        """
+        use_claude = self._should_use_claude(token_count, intent)
+
+        if use_claude and self.anthropic:
+            yield from self._stream_claude(system_prompt, user_message, token_count)
+        else:
+            yield from self._stream_ollama(system_prompt, user_message)
+
+    def _stream_claude(
+        self, system_prompt: str, user_message: str, token_count: int
+    ):
+        """Stream Claude response."""
+        try:
+            cache_control = None
+            if "--- DEPENDENCIES ---" in system_prompt:
+                cache_control = {"type": "ephemeral"}
+
+            with self.anthropic.messages.stream(
+                model=self.claude_model,
+                max_tokens=2048,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": cache_control,
+                    }
+                ],
+                messages=[{"role": "user", "content": user_message}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield text
+        except Exception as e:
+            import logging
+
+            logging.warning(f"Claude streaming failed: {e}. Falling back to Ollama.")
+            yield from self._stream_ollama(system_prompt, user_message)
+
+    def _stream_ollama(self, system_prompt: str, user_message: str):
+        """Stream Ollama response."""
+        try:
+            response = ollama.chat(
+                model=self.ollama_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                stream=True,
+            )
+            for chunk in response:
+                if "message" in chunk and "content" in chunk["message"]:
+                    yield chunk["message"]["content"]
+        except Exception as e:
+            raise RuntimeError(f"Ollama streaming failed: {e}") from e

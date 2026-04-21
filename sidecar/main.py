@@ -1,9 +1,10 @@
 import os
 
-import ollama
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from sidecar.ai.engine import AIEngine
 from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.overlay import InMemoryOverlay
@@ -13,11 +14,12 @@ from sidecar.database.neo4j_client import Neo4jClient
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+MODEL_PREFERENCE = os.getenv("MODEL_PREFERENCE", "auto")  # "claude" | "ollama" | "auto"
 
 app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
 vector_db = LanceDBClient()
+ai_engine = AIEngine(model_preference=MODEL_PREFERENCE)
 
 
 def get_db() -> Neo4jClient:
@@ -128,23 +130,59 @@ def ask(req: AskRequest):
         doc_resolver = DocResolver(vector_db)
         ctx.documentation = doc_resolver.search(f"{req.symbol} {req.question}", limit=3)
 
-        response = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}",
-                },
-                {"role": "user", "content": req.question},
-            ],
+        system_prompt = f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"
+
+        # Use AIEngine to route between Claude and Ollama based on context size and intent
+        answer = ai_engine.chat(
+            system_prompt=system_prompt,
+            user_message=req.question,
+            token_count=ctx.token_count(),
+            intent=ctx.intent,
         )
+
         return {
             "symbol": req.symbol,
-            "answer": response["message"]["content"],
+            "answer": answer,
             "context": ctx.to_dict(),
         }
     finally:
         db.close()
+
+
+@app.post("/ask/stream")
+def ask_stream(req: AskRequest):
+    """Streaming version of /ask endpoint (SSE)."""
+    db = get_db()
+
+    def response_generator():
+        try:
+            arb = ContextArbitrator(db, overlay)
+            ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
+            if isinstance(ctx, str):
+                yield f"data: {{'error': '{ctx}'}}\n\n"
+                return
+
+            doc_resolver = DocResolver(vector_db)
+            ctx.documentation = doc_resolver.search(f"{req.symbol} {req.question}", limit=3)
+
+            system_prompt = f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"
+
+            # Stream response chunks
+            for chunk in ai_engine.stream_chat(
+                system_prompt=system_prompt,
+                user_message=req.question,
+                token_count=ctx.token_count(),
+                intent=ctx.intent,
+            ):
+                # SSE format: "data: {content}\n\n"
+                yield f"data: {chunk}\n\n"
+
+            # Send context metadata at end
+            yield f"data: [CONTEXT]\n{ctx.to_dict()}\n\n"
+        finally:
+            db.close()
+
+    return StreamingResponse(response_generator(), media_type="text/event-stream")
 
 
 @app.get("/impact")
