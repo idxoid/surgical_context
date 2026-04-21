@@ -63,11 +63,11 @@ export function renderStreamingCursor(): string {
 export function renderAccordion(id: string, title: string, content: string, expanded = false): string {
   return `
     <div class="accordion-group" data-accordion="${id}">
-      <button class="accordion-header" aria-expanded="${expanded}" aria-controls="${id}-content">
-        <span class="accordion-title">${title}</span>
-        <span class="accordion-icon">▼</span>
+      <button class="accordion-header" aria-expanded="${expanded}" aria-controls="${id}-content" role="button">
+        <span class="accordion-title">${escapeHtml(title)}</span>
+        <span class="accordion-icon" aria-hidden="true">▼</span>
       </button>
-      <div id="${id}-content" class="accordion-content ${expanded ? 'expanded' : ''}" hidden="${!expanded}">
+      <div id="${id}-content" class="accordion-content ${expanded ? 'expanded' : ''}" ${expanded ? '' : 'hidden'} role="region" aria-labelledby="${id}">
         ${content}
       </div>
     </div>
@@ -190,9 +190,14 @@ export function renderComposerDock(): string {
         id="composer-input"
         class="composer-textarea"
         placeholder="Ask about this symbol, its behavior, dependencies..."
+        aria-label="Message composer"
+        aria-describedby="composer-help"
         rows="1"
       ></textarea>
-      <button id="composer-send" class="composer-send-btn" title="Send (Enter)">Send</button>
+      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message">Send</button>
+      <div id="composer-help" class="sr-only">
+        Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer.
+      </div>
     </div>
   `;
 }

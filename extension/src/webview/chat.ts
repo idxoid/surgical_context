@@ -114,9 +114,10 @@ class ChatPanel {
       this.persistState();
     });
 
-    // Send on Ctrl+Enter or Cmd+Enter
+    // Keyboard shortcuts
     composer.addEventListener('keydown', (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      // Enter to send (unless Shift+Enter for newline)
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.askAboutSymbol();
       }
@@ -124,6 +125,14 @@ class ChatPanel {
 
     // Send button click
     sendBtn.addEventListener('click', () => this.askAboutSymbol());
+
+    // Global keyboard shortcut: Cmd+L or Ctrl+L to focus composer
+    document.addEventListener('keydown', (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+        e.preventDefault();
+        composer.focus();
+      }
+    });
   }
 
   private setupAccordionListeners(): void {
