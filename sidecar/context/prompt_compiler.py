@@ -60,6 +60,10 @@ class PromptCompiler:
                 code=code,
             )
 
+        def estimate_tokens(text: str) -> int:
+            """Rough token estimate: ~4 chars per token."""
+            return max(1, len(text) // 4)
+
         def infer_doc_type(source_file: str) -> str:
             """Infer doc tier from source file path."""
             lower = source_file.lower()
@@ -76,6 +80,12 @@ class PromptCompiler:
         primary = to_symbol_context(subgraph.primary)
         graph = [to_symbol_context(n) for n in subgraph.nodes]
 
+        # Calculate tokens per tier (for observability)
+        tier_tokens = {
+            "code": estimate_tokens(primary.code),
+            "cross_refs": sum(estimate_tokens(sym.code) for sym in graph),
+        }
+
         # Organize docs by tier
         docs_by_tier = {
             "specs": [],
@@ -87,6 +97,10 @@ class PromptCompiler:
             tier = infer_doc_type(doc.source_file)
             if tier in docs_by_tier:
                 docs_by_tier[tier].append(doc)
+
+        # Calculate doc tier tokens
+        for tier_name, doc_list in docs_by_tier.items():
+            tier_tokens[tier_name] = sum(estimate_tokens(doc.content) for doc in doc_list)
 
         # Get tier priority for this intent
         from sidecar.context.intent_classifier import IntentConfig
@@ -126,4 +140,5 @@ class PromptCompiler:
             budget=subgraph.budget,
             mode=mode,
             intent=intent.value,
+            tier_tokens=tier_tokens,
         )

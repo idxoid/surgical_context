@@ -30,6 +30,7 @@ class PromptContext:
     budget: dict = field(default_factory=dict)
     mode: str = "surgical_full"  # "surgical_full" | "surgical_doc_only" | "standard"
     intent: str = ""  # e.g. "navigation", "debugging", "refactor", etc.
+    tier_tokens: dict = field(default_factory=dict)  # token counts per tier
 
     def to_system_prompt(self) -> str:
         """Render to the flat text format the LLM receives."""
@@ -50,9 +51,23 @@ class PromptContext:
 
     def to_dict(self) -> dict:
         """Serialize to the JSON Prompt Contract shape."""
+        # Calculate tiers_used (which tiers were populated)
+        tiers_used = []
+        if self.primary_source.code:
+            tiers_used.append("code")
+        if self.graph_context:
+            tiers_used.append("cross_refs")
+        if self.documentation:
+            tiers_used.append("docs")
+
         return {
             "mode": self.mode,
             "intent": self.intent,
+            "metadata": {
+                "query_intent": self.intent,
+                "tiers_used": tiers_used,
+                "tier_tokens": self.tier_tokens,
+            },
             "primary_source": {
                 "symbol": self.primary_source.symbol,
                 "file_path": self.primary_source.file_path,
