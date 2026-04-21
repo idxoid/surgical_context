@@ -1,14 +1,15 @@
 # Surgical Context — Road Map
 
-> **Status:** ✅ Phase 5 COMPLETE & VALIDATED. ✅ Phase 6 PROGRESSING: 6.1–6.2 COMPLETE.
-> Next: Phase 6.3 (Streaming & Model Routing).
+> **Status:** ✅ Phase 5 COMPLETE & VALIDATED. ✅ Phase 6 COMPLETE (6.1–6.3).
+> Next: Phase 6.4 (Integration Testing).
 >
-> **Phase 6.1–6.2 Results:**
-> - Intent Classifier: 6 types (navigation, debugging, refactor, exploration, new_feature, design_question)
-> - Tier Priority Orders: IntentConfig maps each intent to 6-tier priority (code, cross_refs, specs, architecture, concept, idea)
-> - PromptCompiler.compile_with_intent(): tier-aware assembly with graceful degradation
-> - ContextArbitrator Integration: question parameter drives intent detection, mode field in response
-> - Test Coverage: 17 intent classifier + 19 compiler + 11 orchestrator tests = 47 new tests (108 total unit tests passing)
+> **Phase 6 Complete Results:**
+> - **6.1:** Intent Classifier (6 types, tier priorities, 36 tests)
+> - **6.2:** Orchestrator Integration (question→intent detection, mode field, 11 tests)
+> - **6.3:** Model Routing & Streaming (Claude/Ollama routing, prompt caching, SSE, 21 tests)
+> - **Total:** 68 new tests, 129 total unit tests passing
+> - **Prompt Caching:** ephemeral cache on graph_context block (reduces API costs)
+> - **Smart Routing:** large/complex → Claude (powerful), small/simple → Ollama (fast)
 > - Doc Type Inference: pattern-based (spec_*, idea_*, concept, architecture)
 >
 > **Phase 5 Graph Validation Metrics (full codebase):**
@@ -269,11 +270,17 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 - [x] Add integration tests: 11 tests for intent classification + mode field handling
 - [x] Backward compatibility: question parameter optional (defaults to empty string → exploration intent)
 
-### Phase 6.3: Streaming & Model Routing (PLANNED)
-- [ ] Streaming LLM responses (SSE) instead of blocking
-- [ ] Official Anthropic SDK activation (`sidecar/ai/engine.py`) with prompt caching on `graph_context` block
-- [ ] Round-Robin model router (ADR-004) — route by context size + intent
-- [ ] Upgrade demo from Ollama/llama3 to Claude Sonnet 4.6 (per [review_findings_2026-04-17.md](review_findings_2026-04-17.md) recommendation #5)
+### Phase 6.3: Streaming & Model Routing ✅ COMPLETE
+- [x] Streaming LLM responses (SSE) via `/ask/stream` endpoint
+- [x] Official Anthropic SDK activation (`sidecar/ai/engine.py`) with prompt caching on `graph_context` block
+- [x] Model Router (ADR-004) — route by context size + intent
+  - Large contexts (>= 2k tokens) → Claude (powerful, cached)
+  - Complex intents (design, exploration, refactor) → Claude
+  - Small/simple queries → Ollama (fast, cheap)
+- [x] Support 3 preferences: 'claude' (default) | 'ollama' | 'auto' (intelligent routing)
+- [x] Prompt caching: ephemeral cache on graph_context blocks (reduce API costs)
+- [x] Automatic fallback: Claude → Ollama on error
+- [x] 21 new unit tests covering routing, initialization, model selection
 
 ### Phase 6.4: Integration Testing (PLANNED)
 - [ ] Test intent classification accuracy on 6 intent types
