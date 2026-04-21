@@ -217,7 +217,9 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] Arbitrator BFS expanded to traverse all three edge types for context gathering
 
 ### Embedding Quality (DEFERRED — Phase 5)
-- [ ] Benchmark `all-MiniLM-L6-v2` vs a code-native model (e.g. `bge-code`, `unixcoder`) on the golden set
+- [x] Add reusable embedding benchmark harness for golden-set model comparisons (`python -m sidecar.eval.embedding_benchmark`)
+- [ ] Run and record `all-MiniLM-L6-v2` vs a code-native model (e.g. `bge-code`, `unixcoder`) on the golden set
+  - 2026-04-21 offline probe: cached `all-MiniLM-L6-v2` reached `target_hit@5=1.00`, `MRR=0.78`, `expected_recall@5=0.42`, `expected_precision@5=0.52`; `microsoft/unixcoder-base` was not cached, so the code-native comparison remains pending.
 - [x] Embedding cache keyed by content hash to avoid recomputation on re-index
 
 ---

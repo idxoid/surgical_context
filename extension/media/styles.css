@@ -1201,3 +1201,239 @@ textarea:focus {
   color: #F44336;
   border-color: #F44336;
 }
+
+/* Settings Panel Styles */
+
+.settings-form {
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.settings-header {
+  margin-bottom: 32px;
+}
+
+.settings-header h2 {
+  margin: 0 0 8px 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.settings-description {
+  margin: 0;
+  font-size: 13px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.settings-section {
+  margin-bottom: 28px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.settings-section:last-of-type {
+  border-bottom: none;
+}
+
+.settings-section h3 {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.setting-field {
+  margin-bottom: 16px;
+}
+
+.setting-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
+.setting-input,
+.setting-checkbox {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.setting-input:focus,
+.setting-checkbox:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-input-background);
+}
+
+.field-group {
+  display: flex;
+  gap: 6px;
+}
+
+.field-group .setting-input {
+  flex: 1;
+}
+
+.field-action-btn {
+  padding: 8px 16px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s ease;
+}
+
+.field-action-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.field-hint {
+  margin: 4px 0 0 0;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.4;
+}
+
+.field-status {
+  margin-top: 4px;
+  font-size: 11px;
+  display: none;
+  padding: 4px 6px;
+  border-radius: 2px;
+}
+
+.field-status.success {
+  color: #4CAF50;
+  background: rgba(76, 175, 80, 0.1);
+}
+
+.field-status.error {
+  color: #F44336;
+  background: rgba(244, 67, 54, 0.1);
+}
+
+.checkbox-field label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.checkbox-field .setting-checkbox {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.shortcut-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  background: var(--vscode-sideBar-background);
+  border-radius: 3px;
+  border: 1px solid var(--vscode-panel-border);
+}
+
+.shortcut-key {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  padding: 4px 8px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 2px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.shortcut-desc {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  flex: 1;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 12px;
+  margin: 28px 0;
+}
+
+.primary-btn,
+.secondary-btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 3px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.primary-btn {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  flex: 1;
+}
+
+.primary-btn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.secondary-btn {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.secondary-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.settings-feedback {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 3px;
+  font-size: 12px;
+  display: none;
+}
+
+.settings-feedback-success {
+  background: rgba(76, 175, 80, 0.1);
+  color: #4CAF50;
+  border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.settings-feedback-error {
+  background: rgba(244, 67, 54, 0.1);
+  color: #F44336;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+.settings-feedback-info {
+  background: rgba(33, 150, 243, 0.1);
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid rgba(33, 150, 243, 0.3);
+}

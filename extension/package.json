@@ -80,6 +80,11 @@
         "category": "Surgical Context"
       },
       {
+        "command": "surgicalContext.openSettings",
+        "title": "Surgical Context: Open Settings",
+        "category": "Surgical Context"
+      },
+      {
         "command": "surgicalContext.reindexCurrentFile",
         "title": "Surgical Context: Reindex Current File",
         "category": "Surgical Context"
@@ -143,6 +148,11 @@
         },
         {
           "command": "surgicalContext.openDashboard",
+          "when": "view == surgicalContext.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "surgicalContext.openSettings",
           "when": "view == surgicalContext.chat",
           "group": "navigation"
         }

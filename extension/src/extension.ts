@@ -8,6 +8,7 @@ import { SurgicalContextCodeLensProvider } from './providers/CodeLensProvider';
 import { SurgicalContextHoverProvider } from './providers/HoverProvider';
 import { InspectorPanel } from './panels/InspectorPanel';
 import { DashboardPanel } from './panels/DashboardPanel';
+import { SettingsPanel } from './panels/SettingsPanel';
 import { stateManager } from './state/ExtensionState';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -107,6 +108,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('surgicalContext.openDashboard', async () => {
       DashboardPanel.createOrReveal(context.extensionUri);
+    }),
+
+    vscode.commands.registerCommand('surgicalContext.openSettings', async () => {
+      SettingsPanel.createOrReveal(context.extensionUri);
     }),
 
     vscode.commands.registerCommand('surgicalContext.reindexCurrentFile', async () => {

@@ -17,7 +17,11 @@ export type WebviewToHostMessage =
   | { type: 'action.showImpact'; symbol?: string }
   | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'link.openFile'; filePath: string; line?: number }
-  | { type: 'dashboard.refresh' };
+  | { type: 'dashboard.refresh' }
+  | { type: 'settings.loaded' }
+  | { type: 'settings.update'; key: string; value: unknown }
+  | { type: 'settings.testUrl'; url: string }
+  | { type: 'settings.openKeybindings' };
 
 // ============ Extension Host → Webview Messages ============
 
@@ -38,7 +42,11 @@ export type HostToWebviewMessage =
   | { type: 'impact.loadFailed'; error: string }
   | { type: 'dashboard.loading' }
   | { type: 'dashboard.metricsLoaded'; health: 'up' | 'down'; cloudStatus: 'connected' | 'fallback-local' | 'offline'; auditActions: AuditAction[] }
-  | { type: 'dashboard.metricsFailed'; error: string };
+  | { type: 'dashboard.metricsFailed'; error: string }
+  | { type: 'settings.loaded'; settings: SettingsData }
+  | { type: 'settings.saved'; message: string }
+  | { type: 'settings.saveFailed'; error: string }
+  | { type: 'settings.testUrlComplete'; success: boolean; message: string };
 
 // ============ Data Transfer Objects ============
 
@@ -139,4 +147,13 @@ export interface AuditAction {
   symbol: string;
   status: string;
   details?: Record<string, unknown>;
+}
+
+export interface SettingsData {
+  backendUrl: string;
+  workspaceId: string;
+  modelPreference: string;
+  authToken: string;
+  overlaySync: boolean;
+  autoOpenInspector: boolean;
 }
