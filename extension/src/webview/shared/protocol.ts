@@ -16,7 +16,8 @@ export type WebviewToHostMessage =
   | { type: 'action.openInspector' }
   | { type: 'action.showImpact'; symbol?: string }
   | { type: 'action.openChat'; prefillSymbol?: string }
-  | { type: 'link.openFile'; filePath: string; line?: number };
+  | { type: 'link.openFile'; filePath: string; line?: number }
+  | { type: 'dashboard.refresh' };
 
 // ============ Extension Host → Webview Messages ============
 
@@ -34,7 +35,10 @@ export type HostToWebviewMessage =
   | { type: 'inspector.loaded'; context: PromptContextPayload | null }
   | { type: 'impact.loading' }
   | { type: 'impact.loaded'; symbol: string; impact: ImpactResponse }
-  | { type: 'impact.loadFailed'; error: string };
+  | { type: 'impact.loadFailed'; error: string }
+  | { type: 'dashboard.loading' }
+  | { type: 'dashboard.metricsLoaded'; health: 'up' | 'down'; cloudStatus: 'connected' | 'fallback-local' | 'offline'; auditActions: AuditAction[] }
+  | { type: 'dashboard.metricsFailed'; error: string };
 
 // ============ Data Transfer Objects ============
 
@@ -127,4 +131,12 @@ export interface ImpactResponse {
   file_path: string;
   affected_symbols: Array<Record<string, unknown>>;
   affected_files: string[];
+}
+
+export interface AuditAction {
+  timestamp: string;
+  action_type: string;
+  symbol: string;
+  status: string;
+  details?: Record<string, unknown>;
 }

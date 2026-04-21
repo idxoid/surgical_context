@@ -5,6 +5,7 @@ import { OverlayManager } from './overlayManager';
 import { ChatViewProvider } from './providers/ChatViewProvider';
 import { ImpactViewProvider } from './providers/ImpactViewProvider';
 import { InspectorPanel } from './panels/InspectorPanel';
+import { DashboardPanel } from './panels/DashboardPanel';
 import { stateManager } from './state/ExtensionState';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -76,8 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('surgicalContext.openDashboard', async () => {
-      vscode.window.showInformationMessage('Dashboard coming in Phase 5');
-      // TODO: Implement DashboardPanel
+      DashboardPanel.createOrReveal(context.extensionUri);
     }),
 
     vscode.commands.registerCommand('surgicalContext.reindexCurrentFile', async () => {
