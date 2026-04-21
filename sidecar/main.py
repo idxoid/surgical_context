@@ -1,16 +1,19 @@
 import logging
 import os
+from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from sidecar.ai.engine import AIEngine
+from sidecar.api.sse import format_sse
 from sidecar.auth import AuditLog, UserAuth
 from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.overlay import InMemoryOverlay
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
+from sidecar.indexer.job_log import IndexJobLog
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,12 +56,81 @@ class SearchRequest(BaseModel):
     limit: int = 5
 
 
-@app.get("/health")
+class HealthResponse(BaseModel):
+    status: str
+
+
+class StatusPathResponse(BaseModel):
+    status: str
+    path: str
+
+
+class IndexFileResponse(BaseModel):
+    status: str
+    file_path: str
+    job_id: int
+
+
+class OverlayResponse(BaseModel):
+    file_path: str
+    symbols: list[str]
+
+
+class ClearOverlayResponse(BaseModel):
+    cleared: str
+
+
+class SearchResponse(BaseModel):
+    results: list[dict[str, Any]]
+
+
+class AskResponse(BaseModel):
+    symbol: str
+    answer: str
+    context: dict[str, Any]
+    user: str
+    cloud: bool
+
+
+class ImpactResponse(BaseModel):
+    symbol: str
+    symbol_uid: str
+    file_path: str
+    affected_symbols: list[dict[str, Any]]
+    affected_files: list[str]
+    affected_count: int
+    affected_file_count: int
+    max_depth: int
+
+
+class AuthTokenResponse(BaseModel):
+    token: str
+    user_id: str
+    expires_in_hours: int
+
+
+class UsersResponse(BaseModel):
+    users: list[dict[str, Any]]
+
+
+class CloudStatusResponse(BaseModel):
+    cloud_enabled: bool
+    using_aura: bool
+    using_fallback: bool
+    health: dict[str, Any]
+
+
+class AuditActionsResponse(BaseModel):
+    actions: list[dict[str, Any]]
+    total: int
+
+
+@app.get("/health", response_model=HealthResponse)
 def health():
     return {"status": "ok"}
 
 
-@app.post("/index")
+@app.post("/index", response_model=StatusPathResponse)
 def index(req: IndexRequest):
     if not os.path.isdir(req.project_path):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.project_path}")
@@ -69,23 +141,36 @@ def index(req: IndexRequest):
     return {"status": "indexed", "path": req.project_path}
 
 
-@app.post("/index/file")
+@app.post("/index/file", response_model=IndexFileResponse)
 def index_file_endpoint(req: IndexFileRequest):
     if not os.path.isfile(req.file_path):
         raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
 
     from sidecar.indexer.anchor import resolve_pending_anchors
-    from sidecar.indexer.code import index_file
+    from sidecar.indexer.code import hash_file, index_file
     from sidecar.parser.extractor import SymbolExtractor
 
-    with db_session() as db:
-        db.delete_symbols_for_file(req.file_path)
-        index_file(req.file_path, db, vector_db, SymbolExtractor())
-        resolve_pending_anchors(db, vector_db)
-    return {"status": "indexed", "file_path": req.file_path}
+    job_log = IndexJobLog()
+    job_id = 0
+    file_hash = hash_file(req.file_path)
+    try:
+        with job_log.track_file_job(req.file_path, file_hash=file_hash) as job_id:
+            with db_session() as db:
+                db.delete_symbols_for_file(req.file_path)
+                index_file(req.file_path, db, vector_db, SymbolExtractor())
+                resolve_pending_anchors(db, vector_db)
+    except Exception as exc:
+        job = job_log.get_job(job_id) if job_id else None
+        detail = {
+            "error": str(exc),
+            "job_id": job_id,
+            "job_status": job["status"] if job else "unknown",
+        }
+        raise HTTPException(status_code=500, detail=detail) from exc
+    return {"status": "indexed", "file_path": req.file_path, "job_id": job_id}
 
 
-@app.post("/index/docs")
+@app.post("/index/docs", response_model=StatusPathResponse)
 def index_docs_endpoint(req: IndexDocsRequest):
     if not os.path.isdir(req.docs_path):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.docs_path}")
@@ -96,25 +181,25 @@ def index_docs_endpoint(req: IndexDocsRequest):
     return {"status": "indexed", "path": req.docs_path}
 
 
-@app.post("/search")
+@app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest):
     return {"results": vector_db.search(req.query, req.limit)}
 
 
-@app.post("/overlay")
+@app.post("/overlay", response_model=OverlayResponse)
 def update_overlay(req: OverlayRequest):
     overlay.update(req.file_path, req.content)
     symbols = overlay.get_symbols(req.file_path)
     return {"file_path": req.file_path, "symbols": list(symbols.keys())}
 
 
-@app.delete("/overlay")
+@app.delete("/overlay", response_model=ClearOverlayResponse)
 def clear_overlay(file_path: str):
     overlay.clear(file_path)
     return {"cleared": file_path}
 
 
-@app.post("/ask")
+@app.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest, x_user_id: str = Header(None)):
     """Ask about a symbol (with multi-user audit logging)."""
     user_id = user_auth.identify_user(x_user_id)
@@ -157,7 +242,7 @@ def ask_stream(req: AskRequest, x_user_id: str = Header(None)):
             arb = ContextArbitrator(db, overlay, vector_db)
             ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
             if isinstance(ctx, str):
-                yield f"data: {{'error': '{ctx}'}}\n\n"
+                yield format_sse("error", {"type": "error", "error": ctx})
                 return
 
             system_prompt = f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"
@@ -169,16 +254,16 @@ def ask_stream(req: AskRequest, x_user_id: str = Header(None)):
                 token_count=ctx.token_count(),
                 intent=ctx.intent,
             ):
-                # SSE format: "data: {content}\n\n"
-                yield f"data: {chunk}\n\n"
+                yield format_sse("chunk", {"type": "chunk", "content": chunk})
 
             # Send context metadata at end
-            yield f"data: [CONTEXT]\n{ctx.to_dict()}\n\n"
+            yield format_sse("context", {"type": "context", "context": ctx.to_dict()})
+            yield format_sse("done", {"type": "done"})
 
     return StreamingResponse(response_generator(), media_type="text/event-stream")
 
 
-@app.get("/impact")
+@app.get("/impact", response_model=ImpactResponse)
 def impact(symbol: str):
     """Return downstream dependents affected by a change to the given symbol."""
     with db_session() as db:
@@ -227,7 +312,7 @@ def impact(symbol: str):
         }
 
 
-@app.post("/auth/token")
+@app.post("/auth/token", response_model=AuthTokenResponse)
 def auth_token(user_id: str = None):
     """Generate JWT token for multi-user mode."""
     user_id = user_auth.identify_user(user_id)
@@ -236,13 +321,13 @@ def auth_token(user_id: str = None):
     return {"token": token, "user_id": user_id, "expires_in_hours": 24}
 
 
-@app.get("/auth/users")
+@app.get("/auth/users", response_model=UsersResponse)
 def list_users():
     """List all active users."""
     return {"users": user_auth.list_users()}
 
 
-@app.get("/status/cloud")
+@app.get("/status/cloud", response_model=CloudStatusResponse)
 def cloud_status():
     """Get cloud (Aura) connection status."""
     with db_session() as db:
@@ -255,7 +340,7 @@ def cloud_status():
         }
 
 
-@app.get("/audit/actions")
+@app.get("/audit/actions", response_model=AuditActionsResponse)
 def audit_actions(user_id: str = None, limit: int = 100):
     """Get recent audit log entries."""
     actions = audit_log.get_recent_actions(user_id=user_id, limit=limit)

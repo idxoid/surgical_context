@@ -39,7 +39,7 @@ External Python process. VS Code communicates via FastAPI (localhost HTTP). Faul
 | POST | `/index` | Index a project directory into Neo4j + LanceDB |
 | POST | `/index/docs` | Index a documentation directory into LanceDB + DocAnchor graph |
 | POST | `/ask` | Assemble `PromptContext`, query Ollama, return answer + JSON contract |
-| POST | `/ask/stream` | Streaming answer endpoint over server-sent events |
+| POST | `/ask/stream` | Streaming answer endpoint over JSON-safe server-sent events |
 | POST | `/search` | Semantic search over indexed docs (LanceDB) |
 | POST | `/overlay` | Push unsaved file content into memory |
 | DELETE | `/overlay` | Clear overlay for a file (on save/close) |

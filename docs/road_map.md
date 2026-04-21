@@ -53,13 +53,15 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 - [ ] Maintain `docs/README.md` as the current-truth entry point; archive or label historical analysis when status changes.
 - [x] Fix sidecar DB lifecycle: remove mutable request identity from the global client; use request-scoped user context.
 - [x] Move doc resolution inside the arbitration pipeline before `PromptCompiler.compile_with_intent()`.
-- [ ] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.
+- [x] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.
+- [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
 - [ ] Add endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and auth boundaries.
 
 ### P1 — Retrieval Correctness
 - [ ] Implement stable UID v2 from [spec_uid_stability.md](spec_uid_stability.md).
 - [ ] Replace name-only call linking with the scoped resolver in [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
 - [ ] Add workspace/branch isolation from [spec_branch_isolation.md](spec_branch_isolation.md).
+- [ ] Add Git checkout/stash-pop invalidation strategy: graph/vector versioning plus differential branch sync.
 - [ ] Add adversarial fixtures for duplicate names, moved files, renamed symbols, stale docs, and branch duplication.
 
 ### P2 — Visible Product Value
@@ -71,7 +73,9 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 ### P3 — Scale and Learning
 - [ ] Add retrieval caching only after UID, workspace, and graph-version keys are stable.
 - [ ] Add feedback signals only after prompt-contract observability and privacy/redaction rules exist.
-- [ ] Move AFFECTS rebuild and large-repo indexing work to a background queue.
+- [ ] Move AFFECTS rebuild and large-repo indexing work to a background queue with backpressure and batching.
+- [ ] Coalesce IDE event storms (mass refactor, find/replace, stash pop) into bounded batch updates.
+- [ ] Add embedding recomputation controls: content-hash cache, worker throttle, and opt-in low-priority background mode.
 
 ---
 
@@ -195,8 +199,10 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] File-level dirty tracking: compare `File.hash` before re-parsing
 - [x] `POST /index/file` endpoint for single-file updates (triggered by file save in client)
 - [x] Delete-on-remove: prune Symbol nodes when file changes (`delete_symbols_for_file`)
+- [x] Transactional recovery: write-ahead indexing job log, retry state, and dead-letter queue for partial Neo4j/LanceDB failure
 - [ ] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed (optimization, deferred)
 - [ ] Background debounce queue: batch rapid-fire saves (deferred)
+- [ ] Backpressure for mass IDE events: bounded queue, batch coalescing, and stale job cancellation
 
 ### Graph Completeness ✅ COMPLETE
 - [x] `IMPORTS` edge between Files to enable correct cross-module call resolution
@@ -471,6 +477,10 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 
 ### 10.3 Performance & Reliability (carried forward from Phase 7)
 - [ ] Parallel parsing for `git pull` indexing (ThreadPoolExecutor, 4 workers default)
+- [ ] Durable indexing queue with retries and dead-letter records for partial graph/vector writes
+- [ ] Backpressure and batch coalescing for mass save/refactor events from the IDE
+- [ ] Git branch-switch cache invalidation via workspace graph/vector versions
+- [ ] Embedding recomputation throttle and content-hash cache to reduce local CPU/GPU load
 - [ ] Graceful degradation on Neo4j outage (local cache + retry)
 - [ ] Rate limiting per user
 - [ ] Circuit breaker for cloud sync failures
@@ -484,7 +494,7 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 
 ### 10.5 Extension Productization
 - [ ] Context inspector panel showing retrieved symbols/docs, relevance scores, and dirty-state badges.
-- [ ] Streaming chat integration once `/ask/stream` emits JSON-safe SSE events.
+- [ ] Streaming chat integration with `/ask/stream` JSON-safe SSE events.
 - [ ] Token budget, selected mode, query intent, and model route display.
 - [ ] VS Code settings for sidecar URL, model preference, workspace ID, and auth token.
 
@@ -508,6 +518,10 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 | Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Phase 6.1: tier-aware assembly + mode flag implemented ✅; Phase 6.2: orchestrator integration | 🟡 In Progress (6.1 ✅) |
 | Model Router misclassification | Medium | Misclassification sends complex task to cheap model | Phase 6 — escalation fallback on empty/error; Phase 7 RBAC | 🟡 Pending Phase 6+ |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
+| **Incremental index split-brain** | **Critical** | Neo4j can commit symbol/edge changes while LanceDB embedding writes fail or the process is killed. Graph/vector stores then disagree silently. | Durable job log + retry/dead-letter states implemented; next: idempotent replay worker or rollback strategy | 🟡 Mitigated |
+| **IDE event storm** | **High** | Mass refactor, find/replace across many files, or `git stash pop` can flood the sidecar with parse/embed/index work. | P3: bounded queue, backpressure, batch coalescing, stale job cancellation | ❌ Open |
+| **Git branch cache invalidation** | **High** | Checkout changes many ASTs at once; full reindex is slow, stale graph/vector versions are wrong. | P1/P3: workspace graph/vector versions, branch-scoped cache keys, differential sync on checkout | ❌ Open |
+| **Local embedding compute cost** | **Medium** | Re-embedding changed symbols on every save can consume CPU/GPU and degrade editor responsiveness. | P3: content-hash embedding cache, throttled worker, low-priority background mode | ❌ Open |
 | **UID instability** | **Critical** | `sha256(file_path:name)` breaks on rename/move; collides on overloads + nested funcs. Corrupts AFFECTS, DocAnchor, incremental indexing. | Phase 8.1: qualified-name + signature-hash UID ([spec_uid_stability.md](spec_uid_stability.md)) | ❌ Open |
 | **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Phase 8.2: 5-tier scope-aware resolver ([spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md)) | ❌ Open |
 | **No workspace isolation on Aura** | **Critical** | Multi-user cloud collapses branches/tenants into one graph; wrong-version bodies returned silently. | Phase 8.3: `Workspace` node + scoped Cypher ([spec_branch_isolation.md](spec_branch_isolation.md)) | ❌ Open |

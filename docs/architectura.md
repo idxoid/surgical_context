@@ -132,7 +132,7 @@ Without runtime metrics and prompt-contract observability, production claims in 
 7. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas), fill budget in order.
 8. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
 9. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
-10. **Streaming**: `/ask/stream` provides SSE responses. JSON-safe event framing remains an open hardening task.
+10. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
 
 ### 4.2. Cold Start
 1. FS scan for `.py`/`.ts`/`.tsx` files (gitignore-aware, dirs pruned).

@@ -6,6 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
+from sidecar.indexer.job_log import IndexJobLog
 from sidecar.parser.extractor import SymbolExtractor
 from sidecar.parser.registry import REGISTRY
 from sidecar.silence import install as _silence
@@ -51,10 +52,14 @@ def _collect_files(project_path: str) -> list[str]:
     return files
 
 
+def hash_file(file_path: str) -> str:
+    with open(file_path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
 def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor: SymbolExtractor):
     """Index a single file: symbols → calls → embeddings → imports → inheritance → AFFECTS rebuild."""
-    with open(file_path, "rb") as f:
-        file_hash = hashlib.sha256(f.read()).hexdigest()
+    file_hash = hash_file(file_path)
     symbols = extractor.extract(file_path)
     for sym in symbols:
         line_count = sym.end_line - sym.start_line + 1
@@ -100,6 +105,7 @@ def run_indexing(project_path: str):
     db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
     lance = LanceDBClient()
     extractor = SymbolExtractor()
+    job_log = IndexJobLog()
 
     print(f"🚀 Indexing project: {project_path}")
 
@@ -112,8 +118,7 @@ def run_indexing(project_path: str):
     # Compute current file hashes
     current_hashes = {}
     for file_path in files_to_index:
-        with open(file_path, "rb") as f:
-            current_hashes[file_path] = hashlib.sha256(f.read()).hexdigest()
+        current_hashes[file_path] = hash_file(file_path)
 
     # Query stored hashes from Neo4j
     stored_hashes = db.get_file_hashes(files_to_index)
@@ -128,14 +133,12 @@ def run_indexing(project_path: str):
 
     print(f"🔄 {len(changed_files)}/{len(files_to_index)} files changed, re-indexing...")
 
-    # Delete stale symbols for changed files
-    for file_path in changed_files:
-        db.delete_symbols_for_file(file_path)
-
     # Re-index only changed files
     for file_path in changed_files:
         print(f"📄 Indexing: {file_path}")
-        index_file(file_path, db, lance, extractor)
+        with job_log.track_file_job(file_path, file_hash=current_hashes[file_path]):
+            db.delete_symbols_for_file(file_path)
+            index_file(file_path, db, lance, extractor)
 
     # Resolve pending DocAnchors (runs over entire DB)
     from sidecar.indexer.anchor import resolve_pending_anchors
