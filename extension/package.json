@@ -10,13 +10,7 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onView:surgicalContext.chat",
-    "onCommand:surgicalContext.askCurrentSymbol",
-    "onCommand:surgicalContext.openInspector",
-    "onCommand:surgicalContext.showImpact",
-    "onCommand:surgicalContext.openDashboard"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "icon": "media/icon.svg",
   "contributes": {
