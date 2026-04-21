@@ -31,12 +31,31 @@ External Python process. VS Code communicates via FastAPI (localhost HTTP). Faul
 ### Context Arbitrator
 
 Returns a typed `PromptContext` dataclass (`sidecar/context/arbitrator.py`):
-1. Fetch target symbol from Neo4j (uid, range); resolve file path via `(File)-[:CONTAINS]->(Symbol)`
-2. Check In-Memory Overlay — if dirty version exists, read from memory (`is_dirty=True`)
-3. Otherwise read code from disk by line range
-4. Repeat for all direct `CALLS` dependencies (BFS depth 1)
-5. Caller attaches doc chunks from LanceDB to `PromptContext.documentation`
-6. `to_system_prompt()` → flat text for LLM; `to_dict()` → JSON Prompt Contract returned to VS Code
+1. Detect query intent from user question via `IntentClassifier` (Phase 6.1)
+2. Fetch target symbol from Neo4j (uid, range); resolve file path via `(File)-[:CONTAINS]->(Symbol)`
+3. Check In-Memory Overlay — if dirty version exists, read from memory (`is_dirty=True`)
+4. Otherwise read code from disk by line range
+5. Expand graph via BFS (token-budget constrained) to gather all `CALLS` dependencies + reverse deps
+6. Compile context tier-aware per intent: code → cross-refs → specs → architecture → concepts → ideas
+7. Attaches doc chunks from LanceDB to `PromptContext.documentation` (respects tier priority)
+8. `to_system_prompt()` → flat text for LLM; `to_dict()` → JSON Prompt Contract with `mode` + `intent` fields
+
+### Intent Classification & Graceful Degradation (Phase 6.1)
+
+`IntentClassifier` (`sidecar/context/intent_classifier.py`):
+- Detects one of 6 query intents: **navigation** ("where is X?"), **debugging** ("why does X fail?"), **refactor** ("rename X everywhere"), **exploration** ("how does X work?"), **new_feature** ("add X"), **design_question** ("how should we approach this?")
+- Each intent has a unique 6-tier priority: `[code, cross_refs, specs, architecture, concept, idea]` orderings vary
+- Example: navigation prioritizes code + cross-refs; new_feature deprioritizes code, prioritizes ideas/concepts
+
+`PromptCompiler.compile_with_intent()`:
+- Fills context tiers in priority order per detected intent
+- Graceful degradation: if a tier is empty, proceeds to next tier
+- If all tiers exhausted → `mode = "standard"` (no surgical context, bare LLM call)
+- Otherwise: `mode = "surgical_full"` (code + graph) or `mode = "surgical_doc_only"` (docs only)
+
+PromptContext now includes:
+- `mode`: indicates which context tier(s) populated the response
+- `intent`: the detected query intent (for observability + model routing in Phase 6.3)
 
 ### In-Memory Overlay
 

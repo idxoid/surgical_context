@@ -1,8 +1,16 @@
 # Surgical Context — Road Map
 
-> **Status:** ✅ Phase 5 COMPLETE & VALIDATED. Benchmark: 100% pass rate (10/10 queries).
+> **Status:** ✅ Phase 5 COMPLETE & VALIDATED. Phase 6.1 COMPLETE (Intent Classifier).
+> Next: Phase 6.2 (Orchestrator Integration).
 >
-> **Graph Validation Metrics (full codebase):**
+> **Phase 6.1 Results:**
+> - Intent Classifier: 6 types (navigation, debugging, refactor, exploration, new_feature, design_question)
+> - Tier Priority Orders: IntentConfig maps each intent to 6-tier priority (code, cross_refs, specs, architecture, concept, idea)
+> - PromptCompiler.compile_with_intent(): tier-aware assembly with graceful degradation
+> - Test Coverage: 17 intent classifier tests + 19 compiler tests (all 97 unit tests passing)
+> - Doc Type Inference: pattern-based (spec_*, idea_*, concept, architecture)
+>
+> **Phase 5 Graph Validation Metrics (full codebase):**
 > - Typed call edges: 49 (28 CALLS_DIRECT, 21 CALLS_DYNAMIC)
 > - AFFECTS index: 196 edges (reverse dependency materialization)
 > - FROM relations: 2,040 edges with type classification (doc, code, spec, architecture, concept, roadmap, review)
@@ -237,32 +245,45 @@ Goal: Classify function calls by confidence; enable cascade-aware incremental re
 
 ---
 
-## Phase 6: Intent Classification & Graceful Degradation (PLANNED — post-MVP)
+## Phase 6: Intent Classification & Graceful Degradation (IN PROGRESS — 6.1 COMPLETE)
 Goal: Adaptive context assembly based on query type; fallback to standard LLM mode when no surgical context available.
 
-> **Spec:** [spec_intent_classifier.md](spec_intent_classifier.md) — design spec complete; implementation deferred until Phase 5 metrics validate doc-code precision.
+> **Specs:** [spec_intent_classifier.md](spec_intent_classifier.md) — design spec complete; implementation ongoing.
 
-### Query Intent Classification
-- [ ] Detect intent from user query: navigation, debugging, refactor, exploration, new feature, design question
-- [ ] Route to priority-ordered content tiers: code → cross-refs → specs → architecture → concepts → ideas
-- [ ] Budget allocation per tier (primary/secondary/tail splits vary by intent)
-- [ ] Graceful fallback: if no content found at any tier, switch to "standard mode" (bare LLM call, no context)
+### Phase 6.1: Intent Classifier ✅ COMPLETE
+- [x] `IntentClassifier` class with keyword-based intent detection (heuristics, ML upgrade in Phase 7)
+- [x] 6 intent types: navigation, debugging, refactor, exploration, new_feature, design_question
+- [x] `IntentConfig` with 6-tier priority orderings per intent (code, cross_refs, specs, architecture, concept, idea)
+- [x] Add `mode` field to `PromptContext`: "surgical_full" | "surgical_doc_only" | "standard"
+- [x] Add `intent` field to `PromptContext` for tracking detected query type
+- [x] `PromptCompiler.compile_with_intent()` — tier-aware context assembly with graceful degradation
+- [x] Doc type inference from filename patterns (spec_*, idea_*, concept, architecture)
+- [x] Unit tests: 17 intent classifier tests + 19 compiler tests (all passing)
 
-### Payload Assembly Redesign
-- [ ] Implement `PromptCompiler.compile()` with tier-aware budget filling
-- [ ] Add `mode` field to PromptContext: "surgical_full" | "surgical_doc_only" | "standard"
-- [ ] Surface mode in `/ask` response and UI (user sees which context was used)
+### Phase 6.2: Graceful Degradation in Orchestrator (NEXT)
+- [ ] Integrate `IntentClassifier` with `ContextArbitrator`
+- [ ] Call intent detection in `get_context_for_symbol(question)`
+- [ ] Pass intent to `compile_with_intent()` instead of `compile()`
+- [ ] Surface `mode` and `intent` in `/ask` response JSON
+- [ ] Extend Phase 5 validation tests for intent classification accuracy
 
-### Streaming & Model Routing
+### Phase 6.3: Streaming & Model Routing (PLANNED)
 - [ ] Streaming LLM responses (SSE) instead of blocking
-- [ ] Round-Robin model router (ADR-004) — route by context size + intent
 - [ ] Official Anthropic SDK activation (`sidecar/ai/engine.py`) with prompt caching on `graph_context` block
+- [ ] Round-Robin model router (ADR-004) — route by context size + intent
 - [ ] Upgrade demo from Ollama/llama3 to Claude Sonnet 4.6 (per [review_findings_2026-04-17.md](review_findings_2026-04-17.md) recommendation #5)
 
+### Phase 6.4: Integration Testing (PLANNED)
+- [ ] Test intent classification accuracy on 6 intent types
+- [ ] Test tier-based budget allocation per intent
+- [ ] Test graceful degradation (no matches → standard mode)
+- [ ] Test mode field serialization in PromptContext.to_dict()
+
 ### JSON Prompt Contract — Phase 6 Additions
-- [ ] `mode` field: "surgical_full" | "surgical_doc_only" | "standard"
-- [ ] `metadata` block: project, branch, query_intent, tiers_used
-- [ ] Per-tier token counts for observability
+- [x] `mode` field: "surgical_full" | "surgical_doc_only" | "standard" (6.1)
+- [x] `intent` field: detected query type (6.1)
+- [ ] `metadata` block: query_intent, tiers_used (6.2+)
+- [ ] Per-tier token counts for observability (6.3+)
 
 ---
 
@@ -317,7 +338,7 @@ Goal: Transition from local tool to shared team solution (ADR-003).
 | Missing incremental index | High | Full re-scan on every save breaks the <200ms SLO | Phase 3.5 file-level dirty tracking ✅ + Phase 5 AFFECTS rebuild ✅ | ✅ Resolved |
 | Doc-code semantic linking | **High** | SIMILARITY_THRESHOLD mismatch (0.4 too strict) → 36% resolution rate | Phase 5: threshold tuning (0.4 → 1.5) ✅ → 50%+ resolution | ✅ Resolved |
 | Embedding leakage to cloud | Medium | Vector inversion can recover source text — contradicts ADR-001 spirit | Phase 7: Security ADR before cloud vector sync | 🟡 Pending Phase 7 |
-| Intent classification immaturity | Medium | Query intent classifier premature before precision improves | Phase 6 design complete (spec: [spec_intent_classifier.md](spec_intent_classifier.md)); defer implementation until Phase 5 completion | 🟢 Designed, pending Phase 6 |
-| Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Phase 6: implement tier-based assembly + mode flag + logging | 🟡 Pending Phase 6 |
+| Intent classification immaturity | Medium | Query intent classifier premature before precision improves | Phase 6.1 complete: keyword heuristics classifier implemented + 36 unit tests ✅; ML upgrade in Phase 7 | 🟢 In Progress (6.1 ✅) |
+| Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Phase 6.1: tier-aware assembly + mode flag implemented ✅; Phase 6.2: orchestrator integration | 🟡 In Progress (6.1 ✅) |
 | Model Router misclassification | Medium | Misclassification sends complex task to cheap model | Phase 6 — escalation fallback on empty/error; Phase 7 RBAC | 🟡 Pending Phase 6+ |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
