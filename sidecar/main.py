@@ -1,6 +1,6 @@
+import hashlib
 import logging
 import os
-import hashlib
 from collections.abc import Generator
 from typing import Any, cast
 
@@ -760,7 +760,7 @@ def ask(
             with trace.stage("llm"):
                 response_cache_hit = False
                 prompt_hash = hashlib.sha256(
-                    f"{system_prompt}\n{req.question}".encode("utf-8")
+                    f"{system_prompt}\n{req.question}".encode()
                 ).hexdigest()
                 cached_response = default_cache.get_response(prompt_hash, workspace_id)
                 if cached_response:

@@ -69,7 +69,9 @@ class LanceDBClient:
         self._embedding_cache_enabled = EMBED_CACHE_ENABLED
         self._embedding_cache = EmbeddingCache() if self._embedding_cache_enabled else None
         self._embed_batch_size = max(1, EMBED_BATCH_SIZE)
-        throttle_ms = max(EMBED_THROTTLE_MS, EMBED_LOW_PRIORITY_THROTTLE_MS if EMBED_LOW_PRIORITY else 0)
+        throttle_ms = max(
+            EMBED_THROTTLE_MS, EMBED_LOW_PRIORITY_THROTTLE_MS if EMBED_LOW_PRIORITY else 0
+        )
         self._embed_throttle_seconds = throttle_ms / 1000
         self._embedding_stats = {"cache_hits": 0, "cache_misses": 0, "encoded": 0}
         if DOCS_TABLE not in self._db.table_names():

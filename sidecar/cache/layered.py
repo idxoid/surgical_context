@@ -10,12 +10,9 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from time import time
-from typing import Generic, TypeVar
 
 from sidecar.context.types import Subgraph
 from sidecar.observability.metrics import default_metrics
-
-T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -32,7 +29,7 @@ class CachedResponse:
     expires_at: float
 
 
-class _LRU(Generic[T]):
+class _LRU[T]:
     def __init__(self, capacity: int):
         self.capacity = max(1, capacity)
         self._items: OrderedDict[tuple, T] = OrderedDict()
