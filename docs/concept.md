@@ -4,7 +4,7 @@
 
 Data is split across three stores, each optimized for its role.
 
-**Neo4j** — graph topology only. Nodes: `File`, `Symbol`, `DocAnchor`. Edges: `CONTAINS`, `CALLS`, `COVERS`, `FROM`. No code text, no file paths stored on nodes (ADR-001). ✅ Running via Docker.
+**Neo4j** — graph topology only. Nodes: `File`, `Symbol`, `DocAnchor`. Edges: `CONTAINS`, `CALLS_DIRECT`/`CALLS_DYNAMIC`/`CALLS_INFERRED`, `COVERS`, `FROM` (with type classification), `DEPENDS_ON`, `IMPORTS`, `AFFECTS` (Phase 5 reverse dependencies). No code text, no file paths stored on nodes (ADR-001). ✅ Running via Docker.
 
 **LanceDB** — local vector index for documentation chunks. Model: `all-MiniLM-L6-v2` (384-dim). ✅ Implemented.
 

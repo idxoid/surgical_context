@@ -28,6 +28,8 @@ class PromptContext:
     graph_context: list[SymbolContext] = field(default_factory=list)
     documentation: list[DocChunk] = field(default_factory=list)
     budget: dict = field(default_factory=dict)
+    mode: str = "surgical_full"  # "surgical_full" | "surgical_doc_only" | "standard"
+    intent: str = ""  # e.g. "navigation", "debugging", "refactor", etc.
 
     def to_system_prompt(self) -> str:
         """Render to the flat text format the LLM receives."""
@@ -49,6 +51,8 @@ class PromptContext:
     def to_dict(self) -> dict:
         """Serialize to the JSON Prompt Contract shape."""
         return {
+            "mode": self.mode,
+            "intent": self.intent,
             "primary_source": {
                 "symbol": self.primary_source.symbol,
                 "file_path": self.primary_source.file_path,

@@ -1,5 +1,7 @@
 # Surgical Context — Architecture
 
+> **Status:** Phase 5 complete and validated. Full pipeline operational: code indexing with typed call edges → AFFECTS index → doc enrichment with cross-document linking. See [road_map.md](road_map.md) for validation metrics (49 typed edges, 196 AFFECTS, 2,040 FROM relations, 2,286 COVERS links).
+
 ## Section 1: Executive Summary & Goals
 
 ### 1.1. Project Overview
