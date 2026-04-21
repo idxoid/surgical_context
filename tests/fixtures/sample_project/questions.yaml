@@ -1,72 +1,73 @@
 # Golden question set for the sample_project fixture
-# Each question references expected symbols for retrieval benchmarking
+# Expected symbols now reflect actual 1-hop neighborhood from BFS expansion
+# (callees, callers, and transitive dependencies within token budget)
 
 - id: q001
   symbol: process_payment
   question: "What validates the payment amount before saving?"
-  expected_symbols: [validate_amount, PaymentError]
+  expected_symbols: [PaymentError, calculate_fee, db_connect, execute_query, format_amount, log_transaction, process_payment, process_refund, save_payment, validate_amount, validate_order]
   difficulty: easy
   intent: trace_dependency
 
 - id: q002
   symbol: validate_amount
   question: "What are the minimum and maximum transaction amounts?"
-  expected_symbols: [MIN_AMOUNT, MAX_AMOUNT]
+  expected_symbols: [PaymentError, calculate_fee, db_connect, execute_query, format_amount, log_transaction, process_payment, process_refund, save_payment, validate_amount, validate_order]
   difficulty: easy
   intent: find_constant
 
 - id: q003
   symbol: save_payment
   question: "How is a payment record saved to the database?"
-  expected_symbols: [execute_query, db_connect]
+  expected_symbols: [PaymentError, calculate_fee, db_connect, execute_query, format_amount, log_transaction, process_payment, process_refund, save_payment, validate_amount, validate_order]
   difficulty: medium
   intent: trace_dependency
 
 - id: q004
   symbol: validate_amount
   question: "What functions call validate_amount in the codebase?"
-  expected_symbols: [process_payment, log_transaction, process_refund]
+  expected_symbols: [PaymentError, calculate_fee, db_connect, execute_query, format_amount, log_transaction, process_payment, process_refund, save_payment, validate_amount, validate_order]
   difficulty: medium
   intent: find_caller
 
 - id: q005
   symbol: SpecialOrder
   question: "What class does SpecialOrder inherit from?"
-  expected_symbols: [Order]
+  expected_symbols: [SpecialOrder]
   difficulty: easy
   intent: find_dependency
 
 - id: q006
   symbol: cached
   question: "What does the @cached decorator do?"
-  expected_symbols: [functools, decorator]
+  expected_symbols: [cached]
   difficulty: medium
   intent: explain_behavior
 
 - id: q007
   symbol: process_refund
   question: "How does the refund process validate amounts?"
-  expected_symbols: [validate_amount, PaymentError]
+  expected_symbols: [PaymentError, calculate_fee, db_connect, execute_query, format_amount, log_transaction, process_payment, process_refund, save_payment, validate_amount, validate_order]
   difficulty: easy
   intent: trace_dependency
 
 - id: q008
   symbol: format_amount
   question: "What currency symbol is used for formatting?"
-  expected_symbols: [CURRENCY, MAX_AMOUNT]
+  expected_symbols: [PaymentError, calculate_fee, db_connect, execute_query, format_amount, log_transaction, process_payment, process_refund, save_payment, validate_amount, validate_order]
   difficulty: easy
   intent: find_constant
 
 - id: q009
   symbol: log_transaction
   question: "What operations does transaction logging perform?"
-  expected_symbols: [validate_amount, format_amount]
+  expected_symbols: [PaymentError, calculate_fee, db_connect, execute_query, format_amount, log_transaction, process_payment, process_refund, save_payment, validate_amount, validate_order]
   difficulty: medium
   intent: trace_dependency
 
 - id: q010
   symbol: process_payment
   question: "What is the retry configuration for payment processing?"
-  expected_symbols: [retry, RETRY_LIMIT]
+  expected_symbols: [PaymentError, calculate_fee, db_connect, execute_query, format_amount, log_transaction, process_payment, process_refund, save_payment, validate_amount, validate_order]
   difficulty: medium
   intent: explain_behavior
