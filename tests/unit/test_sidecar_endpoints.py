@@ -134,6 +134,31 @@ def test_ask_endpoint_returns_not_found(monkeypatch):
     assert "not found" in exc_info.value.detail
 
 
+def test_auth_required_rejects_missing_bearer_token(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.ask(main.AskRequest(symbol="process_payment", question="How does this work?"))
+
+    assert exc_info.value.status_code == 401
+    assert "Missing bearer token" in exc_info.value.detail
+
+
+def test_auth_required_accepts_valid_bearer_token(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+    token = main.user_auth.generate_token("Alice")
+
+    body = main.ask(
+        main.AskRequest(symbol="process_payment", question="How does this work?"),
+        authorization=f"Bearer {token}",
+    )
+
+    assert body["symbol"] == "process_payment"
+    assert body["user"] == "alice"
+
+
 def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
     main = import_main_with_fakes(monkeypatch)
 

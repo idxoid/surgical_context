@@ -19,6 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MODEL_PREFERENCE = os.getenv("MODEL_PREFERENCE", "auto")  # "claude" | "ollama" | "auto"
+AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes", "on"}
 
 app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
@@ -125,13 +126,42 @@ class AuditActionsResponse(BaseModel):
     total: int
 
 
+def _header_value(value: Any) -> str | None:
+    """Normalize FastAPI Header defaults when route functions are called directly in tests."""
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _resolve_request_user(
+    x_user_id: Any = None,
+    authorization: Any = None,
+    *,
+    require_auth: bool | None = None,
+) -> str:
+    """Resolve the request user and optionally require a valid bearer token."""
+    require_auth = AUTH_REQUIRED if require_auth is None else require_auth
+    authorization_value = _header_value(authorization)
+    if authorization_value:
+        scheme, _, token = authorization_value.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(status_code=401, detail="Invalid authorization header")
+        if not user_auth.verify_token(token):
+            raise HTTPException(status_code=401, detail="Invalid or expired bearer token")
+        return user_auth.get_user_from_token(token)
+
+    if require_auth:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    return user_auth.identify_user(_header_value(x_user_id))
+
+
 @app.get("/health", response_model=HealthResponse)
 def health():
     return {"status": "ok"}
 
 
 @app.post("/index", response_model=StatusPathResponse)
-def index(req: IndexRequest):
+def index(req: IndexRequest, x_user_id: str = Header(None), authorization: str = Header(None)):
+    _resolve_request_user(x_user_id, authorization)
     if not os.path.isdir(req.project_path):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.project_path}")
 
@@ -142,7 +172,12 @@ def index(req: IndexRequest):
 
 
 @app.post("/index/file", response_model=IndexFileResponse)
-def index_file_endpoint(req: IndexFileRequest):
+def index_file_endpoint(
+    req: IndexFileRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
+    _resolve_request_user(x_user_id, authorization)
     if not os.path.isfile(req.file_path):
         raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
 
@@ -171,7 +206,12 @@ def index_file_endpoint(req: IndexFileRequest):
 
 
 @app.post("/index/docs", response_model=StatusPathResponse)
-def index_docs_endpoint(req: IndexDocsRequest):
+def index_docs_endpoint(
+    req: IndexDocsRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
+    _resolve_request_user(x_user_id, authorization)
     if not os.path.isdir(req.docs_path):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.docs_path}")
 
@@ -182,27 +222,42 @@ def index_docs_endpoint(req: IndexDocsRequest):
 
 
 @app.post("/search", response_model=SearchResponse)
-def search(req: SearchRequest):
+def search(req: SearchRequest, x_user_id: str = Header(None), authorization: str = Header(None)):
+    _resolve_request_user(x_user_id, authorization)
     return {"results": vector_db.search(req.query, req.limit)}
 
 
 @app.post("/overlay", response_model=OverlayResponse)
-def update_overlay(req: OverlayRequest):
+def update_overlay(
+    req: OverlayRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
+    _resolve_request_user(x_user_id, authorization)
     overlay.update(req.file_path, req.content)
     symbols = overlay.get_symbols(req.file_path)
     return {"file_path": req.file_path, "symbols": list(symbols.keys())}
 
 
 @app.delete("/overlay", response_model=ClearOverlayResponse)
-def clear_overlay(file_path: str):
+def clear_overlay(
+    file_path: str,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
+    _resolve_request_user(x_user_id, authorization)
     overlay.clear(file_path)
     return {"cleared": file_path}
 
 
 @app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest, x_user_id: str = Header(None)):
+def ask(
+    req: AskRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
     """Ask about a symbol (with multi-user audit logging)."""
-    user_id = user_auth.identify_user(x_user_id)
+    user_id = _resolve_request_user(x_user_id, authorization)
     with db_session(user_id=user_id) as db:
         arb = ContextArbitrator(db, overlay, vector_db)
         ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
@@ -233,9 +288,13 @@ def ask(req: AskRequest, x_user_id: str = Header(None)):
 
 
 @app.post("/ask/stream")
-def ask_stream(req: AskRequest, x_user_id: str = Header(None)):
+def ask_stream(
+    req: AskRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
     """Streaming version of /ask endpoint (SSE)."""
-    user_id = user_auth.identify_user(x_user_id)
+    user_id = _resolve_request_user(x_user_id, authorization)
 
     def response_generator():
         with db_session(user_id=user_id) as db:
@@ -264,8 +323,9 @@ def ask_stream(req: AskRequest, x_user_id: str = Header(None)):
 
 
 @app.get("/impact", response_model=ImpactResponse)
-def impact(symbol: str):
+def impact(symbol: str, x_user_id: str = Header(None), authorization: str = Header(None)):
     """Return downstream dependents affected by a change to the given symbol."""
+    _resolve_request_user(x_user_id, authorization)
     with db_session() as db:
         from sidecar.indexer.affects import AFFECTSIndexer
 
@@ -322,14 +382,16 @@ def auth_token(user_id: str = None):
 
 
 @app.get("/auth/users", response_model=UsersResponse)
-def list_users():
+def list_users(x_user_id: str = Header(None), authorization: str = Header(None)):
     """List all active users."""
+    _resolve_request_user(x_user_id, authorization)
     return {"users": user_auth.list_users()}
 
 
 @app.get("/status/cloud", response_model=CloudStatusResponse)
-def cloud_status():
+def cloud_status(x_user_id: str = Header(None), authorization: str = Header(None)):
     """Get cloud (Aura) connection status."""
+    _resolve_request_user(x_user_id, authorization)
     with db_session() as db:
         health = db.health_check()
         return {
@@ -341,8 +403,14 @@ def cloud_status():
 
 
 @app.get("/audit/actions", response_model=AuditActionsResponse)
-def audit_actions(user_id: str = None, limit: int = 100):
+def audit_actions(
+    user_id: str = None,
+    limit: int = 100,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
     """Get recent audit log entries."""
+    _resolve_request_user(x_user_id, authorization)
     actions = audit_log.get_recent_actions(user_id=user_id, limit=limit)
     return {"actions": actions, "total": len(actions)}
 

@@ -1,6 +1,5 @@
 """Unit tests for user authentication."""
 
-import pytest
 from sidecar.auth import UserAuth
 
 
@@ -44,13 +43,21 @@ class TestUserAuth:
         auth = UserAuth()
         token = auth.generate_token("alice")
         assert token is not None
-        assert "alice" in token
+        assert auth.get_user_from_token(token) == "alice"
 
     def test_verify_token_valid(self):
         """Verify valid token."""
         auth = UserAuth()
         token = auth.generate_token("alice")
         assert auth.verify_token(token) is True
+
+    def test_verify_token_rejects_tampering(self):
+        """Signed tokens reject payload edits."""
+        auth = UserAuth(secret_key="test-secret")
+        token = auth.generate_token("alice")
+        payload, _, signature = token.rpartition(".")
+        tampered = f"{payload[:-1]}A" if payload[-1] != "A" else f"{payload[:-1]}B"
+        assert auth.verify_token(f"{tampered}.{signature}") is False
 
     def test_verify_token_invalid(self):
         """Verify invalid token."""

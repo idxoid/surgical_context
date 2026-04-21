@@ -56,7 +56,7 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 - [x] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.
 - [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
 - [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
-- [ ] Add auth-boundary enforcement tests once protected endpoints require bearer tokens.
+- [x] Add auth-boundary enforcement tests for protected endpoints with `AUTH_REQUIRED=true`.
 
 ### P1 — Retrieval Correctness
 - [ ] Implement stable UID v2 from [spec_uid_stability.md](spec_uid_stability.md).

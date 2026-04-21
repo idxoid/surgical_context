@@ -1,17 +1,19 @@
-"""Simple JWT-based user identification for multi-user support."""
+"""Signed bearer-token user identification for multi-user support."""
 
-import os
-import uuid
+import base64
+import hashlib
+import hmac
 import json
 import logging
+import os
+import uuid
 from datetime import datetime, timedelta
-import hashlib
 
 logger = logging.getLogger(__name__)
 
 
 class UserAuth:
-    """Simple user identification and JWT token generation."""
+    """Simple user identification and signed token generation."""
 
     def __init__(self, secret_key: str = None):
         """
@@ -61,7 +63,7 @@ class UserAuth:
 
     def generate_token(self, user_id: str, duration_hours: int = 24) -> str:
         """
-        Generate a simple JWT-like token.
+        Generate a signed bearer token.
 
         Args:
             user_id: User ID
@@ -80,9 +82,9 @@ class UserAuth:
             "nonce": str(uuid.uuid4()),
         }
 
-        # Simple encoding (not cryptographically secure, but sufficient for local development)
-        token = json.dumps(payload)
-        return token
+        payload_segment = self._encode_payload(payload)
+        signature = self._sign(payload_segment)
+        return f"{payload_segment}.{signature}"
 
     def verify_token(self, token: str) -> bool:
         """
@@ -94,21 +96,56 @@ class UserAuth:
         Returns:
             True if valid
         """
+        payload = self._decode_token(token)
+        if not payload:
+            return False
         try:
-            payload = json.loads(token)
             expires_at = datetime.fromisoformat(payload["expires_at"])
-            return expires_at > datetime.now()
         except Exception:
             return False
+        return expires_at > datetime.now()
 
     def get_user_from_token(self, token: str) -> str:
         """Extract user ID from token."""
-        try:
-            payload = json.loads(token)
-            return payload.get("user_id", "anonymous")
-        except Exception:
+        payload = self._decode_token(token)
+        if not payload:
             return "anonymous"
+        return payload.get("user_id", "anonymous")
 
     def list_users(self) -> list[dict]:
         """List all known users."""
         return list(self.users.values())
+
+    def _encode_payload(self, payload: dict) -> str:
+        """Encode a token payload as a URL-safe segment."""
+        payload_text = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        return (
+            base64.urlsafe_b64encode(payload_text.encode("utf-8"))
+            .decode("ascii")
+            .rstrip("=")
+        )
+
+    def _sign(self, payload_segment: str) -> str:
+        """Sign a token payload with HMAC-SHA256."""
+        return hmac.new(
+            self.secret_key.encode("utf-8"),
+            payload_segment.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _decode_token(self, token: str) -> dict | None:
+        """Return verified token payload, or None when malformed/tampered."""
+        try:
+            payload_segment, separator, signature = token.rpartition(".")
+            if not separator:
+                return None
+            expected = self._sign(payload_segment)
+            if not hmac.compare_digest(signature, expected):
+                return None
+            padding = "=" * (-len(payload_segment) % 4)
+            payload_text = base64.urlsafe_b64decode(f"{payload_segment}{padding}").decode(
+                "utf-8"
+            )
+            return json.loads(payload_text)
+        except Exception:
+            return None

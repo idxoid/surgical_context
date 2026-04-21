@@ -20,6 +20,7 @@ All via environment variables with defaults:
 | `NEO4J_PASSWORD` | `password` | Neo4j password |
 | `OLLAMA_MODEL` | `llama3` | Ollama model for `/ask` |
 | `MODEL_PREFERENCE` | `auto` | AI routing preference: `auto`, `claude`, or `ollama` |
+| `AUTH_REQUIRED` | `false` | When true, protected endpoints require `Authorization: Bearer <token>` |
 
 ---
 
@@ -122,7 +123,7 @@ Assemble surgical context for a symbol and query the LLM.
 **Errors:** `404` if symbol not found in graph.
 
 **Behavior:**
-1. Identify the user from `X-User-Id` and open a request-scoped Neo4j session via `db_session(user_id=...)`.
+1. Resolve the user from `Authorization: Bearer <token>` or `X-User-Id`. When `AUTH_REQUIRED=true`, missing or invalid bearer tokens return `401`.
 2. `ContextArbitrator.get_context_for_symbol(symbol, question, token_budget)` runs intent classification, graph expansion, deduplication, code resolution, and doc retrieval.
 3. `AIEngine.chat()` routes to the configured local/cloud model based on model preference, context size, and intent.
 4. Audit logging records successful and failed query actions.
@@ -214,7 +215,7 @@ Return downstream symbols and files affected by changing a symbol.
 ---
 
 ### POST /auth/token
-Generate a JWT token for a user id.
+Generate a signed bearer token for a user id.
 
 **Query param:** `user_id=alice`
 
@@ -268,11 +269,13 @@ Return recent audit log entries.
 
 Neo4j access goes through `db_session(...)`, which creates a request-scoped client and closes it after the endpoint finishes. This avoids mutating shared request identity on the global database object.
 
+Protected endpoints accept local `X-User-Id` identity by default for development. Set `AUTH_REQUIRED=true` to require signed bearer tokens from `/auth/token`.
+
 ---
 
 ## Planned Extensions
 
-- Enforce bearer-token auth boundaries on protected endpoints.
+- Add production auth policy: persistent users, secret rotation, token revocation, and role-based authorization.
 - Add `GET /metrics` with request timing, token/cost tracking, and queue state.
 - Add prompt-contract observability: scores, provenance, pruning reasons, model route, resolver version, and trace ID.
 - Add backpressure and batching around `/index/file` for mass editor events.

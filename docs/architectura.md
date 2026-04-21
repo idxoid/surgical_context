@@ -1,6 +1,6 @@
 # Surgical Context — Architecture
 
-> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, request-scoped DB sessions, durable index job logging, and a VS Code extension scaffold are present. The main open gaps are stable symbol identity, scoped call resolution, workspace/branch isolation, stronger auth boundaries, prompt-contract observability, and backpressure for mass indexing events. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, request-scoped DB sessions, durable index job logging, opt-in bearer auth enforcement, and a VS Code extension scaffold are present. The main open gaps are stable symbol identity, scoped call resolution, workspace/branch isolation, production auth policy/secret management, prompt-contract observability, and backpressure for mass indexing events. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 
 ## Section 1: Executive Summary & Goals
 

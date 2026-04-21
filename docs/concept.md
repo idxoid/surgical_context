@@ -162,6 +162,6 @@ Two-phase to ensure all nodes exist before edges are created:
 The project is pre-release. SaaS and marketplace are deferred. The active work stream is:
 
 1. **Correctness hardening.** Stable UID v2, scoped call resolution, workspace/branch isolation, and adversarial retrieval fixtures.
-2. **Operational safety.** Request-scoped DB handling, stronger auth boundaries, typed API responses, and JSON-safe streaming.
+2. **Operational safety.** Durable indexing recovery, signed bearer auth behind `AUTH_REQUIRED`, typed API responses, and JSON-safe streaming.
 3. **Observability.** `/metrics`, structured logs, token/cost/latency tracking, and richer JSON Prompt Contract metadata.
 4. **Extension productization.** Context inspector, streaming answers, token budget display, model route display, and user-configurable sidecar settings.
