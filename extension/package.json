@@ -26,8 +26,28 @@
     "views": {
       "surgicalContext": [
         {
+          "id": "surgicalContext.chat",
+          "name": "Chat",
+          "type": "webview"
+        },
+        {
+          "id": "surgicalContext.inspector",
+          "name": "Inspector",
+          "type": "webview"
+        },
+        {
           "id": "surgicalContext.impact",
           "name": "Impact",
+          "type": "webview"
+        },
+        {
+          "id": "surgicalContext.dashboard",
+          "name": "Dashboard",
+          "type": "webview"
+        },
+        {
+          "id": "surgicalContext.settings",
+          "name": "Settings",
           "type": "webview"
         },
         {

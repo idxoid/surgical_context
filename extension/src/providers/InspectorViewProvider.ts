@@ -1,0 +1,78 @@
+import * as vscode from 'vscode';
+import { getWebviewContent } from '../utils';
+import { stateManager } from '../state/ExtensionState';
+import {
+  WebviewToHostMessage,
+  HostToWebviewMessage,
+} from '../webview/shared/protocol';
+
+export class InspectorViewProvider implements vscode.WebviewViewProvider {
+  public static readonly viewType = 'surgicalContext.inspector';
+
+  private webviewView: vscode.WebviewView | undefined;
+
+  constructor(private extensionUri: vscode.Uri) {}
+
+  public resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken
+  ): void {
+    this.webviewView = webviewView;
+
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
+    };
+
+    webviewView.webview.html = getWebviewContent(
+      webviewView.webview,
+      this.extensionUri,
+      'inspector.js',
+      'styles.css'
+    );
+
+    webviewView.webview.onDidReceiveMessage((message: WebviewToHostMessage) => {
+      this.handleWebviewMessage(message);
+    });
+
+    this.loadContext();
+  }
+
+  private loadContext(): void {
+    const state = stateManager.getState();
+    if (state.lastContext) {
+      this.postMessage({
+        type: 'inspector.loaded',
+        context: state.lastContext,
+      });
+    } else {
+      this.postMessage({
+        type: 'inspector.loaded',
+        context: null,
+      });
+    }
+  }
+
+  private async handleWebviewMessage(message: WebviewToHostMessage): Promise<void> {
+    switch (message.type) {
+      case 'link.openFile':
+        if (message.filePath) {
+          const uri = vscode.Uri.file(message.filePath);
+          const opts: vscode.TextDocumentShowOptions = { preview: true };
+          if (message.line) {
+            opts.selection = new vscode.Range(
+              new vscode.Position(message.line - 1, 0),
+              new vscode.Position(message.line - 1, 0)
+            );
+          }
+          vscode.window.showTextDocument(uri, opts);
+        }
+        break;
+    }
+  }
+
+  private postMessage(message: HostToWebviewMessage): void {
+    this.webviewView?.webview.postMessage(message);
+  }
+}

@@ -2,13 +2,13 @@ import * as vscode from 'vscode';
 import { SidecarClient } from './sidecarClient';
 import { ChatPanel } from './chatPanel';
 import { OverlayManager } from './overlayManager';
+import { ChatViewProvider } from './providers/ChatViewProvider';
+import { InspectorViewProvider } from './providers/InspectorViewProvider';
 import { ImpactViewProvider } from './providers/ImpactViewProvider';
+import { DashboardViewProvider } from './providers/DashboardViewProvider';
+import { SettingsViewProvider } from './providers/SettingsViewProvider';
 import { SurgicalContextCodeLensProvider } from './providers/CodeLensProvider';
 import { SurgicalContextHoverProvider } from './providers/HoverProvider';
-import { ChatPanel } from './panels/ChatPanel';
-import { InspectorPanel } from './panels/InspectorPanel';
-import { DashboardPanel } from './panels/DashboardPanel';
-import { SettingsPanel } from './panels/SettingsPanel';
 import { stateManager } from './state/ExtensionState';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -54,10 +54,30 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidCloseTextDocument(doc => overlayManager.onDocumentClosed(doc))
   );
 
-  // Register Impact sidebar view provider
+  // Register sidebar view providers
+  const chatViewProvider = new ChatViewProvider(context.extensionUri, overlayManager);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatViewProvider)
+  );
+
+  const inspectorViewProvider = new InspectorViewProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(InspectorViewProvider.viewType, inspectorViewProvider)
+  );
+
   const impactViewProvider = new ImpactViewProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ImpactViewProvider.viewType, impactViewProvider)
+  );
+
+  const dashboardViewProvider = new DashboardViewProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(DashboardViewProvider.viewType, dashboardViewProvider)
+  );
+
+  const settingsViewProvider = new SettingsViewProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(SettingsViewProvider.viewType, settingsViewProvider)
   );
 
   // Register CodeLens provider
@@ -77,20 +97,19 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Spec commands
     vscode.commands.registerCommand('surgicalContext.askCurrentSymbol', () => {
-      ChatPanel.createOrReveal(context.extensionUri, overlayManager);
+      vscode.commands.executeCommand('surgicalContext.chat.focus');
     }),
 
     vscode.commands.registerCommand('surgicalContext.askSelection', () => {
-      ChatPanel.createOrReveal(context.extensionUri, overlayManager);
+      vscode.commands.executeCommand('surgicalContext.chat.focus');
     }),
 
     vscode.commands.registerCommand('surgicalContext.openInspector', async () => {
-      InspectorPanel.createOrReveal(context.extensionUri);
+      vscode.commands.executeCommand('surgicalContext.inspector.focus');
     }),
 
     vscode.commands.registerCommand('surgicalContext.showImpact', async (symbol?: string) => {
-      vscode.commands.executeCommand('workbench.view.extension.surgicalContext');
-      // TODO: Focus impact view and trigger load
+      vscode.commands.executeCommand('surgicalContext.impact.focus');
     }),
 
     vscode.commands.registerCommand('surgicalContext.findDocs', async () => {
@@ -99,11 +118,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('surgicalContext.openDashboard', async () => {
-      DashboardPanel.createOrReveal(context.extensionUri);
+      vscode.commands.executeCommand('surgicalContext.dashboard.focus');
     }),
 
     vscode.commands.registerCommand('surgicalContext.openSettings', async () => {
-      SettingsPanel.createOrReveal(context.extensionUri);
+      vscode.commands.executeCommand('surgicalContext.settings.focus');
     }),
 
     vscode.commands.registerCommand('surgicalContext.reindexCurrentFile', async () => {
@@ -133,11 +152,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Legacy commands for backward compatibility
     vscode.commands.registerCommand('surgicalContext.openChat', () => {
-      ChatPanel.createOrReveal(context.extensionUri, overlayManager);
+      vscode.commands.executeCommand('surgicalContext.chat.focus');
     }),
 
     vscode.commands.registerCommand('surgicalContext.askAboutCursor', () => {
-      ChatPanel.createOrReveal(context.extensionUri, overlayManager);
+      vscode.commands.executeCommand('surgicalContext.chat.focus');
     }),
 
     vscode.commands.registerCommand('surgicalContext.indexProject', async () => {
