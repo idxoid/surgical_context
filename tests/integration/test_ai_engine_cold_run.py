@@ -170,7 +170,7 @@ class TestAIEngineColdRun:
         mock_client.messages.create.return_value = mock_message
 
         engine = AIEngine(model_preference="auto")
-        answer = engine.chat(
+        _answer = engine.chat(
             system_prompt=sample_system_prompt,
             user_message=sample_questions["debugging"],
             token_count=2500,
@@ -191,7 +191,7 @@ class TestAIEngineColdRun:
         mock_ollama.chat.return_value = {"message": {"content": "Ollama response"}}
 
         engine = AIEngine(model_preference="auto")
-        answer = engine.chat(
+        _answer = engine.chat(
             system_prompt=sample_system_prompt,
             user_message=sample_questions["navigation"],
             token_count=500,
@@ -216,7 +216,7 @@ class TestAIEngineColdRun:
         mock_client.messages.create.return_value = mock_message
 
         engine = AIEngine(model_preference="auto")
-        answer = engine.chat(
+        _answer = engine.chat(
             system_prompt=sample_system_prompt,
             user_message=sample_questions["design_question"],
             token_count=500,  # Small context
@@ -321,7 +321,7 @@ class TestAIEngineColdRun:
         mock_client.messages.create.return_value = mock_message
 
         engine = AIEngine(model_preference="claude")
-        answer = engine.chat(
+        _answer = engine.chat(
             system_prompt=sample_system_prompt,  # Contains "--- DEPENDENCIES ---"
             user_message="What does process_payment do?",
             token_count=2500,

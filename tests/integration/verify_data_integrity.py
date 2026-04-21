@@ -92,7 +92,7 @@ class DataIntegrityVerifier:
     def consistency_checks():
         """Run consistency checks between stores."""
         db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-        lance = LanceDBClient()
+        _lance = LanceDBClient()
 
         try:
             issues = []

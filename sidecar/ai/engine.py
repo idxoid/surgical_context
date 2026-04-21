@@ -186,7 +186,7 @@ class AIEngine:
                 messages=[{"role": "user", "content": user_message}],
             ) as stream:
                 for text in stream.text_stream:
-                    yield text
+                    yield from text
         except Exception as e:
             import logging
 

@@ -98,7 +98,7 @@ class AuraClient(Neo4jClient):
         """Health check: verify connection is alive."""
         try:
             with self.driver.session() as session:
-                result = session.run("RETURN 1")
+                _result = session.run("RETURN 1")
                 return {
                     "status": "healthy",
                     "mode": "aura" if self.use_aura else "local",
