@@ -48,6 +48,7 @@ class GraphExpander:
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {name: $name})
         RETURN s, coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
                coalesce(c.range, s.range, [0, 0]) AS range
         LIMIT 1
         """
@@ -59,6 +60,7 @@ class GraphExpander:
 
         target = result["s"]
         target_file_path = result["file_path"]
+        target_file_hash = result.get("file_hash", "")
         target_range = result.get("range") or target.get("range", [0, 0])
         target_uid = target["uid"]
         target_token_cost = target.get("token_estimate", 0) or self._estimate_tokens(target)
@@ -77,6 +79,7 @@ class GraphExpander:
             direction="primary",
             depth=0,
             relevance_score=1.0,
+            file_hash=target_file_hash,
         )
 
         visited = {target_uid}
@@ -121,6 +124,7 @@ class GraphExpander:
                 direction=direction,
                 depth=distance,
                 relevance_score=score,
+                file_hash=neighbor.get("file_hash", ""),
             )
             chosen.append(node)
             spent += token_cost
@@ -225,6 +229,7 @@ class GraphExpander:
         RETURN n.uid AS uid,
                n.name AS name,
                coalesce(fn.path, '<unknown>') AS file_path,
+               coalesce(fn.hash, '') AS file_hash,
                coalesce(n.token_estimate, 0) AS token_estimate,
                coalesce(contains.range, n.range, [0, 0]) AS range,
                type(r) AS rel_type,
@@ -245,6 +250,7 @@ class GraphExpander:
                         "uid": record["uid"],
                         "name": record["name"],
                         "file_path": record["file_path"],
+                        "file_hash": record["file_hash"],
                         "token_estimate": record["token_estimate"],
                         "range": record["range"],
                         "rel_type": record["rel_type"],

@@ -32,6 +32,7 @@ class Neo4jClient:
                     w.ref = $ref,
                     w.ref_kind = $ref_kind,
                     w.last_seen = timestamp(),
+                    w.graph_version = coalesce(w.graph_version, 0),
                     w.created_at = coalesce(w.created_at, timestamp())
                 """,
                 **workspace,
@@ -87,6 +88,9 @@ class Neo4jClient:
                 WITH sym, count(*) AS owners
                 WHERE owners = 0
                 DETACH DELETE sym
+                WITH count(*) AS deleted_symbols
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
                 """,
                 path=file_path,
                 workspace_id=workspace_id,
@@ -103,6 +107,7 @@ class Neo4jClient:
                 w.ref = $ref,
                 w.ref_kind = $ref_kind,
                 w.last_indexed = timestamp(),
+                w.graph_version = coalesce(w.graph_version, 0) + 1,
                 w.created_at = coalesce(w.created_at, timestamp())
             MERGE (f:File {path: $path, workspace_id: $id})
             SET f.hash = $hash,
@@ -156,6 +161,14 @@ class Neo4jClient:
     def link_calls(self, calls: list[dict], workspace_id: str = DEFAULT_WORKSPACE_ID):
         with self.driver.session() as session:
             session.execute_write(self._create_call_relations, calls, workspace_id)
+            if calls:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
 
     @staticmethod
     def _create_call_relations(tx, calls, workspace_id):
@@ -224,6 +237,14 @@ class Neo4jClient:
     def link_imports(self, imports: list[ImportEdge], workspace_id: str = DEFAULT_WORKSPACE_ID):
         with self.driver.session() as session:
             session.execute_write(self._create_import_relations, imports, workspace_id)
+            if imports:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
 
     @staticmethod
     def _create_import_relations(tx, imports, workspace_id):
@@ -252,6 +273,14 @@ class Neo4jClient:
             session.execute_write(
                 self._create_inheritance_relations, inheritance_edges, workspace_id
             )
+            if inheritance_edges:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
 
     @staticmethod
     def _create_inheritance_relations(tx, inheritance_edges, workspace_id):

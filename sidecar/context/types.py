@@ -98,6 +98,7 @@ class PromptContext:
                     "trace_id": self.trace_id,
                     "workspace_id": self.workspace_id,
                     "resolver_version": self.resolver_version,
+                    "cache_hits": self.budget.get("cache_hits", []),
                     "stage_timings_ms": self.stage_timings_ms,
                     "token_counts": self.token_counts,
                     "model_route": self.model_route,
@@ -166,6 +167,7 @@ class SubgraphNode:
     direction: str
     depth: int
     relevance_score: float
+    file_hash: str = ""
 
 
 @dataclass

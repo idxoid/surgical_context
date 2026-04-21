@@ -106,6 +106,17 @@ def _extract_identifiers(text: str) -> list[str]:
     return list(set(_IDENTIFIER_RE.findall(text)))
 
 
+def _bump_graph_version(neo4j: Neo4jClient, workspace_id: str):
+    with neo4j.driver.session() as session:
+        session.run(
+            """
+            MATCH (w:Workspace {id: $workspace_id})
+            SET w.graph_version = coalesce(w.graph_version, 0) + 1
+            """,
+            workspace_id=workspace_id,
+        )
+
+
 def link_docs_to_symbols(
     neo4j: Neo4jClient,
     lance: LanceDBClient,
@@ -154,6 +165,7 @@ def link_docs_to_symbols(
         lance.set_pending(chunk_id, pending)
 
     print(f"DocAnchor: processed {len(rows)} chunks.")
+    _bump_graph_version(neo4j, workspace_id)
 
 
 def resolve_pending_anchors(
@@ -190,3 +202,5 @@ def resolve_pending_anchors(
         lance.set_pending(chunk_id, still_pending)
 
     print(f"DocAnchor: resolved {resolved_total} pending links.")
+    if resolved_total:
+        _bump_graph_version(neo4j, workspace_id)

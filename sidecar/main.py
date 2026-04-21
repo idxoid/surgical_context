@@ -1,5 +1,6 @@
 import logging
 import os
+import hashlib
 from collections.abc import Generator
 from typing import Any, cast
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 from sidecar.ai.engine import AIEngine
 from sidecar.api.sse import format_sse
 from sidecar.auth import AuditLog, UserAuth
+from sidecar.cache.layered import default_cache
 from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.overlay import InMemoryOverlay
 from sidecar.context.types import RESOLVER_VERSION, PromptContext
@@ -756,13 +758,38 @@ def ask(
                 trace.model_route = _model_route(context_tokens, ctx.intent)
 
             with trace.stage("llm"):
-                answer = ai_engine.chat(
-                    system_prompt=system_prompt,
-                    user_message=req.question,
-                    token_count=context_tokens,
-                    intent=ctx.intent,
-                )
-            trace.model_route = _last_model_route(trace.model_route)
+                response_cache_hit = False
+                prompt_hash = hashlib.sha256(
+                    f"{system_prompt}\n{req.question}".encode("utf-8")
+                ).hexdigest()
+                cached_response = default_cache.get_response(prompt_hash, workspace_id)
+                if cached_response:
+                    response_cache_hit = True
+                    answer = cached_response.answer
+                    if hasattr(ctx, "budget"):
+                        ctx.budget["cache_hits"] = sorted(
+                            {*ctx.budget.get("cache_hits", []), "l3_response"}
+                        )
+                    trace.model_route = {
+                        **trace.model_route,
+                        "cached": True,
+                        "cache_layer": "l3_response",
+                    }
+                else:
+                    answer = ai_engine.chat(
+                        system_prompt=system_prompt,
+                        user_message=req.question,
+                        token_count=context_tokens,
+                        intent=ctx.intent,
+                    )
+                    default_cache.put_response(
+                        prompt_hash,
+                        workspace_id,
+                        answer,
+                        {"intent": ctx.intent, "mode": ctx.mode},
+                    )
+            if not response_cache_hit:
+                trace.model_route = _last_model_route(trace.model_route)
 
             output_tokens = estimate_text_tokens(answer)
             trace.token_counts["output_estimate"] = output_tokens

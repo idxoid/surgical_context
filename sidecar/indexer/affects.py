@@ -69,6 +69,13 @@ class AFFECTSIndexer:
                         affected_uids=affected,
                         workspace_id=workspace_id,
                     )
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
 
     def _compute_affected_symbols(
         self,
