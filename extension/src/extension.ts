@@ -4,6 +4,8 @@ import { ChatPanel } from './chatPanel';
 import { OverlayManager } from './overlayManager';
 import { ChatViewProvider } from './providers/ChatViewProvider';
 import { ImpactViewProvider } from './providers/ImpactViewProvider';
+import { SurgicalContextCodeLensProvider } from './providers/CodeLensProvider';
+import { SurgicalContextHoverProvider } from './providers/HoverProvider';
 import { InspectorPanel } from './panels/InspectorPanel';
 import { DashboardPanel } from './panels/DashboardPanel';
 import { stateManager } from './state/ExtensionState';
@@ -46,6 +48,18 @@ export function activate(context: vscode.ExtensionContext): void {
   const impactViewProvider = new ImpactViewProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ImpactViewProvider.viewType, impactViewProvider)
+  );
+
+  // Register CodeLens provider
+  const codeLensProvider = new SurgicalContextCodeLensProvider();
+  context.subscriptions.push(
+    vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLensProvider)
+  );
+
+  // Register Hover provider
+  const hoverProvider = new SurgicalContextHoverProvider(overlayManager);
+  context.subscriptions.push(
+    vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider)
   );
 
   // Register commands
