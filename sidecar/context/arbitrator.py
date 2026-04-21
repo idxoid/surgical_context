@@ -1,6 +1,7 @@
 """ContextArbitrator — thin orchestrator facade composing pure components."""
 
 import hashlib
+from typing import Any
 
 from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
@@ -108,7 +109,7 @@ class ContextArbitrator:
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
         return ctx
 
-    def _primary_uid(self, symbol_name: str) -> str | None:
+    def _primary_uid(self, symbol_name: str) -> str | Any | None:
         query = """
         MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
         RETURN s.uid AS uid
