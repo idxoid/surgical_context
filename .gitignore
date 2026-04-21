@@ -20,6 +20,7 @@ import/
 logs/
 plugins/
 QA/
+.surgical_context/
 
 # Env
 .env

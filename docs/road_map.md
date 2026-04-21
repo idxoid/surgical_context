@@ -55,7 +55,8 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 - [x] Move doc resolution inside the arbitration pipeline before `PromptCompiler.compile_with_intent()`.
 - [x] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.
 - [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
-- [ ] Add endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and auth boundaries.
+- [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
+- [ ] Add auth-boundary enforcement tests once protected endpoints require bearer tokens.
 
 ### P1 — Retrieval Correctness
 - [ ] Implement stable UID v2 from [spec_uid_stability.md](spec_uid_stability.md).
