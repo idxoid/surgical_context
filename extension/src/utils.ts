@@ -36,7 +36,7 @@ export function getWebviewContent(
   }
 </head>
 <body>
-  <div id="app"></div>
+  <div id="root"></div>
   <script nonce="${nonce}" src="${scriptUri}"><\/script>
 </body>
 </html>`;
