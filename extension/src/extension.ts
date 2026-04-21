@@ -2,10 +2,10 @@ import * as vscode from 'vscode';
 import { SidecarClient } from './sidecarClient';
 import { ChatPanel } from './chatPanel';
 import { OverlayManager } from './overlayManager';
-import { ChatViewProvider } from './providers/ChatViewProvider';
 import { ImpactViewProvider } from './providers/ImpactViewProvider';
 import { SurgicalContextCodeLensProvider } from './providers/CodeLensProvider';
 import { SurgicalContextHoverProvider } from './providers/HoverProvider';
+import { ChatPanel } from './panels/ChatPanel';
 import { InspectorPanel } from './panels/InspectorPanel';
 import { DashboardPanel } from './panels/DashboardPanel';
 import { SettingsPanel } from './panels/SettingsPanel';
@@ -54,12 +54,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidCloseTextDocument(doc => overlayManager.onDocumentClosed(doc))
   );
 
-  // Register Chat sidebar view provider
-  const chatViewProvider = new ChatViewProvider(context.extensionUri, overlayManager);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatViewProvider)
-  );
-
   // Register Impact sidebar view provider
   const impactViewProvider = new ImpactViewProvider(context.extensionUri);
   context.subscriptions.push(
@@ -83,13 +77,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Spec commands
     vscode.commands.registerCommand('surgicalContext.askCurrentSymbol', () => {
-      // Focus the chat view (which has its own ask logic)
-      vscode.commands.executeCommand('workbench.view.extension.surgicalContext');
+      ChatPanel.createOrReveal(context.extensionUri, overlayManager);
     }),
 
     vscode.commands.registerCommand('surgicalContext.askSelection', () => {
-      // Similar to askCurrentSymbol but uses selection instead of word
-      vscode.commands.executeCommand('workbench.view.extension.surgicalContext');
+      ChatPanel.createOrReveal(context.extensionUri, overlayManager);
     }),
 
     vscode.commands.registerCommand('surgicalContext.openInspector', async () => {
@@ -141,17 +133,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Legacy commands for backward compatibility
     vscode.commands.registerCommand('surgicalContext.openChat', () => {
-      ChatPanel.createOrReveal(context.extensionUri);
+      ChatPanel.createOrReveal(context.extensionUri, overlayManager);
     }),
 
     vscode.commands.registerCommand('surgicalContext.askAboutCursor', () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor) {
-        vscode.window.showErrorMessage('No active editor.');
-        return;
-      }
-      const symbol = overlayManager.getSymbolAtCursor(editor);
-      ChatPanel.createOrReveal(context.extensionUri, symbol ?? undefined);
+      ChatPanel.createOrReveal(context.extensionUri, overlayManager);
     }),
 
     vscode.commands.registerCommand('surgicalContext.indexProject', async () => {

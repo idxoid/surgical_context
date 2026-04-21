@@ -26,11 +26,6 @@
     "views": {
       "surgicalContext": [
         {
-          "id": "surgicalContext.chat",
-          "name": "Chat",
-          "type": "webview"
-        },
-        {
           "id": "surgicalContext.impact",
           "name": "Impact",
           "type": "webview"
@@ -124,33 +119,7 @@
           "group": "navigation"
         }
       ],
-      "view/title": [
-        {
-          "command": "surgicalContext.askCurrentSymbol",
-          "when": "view == surgicalContext.chat",
-          "group": "navigation"
-        },
-        {
-          "command": "surgicalContext.openInspector",
-          "when": "view == surgicalContext.chat",
-          "group": "navigation"
-        },
-        {
-          "command": "surgicalContext.showImpact",
-          "when": "view == surgicalContext.chat",
-          "group": "navigation"
-        },
-        {
-          "command": "surgicalContext.openDashboard",
-          "when": "view == surgicalContext.chat",
-          "group": "navigation"
-        },
-        {
-          "command": "surgicalContext.openSettings",
-          "when": "view == surgicalContext.chat",
-          "group": "navigation"
-        }
-      ]
+      "view/title": []
     },
     "keybindings": [
       {
