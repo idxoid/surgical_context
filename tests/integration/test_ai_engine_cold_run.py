@@ -1,11 +1,12 @@
 """Integration tests for AIEngine with prepared contexts (cold run)."""
 
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from sidecar.ai.engine import AIEngine
-from sidecar.context.types import PromptContext, SymbolContext, DocChunk
+from sidecar.context.types import DocChunk, PromptContext, SymbolContext
 
 
 @pytest.fixture
@@ -112,7 +113,9 @@ class TestAIEngineColdRun:
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
     @patch("sidecar.ai.engine.Anthropic")
-    def test_chat_with_claude_prepared_context(self, mock_anthropic_class, sample_system_prompt, sample_questions):
+    def test_chat_with_claude_prepared_context(
+        self, mock_anthropic_class, sample_system_prompt, sample_questions
+    ):
         """Test Claude chat with prepared context."""
         # Mock Claude response
         mock_client = MagicMock()
@@ -133,10 +136,14 @@ class TestAIEngineColdRun:
         mock_client.messages.create.assert_called_once()
 
     @patch("sidecar.ai.engine.ollama")
-    def test_chat_with_ollama_prepared_context(self, mock_ollama, sample_system_prompt, sample_questions):
+    def test_chat_with_ollama_prepared_context(
+        self, mock_ollama, sample_system_prompt, sample_questions
+    ):
         """Test Ollama chat with prepared context."""
         # Mock Ollama response
-        mock_ollama.chat.return_value = {"message": {"content": "Ollama analysis of the payment function..."}}
+        mock_ollama.chat.return_value = {
+            "message": {"content": "Ollama analysis of the payment function..."}
+        }
 
         engine = AIEngine(model_preference="ollama")
         answer = engine.chat(
@@ -273,7 +280,9 @@ class TestAIEngineColdRun:
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
     @patch("sidecar.ai.engine.Anthropic")
-    def test_stream_chat_with_claude(self, mock_anthropic_class, sample_system_prompt, sample_questions):
+    def test_stream_chat_with_claude(
+        self, mock_anthropic_class, sample_system_prompt, sample_questions
+    ):
         """Test streaming with Claude."""
         # Mock Claude streaming
         mock_client = MagicMock()
@@ -301,7 +310,9 @@ class TestAIEngineColdRun:
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
     @patch("sidecar.ai.engine.Anthropic")
-    def test_prompt_caching_enabled_on_graph_context(self, mock_anthropic_class, sample_system_prompt, sample_questions):
+    def test_prompt_caching_enabled_on_graph_context(
+        self, mock_anthropic_class, sample_system_prompt, sample_questions
+    ):
         """Verify prompt caching is enabled when graph context present."""
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
@@ -325,7 +336,9 @@ class TestAIEngineColdRun:
         # At least one system block should have cache_control
         if isinstance(system_arg, list):
             has_cache_control = any(
-                isinstance(block, dict) and "cache_control" in block and block["cache_control"] is not None
+                isinstance(block, dict)
+                and "cache_control" in block
+                and block["cache_control"] is not None
                 for block in system_arg
             )
             assert has_cache_control, "Prompt caching should be enabled on graph_context"

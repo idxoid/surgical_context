@@ -31,7 +31,10 @@ class GitStateTracker:
     def detect_changes(self, project_path: str) -> GitChangeSet:
         project = Path(project_path).resolve()
         previous = self._load(project)
-        current = GitState(ref=_git(project, "branch", "--show-current") or "DETACHED", head=_git(project, "rev-parse", "HEAD"))
+        current = GitState(
+            ref=_git(project, "branch", "--show-current") or "DETACHED",
+            head=_git(project, "rev-parse", "HEAD"),
+        )
         changed_files = self._changed_files(project, previous, current)
         change_set = GitChangeSet(
             previous=previous,
@@ -42,7 +45,9 @@ class GitStateTracker:
         self._save(project, current)
         return change_set
 
-    def _changed_files(self, project: Path, previous: GitState | None, current: GitState) -> list[str]:
+    def _changed_files(
+        self, project: Path, previous: GitState | None, current: GitState
+    ) -> list[str]:
         if previous is None or not previous.head:
             return []
         if previous.head == current.head:

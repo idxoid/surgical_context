@@ -51,7 +51,6 @@ class IntentClassifier:
             "issue",
             "problem",
             "crash",
-            "crash",
             "exception",
             "not working",
             "doesn't work",

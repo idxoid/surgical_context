@@ -11,7 +11,9 @@ _IDENTIFIER_RE = re.compile(
 )
 
 # Matches markdown links and bare .md filenames that reference project docs
-_DOC_REF_RE = re.compile(r'\]\(((?:docs/)?[\w_]+\.md)\)|(?<!\w)((?:docs/)?spec_[\w_]+\.md|architectura\.md|concept\.md|idea_[\w_]+\.md)')
+_DOC_REF_RE = re.compile(
+    r"\]\(((?:docs/)?[\w_]+\.md)\)|(?<!\w)((?:docs/)?spec_[\w_]+\.md|architectura\.md|concept\.md|idea_[\w_]+\.md)"
+)
 
 _DOC_TYPE_MAP = {
     "spec_": "spec",

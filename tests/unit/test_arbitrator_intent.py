@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import pytest
 
 from sidecar.context.arbitrator import ContextArbitrator
-from sidecar.context.intent_classifier import Intent
 from sidecar.database.neo4j_client import Neo4jClient
 
 

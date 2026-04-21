@@ -2,14 +2,12 @@
 
 import os
 import sys
-import json
 
 # Add repo root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.context.arbitrator import ContextArbitrator
+from sidecar.database.neo4j_client import Neo4jClient
 
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
@@ -38,16 +36,16 @@ class TestPhase5Validation:
             indexer = AFFECTSIndexer(db)
             affected_symbols = indexer.get_affected_symbols(symbol_uid)
 
-            print(f"\n✓ /impact endpoint working")
-            print(f"  Symbol: extract_inheritance")
+            print("\n✓ /impact endpoint working")
+            print("  Symbol: extract_inheritance")
             print(f"  Affected symbols: {len(affected_symbols)}")
             if affected_symbols:
                 print(f"  Affected (sample): {affected_symbols[:3]}")
 
             # Verify AFFECTS index is populated
-            assert (
-                len(affected_symbols) > 0
-            ), "No affected symbols found; AFFECTS index may be empty"
+            assert len(affected_symbols) > 0, (
+                "No affected symbols found; AFFECTS index may be empty"
+            )
 
             return True
         finally:
@@ -63,11 +61,11 @@ class TestPhase5Validation:
             with db.driver.session() as session:
                 results = session.run(query).data()
 
-            print(f"\n✓ IMPORTS edge verification")
+            print("\n✓ IMPORTS edge verification")
             print(f"  Total IMPORTS edges: {len(results)}")
 
             if results:
-                print(f"  Sample IMPORTS edges:")
+                print("  Sample IMPORTS edges:")
                 for r in results[:3]:
                     print(f"    {r['source']} → {r['target']}")
 
@@ -75,9 +73,9 @@ class TestPhase5Validation:
             stdlib_patterns = ["os", "sys", "re", "json", "pathlib", "typing"]
             for edge in results:
                 target = edge["target"].lower()
-                assert not any(
-                    p in target for p in stdlib_patterns
-                ), f"Found stdlib import: {edge['target']}"
+                assert not any(p in target for p in stdlib_patterns), (
+                    f"Found stdlib import: {edge['target']}"
+                )
 
             return True
         finally:
@@ -95,7 +93,7 @@ class TestPhase5Validation:
             with db.driver.session() as session:
                 results = session.run(query).data()
 
-            print(f"\n✓ Typed semantic edges verification")
+            print("\n✓ Typed semantic edges verification")
             total = 0
             for r in results:
                 print(f"  {r['rel_type']}: {r['count']}")
@@ -119,7 +117,7 @@ class TestPhase5Validation:
             with db.driver.session() as session:
                 results = session.run(query).data()
 
-            print(f"\n✓ Enhanced FROM relations verification")
+            print("\n✓ Enhanced FROM relations verification")
             total = 0
             for r in results:
                 print(f"  FROM type '{r['from_type']}': {r['count']}")
@@ -139,7 +137,7 @@ class TestPhase5Validation:
             with db.driver.session() as session:
                 results = session.run(query).data()
 
-            print(f"\n✓ Doc type classification verification")
+            print("\n✓ Doc type classification verification")
             total = 0
             for r in results:
                 print(f"  doc_type='{r['f.doc_type']}': {r['count']} files")
@@ -171,7 +169,7 @@ class TestPhase5Validation:
 
             coverage = (covers / anchors * 100) if anchors > 0 else 0
 
-            print(f"\n✓ Doc-symbol semantic linking verification")
+            print("\n✓ Doc-symbol semantic linking verification")
             print(f"  Total doc anchors: {anchors}")
             print(f"  Linked to symbols (COVERS): {covers}")
             print(f"  Coverage: {coverage:.1f}%")
@@ -209,8 +207,8 @@ def another_function():
             if not isinstance(ctx, str):
                 # Check if dirty flag is set
                 is_dirty = ctx.primary_source.is_dirty if ctx.primary_source else False
-                print(f"\n✓ In-memory overlay (dirty state) verification")
-                print(f"  Overlay file: sidecar/context/graph_expander.py")
+                print("\n✓ In-memory overlay (dirty state) verification")
+                print("  Overlay file: sidecar/context/graph_expander.py")
                 print(f"  Primary source dirty: {is_dirty}")
                 assert isinstance(ctx, object), "Context assembly failed with overlay"
                 return True
@@ -234,8 +232,14 @@ def another_function():
             ("Enhanced FROM Relations", TestPhase5Validation.test_enhanced_from_relations),
             ("Doc Type Classification", TestPhase5Validation.test_doc_type_classification),
             ("Similarity Threshold Tuning", TestPhase5Validation.test_similarity_threshold_tuning),
-            ("/impact Endpoint (Cascade Analysis)", TestPhase5Validation.test_impact_endpoint_cascade_analysis),
-            ("In-Memory Overlay (Dirty State)", TestPhase5Validation.test_context_assembly_with_dirty_overlay),
+            (
+                "/impact Endpoint (Cascade Analysis)",
+                TestPhase5Validation.test_impact_endpoint_cascade_analysis,
+            ),
+            (
+                "In-Memory Overlay (Dirty State)",
+                TestPhase5Validation.test_context_assembly_with_dirty_overlay,
+            ),
         ]
 
         results = {}

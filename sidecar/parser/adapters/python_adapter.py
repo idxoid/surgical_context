@@ -52,15 +52,53 @@ class PythonAdapter(TreeSitterAdapter):
 
     # Known stdlib and third-party top-level packages to skip
     _EXTERNAL_PREFIXES = {
-        "os", "sys", "re", "io", "abc", "ast", "math", "time", "json",
-        "uuid", "enum", "copy", "typing", "hashlib", "pathlib", "logging",
-        "dataclasses", "collections", "functools", "itertools", "contextlib",
-        "threading", "multiprocessing", "subprocess", "shutil", "tempfile",
-        "unittest", "argparse", "heapq", "struct", "string", "textwrap",
+        "os",
+        "sys",
+        "re",
+        "io",
+        "abc",
+        "ast",
+        "math",
+        "time",
+        "json",
+        "uuid",
+        "enum",
+        "copy",
+        "typing",
+        "hashlib",
+        "pathlib",
+        "logging",
+        "dataclasses",
+        "collections",
+        "functools",
+        "itertools",
+        "contextlib",
+        "threading",
+        "multiprocessing",
+        "subprocess",
+        "shutil",
+        "tempfile",
+        "unittest",
+        "argparse",
+        "heapq",
+        "struct",
+        "string",
+        "textwrap",
         # third-party
-        "neo4j", "lancedb", "fastapi", "pydantic", "uvicorn", "ollama",
-        "yaml", "tiktoken", "numpy", "pandas", "sentence_transformers",
-        "tree_sitter", "tree_sitter_languages", "pathspec",
+        "neo4j",
+        "lancedb",
+        "fastapi",
+        "pydantic",
+        "uvicorn",
+        "ollama",
+        "yaml",
+        "tiktoken",
+        "numpy",
+        "pandas",
+        "sentence_transformers",
+        "tree_sitter",
+        "tree_sitter_languages",
+        "pathspec",
     }
 
     def extract_imports(self, source_code: str, file_path: str) -> list[ImportEdge]:
@@ -234,7 +272,9 @@ class PythonAdapter(TreeSitterAdapter):
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
 
-    def _resolve_method_uid(self, caller_node, method_name: str, by_name: dict[str, list]) -> str | None:
+    def _resolve_method_uid(
+        self, caller_node, method_name: str, by_name: dict[str, list]
+    ) -> str | None:
         candidates = by_name.get(method_name, [])
         if not candidates:
             return None

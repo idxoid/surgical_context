@@ -4,7 +4,7 @@ import pytest
 
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.prompt_compiler import PromptCompiler
-from sidecar.context.types import DocChunk, SubgraphNode, Subgraph, SymbolContext
+from sidecar.context.types import DocChunk, Subgraph, SubgraphNode
 
 
 @pytest.fixture
@@ -122,46 +122,66 @@ class TestPromptCompilerBasic:
 class TestPromptCompilerWithIntent:
     """Test intent-aware compile_with_intent() method."""
 
-    def test_compile_with_intent_creates_context(self, sample_subgraph, sample_code_map, sample_docs):
+    def test_compile_with_intent_creates_context(
+        self, sample_subgraph, sample_code_map, sample_docs
+    ):
         """compile_with_intent() creates a valid PromptContext."""
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.NAVIGATION)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.NAVIGATION
+        )
 
         assert ctx.primary_source.symbol == "process_payment"
         assert ctx.intent == "navigation"
         assert ctx.mode in ("surgical_full", "surgical_doc_only", "standard")
 
-    def test_compile_with_intent_marks_mode_surgical_full(self, sample_subgraph, sample_code_map, sample_docs):
+    def test_compile_with_intent_marks_mode_surgical_full(
+        self, sample_subgraph, sample_code_map, sample_docs
+    ):
         """compile_with_intent() marks mode as surgical_full when code and graph present."""
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.NAVIGATION)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.NAVIGATION
+        )
 
         assert ctx.mode == "surgical_full"
 
-    def test_compile_with_intent_navigation_includes_code_first(self, sample_subgraph, sample_code_map, sample_docs):
+    def test_compile_with_intent_navigation_includes_code_first(
+        self, sample_subgraph, sample_code_map, sample_docs
+    ):
         """Navigation intent prioritizes code and cross-refs."""
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.NAVIGATION)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.NAVIGATION
+        )
 
         assert ctx.primary_source.code  # Code should be present
         assert ctx.graph_context  # Graph (cross-refs) should be present
 
-    def test_compile_with_intent_infers_doc_types(self, sample_subgraph, sample_code_map, sample_docs):
+    def test_compile_with_intent_infers_doc_types(
+        self, sample_subgraph, sample_code_map, sample_docs
+    ):
         """compile_with_intent() correctly infers doc types from filenames."""
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.NEW_FEATURE)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.NEW_FEATURE
+        )
 
         # New feature prioritizes idea > concept > architecture > specs
         # So idea docs should be included first
         doc_sources = [doc.source_file for doc in ctx.documentation]
         assert len(doc_sources) > 0
 
-    def test_compile_with_intent_respects_tier_priority(self, sample_subgraph, sample_code_map, sample_docs):
+    def test_compile_with_intent_respects_tier_priority(
+        self, sample_subgraph, sample_code_map, sample_docs
+    ):
         """compile_with_intent() assembles docs according to intent tier priority."""
         compiler = PromptCompiler()
 
         # For NEW_FEATURE, idea > concept > architecture > specs
-        ctx_new = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.NEW_FEATURE)
+        ctx_new = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.NEW_FEATURE
+        )
 
         # All docs should still be included (since all tiers have content)
         # but order should reflect intent priority
@@ -170,7 +190,9 @@ class TestPromptCompilerWithIntent:
     def test_compile_with_intent_debugging(self, sample_subgraph, sample_code_map, sample_docs):
         """Debugging intent includes code and cross-refs as primary."""
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.DEBUGGING)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.DEBUGGING
+        )
 
         assert ctx.intent == "debugging"
         assert ctx.primary_source.code
@@ -179,7 +201,9 @@ class TestPromptCompilerWithIntent:
     def test_compile_with_intent_refactoring(self, sample_subgraph, sample_code_map, sample_docs):
         """Refactoring intent prioritizes cross-refs (blast radius)."""
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.REFACTORING)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.REFACTORING
+        )
 
         assert ctx.intent == "refactor"
         assert ctx.graph_context  # Cross-refs should be prominent
@@ -188,16 +212,22 @@ class TestPromptCompilerWithIntent:
     def test_compile_with_intent_exploration(self, sample_subgraph, sample_code_map, sample_docs):
         """Exploration intent includes code and conceptual docs."""
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.EXPLORATION)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.EXPLORATION
+        )
 
         assert ctx.intent == "exploration"
         assert ctx.primary_source.code
         # Concept should be high in priority
 
-    def test_compile_with_intent_design_question(self, sample_subgraph, sample_code_map, sample_docs):
+    def test_compile_with_intent_design_question(
+        self, sample_subgraph, sample_code_map, sample_docs
+    ):
         """Design question intent prioritizes concept/idea docs."""
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.DESIGN_QUESTION)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.DESIGN_QUESTION
+        )
 
         assert ctx.intent == "design_question"
         # Code should be deprioritized for design questions
@@ -237,12 +267,16 @@ class TestPromptCompilerWithIntent:
         assert len(ctx.graph_context) == 0
         assert ctx.primary_source.code == "code"
 
-    def test_compile_and_compile_with_intent_both_work(self, sample_subgraph, sample_code_map, sample_docs):
+    def test_compile_and_compile_with_intent_both_work(
+        self, sample_subgraph, sample_code_map, sample_docs
+    ):
         """Both compile() and compile_with_intent() work without breaking each other."""
         compiler = PromptCompiler()
 
         ctx_basic = compiler.compile(sample_subgraph, sample_code_map, sample_docs)
-        ctx_intent = compiler.compile_with_intent(sample_subgraph, sample_code_map, sample_docs, Intent.NAVIGATION)
+        ctx_intent = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, sample_docs, Intent.NAVIGATION
+        )
 
         # Both should produce valid contexts
         assert ctx_basic.primary_source.symbol == ctx_intent.primary_source.symbol
@@ -256,7 +290,9 @@ class TestDocTypeInference:
         """Infer 'specs' from spec_*.md filenames."""
         docs = [DocChunk(source_file="docs/spec_payment.md", chunk_id="s1", content="spec")]
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, docs, Intent.NAVIGATION)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, docs, Intent.NAVIGATION
+        )
 
         assert len(ctx.documentation) == 1
 
@@ -264,7 +300,9 @@ class TestDocTypeInference:
         """Infer 'idea' from idea_*.md filenames."""
         docs = [DocChunk(source_file="docs/idea_future.md", chunk_id="i1", content="idea")]
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, docs, Intent.NEW_FEATURE)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, docs, Intent.NEW_FEATURE
+        )
 
         assert len(ctx.documentation) == 1
 
@@ -272,7 +310,9 @@ class TestDocTypeInference:
         """Infer 'concept' from concept.md."""
         docs = [DocChunk(source_file="docs/concept.md", chunk_id="c1", content="concept")]
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, docs, Intent.EXPLORATION)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, docs, Intent.EXPLORATION
+        )
 
         assert len(ctx.documentation) == 1
 
@@ -280,6 +320,8 @@ class TestDocTypeInference:
         """Infer 'architecture' from architecture*.md."""
         docs = [DocChunk(source_file="docs/architecture.md", chunk_id="a1", content="arch")]
         compiler = PromptCompiler()
-        ctx = compiler.compile_with_intent(sample_subgraph, sample_code_map, docs, Intent.DESIGN_QUESTION)
+        ctx = compiler.compile_with_intent(
+            sample_subgraph, sample_code_map, docs, Intent.DESIGN_QUESTION
+        )
 
         assert len(ctx.documentation) == 1

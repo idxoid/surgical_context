@@ -46,7 +46,9 @@ class FakeDb:
 
 
 class FakeContextArbitrator:
-    def __init__(self, db, overlay=None, vector_db=None, workspace_id="local/surgical_context@main"):
+    def __init__(
+        self, db, overlay=None, vector_db=None, workspace_id="local/surgical_context@main"
+    ):
         self.db = db
         self.overlay = overlay
         self.vector_db = vector_db
@@ -229,7 +231,9 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
             self.db = db
 
         def get_affected_symbols(self, symbol_uid, workspace_id="local/surgical_context@main"):
-            return [{"uid": "affected-1", "name": "caller", "file_path": "/repo/caller.py", "depth": 1}]
+            return [
+                {"uid": "affected-1", "name": "caller", "file_path": "/repo/caller.py", "depth": 1}
+            ]
 
         def get_affected_files(self, file_path, workspace_id="local/surgical_context@main"):
             return ["/repo/caller.py"]

@@ -5,8 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.database.lancedb_client import LanceDBClient
+from sidecar.database.neo4j_client import Neo4jClient
 
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
@@ -23,11 +23,15 @@ class DataIntegrityVerifier:
         try:
             with db.driver.session() as session:
                 # Node counts
-                result = session.run("MATCH (n) RETURN labels(n)[0] AS label, count(*) AS count GROUP BY label ORDER BY count DESC")
+                result = session.run(
+                    "MATCH (n) RETURN labels(n)[0] AS label, count(*) AS count GROUP BY label ORDER BY count DESC"
+                )
                 nodes = result.data()
 
                 # Edge counts
-                result = session.run("MATCH ()-[r]->() RETURN type(r) AS rel_type, count(*) AS count GROUP BY rel_type ORDER BY count DESC")
+                result = session.run(
+                    "MATCH ()-[r]->() RETURN type(r) AS rel_type, count(*) AS count GROUP BY rel_type ORDER BY count DESC"
+                )
                 edges = result.data()
 
                 # Total symbols and files
@@ -38,11 +42,15 @@ class DataIntegrityVerifier:
                 file_count = result.single()["count"]
 
                 # Check for orphaned symbols (no File parent)
-                result = session.run("MATCH (s:Symbol) WHERE NOT (s)<-[:CONTAINS]-(:File) RETURN count(*) AS count")
+                result = session.run(
+                    "MATCH (s:Symbol) WHERE NOT (s)<-[:CONTAINS]-(:File) RETURN count(*) AS count"
+                )
                 orphaned_symbols = result.single()["count"]
 
                 # Check for symbols with missing ranges
-                result = session.run("MATCH (s:Symbol) WHERE s.range IS NULL OR size(s.range) <> 2 RETURN count(*) AS count")
+                result = session.run(
+                    "MATCH (s:Symbol) WHERE s.range IS NULL OR size(s.range) <> 2 RETURN count(*) AS count"
+                )
                 bad_ranges = result.single()["count"]
 
                 return {
@@ -91,13 +99,17 @@ class DataIntegrityVerifier:
 
             # 1. Every Symbol in Neo4j should have a UID
             with db.driver.session() as session:
-                result = session.run("MATCH (s:Symbol) WHERE s.uid IS NULL RETURN count(*) AS count")
+                result = session.run(
+                    "MATCH (s:Symbol) WHERE s.uid IS NULL RETURN count(*) AS count"
+                )
                 if result.single()["count"] > 0:
                     issues.append("❌ Found symbols with missing UID")
 
             # 2. DocAnchors should have valid chunk_id
             with db.driver.session() as session:
-                result = session.run("MATCH (a:DocAnchor) WHERE a.chunk_id IS NULL RETURN count(*) AS count")
+                result = session.run(
+                    "MATCH (a:DocAnchor) WHERE a.chunk_id IS NULL RETURN count(*) AS count"
+                )
                 if result.single()["count"] > 0:
                     issues.append("❌ Found DocAnchors with missing chunk_id")
 
@@ -174,16 +186,16 @@ class DataIntegrityVerifier:
         print("-" * 80)
         stats = DataIntegrityVerifier.neo4j_stats()
 
-        print(f"\nNode Counts:")
+        print("\nNode Counts:")
         for node in stats["nodes"]:
             label = node["label"] if node["label"] else "(no label)"
             print(f"  {label}: {node['count']:,}")
 
-        print(f"\nEdge Counts:")
+        print("\nEdge Counts:")
         for edge in stats["edges"]:
             print(f"  {edge['rel_type']}: {edge['count']:,}")
 
-        print(f"\nData Quality:")
+        print("\nData Quality:")
         print(f"  Total Symbols: {stats['symbol_count']:,}")
         print(f"  Total Files: {stats['file_count']:,}")
         print(f"  Orphaned Symbols (no File parent): {stats['orphaned_symbols']}")

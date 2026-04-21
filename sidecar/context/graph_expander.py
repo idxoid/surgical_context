@@ -52,9 +52,7 @@ class GraphExpander:
         LIMIT 1
         """
         with self.db.driver.session() as session:
-            result = session.run(
-                query, name=symbol_name, workspace_id=self.workspace_id
-            ).single()
+            result = session.run(query, name=symbol_name, workspace_id=self.workspace_id).single()
 
         if not result:
             return f"Error: Symbol '{symbol_name}' not found in graph."

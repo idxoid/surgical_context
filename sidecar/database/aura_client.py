@@ -1,11 +1,9 @@
 """Multi-user Neo4j Aura client with fallback to local Neo4j."""
 
-import os
 import logging
-from typing import Optional
+import os
 
 from sidecar.database.neo4j_client import Neo4jClient
-
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +13,13 @@ class AuraClient(Neo4jClient):
 
     def __init__(
         self,
-        aura_username: Optional[str] = None,
-        aura_password: Optional[str] = None,
-        aura_instance_name: Optional[str] = None,
-        local_uri: Optional[str] = None,
-        local_user: Optional[str] = None,
-        local_password: Optional[str] = None,
-        user_id: Optional[str] = None,
+        aura_username: str | None = None,
+        aura_password: str | None = None,
+        aura_instance_name: str | None = None,
+        local_uri: str | None = None,
+        local_user: str | None = None,
+        local_password: str | None = None,
+        user_id: str | None = None,
     ):
         """
         Initialize Aura client with fallback to local Neo4j.
@@ -107,4 +105,8 @@ class AuraClient(Neo4jClient):
                     "user": self.user_id,
                 }
         except Exception as e:
-            return {"status": "unhealthy", "error": str(e), "mode": "aura" if self.use_aura else "local"}
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "mode": "aura" if self.use_aura else "local",
+            }

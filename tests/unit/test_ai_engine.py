@@ -1,7 +1,6 @@
 """Unit tests for AIEngine with model routing."""
 
 import os
-import pytest
 from unittest.mock import patch
 
 from sidecar.ai.engine import AIEngine, ModelRouter

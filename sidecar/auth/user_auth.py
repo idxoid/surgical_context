@@ -119,11 +119,7 @@ class UserAuth:
     def _encode_payload(self, payload: dict) -> str:
         """Encode a token payload as a URL-safe segment."""
         payload_text = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-        return (
-            base64.urlsafe_b64encode(payload_text.encode("utf-8"))
-            .decode("ascii")
-            .rstrip("=")
-        )
+        return base64.urlsafe_b64encode(payload_text.encode("utf-8")).decode("ascii").rstrip("=")
 
     def _sign(self, payload_segment: str) -> str:
         """Sign a token payload with HMAC-SHA256."""
@@ -143,9 +139,7 @@ class UserAuth:
             if not hmac.compare_digest(signature, expected):
                 return None
             padding = "=" * (-len(payload_segment) % 4)
-            payload_text = base64.urlsafe_b64decode(f"{payload_segment}{padding}").decode(
-                "utf-8"
-            )
+            payload_text = base64.urlsafe_b64decode(f"{payload_segment}{padding}").decode("utf-8")
             return json.loads(payload_text)
         except Exception:
             return None

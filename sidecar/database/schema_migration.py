@@ -32,7 +32,7 @@ class SchemaMigrator:
 
             calls_count = session.run("MATCH ()-[r:CALLS]->() RETURN count(r) AS count").single()
             if calls_count:
-                print(f"\nEdge counts:")
+                print("\nEdge counts:")
                 print(f"  CALLS edges: {calls_count['count']}")
 
             typed_counts = session.run(
@@ -70,17 +70,27 @@ class SchemaMigrator:
             for idx_name in indexes_to_create:
                 try:
                     if idx_name == "rel_calls_direct":
-                        session.run("CREATE INDEX rel_calls_direct FOR ()-[r:CALLS_DIRECT]-() ON (r.uid)")
+                        session.run(
+                            "CREATE INDEX rel_calls_direct FOR ()-[r:CALLS_DIRECT]-() ON (r.uid)"
+                        )
                     elif idx_name == "rel_calls_dynamic":
-                        session.run("CREATE INDEX rel_calls_dynamic FOR ()-[r:CALLS_DYNAMIC]-() ON (r.uid)")
+                        session.run(
+                            "CREATE INDEX rel_calls_dynamic FOR ()-[r:CALLS_DYNAMIC]-() ON (r.uid)"
+                        )
                     elif idx_name == "rel_calls_inferred":
-                        session.run("CREATE INDEX rel_calls_inferred FOR ()-[r:CALLS_INFERRED]-() ON (r.uid)")
+                        session.run(
+                            "CREATE INDEX rel_calls_inferred FOR ()-[r:CALLS_INFERRED]-() ON (r.uid)"
+                        )
                     elif idx_name == "rel_implements":
-                        session.run("CREATE INDEX rel_implements FOR ()-[r:IMPLEMENTS]-() ON (r.uid)")
+                        session.run(
+                            "CREATE INDEX rel_implements FOR ()-[r:IMPLEMENTS]-() ON (r.uid)"
+                        )
                     elif idx_name == "rel_overrides":
                         session.run("CREATE INDEX rel_overrides FOR ()-[r:OVERRIDES]-() ON (r.uid)")
                     elif idx_name == "rel_references":
-                        session.run("CREATE INDEX rel_references FOR ()-[r:REFERENCES]-() ON (r.uid)")
+                        session.run(
+                            "CREATE INDEX rel_references FOR ()-[r:REFERENCES]-() ON (r.uid)"
+                        )
                     print(f"  ✓ Created {idx_name}")
                 except Exception as e:
                     if "already exists" in str(e):
@@ -125,9 +135,7 @@ class SchemaMigrator:
 
             for idx_name, rel_type in indexes:
                 try:
-                    session.run(
-                        f"CREATE INDEX {idx_name} FOR ()-[r:{rel_type}]-() ON (r.uid)"
-                    )
+                    session.run(f"CREATE INDEX {idx_name} FOR ()-[r:{rel_type}]-() ON (r.uid)")
                     print(f"  ✓ Created {idx_name}")
                 except Exception as e:
                     if "already exists" in str(e):

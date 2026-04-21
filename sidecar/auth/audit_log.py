@@ -1,8 +1,8 @@
 """Audit logging for multi-user tracking."""
 
-import os
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -22,7 +22,14 @@ class AuditLog:
         self.log_file = log_file or os.getenv("AUDIT_LOG_PATH", ".surgical_context/audit.jsonl")
         Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
 
-    def log_action(self, user_id: str, action: str, resource: str, details: dict = None, status: str = "success"):
+    def log_action(
+        self,
+        user_id: str,
+        action: str,
+        resource: str,
+        details: dict = None,
+        status: str = "success",
+    ):
         """
         Log a user action.
 
@@ -97,7 +104,7 @@ class AuditLog:
         entries = []
         try:
             if os.path.exists(self.log_file):
-                with open(self.log_file, "r") as f:
+                with open(self.log_file) as f:
                     lines = f.readlines()
                     for line in lines[-limit:]:
                         entry = json.loads(line)

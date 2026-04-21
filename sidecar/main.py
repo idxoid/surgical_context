@@ -304,7 +304,9 @@ def ask(
     workspace_id = _resolve_workspace(x_workspace)
     with db_session(user_id=user_id) as db:
         arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
-        ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
+        ctx = arb.get_context_for_symbol(
+            req.symbol, question=req.question, token_budget=req.token_budget
+        )
         if isinstance(ctx, str):
             audit_log.log_error(user_id, "query", ctx)
             raise HTTPException(status_code=404, detail=ctx)
@@ -346,7 +348,9 @@ def ask_stream(
     def response_generator():
         with db_session(user_id=user_id) as db:
             arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
-            ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
+            ctx = arb.get_context_for_symbol(
+                req.symbol, question=req.question, token_budget=req.token_budget
+            )
             if isinstance(ctx, str):
                 yield format_sse("error", {"type": "error", "error": ctx})
                 return

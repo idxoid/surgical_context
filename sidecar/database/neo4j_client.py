@@ -249,7 +249,9 @@ class Neo4jClient:
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ):
         with self.driver.session() as session:
-            session.execute_write(self._create_inheritance_relations, inheritance_edges, workspace_id)
+            session.execute_write(
+                self._create_inheritance_relations, inheritance_edges, workspace_id
+            )
 
     @staticmethod
     def _create_inheritance_relations(tx, inheritance_edges, workspace_id):

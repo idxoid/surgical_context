@@ -1,6 +1,5 @@
 """Unit tests for intent classification."""
 
-import pytest
 
 from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentConfig
 

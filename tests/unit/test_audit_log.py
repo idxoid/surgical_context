@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+
 import pytest
 
 from sidecar.auth import AuditLog
@@ -43,7 +44,9 @@ class TestAuditLog:
     def test_log_query(self, temp_log_file):
         """Log query action."""
         audit = AuditLog(log_file=temp_log_file)
-        audit.log_query("bob", "process_payment", "What does this do?", "exploration", "surgical_full")
+        audit.log_query(
+            "bob", "process_payment", "What does this do?", "exploration", "surgical_full"
+        )
 
         entries = audit.get_recent_actions()
         assert len(entries) == 1

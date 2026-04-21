@@ -1,7 +1,6 @@
 """AI Engine — unified interface for both Ollama and Anthropic SDK with prompt caching."""
 
 import os
-from typing import Optional
 
 import ollama
 from anthropic import Anthropic
@@ -167,9 +166,7 @@ class AIEngine:
         else:
             yield from self._stream_ollama(system_prompt, user_message)
 
-    def _stream_claude(
-        self, system_prompt: str, user_message: str, token_count: int
-    ):
+    def _stream_claude(self, system_prompt: str, user_message: str, token_count: int):
         """Stream Claude response."""
         try:
             cache_control = None
