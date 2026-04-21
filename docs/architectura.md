@@ -1,6 +1,6 @@
 # Surgical Context — Architecture
 
-> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace/branch-scoped graph queries, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, request-scoped DB sessions, durable index job logging, opt-in bearer auth enforcement, and a VS Code extension scaffold are present. The main open gaps are production auth policy/secret management, prompt-contract observability, metrics, extension context inspection, and backpressure for mass indexing events. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace/branch-scoped graph queries, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, request-scoped DB sessions, durable index job logging, opt-in bearer auth enforcement, VS Code extension scaffold, and **complete UI specification** (Chat Panel, Context Inspector, Impact Explorer, Dashboard) are present. The main open gaps are production auth policy/secret management, prompt-contract observability, full metrics endpoint, extension UI implementation, and backpressure hardening. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 
 ## Section 1: Executive Summary & Goals
 
@@ -33,9 +33,10 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 
 | Component | Stack | Role |
 |---|---|---|
-| Thin Client | TypeScript / VS Code API | Captures events, renders chat and dashboard. No business logic. |
-| Sidecar Binary | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
-| Storage Trinity | Neo4j + LanceDB + FS | Hybrid storage — each data type in its optimal environment. |
+| **Extension Host** | TypeScript / VS Code API | Manages sidecar lifecycle, proxies webview messages to sidecar, manages file watchers and overlays. |
+| **Webviews** | TypeScript / React (proposed) | Render Chat Panel, Context Inspector, Impact Explorer, Dashboard. No business logic — dispatch to extension host. |
+| **Sidecar Binary** | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
+| **Storage Trinity** | Neo4j + LanceDB + FS | Hybrid storage — each data type in its optimal environment. |
 
 ### 2.2. Inter-Process Communication
 VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsive even if a heavy Cypher query blocks the sidecar. Enables future replacement of Python binary with Rust without frontend changes.
@@ -72,6 +73,43 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - **Retrieval recall@k** measured against a golden fixture set on every CI run.
 
 Without runtime metrics and prompt-contract observability, production claims in §1.3 remain hard to validate outside benchmark runs.
+
+---
+
+### 2.5. Extension User Interface Layer
+
+The VS Code extension provides a thin UI layer that exposes the sidecar's capabilities through four integrated surfaces: **Chat Panel**, **Context Inspector**, **Impact Explorer**, and **Dashboard**. The UI is deliberately transparent — users can see the exact code symbols, documentation, and metadata sent to the LLM, with token accounting and evidence trails.
+
+**Surfaces:**
+
+| Surface | Purpose | Type |
+|---|---|---|
+| **Chat Panel** | Default entry point; ask about current symbol with streaming response | WebviewView (sidebar) |
+| **Context Inspector** | Inspect primary source, graph neighbors, docs, prompt JSON, token breakdown | WebviewPanel (modal) |
+| **Impact Explorer** | Show callers, callees, dependencies, docs, and AFFECTS for a symbol | TreeView + WebviewPanel |
+| **Dashboard** | Operational overview: sidecar health, indexing status, token savings, recent activity | WebviewPanel |
+
+**Protocol:**
+
+All UI communication flows through a message bridge:
+- **Webview → Extension Host:** Typed messages (`chat.ask`, `chat.retry`, `accordion.toggled`, etc.)
+- **Extension Host → Webview:** State updates and streaming responses
+- **Extension Host → Sidecar:** HTTP/JSON API calls (proxied from webview requests)
+
+This layering ensures webviews remain stateless and dumb; all business logic stays in the extension host and sidecar.
+
+**Key Design Decisions:**
+
+1. **Chat Layout:** composer docked to the bottom, response area above it, secondary info groups collapsed by default. This keeps the active task visually primary while preserving transparency.
+2. **Evidence First:** The context inspector is a peer to the answer, not buried in a menu. Users can immediately verify retrieval quality and spot gaps.
+3. **Dirty Awareness:** Unsaved editor content is sent via `POST /overlay` before each ask, so the answer includes in-memory changes.
+4. **State Separation:** Session state (composer text, expanded groups) is retained per surface; request state (streaming progress, context) is ephemeral.
+
+**Specs:**
+
+- [spec_vscode_extension_ui.md](spec_vscode_extension_ui.md) — Complete UI contract: surfaces, layout rules, state model, interaction flows.
+- [spec_webview_components.md](spec_webview_components.md) — Component tree, messaging protocol, DTOs, accessibility rules.
+- [spec_package_contributes.md](spec_package_contributes.md) — VS Code manifest: views, commands, menus, keybindings, configuration.
 
 ---
 

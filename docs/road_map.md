@@ -72,7 +72,7 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 - [x] Add a unified search endpoint that blends symbols, graph neighbors, and docs.
 
 ### P3 — Scale and Learning
-- [ ] Add retrieval caching only after UID, workspace, and graph-version keys are stable.
+- [x] Add retrieval caching only after UID, workspace, and graph-version keys are stable.
 - [ ] Add feedback signals only after prompt-contract observability and privacy/redaction rules exist.
 - [x] Move AFFECTS rebuild and large-repo indexing work to a background queue with backpressure and batching.
 - [x] Coalesce IDE event storms (mass refactor, find/replace, stash pop) into bounded batch updates.
@@ -158,6 +158,11 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 - [x] Cursor position capture mechanism
 - [x] Wire `onDidChangeTextDocument` / `onDidSaveTextDocument` → `POST /overlay` / `DELETE /overlay`
 - [x] Demo on a real repo; measure cold-start and `/ask` latency
+
+> **Specs (Phase 10.5 Productization):**
+> - [spec_vscode_extension_ui.md](spec_vscode_extension_ui.md) — VS Code extension UI contract: Chat Panel, Context Inspector, Impact Explorer, Dashboard surfaces; interaction flows; state model.
+> - [spec_webview_components.md](spec_webview_components.md) — Webview component model, layout rules, message protocol, DTOs, and accessibility guidelines.
+> - [spec_package_contributes.md](spec_package_contributes.md) — VS Code manifest (package.json): viewsContainers, views, commands, menus, keybindings, configuration.
 
 ---
 
@@ -495,10 +500,21 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [ ] Token savings visualization in VS Code (reuses Phase 2.5 metrics)
 
 ### 10.5 Extension Productization
+> **Specs:**
+> - [spec_vscode_extension_ui.md](spec_vscode_extension_ui.md) — Full UI contract with four surfaces and state model.
+> - [spec_webview_components.md](spec_webview_components.md) — Webview component model, messaging protocol, and DTOs.
+> - [spec_package_contributes.md](spec_package_contributes.md) — VS Code manifest declarations and activation rules.
+
 - [x] Context inspector panel showing retrieved symbols/docs, relevance scores, and dirty-state badges.
+- [x] Four UI surfaces defined: Chat Panel, Context Inspector, Impact Explorer, Dashboard.
+- [x] Webview component model and layout rules (bottom-docked composer, collapsed accordions, auto-grow textarea).
+- [x] Message protocol between webview ↔ extension host and extension host ↔ sidecar.
+- [x] VS Code manifest structure (viewsContainers, commands, menus, keybindings, configuration).
 - [ ] Streaming chat integration with `/ask/stream` JSON-safe SSE events.
 - [x] Token budget, selected mode, query intent, and model route display.
-- [ ] VS Code settings for sidecar URL, model preference, workspace ID, and auth token.
+- [ ] VS Code settings UI for sidecar URL, model preference, workspace ID, and auth token.
+- [ ] Full implementation of all four UI surfaces in TypeScript/React.
+- [ ] Keyboard shortcuts and accessibility (ARIA labels, focus management, screen reader support).
 
 ---
 
