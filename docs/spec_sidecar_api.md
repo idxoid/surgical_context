@@ -117,7 +117,10 @@ Assemble surgical context for a symbol and query the LLM.
     "documentation": [{ "chunk_id": "...", "source_file": "...", "content": "..." }]
   },
   "user": "alice",
-  "cloud": true
+  "cloud": true,
+  "workspace_id": "acme/repo@main",
+  "trace_id": "trace_...",
+  "feedback_token": "fbk_..."
 }
 ```
 
@@ -129,6 +132,7 @@ Assemble surgical context for a symbol and query the LLM.
 3. `ContextArbitrator.get_context_for_symbol(symbol, question, token_budget)` runs intent classification, workspace-scoped graph expansion, deduplication, code resolution, and doc retrieval.
 4. `AIEngine.chat()` routes to the configured local/cloud model based on model preference, context size, and intent.
 5. Audit logging records successful and failed query actions.
+6. A privacy-scoped retrieval snapshot is written with an opaque `feedback_token`. The snapshot stores selected candidate metadata and hashes, not raw prompts, code bodies, answers, or free-text comments.
 
 ---
 
@@ -139,11 +143,44 @@ Streaming version of `/ask` using server-sent events.
 
 **Event types:**
 - `chunk` — one generated model chunk.
-- `context` — final JSON Prompt Contract.
+- `context` — final JSON Prompt Contract plus `feedback_token`.
 - `error` — JSON error payload.
 - `done` — terminal event.
 
 **Behavior:** Uses the same arbitration and model-routing path as `/ask`, but frames every SSE payload through JSON-safe `format_sse()`.
+
+---
+
+### POST /feedback
+Record retrieval feedback against a token issued by `/ask` or `/ask/stream`.
+
+**Request:**
+```json
+{
+  "feedback_token": "fbk_...",
+  "kind": "explicit_reject",
+  "details": {
+    "missing_symbols": ["RequestTimeout.apply"],
+    "comment": "I was looking for timeout logic"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "status": "recorded",
+  "feedback_token": "fbk_...",
+  "kind": "explicit_reject",
+  "outcome": "reject",
+  "workspace_id": "acme/repo@main",
+  "trace_id": "trace_..."
+}
+```
+
+**Errors:** `404` for unknown tokens, `403` for workspace/user scope mismatch, `400` for unsupported feedback kinds.
+
+**Privacy:** Feedback is append-only and workspace-scoped. Structural details such as `missing_symbols`, `wrong_symbols`, and `correct_intent` are stored. Free-text `comment` content is not stored before a redaction pipeline exists; only `comment_present` and `comment_length` are retained.
 
 ---
 

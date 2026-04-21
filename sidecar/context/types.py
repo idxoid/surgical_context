@@ -46,6 +46,7 @@ class PromptContext:
     estimated_cost_usd: float = 0.0
     cost_basis: str = "not_configured"
     pruning_reasons: list[str] = field(default_factory=list)
+    feedback_token: str = ""
 
     def to_system_prompt(self) -> str:
         """Render to the flat text format the LLM receives."""
@@ -99,6 +100,7 @@ class PromptContext:
                     "workspace_id": self.workspace_id,
                     "resolver_version": self.resolver_version,
                     "cache_hits": self.budget.get("cache_hits", []),
+                    "feedback_token": self.feedback_token,
                     "stage_timings_ms": self.stage_timings_ms,
                     "token_counts": self.token_counts,
                     "model_route": self.model_route,

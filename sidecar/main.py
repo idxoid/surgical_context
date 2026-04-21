@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sidecar.ai.engine import AIEngine
 from sidecar.api.sse import format_sse
@@ -17,6 +17,7 @@ from sidecar.context.overlay import InMemoryOverlay
 from sidecar.context.types import RESOLVER_VERSION, PromptContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
+from sidecar.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.queue import EnqueueResult, IndexBatchQueue, IndexWorkItem
 from sidecar.observability import (
@@ -45,6 +46,7 @@ ai_engine = AIEngine(model_preference=MODEL_PREFERENCE)
 user_auth = UserAuth()
 audit_log = AuditLog()
 workspace_resolver = WorkspaceResolver()
+feedback_store = FeedbackStore()
 
 
 class IndexRequest(BaseModel):
@@ -155,8 +157,25 @@ class AskResponse(BaseModel):
     cloud: bool
     workspace_id: str
     trace_id: str
+    feedback_token: str
     model_route: dict[str, Any]
     metrics: dict[str, Any]
+
+
+class FeedbackRequest(BaseModel):
+    feedback_token: str
+    kind: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    timestamp: str = ""
+
+
+class FeedbackResponse(BaseModel):
+    status: str
+    feedback_token: str
+    kind: str
+    outcome: str
+    workspace_id: str
+    trace_id: str
 
 
 class ImpactResponse(BaseModel):
@@ -270,6 +289,69 @@ def _request_metrics(trace: RequestTrace) -> dict[str, Any]:
         "estimated_cost_usd": trace.estimated_cost_usd,
         "cost_basis": trace.cost_basis,
     }
+
+
+def _candidate_record(symbol: Any) -> dict[str, Any]:
+    return {
+        "symbol": getattr(symbol, "symbol", ""),
+        "file_path": getattr(symbol, "file_path", ""),
+        "relation": getattr(symbol, "relation", ""),
+        "direction": getattr(symbol, "direction", ""),
+        "depth": getattr(symbol, "depth", 0),
+        "relevance_score": getattr(symbol, "relevance_score", 0.0),
+        "is_dirty": getattr(symbol, "is_dirty", False),
+    }
+
+
+def _doc_record(doc: Any) -> dict[str, Any]:
+    return {
+        "chunk_id": getattr(doc, "chunk_id", ""),
+        "source_file": getattr(doc, "source_file", ""),
+        "score": getattr(doc, "score", None),
+        "provenance": getattr(doc, "provenance", []),
+    }
+
+
+def _record_retrieval_snapshot(
+    *,
+    feedback_token: str,
+    user_id: str,
+    workspace_id: str,
+    symbol: str,
+    question: str,
+    ctx: Any,
+    trace: RequestTrace,
+) -> None:
+    selected = [_candidate_record(ctx.primary_source)]
+    selected.extend(_candidate_record(candidate) for candidate in getattr(ctx, "graph_context", []))
+    documentation = [_doc_record(doc) for doc in getattr(ctx, "documentation", [])]
+    snapshot = RetrievalSnapshot(
+        feedback_token=feedback_token,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        trace_id=trace.trace_id,
+        symbol=symbol,
+        intent=str(getattr(ctx, "intent", "")),
+        mode=str(getattr(ctx, "mode", "")),
+        question_hash=hashlib.sha256(question.encode()).hexdigest(),
+        question_tokens=trace.token_counts.get("user", estimate_text_tokens(question)),
+        resolver_version=getattr(ctx, "resolver_version", RESOLVER_VERSION),
+        selected_candidates=selected,
+        documentation=documentation,
+        context_metadata={
+            "budget": getattr(ctx, "budget", {}),
+            "tier_tokens": getattr(ctx, "tier_tokens", {}),
+            "token_counts": dict(trace.token_counts),
+            "model_route": dict(trace.model_route),
+            "estimated_cost_usd": trace.estimated_cost_usd,
+            "cost_basis": trace.cost_basis,
+        },
+    )
+    feedback_store.record_snapshot(snapshot)
+    default_metrics.increment(
+        "sidecar_feedback_snapshots_total",
+        labels={"workspace": workspace_id},
+    )
 
 
 def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
@@ -803,6 +885,18 @@ def ask(
                 audit_log.log_query(user_id, req.symbol, req.question, ctx.intent, ctx.mode)
 
             _attach_trace_metadata(ctx, trace)
+            feedback_token = feedback_store.issue_token()
+            ctx.feedback_token = feedback_token
+            with trace.stage("feedback_snapshot"):
+                _record_retrieval_snapshot(
+                    feedback_token=feedback_token,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    symbol=req.symbol,
+                    question=req.question,
+                    ctx=ctx,
+                    trace=trace,
+                )
             logger.info("trace_id=%s endpoint=/ask status=ok", trace.trace_id)
             return {
                 "symbol": req.symbol,
@@ -812,6 +906,7 @@ def ask(
                 "cloud": db.is_cloud(),
                 "workspace_id": workspace_id,
                 "trace_id": trace.trace_id,
+                "feedback_token": feedback_token,
                 "model_route": trace.model_route,
                 "metrics": _request_metrics(trace),
             }
@@ -893,11 +988,24 @@ def ask_stream(
                     audit_log.log_query(user_id, req.symbol, req.question, ctx.intent, ctx.mode)
 
                 _attach_trace_metadata(ctx, trace)
+                feedback_token = feedback_store.issue_token()
+                ctx.feedback_token = feedback_token
+                with trace.stage("feedback_snapshot"):
+                    _record_retrieval_snapshot(
+                        feedback_token=feedback_token,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                        symbol=req.symbol,
+                        question=req.question,
+                        ctx=ctx,
+                        trace=trace,
+                    )
                 yield format_sse(
                     "context",
                     {
                         "type": "context",
                         "trace_id": trace.trace_id,
+                        "feedback_token": feedback_token,
                         "context": ctx.to_dict(),
                         "metrics": _request_metrics(trace),
                     },
@@ -914,6 +1022,52 @@ def ask_stream(
             default_metrics.record_trace(trace, status)
 
     return StreamingResponse(response_generator(), media_type="text/event-stream")
+
+
+@app.post("/feedback", response_model=FeedbackResponse)
+def record_feedback(
+    req: FeedbackRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Record retrieval feedback against an issued feedback token."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    snapshot = feedback_store.get_snapshot(req.feedback_token)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Unknown feedback token")
+    if snapshot.workspace_id != workspace_id:
+        raise HTTPException(status_code=403, detail="Feedback token belongs to another workspace")
+    if snapshot.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Feedback token belongs to another user")
+
+    event = FeedbackEvent(
+        feedback_token=req.feedback_token,
+        kind=req.kind,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        trace_id=snapshot.trace_id,
+        details=req.details,
+        client_timestamp=req.timestamp,
+    )
+    try:
+        feedback_store.record_feedback(event)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    default_metrics.increment(
+        "sidecar_feedback_events_total",
+        labels={"kind": event.kind, "outcome": event.outcome, "workspace": workspace_id},
+    )
+    return {
+        "status": "recorded",
+        "feedback_token": req.feedback_token,
+        "kind": event.kind,
+        "outcome": event.outcome,
+        "workspace_id": workspace_id,
+        "trace_id": snapshot.trace_id,
+    }
 
 
 @app.get("/impact", response_model=ImpactResponse)

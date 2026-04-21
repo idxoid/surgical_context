@@ -2,6 +2,7 @@
 
 import importlib
 import sys
+import tempfile
 import types
 from contextlib import contextmanager
 
@@ -51,6 +52,7 @@ class FakeCtx:
                     "trace_id": getattr(self, "trace_id", ""),
                     "workspace_id": getattr(self, "workspace_id", ""),
                     "model_route": getattr(self, "model_route", {}),
+                    "feedback_token": getattr(self, "feedback_token", ""),
                 }
             },
             "primary_source": {"symbol": "process_payment"},
@@ -100,6 +102,9 @@ def fake_db_session(user_id="anonymous"):
 def import_main_with_fakes(monkeypatch):
     """Import sidecar.main without constructing real LanceDB/LLM clients."""
     sys.modules.pop("sidecar.main", None)
+    feedback_dir = tempfile.mkdtemp(prefix="sidecar-feedback-test-")
+    monkeypatch.setenv("FEEDBACK_SNAPSHOT_PATH", f"{feedback_dir}/snapshots.jsonl")
+    monkeypatch.setenv("FEEDBACK_LOG_PATH", f"{feedback_dir}/feedback.jsonl")
 
     fake_lancedb = types.ModuleType("sidecar.database.lancedb_client")
 
@@ -205,6 +210,8 @@ def test_ask_endpoint_returns_typed_response(monkeypatch):
     assert body["user"] == "alice"
     assert body["cloud"] is False
     assert body["context"]["intent"] == "exploration"
+    assert body["feedback_token"].startswith("fbk_")
+    assert body["context"]["metadata"]["assembly"]["feedback_token"] == body["feedback_token"]
 
 
 def test_ask_endpoint_includes_trace_metrics_and_model_route(monkeypatch):
@@ -219,6 +226,76 @@ def test_ask_endpoint_includes_trace_metrics_and_model_route(monkeypatch):
     assert body["model_route"]["model"] == "fake-model"
     assert body["metrics"]["token_counts"]["context"] == 42
     assert body["context"]["metadata"]["assembly"]["trace_id"] == "trace-test"
+
+
+def test_ask_endpoint_persists_private_feedback_snapshot(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    question = "How does this work?"
+
+    body = main.ask(
+        main.AskRequest(symbol="process_payment", question=question),
+        x_user_id="Alice",
+        x_trace_id="trace-feedback",
+    )
+
+    snapshot = main.feedback_store.get_snapshot(body["feedback_token"])
+    assert snapshot is not None
+    assert snapshot.user_id == "alice"
+    assert snapshot.workspace_id == body["workspace_id"]
+    assert snapshot.trace_id == "trace-feedback"
+    assert snapshot.question_hash != question
+    assert "question" not in snapshot.to_dict()
+    assert "code" not in snapshot.selected_candidates[0]
+    assert snapshot.selected_candidates[0]["symbol"] == "process_payment"
+
+
+def test_feedback_endpoint_records_sanitized_event(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    ask_body = main.ask(
+        main.AskRequest(symbol="process_payment", question="How does this work?"),
+        x_user_id="Alice",
+    )
+
+    body = main.record_feedback(
+        main.FeedbackRequest(
+            feedback_token=ask_body["feedback_token"],
+            kind="explicit_reject",
+            details={
+                "missing_symbols": ["RequestTimeout.apply"],
+                "comment": "This contains raw user prose and should not be stored.",
+                "api_key": "secret",
+            },
+        ),
+        x_user_id="Alice",
+    )
+
+    assert body["status"] == "recorded"
+    assert body["outcome"] == "reject"
+    event = main.feedback_store.recent_feedback(limit=1)[0]
+    assert event["details"]["missing_symbols"] == ["RequestTimeout.apply"]
+    assert event["details"]["comment_present"] is True
+    assert event["details"]["comment_length"] > 0
+    assert "comment" not in event["details"]
+    assert event["details"]["redacted_keys"] == ["api_key"]
+
+
+def test_feedback_endpoint_enforces_token_user_scope(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    ask_body = main.ask(
+        main.AskRequest(symbol="process_payment", question="How does this work?"),
+        x_user_id="Alice",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.record_feedback(
+            main.FeedbackRequest(
+                feedback_token=ask_body["feedback_token"],
+                kind="explicit_accept",
+            ),
+            x_user_id="Bob",
+        )
+
+    assert exc_info.value.status_code == 403
 
 
 def test_ask_stream_endpoint_emits_json_sse(monkeypatch):

@@ -73,7 +73,7 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 
 ### P3 — Scale and Learning
 - [x] Add retrieval caching only after UID, workspace, and graph-version keys are stable.
-- [ ] Add feedback signals only after prompt-contract observability and privacy/redaction rules exist.
+- [x] Add feedback signals only after prompt-contract observability and privacy/redaction rules exist.
 - [x] Move AFFECTS rebuild and large-repo indexing work to a background queue with backpressure and batching.
 - [x] Coalesce IDE event storms (mass refactor, find/replace, stash pop) into bounded batch updates.
 - [x] Add embedding recomputation controls: content-hash cache, worker throttle, and opt-in low-priority background mode.
@@ -466,21 +466,26 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 > **Specs:** [spec_retrieval_cache.md](spec_retrieval_cache.md), [spec_learning_loop.md](spec_learning_loop.md).
 
 ### 10.1 Three-Layer Retrieval Cache
-- [ ] L1 — symbol body cache keyed by `(file_path, range, file_hash)`, in-process LRU
-- [ ] L2 — subgraph cache keyed by `(primary_uid, intent_hash, budget, workspace_id, graph_version)`
-- [ ] L3 — prompt/response cache keyed by `sha256(system_prompt || user_question)`
-- [ ] Version-bump invalidation on graph mutations (no explicit cache walking)
-- [ ] Cache hits surface in `metadata.assembly.cache_hits`
-- [ ] Pluggable backends: in-memory LRU for single-instance; Redis for multi-instance
+- [x] L1 — symbol body cache keyed by `(file_path, range, file_hash)`, in-process LRU
+- [x] L2 — subgraph cache keyed by `(primary_uid, intent_hash, budget, workspace_id, graph_version)`
+- [x] L3 — prompt/response cache keyed by `sha256(system_prompt || user_question)`
+- [x] Version-bump invalidation on graph mutations (no explicit cache walking)
+- [x] Cache hits surface in `metadata.assembly.cache_hits`
+- [x] Pluggable cache facade with in-memory LRU backend for single-instance local mode
+- [ ] Redis backend for multi-instance deployments
 
 ### 10.2 Feedback Loop
-- [ ] `feedback_token` issued on every retrieval, bound to persisted `RetrievalSnapshot`
-- [ ] `POST /feedback` endpoint — implicit/explicit, accept/reject, with details
+**Decision:** implement the first feedback slice as append-only, workspace-scoped telemetry. Persist snapshots with opaque `feedback_token`s and metadata only; do not store raw prompts, code bodies, or free-text comments in training data until a redaction pass exists. Defer personalization, learned graph edges, and offline retraining until enough explicit feedback metrics exist.
+
+- [x] `feedback_token` issued on every retrieval, bound to persisted `RetrievalSnapshot`
+- [x] `POST /feedback` endpoint — implicit/explicit, accept/reject, with details
 - [ ] Fast loop: per-user EMA adjustments to tier priors (capped ±20%)
 - [ ] Slow loop (nightly): weight sweep + classifier retrain proposals (human-approved PRs)
 - [ ] `(Symbol)-[:CO_RELEVANT]->(Symbol)` learned edges — adds candidates beyond structural reach
-- [ ] Privacy: per-workspace scoping, opt-out toggle, PII redaction before ML training
-- [ ] Metrics: feedback rate, accept/reject ratio, coverage, harness impact
+- [x] Privacy: per-workspace scoping and no raw prompt/code/comment storage before redaction exists
+- [ ] Privacy: opt-out toggle and full PII redaction before ML training
+- [x] Metrics: feedback event counters by kind and accept/reject outcome
+- [ ] Metrics: coverage and harness impact
 
 ### 10.3 Performance & Reliability (carried forward from Phase 7)
 - [ ] Parallel parsing for `git pull` indexing (ThreadPoolExecutor, 4 workers default)
