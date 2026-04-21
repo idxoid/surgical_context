@@ -1,5 +1,20 @@
 # Surgical Context — Technical Concept
 
+## 0. Whole Meaning
+
+Surgical Context is a context operating system for code assistants. Its core promise is not generic "chat with code"; it makes context selection explicit, measurable, and inspectable before an LLM answers.
+
+The product loop:
+
+1. Index code into a graph of files, symbols, and relationships.
+2. Index docs into vector chunks and graph anchors.
+3. Listen to editor state, including unsaved overlays.
+4. Given a symbol and question, assemble the smallest useful context packet.
+5. Route the prompt to a local or cloud model.
+6. Return both the answer and the context contract so the user can inspect what the model saw.
+
+The architectural center of gravity is retrieval correctness. If symbol identity, call resolution, branch isolation, and prompt observability are correct, model quality can improve steadily. If those are weak, better models only hide retrieval mistakes.
+
 ## 1. The Storage Trinity
 
 Data is split across three stores, each optimized for its role.
@@ -24,9 +39,16 @@ External Python process. VS Code communicates via FastAPI (localhost HTTP). Faul
 | POST | `/index` | Index a project directory into Neo4j + LanceDB |
 | POST | `/index/docs` | Index a documentation directory into LanceDB + DocAnchor graph |
 | POST | `/ask` | Assemble `PromptContext`, query Ollama, return answer + JSON contract |
+| POST | `/ask/stream` | Streaming answer endpoint over server-sent events |
 | POST | `/search` | Semantic search over indexed docs (LanceDB) |
 | POST | `/overlay` | Push unsaved file content into memory |
 | DELETE | `/overlay` | Clear overlay for a file (on save/close) |
+| POST | `/index/file` | Re-index one saved file |
+| GET | `/impact` | Return downstream symbols/files affected by a symbol |
+| POST | `/auth/token` | Generate a user token for multi-user mode |
+| GET | `/auth/users` | List active users |
+| GET | `/status/cloud` | Report Aura/local fallback status |
+| GET | `/audit/actions` | Return recent audit entries |
 
 ### Context Arbitrator
 
@@ -37,8 +59,10 @@ Returns a typed `PromptContext` dataclass (`sidecar/context/arbitrator.py`):
 4. Otherwise read code from disk by line range
 5. Expand graph via BFS (token-budget constrained) to gather all `CALLS` dependencies + reverse deps
 6. Compile context tier-aware per intent: code → cross-refs → specs → architecture → concepts → ideas
-7. Attaches doc chunks from LanceDB to `PromptContext.documentation` (respects tier priority)
+7. Attaches doc chunks from LanceDB to `PromptContext.documentation`
 8. `to_system_prompt()` → flat text for LLM; `to_dict()` → JSON Prompt Contract with `mode` + `intent` fields
+
+Doc retrieval happens before prompt compilation, so intent-aware document selection and `tier_tokens` are produced by the same arbitration path that builds the prompt.
 
 ### Intent Classification & Graceful Degradation (Phase 6.1)
 
@@ -55,7 +79,7 @@ Returns a typed `PromptContext` dataclass (`sidecar/context/arbitrator.py`):
 
 PromptContext now includes:
 - `mode`: indicates which context tier(s) populated the response
-- `intent`: the detected query intent (for observability + model routing in Phase 6.3)
+- `intent`: the detected query intent (for observability and model routing)
 
 ### In-Memory Overlay
 
@@ -76,7 +100,7 @@ Two-phase to ensure all nodes exist before edges are created:
 **Phase 2 — Call linking** (per file):
 - tree-sitter query for `call` nodes
 - Walk up AST to find enclosing function (caller)
-- Neo4j: `MERGE (caller)-[:CALLS]->(callee)` matched by name
+- Neo4j: `MERGE (caller)-[:CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED]->(callee)` matched by name
 
 **Phase 3 — Symbol embeddings:**
 - Read each symbol's source lines from disk
@@ -113,9 +137,7 @@ Two-phase to ensure all nodes exist before edges are created:
 
 ## 5. LLM Integration
 
-**Current:** Ollama (`llama3` default, `OLLAMA_MODEL` env override). Stateless — single system + user message per request.
-
-**Planned:** Official Anthropic SDK (`sidecar/ai/engine.py` has commented implementation). Activation deferred to Phase 5.
+**Current:** `AIEngine` supports Ollama (`llama3` default, `OLLAMA_MODEL` env override) and Anthropic Claude when `ANTHROPIC_API_KEY` is set. `MODEL_PREFERENCE=auto` routes by context size and intent; `claude` and `ollama` force a provider.
 
 ---
 
@@ -131,7 +153,7 @@ Two-phase to ensure all nodes exist before edges are created:
 
 **ADR-005** — LanguageAdapter protocol. All language-specific logic (tree-sitter queries, call resolution) lives behind a protocol so new languages plug in without core edits.
 
-**ADR-006** — Quality gates before SaaS. Phase 4 (SaaS) and Phase 5 (launch) are blocked until Phase 2.5 (eval harness + metrics) and Phase 3.5 (incremental indexing + token budget) are green.
+**ADR-006** — Quality gates before scale. Cloud fallback, model routing, and the extension scaffold exist, but SaaS/marketplace readiness remains blocked on correctness and observability hardening.
 
 ---
 
@@ -139,8 +161,7 @@ Two-phase to ensure all nodes exist before edges are created:
 
 The project is pre-release. SaaS and marketplace are deferred. The active work stream is:
 
-1. **Phase 2.5 — Quality Foundation.** Eval harness, structured logging, `/metrics` endpoint, token accounting. Every claim in §1 of the architecture doc must be measurable before it can be scaled.
-2. **Phase 3.5 — Arbitration & Indexing Robustness.** Incremental `/index/file`, token-budget-driven BFS instead of hardcoded `*1..2`, re-ranking (callers > callees), `IMPORTS` / `DEPENDS_ON` edges.
-3. **Extension scaffold.** The "thin client" half of the architecture does not yet exist on disk — a `extension/` workspace with a minimal chat window is a Phase 1 gap.
-
-Phase 4 and 5 remain on the road map but are explicitly blocked on the above (see ADR-006).
+1. **Correctness hardening.** Stable UID v2, scoped call resolution, workspace/branch isolation, and adversarial retrieval fixtures.
+2. **Operational safety.** Request-scoped DB handling, stronger auth boundaries, typed API responses, and JSON-safe streaming.
+3. **Observability.** `/metrics`, structured logs, token/cost/latency tracking, and richer JSON Prompt Contract metadata.
+4. **Extension productization.** Context inspector, streaming answers, token budget display, model route display, and user-configurable sidecar settings.

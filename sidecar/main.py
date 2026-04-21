@@ -1,17 +1,16 @@
-import os
 import logging
+import os
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from sidecar.ai.engine import AIEngine
-from sidecar.auth import UserAuth, AuditLog
+from sidecar.auth import AuditLog, UserAuth
 from sidecar.context.arbitrator import ContextArbitrator
-from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.overlay import InMemoryOverlay
-from sidecar.database.aura_client import AuraClient
 from sidecar.database.lancedb_client import LanceDBClient
+from sidecar.database.session import db_session
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,20 +23,6 @@ vector_db = LanceDBClient()
 ai_engine = AIEngine(model_preference=MODEL_PREFERENCE)
 user_auth = UserAuth()
 audit_log = AuditLog()
-
-# Global Aura connection (cloud-first with local fallback)
-_aura_client = None
-
-
-def get_db(user_id: str = "anonymous") -> AuraClient:
-    """Get or create Aura client (cloud-first with local fallback)."""
-    global _aura_client
-    if _aura_client is None:
-        _aura_client = AuraClient(user_id=user_id)
-    else:
-        # Update user context
-        _aura_client.user_id = user_id
-    return _aura_client
 
 
 class IndexRequest(BaseModel):
@@ -93,13 +78,10 @@ def index_file_endpoint(req: IndexFileRequest):
     from sidecar.indexer.code import index_file
     from sidecar.parser.extractor import SymbolExtractor
 
-    db = get_db()
-    try:
+    with db_session() as db:
         db.delete_symbols_for_file(req.file_path)
         index_file(req.file_path, db, vector_db, SymbolExtractor())
         resolve_pending_anchors(db, vector_db)
-    finally:
-        db.close()
     return {"status": "indexed", "file_path": req.file_path}
 
 
@@ -136,16 +118,12 @@ def clear_overlay(file_path: str):
 def ask(req: AskRequest, x_user_id: str = Header(None)):
     """Ask about a symbol (with multi-user audit logging)."""
     user_id = user_auth.identify_user(x_user_id)
-    db = get_db(user_id=user_id)
-    try:
-        arb = ContextArbitrator(db, overlay)
+    with db_session(user_id=user_id) as db:
+        arb = ContextArbitrator(db, overlay, vector_db)
         ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
         if isinstance(ctx, str):
             audit_log.log_error(user_id, "query", ctx)
             raise HTTPException(status_code=404, detail=ctx)
-
-        doc_resolver = DocResolver(vector_db)
-        ctx.documentation = doc_resolver.search(f"{req.symbol} {req.question}", limit=3)
 
         system_prompt = f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"
 
@@ -167,25 +145,20 @@ def ask(req: AskRequest, x_user_id: str = Header(None)):
             "user": user_id,
             "cloud": db.is_cloud(),
         }
-    finally:
-        db.close()
 
 
 @app.post("/ask/stream")
-def ask_stream(req: AskRequest):
+def ask_stream(req: AskRequest, x_user_id: str = Header(None)):
     """Streaming version of /ask endpoint (SSE)."""
-    db = get_db()
+    user_id = user_auth.identify_user(x_user_id)
 
     def response_generator():
-        try:
-            arb = ContextArbitrator(db, overlay)
+        with db_session(user_id=user_id) as db:
+            arb = ContextArbitrator(db, overlay, vector_db)
             ctx = arb.get_context_for_symbol(req.symbol, question=req.question, token_budget=req.token_budget)
             if isinstance(ctx, str):
                 yield f"data: {{'error': '{ctx}'}}\n\n"
                 return
-
-            doc_resolver = DocResolver(vector_db)
-            ctx.documentation = doc_resolver.search(f"{req.symbol} {req.question}", limit=3)
 
             system_prompt = f"You are a Surgical Code Assistant. Use ONLY the provided context.\n\n{ctx.to_system_prompt()}"
 
@@ -201,8 +174,6 @@ def ask_stream(req: AskRequest):
 
             # Send context metadata at end
             yield f"data: [CONTEXT]\n{ctx.to_dict()}\n\n"
-        finally:
-            db.close()
 
     return StreamingResponse(response_generator(), media_type="text/event-stream")
 
@@ -210,8 +181,7 @@ def ask_stream(req: AskRequest):
 @app.get("/impact")
 def impact(symbol: str):
     """Return downstream dependents affected by a change to the given symbol."""
-    db = get_db()
-    try:
+    with db_session() as db:
         from sidecar.indexer.affects import AFFECTSIndexer
 
         # Look up symbol UID by name
@@ -255,8 +225,6 @@ def impact(symbol: str):
             "affected_file_count": len(affected_files),
             "max_depth": AFFECTSIndexer.MAX_AFFECTS_DEPTH,
         }
-    finally:
-        db.close()
 
 
 @app.post("/auth/token")
@@ -277,14 +245,14 @@ def list_users():
 @app.get("/status/cloud")
 def cloud_status():
     """Get cloud (Aura) connection status."""
-    db = get_db()
-    health = db.health_check()
-    return {
-        "cloud_enabled": True,
-        "using_aura": db.is_cloud(),
-        "using_fallback": db.is_fallback(),
-        "health": health,
-    }
+    with db_session() as db:
+        health = db.health_check()
+        return {
+            "cloud_enabled": True,
+            "using_aura": db.is_cloud(),
+            "using_fallback": db.is_fallback(),
+            "health": health,
+        }
 
 
 @app.get("/audit/actions")

@@ -2,6 +2,7 @@
 
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.deduplicator import ContextDeduplicator
+from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.graph_expander import GraphExpander
 from sidecar.context.intent_classifier import IntentClassifier
 from sidecar.context.prompt_compiler import PromptCompiler
@@ -11,9 +12,10 @@ from sidecar.context.types import PromptContext
 class ContextArbitrator:
     """Orchestrator: composes GraphExpander, ContextDeduplicator, CodeResolver, DocResolver, PromptCompiler."""
 
-    def __init__(self, neo4j_client, overlay=None):
+    def __init__(self, neo4j_client, overlay=None, vector_db=None):
         self.db = neo4j_client
         self.overlay = overlay
+        self.vector_db = vector_db
 
     def get_context_for_symbol(
         self,
@@ -40,8 +42,10 @@ class ContextArbitrator:
             for n in [subgraph.primary] + subgraph.nodes
         }
 
-        # 4. Resolve docs (empty in this method; caller optionally populates)
+        # 4. Resolve docs before compilation so intent-aware tier selection can include them.
         docs = []
+        if self.vector_db:
+            docs = DocResolver(self.vector_db).search(f"{symbol_name} {question}", limit=3)
 
         # 5. Compile prompt with intent-aware tier selection
         return PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)

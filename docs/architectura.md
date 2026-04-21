@@ -1,6 +1,6 @@
 # Surgical Context — Architecture
 
-> **Status:** Phase 5 complete and validated. Full pipeline operational: code indexing with typed call edges → AFFECTS index → doc enrichment with cross-document linking. See [road_map.md](road_map.md) for validation metrics (49 typed edges, 196 AFFECTS, 2,040 FROM relations, 2,286 COVERS links).
+> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, and a VS Code extension scaffold are present. The main open gaps are stable symbol identity, scoped call resolution, workspace/branch isolation, request-scoped DB handling, stronger auth, and prompt-contract observability. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 
 ## Section 1: Executive Summary & Goals
 
@@ -48,24 +48,30 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 | POST | `/index` | ✅ |
 | POST | `/index/docs` | ✅ |
 | POST | `/ask` | ✅ |
+| POST | `/ask/stream` | ✅ |
 | POST | `/search` | ✅ |
 | POST | `/overlay` | ✅ |
 | DELETE | `/overlay` | ✅ |
-| POST | `/index/file` | 🔴 Planned (Phase 3.5) — single-file incremental update |
-| GET | `/metrics` | 🔴 Planned (Phase 2.5) — Prometheus text format |
+| POST | `/index/file` | ✅ |
+| GET | `/impact` | ✅ |
+| POST | `/auth/token` | ✅ |
+| GET | `/auth/users` | ✅ |
+| GET | `/status/cloud` | ✅ |
+| GET | `/audit/actions` | ✅ |
+| GET | `/metrics` | 🔴 Planned — Prometheus text format |
 
 ---
 
-### 2.4. Observability (Planned — Phase 2.5)
+### 2.4. Observability (Partially Implemented)
 
-The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. None of these are currently instrumented. Phase 2.5 adds:
+The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency, but runtime observability is still incomplete. The next observability layer adds:
 
 - **Structured logs** per pipeline stage with fields: `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`.
 - **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts, cache hit rates.
 - **Token baselines**: every `/ask` logs both the surgical token count and an estimate of the "carpet-bomb" equivalent (all open files). The delta is the core KPI.
 - **Retrieval recall@k** measured against a golden fixture set on every CI run.
 
-Without this layer, claims in §1.3 are unfalsifiable and cannot be used to justify the Phase 4 SaaS transition.
+Without runtime metrics and prompt-contract observability, production claims in §1.3 remain hard to validate outside benchmark runs.
 
 ---
 
@@ -96,12 +102,13 @@ Without this layer, claims in §1.3 are unfalsifiable and cannot be used to just
 
 ### 3.3. Load — Incremental Upsert
 - **Neo4j:** `MERGE` on uid — only changed nodes/edges are written.
+- **Current caveat:** changed files are handled by deleting their existing symbols and re-upserting extracted symbols; stable symbol identity is a post-MVP hardening item.
 - **LanceDB:** delete-then-insert per file on re-index.
 
 ### 3.4. Dirty State Handling ✅ Implemented
 `InMemoryOverlay` holds `{file_path: raw_content}`:
 - Re-parses symbols on the fly via tree-sitter — no disk I/O.
-- `ContextArbitrator._read_code()` checks overlay before disk.
+- `CodeResolver` checks overlay before disk during context assembly.
 - Cleared on file save or editor close (TTL = session).
 
 ### 3.5. Pipeline Priority Queue
@@ -117,7 +124,7 @@ Without this layer, claims in §1.3 are unfalsifiable and cannot be used to just
 
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol, question}`.
-2. **Intent classification** (Phase 6+): detect query intent (navigation, debugging, refactor, exploration, new feature, design question) → choose tier priority order.
+2. **Intent classification**: detect query intent (navigation, debugging, refactor, exploration, new feature, design question) → choose tier priority order.
 3. **Graph expansion** (`GraphExpander`): BFS from target symbol through typed edges (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) constrained by token budget + depth limit. Returns priority-scored subgraph.
 4. **Deduplication** (`ContextDeduplicator`): remove redundant symbols and overlapping doc chunks.
 5. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol.
@@ -125,12 +132,12 @@ Without this layer, claims in §1.3 are unfalsifiable and cannot be used to just
 7. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas), fill budget in order.
 8. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
 9. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
-10. **Streaming** (Phase 6): SSE instead of blocking (planned).
+10. **Streaming**: `/ask/stream` provides SSE responses. JSON-safe event framing remains an open hardening task.
 
 ### 4.2. Cold Start
 1. FS scan for `.py`/`.ts`/`.tsx` files (gitignore-aware, dirs pruned).
 2. Phase 1: extract all symbols (functions, classes, UPPER_CASE variables) → upsert nodes.
-3. Phase 2: extract all calls → upsert `[:CALLS]` edges.
+3. Phase 2: extract all calls → upsert typed call edges (`CALLS_DIRECT`, `CALLS_DYNAMIC`, `CALLS_INFERRED`).
 4. Phase 3: embed symbol code bodies → LanceDB `symbols` table.
 5. Phase 4: resolve pending DocAnchors against newly indexed symbols.
 6. Doc indexing (separate trigger): section-aware chunk + embed all `.md` → LanceDB + DocAnchor graph.
@@ -143,11 +150,11 @@ Scenario: user edits `process_payment`, hasn't saved.
 3. Reads dirty symbol body from memory; all other dependencies from stable Neo4j graph.
 4. LLM sees current work-in-progress surrounded by stable project structure.
 
-### 4.4. Model Routing (Planned — Phase 5)
+### 4.4. Model Routing
 - Pre-score intent + context token count.
-- Small context + simple question → Llama 3 / cheap API model.
-- Large context + architectural change → Claude / GPT-4o.
-- Fallback: escalate on empty or error response.
+- Small context + simple question → Ollama.
+- Large context or complex intent → Claude when `ANTHROPIC_API_KEY` is configured.
+- Fallback: Claude failures fall back to Ollama.
 
 ---
 
@@ -158,7 +165,7 @@ Scenario: user edits `process_payment`, hasn't saved.
 | Label | Properties | Description |
 |---|---|---|
 | File | `path, hash, last_indexed` | Repository file, entry point for indexing |
-| Symbol | `uid, name, kind, range, hash` | Atomic code unit (function/class/variable) |
+| Symbol | `uid, name, kind, range, hash, token_estimate` | Atomic code unit (function/class/variable) |
 | DocAnchor | `chunk_id` | Doc chunk key — navigates to File via [:FROM], to symbols via [:COVERS] |
 | Commit | `hash, author, timestamp, branch` | Version node for time-travel context (planned) |
 
@@ -167,8 +174,12 @@ Scenario: user edits `process_payment`, hasn't saved.
 | Type | Direction | Description |
 |---|---|---|
 | CONTAINS | (File)→(Symbol) | Symbol belongs to file |
-| CALLS | (Symbol)→(Symbol) | Direct function call |
-| DEPENDS_ON | (Symbol)→(Symbol) | Type/interface usage (planned) |
+| CALLS_DIRECT | (Symbol)→(Symbol) | Static function call |
+| CALLS_DYNAMIC | (Symbol)→(Symbol) | Dynamic/receiver-based call |
+| CALLS_INFERRED | (Symbol)→(Symbol) | Heuristic or reflection-like call |
+| DEPENDS_ON | (Symbol)→(Symbol) | Inheritance/type dependency |
+| IMPORTS | (File)→(File) | Internal project import |
+| AFFECTS | (Symbol)→(Symbol) | Reverse dependency materialization |
 | FROM | (DocAnchor)→(File) | Doc chunk origin — `type` property: `"doc"` (source doc file), `"code"` (code file containing covered symbols), `"spec"` / `"architecture"` / `"concept"` / `"idea"` (referenced project docs) |
 | COVERS | (DocAnchor)→(Symbol) | Doc chunk describes this code symbol |
 | MODIFIED_IN | (Symbol)→(Commit) | Symbol change history (planned) |
@@ -194,33 +205,37 @@ Scenario: user edits `process_payment`, hasn't saved.
 }
 ```
 
-**Planned additions:** `metadata` (project, branch, query_intent), `depth` per dependency, `relevance_score` per doc chunk — deferred to Phase 5.
+**Implemented metadata:** `mode`, `intent`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth`, `direction`, and `relevance_score`.
+
+**Known gap:** project/workspace/branch metadata and document relevance scores are still planned.
 
 ### 5.4. BFS Retrieval Cypher
 
 ```cypher
-MATCH (target:Symbol {uid: $target_uid})
-OPTIONAL MATCH (target)-[:CALLS|DEPENDS_ON*1..2]->(dep:Symbol)
-OPTIONAL MATCH (doc:DocAnchor)-[:COVERS]->(target)
-RETURN target, collect(distinct dep) as dependencies, collect(distinct doc) as anchors
+MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES]-(n:Symbol)
+WHERE NOT n.uid IN $visited
+OPTIONAL MATCH ()-[:CALLS|CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED]->(n)
+OPTIONAL MATCH (fn:File)-[:CONTAINS]->(n)
+RETURN n.uid AS uid, n.name AS name, fn.path AS file_path, type(r) AS rel_type
 ```
 
-**Note:** the hardcoded `*1..2` hop depth is a placeholder. Phase 3.5 replaces this with a **budget-driven traversal**: expand breadth-first while cumulative token estimate of fetched symbol bodies stays below the request's `token_budget`. Depth is an outcome of the budget, not an input.
+The current traversal is priority-queue BFS constrained by `token_budget`. Depth is an outcome of budget and score, not a fixed `*1..2` Cypher expansion.
 
 ---
 
-### 5.5. Incremental Indexing (Planned — Phase 3.5)
+### 5.5. Incremental Indexing
 
-Current `/index` is a full re-scan. Target state:
+Current `/index` collects files, compares hashes against stored `File.hash`, and only re-indexes changed files. `/index/file` supports explicit single-file updates.
 
 1. Client saves a file → `POST /index/file { path }`.
 2. Sidecar hashes the file; compares to stored `File.hash`. Unchanged → no-op.
 3. Re-parse file; compute hash for each extracted symbol.
-4. For each symbol: `MERGE` only if hash differs. Unchanged symbols are not rewritten.
+4. Current implementation deletes symbols for changed files, then re-upserts extracted symbols.
 5. Remove Symbol nodes whose names no longer appear in the file.
-6. Re-link only `[:CALLS]` edges originating from modified symbols.
-7. Re-embed only modified symbols into LanceDB `symbols` table.
-8. Debounce: rapid saves coalesce into one re-index per file per 500ms window.
+6. Re-link calls/imports/inheritance for the changed file.
+7. Re-embed modified symbols into LanceDB `symbols` table.
+8. Rebuild AFFECTS for modified symbols synchronously.
+9. Debounce from editor save events remains a client-side/product hardening item.
 
 ---
 
@@ -258,18 +273,18 @@ Primary graph in Neo4j Aura (shared team instance). Local unsaved changes in `In
 ---
 
 ## ADR-004: Automatic Model Routing by Task Complexity
-**Status:** Accepted (implementation planned Phase 5)
+**Status:** Accepted and partially implemented
 
-Intent + context-size classifier routes requests to appropriate model tier.
+Intent + context-size classifier routes requests to appropriate model tier in `sidecar/ai/engine.py`.
 
 **Why:** Top-tier models for all requests is economically wasteful. Simple queries can be answered cheaper/faster locally.
 
-**Trade-off:** 100–300ms classification overhead. Must maintain multiple API contracts (Ollama, Anthropic, OpenAI).
+**Trade-off:** Must maintain multiple provider contracts and fallback behavior.
 
 ---
 
 ## ADR-005: LanguageAdapter Protocol
-**Status:** Proposed (target: Phase 1 polish)
+**Status:** Accepted and implemented for Python/TypeScript adapters
 
 All language-specific logic (tree-sitter queries, call resolution, identifier conventions) lives behind a `LanguageAdapter` protocol. New languages (Go, Rust, Java) are added by implementing the protocol — no edits to the indexer, arbitrator, or extractor core.
 
@@ -288,8 +303,8 @@ Required methods:
 ## ADR-006: Quality Gates Before SaaS
 **Status:** Accepted
 
-Phase 4 (SaaS / Neo4j Aura) and Phase 5 (model routing, marketplace) are blocked until Phase 2.5 (eval harness + metrics) and Phase 3.5 (incremental indexing + token budget) are green on CI.
+SaaS and marketplace readiness are blocked on correctness, observability, and isolation hardening. Cloud/local fallback exists, but production multi-user operation still needs stable workspace boundaries and stronger auth.
 
-**Why:** The project's value proposition is measurable precision and cost savings. Shipping cloud infrastructure before those metrics exist means scaling an unverified product. The cost of delaying SaaS is small; the cost of a misleading launch is high.
+**Why:** The project's value proposition is measurable precision and cost savings. Scaling before retrieval correctness and observability are durable means scaling an unverified product.
 
 **Trade-off:** Slower path to "enterprise story." Accepted — correctness first.

@@ -45,6 +45,36 @@
 
 ---
 
+## Current Stabilization Backlog
+
+This section merges the project gap analysis into the canonical roadmap. The next work is less about adding novelty and more about making retrieval trustworthy, explainable, and safe under real team usage.
+
+### P0 — Truth, Safety, and API Hardening
+- [ ] Maintain `docs/README.md` as the current-truth entry point; archive or label historical analysis when status changes.
+- [x] Fix sidecar DB lifecycle: remove mutable request identity from the global client; use request-scoped user context.
+- [x] Move doc resolution inside the arbitration pipeline before `PromptCompiler.compile_with_intent()`.
+- [ ] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.
+- [ ] Add endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and auth boundaries.
+
+### P1 — Retrieval Correctness
+- [ ] Implement stable UID v2 from [spec_uid_stability.md](spec_uid_stability.md).
+- [ ] Replace name-only call linking with the scoped resolver in [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
+- [ ] Add workspace/branch isolation from [spec_branch_isolation.md](spec_branch_isolation.md).
+- [ ] Add adversarial fixtures for duplicate names, moved files, renamed symbols, stale docs, and branch duplication.
+
+### P2 — Visible Product Value
+- [ ] Add `GET /metrics`, structured per-stage timing, trace IDs, and token/cost/latency tracking.
+- [ ] Extend the JSON Prompt Contract with scores, provenance, pruning reasons, model route, and resolver version.
+- [ ] Build an extension context inspector showing selected files/docs, scores, dirty-state badges, token budget, intent, and model route.
+- [ ] Add a unified search endpoint that blends symbols, graph neighbors, and docs.
+
+### P3 — Scale and Learning
+- [ ] Add retrieval caching only after UID, workspace, and graph-version keys are stable.
+- [ ] Add feedback signals only after prompt-contract observability and privacy/redaction rules exist.
+- [ ] Move AFFECTS rebuild and large-repo indexing work to a background queue.
+
+---
+
 ## Phase 1: Foundation and Local Core ✅ Largely Complete
 Goal: Working "VS Code ↔ Python Sidecar" prototype with basic parsing.
 
@@ -451,6 +481,12 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [ ] Latency SLO tracking (50ms p50, 200ms p95 target)
 - [ ] Distributed tracing via OpenTelemetry
 - [ ] Token savings visualization in VS Code (reuses Phase 2.5 metrics)
+
+### 10.5 Extension Productization
+- [ ] Context inspector panel showing retrieved symbols/docs, relevance scores, and dirty-state badges.
+- [ ] Streaming chat integration once `/ask/stream` emits JSON-safe SSE events.
+- [ ] Token budget, selected mode, query intent, and model route display.
+- [ ] VS Code settings for sidecar URL, model preference, workspace ID, and auth token.
 
 ---
 

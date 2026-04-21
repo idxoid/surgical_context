@@ -10,6 +10,7 @@ This folder contains all project documentation. Start here to understand the sys
 - **[architectura.md](architectura.md)** — how all pieces fit together (start here)
 - **[concept.md](concept.md)** — what is Surgical Context and why it exists
 - **[idea_summary.md](idea_summary.md)** — elevator pitch
+- **[project_gap_analysis.md](project_gap_analysis.md)** — short index to the merged project analysis
 
 ### **For Implementation**
 
@@ -39,8 +40,17 @@ This folder contains all project documentation. Start here to understand the sys
 
 ### **Planning & Review**
 - **[road_map.md](road_map.md)** — phases and timelines
+- **[project_gap_analysis.md](project_gap_analysis.md)** — index for current gaps and supporting specs
 - **[review_findings_2026-04-17.md](review_findings_2026-04-17.md)** — external review recommendations
 - **[architectural_review.md](architectural_review.md)** — technical decisions and trade-offs
+
+---
+
+## Current Truth
+
+The repo currently includes the Python FastAPI sidecar, Neo4j/LanceDB storage clients, parser/indexer/context modules, tests, QA benchmark tooling, and a VS Code extension scaffold under `extension/`.
+
+The most important open gaps are correctness hardening rather than new feature discovery: stable symbol identity, scoped call resolution, workspace/branch isolation, request-scoped sidecar DB handling, stronger auth, and prompt-contract observability. See **[road_map.md](road_map.md)** for the canonical current backlog.
 
 ---
 

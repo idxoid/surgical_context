@@ -6,7 +6,7 @@ import pytest
 
 from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.types import PromptContext
+from sidecar.context.types import PromptContext, Subgraph, SubgraphNode
 
 
 class TestContextArbitratorBFS:
@@ -112,6 +112,53 @@ class TestContextArbitratorBFS:
         assert ctx.budget["limit"] == 1000
         assert "spent" in ctx.budget
         assert ctx.budget["spent"] > 0
+
+    def test_vector_docs_are_resolved_before_prompt_compilation(self, mock_db):
+        """Doc chunks are fetched inside arbitration, before PromptCompiler runs."""
+
+        class FakeVectorDb:
+            def __init__(self):
+                self.calls = []
+
+            def search(self, query, limit):
+                self.calls.append((query, limit))
+                return [
+                    {
+                        "file_path": "docs/spec_payment.md",
+                        "chunk": "Payment processing specification",
+                    }
+                ]
+
+        subgraph = Subgraph(
+            primary=SubgraphNode(
+                uid="target",
+                name="process_payment",
+                file_path="<unknown>",
+                range=[1, 1],
+                token_estimate=8,
+                relation="target",
+                direction="primary",
+                depth=0,
+                relevance_score=1.0,
+            ),
+            nodes=[],
+            budget={"limit": 4000, "spent": 108, "reserved": 100, "pruned": 0},
+        )
+        vector_db = FakeVectorDb()
+        arbitrator = ContextArbitrator(mock_db, vector_db=vector_db)
+
+        with patch("sidecar.context.arbitrator.GraphExpander.expand", return_value=subgraph):
+            ctx = arbitrator.get_context_for_symbol(
+                "process_payment",
+                question="How should this payment flow work?",
+                token_budget=4000,
+            )
+
+        assert isinstance(ctx, PromptContext)
+        assert vector_db.calls == [("process_payment How should this payment flow work?", 3)]
+        assert len(ctx.documentation) == 1
+        assert ctx.documentation[0].source_file == "docs/spec_payment.md"
+        assert ctx.tier_tokens["specs"] > 0
 
     def test_subgraph_node_has_depth_direction_score(self, arbitrator, mock_db):
         """Test that SymbolContext includes depth, direction, and relevance_score."""

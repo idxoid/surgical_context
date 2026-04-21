@@ -39,3 +39,5 @@ Thumbs.db
 *.bin
 dist_bin/
 my_test_project/
+.codex
+.gitignore
