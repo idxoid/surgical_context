@@ -1,6 +1,7 @@
 import logging
 import os
-from typing import Any, Generator, cast
+from collections.abc import Generator
+from typing import Any, cast
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse, StreamingResponse

@@ -80,8 +80,7 @@ class PromptContext:
             pruning_reasons.append("deduplicated overlapping graph symbols")
 
         docs_tokens = sum(
-            self.tier_tokens.get(tier, 0)
-            for tier in ("specs", "architecture", "concept", "idea")
+            self.tier_tokens.get(tier, 0) for tier in ("specs", "architecture", "concept", "idea")
         )
 
         return {

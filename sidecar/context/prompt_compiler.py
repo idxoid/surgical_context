@@ -1,6 +1,5 @@
 """PromptCompiler — deterministic PromptContext assembly."""
 
-
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.types import DocChunk, PromptContext, Subgraph, SymbolContext
 

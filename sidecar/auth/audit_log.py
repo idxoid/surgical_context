@@ -19,7 +19,9 @@ class AuditLog:
         Args:
             log_file: Path to audit log file (env: AUDIT_LOG_PATH or default)
         """
-        self.log_file: str = log_file or os.getenv("AUDIT_LOG_PATH") or ".surgical_context/audit.jsonl"
+        self.log_file: str = (
+            log_file or os.getenv("AUDIT_LOG_PATH") or ".surgical_context/audit.jsonl"
+        )
         Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
 
     def log_action(
@@ -99,7 +101,9 @@ class AuditLog:
         """Log error action."""
         self.log_action(user_id, action, "error", {"error": error_msg}, status="error")
 
-    def get_recent_actions(self, user_id: str | None = None, limit: int = 100) -> list[dict[str, str | int]]:
+    def get_recent_actions(
+        self, user_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, str | int]]:
         """Get recent audit log entries."""
         entries = []
         try:

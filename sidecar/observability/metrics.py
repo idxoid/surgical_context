@@ -57,7 +57,9 @@ def _env_float(name: str) -> float:
         return 0.0
 
 
-def estimate_cost_usd(model_route: dict[str, Any], input_tokens: int, output_tokens: int) -> tuple[float, str]:
+def estimate_cost_usd(
+    model_route: dict[str, Any], input_tokens: int, output_tokens: int
+) -> tuple[float, str]:
     """Estimate request cost from optional env-configured per-million-token rates.
 
     Defaults stay at zero because provider pricing changes and this local sidecar
@@ -139,7 +141,9 @@ class MetricsRegistry:
     def record_trace(self, trace: RequestTrace, status: str) -> None:
         labels = {"endpoint": trace.endpoint, "status": status}
         self.increment("sidecar_requests_total", labels=labels)
-        self.observe_ms("sidecar_request_latency", trace.total_latency_ms, {"endpoint": trace.endpoint})
+        self.observe_ms(
+            "sidecar_request_latency", trace.total_latency_ms, {"endpoint": trace.endpoint}
+        )
         for stage, elapsed in trace.stage_timings_ms.items():
             self.observe_ms(
                 "sidecar_stage_latency",
@@ -147,8 +151,14 @@ class MetricsRegistry:
                 {"endpoint": trace.endpoint, "stage": stage},
             )
         for kind, count in trace.token_counts.items():
-            self.increment("sidecar_tokens_total", count, {"endpoint": trace.endpoint, "kind": kind})
-        self.increment("sidecar_estimated_cost_usd_total", trace.estimated_cost_usd, {"endpoint": trace.endpoint})
+            self.increment(
+                "sidecar_tokens_total", count, {"endpoint": trace.endpoint, "kind": kind}
+            )
+        self.increment(
+            "sidecar_estimated_cost_usd_total",
+            trace.estimated_cost_usd,
+            {"endpoint": trace.endpoint},
+        )
 
     def render_prometheus(self) -> str:
         with self._lock:
@@ -166,7 +176,9 @@ class MetricsRegistry:
             "# TYPE sidecar_estimated_cost_usd_total counter",
         ]
         for (name, labels), value in rows:
-            value_text = str(int(value)) if value.is_integer() else f"{value:.6f}".rstrip("0").rstrip(".")
+            value_text = (
+                str(int(value)) if value.is_integer() else f"{value:.6f}".rstrip("0").rstrip(".")
+            )
             lines.append(f"{name}{_format_labels(labels)} {value_text}")
         return "\n".join(lines) + "\n"
 
