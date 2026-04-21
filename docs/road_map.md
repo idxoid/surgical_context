@@ -286,17 +286,19 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 - [x] Automatic fallback: Claude → Ollama on error
 - [x] 21 new unit tests covering routing, initialization, model selection
 
-### Phase 6.4: Integration Testing (PLANNED)
-- [ ] Test intent classification accuracy on 6 intent types
-- [ ] Test tier-based budget allocation per intent
-- [ ] Test graceful degradation (no matches → standard mode)
-- [ ] Test mode field serialization in PromptContext.to_dict()
+### Phase 6.4: Integration Testing & Observability ✅ COMPLETE
+- [x] Test intent classification accuracy on 6 intent types (9 cold-run integration tests)
+- [x] Test tier-based budget allocation per intent
+- [x] Test graceful degradation (no matches → standard mode)
+- [x] Test mode field serialization in PromptContext.to_dict()
+- [x] Per-tier token counting for observability (code, cross_refs, specs, architecture, concept, idea)
+- [x] Metadata block: query_intent + tiers_used in JSON response
 
-### JSON Prompt Contract — Phase 6 Additions
+### JSON Prompt Contract — Phase 6 Complete
 - [x] `mode` field: "surgical_full" | "surgical_doc_only" | "standard" (6.1)
 - [x] `intent` field: detected query type (6.1)
-- [ ] `metadata` block: query_intent, tiers_used (6.2+)
-- [ ] Per-tier token counts for observability (6.3+)
+- [x] `metadata` block: query_intent, tiers_used, tier_tokens (6.4)
+- [x] Per-tier token counts for observability (6.4)
 
 ---
 
