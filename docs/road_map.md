@@ -140,7 +140,7 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 - [x] CI config (GitHub Actions) running tests + benchmark on every PR (deferred: needs Neo4j services)
 
 ### Observability
-- [ ] Structured logging across pipeline stages (Phase 5 prerequisite)
+- [x] Structured logging across pipeline stages (Phase 5 prerequisite)
 - [x] `GET /metrics` endpoint (Prometheus text format)
 - [x] Per-request trace ID threaded through logs
 - [ ] Latency SLO tracking against 200ms target

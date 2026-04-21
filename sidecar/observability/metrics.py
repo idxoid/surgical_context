@@ -6,6 +6,8 @@ Prometheus text directly instead of pulling in a global metrics stack.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import uuid
@@ -16,6 +18,7 @@ from time import perf_counter
 from typing import Any
 
 _LABEL_SAFE = re.compile(r"[^a-zA-Z0-9_:.-]")
+logger = logging.getLogger(__name__)
 
 
 def _labels_key(labels: dict[str, str] | None = None) -> tuple[tuple[str, str], ...]:
@@ -37,6 +40,16 @@ def _escape_label_value(value: str) -> str:
 
 def _safe_metric_name(name: str) -> str:
     return _LABEL_SAFE.sub("_", name)
+
+
+def _log_structured(event: str, **fields: Any) -> None:
+    logger.info(
+        json.dumps(
+            {"event": event, **fields},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
 
 
 def new_trace_id(incoming: str | None = None) -> str:
@@ -95,9 +108,18 @@ class RequestTrace:
             yield
         finally:
             elapsed_ms = (perf_counter() - started) * 1000
-            self.stage_timings_ms[name] = round(
+            rounded_ms = round(
                 self.stage_timings_ms.get(name, 0.0) + elapsed_ms,
                 3,
+            )
+            self.stage_timings_ms[name] = rounded_ms
+            _log_structured(
+                "sidecar.stage",
+                trace_id=self.trace_id,
+                endpoint=self.endpoint,
+                workspace_id=self.workspace_id,
+                stage=name,
+                elapsed_ms=rounded_ms,
             )
 
     @property
@@ -158,6 +180,19 @@ class MetricsRegistry:
             "sidecar_estimated_cost_usd_total",
             trace.estimated_cost_usd,
             {"endpoint": trace.endpoint},
+        )
+        _log_structured(
+            "sidecar.request",
+            trace_id=trace.trace_id,
+            endpoint=trace.endpoint,
+            workspace_id=trace.workspace_id,
+            status=status,
+            total_latency_ms=trace.total_latency_ms,
+            stage_timings_ms=dict(trace.stage_timings_ms),
+            token_counts=dict(trace.token_counts),
+            model_route=dict(trace.model_route),
+            estimated_cost_usd=trace.estimated_cost_usd,
+            cost_basis=trace.cost_basis,
         )
 
     def render_prometheus(self) -> str:
