@@ -8,6 +8,7 @@ from sidecar.observability.metrics import (
     estimate_text_tokens,
     new_trace_id,
 )
+from sidecar.observability.tracing import otel_enabled, start_span
 
 __all__ = [
     "MetricsRegistry",
@@ -16,4 +17,6 @@ __all__ = [
     "estimate_cost_usd",
     "estimate_text_tokens",
     "new_trace_id",
+    "otel_enabled",
+    "start_span",
 ]

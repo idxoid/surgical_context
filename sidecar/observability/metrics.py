@@ -17,6 +17,12 @@ from threading import Lock
 from time import perf_counter
 from typing import Any
 
+from sidecar.observability.tracing import (
+    record_span_exception,
+    set_span_attributes,
+    start_span,
+)
+
 _LABEL_SAFE = re.compile(r"[^a-zA-Z0-9_:.-]")
 DEFAULT_REQUEST_LATENCY_SLO_MS = 200.0
 logger = logging.getLogger(__name__)
@@ -114,23 +120,41 @@ class RequestTrace:
     @contextmanager
     def stage(self, name: str):
         started = perf_counter()
-        try:
-            yield
-        finally:
-            elapsed_ms = (perf_counter() - started) * 1000
-            rounded_ms = round(
-                self.stage_timings_ms.get(name, 0.0) + elapsed_ms,
-                3,
-            )
-            self.stage_timings_ms[name] = rounded_ms
-            _log_structured(
-                "sidecar.stage",
-                trace_id=self.trace_id,
-                endpoint=self.endpoint,
-                workspace_id=self.workspace_id,
-                stage=name,
-                elapsed_ms=rounded_ms,
-            )
+        with start_span(
+            f"sidecar.{self.endpoint.strip('/') or 'root'}.{name}",
+            {
+                "sidecar.trace_id": self.trace_id,
+                "http.route": self.endpoint,
+                "sidecar.workspace_id": self.workspace_id,
+                "sidecar.stage": name,
+            },
+        ) as span:
+            try:
+                yield
+            except Exception as exc:
+                record_span_exception(span, exc)
+                raise
+            finally:
+                elapsed_ms = (perf_counter() - started) * 1000
+                rounded_ms = round(
+                    self.stage_timings_ms.get(name, 0.0) + elapsed_ms,
+                    3,
+                )
+                self.stage_timings_ms[name] = rounded_ms
+                set_span_attributes(
+                    span,
+                    {
+                        "sidecar.elapsed_ms": rounded_ms,
+                    },
+                )
+                _log_structured(
+                    "sidecar.stage",
+                    trace_id=self.trace_id,
+                    endpoint=self.endpoint,
+                    workspace_id=self.workspace_id,
+                    stage=name,
+                    elapsed_ms=rounded_ms,
+                )
 
     @property
     def total_latency_ms(self) -> float:

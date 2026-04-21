@@ -23,6 +23,7 @@ All via environment variables with defaults:
 | `AUTH_REQUIRED` | `false` | When true, protected endpoints require `Authorization: Bearer <token>` |
 | `DEFAULT_WORKSPACE_ID` | `local/surgical_context@main` | Development fallback when `X-Workspace` is absent |
 | `SIDECAR_REQUEST_LATENCY_SLO_MS` | `200` | Request latency SLO target used by metrics and structured logs |
+| `SIDECAR_OTEL_ENABLED` | `false` | When true and OpenTelemetry is installed/configured, request stages emit spans |
 
 ---
 
@@ -314,7 +315,7 @@ Protected endpoints accept local `X-User-Id` identity by default for development
 
 Graph endpoints accept `X-Workspace: tenant/repo@ref`. Neo4j `File`, `CONTAINS`, call, and `AFFECTS` operations are scoped by that workspace id.
 
-Structured request logs and Prometheus metrics track request latency against `SIDECAR_REQUEST_LATENCY_SLO_MS` and emit SLO check/violation counters.
+Structured request logs and Prometheus metrics track request latency against `SIDECAR_REQUEST_LATENCY_SLO_MS` and emit SLO check/violation counters. When `SIDECAR_OTEL_ENABLED=true` and OpenTelemetry is available, each request stage also emits an OpenTelemetry span with trace/workspace/stage attributes.
 
 ---
 

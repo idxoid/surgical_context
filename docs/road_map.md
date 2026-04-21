@@ -144,7 +144,7 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 - [x] `GET /metrics` endpoint (Prometheus text format)
 - [x] Per-request trace ID threaded through logs
 - [x] Latency SLO tracking against 200ms target
-- [ ] Distributed tracing via OpenTelemetry (Phase 6, scale phase only)
+- [x] Distributed tracing via OpenTelemetry (Phase 6, scale phase only)
 
 ### Token Accounting ✅ COMPLETE
 - [x] Token counter (tiktoken cl100k_base) on every `PromptContext`

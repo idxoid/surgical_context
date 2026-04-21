@@ -62,7 +62,10 @@ def test_metrics_registry_tracks_latency_slo_breach(monkeypatch, caplog):
     registry.record_trace(trace, status="ok")
 
     rendered = registry.render_prometheus()
-    assert 'sidecar_request_slo_checks_total{endpoint="/ask",status="breached",target_ms="3"} 1' in rendered
+    assert (
+        'sidecar_request_slo_checks_total{endpoint="/ask",status="breached",target_ms="3"} 1'
+        in rendered
+    )
     assert 'sidecar_request_slo_violations_total{endpoint="/ask",target_ms="3"} 1' in rendered
 
     events = _json_messages(caplog.records)
