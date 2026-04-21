@@ -50,9 +50,9 @@ This folder contains all project documentation. Start here to understand the sys
 
 The repo currently includes the Python FastAPI sidecar, Neo4j/LanceDB storage clients, parser/indexer/context modules, tests, QA benchmark tooling, and a VS Code extension scaffold under `extension/`.
 
-Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, a durable indexing job log with retry/dead-letter states, signed bearer-token enforcement behind `AUTH_REQUIRED`, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, and first endpoint coverage for the sidecar API.
+Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, a durable indexing job log with retry/dead-letter states, signed bearer-token enforcement behind `AUTH_REQUIRED`, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, P2 observability/metrics, a unified search endpoint, and first endpoint coverage for the sidecar API.
 
-The most important open gaps are now visibility and production-hardening work: production auth policy/secret management, prompt-contract observability, metrics, extension context inspection, and backpressure for mass indexing events. See **[road_map.md](road_map.md)** for the canonical current backlog.
+The most important open gaps are now production-hardening and scale work: production auth policy/secret management, latency SLOs/OpenTelemetry, streaming chat UI integration, settings UX, and backpressure for mass indexing events. See **[road_map.md](road_map.md)** for the canonical current backlog.
 
 ---
 

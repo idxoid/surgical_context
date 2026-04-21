@@ -8,12 +8,33 @@ from contextlib import contextmanager
 import pytest
 from fastapi import HTTPException
 
+from sidecar.context.types import SymbolContext
 from sidecar.indexer.job_log import IndexJobLog
 
 
 class FakeCtx:
     intent = "exploration"
     mode = "surgical_full"
+    primary_source = SymbolContext(
+        symbol="process_payment",
+        file_path="/repo/payment.py",
+        relation="PRIMARY",
+        direction="self",
+        depth=0,
+        relevance_score=1.0,
+        code="def process_payment(): pass",
+    )
+    graph_context = [
+        SymbolContext(
+            symbol="validate_amount",
+            file_path="/repo/payment.py",
+            relation="CALLS",
+            depth=1,
+            relevance_score=0.8,
+            code="def validate_amount(): pass",
+        )
+    ]
+    documentation = []
 
     def to_system_prompt(self):
         return "compiled prompt"
@@ -25,8 +46,15 @@ class FakeCtx:
         return {
             "mode": self.mode,
             "intent": self.intent,
+            "metadata": {
+                "assembly": {
+                    "trace_id": getattr(self, "trace_id", ""),
+                    "workspace_id": getattr(self, "workspace_id", ""),
+                    "model_route": getattr(self, "model_route", {}),
+                }
+            },
             "primary_source": {"symbol": "process_payment"},
-            "graph_context": [],
+            "graph_context": [{"symbol": "validate_amount"}],
             "documentation": [],
         }
 
@@ -77,7 +105,26 @@ def import_main_with_fakes(monkeypatch):
 
     class FakeLanceDBClient:
         def search(self, query, limit=5):
-            return []
+            return [
+                {
+                    "id": "docs/spec.md::0",
+                    "file_path": "/repo/docs/spec.md",
+                    "chunk": "Payment docs",
+                    "score": 0.7,
+                    "distance": 0.3,
+                }
+            ][:limit]
+
+        def search_symbols(self, query, limit=5, threshold=1.0):
+            return [
+                {
+                    "uid": "symbol-1",
+                    "name": "process_payment",
+                    "file_path": "/repo/payment.py",
+                    "score": 0.9,
+                    "distance": 0.1,
+                }
+            ][:limit]
 
     fake_lancedb.LanceDBClient = FakeLanceDBClient
     monkeypatch.setitem(sys.modules, "sidecar.database.lancedb_client", fake_lancedb)
@@ -94,6 +141,14 @@ def import_main_with_fakes(monkeypatch):
         def stream_chat(self, system_prompt, user_message, token_count=0, intent="exploration"):
             yield "fake "
             yield "stream"
+
+        def route(self, token_count=0, intent="exploration"):
+            return {
+                "provider": "ollama",
+                "model": "fake-model",
+                "preference": self.model_preference,
+                "reason": "test",
+            }
 
     fake_engine.AIEngine = FakeAIEngine
     monkeypatch.setitem(sys.modules, "sidecar.ai.engine", fake_engine)
@@ -117,6 +172,20 @@ def test_ask_endpoint_returns_typed_response(monkeypatch):
     assert body["user"] == "alice"
     assert body["cloud"] is False
     assert body["context"]["intent"] == "exploration"
+
+
+def test_ask_endpoint_includes_trace_metrics_and_model_route(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    body = main.ask(
+        main.AskRequest(symbol="process_payment", question="How does this work?"),
+        x_trace_id="trace-test",
+    )
+
+    assert body["trace_id"] == "trace-test"
+    assert body["model_route"]["model"] == "fake-model"
+    assert body["metrics"]["token_counts"]["context"] == 42
+    assert body["context"]["metadata"]["assembly"]["trace_id"] == "trace-test"
 
 
 def test_ask_stream_endpoint_emits_json_sse(monkeypatch):
@@ -146,6 +215,31 @@ def test_auth_required_rejects_missing_bearer_token(monkeypatch):
 
     assert exc_info.value.status_code == 401
     assert "Missing bearer token" in exc_info.value.detail
+
+
+def test_metrics_endpoint_renders_prometheus_text(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    main.ask(main.AskRequest(symbol="process_payment", question="Metrics?"))
+    response = main.metrics()
+
+    assert response.media_type == "text/plain"
+    assert "sidecar_requests_total" in response.body.decode()
+    assert 'endpoint="/ask"' in response.body.decode()
+
+
+def test_unified_search_blends_docs_symbols_and_graph(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    body = main.unified_search(
+        main.UnifiedSearchRequest(query="payment flow", symbol="process_payment", limit=5),
+        x_trace_id="search-trace",
+    )
+
+    assert body["trace_id"] == "search-trace"
+    assert body["total"] >= 3
+    assert {result["type"] for result in body["results"]} == {"doc", "symbol"}
+    assert any("graph:neighbor" in result["provenance"] for result in body["results"])
 
 
 def test_auth_required_accepts_valid_bearer_token(monkeypatch):

@@ -27,6 +27,7 @@ class PromptCompiler:
                 relevance_score=node.relevance_score,
                 is_dirty=is_dirty,
                 code=code,
+                provenance=["graph", "code_resolver"],
             )
 
         primary = to_symbol_context(subgraph.primary)
@@ -59,6 +60,7 @@ class PromptCompiler:
                 relevance_score=node.relevance_score,
                 is_dirty=is_dirty,
                 code=code,
+                provenance=["graph", "code_resolver"],
             )
 
         def estimate_tokens(text: str) -> int:
@@ -88,7 +90,7 @@ class PromptCompiler:
         }
 
         # Organize docs by tier
-        docs_by_tier: dict[str, list[str]] = {
+        docs_by_tier: dict[str, list[DocChunk]] = {
             "specs": [],
             "architecture": [],
             "concept": [],
@@ -97,7 +99,7 @@ class PromptCompiler:
         for doc in docs:
             tier = infer_doc_type(doc.source_file)
             if tier in docs_by_tier:
-                docs_by_tier[tier].append(doc)  # type: ignore
+                docs_by_tier[tier].append(doc)
 
         # Calculate doc tier tokens
         for tier_name, doc_list in docs_by_tier.items():

@@ -66,10 +66,10 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 - [x] Add adversarial fixtures for duplicate names, moved files, renamed symbols, stale docs, and branch duplication.
 
 ### P2 — Visible Product Value
-- [ ] Add `GET /metrics`, structured per-stage timing, trace IDs, and token/cost/latency tracking.
-- [ ] Extend the JSON Prompt Contract with scores, provenance, pruning reasons, model route, and resolver version.
-- [ ] Build an extension context inspector showing selected files/docs, scores, dirty-state badges, token budget, intent, and model route.
-- [ ] Add a unified search endpoint that blends symbols, graph neighbors, and docs.
+- [x] Add `GET /metrics`, structured per-stage timing, trace IDs, and token/cost/latency tracking.
+- [x] Extend the JSON Prompt Contract with scores, provenance, pruning reasons, model route, and resolver version.
+- [x] Build an extension context inspector showing selected files/docs, scores, dirty-state badges, token budget, intent, and model route.
+- [x] Add a unified search endpoint that blends symbols, graph neighbors, and docs.
 
 ### P3 — Scale and Learning
 - [ ] Add retrieval caching only after UID, workspace, and graph-version keys are stable.
@@ -139,17 +139,17 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 - [x] `QA/qa_benchmark.py` reframed as reproducible metric runner (emits JSON: recall@k, precision@k, tokens, latency)
 - [x] CI config (GitHub Actions) running tests + benchmark on every PR (deferred: needs Neo4j services)
 
-### Observability (DEFERRED — Phase 5+)
+### Observability
 - [ ] Structured logging across pipeline stages (Phase 5 prerequisite)
-- [ ] `GET /metrics` endpoint (Prometheus text format)
-- [ ] Per-request trace ID threaded through logs
+- [x] `GET /metrics` endpoint (Prometheus text format)
+- [x] Per-request trace ID threaded through logs
 - [ ] Latency SLO tracking against 200ms target
 - [ ] Distributed tracing via OpenTelemetry (Phase 6, scale phase only)
 
 ### Token Accounting ✅ COMPLETE
 - [x] Token counter (tiktoken cl100k_base) on every `PromptContext`
 - [x] `PromptContext.token_count()` method
-- [ ] Per-request breakdown: `tokens_primary`, `tokens_graph`, `tokens_docs`
+- [x] Per-request breakdown: `tokens_primary`, `tokens_graph`, `tokens_docs`
 - [x] Baseline: "carpet-bomb" estimation (all files) vs surgical count
 
 ### Extension UI (Promoted from Phase 1) ✅ COMPLETE
@@ -376,8 +376,8 @@ Goal: Transition from local tool to shared team solution (ADR-003).
 - [ ] Circuit breaker for cloud sync failures
 
 ### Analytics & Monitoring
-- [ ] `GET /metrics` endpoint (Prometheus text format)
-- [ ] Per-request trace ID threaded through logs
+- [x] `GET /metrics` endpoint (Prometheus text format)
+- [x] Per-request trace ID threaded through logs
 - [ ] Latency SLO tracking (50ms p50, 200ms p95 target)
 - [ ] Distributed tracing via OpenTelemetry
 - [ ] Token savings visualization in VS Code (reuses Phase 2.5 metrics)
@@ -445,10 +445,11 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [ ] Edge properties: `anchor_type`, `confidence`, `primary_bias`, `resolver`
 
 ### 9.4 Prompt Contract Observability
-- [ ] Per-candidate `scores` block (graph / semantic / blended / intent_weight)
-- [ ] `provenance` list on every symbol and doc chunk
+- [x] Per-candidate basic `scores` block (graph relevance / semantic score)
+- [x] `provenance` list on every symbol and doc chunk
+- [x] Budget-level `metadata.pruning_reasons`
 - [ ] `pruned[]` array — candidates that missed the budget, with reason
-- [ ] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
+- [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
 - [ ] `metadata.ranker.weights` — tuning state snapshotted with every response
 - [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence`
 
@@ -487,16 +488,16 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [ ] Circuit breaker for cloud sync failures
 
 ### 10.4 Analytics & Monitoring (carried forward from Phase 7)
-- [ ] `GET /metrics` endpoint (Prometheus text format)
-- [ ] Per-request trace ID threaded through logs
+- [x] `GET /metrics` endpoint (Prometheus text format)
+- [x] Per-request trace ID threaded through logs
 - [ ] Latency SLO tracking (50ms p50, 200ms p95 target)
 - [ ] Distributed tracing via OpenTelemetry
 - [ ] Token savings visualization in VS Code (reuses Phase 2.5 metrics)
 
 ### 10.5 Extension Productization
-- [ ] Context inspector panel showing retrieved symbols/docs, relevance scores, and dirty-state badges.
+- [x] Context inspector panel showing retrieved symbols/docs, relevance scores, and dirty-state badges.
 - [ ] Streaming chat integration with `/ask/stream` JSON-safe SSE events.
-- [ ] Token budget, selected mode, query intent, and model route display.
+- [x] Token budget, selected mode, query intent, and model route display.
 - [ ] VS Code settings for sidecar URL, model preference, workspace ID, and auth token.
 
 ---

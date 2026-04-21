@@ -118,6 +118,40 @@ class TestPromptCompilerBasic:
         assert save_payment is not None
         assert save_payment.is_dirty is True
 
+    def test_to_dict_includes_observability_contract(self, sample_subgraph, sample_code_map):
+        """PromptContext JSON exposes provenance, scores, pruning, and assembly metadata."""
+        compiler = PromptCompiler()
+        docs = [
+            DocChunk(
+                source_file="docs/spec_payment.md",
+                chunk_id="spec_1",
+                content="Payment processing specification",
+                score=0.73,
+                provenance=["vector:docs"],
+            )
+        ]
+        ctx = compiler.compile_with_intent(
+            sample_subgraph,
+            sample_code_map,
+            docs,
+            Intent.NAVIGATION,
+        )
+        ctx.trace_id = "trace-123"
+        ctx.workspace_id = "local/repo@main"
+        ctx.stage_timings_ms = {"context": 1.5}
+        ctx.token_counts = {"context": 42}
+        ctx.model_route = {"provider": "ollama", "model": "llama3"}
+        ctx.pruning_reasons = ["budget skipped distant import"]
+
+        payload = ctx.to_dict()
+
+        assert payload["metadata"]["assembly"]["trace_id"] == "trace-123"
+        assert payload["metadata"]["assembly"]["resolver_version"] == "context-arbitrator-v2"
+        assert payload["metadata"]["pruning_reasons"] == ["budget skipped distant import"]
+        assert payload["primary_source"]["provenance"] == ["graph", "code_resolver"]
+        assert payload["primary_source"]["scores"]["relevance"] == 1.0
+        assert payload["documentation"][0]["score"] == 0.73
+
 
 class TestPromptCompilerWithIntent:
     """Test intent-aware compile_with_intent() method."""

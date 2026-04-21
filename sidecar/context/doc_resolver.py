@@ -15,8 +15,10 @@ class DocResolver:
         return [
             DocChunk(
                 source_file=d["file_path"],
-                chunk_id=f"{d['file_path']}::search",
+                chunk_id=d.get("id", f"{d['file_path']}::search"),
                 content=d["chunk"],
+                score=d.get("score"),
+                provenance=["vector:docs"],
             )
             for d in raw
         ]

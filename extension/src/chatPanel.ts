@@ -39,6 +39,15 @@ export class ChatPanel {
             this.panel.webview.postMessage({ type: 'error', message: errMsg });
           }
         }
+        if (msg.type === 'openFile' && typeof msg.filePath === 'string') {
+          try {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(msg.filePath));
+            await vscode.window.showTextDocument(doc, { preview: true });
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : 'Unknown error';
+            this.panel.webview.postMessage({ type: 'error', message: errMsg });
+          }
+        }
       },
       undefined,
       this.disposables
@@ -99,9 +108,50 @@ export class ChatPanel {
       font-size: 0.9em;
     }
     .ctx {
-      font-size: 0.8em;
-      opacity: 0.7;
-      margin-top: 4px;
+      font-size: 0.82em;
+      margin-top: 8px;
+      border: 1px solid var(--vscode-panel-border);
+      padding: 8px;
+      background: var(--vscode-sideBar-background);
+    }
+    .ctx-title {
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .ctx-meta {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .badge {
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 999px;
+      padding: 2px 6px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+    }
+    .dirty {
+      background: var(--vscode-inputValidation-warningBackground);
+      color: var(--vscode-inputValidation-warningForeground);
+    }
+    .ctx-list {
+      margin: 0;
+      padding-left: 18px;
+    }
+    .ctx-list li {
+      margin-bottom: 4px;
+    }
+    .file-link {
+      color: var(--vscode-textLink-foreground);
+      cursor: pointer;
+      text-decoration: underline;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      width: auto;
+      margin: 0;
+      font: inherit;
     }
     .error {
       color: var(--vscode-inputValidation-errorBorder);
