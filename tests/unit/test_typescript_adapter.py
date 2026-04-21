@@ -45,6 +45,56 @@ function bar() {}
         assert len(calls) > 0
         assert any(call.get("callee_name") == "bar" for call in calls)
 
+    def test_extract_calls_classifies_top_level_call_as_direct(self, adapter):
+        source = """
+function foo() {
+    bar();
+}
+
+function bar() {}
+"""
+        calls = adapter.extract_calls_from_source(source, "test.ts")
+        call = next(call for call in calls if call.get("callee_name") == "bar")
+
+        assert call["rel_type"] == "CALLS_DIRECT"
+        assert call["tier"] == "direct"
+        assert call["confidence"] == 1.0
+        assert call["resolver"] == "ts-scope-v1"
+
+    def test_extract_calls_classifies_this_member_as_dynamic(self, adapter):
+        source = """
+class Worker {
+  helper() {}
+
+  run() {
+    this.helper();
+  }
+}
+"""
+        calls = adapter.extract_calls_from_source(source, "worker.ts")
+        call = next(call for call in calls if call.get("callee_name") == "helper")
+
+        assert call["rel_type"] == "CALLS_DYNAMIC"
+        assert call["tier"] == "dynamic"
+        assert call["confidence"] == 0.7
+        assert call["resolver"] == "ts-scope-v1"
+        assert call.get("callee_uid")
+
+    def test_extract_calls_classifies_object_member_as_dynamic_without_uid(self, adapter):
+        source = """
+class Worker {
+  run(service: Runner) {
+    service.execute();
+  }
+}
+"""
+        calls = adapter.extract_calls_from_source(source, "worker.ts")
+        call = next(call for call in calls if call.get("callee_name") == "execute")
+
+        assert call["rel_type"] == "CALLS_DYNAMIC"
+        assert call["tier"] == "dynamic"
+        assert "callee_uid" not in call
+
     def test_language_name(self, adapter):
         assert adapter.language_name == "typescript"
 

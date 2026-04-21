@@ -2,7 +2,12 @@
 
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
-from sidecar.parser.uid import compute_uid, module_name_from_path
+from sidecar.parser.uid import (
+    compute_uid,
+    module_name_from_path,
+    qualified_name_for,
+    signature_from_node,
+)
 
 
 class TypeScriptAdapter(TreeSitterAdapter):
@@ -97,9 +102,105 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         return edges
 
+    def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
+        """Extract TypeScript calls with direct vs dynamic dispatch classification."""
+        tree = self.parser.parse(bytes(source_code, "utf8"))
+        query = self.language.query("(call_expression) @call")
+        captures = query.captures(tree.root_node)
+
+        symbols = self.extract_symbols(source_code, file_path)
+        by_name: dict[str, list] = {}
+        for symbol in symbols:
+            by_name.setdefault(symbol.name, []).append(symbol)
+
+        calls = []
+        for node, tag in captures:
+            if tag != "call":
+                continue
+
+            func_node = node.child_by_field_name("function")
+            if not func_node:
+                continue
+
+            parent = node.parent
+            while parent and parent.type not in self.parent_types:
+                parent = parent.parent
+            if not parent:
+                continue
+
+            caller_uid = self._uid_for_node(parent, source_code, file_path)
+            callee_uid = None
+            call_name = ""
+            rel_type = "CALLS_DIRECT"
+            tier = "direct"
+            confidence = 1.0
+
+            if func_node.type == "identifier":
+                call_name = source_code[func_node.start_byte : func_node.end_byte]
+            elif func_node.type == "member_expression":
+                named_children = [child for child in func_node.children if child.is_named]
+                if len(named_children) < 2:
+                    continue
+                receiver_node = named_children[0]
+                method_node = named_children[-1]
+                receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
+                call_name = source_code[method_node.start_byte : method_node.end_byte]
+                rel_type = "CALLS_DYNAMIC"
+                tier = "dynamic"
+                confidence = 0.7
+                if receiver_text == "this":
+                    callee_uid = self._resolve_method_uid(parent, call_name, by_name)
+            else:
+                continue
+
+            if callee_uid == caller_uid:
+                continue
+
+            call = {
+                "caller_uid": caller_uid,
+                "callee_name": call_name,
+                "rel_type": rel_type,
+                "tier": tier,
+                "confidence": confidence,
+                "resolver": "ts-scope-v1",
+                "call_site_line": node.start_point[0] + 1,
+            }
+            if callee_uid:
+                call["callee_uid"] = callee_uid
+            calls.append(call)
+
+        return calls
+
     def _uid(self, file_path: str, name: str) -> str:
         qualified_name = f"{module_name_from_path(file_path)}.{name}"
         return compute_uid(qualified_name, f"{name}()->_", self.language_name)
+
+    def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
+        qualified_name = qualified_name_for(node, source_code, file_path)
+        raw_signature, _ = signature_from_node(node, source_code, self.language_name)
+        return compute_uid(qualified_name, raw_signature, self.language_name)
+
+    def _resolve_method_uid(
+        self, caller_node, method_name: str, by_name: dict[str, list]
+    ) -> str | None:
+        candidates = by_name.get(method_name, [])
+        if not candidates:
+            return None
+
+        class_node = caller_node
+        while class_node and class_node.type != "class_declaration":
+            class_node = class_node.parent
+        if not class_node:
+            return str(candidates[0].uid) if len(candidates) == 1 else None
+
+        class_name_node = class_node.child_by_field_name("name")
+        if not class_name_node:
+            return None
+        class_name = class_name_node.text.decode("utf-8")
+        for candidate in candidates:
+            if f".{class_name}.{method_name}" in candidate.qualified_name:
+                return str(candidate.uid)
+        return str(candidates[0].uid) if len(candidates) == 1 else None
 
 
 def make_adapter() -> TypeScriptAdapter:

@@ -246,10 +246,13 @@ Goal: Reduce token overhead and prepare for multi-model / multi-user environment
 - [x] Read path: guard against cross-model queries (raise `EmbeddingModelMismatch`)
 - [x] Migration CLI: `python -m sidecar.database.embedding_migration status / migrate`
 
-### Graph Richness (Phase 5 planning)
-- [ ] Feasibility assessment: dynamic dispatch detection in Python/TypeScript parsers
-- [ ] Spec review: [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md), [spec_affects_index.md](spec_affects_index.md)
-- [ ] Decision gate: prioritize typed edges vs AFFECTS index for Phase 5 first milestone
+### Graph Richness (Phase 5 planning) ✅ COMPLETE
+- [x] Feasibility assessment: dynamic dispatch detection in Python/TypeScript parsers
+  - Result: Python classifies direct/scoped/imported/dynamic/inferred calls; TypeScript now classifies top-level identifier calls as direct and member dispatch (`this.method()`, `service.method()`) as dynamic.
+- [x] Spec review: [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md), [spec_affects_index.md](spec_affects_index.md)
+  - Result: both specs have corresponding Phase 5 implementation paths in `sidecar/parser`, `sidecar/indexer/affects.py`, and BFS typed-edge traversal.
+- [x] Decision gate: prioritize typed edges vs AFFECTS index for Phase 5 first milestone
+  - Result: resolved by shipping both; typed call edges feed the materialized AFFECTS index.
 
 ---
 
