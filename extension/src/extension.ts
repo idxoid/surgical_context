@@ -3,6 +3,7 @@ import { SidecarClient } from './sidecarClient';
 import { ChatPanel } from './chatPanel';
 import { OverlayManager } from './overlayManager';
 import { ChatViewProvider } from './providers/ChatViewProvider';
+import { ImpactViewProvider } from './providers/ImpactViewProvider';
 import { InspectorPanel } from './panels/InspectorPanel';
 import { stateManager } from './state/ExtensionState';
 
@@ -40,6 +41,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatViewProvider)
   );
 
+  // Register Impact sidebar view provider
+  const impactViewProvider = new ImpactViewProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(ImpactViewProvider.viewType, impactViewProvider)
+  );
+
   // Register commands
   context.subscriptions.push(
 
@@ -59,8 +66,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('surgicalContext.showImpact', async (symbol?: string) => {
-      vscode.window.showInformationMessage('Impact Explorer coming in Phase 4');
-      // TODO: Implement ImpactViewProvider
+      vscode.commands.executeCommand('workbench.view.extension.surgicalContext');
+      // TODO: Focus impact view and trigger load
     }),
 
     vscode.commands.registerCommand('surgicalContext.findDocs', async () => {

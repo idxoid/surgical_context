@@ -15,6 +15,7 @@ export type WebviewToHostMessage =
   | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down' }
   | { type: 'action.openInspector' }
   | { type: 'action.showImpact'; symbol?: string }
+  | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'link.openFile'; filePath: string; line?: number };
 
 // ============ Extension Host → Webview Messages ============
@@ -30,7 +31,10 @@ export type HostToWebviewMessage =
   | { type: 'workspace.updated'; activeFile: string | null; symbol: string | null; isDirty: boolean }
   | { type: 'backend.updated'; sidecarHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'offline' }
   | { type: 'toast.show'; level: 'info' | 'warning' | 'error'; message: string }
-  | { type: 'inspector.loaded'; context: PromptContextPayload | null };
+  | { type: 'inspector.loaded'; context: PromptContextPayload | null }
+  | { type: 'impact.loading' }
+  | { type: 'impact.loaded'; symbol: string; impact: ImpactResponse }
+  | { type: 'impact.loadFailed'; error: string };
 
 // ============ Data Transfer Objects ============
 
@@ -115,4 +119,12 @@ export interface ContextDoc {
   score?: number | null;
   scores?: Record<string, number | null>;
   provenance?: string[];
+}
+
+export interface ImpactResponse {
+  symbol: string;
+  symbol_uid: string;
+  file_path: string;
+  affected_symbols: Array<Record<string, unknown>>;
+  affected_files: string[];
 }
