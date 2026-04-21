@@ -18,6 +18,7 @@ from time import perf_counter
 from typing import Any
 
 _LABEL_SAFE = re.compile(r"[^a-zA-Z0-9_:.-]")
+DEFAULT_REQUEST_LATENCY_SLO_MS = 200.0
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +69,15 @@ def _env_float(name: str) -> float:
         return float(os.getenv(name, "0") or 0)
     except ValueError:
         return 0.0
+
+
+def _ms_label(value: float) -> str:
+    return f"{value:g}"
+
+
+def request_latency_slo_ms() -> float:
+    configured = _env_float("SIDECAR_REQUEST_LATENCY_SLO_MS")
+    return configured if configured > 0 else DEFAULT_REQUEST_LATENCY_SLO_MS
 
 
 def estimate_cost_usd(
@@ -126,11 +136,23 @@ class RequestTrace:
     def total_latency_ms(self) -> float:
         return round(sum(self.stage_timings_ms.values()), 3)
 
+    def latency_slo(self, target_ms: float | None = None) -> dict[str, Any]:
+        target = target_ms if target_ms is not None else request_latency_slo_ms()
+        latency = self.total_latency_ms
+        breached = latency > target
+        return {
+            "target_ms": target,
+            "status": "breached" if breached else "met",
+            "breached": breached,
+            "latency_ms": latency,
+        }
+
     def to_metadata(self, resolver_version: str) -> dict[str, Any]:
         return {
             "trace_id": self.trace_id,
             "workspace_id": self.workspace_id,
             "resolver_version": resolver_version,
+            "latency_slo": self.latency_slo(),
             "stage_timings_ms": dict(self.stage_timings_ms),
             "token_counts": dict(self.token_counts),
             "model_route": dict(self.model_route),
@@ -161,11 +183,26 @@ class MetricsRegistry:
         self.increment(f"{name}_ms_count", 1, labels)
 
     def record_trace(self, trace: RequestTrace, status: str) -> None:
+        latency_slo = trace.latency_slo()
+        latency_slo_target = _ms_label(latency_slo["target_ms"])
         labels = {"endpoint": trace.endpoint, "status": status}
         self.increment("sidecar_requests_total", labels=labels)
         self.observe_ms(
             "sidecar_request_latency", trace.total_latency_ms, {"endpoint": trace.endpoint}
         )
+        self.increment(
+            "sidecar_request_slo_checks_total",
+            labels={
+                "endpoint": trace.endpoint,
+                "status": latency_slo["status"],
+                "target_ms": latency_slo_target,
+            },
+        )
+        if latency_slo["breached"]:
+            self.increment(
+                "sidecar_request_slo_violations_total",
+                labels={"endpoint": trace.endpoint, "target_ms": latency_slo_target},
+            )
         for stage, elapsed in trace.stage_timings_ms.items():
             self.observe_ms(
                 "sidecar_stage_latency",
@@ -188,6 +225,7 @@ class MetricsRegistry:
             workspace_id=trace.workspace_id,
             status=status,
             total_latency_ms=trace.total_latency_ms,
+            latency_slo=latency_slo,
             stage_timings_ms=dict(trace.stage_timings_ms),
             token_counts=dict(trace.token_counts),
             model_route=dict(trace.model_route),
@@ -205,6 +243,10 @@ class MetricsRegistry:
             "# TYPE sidecar_request_latency_ms summary",
             "# HELP sidecar_stage_latency_ms Per-stage request latency in milliseconds.",
             "# TYPE sidecar_stage_latency_ms summary",
+            "# HELP sidecar_request_slo_checks_total Request latency SLO checks by endpoint and result.",
+            "# TYPE sidecar_request_slo_checks_total counter",
+            "# HELP sidecar_request_slo_violations_total Requests exceeding the configured latency SLO.",
+            "# TYPE sidecar_request_slo_violations_total counter",
             "# HELP sidecar_tokens_total Estimated tokens processed by endpoint and kind.",
             "# TYPE sidecar_tokens_total counter",
             "# HELP sidecar_estimated_cost_usd_total Estimated request cost in USD.",

@@ -225,6 +225,8 @@ def test_ask_endpoint_includes_trace_metrics_and_model_route(monkeypatch):
     assert body["trace_id"] == "trace-test"
     assert body["model_route"]["model"] == "fake-model"
     assert body["metrics"]["token_counts"]["context"] == 42
+    assert body["metrics"]["latency_slo"]["target_ms"] == 200.0
+    assert body["metrics"]["latency_slo"]["status"] in {"met", "breached"}
     assert body["context"]["metadata"]["assembly"]["trace_id"] == "trace-test"
 
 

@@ -22,6 +22,7 @@ All via environment variables with defaults:
 | `MODEL_PREFERENCE` | `auto` | AI routing preference: `auto`, `claude`, or `ollama` |
 | `AUTH_REQUIRED` | `false` | When true, protected endpoints require `Authorization: Bearer <token>` |
 | `DEFAULT_WORKSPACE_ID` | `local/surgical_context@main` | Development fallback when `X-Workspace` is absent |
+| `SIDECAR_REQUEST_LATENCY_SLO_MS` | `200` | Request latency SLO target used by metrics and structured logs |
 
 ---
 
@@ -312,6 +313,8 @@ Neo4j access goes through `db_session(...)`, which creates a request-scoped clie
 Protected endpoints accept local `X-User-Id` identity by default for development. Set `AUTH_REQUIRED=true` to require signed bearer tokens from `/auth/token`.
 
 Graph endpoints accept `X-Workspace: tenant/repo@ref`. Neo4j `File`, `CONTAINS`, call, and `AFFECTS` operations are scoped by that workspace id.
+
+Structured request logs and Prometheus metrics track request latency against `SIDECAR_REQUEST_LATENCY_SLO_MS` and emit SLO check/violation counters.
 
 ---
 

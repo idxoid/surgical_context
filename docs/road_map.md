@@ -143,7 +143,7 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 - [x] Structured logging across pipeline stages (Phase 5 prerequisite)
 - [x] `GET /metrics` endpoint (Prometheus text format)
 - [x] Per-request trace ID threaded through logs
-- [ ] Latency SLO tracking against 200ms target
+- [x] Latency SLO tracking against 200ms target
 - [ ] Distributed tracing via OpenTelemetry (Phase 6, scale phase only)
 
 ### Token Accounting ✅ COMPLETE

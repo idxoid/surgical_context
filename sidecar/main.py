@@ -285,6 +285,7 @@ def _attach_trace_metadata(ctx: PromptContext, trace: RequestTrace) -> None:
 def _request_metrics(trace: RequestTrace) -> dict[str, Any]:
     return {
         "stage_timings_ms": dict(trace.stage_timings_ms),
+        "latency_slo": trace.latency_slo(),
         "token_counts": dict(trace.token_counts),
         "estimated_cost_usd": trace.estimated_cost_usd,
         "cost_basis": trace.cost_basis,
