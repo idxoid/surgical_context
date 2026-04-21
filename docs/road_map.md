@@ -218,8 +218,8 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 
 ### Embedding Quality (DEFERRED — Phase 5)
 - [x] Add reusable embedding benchmark harness for golden-set model comparisons (`python -m sidecar.eval.embedding_benchmark`)
-- [ ] Run and record `all-MiniLM-L6-v2` vs a code-native model (e.g. `bge-code`, `unixcoder`) on the golden set
-  - 2026-04-21 offline probe: cached `all-MiniLM-L6-v2` reached `target_hit@5=1.00`, `MRR=0.78`, `expected_recall@5=0.42`, `expected_precision@5=0.52`; `microsoft/unixcoder-base` was not cached, so the code-native comparison remains pending.
+- [x] Run and record `all-MiniLM-L6-v2` vs a code-native model (e.g. `bge-code`, `unixcoder`) on the golden set
+  - 2026-04-21 benchmark: `all-MiniLM-L6-v2` reached `target_hit@5=1.00`, `MRR=0.78`, `expected_recall@5=0.42`, `expected_precision@5=0.52`; `microsoft/unixcoder-base` reached `target_hit@5=1.00`, `MRR=0.78`, `expected_recall@5=0.45`, `expected_precision@5=0.58`.
 - [x] Embedding cache keyed by content hash to avoid recomputation on re-index
 
 ---
@@ -519,9 +519,9 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [x] VS Code manifest structure (viewsContainers, commands, menus, keybindings, configuration).
 - [ ] Streaming chat integration with `/ask/stream` JSON-safe SSE events.
 - [x] Token budget, selected mode, query intent, and model route display.
-- [ ] VS Code settings UI for sidecar URL, model preference, workspace ID, and auth token.
-- [ ] Full implementation of all four UI surfaces in TypeScript/React.
 - [ ] Keyboard shortcuts and accessibility (ARIA labels, focus management, screen reader support).
+- [ ] VS Code settings UI for sidecar URL, model preference, workspace ID, keyboard shortcuts, and auth token .
+- [ ] Full implementation of all four UI surfaces in TypeScript/React.
 
 ---
 
