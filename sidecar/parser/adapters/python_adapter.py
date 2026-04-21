@@ -1,9 +1,15 @@
 """Python language adapter using tree-sitter."""
 
-from hashlib import sha256
+import re
 
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
+from sidecar.parser.uid import (
+    compute_uid,
+    module_name_from_path,
+    qualified_name_for,
+    signature_from_node,
+)
 
 
 class PythonAdapter(TreeSitterAdapter):
@@ -72,7 +78,7 @@ class PythonAdapter(TreeSitterAdapter):
                 match = line.split(" import ")
                 if len(match) == 2:
                     module = match[0][5:].strip()
-                    if module and module != "." and not self._is_external(module):
+                    if module and module != "." and not self._is_external(module.lstrip(".")):
                         imports.append(ImportEdge(file_path, module, "from_package"))
         return imports
 
@@ -84,7 +90,7 @@ class PythonAdapter(TreeSitterAdapter):
         """Extract class inheritance from Python source."""
         edges = []
         lines = source_code.split("\n")
-        for _i, line in enumerate(lines):
+        for line in lines:
             line = line.strip()
             if line.startswith("class "):
                 match = line[6:].split(":")[0].strip()
@@ -99,69 +105,99 @@ class PythonAdapter(TreeSitterAdapter):
         return edges
 
     def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
-        """Extract function calls with typed rel_type: CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED."""
+        """Extract function calls and attach resolver metadata when statically resolvable."""
         tree = self.parser.parse(bytes(source_code, "utf8"))
         query = self.language.query(self.call_query)
         captures = query.captures(tree.root_node)
 
+        symbols = self.extract_symbols(source_code, file_path)
+        by_name: dict[str, list] = {}
+        for symbol in symbols:
+            by_name.setdefault(symbol.name, []).append(symbol)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+
         calls = []
-
         for node, tag in captures:
-            if tag == "call":
-                # node is the call node; function child is the callable
-                func_node = node.child_by_field_name("function")
-                if not func_node:
+            if tag != "call":
+                continue
+
+            func_node = node.child_by_field_name("function")
+            if not func_node:
+                continue
+
+            parent = node.parent
+            while parent and parent.type not in self.parent_types:
+                parent = parent.parent
+            if not parent:
+                continue
+
+            caller_uid = self._uid_for_node(parent, source_code, file_path)
+            call_name = ""
+            callee_uid = None
+            callee_qualified_name = None
+            rel_type = "CALLS_GUESS"
+            tier = "guess"
+            confidence = 0.4
+
+            if func_node.type == "identifier":
+                call_name = source_code[func_node.start_byte : func_node.end_byte]
+                rel_type = self._classify_direct_call(call_name)
+                tier = "direct" if rel_type == "CALLS_DIRECT" else "guess"
+                confidence = 1.0 if rel_type == "CALLS_DIRECT" else 0.4
+
+                if call_name in import_bindings:
+                    callee_qualified_name = import_bindings[call_name]
+                    rel_type = "CALLS_IMPORTED"
+                    tier = "imported"
+                    confidence = 0.85
+                elif len(by_name.get(call_name, [])) == 1:
+                    callee_uid = by_name[call_name][0].uid
+                    rel_type = "CALLS_SCOPED"
+                    tier = "scoped"
+                    confidence = 0.9
+                elif rel_type != "CALLS_INFERRED":
+                    rel_type = "CALLS_GUESS"
+                    tier = "guess"
+                    confidence = 0.4
+
+            elif func_node.type == "attribute":
+                children = [c for c in func_node.children if c.type == "identifier"]
+                if len(children) < 2:
                     continue
+                receiver_node = children[0]
+                method_node = children[-1]
+                receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
+                call_name = source_code[method_node.start_byte : method_node.end_byte]
 
-                # Find enclosing function or class
-                parent = node.parent
-                while parent and parent.type not in self.parent_types:
-                    parent = parent.parent
-                if not parent:
-                    continue
-
-                parent_name_node = parent.child_by_field_name("name")
-                if not parent_name_node:
-                    continue
-                caller_name = source_code[parent_name_node.start_byte : parent_name_node.end_byte]
-
-                # Determine call type based on function node type
-                if func_node.type == "identifier":
-                    # Direct identifier call: func()
-                    call_name = source_code[func_node.start_byte : func_node.end_byte]
-                    rel_type = self._classify_direct_call(call_name)
-                elif func_node.type == "attribute":
-                    # Attribute call: receiver.method()
-                    # attribute node has children: identifier (receiver), ".", identifier (method)
-                    children = [c for c in func_node.children if c.type == "identifier"]
-                    if len(children) < 2:
-                        continue
-                    receiver_node = children[0]
-                    method_node = children[-1]
-
-                    receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
-                    call_name = source_code[method_node.start_byte : method_node.end_byte]
-
-                    if receiver_text == "self":
-                        # self.method() — CALLS_DYNAMIC, check overridability
-                        is_overrideable = not (
-                            call_name.startswith("_") and call_name.endswith("_")
-                        )
-                        rel_type = "CALLS_DYNAMIC" if is_overrideable else "CALLS_DIRECT"
-                    else:
-                        # Other receiver (instance var, function result, etc.)
-                        rel_type = "CALLS_DYNAMIC"
+                if receiver_text == "self":
+                    rel_type = "CALLS_DYNAMIC"
+                    tier = "dynamic"
+                    confidence = 0.7
+                    callee_uid = self._resolve_method_uid(parent, call_name, by_name)
                 else:
-                    # Unsupported call pattern
-                    continue
+                    rel_type = "CALLS_DYNAMIC"
+                    tier = "dynamic"
+                    confidence = 0.7
+            else:
+                continue
 
-                calls.append(
-                    {
-                        "caller_uid": self._uid(file_path, caller_name),
-                        "callee_name": call_name,
-                        "rel_type": rel_type,
-                    }
-                )
+            if callee_uid == caller_uid:
+                continue
+
+            call = {
+                "caller_uid": caller_uid,
+                "callee_name": call_name,
+                "rel_type": rel_type,
+                "tier": tier,
+                "confidence": confidence,
+                "resolver": "py-scope-v1",
+                "call_site_line": node.start_point[0] + 1,
+            }
+            if callee_uid:
+                call["callee_uid"] = callee_uid
+            if callee_qualified_name:
+                call["callee_qualified_name"] = callee_qualified_name
+            calls.append(call)
 
         return calls
 
@@ -190,7 +226,78 @@ class PythonAdapter(TreeSitterAdapter):
         return "CALLS_DIRECT"
 
     def _uid(self, file_path: str, name: str) -> str:
-        return sha256(f"{file_path}:{name}".encode()).hexdigest()
+        qualified_name = f"{module_name_from_path(file_path)}.{name}"
+        return compute_uid(qualified_name, f"{name}()->_", self.language_name)
+
+    def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
+        qualified_name = qualified_name_for(node, source_code, file_path)
+        raw_signature, _ = signature_from_node(node, source_code, self.language_name)
+        return compute_uid(qualified_name, raw_signature, self.language_name)
+
+    def _resolve_method_uid(self, caller_node, method_name: str, by_name: dict[str, list]) -> str | None:
+        candidates = by_name.get(method_name, [])
+        if not candidates:
+            return None
+
+        class_node = caller_node
+        while class_node and class_node.type != "class_definition":
+            class_node = class_node.parent
+        if not class_node:
+            return candidates[0].uid if len(candidates) == 1 else None
+
+        class_name_node = class_node.child_by_field_name("name")
+        if not class_name_node:
+            return None
+        class_name = class_name_node.text.decode("utf-8")
+        for candidate in candidates:
+            if f".{class_name}.{method_name}" in candidate.qualified_name:
+                return candidate.uid
+        return candidates[0].uid if len(candidates) == 1 else None
+
+    def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
+        """Return local import alias -> best-effort target qualified name."""
+        module = module_name_from_path(file_path)
+        package = module.rsplit(".", 1)[0] if "." in module else ""
+        bindings: dict[str, str] = {}
+        for line in source_code.splitlines():
+            stripped = line.strip()
+            from_match = re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", stripped)
+            if from_match:
+                import_module, names = from_match.groups()
+                if self._is_external(import_module.lstrip(".")):
+                    continue
+                target_module = self._resolve_import_module(import_module, package)
+                for item in names.split(","):
+                    item = item.strip()
+                    if not item or item == "*":
+                        continue
+                    original, _, alias = item.partition(" as ")
+                    local_name = alias.strip() or original.strip()
+                    bindings[local_name] = f"{target_module}.{original.strip()}"
+                continue
+
+            import_match = re.match(r"import\s+(.+)$", stripped)
+            if import_match:
+                for item in import_match.group(1).split(","):
+                    item = item.strip()
+                    original, _, alias = item.partition(" as ")
+                    target_module = original.strip()
+                    if not target_module or self._is_external(target_module):
+                        continue
+                    local_name = alias.strip() or target_module.split(".")[0]
+                    bindings[local_name] = target_module
+        return bindings
+
+    def _resolve_import_module(self, import_module: str, package: str) -> str:
+        if not import_module.startswith("."):
+            return import_module
+        dots = len(import_module) - len(import_module.lstrip("."))
+        remainder = import_module.lstrip(".")
+        parts = package.split(".") if package else []
+        prefix = parts[: max(0, len(parts) - dots + 1)]
+        if remainder:
+            prefix.append(remainder)
+        return ".".join(p for p in prefix if p)
 
 
 def make_adapter() -> PythonAdapter:

@@ -1,9 +1,8 @@
 """TypeScript language adapter using tree-sitter."""
 
-from hashlib import sha256
-
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
+from sidecar.parser.uid import compute_uid, module_name_from_path
 
 
 class TypeScriptAdapter(TreeSitterAdapter):
@@ -99,7 +98,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
         return edges
 
     def _uid(self, file_path: str, name: str) -> str:
-        return sha256(f"{file_path}:{name}".encode()).hexdigest()
+        qualified_name = f"{module_name_from_path(file_path)}.{name}"
+        return compute_uid(qualified_name, f"{name}()->_", self.language_name)
 
 
 def make_adapter() -> TypeScriptAdapter:

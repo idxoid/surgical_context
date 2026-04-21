@@ -4,17 +4,22 @@
 class CodeResolver:
     """Resolves code from filesystem or in-memory overlay."""
 
-    def __init__(self, overlay=None):
+    def __init__(self, overlay=None, workspace_id: str = "local/surgical_context@main"):
         self.overlay = overlay
+        self.workspace_id = workspace_id
 
     def resolve(self, file_path: str, start_line: int, end_line: int) -> tuple[str, bool]:
         """Return (code, is_dirty). Checks overlay first, falls back to FS."""
         if file_path == "<unknown>":
             return "", False
 
-        is_dirty = bool(self.overlay and self.overlay.has(file_path))
+        is_dirty = bool(
+            self.overlay and self.overlay.has(file_path, workspace_id=self.workspace_id)
+        )
         if is_dirty:
-            code = self.overlay.read_lines(file_path, start_line, end_line)
+            code = self.overlay.read_lines(
+                file_path, start_line, end_line, workspace_id=self.workspace_id
+            )
             return code, True
 
         try:

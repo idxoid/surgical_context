@@ -89,8 +89,8 @@ The graph supplies symbol file paths and line ranges. Only the source of text ch
 
 ## Current Limitations
 
-- The initial symbol lookup still starts from `Symbol.name` and `LIMIT 1`; duplicate names remain a correctness risk until stable UID v2 and scoped call resolution land.
-- Workspace and Git branch identity are not yet part of the prompt contract.
+- The initial symbol lookup still accepts a display `Symbol.name`; workspace-scoped lookup prevents cross-branch leakage, but exact UID target selection is still a product/API improvement.
+- Workspace identity is applied to graph queries, but not yet surfaced in the JSON Prompt Contract.
 - Doc chunks do not yet expose retrieval scores, provenance details, or pruning reasons in `to_dict()`.
 - Backpressure and batching for mass file-change events live outside the arbitrator and remain roadmap work.
 

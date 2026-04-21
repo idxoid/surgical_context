@@ -1,6 +1,6 @@
 # Surgical Context — Architecture
 
-> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, request-scoped DB sessions, durable index job logging, opt-in bearer auth enforcement, and a VS Code extension scaffold are present. The main open gaps are stable symbol identity, scoped call resolution, workspace/branch isolation, production auth policy/secret management, prompt-contract observability, and backpressure for mass indexing events. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace/branch-scoped graph queries, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, request-scoped DB sessions, durable index job logging, opt-in bearer auth enforcement, and a VS Code extension scaffold are present. The main open gaps are production auth policy/secret management, prompt-contract observability, metrics, extension context inspection, and backpressure for mass indexing events. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 
 ## Section 1: Executive Summary & Goals
 
@@ -86,7 +86,7 @@ Without runtime metrics and prompt-contract observability, production claims in 
 **Syntactic (AST):**
 - Symbol extraction: functions, classes, line coordinates, content hash.
 - Call graph: typed function calls — `CALLS_DIRECT` (static), `CALLS_DYNAMIC` (dispatch), `CALLS_INFERRED` (string-based). Resolved within the same project.
-- UID: `sha256(file_path:name)` — deterministic, collision-resistant.
+- UID v2: `sha256(language:qualified_name|normalized_signature)[:16]` — stable across machine paths and disambiguates overloads/nested scopes.
 - AFFECTS index: reverse dependency materialization (depth ≤ 4) for cascade-aware incremental reindexing.
 
 **Semantic (Docs):**
@@ -102,12 +102,13 @@ Without runtime metrics and prompt-contract observability, production claims in 
 
 ### 3.3. Load — Incremental Upsert
 - **Neo4j:** `MERGE` on uid — only changed nodes/edges are written.
-- **Current caveat:** changed files are handled by deleting their existing symbols and re-upserting extracted symbols; stable symbol identity is a post-MVP hardening item.
+- **Workspace:** File nodes, CONTAINS edges, call edges, AFFECTS edges, and graph reads are scoped by `workspace_id`.
+- **Current caveat:** changed files are handled by deleting their workspace-local file edges and re-upserting extracted symbols; symbol-level diffing is still deferred.
 - **LanceDB:** delete-then-insert per file on re-index.
 - **Recovery:** `/index/file` writes an indexing job record before mutating stores, then marks success, failed, or dead-letter state so partial graph/vector failures are visible and retryable.
 
 ### 3.4. Dirty State Handling ✅ Implemented
-`InMemoryOverlay` holds `{file_path: raw_content}`:
+`InMemoryOverlay` holds `{(workspace_id, file_path): raw_content}`:
 - Re-parses symbols on the fly via tree-sitter — no disk I/O.
 - `CodeResolver` checks overlay before disk during context assembly.
 - Cleared on file save or editor close (TTL = session).
@@ -125,20 +126,21 @@ Without runtime metrics and prompt-contract observability, production claims in 
 
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol, question}`.
-2. **Intent classification**: detect query intent (navigation, debugging, refactor, exploration, new feature, design question) → choose tier priority order.
-3. **Graph expansion** (`GraphExpander`): BFS from target symbol through typed edges (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) constrained by token budget + depth limit. Returns priority-scored subgraph.
-4. **Deduplication** (`ContextDeduplicator`): remove redundant symbols and overlapping doc chunks.
-5. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol.
-6. **Doc retrieval** (`DocResolver`): semantic search in LanceDB `docs` table → top-k chunks. Matched chunks have `[:COVERS]` edges to code symbols.
-7. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas), fill budget in order.
-8. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
-9. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
-10. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
+2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
+3. **Intent classification**: detect query intent (navigation, debugging, refactor, exploration, new feature, design question) → choose tier priority order.
+4. **Graph expansion** (`GraphExpander`): BFS from target symbol through workspace-scoped typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) constrained by token budget + depth limit. Returns priority-scored subgraph.
+5. **Deduplication** (`ContextDeduplicator`): remove redundant symbols and overlapping doc chunks.
+6. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol.
+7. **Doc retrieval** (`DocResolver`): semantic search in LanceDB `docs` table → top-k chunks. Matched chunks have `[:COVERS]` edges to code symbols.
+8. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas), fill budget in order.
+9. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
+10. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
+11. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
 
 ### 4.2. Cold Start
 1. FS scan for `.py`/`.ts`/`.tsx` files (gitignore-aware, dirs pruned).
 2. Phase 1: extract all symbols (functions, classes, UPPER_CASE variables) → upsert nodes.
-3. Phase 2: extract all calls → upsert typed call edges (`CALLS_DIRECT`, `CALLS_DYNAMIC`, `CALLS_INFERRED`).
+3. Phase 2: extract all calls → upsert typed call edges (`CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`, fallback `CALLS_GUESS` only when unique).
 4. Phase 3: embed symbol code bodies → LanceDB `symbols` table.
 5. Phase 4: resolve pending DocAnchors against newly indexed symbols.
 6. Doc indexing (separate trigger): section-aware chunk + embed all `.md` → LanceDB + DocAnchor graph.

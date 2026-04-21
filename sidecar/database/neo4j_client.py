@@ -1,6 +1,17 @@
 from neo4j import GraphDatabase
 
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
+
+_CALL_REL_TYPES = {
+    "CALLS",
+    "CALLS_DIRECT",
+    "CALLS_SCOPED",
+    "CALLS_IMPORTED",
+    "CALLS_DYNAMIC",
+    "CALLS_INFERRED",
+    "CALLS_GUESS",
+}
 
 
 class Neo4jClient:
@@ -10,58 +21,124 @@ class Neo4jClient:
     def close(self):
         self.driver.close()
 
-    def upsert_file_structure(self, file_path: str, file_hash: str, symbols: list[SymbolMetadata]):
+    def ensure_workspace(self, workspace_id: str = DEFAULT_WORKSPACE_ID):
+        workspace = _split_workspace_id(workspace_id)
         with self.driver.session() as session:
-            session.execute_write(self._upsert_nodes, file_path, file_hash, symbols)
+            session.run(
+                """
+                MERGE (w:Workspace {id: $id})
+                SET w.tenant = $tenant,
+                    w.repo = $repo,
+                    w.ref = $ref,
+                    w.ref_kind = $ref_kind,
+                    w.last_seen = timestamp(),
+                    w.created_at = coalesce(w.created_at, timestamp())
+                """,
+                **workspace,
+            )
 
-    def get_file_hashes(self, file_paths: list[str]) -> dict[str, str]:
+    def upsert_file_structure(
+        self,
+        file_path: str,
+        file_hash: str,
+        symbols: list[SymbolMetadata],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        with self.driver.session() as session:
+            session.execute_write(self._upsert_nodes, file_path, file_hash, symbols, workspace_id)
+
+    def get_file_hashes(
+        self, file_paths: list[str], workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> dict[str, str]:
         """Return {path: hash} for all known files in the given list."""
         if not file_paths:
             return {}
         with self.driver.session() as session:
             result = session.run(
-                "MATCH (f:File) WHERE f.path IN $paths RETURN f.path AS path, f.hash AS hash",
+                """
+                MATCH (f:File {workspace_id: $workspace_id})
+                WHERE f.path IN $paths
+                RETURN f.path AS path, f.hash AS hash
+                """,
                 paths=file_paths,
+                workspace_id=workspace_id,
             )
             return {r["path"]: r["hash"] for r in result}
 
-    def delete_symbols_for_file(self, file_path: str):
-        """Detach-delete all Symbol nodes owned by a File."""
+    def delete_symbols_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
+        """Remove workspace-local edges and orphaned symbols for a File."""
         with self.driver.session() as session:
             session.run(
                 """
-                MATCH (f:File {path: $path})-[:CONTAINS]->(s:Symbol)
-                DETACH DELETE s
-            """,
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+                OPTIONAL MATCH (s)-[r]-(other:Symbol)
+                WHERE r IS NULL OR (
+                    type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
+                                'CALLS_DYNAMIC', 'CALLS_INFERRED', 'CALLS_GUESS', 'DEPENDS_ON',
+                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS']
+                    AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                )
+                DELETE r, c
+                WITH f, collect(DISTINCT s) AS symbols
+                DETACH DELETE f
+                WITH symbols
+                UNWIND symbols AS sym
+                OPTIONAL MATCH (:File)-[:CONTAINS]->(sym)
+                WITH sym, count(*) AS owners
+                WHERE owners = 0
+                DETACH DELETE sym
+                """,
                 path=file_path,
+                workspace_id=workspace_id,
             )
 
     @staticmethod
-    def _upsert_nodes(tx, file_path, file_hash, symbols):
-        # 1. Создаем/обновляем узел файла
+    def _upsert_nodes(tx, file_path, file_hash, symbols, workspace_id):
+        workspace = _split_workspace_id(workspace_id)
         tx.run(
             """
-            MERGE (f:File {path: $path})
-            SET f.hash = $hash, f.last_indexed = timestamp()
-        """,
+            MERGE (w:Workspace {id: $id})
+            SET w.tenant = $tenant,
+                w.repo = $repo,
+                w.ref = $ref,
+                w.ref_kind = $ref_kind,
+                w.last_indexed = timestamp(),
+                w.created_at = coalesce(w.created_at, timestamp())
+            MERGE (f:File {path: $path, workspace_id: $id})
+            SET f.hash = $hash,
+                f.last_indexed = timestamp()
+            MERGE (f)-[:IN_WORKSPACE]->(w)
+            """,
             path=file_path,
             hash=file_hash,
+            **workspace,
         )
 
-        # 2. Обновляем символы и связи CONTAINS
         for s in symbols:
             tx.run(
                 """
-                MATCH (f:File {path: $file_path})
+                MATCH (f:File {path: $file_path, workspace_id: $workspace_id})
+                MATCH (w:Workspace {id: $workspace_id})
                 MERGE (s:Symbol {uid: $uid})
                 SET s.name = $name,
                     s.kind = $kind,
                     s.hash = $content_hash,
                     s.range = [$start, $end],
-                    s.token_estimate = $token_estimate
-                MERGE (f)-[:CONTAINS]->(s)
-            """,
+                    s.token_estimate = $token_estimate,
+                    s.qualified_name = $qualified_name,
+                    s.signature = $signature,
+                    s.signature_hash = $signature_hash,
+                    s.signature_status = $signature_status,
+                    s.language = $language
+                MERGE (s)-[:IN_WORKSPACE]->(w)
+                MERGE (f)-[c:CONTAINS {workspace_id: $workspace_id}]->(s)
+                SET c.range = [$start, $end],
+                    c.start_line = $start,
+                    c.end_line = $end,
+                    c.hash = $content_hash
+                """,
                 file_path=file_path,
+                workspace_id=workspace_id,
                 uid=s.uid,
                 name=s.name,
                 kind=s.kind,
@@ -69,64 +146,164 @@ class Neo4jClient:
                 start=s.start_line,
                 end=s.end_line,
                 token_estimate=s.token_estimate,
+                qualified_name=s.qualified_name,
+                signature=s.signature,
+                signature_hash=s.signature_hash,
+                signature_status=s.signature_status,
+                language=s.language,
             )
 
-    def link_calls(self, calls: list[dict]):
+    def link_calls(self, calls: list[dict], workspace_id: str = DEFAULT_WORKSPACE_ID):
         with self.driver.session() as session:
-            session.execute_write(self._create_call_relations, calls)
+            session.execute_write(self._create_call_relations, calls, workspace_id)
 
     @staticmethod
-    def _create_call_relations(tx, calls):
+    def _create_call_relations(tx, calls, workspace_id):
         for call in calls:
             rel_type = call.get("rel_type", "CALLS_DIRECT")
-            tx.run(
-                f"""
-                MATCH (caller:Symbol {{uid: $caller_uid}})
-                MATCH (callee:Symbol {{name: $callee_name}})
-                WHERE caller <> callee
-                MERGE (caller)-[:{rel_type}]->(callee)
-            """,
-                caller_uid=call["caller_uid"],
-                callee_name=call["callee_name"],
-            )
+            if rel_type not in _CALL_REL_TYPES:
+                rel_type = "CALLS_GUESS"
+            params = {
+                "caller_uid": call["caller_uid"],
+                "callee_uid": call.get("callee_uid"),
+                "callee_name": call.get("callee_name"),
+                "callee_qualified_name": call.get("callee_qualified_name"),
+                "workspace_id": workspace_id,
+                "confidence": float(call.get("confidence", _default_confidence(rel_type))),
+                "tier": call.get("tier", _default_tier(rel_type)),
+                "resolver": call.get("resolver", "scope-v1"),
+                "call_site_line": call.get("call_site_line"),
+            }
+            if params["callee_uid"]:
+                tx.run(
+                    f"""
+                    MATCH (caller:Symbol {{uid: $caller_uid}})
+                    MATCH (callee:Symbol {{uid: $callee_uid}})
+                    WHERE caller <> callee
+                    MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
+                                                   call_site_line: $call_site_line}}]->(callee)
+                    SET r.confidence = $confidence,
+                        r.tier = $tier,
+                        r.resolver = $resolver
+                    """,
+                    **params,
+                )
+            elif params["callee_qualified_name"]:
+                tx.run(
+                    f"""
+                    MATCH (caller:Symbol {{uid: $caller_uid}})
+                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(callee:Symbol {{qualified_name: $callee_qualified_name}})
+                    WHERE caller <> callee
+                    MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
+                                                   call_site_line: $call_site_line}}]->(callee)
+                    SET r.confidence = $confidence,
+                        r.tier = $tier,
+                        r.resolver = $resolver
+                    """,
+                    **params,
+                )
+            else:
+                # Honest fallback: only create a guessed edge when the name is unique in this workspace.
+                tx.run(
+                    f"""
+                    MATCH (caller:Symbol {{uid: $caller_uid}})
+                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(callee:Symbol {{name: $callee_name}})
+                    WHERE caller <> callee
+                    WITH caller, collect(DISTINCT callee) AS candidates
+                    WHERE size(candidates) = 1
+                    WITH caller, candidates[0] AS callee
+                    MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
+                                                   call_site_line: $call_site_line}}]->(callee)
+                    SET r.confidence = $confidence,
+                        r.tier = $tier,
+                        r.resolver = $resolver
+                    """,
+                    **params,
+                )
 
-    def link_imports(self, imports: list[ImportEdge]):
+    def link_imports(self, imports: list[ImportEdge], workspace_id: str = DEFAULT_WORKSPACE_ID):
         with self.driver.session() as session:
-            session.execute_write(self._create_import_relations, imports)
+            session.execute_write(self._create_import_relations, imports, workspace_id)
 
     @staticmethod
-    def _create_import_relations(tx, imports):
+    def _create_import_relations(tx, imports, workspace_id):
         for imp in imports:
-            # Convert dotted module name to file path suffix for matching
-            # e.g. "sidecar.database.neo4j_client" → "sidecar/database/neo4j_client.py"
-            path_suffix = imp.target_module_name.replace(".", "/") + ".py"
+            path_suffix = imp.target_module_name.lstrip(".").replace(".", "/") + ".py"
             tx.run(
                 """
-                MATCH (source:File {path: $source_file})
-                MATCH (target:File)
+                MATCH (source:File {path: $source_file, workspace_id: $workspace_id})
+                MATCH (target:File {workspace_id: $workspace_id})
                 WHERE target.path ENDS WITH $path_suffix
                   AND source <> target
-                MERGE (source)-[:IMPORTS {type: $import_type}]->(target)
-            """,
+                MERGE (source)-[:IMPORTS {type: $import_type, workspace_id: $workspace_id}]->(target)
+                """,
                 source_file=imp.source_file,
+                workspace_id=workspace_id,
                 path_suffix=path_suffix,
                 import_type=imp.import_type,
             )
 
-    def link_inheritance(self, inheritance_edges: list[InheritanceEdge]):
+    def link_inheritance(
+        self,
+        inheritance_edges: list[InheritanceEdge],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
         with self.driver.session() as session:
-            session.execute_write(self._create_inheritance_relations, inheritance_edges)
+            session.execute_write(self._create_inheritance_relations, inheritance_edges, workspace_id)
 
     @staticmethod
-    def _create_inheritance_relations(tx, inheritance_edges):
+    def _create_inheritance_relations(tx, inheritance_edges, workspace_id):
         for edge in inheritance_edges:
             tx.run(
                 """
                 MATCH (subclass:Symbol {uid: $subclass_uid})
-                MATCH (superclass:Symbol {name: $superclass_name})
-                MERGE (subclass)-[:DEPENDS_ON {is_interface: $is_interface}]->(superclass)
-            """,
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(superclass:Symbol {name: $superclass_name})
+                MERGE (subclass)-[r:DEPENDS_ON {workspace_id: $workspace_id}]->(superclass)
+                SET r.is_interface = $is_interface,
+                    r.confidence = 0.9,
+                    r.tier = 'scoped',
+                    r.resolver = 'inheritance-v1'
+                """,
                 subclass_uid=edge.subclass_uid,
                 superclass_name=edge.superclass_name,
                 is_interface=edge.is_interface,
+                workspace_id=workspace_id,
             )
+
+
+def _split_workspace_id(workspace_id: str) -> dict[str, str]:
+    tenant_repo, _, ref = workspace_id.partition("@")
+    tenant, _, repo = tenant_repo.partition("/")
+    return {
+        "id": workspace_id,
+        "tenant": tenant or "local",
+        "repo": repo or "repo",
+        "ref": ref or "main",
+        "ref_kind": "commit" if _looks_like_sha(ref) else "branch",
+    }
+
+
+def _looks_like_sha(ref: str) -> bool:
+    return len(ref) in range(7, 41) and all(c in "0123456789abcdef" for c in ref.lower())
+
+
+def _default_confidence(rel_type: str) -> float:
+    return {
+        "CALLS_DIRECT": 1.0,
+        "CALLS_SCOPED": 0.9,
+        "CALLS_IMPORTED": 0.85,
+        "CALLS_DYNAMIC": 0.7,
+        "CALLS_INFERRED": 0.4,
+        "CALLS_GUESS": 0.4,
+    }.get(rel_type, 0.4)
+
+
+def _default_tier(rel_type: str) -> str:
+    return {
+        "CALLS_DIRECT": "direct",
+        "CALLS_SCOPED": "scoped",
+        "CALLS_IMPORTED": "imported",
+        "CALLS_DYNAMIC": "dynamic",
+        "CALLS_INFERRED": "guess",
+        "CALLS_GUESS": "guess",
+    }.get(rel_type, "guess")

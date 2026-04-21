@@ -1,6 +1,6 @@
 # Spec — Call Resolution Pipeline (Phase 8)
 
-> **Status:** Proposed. Formalizes call-edge creation as a staged resolver rather than name-match. Depends on [spec_uid_stability.md](spec_uid_stability.md); refines [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md).
+> **Status:** Implemented for the current Python path, with TypeScript still using the adapter baseline plus safe database fallback. Formalizes call-edge creation as a staged resolver rather than name-match. Depends on [spec_uid_stability.md](spec_uid_stability.md); refines [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md).
 
 ## 1. Problem
 
@@ -104,7 +104,7 @@ If no tier produces a match, the call site is recorded in a `pending_calls` tabl
 ## 3. Pipeline Shape
 
 ```python
-# sidecar/parser/call_resolver.py (new file)
+# implemented inside `sidecar/parser/adapters/python_adapter.py`
 
 class CallResolver:
     def __init__(self, scope_table: ScopeTable, graph: Neo4jClient):
@@ -161,7 +161,7 @@ def _finalize(amount):
 
 - Python `getattr(obj, "method")()` — Tier 4 can detect the shape but not the method name. Recorded in `pending_calls` with a `resolver = "getattr"` hint.
 - Stdlib imports (`json`, `os`, `re`) are not indexed — edges to them are omitted, not promoted to `CALLS_GUESS`.
-- TypeScript declaration merging and generic-bound method calls require the TS resolver; initial implementation Python-only.
+- TypeScript declaration merging and generic-bound method calls require a deeper TS resolver; current implementation keeps TypeScript on adapter-level extraction plus unique-name fallback in `Neo4jClient.link_calls()`.
 - Resolution is static; does not consider runtime monkey-patching. Acceptable — that's a human-review signal anyway.
 
 ## 7. Planned Extensions

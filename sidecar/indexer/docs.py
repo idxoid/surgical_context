@@ -5,6 +5,7 @@ import re
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.indexer.anchor import link_docs_to_symbols
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 CHUNK_SIZE = 400
 CHUNK_OVERLAP = 80
@@ -45,7 +46,7 @@ def _chunk_text(text: str) -> list[str]:
     return chunks
 
 
-def index_docs(docs_path: str):
+def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
     lance = LanceDBClient()
     neo4j = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
 
@@ -62,7 +63,7 @@ def index_docs(docs_path: str):
         lance.upsert_chunks(path, chunks)
         print(f"Indexed {len(chunks)} chunks from {path}")
 
-    link_docs_to_symbols(neo4j, lance)
+    link_docs_to_symbols(neo4j, lance, workspace_id=workspace_id)
     neo4j.close()
     print("Doc indexing complete.")
 

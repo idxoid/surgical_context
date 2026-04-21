@@ -42,7 +42,10 @@ class TestIncrementalIndexing:
             mock_session.run.assert_called_once()
             call_args = mock_session.run.call_args
             assert "DETACH DELETE s" in call_args[0][0]
-            assert call_args[1] == {"path": "/test.py"}
+            assert call_args[1] == {
+                "path": "/test.py",
+                "workspace_id": "local/surgical_context@main",
+            }
 
     def test_hash_skip_gate_with_unchanged_file(self):
         """Test that unchanged files are correctly identified."""

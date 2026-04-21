@@ -70,9 +70,9 @@ run_indexing(project_path)
 ├─ [Phase 2] for each file:
 │     SymbolExtractor.extract_calls(file_path)
 │       → REGISTRY.get_adapter(language).extract_calls_from_source()
-│       → call query from adapter → tree-sitter parse → [{caller_uid, callee_name}]
+│       → call query from adapter → tree-sitter parse → [{caller_uid, callee_uid?, callee_name, rel_type, confidence, tier}]
 │     Neo4jClient.link_calls(calls)
-│       → MERGE (caller)-[:CALLS]->(callee)   [matched by name]
+│       → MERGE (caller)-[:CALLS_* {workspace_id, confidence, tier, resolver}]->(callee)
 │
 ├─ [Phase 3] for each file:
 │     SymbolExtractor.extract_from_source(source, file_path)

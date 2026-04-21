@@ -7,15 +7,23 @@ from sidecar.context.graph_expander import GraphExpander
 from sidecar.context.intent_classifier import IntentClassifier
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
 class ContextArbitrator:
     """Orchestrator: composes GraphExpander, ContextDeduplicator, CodeResolver, DocResolver, PromptCompiler."""
 
-    def __init__(self, neo4j_client, overlay=None, vector_db=None):
+    def __init__(
+        self,
+        neo4j_client,
+        overlay=None,
+        vector_db=None,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
         self.db = neo4j_client
         self.overlay = overlay
         self.vector_db = vector_db
+        self.workspace_id = workspace_id
 
     def get_context_for_symbol(
         self,
@@ -28,7 +36,9 @@ class ContextArbitrator:
         intent = IntentClassifier.classify_intent(question)
 
         # 1. Expand graph
-        subgraph = GraphExpander(self.db).expand(symbol_name, token_budget=token_budget)
+        subgraph = GraphExpander(self.db, workspace_id=self.workspace_id).expand(
+            symbol_name, token_budget=token_budget
+        )
         if isinstance(subgraph, str):
             return subgraph
 
@@ -36,7 +46,7 @@ class ContextArbitrator:
         subgraph = ContextDeduplicator().deduplicate(subgraph)
 
         # 3. Resolve code
-        resolver = CodeResolver(self.overlay)
+        resolver = CodeResolver(self.overlay, workspace_id=self.workspace_id)
         code_map = {
             n.uid: resolver.resolve(n.file_path, n.range[0], n.range[1])
             for n in [subgraph.primary] + subgraph.nodes

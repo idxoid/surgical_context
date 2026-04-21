@@ -38,7 +38,7 @@ class FakeDb:
     def is_cloud(self):
         return False
 
-    def delete_symbols_for_file(self, file_path):
+    def delete_symbols_for_file(self, file_path, workspace_id="local/surgical_context@main"):
         return None
 
     def close(self):
@@ -46,10 +46,11 @@ class FakeDb:
 
 
 class FakeContextArbitrator:
-    def __init__(self, db, overlay=None, vector_db=None):
+    def __init__(self, db, overlay=None, vector_db=None, workspace_id="local/surgical_context@main"):
         self.db = db
         self.overlay = overlay
         self.vector_db = vector_db
+        self.workspace_id = workspace_id
 
     def get_context_for_symbol(self, symbol, question="", token_budget=4000):
         if symbol == "missing":
@@ -166,12 +167,12 @@ def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
     source_file.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
 
     fake_anchor = types.ModuleType("sidecar.indexer.anchor")
-    fake_anchor.resolve_pending_anchors = lambda db, vector_db: None
+    fake_anchor.resolve_pending_anchors = lambda db, vector_db, workspace_id=None: None
     monkeypatch.setitem(sys.modules, "sidecar.indexer.anchor", fake_anchor)
 
     fake_code = types.ModuleType("sidecar.indexer.code")
     fake_code.hash_file = lambda file_path: "abc123"
-    fake_code.index_file = lambda file_path, db, vector_db, extractor: None
+    fake_code.index_file = lambda file_path, db, vector_db, extractor, workspace_id=None: None
     monkeypatch.setitem(sys.modules, "sidecar.indexer.code", fake_code)
 
     fake_extractor = types.ModuleType("sidecar.parser.extractor")
@@ -227,10 +228,10 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
         def __init__(self, db):
             self.db = db
 
-        def get_affected_symbols(self, symbol_uid):
+        def get_affected_symbols(self, symbol_uid, workspace_id="local/surgical_context@main"):
             return [{"uid": "affected-1", "name": "caller", "file_path": "/repo/caller.py", "depth": 1}]
 
-        def get_affected_files(self, file_path):
+        def get_affected_files(self, file_path, workspace_id="local/surgical_context@main"):
             return ["/repo/caller.py"]
 
     fake_affects.AFFECTSIndexer = FakeAffectsIndexer

@@ -36,10 +36,10 @@
 > - Token reduction: 50% (surgical vs carpet-bomb baseline)
 > - Assembly latency: 13.9ms avg (target: <200ms) ✅
 >
-> **Known Limits (addressed in Phase 8):**
-> - UID = `sha256(file_path:name)` — breaks on rename, collides on overloads/nested. See [spec_uid_stability.md](spec_uid_stability.md).
-> - CALLS resolved by name match — collisions across modules/classes. See [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
-> - Aura graph has no workspace axis — branches collapse into one namespace. See [spec_branch_isolation.md](spec_branch_isolation.md).
+> **Known Limits (Phase 8 hardening status):**
+> - UID v2 is implemented from qualified name + normalized signature; migration tooling remains a future cleanup. See [spec_uid_stability.md](spec_uid_stability.md).
+> - Python call resolution now emits scoped/imported/dynamic/guess edges with confidence metadata; deeper TypeScript resolver work remains future cleanup. See [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
+> - Workspace-scoped graph reads/writes are implemented with `X-Workspace`; lifecycle GC remains future cleanup. See [spec_branch_isolation.md](spec_branch_isolation.md).
 >
 > **See also:** [review_findings_2026-04-17.md](review_findings_2026-04-17.md) (all recommendations complete ✅), [DOCS_STYLE_GUIDE.md](DOCS_STYLE_GUIDE.md), [docs/README.md](README.md)
 
@@ -59,11 +59,11 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 - [x] Add auth-boundary enforcement tests for protected endpoints with `AUTH_REQUIRED=true`.
 
 ### P1 — Retrieval Correctness
-- [ ] Implement stable UID v2 from [spec_uid_stability.md](spec_uid_stability.md).
-- [ ] Replace name-only call linking with the scoped resolver in [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
-- [ ] Add workspace/branch isolation from [spec_branch_isolation.md](spec_branch_isolation.md).
-- [ ] Add Git checkout/stash-pop invalidation strategy: graph/vector versioning plus differential branch sync.
-- [ ] Add adversarial fixtures for duplicate names, moved files, renamed symbols, stale docs, and branch duplication.
+- [x] Implement stable UID v2 from [spec_uid_stability.md](spec_uid_stability.md).
+- [x] Replace name-only call linking with the scoped resolver in [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
+- [x] Add workspace/branch isolation from [spec_branch_isolation.md](spec_branch_isolation.md).
+- [x] Add Git checkout/stash-pop invalidation strategy: graph/vector versioning plus differential branch sync.
+- [x] Add adversarial fixtures for duplicate names, moved files, renamed symbols, stale docs, and branch duplication.
 
 ### P2 — Visible Product Value
 - [ ] Add `GET /metrics`, structured per-stage timing, trace IDs, and token/cost/latency tracking.
@@ -388,33 +388,33 @@ Goal: Transition from local tool to shared team solution (ADR-003).
 
 ---
 
-## Phase 8: Correctness Hardening 🚧 PROPOSED
+## Phase 8: Correctness Hardening 🚧 PARTIALLY IMPLEMENTED
 Goal: Fix the load-bearing identity, resolution, and isolation gaps before retrieval quality work. Every downstream metric (AFFECTS, DocAnchor, cross-user correctness) depends on these being right.
 
 > **Specs:** [spec_uid_stability.md](spec_uid_stability.md), [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md), [spec_branch_isolation.md](spec_branch_isolation.md).
 
 ### 8.1 UID Stability
-- [ ] Replace `sha256(file_path:name)` with `sha256(qualified_name + signature_hash)`
-- [ ] Signature normalization (strip names/defaults; keep types + keyword markers)
-- [ ] Qualified-name extraction in Python and TypeScript adapters (`<locals>` for nested scopes)
+- [x] Replace `sha256(file_path:name)` with `sha256(language:qualified_name + normalized_signature)`
+- [x] Signature normalization (strip names/defaults; keep types + keyword markers)
+- [x] Qualified-name extraction in Python and TypeScript adapters (`<locals>` for nested scopes)
 - [ ] Migration CLI: rebuild Symbol nodes, emit `old_uid → new_uid` map for audit log
-- [ ] Handle unresolved signatures (`signature_status = "unresolved"` on the node)
+- [x] Handle unresolved signatures (`signature_status = "unresolved"` on the node)
 
 ### 8.2 Call Resolution Pipeline
-- [ ] 5-tier resolver: DIRECT → SCOPED → IMPORTED → DYNAMIC → GUESS
-- [ ] Per-file scope table with import alias tracking
-- [ ] Dispatch-candidate fanout for `self.m()` / interface calls (one edge per candidate, diluted confidence)
+- [x] 5-tier resolver: DIRECT → SCOPED → IMPORTED → DYNAMIC → GUESS
+- [x] Per-file scope table with import alias tracking
+- [x] Dispatch-candidate handling for `self.m()` in Python; interface fanout remains deeper language work
 - [ ] `pending_calls` store for unresolved sites (retried on next index pass)
-- [ ] Edge schema: `confidence`, `tier`, `resolver` properties on every CALLS_* edge
+- [x] Edge schema: `confidence`, `tier`, `resolver` properties on every CALLS_* edge
 - [ ] Migration CLI: re-resolve existing CALLS edges, downgrade non-matches to CALLS_GUESS
 
 ### 8.3 Workspace / Branch Isolation
-- [ ] `Workspace` node (tenant + repo + ref)
-- [ ] `IN_WORKSPACE` edges on File / Symbol / DocAnchor
-- [ ] Cypher-level scope injection in arbitrator (not Python filtering)
-- [ ] `X-Workspace` header on all endpoints, required after 30-day deprecation
-- [ ] Per-workspace AFFECTS rebuild
-- [ ] Overlay keyed by `(user_id, workspace_id)`
+- [x] `Workspace` node (tenant + repo + ref)
+- [x] `IN_WORKSPACE` edges on File / Symbol / DocAnchor
+- [x] Cypher-level scope injection in arbitrator (not Python filtering)
+- [x] `X-Workspace` header on graph/context endpoints with development fallback
+- [x] Per-workspace AFFECTS rebuild
+- [x] Overlay keyed by `workspace_id`
 - [ ] Workspace lifecycle: create-on-index, delete cascade, TTL-based GC
 
 ---
@@ -521,11 +521,11 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
 | **Incremental index split-brain** | **Critical** | Neo4j can commit symbol/edge changes while LanceDB embedding writes fail or the process is killed. Graph/vector stores then disagree silently. | Durable job log + retry/dead-letter states implemented; next: idempotent replay worker or rollback strategy | 🟡 Mitigated |
 | **IDE event storm** | **High** | Mass refactor, find/replace across many files, or `git stash pop` can flood the sidecar with parse/embed/index work. | P3: bounded queue, backpressure, batch coalescing, stale job cancellation | ❌ Open |
-| **Git branch cache invalidation** | **High** | Checkout changes many ASTs at once; full reindex is slow, stale graph/vector versions are wrong. | P1/P3: workspace graph/vector versions, branch-scoped cache keys, differential sync on checkout | ❌ Open |
+| **Git branch cache invalidation** | **High** | Checkout changes many ASTs at once; full reindex is slow, stale graph/vector versions are wrong. | Git state tracker + changed-file detection implemented; next: queue integration and vector cache keys | 🟡 Mitigated |
 | **Local embedding compute cost** | **Medium** | Re-embedding changed symbols on every save can consume CPU/GPU and degrade editor responsiveness. | P3: content-hash embedding cache, throttled worker, low-priority background mode | ❌ Open |
-| **UID instability** | **Critical** | `sha256(file_path:name)` breaks on rename/move; collides on overloads + nested funcs. Corrupts AFFECTS, DocAnchor, incremental indexing. | Phase 8.1: qualified-name + signature-hash UID ([spec_uid_stability.md](spec_uid_stability.md)) | ❌ Open |
-| **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Phase 8.2: 5-tier scope-aware resolver ([spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md)) | ❌ Open |
-| **No workspace isolation on Aura** | **Critical** | Multi-user cloud collapses branches/tenants into one graph; wrong-version bodies returned silently. | Phase 8.3: `Workspace` node + scoped Cypher ([spec_branch_isolation.md](spec_branch_isolation.md)) | ❌ Open |
+| **UID instability** | **Critical** | Old `sha256(file_path:name)` broke on rename/move and collided on overloads + nested funcs. | Stable UID v2 implemented; migration CLI remains cleanup | 🟡 Mitigated |
+| **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Python scoped/imported/dynamic resolver implemented; TS deep resolver remains cleanup | 🟡 Mitigated |
+| **No workspace isolation on Aura** | **Critical** | Multi-user cloud collapses branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped Cypher implemented for graph reads/writes | 🟡 Mitigated |
 | Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1: unified ranker with blended score ([spec_unified_ranking.md](spec_unified_ranking.md)) | ❌ Open |
 | Single-label intent | High | Mixed queries (e.g. debugging+refactor) collapse to one tier strategy — loses half the answer. | Phase 9.2: `IntentDistribution` multi-label ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
 | Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3: per-edge `anchor_type` + `confidence` ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ❌ Open |

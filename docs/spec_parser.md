@@ -29,13 +29,18 @@ sidecar/parser/
 
 | Field | Type | Description |
 |---|---|---|
-| `uid` | `str` | `sha256(file_path:name)` — deterministic, stable across re-indexing |
+| `uid` | `str` | Stable UID v2: `sha256(language:qualified_name|normalized_signature)[:16]` |
 | `name` | `str` | Identifier as it appears in source |
 | `kind` | `str` | `"function"` \| `"class"` \| `"variable"` |
 | `start_line` | `int` | 1-based start line |
 | `end_line` | `int` | 1-based end line (inclusive) |
 | `content_hash` | `str` | `sha256(full node text)` — used to detect changes without reading code |
 | `file_path` | `str` | Absolute path to source file |
+| `qualified_name` | `str` | Module/scope-qualified symbol path |
+| `signature` | `str` | Normalized signature with parameter names/defaults stripped |
+| `signature_hash` | `str` | Compact hash of the normalized signature |
+| `signature_status` | `str` | `"resolved"` or `"unresolved"` |
+| `language` | `str` | Adapter language name |
 
 ---
 

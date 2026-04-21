@@ -4,6 +4,7 @@ import math
 from heapq import heappop, heappush
 
 from sidecar.context.types import Subgraph, SubgraphNode
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
 class GraphExpander:
@@ -17,6 +18,12 @@ class GraphExpander:
         "CALLS_DYNAMIC_in": 0.9,
         "CALLS_INFERRED_out": 0.4,
         "CALLS_INFERRED_in": 0.5,
+        "CALLS_SCOPED_out": 0.9,
+        "CALLS_SCOPED_in": 1.1,
+        "CALLS_IMPORTED_out": 0.85,
+        "CALLS_IMPORTED_in": 1.0,
+        "CALLS_GUESS_out": 0.4,
+        "CALLS_GUESS_in": 0.5,
         "IMPLEMENTS": 1.1,
         "OVERRIDES": 1.1,
         "REFERENCES": 0.3,
@@ -32,25 +39,29 @@ class GraphExpander:
         "dist": 0.4,
     }
 
-    def __init__(self, neo4j_client):
+    def __init__(self, neo4j_client, workspace_id: str = DEFAULT_WORKSPACE_ID):
         self.db = neo4j_client
+        self.workspace_id = workspace_id
 
     def expand(self, symbol_name: str, token_budget: int = 4000) -> Subgraph | str:
         """Run token-budget BFS. Returns Subgraph or error string."""
         query = """
-        MATCH (s:Symbol {name: $name})
-        OPTIONAL MATCH (f:File)-[:CONTAINS]->(s)
-        RETURN s, coalesce(f.path, '<unknown>') AS file_path
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {name: $name})
+        RETURN s, coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(c.range, s.range, [0, 0]) AS range
         LIMIT 1
         """
         with self.db.driver.session() as session:
-            result = session.run(query, name=symbol_name).single()
+            result = session.run(
+                query, name=symbol_name, workspace_id=self.workspace_id
+            ).single()
 
         if not result:
             return f"Error: Symbol '{symbol_name}' not found in graph."
 
         target = result["s"]
         target_file_path = result["file_path"]
+        target_range = result.get("range") or target.get("range", [0, 0])
         target_uid = target["uid"]
         target_token_cost = target.get("token_estimate", 0) or self._estimate_tokens(target)
 
@@ -62,7 +73,7 @@ class GraphExpander:
             uid=target_uid,
             name=target["name"],
             file_path=target_file_path,
-            range=target.get("range", [0, 0]),
+            range=target_range,
             token_estimate=target_token_cost,
             relation="target",
             direction="primary",
@@ -150,7 +161,15 @@ class GraphExpander:
         self, rel_type: str, outgoing: bool, caller_count: int, token_estimate: int, distance: int
     ) -> float:
         """Compute relevance score for a candidate symbol."""
-        if rel_type in ("CALLS_DIRECT", "CALLS_DYNAMIC", "CALLS_INFERRED", "CALLS"):
+        if rel_type in (
+            "CALLS_DIRECT",
+            "CALLS_SCOPED",
+            "CALLS_IMPORTED",
+            "CALLS_DYNAMIC",
+            "CALLS_INFERRED",
+            "CALLS_GUESS",
+            "CALLS",
+        ):
             base = rel_type if rel_type != "CALLS" else "CALLS_DIRECT"
             relation = f"{base}_out" if outgoing else f"{base}_in"
         elif rel_type in ("IMPLEMENTS", "OVERRIDES", "REFERENCES"):
@@ -173,7 +192,15 @@ class GraphExpander:
 
     def _direction(self, rel_type: str, outgoing: bool) -> str:
         """Map relation type to direction string for context metadata."""
-        if rel_type in ("CALLS", "CALLS_DIRECT", "CALLS_DYNAMIC", "CALLS_INFERRED"):
+        if rel_type in (
+            "CALLS",
+            "CALLS_DIRECT",
+            "CALLS_SCOPED",
+            "CALLS_IMPORTED",
+            "CALLS_DYNAMIC",
+            "CALLS_INFERRED",
+            "CALLS_GUESS",
+        ):
             return "callee" if outgoing else "caller"
         elif rel_type == "DEPENDS_ON":
             return "type"
@@ -190,23 +217,30 @@ class GraphExpander:
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         """Fetch immediate neighbors of a symbol, returning unvisited only."""
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES]-(n:Symbol)
         WHERE NOT n.uid IN $visited
-        OPTIONAL MATCH ()-[:CALLS|CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED]->(n)
-        OPTIONAL MATCH (fn:File)-[:CONTAINS]->(n)
-        WITH n, fn, r, startNode(r) = s AS outgoing, count(*) AS caller_count
+          AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        OPTIONAL MATCH ()-[caller_rel:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)
+        WHERE coalesce(caller_rel.workspace_id, $workspace_id) = $workspace_id
+        OPTIONAL MATCH (fn:File {workspace_id: $workspace_id})-[contains:CONTAINS]->(n)
+        WITH n, fn, contains, r, startNode(r) = s AS outgoing, count(caller_rel) AS caller_count
         RETURN n.uid AS uid,
                n.name AS name,
                coalesce(fn.path, '<unknown>') AS file_path,
                coalesce(n.token_estimate, 0) AS token_estimate,
-               n.range AS range,
+               coalesce(contains.range, n.range, [0, 0]) AS range,
                type(r) AS rel_type,
                outgoing,
                caller_count
         """
         neighbors = []
         with self.db.driver.session() as session:
-            result = session.run(query, uid=uid, visited=list(visited))
+            result = session.run(
+                query,
+                uid=uid,
+                visited=list(visited),
+                workspace_id=self.workspace_id,
+            )
             for record in result:
                 neighbors.append(
                     {

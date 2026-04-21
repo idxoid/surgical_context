@@ -83,7 +83,7 @@ PromptContext now includes:
 
 ### In-Memory Overlay
 
-`InMemoryOverlay` holds `{file_path: content}` for unsaved files. On `POST /overlay`, re-parses symbols from in-memory content via tree-sitter — no disk access. Cleared on save or close.
+`InMemoryOverlay` holds `{(workspace_id, file_path): content}` for unsaved files. On `POST /overlay`, re-parses symbols from in-memory content via tree-sitter — no disk access. Cleared on save or close.
 
 ---
 
@@ -93,14 +93,14 @@ Two-phase to ensure all nodes exist before edges are created:
 
 **Phase 1 — Symbol extraction** (per file):
 - tree-sitter AST query for `function_definition`, `class_definition`, and module-level UPPER_CASE assignments (`variable`)
-- Extract: name, kind, start/end line, content hash, UID (`sha256(file_path:name)`)
+- Extract: name, kind, start/end line, content hash, stable UID v2 (`sha256(language:qualified_name|normalized_signature)[:16]`)
 - Multi-language: Python (`.py`) + TypeScript (`.ts`, `.tsx`); gitignore-aware file collection
 - Neo4j upsert: `MERGE (s:Symbol {uid})`, `MERGE (f)-[:CONTAINS]->(s)`
 
 **Phase 2 — Call linking** (per file):
 - tree-sitter query for `call` nodes
 - Walk up AST to find enclosing function (caller)
-- Neo4j: `MERGE (caller)-[:CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED]->(callee)` matched by name
+- Neo4j: `MERGE (caller)-[:CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(callee)` using callee UID/qualified-name first, unique name fallback last
 
 **Phase 3 — Symbol embeddings:**
 - Read each symbol's source lines from disk
@@ -161,7 +161,7 @@ Two-phase to ensure all nodes exist before edges are created:
 
 The project is pre-release. SaaS and marketplace are deferred. The active work stream is:
 
-1. **Correctness hardening.** Stable UID v2, scoped call resolution, workspace/branch isolation, and adversarial retrieval fixtures.
+1. **Correctness hardening.** Stable UID v2, scoped call resolution, workspace/branch isolation, and adversarial retrieval fixtures are implemented; remaining cleanup is migration tooling and lifecycle automation.
 2. **Operational safety.** Durable indexing recovery, signed bearer auth behind `AUTH_REQUIRED`, typed API responses, and JSON-safe streaming.
 3. **Observability.** `/metrics`, structured logs, token/cost/latency tracking, and richer JSON Prompt Contract metadata.
 4. **Extension productization.** Context inspector, streaming answers, token budget display, model route display, and user-configurable sidecar settings.

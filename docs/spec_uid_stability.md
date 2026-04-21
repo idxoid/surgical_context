@@ -1,6 +1,6 @@
 # Spec — UID Stability (Phase 8)
 
-> **Status:** Proposed. Replaces the current `sha256(file_path:name)` scheme with a qualified-name + signature derivation. Affects the parser, indexer, AFFECTS index, and DocAnchor linkage.
+> **Status:** Implemented. Replaces the old `sha256(file_path:name)` scheme with a qualified-name + signature derivation in `sidecar/parser/uid.py`.
 
 ## 1. Problem
 
@@ -27,7 +27,7 @@ Because UID is the join key across Neo4j, LanceDB, the overlay, and AFFECTS — 
 ### 2.1 New Derivation
 
 ```python
-uid = sha256(f"{qualified_name}|{signature_hash}").hexdigest()[:16]
+uid = sha256(f"{language}:{qualified_name}|{normalized_signature}").hexdigest()[:16]
 ```
 
 Where:
@@ -35,7 +35,7 @@ Where:
 - `qualified_name` — dotted path from module root to symbol, e.g. `sidecar.indexer.code.CodeIndexer.run_indexing`.
 - `signature_hash` — SHA-256 over the normalized signature (parameter names dropped; types kept where available).
 
-**File path is no longer part of the UID.** Moving a function to a different module inside the same package keeps its identity — which is what history, AFFECTS, and doc links all need.
+**Absolute file path is no longer part of the UID.** The implementation derives a module-like qualified name without machine-specific roots, then combines it with the normalized signature.
 
 ### 2.2 Signature Normalization
 
@@ -92,7 +92,7 @@ No online migration path. The cost of an inconsistent hybrid is higher than the 
 ## 4. API / Interface
 
 ```python
-# sidecar/parser/uid.py (new file)
+# sidecar/parser/uid.py
 
 def compute_uid(
     qualified_name: str,

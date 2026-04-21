@@ -14,6 +14,7 @@ Algorithm:
 """
 
 from sidecar.database.neo4j_client import Neo4jClient
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
 class AFFECTSIndexer:
@@ -25,7 +26,11 @@ class AFFECTSIndexer:
     def __init__(self, neo4j_client: Neo4jClient):
         self.db = neo4j_client
 
-    def rebuild_affects(self, modified_symbol_uids: list[str]):
+    def rebuild_affects(
+        self,
+        modified_symbol_uids: list[str],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
         """
         Rebuild AFFECTS edges for symbols that changed.
 
@@ -41,13 +46,15 @@ class AFFECTSIndexer:
                 session.run(
                     """
                     MATCH (s:Symbol {uid: $uid})-[r:AFFECTS]->()
+                    WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
                     DELETE r
                     """,
                     uid=symbol_uid,
+                    workspace_id=workspace_id,
                 )
 
                 # Find all reachable dependents (reverse BFS)
-                affected = self._compute_affected_symbols(session, symbol_uid)
+                affected = self._compute_affected_symbols(session, symbol_uid, workspace_id)
 
                 # Create AFFECTS edges to all dependents
                 if affected:
@@ -56,13 +63,19 @@ class AFFECTSIndexer:
                         MATCH (s:Symbol {uid: $uid})
                         WITH s
                         MATCH (target:Symbol) WHERE target.uid IN $affected_uids
-                        MERGE (s)-[:AFFECTS]->(target)
+                        MERGE (s)-[:AFFECTS {workspace_id: $workspace_id}]->(target)
                         """,
                         uid=symbol_uid,
                         affected_uids=affected,
+                        workspace_id=workspace_id,
                     )
 
-    def _compute_affected_symbols(self, session, symbol_uid: str) -> list[str]:
+    def _compute_affected_symbols(
+        self,
+        session,
+        symbol_uid: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[str]:
         """
         Reverse BFS to find all symbols that depend on the given symbol.
 
@@ -74,23 +87,29 @@ class AFFECTSIndexer:
         MATCH path = (dependent)-[*1..4]-(s)
         WHERE all(rel IN relationships(path)
                   WHERE type(rel) IN ['CALLS_DIRECT', 'CALLS_DYNAMIC', 'CALLS_INFERRED',
-                                     'DEPENDS_ON', 'IMPLEMENTS', 'OVERRIDES'])
+                                     'CALLS_SCOPED', 'CALLS_IMPORTED', 'CALLS_GUESS',
+                                     'DEPENDS_ON', 'IMPLEMENTS', 'OVERRIDES']
+                    AND coalesce(rel.workspace_id, $workspace_id) = $workspace_id)
         RETURN collect(DISTINCT dependent.uid) AS affected_uids
         """
 
-        result = session.run(query, uid=symbol_uid).single()
+        result = session.run(query, uid=symbol_uid, workspace_id=workspace_id).single()
 
         return result["affected_uids"] if result else []
 
-    def get_affected_symbols(self, symbol_uid: str) -> list[dict]:
+    def get_affected_symbols(
+        self,
+        symbol_uid: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[dict]:
         """
         Return all symbols affected by a change to the given symbol.
 
         Returns list of dicts: {uid, name, file_path, depth}
         """
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:AFFECTS]->(affected:Symbol)
-        OPTIONAL MATCH (f:File)-[:CONTAINS]->(affected)
+        MATCH (s:Symbol {uid: $uid})-[r:AFFECTS {workspace_id: $workspace_id}]->(affected:Symbol)
+        OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(affected)
         RETURN affected.uid AS uid,
                affected.name AS name,
                coalesce(f.path, '<unknown>') AS file_path,
@@ -100,7 +119,7 @@ class AFFECTSIndexer:
 
         affected_symbols = []
         with self.db.driver.session() as session:
-            result = session.run(query, uid=symbol_uid)
+            result = session.run(query, uid=symbol_uid, workspace_id=workspace_id)
             for record in result:
                 affected_symbols.append(
                     {
@@ -113,7 +132,11 @@ class AFFECTSIndexer:
 
         return affected_symbols
 
-    def get_affected_files(self, file_path: str) -> list[str]:
+    def get_affected_files(
+        self,
+        file_path: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[str]:
         """
         Return all files affected by a change to symbols in the given file.
 
@@ -121,16 +144,16 @@ class AFFECTSIndexer:
         then deduplicates by file path.
         """
         query = """
-        MATCH (f:File {path: $file_path})-[:CONTAINS]->(s:Symbol)
-        MATCH (s)-[:AFFECTS]->(affected:Symbol)
-        OPTIONAL MATCH (af:File)-[:CONTAINS]->(affected)
+        MATCH (f:File {path: $file_path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+        MATCH (s)-[:AFFECTS {workspace_id: $workspace_id}]->(affected:Symbol)
+        OPTIONAL MATCH (af:File {workspace_id: $workspace_id})-[:CONTAINS]->(affected)
         RETURN DISTINCT coalesce(af.path, '<unknown>') AS file_path
         ORDER BY file_path
         """
 
         affected_files = []
         with self.db.driver.session() as session:
-            result = session.run(query, file_path=file_path)
+            result = session.run(query, file_path=file_path, workspace_id=workspace_id)
             for record in result:
                 if record["file_path"] != "<unknown>":
                     affected_files.append(record["file_path"])

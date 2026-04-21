@@ -1,6 +1,6 @@
 # Spec — Branch / Workspace Isolation (Phase 8)
 
-> **Status:** Proposed. Closes the SaaS correctness gap: the Phase 7 shared Aura graph collapses all branches and users into a single symbol set, guaranteeing drift across workspaces.
+> **Status:** Implemented for graph reads/writes and dirty overlay isolation. Closes the SaaS correctness gap: the Phase 7 shared Aura graph collapses all branches and users into a single symbol set, guaranteeing drift across workspaces.
 
 ## 1. Problem
 
@@ -63,7 +63,7 @@ X-User-ID: alice
 X-Workspace: acme/surgical_context@feature/new-pricing
 ```
 
-Server rejects requests without a resolvable workspace (fallback to per-user default is explicit, not silent).
+For development compatibility, requests without `X-Workspace` fall back to `local/surgical_context@main`. Production clients should send `X-Workspace` explicitly.
 
 Cypher reads get a `WHERE` clause injected at the arbitrator layer:
 
@@ -96,7 +96,7 @@ Workspace scoping is enforced **in Cypher**, not in Python filtering — a Pytho
 ## 3. API / Interface
 
 ```python
-# sidecar/workspace.py (new file)
+# sidecar/workspace.py
 
 @dataclass
 class Workspace:

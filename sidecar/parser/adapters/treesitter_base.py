@@ -6,6 +6,13 @@ from hashlib import sha256
 from tree_sitter import Language, Parser
 
 from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata
+from sidecar.parser.uid import (
+    compute_uid,
+    normalize_signature,
+    qualified_name_for,
+    signature_from_node,
+    signature_hash,
+)
 
 
 class TreeSitterAdapter(LanguageAdapter):
@@ -72,15 +79,25 @@ class TreeSitterAdapter(LanguageAdapter):
                     continue
                 name = name_node.text.decode("utf-8")
                 content = node.text.decode("utf-8")
+                qualified_name = qualified_name_for(node, source_code, file_path)
+                raw_signature, signature_status = signature_from_node(
+                    node, source_code, self.language_name
+                )
+                signature = normalize_signature(raw_signature or "", self.language_name)
                 symbols.append(
                     SymbolMetadata(
-                        uid=self._uid(file_path, name),
+                        uid=compute_uid(qualified_name, signature, self.language_name),
                         name=name,
                         kind="function" if tag == "func.def" else "class",
                         start_line=node.start_point[0] + 1,
                         end_line=node.end_point[0] + 1,
                         content_hash=self._hash(content),
                         file_path=file_path,
+                        qualified_name=qualified_name,
+                        signature=signature,
+                        signature_hash=signature_hash(signature, self.language_name),
+                        signature_status=signature_status,
+                        language=self.language_name,
                     )
                 )
             elif tag == "var.def":
@@ -88,15 +105,22 @@ class TreeSitterAdapter(LanguageAdapter):
                 if not name or not name.isupper():
                     continue
                 content = node.text.decode("utf-8")
+                qualified_name = ".".join([self._module_name(file_path), name])
+                signature = f"{name}()->_"
                 symbols.append(
                     SymbolMetadata(
-                        uid=self._uid(file_path, name),
+                        uid=compute_uid(qualified_name, signature, self.language_name),
                         name=name,
                         kind="variable",
                         start_line=node.start_point[0] + 1,
                         end_line=node.end_point[0] + 1,
                         content_hash=self._hash(content),
                         file_path=file_path,
+                        qualified_name=qualified_name,
+                        signature=normalize_signature(signature, self.language_name),
+                        signature_hash=signature_hash(signature, self.language_name),
+                        signature_status="resolved",
+                        language=self.language_name,
                     )
                 )
         return symbols
@@ -117,22 +141,36 @@ class TreeSitterAdapter(LanguageAdapter):
                 if parent:
                     parent_name_node = parent.child_by_field_name("name")
                     if parent_name_node:
-                        caller_name = source_code[
-                            parent_name_node.start_byte : parent_name_node.end_byte
-                        ]
+                        caller_uid = self._symbol_uid_from_node(parent, source_code, file_path)
                         calls.append(
                             {
-                                "caller_uid": self._uid(file_path, caller_name),
+                                "caller_uid": caller_uid,
                                 "callee_name": call_name,
                                 "rel_type": "CALLS_DIRECT",
+                                "tier": "guess",
+                                "confidence": 0.4,
+                                "resolver": f"{self.language_name}-scope-v1",
+                                "call_site_line": node.start_point[0] + 1,
                             }
                         )
         return calls
 
     def _uid(self, file_path: str, name: str) -> str:
         """Generate deterministic UID for a symbol."""
-        return sha256(f"{file_path}:{name}".encode()).hexdigest()
+        qualified_name = ".".join([self._module_name(file_path), name])
+        signature = f"{name}()->_"
+        return compute_uid(qualified_name, signature, self.language_name)
 
     def _hash(self, code: str) -> str:
         """Hash code content for change detection."""
         return sha256(code.encode()).hexdigest()
+
+    def _module_name(self, file_path: str) -> str:
+        from sidecar.parser.uid import module_name_from_path
+
+        return module_name_from_path(file_path)
+
+    def _symbol_uid_from_node(self, node, source_code: str, file_path: str) -> str:
+        qualified_name = qualified_name_for(node, source_code, file_path)
+        raw_signature, _ = signature_from_node(node, source_code, self.language_name)
+        return compute_uid(qualified_name, raw_signature, self.language_name)

@@ -21,6 +21,7 @@ All via environment variables with defaults:
 | `OLLAMA_MODEL` | `llama3` | Ollama model for `/ask` |
 | `MODEL_PREFERENCE` | `auto` | AI routing preference: `auto`, `claude`, or `ollama` |
 | `AUTH_REQUIRED` | `false` | When true, protected endpoints require `Authorization: Bearer <token>` |
+| `DEFAULT_WORKSPACE_ID` | `local/surgical_context@main` | Development fallback when `X-Workspace` is absent |
 
 ---
 
@@ -124,9 +125,10 @@ Assemble surgical context for a symbol and query the LLM.
 
 **Behavior:**
 1. Resolve the user from `Authorization: Bearer <token>` or `X-User-Id`. When `AUTH_REQUIRED=true`, missing or invalid bearer tokens return `401`.
-2. `ContextArbitrator.get_context_for_symbol(symbol, question, token_budget)` runs intent classification, graph expansion, deduplication, code resolution, and doc retrieval.
-3. `AIEngine.chat()` routes to the configured local/cloud model based on model preference, context size, and intent.
-4. Audit logging records successful and failed query actions.
+2. Resolve workspace from `X-Workspace` (`tenant/repo@ref`) or the development fallback `DEFAULT_WORKSPACE_ID`.
+3. `ContextArbitrator.get_context_for_symbol(symbol, question, token_budget)` runs intent classification, workspace-scoped graph expansion, deduplication, code resolution, and doc retrieval.
+4. `AIEngine.chat()` routes to the configured local/cloud model based on model preference, context size, and intent.
+5. Audit logging records successful and failed query actions.
 
 ---
 
@@ -270,6 +272,8 @@ Return recent audit log entries.
 Neo4j access goes through `db_session(...)`, which creates a request-scoped client and closes it after the endpoint finishes. This avoids mutating shared request identity on the global database object.
 
 Protected endpoints accept local `X-User-Id` identity by default for development. Set `AUTH_REQUIRED=true` to require signed bearer tokens from `/auth/token`.
+
+Graph endpoints accept `X-Workspace: tenant/repo@ref`. Neo4j `File`, `CONTAINS`, call, and `AFFECTS` operations are scoped by that workspace id.
 
 ---
 

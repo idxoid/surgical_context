@@ -60,8 +60,9 @@ class LanguageAdapter(ABC):
             file_path: absolute path (used to look up enclosing symbols)
         
         Returns:
-            List of CallEdge(caller_uid, callee_name, callee_line) tuples.
-            callee_name is unresolved at this stage — matched by name in Neo4j during indexing.
+            List of call dicts containing caller_uid, callee_name, rel_type,
+            confidence/tier/resolver metadata, and callee_uid or
+            callee_qualified_name when the adapter can resolve statically.
         """
         pass
     
@@ -91,7 +92,7 @@ class LanguageAdapter(ABC):
         
         Returns:
             List of InheritanceEdge(subclass_uid, superclass_name, is_interface) tuples.
-            superclass_name is unresolved — matched by name during indexing.
+            superclass_name is resolved workspace-locally during indexing.
         
         Base implementation returns empty list; adapters override only if language has inheritance.
         """
@@ -107,8 +108,14 @@ from dataclasses import dataclass
 class CallEdge:
     """A function call from one symbol to another (or to an unresolved external)."""
     caller_uid: str        # UID of the enclosing function/class
-    callee_name: str       # Unresolved name (matched by name in indexing)
+    callee_name: str       # Display name at the call site
+    callee_uid: str | None # Preferred resolved target UID
+    callee_qualified_name: str | None # Import-qualified fallback
     callee_line: int       # Line number of the call site (optional, for debugging)
+    rel_type: str          # CALLS_SCOPED / CALLS_IMPORTED / CALLS_DYNAMIC / ...
+    confidence: float
+    tier: str
+    resolver: str
 
 @dataclass
 class ImportEdge:

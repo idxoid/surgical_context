@@ -10,6 +10,7 @@ from sidecar.indexer.job_log import IndexJobLog
 from sidecar.parser.extractor import SymbolExtractor
 from sidecar.parser.registry import REGISTRY
 from sidecar.silence import install as _silence
+from sidecar.workspace import DEFAULT_WORKSPACE_ID, WorkspaceResolver
 
 _silence()
 
@@ -57,18 +58,24 @@ def hash_file(file_path: str) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor: SymbolExtractor):
+def index_file(
+    file_path: str,
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    extractor: SymbolExtractor,
+    workspace_id: str = DEFAULT_WORKSPACE_ID,
+):
     """Index a single file: symbols → calls → embeddings → imports → inheritance → AFFECTS rebuild."""
     file_hash = hash_file(file_path)
     symbols = extractor.extract(file_path)
     for sym in symbols:
         line_count = sym.end_line - sym.start_line + 1
         sym.token_estimate = max(1, line_count * 8)
-    db.upsert_file_structure(file_path, file_hash, symbols)
+    db.upsert_file_structure(file_path, file_hash, symbols, workspace_id=workspace_id)
 
     calls = extractor.extract_calls(file_path)
     if calls:
-        db.link_calls(calls)
+        db.link_calls(calls, workspace_id=workspace_id)
 
     with open(file_path, encoding="utf-8") as f:
         source = f.read()
@@ -78,6 +85,7 @@ def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor:
             "uid": s.uid,
             "name": s.name,
             "file_path": s.file_path,
+            "workspace_id": workspace_id,
             "code": "\n".join(lines[s.start_line - 1 : s.end_line]),
         }
         for s in extractor.extract_from_source(source, file_path)
@@ -86,11 +94,11 @@ def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor:
 
     imports = extractor.extract_imports(file_path)
     if imports:
-        db.link_imports(imports)
+        db.link_imports(imports, workspace_id=workspace_id)
 
     inheritance = extractor.extract_inheritance(file_path)
     if inheritance:
-        db.link_inheritance(inheritance)
+        db.link_inheritance(inheritance, workspace_id=workspace_id)
 
     # Rebuild AFFECTS index for modified symbols (synchronous, blocking)
     changed_uids = [s.uid for s in symbols]
@@ -98,16 +106,17 @@ def index_file(file_path: str, db: Neo4jClient, lance: LanceDBClient, extractor:
         from sidecar.indexer.affects import AFFECTSIndexer
 
         indexer = AFFECTSIndexer(db)
-        indexer.rebuild_affects(changed_uids)
+        indexer.rebuild_affects(changed_uids, workspace_id=workspace_id)
 
 
-def run_indexing(project_path: str):
+def run_indexing(project_path: str, workspace_id: str | None = None):
     db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
     lance = LanceDBClient()
     extractor = SymbolExtractor()
     job_log = IndexJobLog()
+    workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
 
-    print(f"🚀 Indexing project: {project_path}")
+    print(f"🚀 Indexing project: {project_path} ({workspace_id})")
 
     files_to_index = _collect_files(project_path)
     if not files_to_index:
@@ -121,7 +130,7 @@ def run_indexing(project_path: str):
         current_hashes[file_path] = hash_file(file_path)
 
     # Query stored hashes from Neo4j
-    stored_hashes = db.get_file_hashes(files_to_index)
+    stored_hashes = db.get_file_hashes(files_to_index, workspace_id=workspace_id)
 
     # Filter to changed files only
     changed_files = [p for p in files_to_index if current_hashes[p] != stored_hashes.get(p)]
@@ -137,13 +146,13 @@ def run_indexing(project_path: str):
     for file_path in changed_files:
         print(f"📄 Indexing: {file_path}")
         with job_log.track_file_job(file_path, file_hash=current_hashes[file_path]):
-            db.delete_symbols_for_file(file_path)
-            index_file(file_path, db, lance, extractor)
+            db.delete_symbols_for_file(file_path, workspace_id=workspace_id)
+            index_file(file_path, db, lance, extractor, workspace_id=workspace_id)
 
     # Resolve pending DocAnchors (runs over entire DB)
     from sidecar.indexer.anchor import resolve_pending_anchors
 
-    resolve_pending_anchors(db, lance)
+    resolve_pending_anchors(db, lance, workspace_id=workspace_id)
 
     db.close()
     print("✅ Indexing complete.")

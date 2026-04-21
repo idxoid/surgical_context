@@ -17,6 +17,11 @@ class SymbolMetadata(BaseModel):
     content_hash: str
     file_path: str
     token_estimate: int = 0  # tiktoken estimate; computed at index time
+    qualified_name: str = ""
+    signature: str = "<unresolved>"
+    signature_hash: str = ""
+    signature_status: str = "unresolved"
+    language: str = ""
 
 
 @dataclass
