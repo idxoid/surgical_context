@@ -3,6 +3,25 @@
 from unittest.mock import MagicMock, patch
 
 from sidecar.database.neo4j_client import Neo4jClient
+from sidecar.indexer.code import index_file
+from sidecar.parser.protocol import SymbolMetadata
+
+
+def _symbol(uid: str, content_hash: str, start_line: int = 1, end_line: int = 2):
+    return SymbolMetadata(
+        uid=uid,
+        name=uid,
+        kind="function",
+        start_line=start_line,
+        end_line=end_line,
+        content_hash=content_hash,
+        file_path="/test.py",
+        qualified_name=uid,
+        signature=f"def {uid}()",
+        signature_hash=f"sig-{uid}",
+        signature_status="resolved",
+        language="python",
+    )
 
 
 class TestIncrementalIndexing:
@@ -105,3 +124,164 @@ class TestIncrementalIndexing:
         hash1 = hashlib.sha256(b"content1").hexdigest()
         hash2 = hashlib.sha256(b"content2").hexdigest()
         assert hash1 != hash2
+
+    def test_index_file_upserts_only_changed_symbols(self, tmp_path, monkeypatch):
+        """Changed/new symbols are upserted; unchanged symbols are preserved."""
+
+        class FakeDb:
+            def __init__(self):
+                self.upserted = []
+                self.pruned_keep = []
+                self.cleared_edges = []
+                self.linked_calls = []
+                self.deleted_imports = []
+
+            def get_symbol_index_for_file(self, file_path, workspace_id):
+                return {
+                    "unchanged": {"hash": "same", "start_line": 1, "end_line": 2},
+                    "changed": {"hash": "old", "start_line": 3, "end_line": 4},
+                    "removed": {"hash": "gone", "start_line": 5, "end_line": 6},
+                }
+
+            def upsert_file_structure(self, file_path, file_hash, symbols, workspace_id):
+                self.upserted = [s.uid for s in symbols]
+
+            def prune_symbols_for_file(self, file_path, keep_uids, workspace_id):
+                self.pruned_keep = keep_uids
+
+            def clear_outgoing_symbol_edges(self, symbol_uids, workspace_id):
+                self.cleared_edges = symbol_uids
+
+            def link_calls(self, calls, workspace_id):
+                self.linked_calls = calls
+
+            def delete_imports_for_file(self, file_path, workspace_id):
+                self.deleted_imports.append(file_path)
+
+            def link_imports(self, imports, workspace_id):
+                raise AssertionError("No imports expected")
+
+            def link_inheritance(self, inheritance_edges, workspace_id):
+                raise AssertionError("No inheritance expected")
+
+        class FakeLance:
+            def __init__(self):
+                self.upserted = []
+                self.deleted = []
+
+            def upsert_symbol_embeddings(self, symbols):
+                self.upserted = [s["uid"] for s in symbols]
+
+            def delete_symbol_embeddings(self, uids):
+                self.deleted = uids
+
+        class FakeExtractor:
+            def extract(self, file_path):
+                return [
+                    _symbol("unchanged", "same", 1, 2),
+                    _symbol("changed", "new", 3, 4),
+                    _symbol("new", "brand-new", 5, 6),
+                ]
+
+            def extract_calls(self, file_path):
+                return [{"caller_uid": "changed", "callee_name": "helper"}]
+
+            def extract_imports(self, file_path):
+                return []
+
+            def extract_inheritance(self, file_path):
+                return []
+
+        rebuilt = []
+
+        class FakeAffectsIndexer:
+            def __init__(self, db):
+                self.db = db
+
+            def rebuild_affects(self, uids, workspace_id):
+                rebuilt.extend(uids)
+
+        monkeypatch.setattr("sidecar.indexer.affects.AFFECTSIndexer", FakeAffectsIndexer)
+        source_file = tmp_path / "test.py"
+        source_file.write_text(
+            "def unchanged():\n    pass\ndef changed():\n    return 1\ndef new():\n    return 2\n",
+            encoding="utf-8",
+        )
+        db = FakeDb()
+        lance = FakeLance()
+
+        index_file(str(source_file), db, lance, FakeExtractor(), workspace_id="acme/repo@main")
+
+        assert db.upserted == ["changed", "new"]
+        assert db.pruned_keep == ["unchanged", "changed", "new"]
+        assert db.cleared_edges == ["changed", "new"]
+        assert db.linked_calls == [{"caller_uid": "changed", "callee_name": "helper"}]
+        assert db.deleted_imports == [str(source_file)]
+        assert lance.upserted == ["changed", "new"]
+        assert lance.deleted == ["removed"]
+        assert rebuilt == ["changed", "new"]
+
+    def test_index_file_skips_embeddings_when_symbols_unchanged(self, tmp_path, monkeypatch):
+        """Unchanged symbols skip row/vector writes but refresh file-scoped edges."""
+
+        class FakeDb:
+            def __init__(self):
+                self.upserted = None
+                self.cleared_edges = None
+
+            def get_symbol_index_for_file(self, file_path, workspace_id):
+                return {"unchanged": {"hash": "same", "start_line": 1, "end_line": 2}}
+
+            def upsert_file_structure(self, file_path, file_hash, symbols, workspace_id):
+                self.upserted = [s.uid for s in symbols]
+
+            def prune_symbols_for_file(self, file_path, keep_uids, workspace_id):
+                self.keep_uids = keep_uids
+
+            def clear_outgoing_symbol_edges(self, symbol_uids, workspace_id):
+                self.cleared_edges = symbol_uids
+
+            def link_calls(self, calls, workspace_id):
+                self.linked_calls = calls
+
+            def delete_imports_for_file(self, file_path, workspace_id):
+                self.deleted_imports = True
+
+        class FakeLance:
+            def upsert_symbol_embeddings(self, symbols):
+                self.upserted = symbols
+
+            def delete_symbol_embeddings(self, uids):
+                self.deleted = uids
+
+        class FakeExtractor:
+            def extract(self, file_path):
+                return [_symbol("unchanged", "same", 1, 2)]
+
+            def extract_calls(self, file_path):
+                return [{"caller_uid": "unchanged", "callee_name": "helper"}]
+
+            def extract_imports(self, file_path):
+                return []
+
+            def extract_inheritance(self, file_path):
+                return []
+
+        monkeypatch.setattr(
+            "sidecar.indexer.affects.AFFECTSIndexer",
+            lambda db: (_ for _ in ()).throw(AssertionError("AFFECTS should not rebuild")),
+        )
+        source_file = tmp_path / "test.py"
+        source_file.write_text("def unchanged():\n    pass\n", encoding="utf-8")
+        db = FakeDb()
+        lance = FakeLance()
+
+        index_file(str(source_file), db, lance, FakeExtractor(), workspace_id="acme/repo@main")
+
+        assert db.upserted == []
+        assert db.keep_uids == ["unchanged"]
+        assert db.cleared_edges == ["unchanged"]
+        assert db.linked_calls == [{"caller_uid": "unchanged", "callee_name": "helper"}]
+        assert db.deleted_imports is True
+        assert lance.upserted == []
+        assert lance.deleted == []

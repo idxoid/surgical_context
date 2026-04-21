@@ -58,6 +58,16 @@ def hash_file(file_path: str) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def _symbol_needs_upsert(sym, existing: dict | None) -> bool:
+    if existing is None:
+        return True
+    return (
+        existing.get("hash") != sym.content_hash
+        or int(existing.get("start_line") or 0) != sym.start_line
+        or int(existing.get("end_line") or 0) != sym.end_line
+    )
+
+
 def index_file(
     file_path: str,
     db: Neo4jClient,
@@ -71,15 +81,36 @@ def index_file(
     for sym in symbols:
         line_count = sym.end_line - sym.start_line + 1
         sym.token_estimate = max(1, line_count * 8)
-    db.upsert_file_structure(file_path, file_hash, symbols, workspace_id=workspace_id)
+
+    get_symbol_index = getattr(db, "get_symbol_index_for_file", None)
+    existing_symbols = (
+        get_symbol_index(file_path, workspace_id=workspace_id) if callable(get_symbol_index) else {}
+    )
+    current_uids = [s.uid for s in symbols]
+    changed_symbols = [s for s in symbols if _symbol_needs_upsert(s, existing_symbols.get(s.uid))]
+    changed_uids = [s.uid for s in changed_symbols]
+    edge_refresh_uids = changed_uids or current_uids
+    removed_uids = sorted(set(existing_symbols) - set(current_uids))
+
+    # Always update File.hash, but preserve unchanged Symbol nodes and embeddings.
+    db.upsert_file_structure(file_path, file_hash, changed_symbols, workspace_id=workspace_id)
+
+    prune_symbols = getattr(db, "prune_symbols_for_file", None)
+    if callable(prune_symbols):
+        prune_symbols(file_path, keep_uids=current_uids, workspace_id=workspace_id)
+
+    clear_edges = getattr(db, "clear_outgoing_symbol_edges", None)
+    if callable(clear_edges):
+        clear_edges(edge_refresh_uids, workspace_id=workspace_id)
 
     calls = extractor.extract_calls(file_path)
-    if calls:
+    if calls and edge_refresh_uids:
         db.link_calls(calls, workspace_id=workspace_id)
 
     with open(file_path, encoding="utf-8") as f:
         source = f.read()
     lines = source.splitlines()
+    changed_uid_set = set(changed_uids)
     symbol_docs = [
         {
             "uid": s.uid,
@@ -88,20 +119,26 @@ def index_file(
             "workspace_id": workspace_id,
             "code": "\n".join(lines[s.start_line - 1 : s.end_line]),
         }
-        for s in extractor.extract_from_source(source, file_path)
+        for s in symbols
+        if s.uid in changed_uid_set
     ]
     lance.upsert_symbol_embeddings(symbol_docs)
+    delete_symbol_embeddings = getattr(lance, "delete_symbol_embeddings", None)
+    if callable(delete_symbol_embeddings):
+        delete_symbol_embeddings(removed_uids)
 
     imports = extractor.extract_imports(file_path)
+    delete_imports = getattr(db, "delete_imports_for_file", None)
+    if callable(delete_imports):
+        delete_imports(file_path, workspace_id=workspace_id)
     if imports:
         db.link_imports(imports, workspace_id=workspace_id)
 
     inheritance = extractor.extract_inheritance(file_path)
-    if inheritance:
+    if inheritance and edge_refresh_uids:
         db.link_inheritance(inheritance, workspace_id=workspace_id)
 
     # Rebuild AFFECTS index for modified symbols (synchronous, blocking)
-    changed_uids = [s.uid for s in symbols]
     if changed_uids:
         from sidecar.indexer.affects import AFFECTSIndexer
 
@@ -146,7 +183,6 @@ def run_indexing(project_path: str, workspace_id: str | None = None):
     for file_path in changed_files:
         print(f"📄 Indexing: {file_path}")
         with job_log.track_file_job(file_path, file_hash=current_hashes[file_path]):
-            db.delete_symbols_for_file(file_path, workspace_id=workspace_id)
             index_file(file_path, db, lance, extractor, workspace_id=workspace_id)
 
     # Resolve pending DocAnchors (runs over entire DB)

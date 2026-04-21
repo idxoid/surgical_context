@@ -66,6 +66,109 @@ class Neo4jClient:
             )
             return {r["path"]: r["hash"] for r in result}
 
+    def get_symbol_index_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> dict[str, dict]:
+        """Return existing symbol hashes/ranges for one workspace file."""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+                RETURN s.uid AS uid,
+                       s.hash AS hash,
+                       coalesce(c.start_line, s.range[0], 0) AS start_line,
+                       coalesce(c.end_line, s.range[1], 0) AS end_line
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+            return {
+                r["uid"]: {
+                    "hash": r["hash"],
+                    "start_line": r["start_line"],
+                    "end_line": r["end_line"],
+                }
+                for r in result
+            }
+
+    def prune_symbols_for_file(
+        self,
+        file_path: str,
+        keep_uids: list[str],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Remove symbols no longer present in a file while preserving unchanged symbols."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+                WHERE NOT s.uid IN $keep_uids
+                OPTIONAL MATCH (s)-[r]-(other:Symbol)
+                WHERE r IS NULL OR (
+                    type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
+                                'CALLS_DYNAMIC', 'CALLS_INFERRED', 'CALLS_GUESS', 'DEPENDS_ON',
+                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS']
+                    AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                )
+                DELETE r, c
+                WITH collect(DISTINCT s) AS symbols
+                UNWIND symbols AS sym
+                OPTIONAL MATCH (:File)-[:CONTAINS]->(sym)
+                WITH sym, count(*) AS owners
+                WHERE owners = 0
+                DETACH DELETE sym
+                WITH count(*) AS deleted_symbols
+                MATCH (w:Workspace {id: $workspace_id})
+                WHERE deleted_symbols > 0
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                path=file_path,
+                keep_uids=keep_uids,
+                workspace_id=workspace_id,
+            )
+
+    def clear_outgoing_symbol_edges(
+        self,
+        symbol_uids: list[str],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Clear stale outgoing semantic edges for changed symbols before relinking."""
+        if not symbol_uids:
+            return
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES]->(:Symbol)
+                WHERE s.uid IN $symbol_uids
+                  AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                WITH collect(r) AS edges
+                FOREACH (edge IN edges | DELETE edge)
+                WITH size(edges) AS deleted_edges
+                MATCH (w:Workspace {id: $workspace_id})
+                WHERE deleted_edges > 0
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                symbol_uids=symbol_uids,
+                workspace_id=workspace_id,
+            )
+
+    def delete_imports_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
+        """Clear stale file import edges before relinking current imports."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (:File {path: $path, workspace_id: $workspace_id})-[r:IMPORTS]->()
+                WITH collect(r) AS edges
+                FOREACH (edge IN edges | DELETE edge)
+                WITH size(edges) AS deleted_edges
+                MATCH (w:Workspace {id: $workspace_id})
+                WHERE deleted_edges > 0
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
     def delete_symbols_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
         """Remove workspace-local edges and orphaned symbols for a File."""
         with self.driver.session() as session:

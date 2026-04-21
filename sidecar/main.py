@@ -381,7 +381,6 @@ def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
     file_hash = hash_file(file_path)
     with job_log.track_file_job(file_path, file_hash=file_hash) as tracked_job_id:
         with db_session(user_id=user_id) as db:
-            db.delete_symbols_for_file(file_path, workspace_id=workspace_id)
             index_file(
                 file_path,
                 db,
@@ -473,7 +472,6 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                     continue
                 try:
                     with job_log.track_file_job(path, file_hash=file_hash):
-                        db.delete_symbols_for_file(path, workspace_id=workspace_id)
                         index_file(path, db, vector_db, extractor, workspace_id=workspace_id)
                         completed += 1
                 except Exception:

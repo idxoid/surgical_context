@@ -206,7 +206,7 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] `POST /index/file` endpoint for single-file updates (triggered by file save in client)
 - [x] Delete-on-remove: prune Symbol nodes when file changes (`delete_symbols_for_file`)
 - [x] Transactional recovery: write-ahead indexing job log, retry state, and dead-letter queue for partial Neo4j/LanceDB failure
-- [ ] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed (optimization, deferred)
+- [x] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed (optimization, deferred)
 - [x] Background debounce queue: batch rapid-fire saves (`sidecar/indexer/queue.py`, `POST /index/files`)
 - [x] Backpressure for mass IDE events: bounded queue, batch coalescing, and stale job cancellation
 

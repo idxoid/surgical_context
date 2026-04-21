@@ -288,6 +288,14 @@ class LanceDBClient:
                 pass
         self._sym_table.add(rows)
 
+    def delete_symbol_embeddings(self, uids: list[str]):
+        """Remove symbol embedding rows for deleted symbols."""
+        for uid in uids:
+            try:
+                self._sym_table.delete(f"uid = '{uid}'")
+            except Exception:
+                pass
+
     def search_symbols(self, query: str, limit: int = 5, threshold: float = 0.4) -> list[dict]:
         """Returns symbols semantically similar to query, with cosine distance."""
         vec = self._embed([query])[0]
