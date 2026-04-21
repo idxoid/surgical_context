@@ -1,18 +1,23 @@
 # Surgical Context — Road Map
 
-> **Status:** ✅ ALL PHASES COMPLETE (5–7). MVP READY FOR PRODUCTION.
-> 
-> **Architecture Complete:**
+> **Status:** ✅ MVP COMPLETE (Phases 1–7). 🚧 Phases 8–10 PROPOSED — correctness hardening, unified retrieval, and the learning loop.
+>
+> **Architecture Complete (MVP):**
 > - Phase 5: Typed Semantic Edges + Reverse Dependencies
 > - Phase 6: Intent Classification + Graceful Degradation + Smart Routing + Streaming
 > - Phase 7: Cloud Sync (Aura) + Multi-User + Audit Logging
 >
-> **Highlights:**
+> **Proposed Next (post-MVP, prioritized):**
+> - **Phase 8 — Correctness Hardening:** UID stability, call-resolution pipeline, workspace/branch isolation. These are load-bearing — every downstream metric (AFFECTS, DocAnchor, multi-user) depends on them being correct.
+> - **Phase 9 — Unified Retrieval & Observability:** single scored pool over graph + semantic, multi-label intent, full observability in the JSON Prompt Contract.
+> - **Phase 10 — Scale & Learning:** three-layer retrieval cache, feedback-driven learning loop.
+>
+> **Highlights (MVP, shipped):**
 > - **150 unit tests passing** (61 base + 47 Phase 6 + 21 Phase 7 + 9 cold-run integration)
-> - **Intent Classification:** 6 types drive context assembly strategy
+> - **Intent Classification:** 6 types drive context assembly strategy (single-label; multi-label proposed in Phase 9)
 > - **Model Routing:** smart routing (large/complex → Claude, small/simple → Ollama)
 > - **Prompt Caching:** ephemeral cache on graph_context (reduces API costs)
-> - **Multi-User Ready:** JWT auth, audit logging, cloud fallback
+> - **Multi-User Ready:** JWT auth, audit logging, cloud fallback (workspace isolation gap — Phase 8)
 > - **Neo4j Aura:** cloud-first with local Neo4j fallback on outage
 > - Doc Type Inference: pattern-based (spec_*, idea_*, concept, architecture)
 >
@@ -31,7 +36,10 @@
 > - Token reduction: 50% (surgical vs carpet-bomb baseline)
 > - Assembly latency: 13.9ms avg (target: <200ms) ✅
 >
-> **Next:** Phase 6 implementation (intent classification + graceful degradation).
+> **Known Limits (addressed in Phase 8):**
+> - UID = `sha256(file_path:name)` — breaks on rename, collides on overloads/nested. See [spec_uid_stability.md](spec_uid_stability.md).
+> - CALLS resolved by name match — collisions across modules/classes. See [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
+> - Aura graph has no workspace axis — branches collapse into one namespace. See [spec_branch_isolation.md](spec_branch_isolation.md).
 >
 > **See also:** [review_findings_2026-04-17.md](review_findings_2026-04-17.md) (all recommendations complete ✅), [DOCS_STYLE_GUIDE.md](DOCS_STYLE_GUIDE.md), [docs/README.md](README.md)
 
@@ -343,6 +351,109 @@ Goal: Transition from local tool to shared team solution (ADR-003).
 
 ---
 
+## Phase 8: Correctness Hardening 🚧 PROPOSED
+Goal: Fix the load-bearing identity, resolution, and isolation gaps before retrieval quality work. Every downstream metric (AFFECTS, DocAnchor, cross-user correctness) depends on these being right.
+
+> **Specs:** [spec_uid_stability.md](spec_uid_stability.md), [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md), [spec_branch_isolation.md](spec_branch_isolation.md).
+
+### 8.1 UID Stability
+- [ ] Replace `sha256(file_path:name)` with `sha256(qualified_name + signature_hash)`
+- [ ] Signature normalization (strip names/defaults; keep types + keyword markers)
+- [ ] Qualified-name extraction in Python and TypeScript adapters (`<locals>` for nested scopes)
+- [ ] Migration CLI: rebuild Symbol nodes, emit `old_uid → new_uid` map for audit log
+- [ ] Handle unresolved signatures (`signature_status = "unresolved"` on the node)
+
+### 8.2 Call Resolution Pipeline
+- [ ] 5-tier resolver: DIRECT → SCOPED → IMPORTED → DYNAMIC → GUESS
+- [ ] Per-file scope table with import alias tracking
+- [ ] Dispatch-candidate fanout for `self.m()` / interface calls (one edge per candidate, diluted confidence)
+- [ ] `pending_calls` store for unresolved sites (retried on next index pass)
+- [ ] Edge schema: `confidence`, `tier`, `resolver` properties on every CALLS_* edge
+- [ ] Migration CLI: re-resolve existing CALLS edges, downgrade non-matches to CALLS_GUESS
+
+### 8.3 Workspace / Branch Isolation
+- [ ] `Workspace` node (tenant + repo + ref)
+- [ ] `IN_WORKSPACE` edges on File / Symbol / DocAnchor
+- [ ] Cypher-level scope injection in arbitrator (not Python filtering)
+- [ ] `X-Workspace` header on all endpoints, required after 30-day deprecation
+- [ ] Per-workspace AFFECTS rebuild
+- [ ] Overlay keyed by `(user_id, workspace_id)`
+- [ ] Workspace lifecycle: create-on-index, delete cascade, TTL-based GC
+
+---
+
+## Phase 9: Unified Retrieval & Observability 🚧 PROPOSED
+Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
+
+> **Specs:** [spec_unified_ranking.md](spec_unified_ranking.md), [spec_multi_label_intent.md](spec_multi_label_intent.md), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
+
+### 9.1 Unified Ranker
+- [ ] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
+- [ ] Blended score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost (per-track normalized)
+- [ ] Overlap bonus when both signals fire on the same candidate
+- [ ] Budget-fill loop competes symbols and doc chunks on identical terms
+- [ ] Weight tuning via eval harness sweep
+
+### 9.2 Multi-Label Intent
+- [ ] `IntentDistribution` (sum-to-1 weights across 6 labels)
+- [ ] Classifier returns partial scores per label → normalized distribution
+- [ ] Tier priority = weighted sum across intent distribution
+- [ ] Budget split across tiers in proportion to blended tier score (floor per tier)
+- [ ] `is_ambiguous()` signal in contract for client UX / routing decisions
+
+### 9.3 DocAnchor Confidence & Type
+- [ ] Anchor type classification: definition / example / reference / warning / deprecated
+- [ ] Per-edge confidence score (similarity + name mention + heading + code-block signals)
+- [ ] Multi-symbol weighting: `primary_bias` = 1.0 for focal symbol, 0.6 for others
+- [ ] Edge properties: `anchor_type`, `confidence`, `primary_bias`, `resolver`
+
+### 9.4 Prompt Contract Observability
+- [ ] Per-candidate `scores` block (graph / semantic / blended / intent_weight)
+- [ ] `provenance` list on every symbol and doc chunk
+- [ ] `pruned[]` array — candidates that missed the budget, with reason
+- [ ] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
+- [ ] `metadata.ranker.weights` — tuning state snapshotted with every response
+- [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence`
+
+---
+
+## Phase 10: Scale & Learning 📋 PROPOSED
+Goal: Make retrieval cheap at scale and let the system get better from usage. Deliberately last — the learning loop only works once observability (Phase 9) is in place.
+
+> **Specs:** [spec_retrieval_cache.md](spec_retrieval_cache.md), [spec_learning_loop.md](spec_learning_loop.md).
+
+### 10.1 Three-Layer Retrieval Cache
+- [ ] L1 — symbol body cache keyed by `(file_path, range, file_hash)`, in-process LRU
+- [ ] L2 — subgraph cache keyed by `(primary_uid, intent_hash, budget, workspace_id, graph_version)`
+- [ ] L3 — prompt/response cache keyed by `sha256(system_prompt || user_question)`
+- [ ] Version-bump invalidation on graph mutations (no explicit cache walking)
+- [ ] Cache hits surface in `metadata.assembly.cache_hits`
+- [ ] Pluggable backends: in-memory LRU for single-instance; Redis for multi-instance
+
+### 10.2 Feedback Loop
+- [ ] `feedback_token` issued on every retrieval, bound to persisted `RetrievalSnapshot`
+- [ ] `POST /feedback` endpoint — implicit/explicit, accept/reject, with details
+- [ ] Fast loop: per-user EMA adjustments to tier priors (capped ±20%)
+- [ ] Slow loop (nightly): weight sweep + classifier retrain proposals (human-approved PRs)
+- [ ] `(Symbol)-[:CO_RELEVANT]->(Symbol)` learned edges — adds candidates beyond structural reach
+- [ ] Privacy: per-workspace scoping, opt-out toggle, PII redaction before ML training
+- [ ] Metrics: feedback rate, accept/reject ratio, coverage, harness impact
+
+### 10.3 Performance & Reliability (carried forward from Phase 7)
+- [ ] Parallel parsing for `git pull` indexing (ThreadPoolExecutor, 4 workers default)
+- [ ] Graceful degradation on Neo4j outage (local cache + retry)
+- [ ] Rate limiting per user
+- [ ] Circuit breaker for cloud sync failures
+
+### 10.4 Analytics & Monitoring (carried forward from Phase 7)
+- [ ] `GET /metrics` endpoint (Prometheus text format)
+- [ ] Per-request trace ID threaded through logs
+- [ ] Latency SLO tracking (50ms p50, 200ms p95 target)
+- [ ] Distributed tracing via OpenTelemetry
+- [ ] Token savings visualization in VS Code (reuses Phase 2.5 metrics)
+
+---
+
 ## Risk Register
 
 | Task | Priority | Risk | Mitigation | Status |
@@ -361,3 +472,12 @@ Goal: Transition from local tool to shared team solution (ADR-003).
 | Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Phase 6.1: tier-aware assembly + mode flag implemented ✅; Phase 6.2: orchestrator integration | 🟡 In Progress (6.1 ✅) |
 | Model Router misclassification | Medium | Misclassification sends complex task to cheap model | Phase 6 — escalation fallback on empty/error; Phase 7 RBAC | 🟡 Pending Phase 6+ |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
+| **UID instability** | **Critical** | `sha256(file_path:name)` breaks on rename/move; collides on overloads + nested funcs. Corrupts AFFECTS, DocAnchor, incremental indexing. | Phase 8.1: qualified-name + signature-hash UID ([spec_uid_stability.md](spec_uid_stability.md)) | ❌ Open |
+| **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Phase 8.2: 5-tier scope-aware resolver ([spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md)) | ❌ Open |
+| **No workspace isolation on Aura** | **Critical** | Multi-user cloud collapses branches/tenants into one graph; wrong-version bodies returned silently. | Phase 8.3: `Workspace` node + scoped Cypher ([spec_branch_isolation.md](spec_branch_isolation.md)) | ❌ Open |
+| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1: unified ranker with blended score ([spec_unified_ranking.md](spec_unified_ranking.md)) | ❌ Open |
+| Single-label intent | High | Mixed queries (e.g. debugging+refactor) collapse to one tier strategy — loses half the answer. | Phase 9.2: `IntentDistribution` multi-label ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
+| Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3: per-edge `anchor_type` + `confidence` ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ❌ Open |
+| No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4: scores / provenance / pruned[] in contract ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | ❌ Open |
+| No caching strategy | Medium | Repeated queries re-read bodies, re-run BFS, re-call LLM; Neo4j saturates before model does. | Phase 10.1: three-layer cache ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ❌ Open |
+| Static retriever | Medium | No feedback signal — silent drift, silent miss. System cannot improve from usage. | Phase 10.2: feedback loop + `CO_RELEVANT` learned edges ([spec_learning_loop.md](spec_learning_loop.md)) | ❌ Open |
