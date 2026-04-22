@@ -309,10 +309,7 @@ def print_report(metrics: dict) -> None:
         print(f"  target_hit@{summary['top_k']}: {summary['target_hit_rate_at_k']:.2f}")
         print(f"  mrr:           {summary['mrr']:.2f}")
         print(f"  expected_recall@{summary['top_k']}:    {summary['expected_recall_at_k']:.2f}")
-        print(
-            f"  expected_precision@{summary['top_k']}: "
-            f"{summary['expected_precision_at_k']:.2f}"
-        )
+        print(f"  expected_precision@{summary['top_k']}: {summary['expected_precision_at_k']:.2f}")
         print(f"  elapsed_ms:    {model_result['elapsed_ms']:.1f}")
 
 
@@ -325,7 +322,9 @@ def main() -> int:
         default=",".join(DEFAULT_MODELS),
         help="Comma-separated SentenceTransformer model names",
     )
-    parser.add_argument("--top-k", type=int, default=5, help="Number of symbols to rank per question")
+    parser.add_argument(
+        "--top-k", type=int, default=5, help="Number of symbols to rank per question"
+    )
     parser.add_argument("--report", default=None, help="Write JSON metrics to this path")
     parser.add_argument("--json", action="store_true", help="Print JSON metrics only")
     parser.add_argument(
