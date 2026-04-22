@@ -14,6 +14,9 @@ This folder contains all project documentation. Start here to understand the sys
 
 ### **For Implementation**
 
+**Local Development:**
+- **[local_development.md](local_development.md)** — local setup, bootstrap, sidecar, and extension dev host
+
 **Code Indexing:**
 - **[spec_indexer.md](spec_indexer.md)** — code extraction, call typing, AFFECTS rebuild
 - **[spec_parser.md](spec_parser.md)** — language adapters, symbol extraction
@@ -57,7 +60,7 @@ The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/i
 
 Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, and endpoint coverage for the sidecar API.
 
-The most important open gaps are now local-product gaps: one-command local setup, SQLite-backed history/snapshots, extension streaming and settings polish, dashboard resilience, remaining prompt-contract observability, local smoke tests, and provider boundaries around the default Neo4j/LanceDB/SQLite implementations. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting are future horizons. See **[road_map.md](road_map.md)** for the canonical current backlog.
+The local setup path now lives in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are SQLite-backed history/snapshots, extension streaming and settings polish, dashboard resilience, remaining prompt-contract observability, local smoke tests, and provider boundaries around the default Neo4j/LanceDB/SQLite implementations. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting are future horizons. See **[road_map.md](road_map.md)** for the canonical current backlog.
 
 ---
 
