@@ -41,6 +41,26 @@
     </div>
   `;
   }
+  function renderDashboardNotices(notices) {
+    if (notices.length === 0) return "";
+    return `
+    <div class="dashboard-notices" role="status">
+      ${notices.map((notice) => `
+        <div class="dashboard-notice ${escapeHtml(notice.level)}">
+          <div>
+            <div class="dashboard-notice-title">${escapeHtml(notice.title)}</div>
+            <div class="dashboard-notice-message">${escapeHtml(notice.message)}</div>
+          </div>
+          ${notice.action ? `
+            <button class="notice-action" data-action="${escapeHtml(notice.action)}">
+              ${escapeHtml(notice.actionLabel || "Open")}
+            </button>
+          ` : ""}
+        </div>
+      `).join("")}
+    </div>
+  `;
+  }
   function renderMetricCardGrid(props) {
     const metrics = props.metrics;
     const healthStatus = props.health === "up" ? "success" : "danger";
@@ -94,6 +114,21 @@
   `;
   }
   function renderIndexingJobsCard(metrics) {
+    const queueUnavailable = metrics.queuePending === null && metrics.queueProcessing === null && metrics.queueProcessed === null && metrics.queueFailedBatches === null;
+    if (queueUnavailable) {
+      return renderIndexingStateCard(
+        "Index queue unavailable",
+        "The dashboard cannot read indexing state right now.",
+        "unknown"
+      );
+    }
+    if (metrics.lastIndexJobStatus === "not indexed") {
+      return renderIndexingStateCard(
+        "No indexing jobs yet",
+        "Run Index Workspace to populate graph and vector context for this workspace.",
+        "empty"
+      );
+    }
     const rows = [
       {
         time: "now",
@@ -140,6 +175,20 @@
             <span>${escapeHtml(row.duration)}</span>
           </div>
         `).join("")}
+      </div>
+    </div>
+  `;
+  }
+  function renderIndexingStateCard(title, message, status) {
+    return `
+    <div class="dashboard-card indexing-card">
+      <div class="card-header">
+        <span>Recent indexing jobs</span>
+        <span class="card-header-meta">${escapeHtml(status)}</span>
+      </div>
+      <div class="dashboard-empty-state">
+        <div class="dashboard-empty-title">${escapeHtml(title)}</div>
+        <div class="dashboard-empty-message">${escapeHtml(message)}</div>
       </div>
     </div>
   `;
@@ -320,6 +369,7 @@
         auditActions: [],
         metrics: emptyDashboardMetrics(),
         healthChecks: [],
+        notices: [],
         workspaceId: "local/default@main",
         warnings: [],
         isLoading: false,
@@ -343,6 +393,7 @@
             this.state.auditActions = message.auditActions;
             this.state.metrics = message.metrics;
             this.state.healthChecks = message.healthChecks;
+            this.state.notices = message.notices;
             this.state.workspaceId = message.workspaceId;
             this.state.warnings = message.warnings;
             this.state.isLoading = false;
@@ -353,7 +404,15 @@
           case "dashboard.metricsFailed":
             this.state.isLoading = false;
             this.state.error = message.error;
-            this.state.warnings = [message.error];
+            this.state.warnings = [];
+            this.state.notices = [{
+              id: "dashboard-load-failed",
+              level: "error",
+              title: "Dashboard data failed to load",
+              message: message.error,
+              action: "refresh",
+              actionLabel: "Retry"
+            }];
             this.render();
             break;
         }
@@ -364,6 +423,12 @@
       if (refreshBtn) {
         refreshBtn.addEventListener("click", () => {
           vscode.postMessage({ type: "dashboard.refresh" });
+        });
+      }
+      const indexBtn = document.querySelector('[data-action="indexWorkspace"]');
+      if (indexBtn) {
+        indexBtn.addEventListener("click", () => {
+          vscode.postMessage({ type: "dashboard.indexWorkspace" });
         });
       }
     }
@@ -381,6 +446,7 @@
       const header = renderDashboardHeader(this.state.workspaceId, this.state.lastUpdate);
       const refreshBtn = renderRefreshButton(this.state.isLoading);
       const warnings = renderDashboardWarnings(this.state.warnings);
+      const notices = renderDashboardNotices(this.state.notices);
       const metricCards = renderMetricCardGrid({
         health: this.state.health || "degraded",
         cloudStatus: this.state.cloudStatus || "offline",
@@ -397,6 +463,7 @@
           ${warnings}
           ${refreshBtn}
         </div>
+        ${notices}
         <div class="dashboard-grid">
           ${metricCards}
           <div class="dashboard-main-panels">

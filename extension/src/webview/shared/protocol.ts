@@ -20,6 +20,7 @@ export type WebviewToHostMessage =
   | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'link.openFile'; filePath: string; line?: number }
   | { type: 'dashboard.refresh' }
+  | { type: 'dashboard.indexWorkspace' }
   | { type: 'settings.loaded' }
   | { type: 'settings.update'; key: string; value: unknown }
   | { type: 'settings.testUrl'; url: string }
@@ -53,6 +54,7 @@ export type HostToWebviewMessage =
       auditActions: AuditAction[];
       metrics: DashboardMetrics;
       healthChecks: HealthCheckItem[];
+      notices: DashboardNotice[];
       workspaceId: string;
       warnings: string[];
     }
@@ -192,6 +194,15 @@ export interface HealthCheckItem {
   status: 'ok' | 'warning' | 'error' | 'pending';
   value: string;
   detail: string;
+}
+
+export interface DashboardNotice {
+  id: string;
+  level: 'info' | 'warning' | 'error';
+  title: string;
+  message: string;
+  action?: 'refresh' | 'indexWorkspace';
+  actionLabel?: string;
 }
 
 export interface SettingsData {

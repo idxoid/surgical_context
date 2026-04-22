@@ -3,6 +3,7 @@ import { SidecarClient } from '../sidecarClient';
 import { getWebviewContent } from '../utils';
 import {
   AuditAction,
+  DashboardNotice,
   DashboardMetrics,
   HealthCheckItem,
   WebviewToHostMessage,
@@ -57,10 +58,12 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'dashboard.loading' });
 
     const healthOk = await SidecarClient.health();
-    const [cloudStatus, auditActionsResponse] = await Promise.all([
-      SidecarClient.cloudStatus().catch(() => null),
-      SidecarClient.auditActions(undefined, 10).catch(() => null),
-    ]);
+    const [cloudStatus, auditActionsResponse] = healthOk
+      ? await Promise.all([
+        SidecarClient.cloudStatus().catch(() => null),
+        SidecarClient.auditActions(undefined, 10).catch(() => null),
+      ])
+      : [null, null];
 
     const auditActions: AuditAction[] = (auditActionsResponse?.actions || []).map(action => ({
       timestamp: action.timestamp,
@@ -86,10 +89,11 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
       auditActions,
       metrics: this.emptyDashboardMetrics(),
       healthChecks: this.buildHealthChecks(healthOk, cloudStatus),
+      notices: this.buildDashboardNotices(healthOk),
       workspaceId: vscode.workspace
         .getConfiguration('surgicalContext')
         .get<string>('workspaceId', 'local/default@main'),
-      warnings: healthOk ? [] : ['Sidecar health check failed. Showing degraded dashboard data.'],
+      warnings: [],
     });
   }
 
@@ -183,6 +187,30 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
     ];
   }
 
+  private buildDashboardNotices(healthOk: boolean): DashboardNotice[] {
+    if (!healthOk) {
+      return [
+        {
+          id: 'sidecar-offline',
+          level: 'error',
+          title: 'Sidecar is offline',
+          message: 'Start the local sidecar and refresh to load graph, vector, index, and audit data.',
+          action: 'refresh',
+          actionLabel: 'Refresh',
+        },
+      ];
+    }
+
+    return [
+      {
+        id: 'dashboard-panel-required',
+        level: 'info',
+        title: 'Open the dashboard panel for live queue details',
+        message: 'The sidebar dashboard keeps lightweight status only; the full panel reads metrics and index state.',
+      },
+    ];
+  }
+
   private startPolling(): void {
     const config = vscode.workspace.getConfiguration('surgicalContext');
     const interval = config.get<number>('dashboard.autoRefreshSeconds', 30) * 1000;
@@ -205,6 +233,10 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
     switch (message.type) {
       case 'dashboard.refresh':
         this.loadMetrics();
+        break;
+      case 'dashboard.indexWorkspace':
+        await vscode.commands.executeCommand('surgicalContext.indexProject');
+        await this.loadMetrics();
         break;
     }
   }

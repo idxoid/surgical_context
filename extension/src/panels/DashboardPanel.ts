@@ -8,6 +8,7 @@ import {
 import { getWebviewContent } from '../utils';
 import {
   AuditAction,
+  DashboardNotice,
   DashboardMetrics,
   HealthCheckItem,
   WebviewToHostMessage,
@@ -84,38 +85,52 @@ export class DashboardPanel {
   private async loadMetrics(): Promise<void> {
     this.postMessage({ type: 'dashboard.loading' });
 
-    const [healthOk, cloudStatus, auditActions, metricsText, indexQueue] = await Promise.all([
-      SidecarClient.health(),
-      this.safeDashboardCall('Cloud status', () => SidecarClient.cloudStatus()),
-      this.safeDashboardCall('Recent activity', () => SidecarClient.auditActions(undefined, 10)),
-      this.safeDashboardCall('Prometheus metrics', () => SidecarClient.metrics()),
-      this.safeDashboardCall('Index queue', () => SidecarClient.indexQueueStatus()),
-    ]);
-
-    const warnings = [
-      healthOk ? undefined : 'Sidecar health check failed. Showing degraded dashboard data.',
-      cloudStatus.warning,
-      auditActions.warning,
-      metricsText.warning,
-      indexQueue.warning,
-    ].filter((warning): warning is string => Boolean(warning));
+    const healthOk = await SidecarClient.health();
+    const [cloudStatus, auditActions, metricsText, indexQueue] = healthOk
+      ? await Promise.all([
+        this.safeDashboardCall('Cloud status', () => SidecarClient.cloudStatus()),
+        this.safeDashboardCall('Recent activity', () => SidecarClient.auditActions(undefined, 10)),
+        this.safeDashboardCall('Prometheus metrics', () => SidecarClient.metrics()),
+        this.safeDashboardCall('Index queue', () => SidecarClient.indexQueueStatus()),
+      ])
+      : [
+        this.emptyDashboardCall<CloudStatusResponse>(),
+        this.emptyDashboardCall<AuditActionsResponse>(),
+        this.emptyDashboardCall<string>(),
+        this.emptyDashboardCall<IndexQueueResponse>(),
+      ];
+    const metrics = {
+      ...this.emptyDashboardMetrics(),
+      ...this.parsePrometheusMetrics(metricsText.value),
+      ...this.metricsFromIndexQueue(indexQueue.value),
+    };
+    const notices = this.buildDashboardNotices({
+      healthOk,
+      metricsText,
+      indexQueue,
+      metrics,
+    });
+    const warnings = this.buildDashboardWarnings({
+      healthOk,
+      cloudStatus,
+      auditActions,
+      metricsText,
+      indexQueue,
+    });
 
     this.postMessage({
       type: 'dashboard.metricsLoaded',
       health: healthOk ? 'up' : 'down',
       cloudStatus: this.resolveCloudStatus(cloudStatus.value),
       auditActions: this.mapAuditActions(auditActions.value),
-      metrics: {
-        ...this.emptyDashboardMetrics(),
-        ...this.parsePrometheusMetrics(metricsText.value),
-        ...this.metricsFromIndexQueue(indexQueue.value),
-      },
+      metrics,
       healthChecks: this.buildHealthChecks({
         healthOk,
         cloudStatus: cloudStatus.value,
         metricsText: metricsText.value,
         indexQueue: indexQueue.value,
       }),
+      notices,
       workspaceId: vscode.workspace
         .getConfiguration('surgicalContext')
         .get<string>('workspaceId', 'local/default@main'),
@@ -135,6 +150,89 @@ export class DashboardPanel {
         warning: `${label}: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
+  }
+
+  private emptyDashboardCall<T>(): DashboardCallResult<T> {
+    return { value: null };
+  }
+
+  private buildDashboardWarnings(input: {
+    healthOk: boolean;
+    cloudStatus: DashboardCallResult<CloudStatusResponse>;
+    auditActions: DashboardCallResult<AuditActionsResponse>;
+    metricsText: DashboardCallResult<string>;
+    indexQueue: DashboardCallResult<IndexQueueResponse>;
+  }): string[] {
+    if (!input.healthOk) {
+      return [];
+    }
+
+    return Array.from(new Set([
+      this.cleanWarning(input.cloudStatus.warning, 'Graph provider status is unavailable.'),
+      this.cleanWarning(input.auditActions.warning, 'Recent activity is unavailable.'),
+    ].filter((warning): warning is string => Boolean(warning))));
+  }
+
+  private cleanWarning(warning: string | undefined, fallback: string): string | undefined {
+    if (!warning) return undefined;
+    return /fetch failed|failed to fetch|ECONNREFUSED|connection refused/i.test(warning)
+      ? fallback
+      : warning;
+  }
+
+  private buildDashboardNotices(input: {
+    healthOk: boolean;
+    metricsText: DashboardCallResult<string>;
+    indexQueue: DashboardCallResult<IndexQueueResponse>;
+    metrics: DashboardMetrics;
+  }): DashboardNotice[] {
+    if (!input.healthOk) {
+      return [
+        {
+          id: 'sidecar-offline',
+          level: 'error',
+          title: 'Sidecar is offline',
+          message: 'Start the local sidecar and refresh to load graph, vector, index, and audit data.',
+          action: 'refresh',
+          actionLabel: 'Refresh',
+        },
+      ];
+    }
+
+    const notices: DashboardNotice[] = [];
+
+    if (!input.metricsText.value) {
+      notices.push({
+        id: 'metrics-unavailable',
+        level: 'warning',
+        title: 'Metrics are unavailable',
+        message: 'Core health can still be shown, but token, latency, and cost cards will stay empty.',
+        action: 'refresh',
+        actionLabel: 'Retry',
+      });
+    }
+
+    if (!input.indexQueue.value) {
+      notices.push({
+        id: 'index-unavailable',
+        level: 'warning',
+        title: 'Index state is unavailable',
+        message: 'The dashboard cannot confirm whether graph and vector context are ready.',
+        action: 'refresh',
+        actionLabel: 'Retry',
+      });
+    } else if (this.hasNoObservedIndexWork(input.indexQueue.value, input.metrics)) {
+      notices.push({
+        id: 'index-empty',
+        level: 'info',
+        title: 'No indexing jobs yet',
+        message: 'Index the workspace to populate graph and vector context before relying on ask or impact results.',
+        action: 'indexWorkspace',
+        actionLabel: 'Index workspace',
+      });
+    }
+
+    return notices;
   }
 
   private resolveCloudStatus(
@@ -198,7 +296,9 @@ export class DashboardPanel {
         ? 'queued'
         : queue.last_error
           ? 'attention'
-          : 'idle';
+          : this.hasQueueActivity(queue)
+            ? 'idle'
+            : 'not indexed';
 
     return {
       queuePending: queue.pending,
@@ -207,6 +307,27 @@ export class DashboardPanel {
       queueFailedBatches: queue.failed_batches,
       lastIndexJobStatus,
     };
+  }
+
+  private hasNoObservedIndexWork(
+    response: IndexQueueResponse,
+    metrics: DashboardMetrics
+  ): boolean {
+    const hasCatalogMetrics = metrics.indexedFiles !== null
+      || metrics.indexedSymbols !== null
+      || metrics.docChunks !== null;
+    return !hasCatalogMetrics && !this.hasQueueActivity(response.queue);
+  }
+
+  private hasQueueActivity(queue: IndexQueueResponse['queue']): boolean {
+    return queue.pending > 0
+      || queue.processing > 0
+      || queue.enqueued > 0
+      || queue.coalesced > 0
+      || queue.rejected > 0
+      || queue.processed > 0
+      || queue.failed_batches > 0
+      || Boolean(queue.last_error);
   }
 
   private parsePrometheusMetrics(metricsText: string | null): Partial<DashboardMetrics> {
@@ -403,6 +524,10 @@ export class DashboardPanel {
   private async handleWebviewMessage(message: WebviewToHostMessage): Promise<void> {
     switch (message.type) {
       case 'dashboard.refresh':
+        await this.loadMetrics();
+        break;
+      case 'dashboard.indexWorkspace':
+        await vscode.commands.executeCommand('surgicalContext.indexProject');
         await this.loadMetrics();
         break;
     }

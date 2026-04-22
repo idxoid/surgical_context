@@ -725,6 +725,51 @@ button {
   font-size: 12px;
 }
 
+.dashboard-notices {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dashboard-notice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--sc-border);
+  border-left-width: 3px;
+  border-radius: var(--sc-radius);
+  background: color-mix(in srgb, var(--sc-card) 92%, transparent);
+}
+
+.dashboard-notice.info {
+  border-left-color: var(--sc-link);
+}
+
+.dashboard-notice.warning {
+  border-left-color: var(--sc-warn);
+}
+
+.dashboard-notice.error {
+  border-left-color: var(--sc-bad);
+}
+
+.dashboard-notice-title {
+  color: var(--sc-text);
+  font-weight: 700;
+}
+
+.dashboard-notice-message {
+  margin-top: 3px;
+  color: var(--sc-muted);
+  font-size: 12px;
+}
+
+.notice-action {
+  min-width: 104px;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -854,6 +899,24 @@ button {
 
 .savings-chart span.pending {
   background: color-mix(in srgb, var(--sc-muted) 32%, transparent);
+}
+
+.dashboard-empty-state {
+  display: grid;
+  gap: 4px;
+  min-height: 130px;
+  align-content: center;
+  padding: 18px;
+}
+
+.dashboard-empty-title {
+  color: var(--sc-text);
+  font-weight: 700;
+}
+
+.dashboard-empty-message {
+  color: var(--sc-muted);
+  font-size: 12px;
 }
 
 .health-check-list {
@@ -1294,6 +1357,14 @@ button {
 
   .dashboard-main-panels {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-notice {
+    grid-template-columns: 1fr;
+  }
+
+  .notice-action {
+    width: 100%;
   }
 
   .dashboard-table-row,

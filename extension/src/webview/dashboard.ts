@@ -4,6 +4,7 @@ const vscode = acquireVsCodeApi();
 import {
   HostToWebviewMessage,
   AuditAction,
+  DashboardNotice,
   DashboardMetrics,
   HealthCheckItem,
 } from './shared/protocol';
@@ -13,6 +14,7 @@ import {
   renderDashboardHeader,
   renderRefreshButton,
   renderDashboardWarnings,
+  renderDashboardNotices,
   renderIndexingJobsCard,
   renderTokenSavingsCard,
   renderHealthChecklistCard,
@@ -24,6 +26,7 @@ interface DashboardState {
   auditActions: AuditAction[];
   metrics: DashboardMetrics;
   healthChecks: HealthCheckItem[];
+  notices: DashboardNotice[];
   workspaceId: string;
   warnings: string[];
   isLoading: boolean;
@@ -38,6 +41,7 @@ class DashboardPanel {
     auditActions: [],
     metrics: emptyDashboardMetrics(),
     healthChecks: [],
+    notices: [],
     workspaceId: 'local/default@main',
     warnings: [],
     isLoading: false,
@@ -66,6 +70,7 @@ class DashboardPanel {
           this.state.auditActions = message.auditActions;
           this.state.metrics = message.metrics;
           this.state.healthChecks = message.healthChecks;
+          this.state.notices = message.notices;
           this.state.workspaceId = message.workspaceId;
           this.state.warnings = message.warnings;
           this.state.isLoading = false;
@@ -77,7 +82,15 @@ class DashboardPanel {
         case 'dashboard.metricsFailed':
           this.state.isLoading = false;
           this.state.error = message.error;
-          this.state.warnings = [message.error];
+          this.state.warnings = [];
+          this.state.notices = [{
+            id: 'dashboard-load-failed',
+            level: 'error',
+            title: 'Dashboard data failed to load',
+            message: message.error,
+            action: 'refresh',
+            actionLabel: 'Retry',
+          }];
           this.render();
           break;
       }
@@ -89,6 +102,13 @@ class DashboardPanel {
     if (refreshBtn) {
       refreshBtn.addEventListener('click', () => {
         vscode.postMessage({ type: 'dashboard.refresh' });
+      });
+    }
+
+    const indexBtn = document.querySelector('[data-action="indexWorkspace"]') as HTMLButtonElement | null;
+    if (indexBtn) {
+      indexBtn.addEventListener('click', () => {
+        vscode.postMessage({ type: 'dashboard.indexWorkspace' });
       });
     }
   }
@@ -109,6 +129,7 @@ class DashboardPanel {
     const header = renderDashboardHeader(this.state.workspaceId, this.state.lastUpdate);
     const refreshBtn = renderRefreshButton(this.state.isLoading);
     const warnings = renderDashboardWarnings(this.state.warnings);
+    const notices = renderDashboardNotices(this.state.notices);
     const metricCards = renderMetricCardGrid({
       health: this.state.health || 'degraded',
       cloudStatus: this.state.cloudStatus || 'offline',
@@ -126,6 +147,7 @@ class DashboardPanel {
           ${warnings}
           ${refreshBtn}
         </div>
+        ${notices}
         <div class="dashboard-grid">
           ${metricCards}
           <div class="dashboard-main-panels">

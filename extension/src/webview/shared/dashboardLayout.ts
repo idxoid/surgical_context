@@ -1,4 +1,4 @@
-import { AuditAction, DashboardMetrics, HealthCheckItem } from './protocol';
+import { AuditAction, DashboardMetrics, DashboardNotice, HealthCheckItem } from './protocol';
 
 export function escapeHtml(text: string): string {
   const map: Record<string, string> = {
@@ -48,6 +48,28 @@ export function renderDashboardWarnings(warnings: string[]): string {
   return `
     <div class="dashboard-warning" role="status">
       ${warnings.map(warning => `<div>${escapeHtml(warning)}</div>`).join('')}
+    </div>
+  `;
+}
+
+export function renderDashboardNotices(notices: DashboardNotice[]): string {
+  if (notices.length === 0) return '';
+
+  return `
+    <div class="dashboard-notices" role="status">
+      ${notices.map(notice => `
+        <div class="dashboard-notice ${escapeHtml(notice.level)}">
+          <div>
+            <div class="dashboard-notice-title">${escapeHtml(notice.title)}</div>
+            <div class="dashboard-notice-message">${escapeHtml(notice.message)}</div>
+          </div>
+          ${notice.action ? `
+            <button class="notice-action" data-action="${escapeHtml(notice.action)}">
+              ${escapeHtml(notice.actionLabel || 'Open')}
+            </button>
+          ` : ''}
+        </div>
+      `).join('')}
     </div>
   `;
 }
@@ -119,6 +141,27 @@ export function renderTokenSavingsCard(metrics: DashboardMetrics): string {
 }
 
 export function renderIndexingJobsCard(metrics: DashboardMetrics): string {
+  const queueUnavailable = metrics.queuePending === null
+    && metrics.queueProcessing === null
+    && metrics.queueProcessed === null
+    && metrics.queueFailedBatches === null;
+
+  if (queueUnavailable) {
+    return renderIndexingStateCard(
+      'Index queue unavailable',
+      'The dashboard cannot read indexing state right now.',
+      'unknown'
+    );
+  }
+
+  if (metrics.lastIndexJobStatus === 'not indexed') {
+    return renderIndexingStateCard(
+      'No indexing jobs yet',
+      'Run Index Workspace to populate graph and vector context for this workspace.',
+      'empty'
+    );
+  }
+
   const rows = [
     {
       time: 'now',
@@ -166,6 +209,21 @@ export function renderIndexingJobsCard(metrics: DashboardMetrics): string {
             <span>${escapeHtml(row.duration)}</span>
           </div>
         `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderIndexingStateCard(title: string, message: string, status: string): string {
+  return `
+    <div class="dashboard-card indexing-card">
+      <div class="card-header">
+        <span>Recent indexing jobs</span>
+        <span class="card-header-meta">${escapeHtml(status)}</span>
+      </div>
+      <div class="dashboard-empty-state">
+        <div class="dashboard-empty-title">${escapeHtml(title)}</div>
+        <div class="dashboard-empty-message">${escapeHtml(message)}</div>
       </div>
     </div>
   `;
