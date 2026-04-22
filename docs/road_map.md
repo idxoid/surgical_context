@@ -49,7 +49,7 @@ The local product is the canonical next milestone.
 - [x] Document open-source local usage with Docker Neo4j, LanceDB, SQLite, Ollama, and optional cloud model keys.
 
 ### P1 - Local History and Prompt Snapshots
-- [ ] Implement SQLite `HistoryProvider` for conversations, messages, ask snapshots, inspector snapshots, and impact snapshots.
+- [x] Implement SQLite `HistoryProvider` for conversations, messages, ask snapshots, inspector snapshots, and impact snapshots.
 - [ ] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
 - [ ] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
 - [ ] Add retention controls and disabled/ephemeral modes for history.
