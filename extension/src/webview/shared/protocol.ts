@@ -52,6 +52,7 @@ export type HostToWebviewMessage =
       cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline';
       auditActions: AuditAction[];
       metrics: DashboardMetrics;
+      healthChecks: HealthCheckItem[];
       workspaceId: string;
       warnings: string[];
     }
@@ -183,6 +184,14 @@ export interface DashboardMetrics {
   queueProcessed: number | null;
   queueFailedBatches: number | null;
   lastIndexJobStatus: string | null;
+}
+
+export interface HealthCheckItem {
+  id: string;
+  label: string;
+  status: 'ok' | 'warning' | 'error' | 'pending';
+  value: string;
+  detail: string;
 }
 
 export interface SettingsData {

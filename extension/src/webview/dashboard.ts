@@ -5,6 +5,7 @@ import {
   HostToWebviewMessage,
   AuditAction,
   DashboardMetrics,
+  HealthCheckItem,
 } from './shared/protocol';
 import {
   renderMetricCardGrid,
@@ -14,6 +15,7 @@ import {
   renderDashboardWarnings,
   renderIndexingJobsCard,
   renderTokenSavingsCard,
+  renderHealthChecklistCard,
 } from './shared/dashboardLayout';
 
 interface DashboardState {
@@ -21,6 +23,7 @@ interface DashboardState {
   cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline' | null;
   auditActions: AuditAction[];
   metrics: DashboardMetrics;
+  healthChecks: HealthCheckItem[];
   workspaceId: string;
   warnings: string[];
   isLoading: boolean;
@@ -34,6 +37,7 @@ class DashboardPanel {
     cloudStatus: null,
     auditActions: [],
     metrics: emptyDashboardMetrics(),
+    healthChecks: [],
     workspaceId: 'local/default@main',
     warnings: [],
     isLoading: false,
@@ -61,6 +65,7 @@ class DashboardPanel {
           this.state.cloudStatus = message.cloudStatus;
           this.state.auditActions = message.auditActions;
           this.state.metrics = message.metrics;
+          this.state.healthChecks = message.healthChecks;
           this.state.workspaceId = message.workspaceId;
           this.state.warnings = message.warnings;
           this.state.isLoading = false;
@@ -111,6 +116,7 @@ class DashboardPanel {
     });
     const tokenSavingsCard = renderTokenSavingsCard(this.state.metrics);
     const indexingJobsCard = renderIndexingJobsCard(this.state.metrics);
+    const healthChecklistCard = renderHealthChecklistCard(this.state.healthChecks);
     const auditCard = renderAuditEventsCard(this.state.auditActions);
 
     root.innerHTML = `
@@ -126,6 +132,7 @@ class DashboardPanel {
             ${tokenSavingsCard}
             ${indexingJobsCard}
           </div>
+          ${healthChecklistCard}
           ${auditCard}
         </div>
       </div>

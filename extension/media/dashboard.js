@@ -144,6 +144,33 @@
     </div>
   `;
   }
+  function renderHealthChecklistCard(items) {
+    const rows = items.length === 0 ? `
+      <div class="health-check-row empty">
+        <span>No health checks available</span>
+      </div>
+    ` : items.map((item) => `
+      <div class="health-check-row ${escapeHtml(item.status)}">
+        <div class="health-check-status" aria-hidden="true">${escapeHtml(statusSymbol(item.status))}</div>
+        <div class="health-check-main">
+          <div class="health-check-label">${escapeHtml(item.label)}</div>
+          <div class="health-check-detail">${escapeHtml(item.detail)}</div>
+        </div>
+        <div class="health-check-value">${escapeHtml(item.value)}</div>
+      </div>
+    `).join("");
+    return `
+    <div class="dashboard-card health-check-card">
+      <div class="card-header">
+        <span>Health checklist</span>
+        <span class="card-header-meta">local</span>
+      </div>
+      <div class="health-check-list">
+        ${rows}
+      </div>
+    </div>
+  `;
+  }
   function renderAuditEventsCard(auditActions) {
     const rows = auditActions.length === 0 ? `
       <div class="dashboard-table-row empty" role="row">
@@ -210,6 +237,12 @@
       db: "\u25A5"
     };
     return icons[name] || "\u25A1";
+  }
+  function statusSymbol(status) {
+    if (status === "ok") return "\u2713";
+    if (status === "warning") return "!";
+    if (status === "error") return "\xD7";
+    return "\u25CB";
   }
   function healthLabel(health) {
     if (health === "up") return "healthy";
@@ -286,6 +319,7 @@
         cloudStatus: null,
         auditActions: [],
         metrics: emptyDashboardMetrics(),
+        healthChecks: [],
         workspaceId: "local/default@main",
         warnings: [],
         isLoading: false,
@@ -308,6 +342,7 @@
             this.state.cloudStatus = message.cloudStatus;
             this.state.auditActions = message.auditActions;
             this.state.metrics = message.metrics;
+            this.state.healthChecks = message.healthChecks;
             this.state.workspaceId = message.workspaceId;
             this.state.warnings = message.warnings;
             this.state.isLoading = false;
@@ -353,6 +388,7 @@
       });
       const tokenSavingsCard = renderTokenSavingsCard(this.state.metrics);
       const indexingJobsCard = renderIndexingJobsCard(this.state.metrics);
+      const healthChecklistCard = renderHealthChecklistCard(this.state.healthChecks);
       const auditCard = renderAuditEventsCard(this.state.auditActions);
       root.innerHTML = `
       ${header}
@@ -367,6 +403,7 @@
             ${tokenSavingsCard}
             ${indexingJobsCard}
           </div>
+          ${healthChecklistCard}
           ${auditCard}
         </div>
       </div>

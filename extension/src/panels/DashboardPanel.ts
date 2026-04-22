@@ -9,6 +9,7 @@ import { getWebviewContent } from '../utils';
 import {
   AuditAction,
   DashboardMetrics,
+  HealthCheckItem,
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
@@ -109,6 +110,12 @@ export class DashboardPanel {
         ...this.parsePrometheusMetrics(metricsText.value),
         ...this.metricsFromIndexQueue(indexQueue.value),
       },
+      healthChecks: this.buildHealthChecks({
+        healthOk,
+        cloudStatus: cloudStatus.value,
+        metricsText: metricsText.value,
+        indexQueue: indexQueue.value,
+      }),
       workspaceId: vscode.workspace
         .getConfiguration('surgicalContext')
         .get<string>('workspaceId', 'local/default@main'),
@@ -240,6 +247,114 @@ export class DashboardPanel {
       tokensTotal: tokensTotal || null,
       costUsdTotal: costUsdTotal || null,
     };
+  }
+
+  private buildHealthChecks(input: {
+    healthOk: boolean;
+    cloudStatus: CloudStatusResponse | null;
+    metricsText: string | null;
+    indexQueue: IndexQueueResponse | null;
+  }): HealthCheckItem[] {
+    const config = vscode.workspace.getConfiguration('surgicalContext');
+    const backendUrl = config.get<string>('backendUrl', 'http://localhost:8000');
+    const workspaceId = config.get<string>('workspaceId', 'local/default@main');
+    const modelPreference = config.get<string>('modelPreference', 'auto');
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+    const queue = input.indexQueue?.queue;
+    const llmDegraded = this.metricValue(input.metricsText, 'sidecar_llm_degraded_total');
+
+    return [
+      {
+        id: 'sidecar',
+        label: 'Sidecar',
+        status: input.healthOk ? 'ok' : 'error',
+        value: input.healthOk ? 'reachable' : 'offline',
+        detail: backendUrl,
+      },
+      {
+        id: 'graph',
+        label: 'Graph provider',
+        status: input.cloudStatus
+          ? input.cloudStatus.using_fallback
+            ? 'warning'
+            : 'ok'
+          : 'error',
+        value: this.graphProviderValue(input.cloudStatus),
+        detail: input.cloudStatus
+          ? 'Graph endpoint responded through /status/cloud.'
+          : 'Could not read graph provider status.',
+      },
+      {
+        id: 'vector',
+        label: 'Vector provider',
+        status: input.metricsText ? 'ok' : input.healthOk ? 'warning' : 'error',
+        value: input.metricsText ? 'sidecar-loaded' : 'unknown',
+        detail: input.metricsText
+          ? 'LanceDB client is loaded with the sidecar; retrieval metrics are reachable.'
+          : 'Metrics endpoint unavailable; vector state cannot be inferred.',
+      },
+      {
+        id: 'index',
+        label: 'Index state',
+        status: this.indexHealthStatus(input.indexQueue),
+        value: queue
+          ? queue.processing > 0
+            ? 'processing'
+            : queue.pending > 0
+              ? 'queued'
+              : 'idle'
+          : 'unknown',
+        detail: queue
+          ? `${queue.pending} pending, ${queue.processing} processing, ${queue.failed_batches} failed batches`
+          : 'Index queue endpoint unavailable.',
+      },
+      {
+        id: 'llm',
+        label: 'LLM provider',
+        status: !input.healthOk ? 'error' : llmDegraded > 0 ? 'warning' : 'ok',
+        value: modelPreference,
+        detail: llmDegraded > 0
+          ? `${llmDegraded} degraded LLM responses observed.`
+          : 'Model route will be validated on the next ask.',
+      },
+      {
+        id: 'workspace',
+        label: 'Workspace',
+        status: workspaceFolders.length > 0 && workspaceId ? 'ok' : 'warning',
+        value: workspaceId || 'unset',
+        detail: workspaceFolders.length > 0
+          ? workspaceFolders.map(folder => folder.name).join(', ')
+          : 'No VS Code workspace folder is open.',
+      },
+    ];
+  }
+
+  private graphProviderValue(cloudStatus: CloudStatusResponse | null): string {
+    if (!cloudStatus) return 'offline';
+    if (cloudStatus.using_fallback) return 'fallback-local';
+    if (cloudStatus.using_aura) return 'aura';
+    return 'local';
+  }
+
+  private indexHealthStatus(response: IndexQueueResponse | null): HealthCheckItem['status'] {
+    const queue = response?.queue;
+    if (!queue) return 'warning';
+    if (queue.failed_batches > 0 || queue.last_error) return 'error';
+    if (queue.pending > 0 || queue.processing > 0) return 'warning';
+    return 'ok';
+  }
+
+  private metricValue(metricsText: string | null, metricName: string): number {
+    if (!metricsText) return 0;
+
+    let total = 0;
+    for (const line of metricsText.split('\n')) {
+      const parsed = this.parsePrometheusLine(line);
+      if (parsed?.name === metricName) {
+        total += parsed.value;
+      }
+    }
+    return total;
   }
 
   private parsePrometheusLine(

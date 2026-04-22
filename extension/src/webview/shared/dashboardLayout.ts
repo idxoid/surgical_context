@@ -1,4 +1,4 @@
-import { AuditAction, DashboardMetrics } from './protocol';
+import { AuditAction, DashboardMetrics, HealthCheckItem } from './protocol';
 
 export function escapeHtml(text: string): string {
   const map: Record<string, string> = {
@@ -171,6 +171,37 @@ export function renderIndexingJobsCard(metrics: DashboardMetrics): string {
   `;
 }
 
+export function renderHealthChecklistCard(items: HealthCheckItem[]): string {
+  const rows = items.length === 0
+    ? `
+      <div class="health-check-row empty">
+        <span>No health checks available</span>
+      </div>
+    `
+    : items.map(item => `
+      <div class="health-check-row ${escapeHtml(item.status)}">
+        <div class="health-check-status" aria-hidden="true">${escapeHtml(statusSymbol(item.status))}</div>
+        <div class="health-check-main">
+          <div class="health-check-label">${escapeHtml(item.label)}</div>
+          <div class="health-check-detail">${escapeHtml(item.detail)}</div>
+        </div>
+        <div class="health-check-value">${escapeHtml(item.value)}</div>
+      </div>
+    `).join('');
+
+  return `
+    <div class="dashboard-card health-check-card">
+      <div class="card-header">
+        <span>Health checklist</span>
+        <span class="card-header-meta">local</span>
+      </div>
+      <div class="health-check-list">
+        ${rows}
+      </div>
+    </div>
+  `;
+}
+
 export function renderAuditEventsCard(auditActions: AuditAction[]): string {
   const rows = auditActions.length === 0
     ? `
@@ -251,6 +282,13 @@ function iconSymbol(name: string): string {
     db: '▥',
   };
   return icons[name] || '□';
+}
+
+function statusSymbol(status: HealthCheckItem['status']): string {
+  if (status === 'ok') return '✓';
+  if (status === 'warning') return '!';
+  if (status === 'error') return '×';
+  return '○';
 }
 
 function healthLabel(health: 'up' | 'down' | 'degraded'): string {

@@ -4,6 +4,7 @@ import { getWebviewContent } from '../utils';
 import {
   AuditAction,
   DashboardMetrics,
+  HealthCheckItem,
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
@@ -84,6 +85,7 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
             : 'offline',
       auditActions,
       metrics: this.emptyDashboardMetrics(),
+      healthChecks: this.buildHealthChecks(healthOk, cloudStatus),
       workspaceId: vscode.workspace
         .getConfiguration('surgicalContext')
         .get<string>('workspaceId', 'local/default@main'),
@@ -111,6 +113,74 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
       queueFailedBatches: null,
       lastIndexJobStatus: null,
     };
+  }
+
+  private buildHealthChecks(
+    healthOk: boolean,
+    cloudStatus: Awaited<ReturnType<typeof SidecarClient.cloudStatus>> | null
+  ): HealthCheckItem[] {
+    const config = vscode.workspace.getConfiguration('surgicalContext');
+    const backendUrl = config.get<string>('backendUrl', 'http://localhost:8000');
+    const workspaceId = config.get<string>('workspaceId', 'local/default@main');
+    const modelPreference = config.get<string>('modelPreference', 'auto');
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+
+    return [
+      {
+        id: 'sidecar',
+        label: 'Sidecar',
+        status: healthOk ? 'ok' : 'error',
+        value: healthOk ? 'reachable' : 'offline',
+        detail: backendUrl,
+      },
+      {
+        id: 'graph',
+        label: 'Graph provider',
+        status: cloudStatus ? cloudStatus.using_fallback ? 'warning' : 'ok' : 'error',
+        value: cloudStatus
+          ? cloudStatus.using_fallback
+            ? 'fallback-local'
+            : cloudStatus.using_aura
+              ? 'aura'
+              : 'local'
+          : 'offline',
+        detail: cloudStatus
+          ? 'Graph endpoint responded through /status/cloud.'
+          : 'Could not read graph provider status.',
+      },
+      {
+        id: 'vector',
+        label: 'Vector provider',
+        status: healthOk ? 'pending' : 'error',
+        value: healthOk ? 'sidecar-loaded' : 'unknown',
+        detail: healthOk
+          ? 'Validated when dashboard metrics or retrieval calls respond.'
+          : 'Sidecar is offline.',
+      },
+      {
+        id: 'index',
+        label: 'Index state',
+        status: 'pending',
+        value: 'unknown',
+        detail: 'Open the full dashboard panel for queue details.',
+      },
+      {
+        id: 'llm',
+        label: 'LLM provider',
+        status: healthOk ? 'pending' : 'error',
+        value: modelPreference,
+        detail: 'Model route is validated on the next ask.',
+      },
+      {
+        id: 'workspace',
+        label: 'Workspace',
+        status: workspaceFolders.length > 0 && workspaceId ? 'ok' : 'warning',
+        value: workspaceId || 'unset',
+        detail: workspaceFolders.length > 0
+          ? workspaceFolders.map(folder => folder.name).join(', ')
+          : 'No VS Code workspace folder is open.',
+      },
+    ];
   }
 
   private startPolling(): void {

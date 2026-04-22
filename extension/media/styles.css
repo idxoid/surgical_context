@@ -856,6 +856,70 @@ button {
   background: color-mix(in srgb, var(--sc-muted) 32%, transparent);
 }
 
+.health-check-list {
+  display: grid;
+}
+
+.health-check-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) minmax(86px, auto);
+  gap: 10px;
+  align-items: center;
+  min-height: 56px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--sc-border);
+}
+
+.health-check-row:last-child {
+  border-bottom: 0;
+}
+
+.health-check-row.empty {
+  display: block;
+  color: var(--sc-muted);
+}
+
+.health-check-status {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.health-check-row.ok .health-check-status {
+  color: var(--sc-good);
+}
+
+.health-check-row.warning .health-check-status,
+.health-check-row.pending .health-check-status {
+  color: var(--sc-warn);
+}
+
+.health-check-row.error .health-check-status {
+  color: var(--sc-bad);
+}
+
+.health-check-label {
+  color: var(--sc-text);
+  font-weight: 600;
+}
+
+.health-check-detail {
+  margin-top: 3px;
+  color: var(--sc-muted);
+  font-size: 12px;
+}
+
+.health-check-value {
+  color: var(--sc-link);
+  font-size: 12px;
+  text-align: right;
+}
+
 .dashboard-table {
   display: grid;
   padding: 8px 12px 12px;
