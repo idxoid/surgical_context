@@ -22,8 +22,9 @@ export type WebviewToHostMessage =
   | { type: 'dashboard.refresh' }
   | { type: 'dashboard.indexWorkspace' }
   | { type: 'settings.loaded' }
+  | { type: 'settings.save'; settings: SettingsData }
   | { type: 'settings.update'; key: string; value: unknown }
-  | { type: 'settings.testUrl'; url: string }
+  | { type: 'settings.testUrl'; url: string; authToken?: string }
   | { type: 'settings.openKeybindings' };
 
 // ============ Extension Host → Webview Messages ============
@@ -210,6 +211,9 @@ export interface SettingsData {
   workspaceId: string;
   modelPreference: string;
   authToken: string;
+  tokenBudget: number;
+  lancedbPath: string;
+  historyPath: string;
   overlaySync: boolean;
   autoOpenInspector: boolean;
 }

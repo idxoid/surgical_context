@@ -45,7 +45,7 @@ The local product is the canonical next milestone.
 - [x] Add a local smoke test: clean clone -> install -> start storage -> index repo -> ask -> inspect -> impact -> dashboard.
 - [x] Add an extension health checklist for sidecar, graph provider, vector provider, index state, LLM provider, and current workspace.
 - [x] Make dashboard failures graceful when the sidecar is down, metrics are missing, or no index exists yet.
-- [ ] Finalize local settings UX for sidecar URL, workspace ID, model preference, auth token, storage paths, and token budget.
+- [x] Finalize local settings UX for sidecar URL, workspace ID, model preference, auth token, storage paths, and token budget.
 - [x] Document open-source local usage with Docker Neo4j, LanceDB, SQLite, Ollama, and optional cloud model keys.
 
 ### P1 - Local History and Prompt Snapshots

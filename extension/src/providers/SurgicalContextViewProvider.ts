@@ -3,10 +3,10 @@ import { SidecarClient } from '../sidecarClient';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
 import { stateManager } from '../state/ExtensionState';
+import { readSettings, saveSettings as persistSettings, updateSetting } from '../settings';
 import {
   WebviewToHostMessage,
   HostToWebviewMessage,
-  SettingsData,
 } from '../webview/shared/protocol';
 import { PromptContextPayload } from '../sidecarClient';
 
@@ -190,12 +190,16 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         this.pushSettings();
         break;
 
+      case 'settings.save':
+        await this.saveSettings(message.settings);
+        break;
+
       case 'settings.update':
         await this.updateSetting(message.key, message.value);
         break;
 
       case 'settings.testUrl':
-        await this.testSettingsUrl();
+        await this.testSettingsUrl(message.url, message.authToken || '');
         break;
 
       case 'settings.openKeybindings':
@@ -287,7 +291,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         targetSymbol,
         prompt,
         callbacks,
-        4000,
+        undefined,
         activeFile
       );
     } catch (error) {
@@ -327,28 +331,30 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   }
 
   private pushSettings(): void {
-    const config = vscode.workspace.getConfiguration('surgicalContext');
-    const settings: SettingsData = {
-      backendUrl: config.get('backendUrl') ?? 'http://localhost:8000',
-      workspaceId: config.get('workspaceId') ?? 'local/default@main',
-      modelPreference: config.get('modelPreference') ?? 'auto',
-      authToken: config.get('authToken') ?? '',
-      overlaySync: config.get('overlaySync') ?? true,
-      autoOpenInspector: config.get('chat.autoOpenInspector') ?? false,
-    };
-
     this.postMessage({
       type: 'settings.loaded',
-      settings,
+      settings: readSettings(),
     });
   }
 
-  private async updateSetting(key: string, value: unknown): Promise<void> {
-    const config = vscode.workspace.getConfiguration('surgicalContext');
-    const configKey = key.startsWith('surgicalContext.') ? key.slice('surgicalContext.'.length) : key;
-
+  private async saveSettings(settings: ReturnType<typeof readSettings>): Promise<void> {
     try {
-      await config.update(configKey, value, vscode.ConfigurationTarget.Workspace);
+      await persistSettings(settings);
+      this.postMessage({
+        type: 'settings.saved',
+        message: 'Settings saved.',
+      });
+    } catch (error) {
+      this.postMessage({
+        type: 'settings.saveFailed',
+        error: `Failed to save settings: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  private async updateSetting(key: string, value: unknown): Promise<void> {
+    try {
+      await updateSetting(key, value);
       this.postMessage({
         type: 'settings.saved',
         message: `Setting updated: ${key}`,
@@ -361,9 +367,9 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async testSettingsUrl(): Promise<void> {
+  private async testSettingsUrl(url: string, authToken: string): Promise<void> {
     try {
-      const ok = await SidecarClient.health();
+      const ok = await SidecarClient.health(url, authToken);
       this.postMessage({
         type: 'settings.testUrlComplete',
         success: ok,

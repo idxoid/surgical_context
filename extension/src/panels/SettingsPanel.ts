@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { getWebviewContent } from '../utils';
-import { WebviewToHostMessage, HostToWebviewMessage, SettingsData } from '../webview/shared/protocol';
+import { WebviewToHostMessage, HostToWebviewMessage } from '../webview/shared/protocol';
 import { SidecarClient } from '../sidecarClient';
+import { readSettings, saveSettings, updateSetting } from '../settings';
 
 export class SettingsPanel {
   public static currentPanel: SettingsPanel | undefined;
@@ -35,7 +36,7 @@ export class SettingsPanel {
   private loadInitialSettings(): void {
     // Small delay to ensure webview is ready
     setTimeout(() => {
-      this.panel.webview.postMessage({ type: 'settings.loaded' } as any);
+      this.postMessage({ type: 'settings.loaded', settings: readSettings() });
     }, 100);
   }
 
@@ -61,33 +62,32 @@ export class SettingsPanel {
   }
 
   private async handleWebviewMessage(message: WebviewToHostMessage): Promise<void> {
-    const config = vscode.workspace.getConfiguration('surgicalContext');
-
     switch (message.type) {
       case 'settings.loaded':
-        // Send current settings to webview
-        const settings: SettingsData = {
-          backendUrl: config.get('backendUrl') ?? 'http://localhost:8000',
-          workspaceId: config.get('workspaceId') ?? 'local/default@main',
-          modelPreference: config.get('modelPreference') ?? 'auto',
-          authToken: config.get('authToken') ?? '',
-          overlaySync: config.get('overlaySync') ?? true,
-          autoOpenInspector: config.get('chat.autoOpenInspector') ?? false,
-        };
-
         this.postMessage({
           type: 'settings.loaded',
-          settings,
+          settings: readSettings(),
         });
+        break;
+
+      case 'settings.save':
+        try {
+          await saveSettings(message.settings);
+          this.postMessage({
+            type: 'settings.saved',
+            message: 'Settings saved.',
+          });
+        } catch (err) {
+          this.postMessage({
+            type: 'settings.saveFailed',
+            error: `Failed to save settings: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
         break;
 
       case 'settings.update':
         try {
-          await config.update(
-            message.key,
-            message.value,
-            vscode.ConfigurationTarget.Workspace
-          );
+          await updateSetting(message.key, message.value);
           this.postMessage({
             type: 'settings.saved',
             message: `Setting updated: ${message.key}`,
@@ -102,7 +102,7 @@ export class SettingsPanel {
 
       case 'settings.testUrl':
         try {
-          const ok = await SidecarClient.health();
+          const ok = await SidecarClient.health(message.url, message.authToken || '');
           this.postMessage({
             type: 'settings.testUrlComplete',
             success: ok,

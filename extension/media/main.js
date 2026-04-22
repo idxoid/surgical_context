@@ -518,12 +518,62 @@
             aria-label="LLM model to use"
             aria-describedby="modelPreference-hint"
           >
-            <option value="auto" ${data.modelPreference === "auto" ? "selected" : ""}>Auto (use backend default)</option>
-            <option value="claude-opus" ${data.modelPreference === "claude-opus" ? "selected" : ""}>Claude Opus</option>
-            <option value="claude-sonnet" ${data.modelPreference === "claude-sonnet" ? "selected" : ""}>Claude Sonnet</option>
-            <option value="claude-haiku" ${data.modelPreference === "claude-haiku" ? "selected" : ""}>Claude Haiku</option>
+            <option value="auto" ${data.modelPreference === "auto" ? "selected" : ""}>Auto</option>
+            <option value="claude" ${data.modelPreference === "claude" ? "selected" : ""}>Claude</option>
+            <option value="ollama" ${data.modelPreference === "ollama" ? "selected" : ""}>Ollama</option>
           </select>
-          <p class="field-hint" id="modelPreference-hint">Which Claude model to use for analysis</p>
+          <p class="field-hint" id="modelPreference-hint">Preferred sidecar model route for local asks</p>
+        </div>
+
+        <div class="setting-field">
+          <label for="tokenBudget">Token Budget</label>
+          <input
+            type="number"
+            id="tokenBudget"
+            class="setting-input"
+            value="${escapeHtml4(String(data.tokenBudget))}"
+            min="1000"
+            max="32000"
+            step="500"
+            aria-label="Default token budget"
+            aria-describedby="tokenBudget-hint"
+          />
+          <p class="field-hint" id="tokenBudget-hint">Default context budget used for ask and streaming ask requests</p>
+          <div class="field-status" id="tokenBudget-status"></div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Local Storage</h3>
+
+        <div class="setting-grid">
+          <div class="setting-field">
+            <label for="lancedbPath">LanceDB Path</label>
+            <input
+              type="text"
+              id="lancedbPath"
+              class="setting-input"
+              value="${escapeHtml4(data.lancedbPath)}"
+              placeholder="./data/lancedb"
+              aria-label="LanceDB path"
+              aria-describedby="lancedbPath-hint"
+            />
+            <p class="field-hint" id="lancedbPath-hint">Local vector index path used by the sidecar environment</p>
+          </div>
+
+          <div class="setting-field">
+            <label for="historyPath">History DB Path</label>
+            <input
+              type="text"
+              id="historyPath"
+              class="setting-input"
+              value="${escapeHtml4(data.historyPath)}"
+              placeholder="./data/history/surgical_context.sqlite3"
+              aria-label="SQLite history path"
+              aria-describedby="historyPath-hint"
+            />
+            <p class="field-hint" id="historyPath-hint">Planned local SQLite history path for dialogs and snapshots</p>
+          </div>
         </div>
       </div>
 
@@ -1169,18 +1219,33 @@
       const workspaceId = document.getElementById("workspaceId")?.value || "";
       const modelPreference = document.getElementById("modelPreference")?.value || "auto";
       const authToken = document.getElementById("authToken")?.value || "";
+      const tokenBudget = Number(document.getElementById("tokenBudget")?.value || "4000");
+      const lancedbPath = document.getElementById("lancedbPath")?.value || "";
+      const historyPath = document.getElementById("historyPath")?.value || "";
       const overlaySync = document.getElementById("overlaySync")?.checked || false;
       const autoOpenInspector = document.getElementById("autoOpenInspector")?.checked || false;
       if (backendUrl && !backendUrl.startsWith("http://") && !backendUrl.startsWith("https://")) {
         showFieldStatus("backendUrl", false, "URL must start with http:// or https://");
         return;
       }
-      this.postMessage({ type: "settings.update", key: "surgicalContext.backendUrl", value: backendUrl });
-      this.postMessage({ type: "settings.update", key: "surgicalContext.workspaceId", value: workspaceId });
-      this.postMessage({ type: "settings.update", key: "surgicalContext.modelPreference", value: modelPreference });
-      this.postMessage({ type: "settings.update", key: "surgicalContext.authToken", value: authToken });
-      this.postMessage({ type: "settings.update", key: "surgicalContext.overlaySync", value: overlaySync });
-      this.postMessage({ type: "settings.update", key: "surgicalContext.chat.autoOpenInspector", value: autoOpenInspector });
+      if (!Number.isFinite(tokenBudget) || tokenBudget < 1e3 || tokenBudget > 32e3) {
+        showFieldStatus("tokenBudget", false, "Use a value from 1000 to 32000");
+        return;
+      }
+      this.postMessage({
+        type: "settings.save",
+        settings: {
+          backendUrl,
+          workspaceId,
+          modelPreference,
+          authToken,
+          tokenBudget,
+          lancedbPath,
+          historyPath,
+          overlaySync,
+          autoOpenInspector
+        }
+      });
     }
     resetSettings() {
       const defaults = {
@@ -1188,6 +1253,9 @@
         workspaceId: "local/default@main",
         modelPreference: "auto",
         authToken: "",
+        tokenBudget: 4e3,
+        lancedbPath: "./data/lancedb",
+        historyPath: "./data/history/surgical_context.sqlite3",
         overlaySync: true,
         autoOpenInspector: false
       };
@@ -1195,12 +1263,18 @@
       const workspaceId = document.getElementById("workspaceId");
       const modelPreference = document.getElementById("modelPreference");
       const authToken = document.getElementById("authToken");
+      const tokenBudget = document.getElementById("tokenBudget");
+      const lancedbPath = document.getElementById("lancedbPath");
+      const historyPath = document.getElementById("historyPath");
       const overlaySync = document.getElementById("overlaySync");
       const autoOpenInspector = document.getElementById("autoOpenInspector");
       if (backendUrl) backendUrl.value = defaults.backendUrl;
       if (workspaceId) workspaceId.value = defaults.workspaceId;
       if (modelPreference) modelPreference.value = defaults.modelPreference;
       if (authToken) authToken.value = defaults.authToken;
+      if (tokenBudget) tokenBudget.value = String(defaults.tokenBudget);
+      if (lancedbPath) lancedbPath.value = defaults.lancedbPath;
+      if (historyPath) historyPath.value = defaults.historyPath;
       if (overlaySync) overlaySync.checked = defaults.overlaySync;
       if (autoOpenInspector) autoOpenInspector.checked = defaults.autoOpenInspector;
       showFeedback("Reset to default settings", "info");
@@ -1211,7 +1285,8 @@
         showFieldStatus("backendUrl", false, "Please enter a URL");
         return;
       }
-      this.postMessage({ type: "settings.testUrl", url });
+      const authToken = document.getElementById("authToken")?.value || "";
+      this.postMessage({ type: "settings.testUrl", url, authToken });
     }
     onRequestStarted(requestId, symbol) {
       this.currentStreamingRequestId = requestId;

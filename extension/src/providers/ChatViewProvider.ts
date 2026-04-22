@@ -241,7 +241,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         targetSymbol,
         prompt,
         callbacks,
-        4000,
+        undefined,
         activeFile
       );
     } catch (error) {

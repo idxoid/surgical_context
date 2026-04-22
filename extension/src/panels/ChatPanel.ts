@@ -265,7 +265,7 @@ export class ChatPanel {
         targetSymbol,
         prompt,
         callbacks,
-        4000,
+        undefined,
         activeFile
       );
     } catch (error) {

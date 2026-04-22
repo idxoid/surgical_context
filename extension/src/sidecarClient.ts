@@ -3,15 +3,37 @@ import { SSECallbacks, parseSSEStream } from './utils';
 
 function getBaseUrl(): string {
   const config = vscode.workspace.getConfiguration('surgicalContext');
-  return config.get<string>('backendUrl', 'http://localhost:8000');
+  return normalizeBaseUrl(config.get<string>('backendUrl', 'http://localhost:8000'));
 }
 
-function getHeaders(): Record<string, string> {
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, '');
+}
+
+function getAuthToken(): string {
+  const config = vscode.workspace.getConfiguration('surgicalContext');
+  return config.get<string>('authToken', '').trim();
+}
+
+function authHeaderValue(token: string): string {
+  return token.toLowerCase().startsWith('bearer ') ? token : `Bearer ${token}`;
+}
+
+function getTokenBudget(defaultValue = 4000): number {
+  const config = vscode.workspace.getConfiguration('surgicalContext');
+  const configured = config.get<number>('tokenBudget', defaultValue);
+  return Number.isFinite(configured) ? Math.max(1000, Math.min(32000, configured)) : defaultValue;
+}
+
+function getHeaders(authToken = getAuthToken()): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const config = vscode.workspace.getConfiguration('surgicalContext');
   const workspaceId = config.get<string>('workspaceId', 'local/default@main');
   if (workspaceId) {
     headers['X-Workspace'] = workspaceId;
+  }
+  if (authToken) {
+    headers.Authorization = authHeaderValue(authToken);
   }
   return headers;
 }
@@ -214,9 +236,11 @@ export interface FeedbackEvent {
 
 export const SidecarClient = {
 
-  async health(): Promise<boolean> {
+  async health(baseUrl = getBaseUrl(), authToken = getAuthToken()): Promise<boolean> {
     try {
-      const res = await fetch(`${getBaseUrl()}/health`);
+      const res = await fetch(`${normalizeBaseUrl(baseUrl)}/health`, {
+        headers: getHeaders(authToken),
+      });
       return res.ok;
     } catch {
       return false;
@@ -241,7 +265,7 @@ export const SidecarClient = {
   ask(
     symbol: string | undefined,
     question: string,
-    tokenBudget = 4000,
+    tokenBudget = getTokenBudget(),
     filePath?: string
   ): Promise<AskResponse> {
     return post('/ask', {
@@ -256,7 +280,7 @@ export const SidecarClient = {
     symbol: string | undefined,
     question: string,
     callbacks: SSECallbacks,
-    tokenBudget = 4000,
+    tokenBudget = getTokenBudget(),
     filePath?: string
   ): Promise<AbortController> {
     const controller = new AbortController();
@@ -307,7 +331,7 @@ export const SidecarClient = {
     query: string,
     symbol?: string,
     limit = 5,
-    tokenBudget = 2000
+    tokenBudget = getTokenBudget(2000)
   ): Promise<UnifiedSearchResponse> {
     return post('/search/unified', {
       query,

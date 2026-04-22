@@ -9,6 +9,9 @@ export interface SettingsFormData {
   workspaceId: string;
   modelPreference: string;
   authToken: string;
+  tokenBudget: number;
+  lancedbPath: string;
+  historyPath: string;
   overlaySync: boolean;
   autoOpenInspector: boolean;
 }
@@ -84,12 +87,62 @@ export function renderSettingsForm(data: SettingsFormData): string {
             aria-label="LLM model to use"
             aria-describedby="modelPreference-hint"
           >
-            <option value="auto" ${data.modelPreference === 'auto' ? 'selected' : ''}>Auto (use backend default)</option>
-            <option value="claude-opus" ${data.modelPreference === 'claude-opus' ? 'selected' : ''}>Claude Opus</option>
-            <option value="claude-sonnet" ${data.modelPreference === 'claude-sonnet' ? 'selected' : ''}>Claude Sonnet</option>
-            <option value="claude-haiku" ${data.modelPreference === 'claude-haiku' ? 'selected' : ''}>Claude Haiku</option>
+            <option value="auto" ${data.modelPreference === 'auto' ? 'selected' : ''}>Auto</option>
+            <option value="claude" ${data.modelPreference === 'claude' ? 'selected' : ''}>Claude</option>
+            <option value="ollama" ${data.modelPreference === 'ollama' ? 'selected' : ''}>Ollama</option>
           </select>
-          <p class="field-hint" id="modelPreference-hint">Which Claude model to use for analysis</p>
+          <p class="field-hint" id="modelPreference-hint">Preferred sidecar model route for local asks</p>
+        </div>
+
+        <div class="setting-field">
+          <label for="tokenBudget">Token Budget</label>
+          <input
+            type="number"
+            id="tokenBudget"
+            class="setting-input"
+            value="${escapeHtml(String(data.tokenBudget))}"
+            min="1000"
+            max="32000"
+            step="500"
+            aria-label="Default token budget"
+            aria-describedby="tokenBudget-hint"
+          />
+          <p class="field-hint" id="tokenBudget-hint">Default context budget used for ask and streaming ask requests</p>
+          <div class="field-status" id="tokenBudget-status"></div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Local Storage</h3>
+
+        <div class="setting-grid">
+          <div class="setting-field">
+            <label for="lancedbPath">LanceDB Path</label>
+            <input
+              type="text"
+              id="lancedbPath"
+              class="setting-input"
+              value="${escapeHtml(data.lancedbPath)}"
+              placeholder="./data/lancedb"
+              aria-label="LanceDB path"
+              aria-describedby="lancedbPath-hint"
+            />
+            <p class="field-hint" id="lancedbPath-hint">Local vector index path used by the sidecar environment</p>
+          </div>
+
+          <div class="setting-field">
+            <label for="historyPath">History DB Path</label>
+            <input
+              type="text"
+              id="historyPath"
+              class="setting-input"
+              value="${escapeHtml(data.historyPath)}"
+              placeholder="./data/history/surgical_context.sqlite3"
+              aria-label="SQLite history path"
+              aria-describedby="historyPath-hint"
+            />
+            <p class="field-hint" id="historyPath-hint">Planned local SQLite history path for dialogs and snapshots</p>
+          </div>
         </div>
       </div>
 

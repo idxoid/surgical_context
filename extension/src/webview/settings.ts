@@ -15,6 +15,7 @@ import {
 
 class SettingsPanel {
   private settings: SettingsData | null = null;
+  private listenersAttached = false;
 
   constructor() {
     this.initializeMessageListener();
@@ -52,8 +53,10 @@ class SettingsPanel {
   }
 
   private setupFormListeners(): void {
+    if (this.listenersAttached) return;
+    this.listenersAttached = true;
+
     document.addEventListener('click', (e: Event) => {
-      const target = e.currentTarget as HTMLElement;
       const btn = (e.target as HTMLElement).closest('[data-action]');
       if (!btn) return;
 
@@ -86,24 +89,36 @@ class SettingsPanel {
     const workspaceId = (document.getElementById('workspaceId') as HTMLInputElement)?.value || '';
     const modelPreference = (document.getElementById('modelPreference') as HTMLSelectElement)?.value || 'auto';
     const authToken = (document.getElementById('authToken') as HTMLInputElement)?.value || '';
+    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement)?.value || '4000');
+    const lancedbPath = (document.getElementById('lancedbPath') as HTMLInputElement)?.value || '';
+    const historyPath = (document.getElementById('historyPath') as HTMLInputElement)?.value || '';
     const overlaySync = (document.getElementById('overlaySync') as HTMLInputElement)?.checked || false;
     const autoOpenInspector = (document.getElementById('autoOpenInspector') as HTMLInputElement)?.checked || false;
 
-    // Validate backendUrl format
     if (backendUrl && !backendUrl.startsWith('http://') && !backendUrl.startsWith('https://')) {
       showFieldStatus('backendUrl', false, 'URL must start with http:// or https://');
       return;
     }
 
-    // Send updates
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.backendUrl', value: backendUrl });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.workspaceId', value: workspaceId });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.modelPreference', value: modelPreference });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.authToken', value: authToken });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.overlaySync', value: overlaySync });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.chat.autoOpenInspector', value: autoOpenInspector });
+    if (!Number.isFinite(tokenBudget) || tokenBudget < 1000 || tokenBudget > 32000) {
+      showFieldStatus('tokenBudget', false, 'Use a value from 1000 to 32000');
+      return;
+    }
 
-    showFeedback('Settings saved successfully', 'success');
+    this.postMessage({
+      type: 'settings.save',
+      settings: {
+        backendUrl,
+        workspaceId,
+        modelPreference,
+        authToken,
+        tokenBudget,
+        lancedbPath,
+        historyPath,
+        overlaySync,
+        autoOpenInspector,
+      },
+    });
   }
 
   private resetSettings(): void {
@@ -115,16 +130,32 @@ class SettingsPanel {
       workspaceId: 'local/default@main',
       modelPreference: 'auto',
       authToken: '',
+      tokenBudget: 4000,
+      lancedbPath: './data/lancedb',
+      historyPath: './data/history/surgical_context.sqlite3',
       overlaySync: true,
       autoOpenInspector: false,
     };
 
-    (document.getElementById('backendUrl') as HTMLInputElement).value = defaults.backendUrl;
-    (document.getElementById('workspaceId') as HTMLInputElement).value = defaults.workspaceId;
-    (document.getElementById('modelPreference') as HTMLSelectElement).value = defaults.modelPreference;
-    (document.getElementById('authToken') as HTMLInputElement).value = defaults.authToken;
-    (document.getElementById('overlaySync') as HTMLInputElement).checked = defaults.overlaySync;
-    (document.getElementById('autoOpenInspector') as HTMLInputElement).checked = defaults.autoOpenInspector;
+    const backendUrl = document.getElementById('backendUrl') as HTMLInputElement | null;
+    const workspaceId = document.getElementById('workspaceId') as HTMLInputElement | null;
+    const modelPreference = document.getElementById('modelPreference') as HTMLSelectElement | null;
+    const authToken = document.getElementById('authToken') as HTMLInputElement | null;
+    const tokenBudget = document.getElementById('tokenBudget') as HTMLInputElement | null;
+    const lancedbPath = document.getElementById('lancedbPath') as HTMLInputElement | null;
+    const historyPath = document.getElementById('historyPath') as HTMLInputElement | null;
+    const overlaySync = document.getElementById('overlaySync') as HTMLInputElement | null;
+    const autoOpenInspector = document.getElementById('autoOpenInspector') as HTMLInputElement | null;
+
+    if (backendUrl) backendUrl.value = defaults.backendUrl;
+    if (workspaceId) workspaceId.value = defaults.workspaceId;
+    if (modelPreference) modelPreference.value = defaults.modelPreference;
+    if (authToken) authToken.value = defaults.authToken;
+    if (tokenBudget) tokenBudget.value = String(defaults.tokenBudget);
+    if (lancedbPath) lancedbPath.value = defaults.lancedbPath;
+    if (historyPath) historyPath.value = defaults.historyPath;
+    if (overlaySync) overlaySync.checked = defaults.overlaySync;
+    if (autoOpenInspector) autoOpenInspector.checked = defaults.autoOpenInspector;
 
     showFeedback('Reset to default settings', 'info');
   }
@@ -135,7 +166,8 @@ class SettingsPanel {
       showFieldStatus('backendUrl', false, 'Please enter a URL');
       return;
     }
-    this.postMessage({ type: 'settings.testUrl', url });
+    const authToken = (document.getElementById('authToken') as HTMLInputElement | null)?.value || '';
+    this.postMessage({ type: 'settings.testUrl', url, authToken });
   }
 
   private render(): void {
@@ -147,6 +179,9 @@ class SettingsPanel {
       workspaceId: this.settings.workspaceId,
       modelPreference: this.settings.modelPreference,
       authToken: this.settings.authToken,
+      tokenBudget: this.settings.tokenBudget,
+      lancedbPath: this.settings.lancedbPath,
+      historyPath: this.settings.historyPath,
       overlaySync: this.settings.overlaySync,
       autoOpenInspector: this.settings.autoOpenInspector,
     };

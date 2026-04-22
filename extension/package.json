@@ -263,6 +263,38 @@
           "default": "local/default@main",
           "description": "Workspace scope identifier for multi-workspace support"
         },
+        "surgicalContext.modelPreference": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "claude",
+            "ollama"
+          ],
+          "description": "Preferred sidecar model route for ask requests"
+        },
+        "surgicalContext.authToken": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token used when the sidecar requires authentication"
+        },
+        "surgicalContext.tokenBudget": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 1000,
+          "maximum": 32000,
+          "description": "Default context token budget for ask requests"
+        },
+        "surgicalContext.storage.lancedbPath": {
+          "type": "string",
+          "default": "./data/lancedb",
+          "description": "Local LanceDB path used by the sidecar environment"
+        },
+        "surgicalContext.storage.historyPath": {
+          "type": "string",
+          "default": "./data/history/surgical_context.sqlite3",
+          "description": "Local SQLite history path for dialogs and prompt snapshots"
+        },
         "surgicalContext.overlaySync": {
           "type": "boolean",
           "default": true,

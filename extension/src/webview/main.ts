@@ -667,6 +667,9 @@ class MainSurface {
     const workspaceId = (document.getElementById('workspaceId') as HTMLInputElement | null)?.value || '';
     const modelPreference = (document.getElementById('modelPreference') as HTMLSelectElement | null)?.value || 'auto';
     const authToken = (document.getElementById('authToken') as HTMLInputElement | null)?.value || '';
+    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement | null)?.value || '4000');
+    const lancedbPath = (document.getElementById('lancedbPath') as HTMLInputElement | null)?.value || '';
+    const historyPath = (document.getElementById('historyPath') as HTMLInputElement | null)?.value || '';
     const overlaySync = (document.getElementById('overlaySync') as HTMLInputElement | null)?.checked || false;
     const autoOpenInspector = (document.getElementById('autoOpenInspector') as HTMLInputElement | null)?.checked || false;
 
@@ -675,12 +678,25 @@ class MainSurface {
       return;
     }
 
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.backendUrl', value: backendUrl });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.workspaceId', value: workspaceId });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.modelPreference', value: modelPreference });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.authToken', value: authToken });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.overlaySync', value: overlaySync });
-    this.postMessage({ type: 'settings.update', key: 'surgicalContext.chat.autoOpenInspector', value: autoOpenInspector });
+    if (!Number.isFinite(tokenBudget) || tokenBudget < 1000 || tokenBudget > 32000) {
+      showFieldStatus('tokenBudget', false, 'Use a value from 1000 to 32000');
+      return;
+    }
+
+    this.postMessage({
+      type: 'settings.save',
+      settings: {
+        backendUrl,
+        workspaceId,
+        modelPreference,
+        authToken,
+        tokenBudget,
+        lancedbPath,
+        historyPath,
+        overlaySync,
+        autoOpenInspector,
+      },
+    });
   }
 
   private resetSettings(): void {
@@ -689,6 +705,9 @@ class MainSurface {
       workspaceId: 'local/default@main',
       modelPreference: 'auto',
       authToken: '',
+      tokenBudget: 4000,
+      lancedbPath: './data/lancedb',
+      historyPath: './data/history/surgical_context.sqlite3',
       overlaySync: true,
       autoOpenInspector: false,
     };
@@ -697,6 +716,9 @@ class MainSurface {
     const workspaceId = document.getElementById('workspaceId') as HTMLInputElement | null;
     const modelPreference = document.getElementById('modelPreference') as HTMLSelectElement | null;
     const authToken = document.getElementById('authToken') as HTMLInputElement | null;
+    const tokenBudget = document.getElementById('tokenBudget') as HTMLInputElement | null;
+    const lancedbPath = document.getElementById('lancedbPath') as HTMLInputElement | null;
+    const historyPath = document.getElementById('historyPath') as HTMLInputElement | null;
     const overlaySync = document.getElementById('overlaySync') as HTMLInputElement | null;
     const autoOpenInspector = document.getElementById('autoOpenInspector') as HTMLInputElement | null;
 
@@ -704,6 +726,9 @@ class MainSurface {
     if (workspaceId) workspaceId.value = defaults.workspaceId;
     if (modelPreference) modelPreference.value = defaults.modelPreference;
     if (authToken) authToken.value = defaults.authToken;
+    if (tokenBudget) tokenBudget.value = String(defaults.tokenBudget);
+    if (lancedbPath) lancedbPath.value = defaults.lancedbPath;
+    if (historyPath) historyPath.value = defaults.historyPath;
     if (overlaySync) overlaySync.checked = defaults.overlaySync;
     if (autoOpenInspector) autoOpenInspector.checked = defaults.autoOpenInspector;
 
@@ -717,7 +742,8 @@ class MainSurface {
       return;
     }
 
-    this.postMessage({ type: 'settings.testUrl', url });
+    const authToken = (document.getElementById('authToken') as HTMLInputElement | null)?.value || '';
+    this.postMessage({ type: 'settings.testUrl', url, authToken });
   }
 
   private onRequestStarted(requestId: string, symbol?: string): void {
