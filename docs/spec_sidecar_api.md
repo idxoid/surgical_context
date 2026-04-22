@@ -322,6 +322,6 @@ Structured request logs and Prometheus metrics track request latency against `SI
 ## Planned Extensions
 
 - Add production auth policy: persistent users, secret rotation, token revocation, and role-based authorization.
-- Add `GET /metrics` with request timing, token/cost tracking, and queue state.
-- Add prompt-contract observability: scores, provenance, pruning reasons, model route, resolver version, and trace ID.
-- Add backpressure and batching around `/index/file` for mass editor events.
+- Expand `GET /metrics` with local release SLO checks and dashboard-ready health fields.
+- Finish prompt-contract observability: `pruned[]`, ranker weights, intent distribution, and ambiguous-intent signal.
+- Add SQLite-backed history for conversations, prompt snapshots, inspector snapshots, and impact snapshots.

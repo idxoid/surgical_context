@@ -35,6 +35,15 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function getText(path: string): Promise<string> {
+  const res = await fetch(`${getBaseUrl()}${path}`, {
+    method: 'GET',
+    headers: getHeaders(),
+  });
+  if (!res.ok) throw new Error(`Sidecar ${path} → ${res.status}`);
+  return res.text();
+}
+
 export interface OverlayResponse {
   file_path: string;
   symbols: string[];
@@ -141,9 +150,12 @@ export interface AuditAction {
   timestamp: string;
   user_id: string;
   action: string;
+  resource?: string;
+  status?: string;
   symbol?: string;
   intent?: string;
   mode?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface AuditActionsResponse {
@@ -176,23 +188,21 @@ export interface IndexFilesResponse {
   queue_depth: number;
 }
 
-export interface MetricsResponse {
-  requests_total: number;
-  requests_successful: number;
-  requests_failed: number;
-  latency_p50_ms: number;
-  latency_p95_ms: number;
-  latency_p99_ms: number;
-  tokens_used_total: number;
-  cost_usd_total: number;
-  cache_hit_rate: number;
-}
-
 export interface IndexQueueResponse {
-  queue_depth: number;
-  pending_jobs: number;
-  processing: number;
-  completed_total: number;
+  status: string;
+  queue: {
+    pending: number;
+    processing: number;
+    max_pending: number;
+    batch_size: number;
+    debounce_ms: number;
+    last_error: string;
+    enqueued: number;
+    coalesced: number;
+    rejected: number;
+    processed: number;
+    failed_batches: number;
+  };
 }
 
 export interface FeedbackEvent {
@@ -228,15 +238,26 @@ export const SidecarClient = {
     }
   },
 
-  ask(symbol: string, question: string, tokenBudget = 4000): Promise<AskResponse> {
-    return post('/ask', { symbol, question, token_budget: tokenBudget });
+  ask(
+    symbol: string | undefined,
+    question: string,
+    tokenBudget = 4000,
+    filePath?: string
+  ): Promise<AskResponse> {
+    return post('/ask', {
+      symbol: symbol || null,
+      question,
+      token_budget: tokenBudget,
+      file_path: filePath || null,
+    });
   },
 
   async askStream(
-    symbol: string,
+    symbol: string | undefined,
     question: string,
     callbacks: SSECallbacks,
-    tokenBudget = 4000
+    tokenBudget = 4000,
+    filePath?: string
   ): Promise<AbortController> {
     const controller = new AbortController();
 
@@ -244,7 +265,12 @@ export const SidecarClient = {
       const res = await fetch(`${getBaseUrl()}/ask/stream`, {
         method: 'POST',
         headers: getHeaders(),
-        body: JSON.stringify({ symbol, question, token_budget: tokenBudget }),
+        body: JSON.stringify({
+          symbol: symbol || null,
+          question,
+          token_budget: tokenBudget,
+          file_path: filePath || null,
+        }),
         signal: controller.signal,
       });
 
@@ -312,8 +338,8 @@ export const SidecarClient = {
     return post('/search', { query, limit });
   },
 
-  metrics(): Promise<MetricsResponse> {
-    return get('/metrics');
+  metrics(): Promise<string> {
+    return getText('/metrics');
   },
 
   indexQueueStatus(): Promise<IndexQueueResponse> {

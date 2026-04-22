@@ -30,8 +30,11 @@ This folder contains all project documentation. Start here to understand the sys
 
 **APIs & Infrastructure:**
 - **[spec_sidecar_api.md](spec_sidecar_api.md)** — FastAPI endpoints
+- **[spec_storage.md](spec_storage.md)** — current Neo4j/LanceDB storage behavior
+- **[spec_storage_connectors.md](spec_storage_connectors.md)** — planned Graph/Vector/History provider connector layer
 - **[spec_language_adapter.md](spec_language_adapter.md)** — plugin architecture (ADR-005)
 - **[spec_overlay.md](spec_overlay.md)** — in-memory dirty state
+- **[spec_tenant_api_graph.md](spec_tenant_api_graph.md)** — future Team/Enterprise tenant-level API contract graph
 
 **Advanced Topics:**
 - **[spec_eval_harness.md](spec_eval_harness.md)** — measuring quality (recall, precision)
@@ -48,11 +51,13 @@ This folder contains all project documentation. Start here to understand the sys
 
 ## Current Truth
 
-The repo currently includes the Python FastAPI sidecar, Neo4j/LanceDB storage clients, parser/indexer/context modules, tests, QA benchmark tooling, and a VS Code extension scaffold under `extension/`.
+The active target is the **Local Developer Product**: a local-first, single-tenant VS Code tool with the Python FastAPI sidecar, local Neo4j graph, local LanceDB vectors, local SQLite history, and ask/inspect/impact workflows. This is the open-source candidate.
 
-Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, a durable indexing job log with retry/dead-letter states, signed bearer-token enforcement behind `AUTH_REQUIRED`, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, P2 observability/metrics, a unified search endpoint, a bounded indexing queue with IDE save batching, content-hash embedding cache/throttling, and first endpoint coverage for the sidecar API.
+The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/context modules, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
 
-The most important open gaps are now production-hardening and scale work: production auth policy/secret management, latency SLOs/OpenTelemetry, streaming chat UI integration, settings UX, branch-sync queue integration, and retrieval/feedback learning loops. See **[road_map.md](road_map.md)** for the canonical current backlog.
+Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, and endpoint coverage for the sidecar API.
+
+The most important open gaps are now local-product gaps: one-command local setup, SQLite-backed history/snapshots, extension streaming and settings polish, dashboard resilience, remaining prompt-contract observability, local smoke tests, and provider boundaries around the default Neo4j/LanceDB/SQLite implementations. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting are future horizons. See **[road_map.md](road_map.md)** for the canonical current backlog.
 
 ---
 

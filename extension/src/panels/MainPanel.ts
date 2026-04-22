@@ -6,50 +6,54 @@ import { stateManager } from '../state/ExtensionState';
 import {
   WebviewToHostMessage,
   HostToWebviewMessage,
-  ChatSurfaceState,
 } from '../webview/shared/protocol';
 import { PromptContextPayload } from '../sidecarClient';
 
-export class ChatViewProvider implements vscode.WebviewViewProvider {
-  public static readonly viewType = 'surgicalContext.chat';
+export class MainPanel {
+  public static readonly viewType = 'surgicalContext.main';
+  private static instance: MainPanel | undefined;
 
-  private webviewView: vscode.WebviewView | undefined;
+  private readonly panel: vscode.WebviewPanel;
+  private readonly extensionUri: vscode.Uri;
+  private readonly overlayManager: OverlayManager;
+  private disposables: vscode.Disposable[] = [];
   private currentAbortController: AbortController | null = null;
+  private onDisposeCallback: (() => void) | null = null;
 
-  constructor(
-    private extensionUri: vscode.Uri,
-    private overlayManager: OverlayManager
-  ) {}
+  private constructor(extensionUri: vscode.Uri, overlayManager: OverlayManager) {
+    this.extensionUri = extensionUri;
+    this.overlayManager = overlayManager;
 
-  public resolveWebviewView(
-    webviewView: vscode.WebviewView,
-    _context: vscode.WebviewViewResolveContext,
-    _token: vscode.CancellationToken
-  ): void {
-    this.webviewView = webviewView;
+    this.panel = vscode.window.createWebviewPanel(
+      MainPanel.viewType,
+      'Surgical Context',
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
+      }
+    );
 
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
-    };
-
-    webviewView.webview.html = getWebviewContent(
-      webviewView.webview,
-      this.extensionUri,
-      'chat.js',
+    this.panel.webview.html = getWebviewContent(
+      this.panel.webview,
+      extensionUri,
+      'main.js',
       'styles.css'
     );
 
-    this.initializeSurfaceState();
+    this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    this.panel.webview.onDidReceiveMessage(
+      (message: WebviewToHostMessage) => this.handleWebviewMessage(message),
+      null,
+      this.disposables
+    );
 
-    webviewView.webview.onDidReceiveMessage((message: WebviewToHostMessage) => {
-      this.handleWebviewMessage(message);
-    });
-
+    // Listen to state changes
     stateManager.subscribe(() => {
       this.pushStateToWebview();
     });
 
+    // Listen to editor changes
     vscode.window.onDidChangeActiveTextEditor(() => {
       this.pushWorkspaceState();
     });
@@ -62,32 +66,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.pushWorkspaceState();
     });
 
-    this.pushStateToWebview();
+    this.initializeSurfaceState();
+  }
+
+  public static createOrReveal(extensionUri: vscode.Uri, overlayManager: OverlayManager): void {
+    if (MainPanel.instance) {
+      MainPanel.instance.panel.reveal(vscode.ViewColumn.Beside);
+      return;
+    }
+
+    MainPanel.instance = new MainPanel(extensionUri, overlayManager);
+  }
+
+  public onDispose(callback: () => void): void {
+    this.onDisposeCallback = callback;
+  }
+
+  public reveal(column: vscode.ViewColumn): void {
+    this.panel.reveal(column);
   }
 
   private initializeSurfaceState(): void {
     const state = stateManager.getState();
-    const surfaceState: ChatSurfaceState = {
-      expandedAccordions: {
-        environment: false,
-        contextSummary: false,
-        advancedInfo: false,
-      },
-      composerDraft: '',
-      workspace: {
-        activeFile: state.activeFile || null,
-        selectedSymbol: state.selectedSymbol || null,
-        isDirty: state.isDirty,
-      },
-      backend: {
-        sidecarHealth: state.sidecarHealth,
-        cloudStatus: state.cloudStatus,
-      },
-    };
-
     this.postMessage({
       type: 'surface.init',
-      state: surfaceState,
+      state: {
+        expandedAccordions: {
+          environment: false,
+          contextSummary: false,
+          advancedInfo: false,
+        },
+        composerDraft: '',
+        workspace: {
+          activeFile: state.activeFile || null,
+          selectedSymbol: state.selectedSymbol || null,
+          isDirty: state.isDirty,
+        },
+        backend: {
+          sidecarHealth: state.sidecarHealth,
+          cloudStatus: state.cloudStatus,
+        },
+      },
     });
   }
 
@@ -133,14 +152,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
 
-      case 'action.openInspector':
-        vscode.commands.executeCommand('surgicalContext.openInspector');
-        break;
-
-      case 'action.showImpact':
-        vscode.commands.executeCommand('surgicalContext.showImpact', message.symbol);
-        break;
-
       case 'feedback.submit':
         SidecarClient.submitFeedback({
           message_id: message.messageId,
@@ -165,7 +176,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleAsk(prompt: string, symbol?: string): Promise<void> {
-    if (!this.webviewView) return;
+    if (!this.panel) return;
 
     let targetSymbol = symbol;
     if (!targetSymbol) {
@@ -254,6 +265,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private postMessage(message: HostToWebviewMessage): void {
-    this.webviewView?.webview.postMessage(message);
+    this.panel.webview.postMessage(message);
+  }
+
+  private dispose(): void {
+    MainPanel.instance = undefined;
+    this.panel.dispose();
+
+    while (this.disposables.length) {
+      const x = this.disposables.pop();
+      if (x) {
+        x.dispose();
+      }
+    }
+
+    if (this.onDisposeCallback) {
+      this.onDisposeCallback();
+    }
   }
 }

@@ -10,6 +10,8 @@
 
 **LanceDB (The Searcher)** — local vector database for documentation embeddings (`all-MiniLM-L6-v2`). Enables semantic retrieval of relevant doc snippets. ✅ Implemented.
 
+**SQLite (The Memory)** — planned local history store for conversations, messages, ask snapshots, inspector snapshots, impact snapshots, and feedback tokens. Local-only by default.
+
 **Local FS (The Source of Truth)** — all actual code and doc text stays on disk. The sidecar reads it on demand, just before sending a prompt.
 
 ---
@@ -81,20 +83,42 @@ Symbol node stores: `uid`, `name`, `kind`, `range`, `hash`. No `file_path` — n
 
 ---
 
-## 6. Security (Privacy by Design)
+## 6. New Ideas / Optional Add-ons
 
-- Source code never leaves the local machine for storage.
-- Neo4j SaaS (Phase 4, deferred) stores only the topology map — names and relationships, no code text.
-- Vector embeddings stored locally in LanceDB.
-- Open question for Phase 4: embedding-inversion risk. Before any LanceDB data syncs to cloud, an ADR must justify the leakage surface (vectors can be partially inverted to recover source text).
+These ideas are not required for the Local Developer Product. They stay documented so the architecture can grow without confusing the near-term release target.
+
+**LLM Proxy Gateway** — optional independent service in front of model APIs. The sidecar still keeps model preferences, model selection, prompt assembly, and routing intent. The gateway is an execution proxy: it receives the selected model call and forwards it to the configured LLM provider.
+
+Possible modules / use cases:
+- Unified execution API for OpenAI, Anthropic, local Ollama, Bedrock, Vertex, Azure OpenAI, or customer-hosted models.
+- Account and expense balancing across one user with many provider accounts, many users sharing one account, or tenant-level account pools.
+- Centralized provider credentials, rate limits, budgets, quota tracking, and cost attribution.
+- Auditing of model calls, metadata, selected model, token usage, latency, and provider errors.
+- PII filtration, redaction, masking, or policy checks before a prompt leaves the local/customer boundary.
+- Optional fallback when the selected provider/account is unavailable, if product policy allows fallback.
+
+Boundary: the gateway is not required for the core local product and does not replace sidecar model selection. The extension should need only small configuration changes, if any. The sidecar calls either a direct LLM client or the proxy transport with the already-selected model instruction.
 
 ---
 
-## 7. Current Status
+## 7. Security (Privacy by Design)
 
-Pre-release, local dev tool. SaaS (Phase 4) and Marketplace (Phase 5) are deferred until:
+- Source code never leaves the local machine for storage.
+- Local Neo4j stores only the topology map — names and relationships, no code text. Future managed graph providers must keep the same boundary.
+- Vector embeddings stored locally in LanceDB.
+- Local history defaults to SQLite with policy gates around prompt text, response text, source snippets, retention, and redaction.
+- Open question for future managed vector providers: embedding-inversion risk. Before any vector data syncs outside the local machine, an ADR must justify the leakage surface because vectors can be partially inverted to recover source text.
 
-- **Phase 2.5** — evaluation harness, structured logging, `/metrics`, token accounting.
-- **Phase 3.5** — incremental `POST /index/file`, token-budget-driven BFS, `IMPORTS` / `DEPENDS_ON` edges.
+---
+
+## 8. Current Status
+
+Pre-release, local dev tool. The active target is the Local Developer Product and open-source candidate. SaaS, marketplace, tenant graph, alternate database backends, and microservice splitting are deferred until the local loop is stable.
+
+Near-term priorities:
+- One-command local setup and smoke-testable extension flow.
+- SQLite local history and prompt snapshots.
+- Streaming chat, Inspector/Impact synchronization, settings UX, and dashboard resilience.
+- Remaining prompt-contract observability and local latency SLO checks.
 
 See `road_map.md` and ADR-006 for the full blocking rationale.

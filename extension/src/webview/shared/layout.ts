@@ -11,28 +11,40 @@ export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, char => map[char]);
 }
 
-export function renderMessageCard(message: ChatMessage): string {
+export function renderMessageCard(message: ChatMessage, selectedRequestId?: string | null): string {
   const timestamp = new Date(message.timestamp).toLocaleTimeString();
-  const baseClass = `message-card message-${message.type}`;
+  const isSelected = Boolean(message.requestId && selectedRequestId === message.requestId);
+  const isSelectablePrompt = message.type === 'user' && Boolean(message.requestId);
+  const baseClass = `message-card ${message.type}${isSelected ? ' selected' : ''}${isSelectablePrompt ? ' selectable' : ''}`;
   const statusClass = message.status ? ` status-${message.status}` : '';
+  const requestAttrs = message.requestId
+    ? ` data-request-id="${escapeHtml(message.requestId)}"`
+    : '';
+  const selectionAttrs = isSelectablePrompt
+    ? ` data-action="selectPrompt" role="button" tabindex="0" aria-pressed="${isSelected}"`
+    : '';
 
   if (message.type === 'user') {
     return `
-      <div class="${baseClass}${statusClass}">
+      <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${selectionAttrs}>
         <div class="message-header">
           <span class="message-role">You</span>
           <span class="message-time">${timestamp}</span>
         </div>
         <div class="message-content">${escapeHtml(message.content)}</div>
-      </div>
+      </article>
     `;
   }
 
   // Assistant message
   let content = `
-    <div class="${baseClass}${statusClass}">
+    <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}>
       <div class="message-header">
-        <span class="message-role">Surgical Context</span>
+        <span class="message-role">
+          <span class="message-icon" aria-hidden="true">✦</span>
+          Surgical Context
+          ${message.status === 'streaming' ? '<span class="live-dot"></span><span class="message-muted">Streaming answer...</span>' : ''}
+        </span>
         <span class="message-time">${timestamp}</span>
       </div>
       <div class="message-content">${escapeHtml(message.content)}</div>
@@ -45,14 +57,14 @@ export function renderMessageCard(message: ChatMessage): string {
   if (message.status === 'done') {
     content += `
       <div class="message-actions">
-        <button class="action-btn" data-action="feedback" data-rating="up" title="Helpful">👍</button>
-        <button class="action-btn" data-action="feedback" data-rating="down" title="Not helpful">👎</button>
-        <button class="action-btn" data-action="copy" title="Copy response">📋</button>
+        <button class="icon-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
+        <button class="icon-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
+        <button class="icon-button" data-action="copy" title="Copy response" aria-label="Copy response">Copy</button>
       </div>
     `;
   }
 
-  content += '</div>';
+  content += '</article>';
   return content;
 }
 
@@ -62,12 +74,12 @@ export function renderStreamingCursor(): string {
 
 export function renderAccordion(id: string, title: string, content: string, expanded = false): string {
   return `
-    <div class="accordion-group" data-accordion="${id}">
-      <button class="accordion-header" aria-expanded="${expanded}" aria-controls="${id}-content" role="button">
+    <div class="accordion" data-accordion="${id}">
+      <button id="${id}-header" class="accordion-header" aria-expanded="${expanded}" aria-controls="${id}-content" role="button">
+        <span class="accordion-chevron" aria-hidden="true">›</span>
         <span class="accordion-title">${escapeHtml(title)}</span>
-        <span class="accordion-icon" aria-hidden="true">▼</span>
       </button>
-      <div id="${id}-content" class="accordion-content ${expanded ? 'expanded' : ''}" ${expanded ? '' : 'hidden'} role="region" aria-labelledby="${id}">
+      <div id="${id}-content" class="accordion-content ${expanded ? 'expanded' : ''}" ${expanded ? '' : 'hidden'} role="region" aria-labelledby="${id}-header">
         ${content}
       </div>
     </div>
@@ -79,7 +91,7 @@ export function renderEnvironmentAccordion(state: {
   cloud: string;
   mode: string;
   symbol?: string;
-}): string {
+}, expanded = false): string {
   const content = `
     <div class="accordion-row">
       <div class="accordion-label">Workspace</div>
@@ -102,7 +114,7 @@ export function renderEnvironmentAccordion(state: {
         : ''
     }
   `;
-  return renderAccordion('environment', 'Environment', content, false);
+  return renderAccordion('environment', 'Environment', content, expanded);
 }
 
 export function renderContextSummaryAccordion(summary?: {
@@ -111,9 +123,9 @@ export function renderContextSummaryAccordion(summary?: {
   docsCount: number;
   tokenText: string;
   chips: string[];
-}): string {
+}, expanded = false): string {
   if (!summary) {
-    return renderAccordion('contextSummary', 'Context Summary', 'Run an ask to populate this section.', false);
+    return renderAccordion('contextSummary', 'Context Summary', 'Run an ask to populate this section.', expanded);
   }
 
   const content = `
@@ -137,12 +149,15 @@ export function renderContextSummaryAccordion(summary?: {
       ${summary.chips.map(chip => `<span class="chip">${escapeHtml(chip)}</span>`).join('')}
     </div>
   `;
-  return renderAccordion('contextSummary', 'Context Summary', content, false);
+  return renderAccordion('contextSummary', 'Context Summary', content, expanded);
 }
 
-export function renderAdvancedInfoAccordion(info?: { intent: string; tiersUsed: string[]; isDirty: boolean }): string {
+export function renderAdvancedInfoAccordion(
+  info?: { intent: string; tiersUsed: string[]; isDirty: boolean },
+  expanded = false
+): string {
   if (!info) {
-    return renderAccordion('advancedInfo', 'Advanced Info', 'Run an ask to populate this section.', false);
+    return renderAccordion('advancedInfo', 'Advanced Info', 'Run an ask to populate this section.', expanded);
   }
 
   const content = `
@@ -152,33 +167,43 @@ export function renderAdvancedInfoAccordion(info?: { intent: string; tiersUsed: 
     </div>
     <div class="accordion-row">
       <div class="accordion-label">Tiers Used</div>
-      <div class="accordion-value">${info.tiersUsed.join(', ')}</div>
+      <div class="accordion-value">${info.tiersUsed.map(escapeHtml).join(', ')}</div>
     </div>
     <div class="accordion-row">
       <div class="accordion-label">Has Unsaved Changes</div>
       <div class="accordion-value">${info.isDirty ? 'Yes' : 'No'}</div>
     </div>
   `;
-  return renderAccordion('advancedInfo', 'Advanced Info', content, false);
+  return renderAccordion('advancedInfo', 'Advanced Info', content, expanded);
 }
 
 export function renderStatusChips(state: { isDirty: boolean; graphFirst: boolean; docLinked: boolean }): string {
   return `
     <div class="status-chip-row">
-      ${state.isDirty ? '<span class="status-chip dirty">Unsaved Changes</span>' : ''}
-      ${state.graphFirst ? '<span class="status-chip graph">Graph-First</span>' : ''}
-      ${state.docLinked ? '<span class="status-chip docs">Doc-Linked</span>' : ''}
+      <span class="status-chip dirty">${state.isDirty ? 'dirty-aware' : 'clean'}</span>
+      ${state.graphFirst ? '<span class="status-chip graph">graph-first</span>' : ''}
+      ${state.docLinked ? '<span class="status-chip docs">doc-linked</span>' : ''}
+      <span class="status-spacer"></span>
+      <button class="status-info" title="Context provenance and privacy state" aria-label="Context provenance and privacy state">i</button>
     </div>
   `;
 }
 
-export function renderActionBar(): string {
+export function renderActionBar(active: 'chat' | 'inspector' | 'impact' | 'settings' = 'chat'): string {
   return `
     <div class="action-bar">
-      <button class="action-main-btn" data-action="ask" title="Ask about current symbol">Ask</button>
-      <button class="action-sec-btn" data-action="openInspector" title="Inspect context">Context</button>
-      <button class="action-sec-btn" data-action="showImpact" title="Show impact">Impact</button>
-      <button class="action-sec-btn" data-action="search" title="Search workspace">Search</button>
+      <button class="action-btn ${active === 'chat' ? 'primary' : ''}" data-action="openChat" title="Ask about current symbol">
+        <span aria-hidden="true">✦</span> Ask
+      </button>
+      <button class="action-btn ${active === 'inspector' ? 'primary' : ''}" data-action="openInspector" title="Inspect context">
+        <span aria-hidden="true">○</span> Inspect Context
+      </button>
+      <button class="action-btn ${active === 'impact' ? 'primary' : ''}" data-action="showImpact" title="Show impact">
+        <span aria-hidden="true">⌘</span> Impact
+      </button>
+      <button class="action-btn" data-action="search" title="Search workspace">
+        <span aria-hidden="true">⌕</span> Search
+      </button>
     </div>
   `;
 }
@@ -194,7 +219,9 @@ export function renderComposerDock(): string {
         aria-describedby="composer-help"
         rows="1"
       ></textarea>
-      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message">Send</button>
+      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message">
+        <span class="composer-send-icon" aria-hidden="true">➤</span>
+      </button>
       <div id="composer-help" class="sr-only">
         Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer.
       </div>

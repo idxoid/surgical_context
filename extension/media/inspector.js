@@ -155,6 +155,7 @@
   }
 
   // src/webview/inspector.ts
+  var vscode = acquireVsCodeApi();
   var InspectorPanel = class {
     constructor() {
       this.context = null;

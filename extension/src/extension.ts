@@ -1,15 +1,13 @@
 import * as vscode from 'vscode';
 import { SidecarClient } from './sidecarClient';
-import { ChatPanel } from './chatPanel';
 import { OverlayManager } from './overlayManager';
-import { ChatViewProvider } from './providers/ChatViewProvider';
-import { InspectorViewProvider } from './providers/InspectorViewProvider';
-import { ImpactViewProvider } from './providers/ImpactViewProvider';
-import { DashboardViewProvider } from './providers/DashboardViewProvider';
-import { SettingsViewProvider } from './providers/SettingsViewProvider';
 import { SurgicalContextCodeLensProvider } from './providers/CodeLensProvider';
 import { SurgicalContextHoverProvider } from './providers/HoverProvider';
+import { DashboardPanel } from './panels/DashboardPanel';
+import { SurgicalContextViewProvider } from './providers/SurgicalContextViewProvider';
 import { stateManager } from './state/ExtensionState';
+
+const SECONDARY_SIDEBAR_PROMPT_KEY = 'surgicalContext.secondarySideBarPromptShown';
 
 export function activate(context: vscode.ExtensionContext): void {
   // Create persistent status bar item
@@ -38,7 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Poll cloud status
   SidecarClient.cloudStatus().then(status => {
-    const cloudStatus = status.using_fallback ? 'fallback-local' : status.using_aura ? 'connected' : 'offline';
+    const cloudStatus = status.using_fallback ? 'fallback-local' : status.using_aura ? 'connected' : 'local';
     stateManager.setState({ cloudStatus });
   }).catch(err => {
     console.warn('Failed to fetch cloud status:', err);
@@ -46,6 +44,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Instantiate managers
   const overlayManager = new OverlayManager();
+  const surgicalContextView = new SurgicalContextViewProvider(context.extensionUri, overlayManager);
+
+  const revealSurgicalContextView = async (): Promise<void> => {
+    await vscode.commands.executeCommand('workbench.view.extension.surgicalContext');
+    await vscode.commands.executeCommand(SurgicalContextViewProvider.viewType + '.focus');
+  };
+
+  const openSecondarySideBarMovePicker = async (): Promise<void> => {
+    await revealSurgicalContextView();
+    await vscode.window.showInformationMessage(
+      'Choose "Secondary Side Bar" or "New Secondary Side Bar Entry" in the next picker.'
+    );
+    await vscode.commands.executeCommand(
+      'workbench.action.moveFocusedView',
+      SurgicalContextViewProvider.viewType
+    );
+  };
 
   // Register document lifecycle subscriptions
   context.subscriptions.push(
@@ -54,30 +69,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidCloseTextDocument(doc => overlayManager.onDocumentClosed(doc))
   );
 
-  // Register sidebar view providers
-  const chatViewProvider = new ChatViewProvider(context.extensionUri, overlayManager);
+  // Register the single sidebar surface used by the mocks for chat and impact.
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatViewProvider)
-  );
-
-  const inspectorViewProvider = new InspectorViewProvider(context.extensionUri);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(InspectorViewProvider.viewType, inspectorViewProvider)
-  );
-
-  const impactViewProvider = new ImpactViewProvider(context.extensionUri);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ImpactViewProvider.viewType, impactViewProvider)
-  );
-
-  const dashboardViewProvider = new DashboardViewProvider(context.extensionUri);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(DashboardViewProvider.viewType, dashboardViewProvider)
-  );
-
-  const settingsViewProvider = new SettingsViewProvider(context.extensionUri);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(SettingsViewProvider.viewType, settingsViewProvider)
+    vscode.window.registerWebviewViewProvider(
+      SurgicalContextViewProvider.viewType,
+      surgicalContextView,
+      { webviewOptions: { retainContextWhenHidden: true } }
+    )
   );
 
   // Register CodeLens provider
@@ -96,20 +94,24 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
 
     // Spec commands
-    vscode.commands.registerCommand('surgicalContext.askCurrentSymbol', () => {
-      vscode.commands.executeCommand('surgicalContext.chat.focus');
+    vscode.commands.registerCommand('surgicalContext.askCurrentSymbol', async () => {
+      await revealSurgicalContextView();
+      surgicalContextView.showChat();
     }),
 
-    vscode.commands.registerCommand('surgicalContext.askSelection', () => {
-      vscode.commands.executeCommand('surgicalContext.chat.focus');
+    vscode.commands.registerCommand('surgicalContext.askSelection', async () => {
+      await revealSurgicalContextView();
+      surgicalContextView.showChat();
     }),
 
     vscode.commands.registerCommand('surgicalContext.openInspector', async () => {
-      vscode.commands.executeCommand('surgicalContext.inspector.focus');
+      await revealSurgicalContextView();
+      surgicalContextView.showInspector();
     }),
 
     vscode.commands.registerCommand('surgicalContext.showImpact', async (symbol?: string) => {
-      vscode.commands.executeCommand('surgicalContext.impact.focus');
+      await revealSurgicalContextView();
+      await surgicalContextView.showImpact(symbol);
     }),
 
     vscode.commands.registerCommand('surgicalContext.findDocs', async () => {
@@ -118,11 +120,16 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('surgicalContext.openDashboard', async () => {
-      vscode.commands.executeCommand('surgicalContext.dashboard.focus');
+      DashboardPanel.createOrReveal(context.extensionUri);
     }),
 
     vscode.commands.registerCommand('surgicalContext.openSettings', async () => {
-      vscode.commands.executeCommand('surgicalContext.settings.focus');
+      await revealSurgicalContextView();
+      surgicalContextView.showSettings();
+    }),
+
+    vscode.commands.registerCommand('surgicalContext.moveToSecondarySideBar', async () => {
+      await openSecondarySideBarMovePicker();
     }),
 
     vscode.commands.registerCommand('surgicalContext.reindexCurrentFile', async () => {
@@ -151,12 +158,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // Legacy commands for backward compatibility
-    vscode.commands.registerCommand('surgicalContext.openChat', () => {
-      vscode.commands.executeCommand('surgicalContext.chat.focus');
+    vscode.commands.registerCommand('surgicalContext.openChat', async () => {
+      await revealSurgicalContextView();
+      surgicalContextView.showChat();
     }),
 
-    vscode.commands.registerCommand('surgicalContext.askAboutCursor', () => {
-      vscode.commands.executeCommand('surgicalContext.chat.focus');
+    vscode.commands.registerCommand('surgicalContext.askAboutCursor', async () => {
+      await revealSurgicalContextView();
+      surgicalContextView.showChat();
     }),
 
     vscode.commands.registerCommand('surgicalContext.indexProject', async () => {
@@ -179,8 +188,37 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     })
   );
+
+  void promptForSecondarySideBarPlacement(context, openSecondarySideBarMovePicker);
 }
 
 export function deactivate(): void {
   // cleanup handled by context.subscriptions
+}
+
+async function promptForSecondarySideBarPlacement(
+  context: vscode.ExtensionContext,
+  openMovePicker: () => Promise<void>
+): Promise<void> {
+  const config = vscode.workspace.getConfiguration('surgicalContext');
+  const shouldPrompt = config.get<boolean>('layout.promptForSecondarySideBar', true);
+  const alreadyPrompted = context.globalState.get<boolean>(SECONDARY_SIDEBAR_PROMPT_KEY, false);
+
+  if (!shouldPrompt || alreadyPrompted) {
+    return;
+  }
+
+  const choice = await vscode.window.showInformationMessage(
+    'Surgical Context works best in the Secondary Side Bar on the right. VS Code requires a one-time Move View confirmation.',
+    'Move View',
+    'Later',
+    'Do Not Ask Again'
+  );
+
+  if (choice === 'Move View') {
+    await context.globalState.update(SECONDARY_SIDEBAR_PROMPT_KEY, true);
+    await openMovePicker();
+  } else if (choice === 'Do Not Ask Again') {
+    await context.globalState.update(SECONDARY_SIDEBAR_PROMPT_KEY, true);
+  }
 }

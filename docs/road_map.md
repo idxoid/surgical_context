@@ -1,55 +1,102 @@
-# Surgical Context — Road Map
+# Surgical Context - Road Map
 
-> **Status:** ✅ MVP COMPLETE (Phases 1–7). 🚧 Phases 8–10 PROPOSED — correctness hardening, unified retrieval, and the learning loop.
+> **Status:** Active release target is the **Local Developer Product**: a local-first, single-tenant VS Code experience with the sidecar, local graph/vector/history, and ask/inspect/impact workflows. This is the open-source candidate.
 >
-> **Architecture Complete (MVP):**
-> - Phase 5: Typed Semantic Edges + Reverse Dependencies
-> - Phase 6: Intent Classification + Graceful Degradation + Smart Routing + Streaming
-> - Phase 7: Cloud Sync (Aura) + Multi-User + Audit Logging
+> **Already shipped foundation:** typed graph edges, AFFECTS, stable UID v2, scoped call resolution, workspace-scoped graph reads/writes, doc enrichment, intent-aware prompt assembly, graceful degradation, model routing, streaming sidecar endpoint, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a working VS Code extension surface.
 >
-> **Proposed Next (post-MVP, prioritized):**
-> - **Phase 8 — Correctness Hardening:** UID stability, call-resolution pipeline, workspace/branch isolation. These are load-bearing — every downstream metric (AFFECTS, DocAnchor, multi-user) depends on them being correct.
-> - **Phase 9 — Unified Retrieval & Observability:** single scored pool over graph + semantic, multi-label intent, full observability in the JSON Prompt Contract.
-> - **Phase 10 — Scale & Learning:** three-layer retrieval cache, feedback-driven learning loop.
+> **Principle:** finish the local daily-driver loop before expanding into team, enterprise, SaaS, marketplace, or microservice-platform scope.
 >
-> **Highlights (MVP, shipped):**
-> - **150 unit tests passing** (61 base + 47 Phase 6 + 21 Phase 7 + 9 cold-run integration)
-> - **Intent Classification:** 6 types drive context assembly strategy (single-label; multi-label proposed in Phase 9)
-> - **Model Routing:** smart routing (large/complex → Claude, small/simple → Ollama)
-> - **Prompt Caching:** ephemeral cache on graph_context (reduces API costs)
-> - **Multi-User Ready:** JWT auth, audit logging, cloud fallback (workspace isolation gap — Phase 8)
-> - **Neo4j Aura:** cloud-first with local Neo4j fallback on outage
-> - Doc Type Inference: pattern-based (spec_*, idea_*, concept, architecture)
->
-> **Phase 5 Graph Validation Metrics (full codebase):**
-> - Typed call edges: 49 (28 CALLS_DIRECT, 21 CALLS_DYNAMIC)
-> - AFFECTS index: 196 edges (reverse dependency materialization)
-> - FROM relations: 2,040 edges with type classification (doc, code, spec, architecture, concept, roadmap, review)
-> - COVERS edges: 2,286 (doc chunk → code symbol links)
-> - Relation types: 8 (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, AFFECTS, FROM, COVERS, DEPENDS_ON, IMPORTS)
-> - File doc_type: 37 files classified (28 code, 17 spec, 2 architecture, 2 documentation, 1 each: concept, idea, review, roadmap)
->
-> **Retrieval Quality (qa_benchmark.py):**
-> - Pass rate: 100% (10/10 questions)
-> - Recall@5: 1.00 (all expected symbols retrieved)
-> - Precision@5: 1.00 (no false positives)
-> - Token reduction: 50% (surgical vs carpet-bomb baseline)
-> - Assembly latency: 13.9ms avg (target: <200ms) ✅
->
-> **Known Limits (Phase 8 hardening status):**
-> - UID v2 is implemented from qualified name + normalized signature; migration tooling remains a future cleanup. See [spec_uid_stability.md](spec_uid_stability.md).
-> - Python call resolution now emits scoped/imported/dynamic/guess edges with confidence metadata; deeper TypeScript resolver work remains future cleanup. See [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
-> - Workspace-scoped graph reads/writes are implemented with `X-Workspace`; lifecycle GC remains future cleanup. See [spec_branch_isolation.md](spec_branch_isolation.md).
->
-> **See also:** [review_findings_2026-04-17.md](review_findings_2026-04-17.md) (all recommendations complete ✅), [DOCS_STYLE_GUIDE.md](DOCS_STYLE_GUIDE.md), [docs/README.md](README.md)
+> **See also:** [review_findings_2026-04-17.md](review_findings_2026-04-17.md), [DOCS_STYLE_GUIDE.md](DOCS_STYLE_GUIDE.md), [docs/README.md](README.md)
 
 ---
 
-## Current Stabilization Backlog
+## Release Target: Local Developer Product
 
-This section merges the project gap analysis into the canonical roadmap. The next work is less about adding novelty and more about making retrieval trustworthy, explainable, and safe under real team usage.
+The local product is the canonical next milestone.
 
-### P0 — Truth, Safety, and API Hardening
+**In scope for v0.1:**
+- VS Code UI with Chat, Inspector, Impact, Settings, and Dashboard.
+- Python sidecar running locally.
+- Local graph provider default: Neo4j in Docker.
+- Local vector provider default: LanceDB.
+- Local history provider default: SQLite.
+- Ask/inspect/impact flows that work without a required symbol: `symbol -> file -> workspace -> direct_llm`.
+- Prompt-contract transparency: selected context, scores/provenance where available, pruning reasons, model route, trace ID, token budget.
+- Local docs indexing from the repository.
+- Local-first privacy: no raw code in the graph, no raw prompt/code history unless policy explicitly allows it.
+- One-machine development and open-source contribution path.
+
+**Out of scope for v0.1:**
+- Required managed SaaS.
+- Cross-organization or cross-tenant graph.
+- Full alternate database backend support beyond provider boundaries around the defaults.
+- LLM proxy gateway as a required dependency.
+- Microservice split of the sidecar.
+- Rust/Go/C parser rewrites before profiling proves they are necessary.
+
+**Single-tenant default:** keep `workspace_id` and `tenant_id` in schemas and contracts, but default `tenant_id` to `local`. Multiple local workspaces are allowed; cross-project tenant graph traversal is not required for the local release.
+
+---
+
+## Canonical Backlog
+
+### P0 - Local Release Hardening
+- [ ] Add a clean local setup path: install extension dependencies, start Neo4j Docker, initialize LanceDB paths, run sidecar, launch extension dev host.
+- [ ] Add a local smoke test: clean clone -> install -> start storage -> index repo -> ask -> inspect -> impact -> dashboard.
+- [ ] Add an extension health checklist for sidecar, graph provider, vector provider, index state, LLM provider, and current workspace.
+- [ ] Make dashboard failures graceful when the sidecar is down, metrics are missing, or no index exists yet.
+- [ ] Finalize local settings UX for sidecar URL, workspace ID, model preference, auth token, storage paths, and token budget.
+- [ ] Document open-source local usage with Docker Neo4j, LanceDB, SQLite, Ollama, and optional cloud model keys.
+
+### P1 - Local History and Prompt Snapshots
+- [ ] Implement SQLite `HistoryProvider` for conversations, messages, ask snapshots, inspector snapshots, and impact snapshots.
+- [ ] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
+- [ ] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
+- [ ] Add retention controls and disabled/ephemeral modes for history.
+- [ ] Default policy: store metadata and response summaries; do not store raw code bodies or raw prompt bodies unless explicitly enabled.
+- [ ] Add tests for prompt-history privacy gates and snapshot retrieval.
+
+### P2 - Retrieval Quality and Observability
+- [ ] Finish the soft fallback ladder: missing symbol is a warning, not a failed chat; continue through file, workspace, then direct LLM.
+- [ ] Finish remaining Prompt Contract fields: `pruned[]`, ranker weights, intent distribution/confidence, and ambiguous-intent signal.
+- [ ] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally.
+- [ ] Tune unified ranking over graph + semantic candidates using the QA harness.
+- [ ] Add latency SLO checks for local asks and index operations.
+- [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
+
+### P3 - Extension Productization
+- [ ] Wire chat streaming to `/ask/stream` end to end in the webview.
+- [ ] Keep Chat, Inspector, and Impact synchronized around the currently selected ask.
+- [ ] Add keyboard/focus/accessibility polish for all webview surfaces.
+- [ ] Make command palette entries, activity placement, dashboard open behavior, and sidebar behavior predictable in development and packaged installs.
+- [ ] Add extension-side tests or smoke scripts for command registration and webview message contracts.
+- [ ] Package local dev assets cleanly and exclude generated/noisy files where appropriate.
+
+### P4 - Provider Boundaries, Defaults First
+- [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
+- [ ] Define `VectorProvider` protocol around the methods the sidecar already uses and wrap `LanceDBClient` as the default implementation.
+- [ ] Define `HistoryProvider` protocol and implement SQLite local history.
+- [ ] Add provider config only for local defaults first: `local`, `local_docker`, `ephemeral`, and `disabled`.
+- [ ] Put storage policy above all providers for prompt text, response text, source snippets, retention, redaction, and sharing.
+- [ ] Add fake/in-memory provider conformance tests before adding real alternate backends.
+
+### P5 - Future Team and Enterprise Horizon
+- [ ] Add roles `admin` and `user`, then map permissions onto indexing controls, audit/history access, model/provider settings, and graph queries.
+- [ ] Add connectable documentation sources through `DocSourceProvider`: repository docs first, then Confluence, Figma, and future sources.
+- [ ] Add parallel indexing only after local profiling identifies the real bottlenecks.
+- [ ] Add customer-managed/dedicated provider modes for graph, vector, and history stores.
+- [ ] Add Tenant API Contract Graph for project-published API facts and tenant-level service links; no neighboring source scans.
+- [ ] Add optional LLM Proxy Gateway transport for organizations that need provider-account policy, auditing, masking, quotas, or fallback outside the sidecar.
+- [ ] Split the sidecar into services only when scale requires it.
+- [ ] Consider Rust/Go/C parser or indexer hot paths only after a performance review proves Python orchestration is the bottleneck.
+
+---
+
+## Completed Stabilization Backlog
+
+This section preserves the post-MVP hardening record. Completed items remain useful context, but the active product direction is the Local Developer Product backlog above.
+
+### P0 - Truth, Safety, and API Hardening
 - [x] Refresh `docs/README.md` as the current-truth entry point; archive or label historical analysis when status changes.
 - [x] Fix sidecar DB lifecycle: remove mutable request identity from the global client; use request-scoped user context.
 - [x] Move doc resolution inside the arbitration pipeline before `PromptCompiler.compile_with_intent()`.
@@ -58,20 +105,20 @@ This section merges the project gap analysis into the canonical roadmap. The nex
 - [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
 - [x] Add auth-boundary enforcement tests for protected endpoints with `AUTH_REQUIRED=true`.
 
-### P1 — Retrieval Correctness
+### P1 - Retrieval Correctness
 - [x] Implement stable UID v2 from [spec_uid_stability.md](spec_uid_stability.md).
 - [x] Replace name-only call linking with the scoped resolver in [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md).
 - [x] Add workspace/branch isolation from [spec_branch_isolation.md](spec_branch_isolation.md).
 - [x] Add Git checkout/stash-pop invalidation strategy: graph/vector versioning plus differential branch sync.
 - [x] Add adversarial fixtures for duplicate names, moved files, renamed symbols, stale docs, and branch duplication.
 
-### P2 — Visible Product Value
+### P2 - Visible Product Value
 - [x] Add `GET /metrics`, structured per-stage timing, trace IDs, and token/cost/latency tracking.
 - [x] Extend the JSON Prompt Contract with scores, provenance, pruning reasons, model route, and resolver version.
 - [x] Build an extension context inspector showing selected files/docs, scores, dirty-state badges, token budget, intent, and model route.
 - [x] Add a unified search endpoint that blends symbols, graph neighbors, and docs.
 
-### P3 — Scale and Learning
+### P3 - Scale and Learning
 - [x] Add retrieval caching only after UID, workspace, and graph-version keys are stable.
 - [x] Add feedback signals only after prompt-contract observability and privacy/redaction rules exist.
 - [x] Move AFFECTS rebuild and large-repo indexing work to a background queue with backpressure and batching.
@@ -357,17 +404,17 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 
 ---
 
-## Phase 7: Scaling & SaaS ✅ COMPLETE
+## Phase 7: Scaling & Graph Provider Modes ✅ COMPLETE
 Goal: Transition from local tool to shared team solution (ADR-003).
 
-> **Status:** Phase 5–6 complete. Phase 7 MVP implemented: cloud-first with local fallback, multi-user auth, audit logging.
+> **Status:** Phase 5–6 complete. Phase 7 MVP implemented: Neo4j Aura/local provider support, multi-user auth, audit logging.
 
-### Cloud Sync & Multi-User ✅ COMPLETE
-- [x] Migration to Neo4j Aura (SaaS) for shared knowledge base
-- [x] Cloud-first strategy: connect to Aura, fallback to local Neo4j if unavailable
+### Graph Provider Sync & Multi-User ✅ COMPLETE
+- [x] Neo4j Aura/customer endpoint support for shared knowledge base
+- [x] Provider fallback strategy: connect to configured graph endpoint, fallback to local Neo4j if unavailable
 - [x] Multi-user support: user identification via headers + JWT tokens
 - [x] Conflict resolution: last-write-wins (timestamps on mutations)
-- [x] Local overlay per user (unsaved edits in-memory, survives Aura outage)
+- [x] Local overlay per user (unsaved edits in-memory, survives graph provider outage)
 
 ### Security & Compliance ✅ COMPLETE (MVP)
 - [x] User authentication: JWT tokens with 24-hour expiration
@@ -376,12 +423,12 @@ Goal: Transition from local tool to shared team solution (ADR-003).
 - [x] Multi-user tracking: user_id on all graph mutations
 - [x] Health checks: cloud connection status + fallback detection
 - [ ] RBAC for graph queries (Phase 7+ enhancement)
-- [ ] Secrets management for Aura credentials (use environment variables for now)
-- [ ] Metadata encryption in cloud AES-256 (Phase 7+ enhancement)
+- [ ] Secrets management for managed graph credentials (use environment variables for now)
+- [ ] Metadata encryption for managed graph providers (Phase 7+ enhancement)
 
 ### Performance & Reliability
 - [ ] Parallel parsing for `git pull` indexing (ThreadPoolExecutor, 4 workers default)
-- [ ] Graceful degradation on Neo4j outage (local cache + retry)
+- [ ] Graceful degradation on graph provider outage (local cache + retry)
 - [ ] Rate limiting per user
 - [ ] Circuit breaker for cloud sync failures
 
@@ -498,7 +545,7 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [x] Backpressure and batch coalescing for mass save/refactor events from the IDE
 - [ ] Git branch-switch cache invalidation via workspace graph/vector versions
 - [x] Embedding recomputation throttle and content-hash cache to reduce local CPU/GPU load
-- [ ] Graceful degradation on Neo4j outage (local cache + retry)
+- [ ] Graceful degradation on graph provider outage (local cache + retry)
 - [ ] Rate limiting per user
 - [ ] Circuit breaker for cloud sync failures
 
@@ -526,6 +573,60 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [ ] VS Code settings UI for sidecar URL, model preference, workspace ID, keyboard shortcuts, and auth token .
 - [ ] Full implementation of all four UI surfaces in TypeScript/React.
 
+### 10.6 Storage Provider Connectors
+Goal: define storage boundaries without blocking the local release on alternate database backends. For v0.1, wrap the defaults first: Neo4j, LanceDB, and SQLite. Alternate graph/vector/history providers are Team/Enterprise horizon work.
+
+> **Spec:** [spec_storage_connectors.md](spec_storage_connectors.md).
+
+- [ ] Define `GraphProvider` protocol and wrap `Neo4jClient` as the default implementation.
+- [ ] Define `VectorProvider` protocol and wrap `LanceDBClient` as the default implementation.
+- [ ] Define `HistoryProvider` protocol and implement SQLite local history for dialogs, ask snapshots, inspector snapshots, and impact snapshots.
+- [ ] Add local provider config with modes: `local`, `local_docker`, `ephemeral`, and `disabled`.
+- [ ] Add storage policy enforcement before any connector receives raw prompt text, response text, source snippets, or audit payloads.
+- [ ] Add provider capability checks and conformance tests for graph/vector/history providers.
+- [ ] Defer `customer_managed`, `dedicated_managed`, and `enterprise_audit` modes until the local provider contracts are stable.
+
+---
+
+## Phase 11: Tenant API Contract Graph 📋 FUTURE TEAM/ENTERPRISE
+Goal: add tenant-level service/API awareness after the local product is stable. Each project indexes and publishes its own safe API facts; the tenant graph links those facts across services, systems, schemas, and events. This is not required for the single-tenant local release.
+
+> **Spec:** [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
+
+### 11.1 Project API Contract Indexing
+- [ ] OpenAPI/Swagger parser for endpoint, operation, and schema facts.
+- [ ] GraphQL SDL parser for query/mutation/type facts.
+- [ ] protobuf/gRPC parser for service, RPC, and message facts.
+- [ ] AsyncAPI/event parser for topics, producers, consumers, and schemas.
+- [ ] Route declaration extraction from supported language adapters.
+- [ ] Generated client / SDK call-site extraction for outbound dependency edges.
+
+### 11.2 Tenant Manifest Publication
+- [ ] `ContractManifest` publication unit with tenant, workspace, ref, graph_version, service, version, and published_at.
+- [ ] Manifest diffing for added/removed/renamed endpoints and schema compatibility warnings.
+- [ ] Stable endpoint, schema, event, and service fingerprints for cross-project matching.
+- [ ] Ambiguity handling: low-confidence links and warnings instead of silent winner selection.
+
+### 11.3 Tenant Graph Links
+- [ ] Node labels: `Service`, `ApiEndpoint`, `ApiSchema`, `ApiField`, `EventTopic`, `ExternalSystem`, `ContractManifest`.
+- [ ] Edge types: `EXPOSES_ENDPOINT`, `CALLS_ENDPOINT`, `IMPLEMENTS_ENDPOINT`, `USES_SCHEMA`, `PRODUCES_EVENT`, `CONSUMES_EVENT`, `DEPENDS_ON_SERVICE`, `VERSION_OF`, `BREAKS_CONTRACT`.
+- [ ] Tenant/workspace/RBAC scoping on every cross-project API query.
+- [ ] External systems represented as metadata nodes, not crawled dependencies.
+
+### 11.4 Direction-Aware Retrieval
+- [ ] Retrieval ladder: `symbol -> file -> workspace -> tenant_api_graph -> direct_llm`.
+- [ ] `api_direction` options: `outbound_dependencies`, `inbound_consumers`, `contract_impact`, `internal_processing`, `bidirectional_contract`.
+- [ ] `tenant_link_depth` traversal cap: default 1, hard cap 2, depth means published link hops only.
+- [ ] Score factors: edge type, direction weight, scope weight, depth decay, confidence, and token cost.
+- [ ] Prompt Contract tier: `tenant_api_context` with service/endpoint/schema provenance and redacted metadata.
+
+### 11.5 Privacy and Safety
+- [ ] Prohibit neighboring project source reads from tenant API retrieval.
+- [ ] Prohibit live external API invocation during indexing/retrieval unless a future explicit connector policy exists.
+- [ ] No raw prompts, code bodies, payload examples, secrets, credentials, or auth headers in the tenant graph.
+- [ ] Field-level sensitivity labels allowed; sample values forbidden by default.
+- [ ] Tests prove Project A cannot trigger indexing of Project B.
+
 ---
 
 ## Risk Register
@@ -546,16 +647,16 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 | Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Phase 6.1: tier-aware assembly + mode flag implemented ✅; Phase 6.2: orchestrator integration | 🟡 In Progress (6.1 ✅) |
 | Model Router misclassification | Medium | Misclassification sends complex task to cheap model | Phase 6 — escalation fallback on empty/error; Phase 7 RBAC | 🟡 Pending Phase 6+ |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
-| **Incremental index split-brain** | **Critical** | Neo4j can commit symbol/edge changes while LanceDB embedding writes fail or the process is killed. Graph/vector stores then disagree silently. | Durable job log + retry/dead-letter states implemented; next: idempotent replay worker or rollback strategy | 🟡 Mitigated |
+| **Incremental index split-brain** | **Critical** | Graph storage can commit symbol/edge changes while vector storage writes fail or the process is killed. Graph/vector stores then disagree silently. | Durable job log + retry/dead-letter states implemented; next: idempotent replay worker or rollback strategy | 🟡 Mitigated |
 | **IDE event storm** | **High** | Mass refactor, find/replace across many files, or `git stash pop` can flood the sidecar with parse/embed/index work. | Bounded sidecar queue + VS Code save batching implemented; next: branch-sync enqueue integration | 🟡 Mitigated |
 | **Git branch cache invalidation** | **High** | Checkout changes many ASTs at once; full reindex is slow, stale graph/vector versions are wrong. | Git state tracker + changed-file detection implemented; next: queue integration and vector cache keys | 🟡 Mitigated |
 | **Local embedding compute cost** | **Medium** | Re-embedding changed symbols on every save can consume CPU/GPU and degrade editor responsiveness. | Content-hash embedding cache + configurable encode batch/throttle/low-priority mode implemented | ✅ Resolved |
 | **UID instability** | **Critical** | Old `sha256(file_path:name)` broke on rename/move and collided on overloads + nested funcs. | Stable UID v2 implemented; migration CLI remains cleanup | 🟡 Mitigated |
 | **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Python scoped/imported/dynamic resolver implemented; TS deep resolver remains cleanup | 🟡 Mitigated |
-| **No workspace isolation on Aura** | **Critical** | Multi-user cloud collapses branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped Cypher implemented for graph reads/writes | 🟡 Mitigated |
+| **No workspace isolation on managed graph provider** | **Critical** | Multi-user/team graph storage can collapse branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped graph reads/writes implemented | 🟡 Mitigated |
 | Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1: unified ranker with blended score ([spec_unified_ranking.md](spec_unified_ranking.md)) | ❌ Open |
 | Single-label intent | High | Mixed queries (e.g. debugging+refactor) collapse to one tier strategy — loses half the answer. | Phase 9.2: `IntentDistribution` multi-label ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
 | Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3: per-edge `anchor_type` + `confidence` ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ❌ Open |
 | No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4: scores / provenance / pruned[] in contract ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | ❌ Open |
-| No caching strategy | Medium | Repeated queries re-read bodies, re-run BFS, re-call LLM; Neo4j saturates before model does. | Phase 10.1: three-layer cache ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ❌ Open |
+| No caching strategy | Medium | Repeated queries re-read bodies, re-run BFS, re-call LLM; the graph provider saturates before the model does. | Phase 10.1: three-layer cache ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ❌ Open |
 | Static retriever | Medium | No feedback signal — silent drift, silent miss. System cannot improve from usage. | Phase 10.2: feedback loop + `CO_RELEVANT` learned edges ([spec_learning_loop.md](spec_learning_loop.md)) | ❌ Open |

@@ -13,8 +13,10 @@ from sidecar.api.sse import format_sse
 from sidecar.auth import AuditLog, UserAuth
 from sidecar.cache.layered import default_cache
 from sidecar.context.arbitrator import ContextArbitrator
+from sidecar.context.doc_resolver import DocResolver
+from sidecar.context.intent_classifier import IntentClassifier
 from sidecar.context.overlay import InMemoryOverlay
-from sidecar.context.types import RESOLVER_VERSION, PromptContext
+from sidecar.context.types import RESOLVER_VERSION, DocChunk, PromptContext, SymbolContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
 from sidecar.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
@@ -69,9 +71,10 @@ class IndexDocsRequest(BaseModel):
 
 
 class AskRequest(BaseModel):
-    symbol: str
+    symbol: str | None = None
     question: str = "What does this code do?"
     token_budget: int = 4000
+    file_path: str | None = None
 
 
 class OverlayRequest(BaseModel):
@@ -369,6 +372,251 @@ def _record_retrieval_snapshot(
     default_metrics.increment(
         "sidecar_feedback_snapshots_total",
         labels={"workspace": workspace_id},
+    )
+
+
+def _read_file_context(
+    file_path: str,
+    *,
+    workspace_id: str,
+    user_id: str,
+    token_budget: int,
+) -> tuple[str, bool]:
+    if overlay.has(file_path, workspace_id=workspace_id, user_id=user_id):
+        symbols = overlay.get_symbols(file_path, workspace_id=workspace_id, user_id=user_id)
+        if symbols:
+            start = min(line_range[0] for line_range in symbols.values())
+            end = max(line_range[1] for line_range in symbols.values())
+            code = overlay.read_lines(
+                file_path,
+                start,
+                end,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+        else:
+            code = overlay.read_lines(
+                file_path,
+                1,
+                500,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+        return _trim_text_to_budget(code, token_budget), True
+
+    try:
+        with open(file_path, encoding="utf-8") as file:
+            code = file.read()
+    except (OSError, FileNotFoundError):
+        return "", False
+    return _trim_text_to_budget(code, token_budget), False
+
+
+def _trim_text_to_budget(text: str, token_budget: int) -> str:
+    if not text:
+        return ""
+    max_tokens = max(400, int(token_budget * 0.75))
+    if estimate_text_tokens(text) <= max_tokens:
+        return text
+
+    # Cheap deterministic trimming. Keep the top of the file because definitions/imports
+    # usually explain module shape better than a middle slice.
+    lines = text.splitlines()
+    kept: list[str] = []
+    for line in lines:
+        candidate = "\n".join([*kept, line])
+        if estimate_text_tokens(candidate) > max_tokens:
+            break
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _context_from_file(
+    *,
+    file_path: str,
+    question: str,
+    token_budget: int,
+    workspace_id: str,
+    user_id: str,
+) -> PromptContext | None:
+    code, is_dirty = _read_file_context(
+        file_path,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        token_budget=token_budget,
+    )
+    if not code:
+        return None
+
+    intent = IntentClassifier.classify_intent(question)
+    ctx = PromptContext(
+        primary_source=SymbolContext(
+            symbol=os.path.basename(file_path) or file_path,
+            file_path=file_path,
+            relation="file",
+            relevance_score=1.0,
+            is_dirty=is_dirty,
+            code=code,
+            provenance=["file"],
+        ),
+        graph_context=[],
+        documentation=_search_docs(f"{file_path} {question}", limit=3),
+        mode="file",
+        intent=intent.value,
+        tier_tokens={"code": estimate_text_tokens(code)},
+    )
+    ctx.tier_tokens.update(_doc_tier_tokens(ctx.documentation))
+    return ctx
+
+
+def _context_from_workspace(question: str, token_budget: int) -> PromptContext | None:
+    docs = _search_docs(question, limit=5)
+    symbols = _search_symbols(question, limit=5)
+    if not docs and not symbols:
+        return None
+
+    intent = IntentClassifier.classify_intent(question)
+    ctx = PromptContext(
+        primary_source=SymbolContext(
+            symbol="workspace",
+            file_path="<workspace>",
+            relation="workspace",
+            relevance_score=1.0,
+            provenance=["workspace_search"],
+        ),
+        graph_context=symbols,
+        documentation=docs,
+        mode="workspace",
+        intent=intent.value,
+        tier_tokens={"cross_refs": sum(estimate_text_tokens(sym.symbol) for sym in symbols)},
+    )
+    ctx.tier_tokens.update(_doc_tier_tokens(docs))
+    ctx.budget["token_budget"] = token_budget
+    return ctx
+
+
+def _context_from_direct(question: str, token_budget: int) -> PromptContext:
+    intent = IntentClassifier.classify_intent(question)
+    return PromptContext(
+        primary_source=SymbolContext(
+            symbol="direct",
+            file_path="<none>",
+            relation="direct",
+            relevance_score=0.0,
+            provenance=["direct_llm"],
+        ),
+        graph_context=[],
+        documentation=[],
+        mode="direct",
+        intent=intent.value,
+        tier_tokens={},
+        budget={"token_budget": token_budget},
+    )
+
+
+def _search_docs(query: str, limit: int) -> list[DocChunk]:
+    try:
+        return DocResolver(vector_db).search(query, limit=limit)
+    except Exception:
+        return []
+
+
+def _search_symbols(query: str, limit: int) -> list[SymbolContext]:
+    search_symbols = getattr(vector_db, "search_symbols", None)
+    if not callable(search_symbols):
+        return []
+    try:
+        raw_symbols = search_symbols(query, limit=limit, threshold=1.0)
+    except Exception:
+        return []
+    return [
+        SymbolContext(
+            symbol=str(symbol.get("name", "")),
+            file_path=str(symbol.get("file_path", "")),
+            relation="workspace_match",
+            relevance_score=float(symbol.get("score") or 0.0),
+            provenance=["vector:symbols"],
+        )
+        for symbol in raw_symbols
+    ]
+
+
+def _doc_tier_tokens(docs: list[DocChunk]) -> dict[str, int]:
+    if not docs:
+        return {}
+    return {"docs": sum(estimate_text_tokens(doc.content) for doc in docs)}
+
+
+def _resolve_ask_context(
+    *,
+    req: AskRequest,
+    user_id: str,
+    workspace_id: str,
+    db: Any,
+) -> PromptContext:
+    if req.symbol:
+        arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
+        ctx = arb.get_context_for_symbol(
+            req.symbol,
+            question=req.question,
+            token_budget=req.token_budget,
+        )
+        if not isinstance(ctx, str):
+            _context_budget(ctx)["ask_level"] = "symbol"
+            return ctx
+
+    if req.file_path:
+        file_ctx = _context_from_file(
+            file_path=req.file_path,
+            question=req.question,
+            token_budget=req.token_budget,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+        if file_ctx:
+            _context_budget(file_ctx)["ask_level"] = "file"
+            if req.symbol:
+                _context_budget(file_ctx)["missing_symbol"] = req.symbol
+            return file_ctx
+
+    workspace_ctx = _context_from_workspace(req.question, req.token_budget)
+    if workspace_ctx:
+        _context_budget(workspace_ctx)["ask_level"] = "workspace"
+        if req.symbol:
+            _context_budget(workspace_ctx)["missing_symbol"] = req.symbol
+        return workspace_ctx
+
+    direct_ctx = _context_from_direct(req.question, req.token_budget)
+    _context_budget(direct_ctx)["ask_level"] = "direct"
+    if req.symbol:
+        _context_budget(direct_ctx)["missing_symbol"] = req.symbol
+    return direct_ctx
+
+
+def _context_budget(ctx: Any) -> dict[str, Any]:
+    budget = getattr(ctx, "budget", None)
+    if not isinstance(budget, dict):
+        budget = {}
+        ctx.budget = budget
+    return budget
+
+
+def _system_prompt_for_context(ctx: PromptContext) -> str:
+    if ctx.mode == "direct":
+        return (
+            "You are a Surgical Code Assistant. No codebase context was retrieved for this "
+            "question. Answer from general engineering knowledge, and clearly state when a "
+            "claim would need codebase verification."
+        )
+    if ctx.mode in {"file", "workspace"}:
+        return (
+            "You are a Surgical Code Assistant. Use the retrieved context when it is relevant. "
+            "If the context is incomplete, keep the answer practical and mark assumptions.\n\n"
+            f"{ctx.to_system_prompt()}"
+        )
+    return (
+        "You are a Surgical Code Assistant. Use ONLY the provided context.\n\n"
+        f"{ctx.to_system_prompt()}"
     )
 
 
@@ -833,21 +1081,16 @@ def ask(
     try:
         with db_session(user_id=user_id) as db:
             with trace.stage("context"):
-                arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
-                ctx = arb.get_context_for_symbol(
-                    req.symbol, question=req.question, token_budget=req.token_budget
+                ctx = _resolve_ask_context(
+                    req=req,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    db=db,
                 )
-            if isinstance(ctx, str):
-                status = "not_found"
-                audit_log.log_error(user_id, "query", ctx)
-                logger.info("trace_id=%s endpoint=/ask status=not_found", trace.trace_id)
-                raise HTTPException(status_code=404, detail=ctx)
+                ask_anchor = ctx.primary_source.symbol
 
             with trace.stage("prompt"):
-                system_prompt = (
-                    "You are a Surgical Code Assistant. Use ONLY the provided context.\n\n"
-                    f"{ctx.to_system_prompt()}"
-                )
+                system_prompt = _system_prompt_for_context(ctx)
                 context_tokens = ctx.token_count()
                 trace.token_counts = {
                     "context": context_tokens,
@@ -909,7 +1152,7 @@ def ask(
             )
 
             with trace.stage("audit"):
-                audit_log.log_query(user_id, req.symbol, req.question, ctx.intent, ctx.mode)
+                audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
 
             _attach_trace_metadata(ctx, trace)
             feedback_token = feedback_store.issue_token()
@@ -919,14 +1162,14 @@ def ask(
                     feedback_token=feedback_token,
                     user_id=user_id,
                     workspace_id=workspace_id,
-                    symbol=req.symbol,
+                    symbol=ask_anchor,
                     question=req.question,
                     ctx=ctx,
                     trace=trace,
                 )
             logger.info("trace_id=%s endpoint=/ask status=ok", trace.trace_id)
             return {
-                "symbol": req.symbol,
+                "symbol": ask_anchor,
                 "answer": answer,
                 "context": ctx.to_dict(),
                 "user": user_id,
@@ -967,24 +1210,16 @@ def ask_stream(
         try:
             with db_session(user_id=user_id) as db:
                 with trace.stage("context"):
-                    arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
-                    ctx = arb.get_context_for_symbol(
-                        req.symbol, question=req.question, token_budget=req.token_budget
+                    ctx = _resolve_ask_context(
+                        req=req,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                        db=db,
                     )
-                if isinstance(ctx, str):
-                    status = "not_found"
-                    audit_log.log_error(user_id, "query", ctx)
-                    yield format_sse(
-                        "error",
-                        {"type": "error", "error": ctx, "trace_id": trace.trace_id},
-                    )
-                    return
+                    ask_anchor = ctx.primary_source.symbol
 
                 with trace.stage("prompt"):
-                    system_prompt = (
-                        "You are a Surgical Code Assistant. Use ONLY the provided context.\n\n"
-                        f"{ctx.to_system_prompt()}"
-                    )
+                    system_prompt = _system_prompt_for_context(ctx)
                     context_tokens = ctx.token_count()
                     trace.token_counts = {
                         "context": context_tokens,
@@ -1012,7 +1247,7 @@ def ask_stream(
                 )
 
                 with trace.stage("audit"):
-                    audit_log.log_query(user_id, req.symbol, req.question, ctx.intent, ctx.mode)
+                    audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
 
                 _attach_trace_metadata(ctx, trace)
                 feedback_token = feedback_store.issue_token()
@@ -1022,7 +1257,7 @@ def ask_stream(
                         feedback_token=feedback_token,
                         user_id=user_id,
                         workspace_id=workspace_id,
-                        symbol=req.symbol,
+                        symbol=ask_anchor,
                         question=req.question,
                         ctx=ctx,
                         trace=trace,

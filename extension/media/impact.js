@@ -13,65 +13,85 @@
   }
   function renderSymbolSummaryCard(symbolInfo) {
     return `
-    <div class="impact-header">
-      <div class="symbol-summary">
-        <h2>${escapeHtml(symbolInfo.symbol)}</h2>
-        <div class="summary-details">
-          <span class="detail-item">
-            <strong>File:</strong> ${escapeHtml(symbolInfo.filePath)}
-          </span>
-          <span class="detail-item">
-            <strong>UID:</strong> <code>${escapeHtml(symbolInfo.uid)}</code>
-          </span>
-        </div>
+    <div class="impact-symbol-card">
+      <div class="impact-symbol-title">
+        <span class="impact-info-icon" aria-hidden="true">i</span>
+        <strong>${escapeHtml(symbolInfo.symbol)}</strong>
+      </div>
+      <div class="impact-symbol-meta">
+        <span>Method</span>
+        <span>${escapeHtml(symbolInfo.filePath)}</span>
+        <code>${escapeHtml(symbolInfo.uid)}</code>
       </div>
     </div>
   `;
   }
-  function renderAffectsGroup(affectedSymbols) {
+  function renderAffectsGroup(affectedSymbols, title = "Affects", expanded = true) {
     if (affectedSymbols.length === 0) {
       return `
       <div class="impact-group">
-        <div class="group-header">\u{1F4C4} Affects</div>
+        <div class="group-header">${escapeHtml(title)}</div>
         <div class="group-content empty">
-          No affected symbols found.
+          No related symbols found.
         </div>
       </div>
     `;
     }
     const rows = affectedSymbols.map((sym) => {
       const filePath = sym.file_path || "unknown";
-      const symbolName = sym.symbol || "unknown";
+      const symbolName = sym.symbol || sym.name || "unknown";
       const score = sym.relevance_score;
       const isDirty = sym.is_dirty;
+      const relation = sym.relation || sym.direction || "related";
+      const depth = typeof sym.depth === "number" ? `d${sym.depth}` : "";
       return `
         <div class="impact-row" data-file-path="${escapeHtml(filePath)}">
-          <div class="impact-row-main">
-            <span class="symbol-name">${escapeHtml(symbolName)}</span>
-            <span class="file-name">${escapeHtml(filePath)}</span>
-          </div>
-          <div class="impact-row-meta">
-            ${score ? `<span class="score">${(score * 100).toFixed(0)}%</span>` : ""}
-            ${isDirty ? '<span class="dirty-badge">\u{1F534} Unsaved</span>' : ""}
-          </div>
+          <span class="impact-chevron" aria-hidden="true">\u203A</span>
+          <span class="impact-symbol">${escapeHtml(symbolName)}</span>
+          <span class="impact-file">${escapeHtml(filePath)}</span>
+          <span class="impact-tag direct">${escapeHtml(depth || relation)}</span>
+          ${score ? `<span class="impact-tag indirect">${(score * 100).toFixed(0)}%</span>` : ""}
+          ${isDirty ? '<span class="impact-tag conditional">dirty</span>' : ""}
         </div>
       `;
     }).join("");
     return `
-    <div class="impact-group">
-      <div class="group-header">\u{1F4C4} Affects (${affectedSymbols.length})</div>
-      <div class="group-content">
+    <div class="impact-group ${expanded ? "expanded" : ""}">
+      <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
+        <span aria-hidden="true">\u203A</span>
+        <strong>${escapeHtml(title)}</strong>
+        <span>(${affectedSymbols.length})</span>
+      </button>
+      <div class="group-content" ${expanded ? "" : "hidden"}>
         ${rows}
       </div>
     </div>
   `;
   }
-  function renderPlaceholderGroup(title, message) {
+  function renderPlaceholderGroup(title, message, count, expanded = false) {
     return `
-    <div class="impact-group">
-      <div class="group-header">${escapeHtml(title)}</div>
-      <div class="group-content placeholder">
+    <div class="impact-group ${expanded ? "expanded" : ""}">
+      <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
+        <span aria-hidden="true">\u203A</span>
+        <strong>${escapeHtml(title)}</strong>
+        ${count !== void 0 ? `<span>(${count})</span>` : ""}
+      </button>
+      <div class="group-content placeholder" ${expanded ? "" : "hidden"}>
         <p>${escapeHtml(message)}</p>
+        ${expanded ? `
+              <div class="impact-row static">
+                <span class="impact-chevron" aria-hidden="true">\u203A</span>
+                <span class="impact-symbol">SymbolResolver.resolve()</span>
+                <span class="impact-file">packages/core/src/symbolResolver.ts:87</span>
+                <span class="impact-tag direct">direct</span>
+              </div>
+              <div class="impact-row static">
+                <span class="impact-chevron" aria-hidden="true">\u203A</span>
+                <span class="impact-symbol">Graph.getNeighbors()</span>
+                <span class="impact-file">packages/core/src/graphBuilder.ts:142</span>
+                <span class="impact-tag direct">direct</span>
+              </div>
+            ` : ""}
       </div>
     </div>
   `;
@@ -79,17 +99,21 @@
   function renderActionButtonRow() {
     return `
     <div class="impact-actions">
-      <button class="action-button" data-action="ask-followup">
-        \u{1F4AC} Ask Follow-up
+      <button class="secondary-action" data-action="open-related-files">
+        Open related files
       </button>
-      <button class="action-button" data-action="ask-impact">
-        \u{1F504} Refresh Impact
+      <button class="secondary-action" data-action="ask-followup">
+        Ask follow-up
+      </button>
+      <button class="secondary-action" data-action="create-refactor-plan">
+        Create refactor plan
       </button>
     </div>
   `;
   }
 
   // src/webview/impact.ts
+  var vscode = acquireVsCodeApi();
   var ImpactPanel = class {
     constructor() {
       this.currentSymbol = null;

@@ -1,5 +1,5 @@
-// @ts-ignore vscode API injected at runtime
-declare const vscode: any;
+declare function acquireVsCodeApi(): any;
+const vscode = acquireVsCodeApi();
 
 import {
   WebviewToHostMessage,

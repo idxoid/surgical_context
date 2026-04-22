@@ -192,14 +192,7 @@ export class ChatPanel {
       }
     }
 
-    if (!targetSymbol) {
-      this.postMessage({
-        type: 'chat.requestFailed',
-        requestId: `req-${Date.now()}`,
-        error: 'No symbol selected. Please position your cursor on a code symbol.',
-      });
-      return;
-    }
+    const activeFile = vscode.window.activeTextEditor?.document.fileName;
 
     const requestId = `req-${Date.now()}`;
 
@@ -207,7 +200,7 @@ export class ChatPanel {
     this.postMessage({
       type: 'chat.requestStarted',
       requestId,
-      symbol: targetSymbol,
+      symbol: targetSymbol || activeFile || 'workspace',
     });
 
     const callbacks: SSECallbacks = {
@@ -232,6 +225,9 @@ export class ChatPanel {
         const metadata = payload.metadata;
         const tierTokens = metadata.tier_tokens || {};
         const totalTokens = Object.values(tierTokens).reduce((sum, val) => sum + (val as number), 0);
+        const askLevel = typeof payload.budget?.ask_level === 'string'
+          ? [`level:${payload.budget.ask_level}`]
+          : [];
 
         this.postMessage({
           type: 'chat.contextSummary',
@@ -240,7 +236,7 @@ export class ChatPanel {
             graphCount: payload.graph_context.length,
             docsCount: payload.documentation.length,
             tokenText: `${totalTokens} tokens`,
-            chips: metadata.tiers_used || [],
+            chips: [...askLevel, ...(metadata.tiers_used || [])],
           },
         });
       },
@@ -268,7 +264,9 @@ export class ChatPanel {
       this.currentAbortController = await SidecarClient.askStream(
         targetSymbol,
         prompt,
-        callbacks
+        callbacks,
+        4000,
+        activeFile
       );
     } catch (error) {
       this.postMessage({

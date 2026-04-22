@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { SidecarClient } from '../sidecarClient';
 import { getWebviewContent } from '../utils';
 import {
+  AuditAction,
+  DashboardMetrics,
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
@@ -51,36 +53,64 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async loadMetrics(): Promise<void> {
-    try {
-      this.postMessage({ type: 'dashboard.loading' });
+    this.postMessage({ type: 'dashboard.loading' });
 
-      const [health, cloudStatus, auditActionsResponse, metricsData] = await Promise.all([
-        SidecarClient.health().then(ok => ({ ok })),
-        SidecarClient.cloudStatus(),
-        SidecarClient.auditActions(undefined, 10),
-        SidecarClient.metrics().catch(() => null),
-      ]);
+    const healthOk = await SidecarClient.health();
+    const [cloudStatus, auditActionsResponse] = await Promise.all([
+      SidecarClient.cloudStatus().catch(() => null),
+      SidecarClient.auditActions(undefined, 10).catch(() => null),
+    ]);
 
-      const auditActions = auditActionsResponse.actions.map(action => ({
-        timestamp: action.timestamp,
-        action_type: action.action,
-        symbol: action.symbol || 'N/A',
-        status: 'completed',
-      }));
+    const auditActions: AuditAction[] = (auditActionsResponse?.actions || []).map(action => ({
+      timestamp: action.timestamp,
+      action_type: action.action,
+      symbol: action.symbol
+        || (typeof action.details?.symbol === 'string' ? action.details.symbol : undefined)
+        || action.resource
+        || 'N/A',
+      status: action.status === 'error' ? 'failed' : 'success',
+      details: action.details,
+    }));
 
-      this.postMessage({
-        type: 'dashboard.metricsLoaded',
-        health: health.ok ? 'up' : 'down',
-        cloudStatus: cloudStatus.using_fallback ? 'fallback-local' : cloudStatus.using_aura ? 'connected' : 'offline',
-        auditActions,
-        metrics: metricsData,
-      });
-    } catch (error) {
-      this.postMessage({
-        type: 'dashboard.metricsFailed',
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
+    this.postMessage({
+      type: 'dashboard.metricsLoaded',
+      health: healthOk ? 'up' : 'down',
+      cloudStatus: cloudStatus?.using_fallback
+        ? 'fallback-local'
+        : cloudStatus?.using_aura
+          ? 'connected'
+          : cloudStatus
+            ? 'local'
+            : 'offline',
+      auditActions,
+      metrics: this.emptyDashboardMetrics(),
+      workspaceId: vscode.workspace
+        .getConfiguration('surgicalContext')
+        .get<string>('workspaceId', 'local/default@main'),
+      warnings: healthOk ? [] : ['Sidecar health check failed. Showing degraded dashboard data.'],
+    });
+  }
+
+  private emptyDashboardMetrics(): DashboardMetrics {
+    return {
+      indexedFiles: null,
+      indexedSymbols: null,
+      docChunks: null,
+      avgLatencyMs: null,
+      tokenSavingsPercent: null,
+      fallbackRatePercent: null,
+      contextQualityPercent: null,
+      symbolsWithDocs: null,
+      storageGb: null,
+      requestsTotal: null,
+      tokensTotal: null,
+      costUsdTotal: null,
+      queuePending: null,
+      queueProcessing: null,
+      queueProcessed: null,
+      queueFailedBatches: null,
+      lastIndexJobStatus: null,
+    };
   }
 
   private startPolling(): void {

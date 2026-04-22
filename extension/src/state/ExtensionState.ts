@@ -6,7 +6,7 @@ export interface ExtensionState {
   isDirty: boolean;
   lastContext: PromptContextPayload | undefined;
   sidecarHealth: 'up' | 'down' | 'degraded';
-  cloudStatus: 'connected' | 'fallback-local' | 'offline';
+  cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline';
   workspaceId: string;
   authState: 'ready' | 'missing-token' | 'expired';
 }

@@ -179,6 +179,7 @@
   }
 
   // src/webview/settings.ts
+  var vscode = acquireVsCodeApi();
   var SettingsPanel = class {
     constructor() {
       this.settings = null;

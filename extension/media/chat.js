@@ -11,25 +11,33 @@
     };
     return text.replace(/[&<>"']/g, (char) => map[char]);
   }
-  function renderMessageCard(message) {
+  function renderMessageCard(message, selectedRequestId) {
     const timestamp = new Date(message.timestamp).toLocaleTimeString();
-    const baseClass = `message-card message-${message.type}`;
+    const isSelected = Boolean(message.requestId && selectedRequestId === message.requestId);
+    const isSelectablePrompt = message.type === "user" && Boolean(message.requestId);
+    const baseClass = `message-card ${message.type}${isSelected ? " selected" : ""}${isSelectablePrompt ? " selectable" : ""}`;
     const statusClass = message.status ? ` status-${message.status}` : "";
+    const requestAttrs = message.requestId ? ` data-request-id="${escapeHtml(message.requestId)}"` : "";
+    const selectionAttrs = isSelectablePrompt ? ` data-action="selectPrompt" role="button" tabindex="0" aria-pressed="${isSelected}"` : "";
     if (message.type === "user") {
       return `
-      <div class="${baseClass}${statusClass}">
+      <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${selectionAttrs}>
         <div class="message-header">
           <span class="message-role">You</span>
           <span class="message-time">${timestamp}</span>
         </div>
         <div class="message-content">${escapeHtml(message.content)}</div>
-      </div>
+      </article>
     `;
     }
     let content = `
-    <div class="${baseClass}${statusClass}">
+    <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}>
       <div class="message-header">
-        <span class="message-role">Surgical Context</span>
+        <span class="message-role">
+          <span class="message-icon" aria-hidden="true">\u2726</span>
+          Surgical Context
+          ${message.status === "streaming" ? '<span class="live-dot"></span><span class="message-muted">Streaming answer...</span>' : ""}
+        </span>
         <span class="message-time">${timestamp}</span>
       </div>
       <div class="message-content">${escapeHtml(message.content)}</div>
@@ -40,29 +48,29 @@
     if (message.status === "done") {
       content += `
       <div class="message-actions">
-        <button class="action-btn" data-action="feedback" data-rating="up" title="Helpful">\u{1F44D}</button>
-        <button class="action-btn" data-action="feedback" data-rating="down" title="Not helpful">\u{1F44E}</button>
-        <button class="action-btn" data-action="copy" title="Copy response">\u{1F4CB}</button>
+        <button class="icon-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
+        <button class="icon-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
+        <button class="icon-button" data-action="copy" title="Copy response" aria-label="Copy response">Copy</button>
       </div>
     `;
     }
-    content += "</div>";
+    content += "</article>";
     return content;
   }
   function renderAccordion(id, title, content, expanded = false) {
     return `
-    <div class="accordion-group" data-accordion="${id}">
-      <button class="accordion-header" aria-expanded="${expanded}" aria-controls="${id}-content" role="button">
+    <div class="accordion" data-accordion="${id}">
+      <button id="${id}-header" class="accordion-header" aria-expanded="${expanded}" aria-controls="${id}-content" role="button">
+        <span class="accordion-chevron" aria-hidden="true">\u203A</span>
         <span class="accordion-title">${escapeHtml(title)}</span>
-        <span class="accordion-icon" aria-hidden="true">\u25BC</span>
       </button>
-      <div id="${id}-content" class="accordion-content ${expanded ? "expanded" : ""}" ${expanded ? "" : "hidden"} role="region" aria-labelledby="${id}">
+      <div id="${id}-content" class="accordion-content ${expanded ? "expanded" : ""}" ${expanded ? "" : "hidden"} role="region" aria-labelledby="${id}-header">
         ${content}
       </div>
     </div>
   `;
   }
-  function renderEnvironmentAccordion(state) {
+  function renderEnvironmentAccordion(state, expanded = false) {
     const content = `
     <div class="accordion-row">
       <div class="accordion-label">Workspace</div>
@@ -81,11 +89,11 @@
       <div class="accordion-value">${escapeHtml(state.symbol)}</div>
     </div>` : ""}
   `;
-    return renderAccordion("environment", "Environment", content, false);
+    return renderAccordion("environment", "Environment", content, expanded);
   }
-  function renderContextSummaryAccordion(summary) {
+  function renderContextSummaryAccordion(summary, expanded = false) {
     if (!summary) {
-      return renderAccordion("contextSummary", "Context Summary", "Run an ask to populate this section.", false);
+      return renderAccordion("contextSummary", "Context Summary", "Run an ask to populate this section.", expanded);
     }
     const content = `
     <div class="accordion-row">
@@ -108,11 +116,11 @@
       ${summary.chips.map((chip) => `<span class="chip">${escapeHtml(chip)}</span>`).join("")}
     </div>
   `;
-    return renderAccordion("contextSummary", "Context Summary", content, false);
+    return renderAccordion("contextSummary", "Context Summary", content, expanded);
   }
-  function renderAdvancedInfoAccordion(info) {
+  function renderAdvancedInfoAccordion(info, expanded = false) {
     if (!info) {
-      return renderAccordion("advancedInfo", "Advanced Info", "Run an ask to populate this section.", false);
+      return renderAccordion("advancedInfo", "Advanced Info", "Run an ask to populate this section.", expanded);
     }
     const content = `
     <div class="accordion-row">
@@ -121,31 +129,41 @@
     </div>
     <div class="accordion-row">
       <div class="accordion-label">Tiers Used</div>
-      <div class="accordion-value">${info.tiersUsed.join(", ")}</div>
+      <div class="accordion-value">${info.tiersUsed.map(escapeHtml).join(", ")}</div>
     </div>
     <div class="accordion-row">
       <div class="accordion-label">Has Unsaved Changes</div>
       <div class="accordion-value">${info.isDirty ? "Yes" : "No"}</div>
     </div>
   `;
-    return renderAccordion("advancedInfo", "Advanced Info", content, false);
+    return renderAccordion("advancedInfo", "Advanced Info", content, expanded);
   }
   function renderStatusChips(state) {
     return `
     <div class="status-chip-row">
-      ${state.isDirty ? '<span class="status-chip dirty">Unsaved Changes</span>' : ""}
-      ${state.graphFirst ? '<span class="status-chip graph">Graph-First</span>' : ""}
-      ${state.docLinked ? '<span class="status-chip docs">Doc-Linked</span>' : ""}
+      <span class="status-chip dirty">${state.isDirty ? "dirty-aware" : "clean"}</span>
+      ${state.graphFirst ? '<span class="status-chip graph">graph-first</span>' : ""}
+      ${state.docLinked ? '<span class="status-chip docs">doc-linked</span>' : ""}
+      <span class="status-spacer"></span>
+      <button class="status-info" title="Context provenance and privacy state" aria-label="Context provenance and privacy state">i</button>
     </div>
   `;
   }
-  function renderActionBar() {
+  function renderActionBar(active = "chat") {
     return `
     <div class="action-bar">
-      <button class="action-main-btn" data-action="ask" title="Ask about current symbol">Ask</button>
-      <button class="action-sec-btn" data-action="openInspector" title="Inspect context">Context</button>
-      <button class="action-sec-btn" data-action="showImpact" title="Show impact">Impact</button>
-      <button class="action-sec-btn" data-action="search" title="Search workspace">Search</button>
+      <button class="action-btn ${active === "chat" ? "primary" : ""}" data-action="openChat" title="Ask about current symbol">
+        <span aria-hidden="true">\u2726</span> Ask
+      </button>
+      <button class="action-btn ${active === "inspector" ? "primary" : ""}" data-action="openInspector" title="Inspect context">
+        <span aria-hidden="true">\u25CB</span> Inspect Context
+      </button>
+      <button class="action-btn ${active === "impact" ? "primary" : ""}" data-action="showImpact" title="Show impact">
+        <span aria-hidden="true">\u2318</span> Impact
+      </button>
+      <button class="action-btn" data-action="search" title="Search workspace">
+        <span aria-hidden="true">\u2315</span> Search
+      </button>
     </div>
   `;
   }
@@ -160,7 +178,9 @@
         aria-describedby="composer-help"
         rows="1"
       ></textarea>
-      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message">Send</button>
+      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message">
+        <span class="composer-send-icon" aria-hidden="true">\u27A4</span>
+      </button>
       <div id="composer-help" class="sr-only">
         Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer.
       </div>
@@ -176,6 +196,7 @@
   }
 
   // src/webview/chat.ts
+  var vscode = acquireVsCodeApi();
   var ChatPanel = class {
     constructor() {
       this.state = null;
@@ -301,6 +322,9 @@
         btn.addEventListener("click", (e) => {
           const action = e.currentTarget.getAttribute("data-action");
           switch (action) {
+            case "openChat":
+              document.getElementById("composer-input")?.focus();
+              break;
             case "ask":
               this.askAboutSymbol();
               break;

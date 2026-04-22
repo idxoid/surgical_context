@@ -1,6 +1,8 @@
 # Surgical Context — Architecture
 
-> **Status:** MVP pipeline exists and post-MVP correctness hardening is active. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace/branch-scoped graph queries, AFFECTS, doc enrichment, model routing, cloud/local fallback, audit logging, request-scoped DB sessions, durable index job logging, opt-in bearer auth enforcement, VS Code extension scaffold, and **complete UI specification** (Chat Panel, Context Inspector, Impact Explorer, Dashboard) are present. The main open gaps are production auth policy/secret management, prompt-contract observability, full metrics endpoint, extension UI implementation, and backpressure hardening. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+> **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, intent-aware prompt assembly, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. The main open gaps are local history, extension product polish, setup/smoke-test hardening, remaining prompt-contract observability, and provider boundaries around the local defaults. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+>
+> **Future layer:** tenant-level API contract graph. Each project indexes and publishes its own safe service/API facts; the tenant graph links those facts across projects and systems without scanning neighboring repositories. This is Team/Enterprise horizon work, not a dependency for the local single-tenant release. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
 ## Section 1: Executive Summary & Goals
 
@@ -13,17 +15,26 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 1. **Context Noise** — irrelevant code confuses the model and causes hallucinations.
 2. **Token Inefficiency** — superfluous data inflates cost and hits rate limits.
 3. **Knowledge Silos** — AI misses connections between code and docs unless both are open.
+4. **Service Boundary Drift** — in microservice systems, APIs, schemas, generated clients, and event contracts change across project boundaries faster than humans can track manually.
 
 ### 1.3. Success Metrics
 - **Precision:** reduce transmitted code by 60–80% with equal or better answer quality.
 - **Cost:** lower average token cost 3–5× via surgical selection + model routing.
 - **Latency:** context assembly (Graph + Vector + FS) under 200ms.
-- **Team Velocity:** shared SaaS graph accelerates onboarding.
+- **Portability:** local defaults work out of the box, while provider boundaries leave room for customer-owned storage later.
 
 ### 1.4. Design Principles
 - **Ownership over Hype:** robust data infrastructure, not an API wrapper.
-- **Security by Design:** source code never leaves the local machine for storage.
+- **Security by Design:** source code never enters graph storage; vector/history persistence follows explicit storage policy and defaults local.
 - **Transparency:** user always sees what context was collected and what it cost.
+
+### 1.5. Product Layers
+
+| Layer | Purpose | Required for Local v0.1 |
+|---|---|---|
+| **Local Developer Product** | Single-tenant local VS Code tool with sidecar, Neo4j Docker, LanceDB, SQLite history, ask/inspect/impact, and local docs indexing. | Yes |
+| **Team Layer** | Shared customer-owned storage, admin/user roles, connectable doc sources, and tenant API contract links between project-published manifests. | No |
+| **Enterprise / Platform Layer** | Alternate database connectors, audit/retention stores, LLM proxy gateway transport, dedicated deployments, service split, and performance hot-path rewrites after profiling. | No |
 
 ---
 
@@ -36,7 +47,16 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 | **Extension Host** | TypeScript / VS Code API | Manages sidecar lifecycle, proxies webview messages to sidecar, manages file watchers and overlays. |
 | **Webviews** | TypeScript / React (proposed) | Render Chat Panel, Context Inspector, Impact Explorer, Dashboard. No business logic — dispatch to extension host. |
 | **Sidecar Binary** | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
-| **Storage Trinity** | Neo4j + LanceDB + FS | Hybrid storage — each data type in its optimal environment. |
+| **Storage Provider Layer** | GraphProvider + VectorProvider + HistoryProvider + FS | Provider boundaries around storage. Local defaults: Neo4j, LanceDB, SQLite. Alternate providers are future. |
+| **Tenant API Contract Graph** | GraphProvider metadata layer (future Team layer) | Links project-published service/API manifests across a tenant without cross-project source scanning. |
+
+**Default provider implementations:**
+
+| Provider Family | Default | Alternatives |
+|---|---|---|
+| `GraphProvider` | Neo4j local Docker / customer Neo4j | NebulaGraph, Memgraph, dedicated managed graph service |
+| `VectorProvider` | LanceDB local | Qdrant, Weaviate, pgvector, customer-managed vector services |
+| `HistoryProvider` | SQLite local (planned) | encrypted SQLite, Postgres, enterprise audit store, memory-only, disabled |
 
 ### 2.2. Inter-Process Communication
 VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsive even if a heavy Cypher query blocks the sidecar. Enables future replacement of Python binary with Rust without frontend changes.
@@ -48,31 +68,35 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 | GET | `/health` | ✅ |
 | POST | `/index` | ✅ |
 | POST | `/index/docs` | ✅ |
+| POST | `/index/file` | ✅ |
+| POST | `/index/files` | ✅ |
+| GET | `/index/queue` | ✅ |
 | POST | `/ask` | ✅ |
 | POST | `/ask/stream` | ✅ |
 | POST | `/search` | ✅ |
+| POST | `/search/unified` | ✅ |
 | POST | `/overlay` | ✅ |
 | DELETE | `/overlay` | ✅ |
-| POST | `/index/file` | ✅ |
+| POST | `/feedback` | ✅ |
 | GET | `/impact` | ✅ |
 | POST | `/auth/token` | ✅ |
 | GET | `/auth/users` | ✅ |
 | GET | `/status/cloud` | ✅ |
 | GET | `/audit/actions` | ✅ |
-| GET | `/metrics` | 🔴 Planned — Prometheus text format |
+| GET | `/metrics` | ✅ |
 
 ---
 
 ### 2.4. Observability (Partially Implemented)
 
-The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency, but runtime observability is still incomplete. The next observability layer adds:
+The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency. Runtime metrics and trace IDs exist; the remaining work is richer prompt-contract explanation and local release SLO checks.
 
 - **Structured logs** per pipeline stage with fields: `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`.
 - **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts, cache hit rates.
 - **Token baselines**: every `/ask` logs both the surgical token count and an estimate of the "carpet-bomb" equivalent (all open files). The delta is the core KPI.
 - **Retrieval recall@k** measured against a golden fixture set on every CI run.
 
-Without runtime metrics and prompt-contract observability, production claims in §1.3 remain hard to validate outside benchmark runs.
+Without complete prompt-contract observability, production claims in §1.3 remain hard to debug outside benchmark runs.
 
 ---
 
@@ -116,7 +140,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ## Section 3: Data Processing Pipelines
 
 ### 3.1. Extract — Change Monitoring
-- **Git Integration (macro):** subscribes to `.git` events; on checkout/commit, reconciles local index with Neo4j SaaS.
+- **Git Integration (macro):** subscribes to `.git` events; on checkout/commit, reconciles local index with the configured graph provider.
 - **LSP / File Watcher (micro):** `onDidChangeTextDocument` / `onDidSaveTextDocument` events feed the In-Memory Overlay in real time.
 
 ### 3.2. Transform — Analysis & Enrichment
@@ -138,11 +162,18 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
   - `[:COVERS]` — code symbols mentioned in chunk
   - Lazy `pending` resolution for forward references (symbols indexed after docs)
 
+**API Contracts (Planned):**
+- Project-owned extraction only: OpenAPI/Swagger, GraphQL SDL, protobuf/gRPC, AsyncAPI, route declarations, generated clients, gateway metadata, and service catalogs inside the current workspace.
+- Local output: a `ContractManifest` containing safe service, endpoint, schema, event, and call-site metadata for this project.
+- Tenant output: links between published manifests, such as `CALLS_ENDPOINT`, `EXPOSES_ENDPOINT`, `USES_SCHEMA`, `PRODUCES_EVENT`, `CONSUMES_EVENT`, and `DEPENDS_ON_SERVICE`.
+- Explicit boundary: the sidecar never scans neighboring repositories from another project's context. Neighboring projects publish their own facts; the tenant graph only connects those facts.
+
 ### 3.3. Load — Incremental Upsert
-- **Neo4j:** `MERGE` on uid — only changed nodes/edges are written.
+- **GraphProvider:** upsert by stable UID — only changed nodes/edges are written. Neo4j is the current default implementation.
 - **Workspace:** File nodes, CONTAINS edges, call edges, AFFECTS edges, and graph reads are scoped by `workspace_id`.
 - **Current caveat:** changed files are handled by deleting their workspace-local file edges and re-upserting extracted symbols; symbol-level diffing is still deferred.
-- **LanceDB:** delete-then-insert per file on re-index.
+- **VectorProvider:** delete-then-insert per file on re-index. LanceDB is the current default implementation.
+- **HistoryProvider (planned):** append-only conversations, messages, ask snapshots, inspector snapshots, and impact snapshots. SQLite local is the planned default.
 - **Recovery:** `/index/file` writes an indexing job record before mutating stores, then marks success, failed, or dead-letter state so partial graph/vector failures are visible and retryable.
 
 ### 3.4. Dirty State Handling ✅ Implemented
@@ -163,17 +194,19 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ## Section 4: Core Workflows
 
 ### 4.1. Prompt Lifecycle
-1. VS Code sends `POST /ask` with `{symbol, question}`.
+1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
 3. **Intent classification**: detect query intent (navigation, debugging, refactor, exploration, new feature, design question) → choose tier priority order.
-4. **Graph expansion** (`GraphExpander`): BFS from target symbol through workspace-scoped typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) constrained by token budget + depth limit. Returns priority-scored subgraph.
-5. **Deduplication** (`ContextDeduplicator`): remove redundant symbols and overlapping doc chunks.
-6. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol.
-7. **Doc retrieval** (`DocResolver`): semantic search in LanceDB `docs` table → top-k chunks. Matched chunks have `[:COVERS]` edges to code symbols.
-8. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas), fill budget in order.
-9. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
-10. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
-11. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
+4. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
+5. **Graph expansion** (`GraphExpander`): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) constrained by token budget + depth limit. Returns priority-scored subgraph.
+6. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
+7. **Deduplication** (`ContextDeduplicator`): remove redundant symbols and overlapping doc chunks.
+8. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol.
+9. **Doc retrieval** (`DocResolver`): semantic search in LanceDB `docs` table → top-k chunks. Matched chunks have `[:COVERS]` edges to code symbols.
+10. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas → tenant API context), fill budget in order.
+11. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
+12. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
+13. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
 
 ### 4.2. Cold Start
 1. FS scan for `.py`/`.ts`/`.tsx` files (gitignore-aware, dirs pruned).
@@ -201,7 +234,7 @@ Scenario: user edits `process_payment`, hasn't saved.
 
 ## Section 5: Data Schema
 
-### 5.1. Neo4j Node Labels
+### 5.1. GraphProvider Node Labels
 
 | Label | Properties | Description |
 |---|---|---|
@@ -209,6 +242,18 @@ Scenario: user edits `process_payment`, hasn't saved.
 | Symbol | `uid, name, kind, range, hash, token_estimate` | Atomic code unit (function/class/variable) |
 | DocAnchor | `chunk_id` | Doc chunk key — navigates to File via [:FROM], to symbols via [:COVERS] |
 | Commit | `hash, author, timestamp, branch` | Version node for time-travel context (planned) |
+
+**Planned tenant API labels:**
+
+| Label | Properties | Description |
+|---|---|---|
+| Service | `service_id, tenant_id, workspace_id, name, owner, repo, version` | Project-published service identity |
+| ApiEndpoint | `operation_id, method, path, protocol, version, deprecated` | HTTP/GraphQL/RPC operation |
+| ApiSchema | `schema_id, name, format, version, schema_hash` | Request/response/event schema |
+| ApiField | `field_id, name, type, required, sensitivity` | Optional schema-field granularity |
+| EventTopic | `topic_id, name, broker, version` | Published/consumed event stream |
+| ExternalSystem | `system_id, tenant_id, name, kind` | SaaS/vendor/system without a project index |
+| ContractManifest | `manifest_id, workspace_id, graph_version, published_at` | Immutable publication unit from one project |
 
 ### 5.2. Relationships
 
@@ -224,6 +269,24 @@ Scenario: user edits `process_payment`, hasn't saved.
 | FROM | (DocAnchor)→(File) | Doc chunk origin — `type` property: `"doc"` (source doc file), `"code"` (code file containing covered symbols), `"spec"` / `"architecture"` / `"concept"` / `"idea"` (referenced project docs) |
 | COVERS | (DocAnchor)→(Symbol) | Doc chunk describes this code symbol |
 | MODIFIED_IN | (Symbol)→(Commit) | Symbol change history (planned) |
+
+**Planned tenant API relationships:**
+
+| Type | Direction | Description |
+|---|---|---|
+| PUBLISHES_SERVICE | (Workspace)→(Service) | Workspace owns/publishes a service manifest |
+| EXPOSES_ENDPOINT | (Service)→(ApiEndpoint) | Service offers an operation |
+| IMPLEMENTS_ENDPOINT | (Symbol/File)→(ApiEndpoint) | Current-project code implements an endpoint |
+| CALLS_ENDPOINT | (Symbol/File/Service)→(ApiEndpoint) | Current project calls an operation |
+| USES_SCHEMA | (ApiEndpoint/EventTopic)→(ApiSchema) | Operation/topic uses a schema |
+| HAS_FIELD | (ApiSchema)→(ApiField) | Field-level schema structure |
+| PRODUCES_EVENT | (Service)→(EventTopic) | Service publishes an event |
+| CONSUMES_EVENT | (Service)→(EventTopic) | Service consumes an event |
+| DEPENDS_ON_SERVICE | (Service)→(Service/ExternalSystem) | Derived service dependency |
+| VERSION_OF | (ApiEndpoint/ApiSchema)→(ApiEndpoint/ApiSchema) | Contract version lineage |
+| BREAKS_CONTRACT | (ContractManifest)→(ApiEndpoint/ApiSchema) | Compatibility warning from contract diff |
+
+Tenant API graph edges are metadata-only. They carry tenant/workspace scope, confidence, resolver, and publication timestamps, but never raw source code, request/response payloads, secrets, or auth material.
 
 ### 5.3. JSON Prompt Contract
 
@@ -246,7 +309,9 @@ Scenario: user edits `process_payment`, hasn't saved.
 }
 ```
 
-**Implemented metadata:** `mode`, `intent`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth`, `direction`, and `relevance_score`.
+**Implemented metadata:** `mode`, `intent`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, `budget.ask_level`, dependency `depth`, `direction`, and `relevance_score`.
+
+**Planned metadata:** `tenant_api_context`, `api_direction`, `tenant_link_depth`, service/contract provenance, and tenant API candidate scores. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
 **Known gap:** project/workspace/branch metadata and document relevance scores are still planned.
 
@@ -284,9 +349,9 @@ Current `/index` collects files, compares hashes against stored `File.hash`, and
 ## ADR-001: Separation of Graph Topology and Source Code Content
 **Status:** Accepted
 
-Store only topology in Neo4j. Symbol node contains: `uid`, `name`, `kind`, `range` (start/end lines), `hash`. No `file_path` — navigate via `(File)-[:CONTAINS]->(Symbol)`. DocAnchor node contains only `chunk_id` — navigate via `[:FROM]` to File, `[:COVERS]` to Symbol. Sidecar reads code text from disk on demand using line coordinates.
+Store only topology in the graph provider. Symbol node contains: `uid`, `name`, `kind`, `range` (start/end lines), `hash`. No source body text — navigate via `(File)-[:CONTAINS]->(Symbol)`. DocAnchor node contains only `chunk_id` — navigate via `[:FROM]` to File, `[:COVERS]` to Symbol. Sidecar reads code text from disk on demand using line coordinates.
 
-**Why:** Keeps Neo4j lightweight for fast Cypher queries. Source code never goes to SaaS cloud. Only `hash` update needed when function body changes without structural impact.
+**Why:** Keeps graph storage lightweight for fast topology queries. Source code never goes to the graph provider. Only `hash` update needed when function body changes without structural impact.
 
 **Trade-off:** Extra disk I/O per prompt assembly. Mitigated by OS file cache. Hash mismatch = dirty flag = re-parse.
 
@@ -297,20 +362,20 @@ Store only topology in Neo4j. Symbol node contains: `uid`, `name`, `kind`, `rang
 
 Python 3.12+, compiled to standalone binary with Nuitka at launch.
 
-**Why:** Best ecosystem for tree-sitter, LanceDB, sentence-transformers. Fast iteration on arbitration logic. Compiled binary ships as single file (50MB+).
+**Why:** Best ecosystem for tree-sitter, local vector stores, sentence-transformers, and FastAPI. Fast iteration on arbitration logic. Compiled binary ships as single file (50MB+).
 
 **Trade-off:** Performance ceiling on very large graphs (100k+ nodes) may require hot-path rewrite in Rust later.
 
 ---
 
-## ADR-003: Shared SaaS Graph + Local Dirty Overlay
+## ADR-003: Pluggable Graph Provider + Local Dirty Overlay
 **Status:** Accepted
 
-Primary graph in Neo4j Aura (shared team instance). Local unsaved changes in `InMemoryOverlay` inside the sidecar process. ✅ Overlay implemented.
+The primary graph is supplied by the configured `GraphProvider`: local Docker for solo users, customer-managed graph storage for teams, or dedicated managed graph storage for larger customers. Local unsaved changes remain in `InMemoryOverlay` inside the sidecar process. ✅ Overlay implemented.
 
-**Why:** Team shares one source of truth. Local edits don't pollute the shared graph. No full re-index per developer.
+**Why:** Teams need one source of truth, but storage ownership varies by customer. Local edits don't pollute the configured graph provider. No full re-index per developer.
 
-**Trade-off:** Cloud access required for SaaS graph (fallback to local Docker). Cypher queries must merge cloud + local results.
+**Trade-off:** Provider abstraction adds capability checks and conformance testing. Query features must stay inside the provider contract, not vendor-specific assumptions.
 
 ---
 
@@ -342,11 +407,48 @@ Required methods:
 
 ---
 
-## ADR-006: Quality Gates Before SaaS
+## ADR-006: Quality Gates Before Managed Release
 **Status:** Accepted
 
-SaaS and marketplace readiness are blocked on correctness, observability, and isolation hardening. Cloud/local fallback exists, but production multi-user operation still needs stable workspace boundaries and stronger auth.
+Managed deployments and marketplace readiness are blocked on the Local Developer Product becoming a reliable daily driver. Cloud/local graph provider fallback exists, but the current release gates are local setup, local history, extension polish, prompt-contract observability, and smoke-testable ask/inspect/impact workflows.
 
-**Why:** The project's value proposition is measurable precision and cost savings. Scaling before retrieval correctness and observability are durable means scaling an unverified product.
+**Why:** The project's value proposition is measurable precision and cost savings. Scaling before the local loop is durable means scaling an unverified product.
 
-**Trade-off:** Slower path to "enterprise story." Accepted — correctness first.
+**Trade-off:** Slower path to the enterprise story. Accepted — local daily-driver first.
+
+---
+
+## ADR-007: Project-Owned Indexing + Tenant API Links
+**Status:** Future Team/Enterprise
+
+Each project indexes itself and publishes safe API contract metadata into a tenant-scoped graph. Tenant-level retrieval traverses only those published facts. It does not scan neighboring repositories, read neighboring source files, or invoke live APIs.
+
+**Why:** Microservice architectures need cross-project context, but source ownership and privacy boundaries are non-negotiable. Published service manifests let teams connect endpoints, schemas, clients, events, and ownership without turning one sidecar into a tenant-wide crawler.
+
+**Design:**
+- Project indexers extract local API facts: route declarations, OpenAPI/GraphQL/protobuf/AsyncAPI contracts, generated client calls, SDK usage, event topics, and service metadata.
+- Tenant linking connects manifests by stable fingerprints: endpoint signature, schema hash, event topic, service alias, and gateway/catalog identity.
+- Retrieval accepts direction and traversal policy: `api_direction` (`outbound_dependencies`, `inbound_consumers`, `contract_impact`, `internal_processing`, `bidirectional_contract`) and `tenant_link_depth` (default 1, hard-capped at 2).
+- Scoring extends unified ranking with direction weight, scope weight, depth decay, edge type weight, and confidence.
+
+**Trade-off:** The tenant graph can only be as complete as project-published manifests. If a neighboring service has not indexed/published its API facts, retrieval should surface a low-confidence or missing-contract state rather than attempting to inspect that service directly.
+
+---
+
+## ADR-008: Storage Provider Connectors
+**Status:** Proposed, staged
+
+Graph, vector, and user-history storage live behind provider connector interfaces. Neo4j, LanceDB, and SQLite are defaults, not product-level requirements.
+
+**Why:** Customers differ on database standards, procurement, monitoring, privacy, and deployment models. A startup may accept local Docker defaults; a company may require its own Neo4j/Qdrant/Postgres; a larger customer may require dedicated managed storage in its cloud account. The product should preserve retrieval behavior while letting storage ownership vary.
+
+**Design:**
+- `GraphProvider` stores topology and metadata: symbols, files, edges, workspaces, DocAnchors, AFFECTS, and tenant API links.
+- `VectorProvider` stores semantic retrieval indexes: docs, symbol embeddings, embedding metadata, and pending references.
+- `HistoryProvider` stores product UX state: conversations, messages, ask snapshots, inspector snapshots, impact snapshots, and retention metadata.
+- Local storage modes include `local`, `local_docker`, `ephemeral`, and `disabled`; customer-managed, dedicated, and enterprise-audit modes are future implementations.
+- Privacy policy sits above connectors. Connectors receive already-approved payloads; they do not decide whether raw prompts, source snippets, responses, or audit data may be stored.
+
+**Trade-off:** Provider abstraction slows early implementation and requires conformance tests. Accepted, because it prevents Neo4j/LanceDB/SQLite from becoming accidental lock-in and keeps enterprise deployment options credible.
+
+**Staging:** local v0.1 only needs provider boundaries around Neo4j, LanceDB, and SQLite. Real alternate backends move to the Team/Enterprise horizon after those contracts are stable.

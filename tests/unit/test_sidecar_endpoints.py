@@ -333,14 +333,15 @@ def test_ask_stream_endpoint_emits_json_sse(monkeypatch):
     assert response.media_type == "text/event-stream"
 
 
-def test_ask_endpoint_returns_not_found(monkeypatch):
+def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
-    with pytest.raises(HTTPException) as exc_info:
-        main.ask(main.AskRequest(symbol="missing", question="Where?"))
+    body = main.ask(main.AskRequest(symbol="missing", question="Where?"))
 
-    assert exc_info.value.status_code == 404
-    assert "not found" in exc_info.value.detail
+    assert body["answer"] == "fake answer"
+    assert body["context"]["mode"] == "workspace"
+    assert body["context"]["budget"]["ask_level"] == "workspace"
+    assert body["context"]["budget"]["missing_symbol"] == "missing"
 
 
 def test_auth_required_rejects_missing_bearer_token(monkeypatch):

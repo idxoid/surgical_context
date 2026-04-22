@@ -15,13 +15,31 @@ The product loop:
 
 The architectural center of gravity is retrieval correctness. If symbol identity, call resolution, branch isolation, and prompt observability are correct, model quality can improve steadily. If those are weak, better models only hide retrieval mistakes.
 
-## 1. The Storage Trinity
+## 0.1. Release Shape
 
-Data is split across three stores, each optimized for its role.
+The active product target is the **Local Developer Product**. It is a single-tenant, local-first VS Code tool that can be used from a developer machine without a managed SaaS dependency.
 
-**Neo4j** — graph topology only. Nodes: `File`, `Symbol`, `DocAnchor`. Edges: `CONTAINS`, `CALLS_DIRECT`/`CALLS_DYNAMIC`/`CALLS_INFERRED`, `COVERS`, `FROM` (with type classification), `DEPENDS_ON`, `IMPORTS`, `AFFECTS` (Phase 5 reverse dependencies). No code text, no file paths stored on nodes (ADR-001). ✅ Running via Docker.
+Local v0.1 includes:
+- VS Code UI: Chat, Inspector, Impact, Settings, and Dashboard.
+- Python sidecar.
+- Local graph/vector/history defaults: Neo4j Docker, LanceDB, SQLite.
+- Ask/inspect/impact flows for symbol, file, workspace, and direct LLM questions.
+- Local repository docs indexing.
+- Prompt-context transparency and privacy controls.
 
-**LanceDB** — local vector index for documentation chunks. Model: `all-MiniLM-L6-v2` (384-dim). ✅ Implemented.
+Future layers are deliberately separate:
+- **Team:** shared customer-owned storage, admin/user roles, connectable doc sources, and tenant API contract links between project-published manifests.
+- **Enterprise / Platform:** alternate database connectors, audit stores, optional LLM proxy gateway transport, dedicated deployments, microservice split, and parser/indexer hot-path rewrites after profiling.
+
+## 1. Storage Provider Layer
+
+Data is split across provider families, each optimized for its role. The local defaults are Neo4j, LanceDB, and SQLite. These defaults will sit behind provider connectors so storage boundaries are explicit; real alternate backends are a later Team/Enterprise layer.
+
+**GraphProvider** — graph topology only. Default: Neo4j. Nodes: `File`, `Symbol`, `DocAnchor`. Edges: `CONTAINS`, `CALLS_DIRECT`/`CALLS_DYNAMIC`/`CALLS_INFERRED`, `COVERS`, `FROM` (with type classification), `DEPENDS_ON`, `IMPORTS`, `AFFECTS` (Phase 5 reverse dependencies). No code text stored in graph storage (ADR-001). ✅ Neo4j default running via Docker.
+
+**VectorProvider** — semantic index for documentation chunks and optional symbol embeddings. Default: LanceDB local. Model: `all-MiniLM-L6-v2` (384-dim). ✅ Implemented.
+
+**HistoryProvider** — user dialogs, messages, ask snapshots, inspector snapshots, and impact snapshots. Default planned: SQLite local. Enterprise modes may point to a customer-managed audit/history store.
 
 **Local FS** — source of truth for all text content. Read on demand using line coordinates from graph.
 
@@ -36,30 +54,35 @@ External Python process. VS Code communicates via FastAPI (localhost HTTP). Faul
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Liveness check |
-| POST | `/index` | Index a project directory into Neo4j + LanceDB |
-| POST | `/index/docs` | Index a documentation directory into LanceDB + DocAnchor graph |
+| POST | `/index` | Index a project directory into the configured graph/vector providers |
+| POST | `/index/file` | Re-index one saved file |
+| POST | `/index/files` | Queue and batch multiple saved-file updates |
+| GET | `/index/queue` | Inspect indexing queue state |
+| POST | `/index/docs` | Index a documentation directory into the vector provider + DocAnchor graph |
 | POST | `/ask` | Assemble `PromptContext`, query Ollama, return answer + JSON contract |
 | POST | `/ask/stream` | Streaming answer endpoint over JSON-safe server-sent events |
-| POST | `/search` | Semantic search over indexed docs (LanceDB) |
+| POST | `/search` | Semantic search over indexed docs |
+| POST | `/search/unified` | Blend symbols, graph neighbors, and docs in one result set |
 | POST | `/overlay` | Push unsaved file content into memory |
 | DELETE | `/overlay` | Clear overlay for a file (on save/close) |
-| POST | `/index/file` | Re-index one saved file |
+| POST | `/feedback` | Record accept/reject feedback against a retrieval snapshot |
 | GET | `/impact` | Return downstream symbols/files affected by a symbol |
 | POST | `/auth/token` | Generate a user token for multi-user mode |
 | GET | `/auth/users` | List active users |
-| GET | `/status/cloud` | Report Aura/local fallback status |
+| GET | `/status/cloud` | Report graph provider local/cloud status |
 | GET | `/audit/actions` | Return recent audit entries |
+| GET | `/metrics` | Prometheus-style metrics |
 
 ### Context Arbitrator
 
 Returns a typed `PromptContext` dataclass (`sidecar/context/arbitrator.py`):
 1. Detect query intent from user question via `IntentClassifier` (Phase 6.1)
-2. Fetch target symbol from Neo4j (uid, range); resolve file path via `(File)-[:CONTAINS]->(Symbol)`
+2. Fetch target symbol from the graph provider (uid, range); resolve file path via `(File)-[:CONTAINS]->(Symbol)`
 3. Check In-Memory Overlay — if dirty version exists, read from memory (`is_dirty=True`)
 4. Otherwise read code from disk by line range
 5. Expand graph via BFS (token-budget constrained) to gather all `CALLS` dependencies + reverse deps
 6. Compile context tier-aware per intent: code → cross-refs → specs → architecture → concepts → ideas
-7. Attaches doc chunks from LanceDB to `PromptContext.documentation`
+7. Attaches doc chunks from the vector provider to `PromptContext.documentation`
 8. `to_system_prompt()` → flat text for LLM; `to_dict()` → JSON Prompt Contract with `mode` + `intent` fields
 
 Doc retrieval happens before prompt compilation, so intent-aware document selection and `tier_tokens` are produced by the same arbitration path that builds the prompt.
@@ -95,19 +118,19 @@ Two-phase to ensure all nodes exist before edges are created:
 - tree-sitter AST query for `function_definition`, `class_definition`, and module-level UPPER_CASE assignments (`variable`)
 - Extract: name, kind, start/end line, content hash, stable UID v2 (`sha256(language:qualified_name|normalized_signature)[:16]`)
 - Multi-language: Python (`.py`) + TypeScript (`.ts`, `.tsx`); gitignore-aware file collection
-- Neo4j upsert: `MERGE (s:Symbol {uid})`, `MERGE (f)-[:CONTAINS]->(s)`
+- GraphProvider upsert: `MERGE (s:Symbol {uid})`, `MERGE (f)-[:CONTAINS]->(s)` in the current Neo4j default
 
 **Phase 2 — Call linking** (per file):
 - tree-sitter query for `call` nodes
 - Walk up AST to find enclosing function (caller)
-- Neo4j: `MERGE (caller)-[:CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(callee)` using callee UID/qualified-name first, unique name fallback last
+- GraphProvider: create `CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS` edges using callee UID/qualified-name first, unique name fallback last
 
 **Phase 3 — Symbol embeddings:**
 - Read each symbol's source lines from disk
-- Embed code bodies into LanceDB `symbols` table
+- Embed code bodies into the vector provider `symbols` index
 
 **Phase 4 — Pending DocAnchor resolution:**
-- `resolve_pending_anchors()` checks LanceDB `docs.pending` against newly indexed symbols
+- `resolve_pending_anchors()` checks vector-provider pending references against newly indexed symbols
 - Creates `[:COVERS]` edges for any identifiers now present in graph
 
 ---
@@ -118,20 +141,20 @@ Two-phase to ensure all nodes exist before edges are created:
 - Walks directory for `*.md` files
 - Section-aware chunking: splits on `#`/`##`/`###` headings first; word-window fallback (400 words, 80 overlap) for oversized sections
 - Embeds with `sentence-transformers/all-MiniLM-L6-v2`
-- Upserts into LanceDB (delete-then-insert per file)
+- Upserts into the vector provider (delete-then-insert per file in the current LanceDB default)
 - Calls `link_docs_to_symbols()` after indexing
 
-**LanceDB client** (`sidecar/database/lancedb_client.py`) — two tables:
+**VectorProvider default: LanceDB client** (`sidecar/database/lancedb_client.py`) — two tables:
 - `docs`: `id, file_path, chunk, pending: list[str], vector[384]`
 - `symbols`: `uid, name, file_path, code, vector[384]`
 - `search(query, limit)` — ANN over docs table
 - `search_symbols(query, limit, threshold)` — ANN over symbols table with cosine distance filter
 - `get_pending()` / `set_pending()` — lazy DocAnchor resolution state
 
-**DocAnchor** (`sidecar/indexer/anchor.py`) — Neo4j node with only `chunk_id` property.
+**DocAnchor** (`sidecar/indexer/anchor.py`) — graph-provider node with only `chunk_id` property.
 - `[:FROM]` edge to `File` node (source doc file)
 - `[:COVERS]` edges to `Symbol` nodes (semantic + identifier matching)
-- Unresolved identifiers stored in `docs.pending` (LanceDB); resolved on every index run via `resolve_pending_anchors()`
+- Unresolved identifiers stored in vector-provider pending metadata; resolved on every index run via `resolve_pending_anchors()`
 
 ---
 
@@ -143,25 +166,28 @@ Two-phase to ensure all nodes exist before edges are created:
 
 ## 6. ADR Summary
 
-**ADR-001** — Code text stays on FS, only topology in Neo4j. Keeps graph lightweight and code off SaaS.
+**ADR-001** — Code text stays on FS; only topology goes into the graph provider. Keeps graph storage lightweight and code out of graph storage.
 
 **ADR-002** — Python sidecar for MVP. Best ecosystem for tree-sitter + AI libs. Compiled to binary (Nuitka) at launch.
 
-**ADR-003** — Shared SaaS graph + Local Dirty Overlay. Team shares one Neo4j Aura graph; local unsaved changes handled in-memory only.
+**ADR-003** — Pluggable Graph Provider + Local Dirty Overlay. Solo users can use local Docker; teams can use customer-managed graph storage; local unsaved changes remain in-memory only.
 
 **ADR-004** — Model round-robin by intent + context size. Simple → cheap model, complex → powerful model.
 
 **ADR-005** — LanguageAdapter protocol. All language-specific logic (tree-sitter queries, call resolution) lives behind a protocol so new languages plug in without core edits.
 
-**ADR-006** — Quality gates before scale. Cloud fallback, model routing, and the extension scaffold exist, but SaaS/marketplace readiness remains blocked on correctness and observability hardening.
+**ADR-006** — Local release before managed release. Cloud/local provider fallback, model routing, and the extension scaffold exist, but managed deployments and marketplace readiness remain blocked on the local daily-driver loop: setup, history, extension polish, and observability.
+
+**ADR-008** — Storage Provider Connectors. Graph, vector, and user-history storage are connector-backed; Neo4j, LanceDB, and SQLite are defaults, not lock-in. Local v0.1 wraps these defaults first; alternate backends come later.
 
 ---
 
 ## 7. Dev-Phase Priorities
 
-The project is pre-release. SaaS and marketplace are deferred. The active work stream is:
+The project is pre-release. SaaS, marketplace, tenant graph, alternate database backends, and microservice splitting are deferred. The active work stream is:
 
-1. **Correctness hardening.** Stable UID v2, scoped call resolution, workspace/branch isolation, and adversarial retrieval fixtures are implemented; remaining cleanup is migration tooling and lifecycle automation.
-2. **Operational safety.** Durable indexing recovery, signed bearer auth behind `AUTH_REQUIRED`, typed API responses, and JSON-safe streaming.
-3. **Observability.** `/metrics`, structured logs, token/cost/latency tracking, and richer JSON Prompt Contract metadata.
-4. **Extension productization.** Context inspector, streaming answers, token budget display, model route display, and user-configurable sidecar settings.
+1. **Local daily-driver loop.** Clean setup, sidecar health, local storage defaults, extension commands, and smoke-testable ask/inspect/impact.
+2. **Local history.** SQLite conversations, messages, ask snapshots, inspector snapshots, impact snapshots, retention, and privacy gates.
+3. **Extension productization.** Streaming answers, prompt selection history, dashboard resilience, settings UX, command placement, and accessibility.
+4. **Retrieval observability.** Remaining JSON Prompt Contract fields, pruning explanations, ranker weights, latency SLO checks, and QA harness tuning.
+5. **Provider boundaries.** Wrap Neo4j/LanceDB/SQLite behind narrow contracts before adding real alternate backends.

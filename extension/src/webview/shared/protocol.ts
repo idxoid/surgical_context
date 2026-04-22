@@ -7,6 +7,7 @@
 // ============ Webview → Extension Host Messages ============
 
 export type WebviewToHostMessage =
+  | { type: 'surface.ready' }
   | { type: 'chat.ask'; prompt: string; symbol?: string }
   | { type: 'chat.stop'; requestId: string }
   | { type: 'chat.retry'; messageId: string }
@@ -14,6 +15,7 @@ export type WebviewToHostMessage =
   | { type: 'accordion.toggled'; id: string; expanded: boolean }
   | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down' }
   | { type: 'action.openInspector' }
+  | { type: 'action.openSettings' }
   | { type: 'action.showImpact'; symbol?: string }
   | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'link.openFile'; filePath: string; line?: number }
@@ -27,6 +29,9 @@ export type WebviewToHostMessage =
 
 export type HostToWebviewMessage =
   | { type: 'surface.init'; state: ChatSurfaceState }
+  | { type: 'surface.showChat' }
+  | { type: 'surface.showInspector' }
+  | { type: 'surface.showSettings' }
   | { type: 'chat.requestStarted'; requestId: string; symbol?: string }
   | { type: 'chat.streamChunk'; requestId: string; chunk: string }
   | { type: 'chat.requestCompleted'; requestId: string; answer: string; context: PromptContextPayload }
@@ -34,14 +39,22 @@ export type HostToWebviewMessage =
   | { type: 'chat.requestStopped'; requestId: string }
   | { type: 'chat.contextSummary'; summary: ContextSummaryDto }
   | { type: 'workspace.updated'; activeFile: string | null; symbol: string | null; isDirty: boolean }
-  | { type: 'backend.updated'; sidecarHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'offline' }
+  | { type: 'backend.updated'; sidecarHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline' }
   | { type: 'toast.show'; level: 'info' | 'warning' | 'error'; message: string }
   | { type: 'inspector.loaded'; context: PromptContextPayload | null }
   | { type: 'impact.loading' }
   | { type: 'impact.loaded'; symbol: string; impact: ImpactResponse }
   | { type: 'impact.loadFailed'; error: string }
   | { type: 'dashboard.loading' }
-  | { type: 'dashboard.metricsLoaded'; health: 'up' | 'down'; cloudStatus: 'connected' | 'fallback-local' | 'offline'; auditActions: AuditAction[]; metrics?: unknown }
+  | {
+      type: 'dashboard.metricsLoaded';
+      health: 'up' | 'down' | 'degraded';
+      cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline';
+      auditActions: AuditAction[];
+      metrics: DashboardMetrics;
+      workspaceId: string;
+      warnings: string[];
+    }
   | { type: 'dashboard.metricsFailed'; error: string }
   | { type: 'settings.loaded'; settings: SettingsData }
   | { type: 'settings.saved'; message: string }
@@ -53,6 +66,7 @@ export type HostToWebviewMessage =
 export interface ChatSurfaceState {
   expandedAccordions: Record<string, boolean>;
   composerDraft: string;
+  lastContext?: PromptContextPayload | null;
   workspace: {
     activeFile: string | null;
     selectedSymbol: string | null;
@@ -60,7 +74,7 @@ export interface ChatSurfaceState {
   };
   backend: {
     sidecarHealth: 'up' | 'down' | 'degraded';
-    cloudStatus: 'connected' | 'fallback-local' | 'offline';
+    cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline';
   };
 }
 
@@ -75,9 +89,11 @@ export interface ContextSummaryDto {
 
 export interface ChatMessage {
   id: string;
+  requestId?: string;
   type: 'user' | 'assistant';
   content: string;
   timestamp: number;
+  symbol?: string;
   context?: PromptContextPayload;
   status?: 'streaming' | 'done' | 'error';
   error?: string;
@@ -147,6 +163,26 @@ export interface AuditAction {
   symbol: string;
   status: string;
   details?: Record<string, unknown>;
+}
+
+export interface DashboardMetrics {
+  indexedFiles: number | null;
+  indexedSymbols: number | null;
+  docChunks: number | null;
+  avgLatencyMs: number | null;
+  tokenSavingsPercent: number | null;
+  fallbackRatePercent: number | null;
+  contextQualityPercent: number | null;
+  symbolsWithDocs: number | null;
+  storageGb: number | null;
+  requestsTotal: number | null;
+  tokensTotal: number | null;
+  costUsdTotal: number | null;
+  queuePending: number | null;
+  queueProcessing: number | null;
+  queueProcessed: number | null;
+  queueFailedBatches: number | null;
+  lastIndexJobStatus: string | null;
 }
 
 export interface SettingsData {

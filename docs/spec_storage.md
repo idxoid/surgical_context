@@ -2,11 +2,26 @@
 
 ## Overview
 
-Two database clients. Each optimized for its data type. Neither stores source code content (ADR-001).
+The current implementation uses two concrete storage clients:
+
+- `Neo4jClient` for graph topology and metadata.
+- `LanceDBClient` for vector retrieval over docs and symbol bodies.
+
+These are now treated as default provider implementations behind the planned storage connector layer. See [spec_storage_connectors.md](spec_storage_connectors.md).
+
+Neither graph storage nor tenant API graph storage may store raw source code content (ADR-001). Vector and history storage are governed by storage policy because they may contain text snippets, embeddings, prompts, answers, or prompt-context snapshots.
+
+### Provider Families
+
+| Family | Current Default | Responsibility |
+|---|---|---|
+| `GraphProvider` | Neo4j | Topology: files, symbols, edges, workspaces, DocAnchors, tenant API links |
+| `VectorProvider` | LanceDB | Semantic indexes: docs, symbol embeddings, embedding metadata |
+| `HistoryProvider` | Planned SQLite | User dialogs, ask snapshots, inspector/impact snapshots, retention policy |
 
 ---
 
-## Neo4jClient (`sidecar/database/neo4j_client.py`)
+## GraphProvider Default: Neo4jClient (`sidecar/database/neo4j_client.py`)
 
 ### Connection
 
@@ -54,7 +69,7 @@ Preferred resolution is by `callee_uid`, then `callee_qualified_name`. Name-only
 
 ---
 
-## LanceDBClient (`sidecar/database/lancedb_client.py`)
+## VectorProvider Default: LanceDBClient (`sidecar/database/lancedb_client.py`)
 
 ### Connection
 
@@ -116,11 +131,19 @@ Delete-then-insert for the target row. LanceDB `update()` cannot handle empty li
 - No transaction batching in `_upsert_nodes` — N symbols = N round-trips to Neo4j.
 - `set_pending` is delete-then-insert — concurrent writes to the same chunk_id would lose data (not an issue in current single-process design).
 - LanceDB delete filter uses string interpolation — values with single quotes in file paths would break the filter.
+- No `HistoryProvider` exists yet; dialog history and prompt/impact/inspector snapshots are currently webview/session state rather than durable local product state.
+- Neo4j and LanceDB are concrete clients, not yet replaceable through provider interfaces.
 
 ---
 
 ## Planned Extensions
 
+- Introduce provider protocols from [spec_storage_connectors.md](spec_storage_connectors.md): `GraphProvider`, `VectorProvider`, and `HistoryProvider`
+- Add SQLite-backed `HistoryProvider` for local conversations, messages, ask snapshots, inspector snapshots, and impact snapshots
+- Add storage policy enforcement before history/vector persistence of raw text, code snippets, prompt text, or response text
+- Add local provider configuration modes first: `local`, `local_docker`, `ephemeral`, and `disabled`
+- Defer `customer_managed`, `dedicated_managed`, and `enterprise_audit` provider modes until local defaults and conformance tests are stable
 - Batch `_upsert_nodes` into a single parameterized Cypher `UNWIND` call
 - Strong workspace filters in LanceDB doc/vector tables
 - Parameterized LanceDB delete filter to handle paths with special characters
+- Tenant API contract graph labels and relationships from [spec_tenant_api_graph.md](spec_tenant_api_graph.md): `Service`, `ApiEndpoint`, `ApiSchema`, `EventTopic`, `ContractManifest`, and published metadata-only cross-project links

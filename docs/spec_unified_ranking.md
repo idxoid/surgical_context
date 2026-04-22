@@ -49,13 +49,13 @@ Both tracks emit candidates into a single pool before budget-constrained selecti
 
 ### 2.2 Candidate Types
 
-Two Python types, one abstract base:
+Current Phase 9 candidates are symbols and docs. Phase 11 adds tenant API contract candidates from published manifests, using the same scoring/budget rules.
 
 ```python
 @dataclass
 class Candidate:
-    kind: str               # "symbol" | "doc"
-    uid: str                # symbol UID or doc chunk_id
+    kind: str               # "symbol" | "doc" | "tenant_api"
+    uid: str                # symbol UID, doc chunk_id, or contract candidate ID
     token_cost: int
     graph_score: float      # 0 if not reached via graph
     semantic_score: float   # 0 if not found in vector search
@@ -121,6 +121,19 @@ No special-casing of doc vs. symbol at fill time — they compete on identical t
 ### 2.6 Intent Integration
 
 `intent_weight(c)` comes from the multi-label intent distribution ([spec_multi_label_intent.md](spec_multi_label_intent.md)) applied to tier priors. A `debugging`-weighted query boosts callees/callers; an `architecture`-weighted query boosts architecture-tagged docs.
+
+### 2.7 Tenant API Candidates (Planned)
+
+Tenant API candidates enter the pool only from published contract manifests, not from neighboring project source. They are generated after current-workspace retrieval and before direct LLM fallback.
+
+Additional policy inputs:
+
+| Input | Values | Purpose |
+|---|---|---|
+| `api_direction` | `outbound_dependencies`, `inbound_consumers`, `contract_impact`, `internal_processing`, `bidirectional_contract` | Boosts the correct side of a service boundary |
+| `tenant_link_depth` | `0`, `1`, `2` | Limits traversal over published tenant links |
+
+Tenant API scoring extends the blended score with `direction_weight`, `scope_weight`, `depth_decay`, `edge_type_weight`, and `confidence`. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
 ## 3. API / Interface
 
@@ -193,6 +206,7 @@ See [spec_prompt_contract_observability.md](spec_prompt_contract_observability.m
 - **Learned reranker** (Phase 10+): replace hand-tuned weights with a small cross-encoder trained on feedback-loop signal.
 - **Query-adaptive weights:** `α/β` could vary by intent (exploration → more β; navigation → more α).
 - **Graph score as a function of semantic distance at each hop:** rather than treating BFS as pure structural expansion, propagate semantic similarity through the graph (Personalized PageRank style).
+- **Tenant API candidates:** blend published service/endpoint/schema facts into the pool after workspace context and before direct LLM fallback.
 
 ## 8. Related
 
@@ -201,3 +215,4 @@ See [spec_prompt_contract_observability.md](spec_prompt_contract_observability.m
 - [spec_multi_label_intent.md](spec_multi_label_intent.md) — intent weights feed into γ.
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — surfacing scores in the contract.
 - [spec_eval_harness.md](spec_eval_harness.md) — tuning substrate for α/β/γ/δ/ε.
+- [spec_tenant_api_graph.md](spec_tenant_api_graph.md) — planned tenant API contract candidates and direction/depth policy.

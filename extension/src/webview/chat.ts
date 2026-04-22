@@ -1,5 +1,5 @@
-// @ts-ignore vscode API injected at runtime
-declare const vscode: any;
+declare function acquireVsCodeApi(): any;
+const vscode = acquireVsCodeApi();
 
 import {
   WebviewToHostMessage,
@@ -175,6 +175,9 @@ class ChatPanel {
         const action = (e.currentTarget as HTMLElement).getAttribute('data-action');
 
         switch (action) {
+          case 'openChat':
+            (document.getElementById('composer-input') as HTMLTextAreaElement | null)?.focus();
+            break;
           case 'ask':
             this.askAboutSymbol();
             break;

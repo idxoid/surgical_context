@@ -8,14 +8,16 @@ The product meaning now lives in [concept.md](concept.md): Surgical Context is a
 
 ## Current Gaps
 
-The active gap list now lives in [road_map.md](road_map.md), under **Current Stabilization Backlog**:
+The active gap list now lives in [road_map.md](road_map.md), under **Canonical Backlog**. The release target is the Local Developer Product; older stabilization items are preserved in the roadmap as completed history.
 
 | Priority | Canonical home | Focus |
 |---|---|---|
-| P0 | [road_map.md](road_map.md) | API coverage, sidecar safety checks, auth-boundary enforcement, and keeping docs synced to code |
-| P1 | [road_map.md](road_map.md) | Stable UID v2, scoped call resolution, workspace/branch isolation, Git branch invalidation — implemented and covered by adversarial tests |
-| P2 | [road_map.md](road_map.md) | Metrics, prompt-contract observability, extension context inspector, unified search |
-| P3 | [road_map.md](road_map.md) | Retrieval cache, feedback loop, backpressure, embedding throttling, background indexing/rebuild queue |
+| P0 | [road_map.md](road_map.md) | Local setup, smoke tests, extension health, dashboard resilience, settings, and open-source local usage |
+| P1 | [road_map.md](road_map.md) | SQLite history, conversations, prompt snapshots, feedback tokens, retention, and privacy gates |
+| P2 | [road_map.md](road_map.md) | Soft fallback ladder, prompt-contract observability, doc-anchor confidence, unified ranking, and latency SLOs |
+| P3 | [road_map.md](road_map.md) | Extension streaming, prompt selection sync, accessibility, command placement, and package polish |
+| P4 | [road_map.md](road_map.md) | Provider boundaries around Neo4j, LanceDB, and SQLite defaults |
+| P5 | [road_map.md](road_map.md) | Future Team/Enterprise horizon: roles, doc sources, tenant API graph, LLM proxy transport, service split, and profiled performance rewrites |
 
 ## Supporting Specs
 

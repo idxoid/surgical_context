@@ -26,47 +26,29 @@
     "views": {
       "surgicalContext": [
         {
-          "id": "surgicalContext.chat",
-          "name": "Chat",
+          "id": "surgicalContext.main",
+          "name": "Surgical Context",
           "type": "webview"
-        },
-        {
-          "id": "surgicalContext.inspector",
-          "name": "Inspector",
-          "type": "webview"
-        },
-        {
-          "id": "surgicalContext.impact",
-          "name": "Impact",
-          "type": "webview"
-        },
-        {
-          "id": "surgicalContext.dashboard",
-          "name": "Dashboard",
-          "type": "webview"
-        },
-        {
-          "id": "surgicalContext.settings",
-          "name": "Settings",
-          "type": "webview"
-        },
-        {
-          "id": "surgicalContext.status",
-          "name": "Status",
-          "type": "tree"
         }
       ]
     },
     "commands": [
       {
         "command": "surgicalContext.askCurrentSymbol",
-        "title": "Surgical Context: Ask About Current Symbol",
-        "category": "Surgical Context"
+        "title": "Ask Surgical Context",
+        "category": "Surgical Context",
+        "icon": "media/icon.svg"
       },
       {
         "command": "surgicalContext.askSelection",
         "title": "Surgical Context: Ask About Selection",
         "category": "Surgical Context"
+      },
+      {
+        "command": "surgicalContext.openChat",
+        "title": "Chat",
+        "category": "Surgical Context",
+        "icon": "$(comment-discussion)"
       },
       {
         "command": "surgicalContext.openInspector",
@@ -75,8 +57,9 @@
       },
       {
         "command": "surgicalContext.showImpact",
-        "title": "Surgical Context: Show Impact",
-        "category": "Surgical Context"
+        "title": "Show Impact",
+        "category": "Surgical Context",
+        "icon": "$(git-branch)"
       },
       {
         "command": "surgicalContext.findDocs",
@@ -85,8 +68,9 @@
       },
       {
         "command": "surgicalContext.openDashboard",
-        "title": "Surgical Context: Open Dashboard",
-        "category": "Surgical Context"
+        "title": "Dashboard",
+        "category": "Surgical Context",
+        "icon": "$(dashboard)"
       },
       {
         "command": "surgicalContext.openSettings",
@@ -94,9 +78,22 @@
         "category": "Surgical Context"
       },
       {
+        "command": "surgicalContext.moveToSecondarySideBar",
+        "title": "Surgical Context: Move to Secondary Side Bar",
+        "category": "Surgical Context",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
+        "command": "surgicalContext.indexProject",
+        "title": "Surgical Context: Index Workspace",
+        "category": "Surgical Context",
+        "icon": "$(database)"
+      },
+      {
         "command": "surgicalContext.reindexCurrentFile",
-        "title": "Surgical Context: Reindex Current File",
-        "category": "Surgical Context"
+        "title": "Surgical Context: Index Current File",
+        "category": "Surgical Context",
+        "icon": "$(file-code)"
       },
       {
         "command": "surgicalContext.toggleOverlaySync",
@@ -107,6 +104,13 @@
         "command": "surgicalContext.searchWorkspace",
         "title": "Surgical Context: Search Workspace",
         "category": "Surgical Context"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "surgicalContext.editorMenu",
+        "label": "Surgical Context",
+        "icon": "media/icon.svg"
       }
     ],
     "menus": {
@@ -129,17 +133,36 @@
       ],
       "editor/title": [
         {
-          "command": "surgicalContext.askCurrentSymbol",
-          "when": "resourceExtname =~ /\\.(ts|tsx|py|js)$/",
-          "group": "navigation"
-        },
-        {
-          "command": "surgicalContext.showImpact",
+          "submenu": "surgicalContext.editorMenu",
           "when": "resourceExtname =~ /\\.(ts|tsx|py|js)$/",
           "group": "navigation"
         }
       ],
-      "view/title": []
+      "surgicalContext.editorMenu": [
+        {
+          "command": "surgicalContext.openChat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "surgicalContext.openDashboard",
+          "group": "navigation@2"
+        },
+        {
+          "command": "surgicalContext.reindexCurrentFile",
+          "group": "2_index@1"
+        },
+        {
+          "command": "surgicalContext.indexProject",
+          "group": "2_index@2"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "surgicalContext.moveToSecondarySideBar",
+          "when": "view == surgicalContext.main",
+          "group": "navigation@100"
+        }
+      ]
     },
     "keybindings": [
       {
@@ -165,6 +188,15 @@
             "id": "openChat",
             "title": "Open the Chat Panel",
             "description": "The Chat panel in the sidebar is where you ask questions about code. You can also access it with Ctrl+Alt+A / Cmd+Alt+A.\n\n[Open Chat View](command:workbench.view.extension.surgicalContext)",
+            "media": {
+              "image": "media/icon.svg",
+              "altText": "Surgical Context icon"
+            }
+          },
+          {
+            "id": "moveToSecondarySideBar",
+            "title": "Move to the Secondary Side Bar",
+            "description": "Surgical Context is designed to sit on the right side while code stays visible. VS Code requires this as a one-time layout choice.\n\n[Move Surgical Context](command:surgicalContext.moveToSecondarySideBar)",
             "media": {
               "image": "media/icon.svg",
               "altText": "Surgical Context icon"
@@ -246,6 +278,11 @@
           "default": 30,
           "description": "Interval in seconds for dashboard metrics polling"
         },
+        "surgicalContext.layout.promptForSecondarySideBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a one-time setup prompt that opens VS Code's Move View picker for placing Surgical Context in the Secondary Side Bar"
+        },
         "surgicalContext.experimental.searchPanel": {
           "type": "boolean",
           "default": false,
@@ -257,7 +294,8 @@
   "scripts": {
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "vscode:prepublish": "node esbuild.js --production"
+    "vscode:prepublish": "node esbuild.js --production",
+    "perf-test": "node run-perf-tests.js"
   },
   "devDependencies": {
     "@types/vscode": "^1.82.0",

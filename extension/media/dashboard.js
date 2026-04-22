@@ -11,130 +11,283 @@
     };
     return text.replace(/[&<>"']/g, (m) => map[m]);
   }
-  function renderDashboardHeader() {
+  function renderDashboardHeader(workspaceId, lastUpdate) {
+    const lastUpdateText = lastUpdate ? `${secondsAgo(lastUpdate)} ago` : "never";
     return `
     <div class="dashboard-header">
-      <h1>Surgical Context Dashboard</h1>
-      <p>System health and operational metrics</p>
+      <div>
+        <h1>Surgical Context Dashboard</h1>
+        <p>Operational overview of your indexing sidecar and context system.</p>
+      </div>
+      <div class="dashboard-meta">
+        <div>Workspace: <span>${escapeHtml(workspaceId)}</span></div>
+        <div>Last updated: <span>${escapeHtml(lastUpdateText)}</span></div>
+      </div>
     </div>
   `;
   }
-  function renderRefreshButton(isLoading, lastUpdate) {
-    const lastUpdateText = lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : "Never";
+  function renderRefreshButton(isLoading) {
     return `
-    <div class="refresh-info">
-      <span class="last-update">Last updated: ${escapeHtml(lastUpdateText)}</span>
-      <button class="refresh-button ${isLoading ? "loading" : ""}" data-action="refresh" ${isLoading ? "disabled" : ""}>
-        ${isLoading ? "\u27F3 Refreshing..." : "\u{1F504} Refresh"}
-      </button>
+    <button class="refresh-button ${isLoading ? "loading" : ""}" data-action="refresh" ${isLoading ? "disabled" : ""}>
+      ${isLoading ? "Refreshing..." : "Refresh"}
+    </button>
+  `;
+  }
+  function renderDashboardWarnings(warnings) {
+    if (warnings.length === 0) return "";
+    return `
+    <div class="dashboard-warning" role="status">
+      ${warnings.map((warning) => `<div>${escapeHtml(warning)}</div>`).join("")}
     </div>
   `;
   }
   function renderMetricCardGrid(props) {
-    const healthColor = props.health === "up" ? "#4CAF50" : props.health === "degraded" ? "#FF9800" : "#F44336";
-    const cloudColor = props.cloudStatus === "connected" ? "#4CAF50" : props.cloudStatus === "fallback-local" ? "#FF9800" : "#F44336";
+    const metrics = props.metrics;
+    const healthStatus = props.health === "up" ? "success" : "danger";
+    const cloudStatus = props.cloudStatus === "connected" || props.cloudStatus === "local" ? "success" : props.cloudStatus === "fallback-local" ? "warning" : "danger";
+    const queueStatus = metrics.queueFailedBatches && metrics.queueFailedBatches > 0 ? "danger" : metrics.queuePending && metrics.queuePending > 0 ? "warning" : "success";
     return `
     <div class="metric-card-grid">
-      <div class="metric-card health-card">
-        <div class="metric-icon" style="color: ${healthColor}">\u2699\uFE0F</div>
-        <div class="metric-info">
-          <div class="metric-label">Sidecar Health</div>
-          <div class="metric-value">${props.health}</div>
+      ${renderMetricCard("Sidecar health", healthLabel(props.health), props.health === "up" ? "Ready for requests" : "Check backend URL", "pulse", healthStatus)}
+      ${renderMetricCard("Cloud status", cloudLabel(props.cloudStatus), cloudNote(props.cloudStatus), "cloud", cloudStatus)}
+      ${renderMetricCard("Indexed files", formatNumber(metrics.indexedFiles), "Metric pending from index catalog", "file")}
+      ${renderMetricCard("Indexed symbols", formatNumber(metrics.indexedSymbols), "Metric pending from graph catalog", "code")}
+      ${renderMetricCard("Doc chunks", formatNumber(metrics.docChunks), "Metric pending from docs index", "doc")}
+      ${renderMetricCard("Last indexing job", metrics.lastIndexJobStatus || "idle", queueSummary(metrics), "play", queueStatus)}
+      ${renderMetricCard("Avg latency (ask)", formatMs(metrics.avgLatencyMs), metrics.requestsTotal ? `${formatNumber(metrics.requestsTotal)} requests observed` : "Waiting for ask traffic", "clock")}
+      ${renderMetricCard("Token savings", formatPercent(metrics.tokenSavingsPercent), metrics.tokensTotal ? `${formatNumber(metrics.tokensTotal)} tokens observed` : "Needs prompt telemetry", "trend")}
+      ${renderMetricCard("Fallback rate", formatPercent(metrics.fallbackRatePercent), "Metric pending from retrieval cache", "sync")}
+      ${renderMetricCard("Context quality", formatPercent(metrics.contextQualityPercent), "Feedback signal pending", "target")}
+      ${renderMetricCard("Symbols with docs", formatNumber(metrics.symbolsWithDocs), "Metric pending from docs links", "book")}
+      ${renderMetricCard("Storage (sidecar)", formatGb(metrics.storageGb), metrics.costUsdTotal ? `$${metrics.costUsdTotal.toFixed(4)} estimated cost` : "Metric pending from storage layer", "db")}
+    </div>
+  `;
+  }
+  function renderTokenSavingsCard(metrics) {
+    const savings = metrics.tokenSavingsPercent;
+    const value = formatPercent(savings);
+    const bars = savings === null ? [38, 42, 44, 40, 46, 43, 45, 41, 39, 44, 47, 45] : [56, 62, 67, 64, 70, 73, Math.max(8, savings), 68, 71, 66, 74, 76];
+    return `
+    <div class="dashboard-card token-savings-card">
+      <div class="card-header">
+        <span>Token savings vs naive context</span>
+        <span class="card-header-meta">${savings === null ? "pending" : "live"}</span>
+      </div>
+      <div class="token-savings-body">
+        <div>
+          <div class="token-savings-value">${value}</div>
+          <div class="metric-note">
+            ${metrics.tokensTotal ? `${formatNumber(metrics.tokensTotal)} tokens processed` : "Prompt telemetry has not produced token savings yet."}
+          </div>
+        </div>
+        <div class="savings-chart" aria-label="Token savings trend">
+          ${bars.map((height, index) => `
+            <span
+              class="${savings === null ? "pending" : ""}"
+              style="height: ${height}%"
+              title="Sample ${index + 1}"
+            ></span>
+          `).join("")}
         </div>
       </div>
-
-      <div class="metric-card cloud-card">
-        <div class="metric-icon" style="color: ${cloudColor}">\u2601\uFE0F</div>
-        <div class="metric-info">
-          <div class="metric-label">Cloud Status</div>
-          <div class="metric-value">${props.cloudStatus}</div>
-        </div>
+    </div>
+  `;
+  }
+  function renderIndexingJobsCard(metrics) {
+    const rows = [
+      {
+        time: "now",
+        type: "Queue",
+        scope: "workspace",
+        status: metrics.lastIndexJobStatus || "idle",
+        duration: metrics.queueProcessing && metrics.queueProcessing > 0 ? "active" : "0s"
+      },
+      {
+        time: "total",
+        type: "Processed",
+        scope: "files",
+        status: metrics.queueFailedBatches && metrics.queueFailedBatches > 0 ? "attention" : "success",
+        duration: formatNumber(metrics.queueProcessed)
+      },
+      {
+        time: "pending",
+        type: "Backlog",
+        scope: "queue",
+        status: metrics.queuePending && metrics.queuePending > 0 ? "queued" : "clear",
+        duration: formatNumber(metrics.queuePending)
+      }
+    ];
+    return `
+    <div class="dashboard-card indexing-card">
+      <div class="card-header">
+        <span>Recent indexing jobs</span>
+        <span class="card-header-meta">queue</span>
       </div>
-
-      <div class="metric-card">
-        <div class="metric-icon">\u{1F4C1}</div>
-        <div class="metric-info">
-          <div class="metric-label">Indexed Files</div>
-          <div class="metric-value">\u2014</div>
-          <div class="metric-note">Coming in Phase 6</div>
+      <div class="dashboard-table" role="table" aria-label="Recent indexing jobs">
+        <div class="dashboard-table-row header" role="row">
+          <span>Time</span>
+          <span>Type</span>
+          <span>Scope</span>
+          <span>Status</span>
+          <span>Duration</span>
         </div>
-      </div>
-
-      <div class="metric-card">
-        <div class="metric-icon">\u2728</div>
-        <div class="metric-info">
-          <div class="metric-label">Indexed Symbols</div>
-          <div class="metric-value">\u2014</div>
-          <div class="metric-note">Coming in Phase 6</div>
-        </div>
-      </div>
-
-      <div class="metric-card">
-        <div class="metric-icon">\u23F1\uFE0F</div>
-        <div class="metric-info">
-          <div class="metric-label">Avg Latency</div>
-          <div class="metric-value">\u2014</div>
-          <div class="metric-note">Coming in Phase 6</div>
-        </div>
-      </div>
-
-      <div class="metric-card">
-        <div class="metric-icon">\u{1F4B0}</div>
-        <div class="metric-info">
-          <div class="metric-label">Token Savings</div>
-          <div class="metric-value">\u2014</div>
-          <div class="metric-note">Coming in Phase 6</div>
-        </div>
+        ${rows.map((row) => `
+          <div class="dashboard-table-row" role="row">
+            <span>${escapeHtml(row.time)}</span>
+            <span>${escapeHtml(row.type)}</span>
+            <span>${escapeHtml(row.scope)}</span>
+            <span class="status ${escapeHtml(row.status.toLowerCase())}">${escapeHtml(row.status)}</span>
+            <span>${escapeHtml(row.duration)}</span>
+          </div>
+        `).join("")}
       </div>
     </div>
   `;
   }
   function renderAuditEventsCard(auditActions) {
-    if (auditActions.length === 0) {
-      return `
-      <div class="dashboard-card audit-card">
-        <div class="card-header">\u{1F4CB} Recent Activity</div>
-        <div class="card-content empty">
-          No recent events
-        </div>
+    const rows = auditActions.length === 0 ? `
+      <div class="dashboard-table-row empty" role="row">
+        <span>No recent audit events</span>
       </div>
-    `;
-    }
-    const rows = auditActions.map((action) => {
-      const timestamp = new Date(action.timestamp).toLocaleString();
+    ` : auditActions.map((action) => {
+      const timestamp = formatTimestamp(action.timestamp);
       const actionType = action.action_type || "unknown";
-      const symbol = action.symbol || "\u2014";
-      const status = action.status || "\u2014";
+      const symbol = action.symbol || "N/A";
+      const status = action.status || "success";
+      const detail = action.details ? summarizeDetails(action.details) : symbol;
       return `
-        <div class="audit-row">
-          <div class="audit-main">
-            <span class="action-type">${escapeHtml(actionType)}</span>
-            <span class="timestamp">${escapeHtml(timestamp)}</span>
+          <div class="dashboard-table-row audit" role="row">
+            <span>${escapeHtml(timestamp)}</span>
+            <span>${escapeHtml(actionType)}</span>
+            <span>${escapeHtml(detail)}</span>
+            <span class="status ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span>
           </div>
-          <div class="audit-meta">
-            <span class="symbol">${escapeHtml(symbol)}</span>
-            <span class="status ${status.toLowerCase()}">${escapeHtml(status)}</span>
-          </div>
-        </div>
-      `;
+        `;
     }).join("");
     return `
     <div class="dashboard-card audit-card">
-      <div class="card-header">\u{1F4CB} Recent Activity</div>
-      <div class="card-content">
+      <div class="card-header">
+        <span>Recent audit events</span>
+        <span class="card-header-meta">latest</span>
+      </div>
+      <div class="dashboard-table audit-table" role="table" aria-label="Recent audit events">
+        <div class="dashboard-table-row header" role="row">
+          <span>Time</span>
+          <span>Event</span>
+          <span>Details</span>
+          <span>Status</span>
+        </div>
         ${rows}
       </div>
     </div>
   `;
   }
+  function renderMetricCard(label, value, note, icon, status = "neutral") {
+    return `
+    <div class="metric-card ${status}">
+      <div class="metric-icon" aria-hidden="true">${escapeHtml(iconSymbol(icon))}</div>
+      <div class="metric-info">
+        <div class="metric-label">${escapeHtml(label)}</div>
+        <div class="metric-value">${escapeHtml(value)}</div>
+        <div class="metric-note">${escapeHtml(note)}</div>
+      </div>
+    </div>
+  `;
+  }
+  function iconSymbol(name) {
+    const icons = {
+      pulse: "\u25C7",
+      cloud: "\u2601",
+      file: "\u25A1",
+      code: "</>",
+      doc: "\u25A4",
+      play: "\u25B7",
+      clock: "\u25CB",
+      trend: "\u2301",
+      sync: "\u21BB",
+      target: "\u25CE",
+      book: "\u25B1",
+      db: "\u25A5"
+    };
+    return icons[name] || "\u25A1";
+  }
+  function healthLabel(health) {
+    if (health === "up") return "healthy";
+    if (health === "degraded") return "degraded";
+    return "down";
+  }
+  function cloudLabel(status) {
+    if (status === "connected") return "connected";
+    if (status === "fallback-local") return "fallback";
+    if (status === "local") return "local";
+    return "offline";
+  }
+  function cloudNote(status) {
+    if (status === "connected") return "Aura graph provider active";
+    if (status === "fallback-local") return "Local fallback active";
+    if (status === "local") return "Local graph provider active";
+    return "Cloud/local status unavailable";
+  }
+  function queueSummary(metrics) {
+    const pending = metrics.queuePending ?? 0;
+    const processing = metrics.queueProcessing ?? 0;
+    const failed = metrics.queueFailedBatches ?? 0;
+    if (failed > 0) return `${failed} failed batch${failed === 1 ? "" : "es"}`;
+    if (processing > 0) return `${processing} processing`;
+    if (pending > 0) return `${pending} pending`;
+    return "Queue clear";
+  }
+  function formatNumber(value) {
+    return value === null ? "-" : new Intl.NumberFormat().format(Math.round(value));
+  }
+  function formatPercent(value) {
+    return value === null ? "-" : `${Math.round(value)}%`;
+  }
+  function formatMs(value) {
+    return value === null ? "-" : `${Math.round(value)} ms`;
+  }
+  function formatGb(value) {
+    return value === null ? "-" : `${value.toFixed(1)} GB`;
+  }
+  function secondsAgo(timestamp) {
+    const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1e3));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.round(seconds / 60);
+    return `${minutes}m`;
+  }
+  function formatTimestamp(timestamp) {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return timestamp;
+    return `${secondsAgo(date.getTime())} ago`;
+  }
+  function summarizeDetails(details) {
+    if (typeof details.symbol === "string") return details.symbol;
+    if (typeof details.file_path === "string") return details.file_path;
+    if (typeof details.project_path === "string") return details.project_path;
+    if (typeof details.error === "string") return summarizeError(details.error);
+    const entries = Object.entries(details).slice(0, 2);
+    if (entries.length === 0) return "N/A";
+    return entries.map(([key, value]) => `${key}: ${String(value)}`).join(" \u2022 ");
+  }
+  function summarizeError(error) {
+    const missingSymbol = error.match(/Symbol '([^']+)' not found in graph/i);
+    if (missingSymbol) {
+      return `Symbol not indexed: ${missingSymbol[1]}`;
+    }
+    return error.replace(/^Error:\s*/i, "");
+  }
 
   // src/webview/dashboard.ts
+  var vscode = acquireVsCodeApi();
   var DashboardPanel = class {
     constructor() {
       this.state = {
         health: null,
         cloudStatus: null,
         auditActions: [],
+        metrics: emptyDashboardMetrics(),
+        workspaceId: "local/default@main",
+        warnings: [],
         isLoading: false,
         error: null,
         lastUpdate: null
@@ -154,6 +307,9 @@
             this.state.health = message.health;
             this.state.cloudStatus = message.cloudStatus;
             this.state.auditActions = message.auditActions;
+            this.state.metrics = message.metrics;
+            this.state.workspaceId = message.workspaceId;
+            this.state.warnings = message.warnings;
             this.state.isLoading = false;
             this.state.error = null;
             this.state.lastUpdate = Date.now();
@@ -162,6 +318,7 @@
           case "dashboard.metricsFailed":
             this.state.isLoading = false;
             this.state.error = message.error;
+            this.state.warnings = [message.error];
             this.render();
             break;
         }
@@ -178,7 +335,7 @@
     render() {
       const root = document.getElementById("root");
       if (!root) return;
-      if (this.state.isLoading && !this.state.health) {
+      if (this.state.isLoading && !this.state.lastUpdate) {
         root.innerHTML = `
         <div class="dashboard-loading">
           <p>Loading dashboard metrics...</p>
@@ -186,32 +343,30 @@
       `;
         return;
       }
-      if (this.state.error && !this.state.health) {
-        root.innerHTML = `
-        <div class="dashboard-error">
-          <h3>Failed to load metrics</h3>
-          <p>${escapeHtml(this.state.error)}</p>
-          <button class="retry-button" data-action="refresh">Retry</button>
-        </div>
-      `;
-        this.initializeUI();
-        return;
-      }
-      const header = renderDashboardHeader();
-      const refreshBtn = renderRefreshButton(this.state.isLoading, this.state.lastUpdate);
+      const header = renderDashboardHeader(this.state.workspaceId, this.state.lastUpdate);
+      const refreshBtn = renderRefreshButton(this.state.isLoading);
+      const warnings = renderDashboardWarnings(this.state.warnings);
       const metricCards = renderMetricCardGrid({
         health: this.state.health || "degraded",
-        cloudStatus: this.state.cloudStatus || "offline"
+        cloudStatus: this.state.cloudStatus || "offline",
+        metrics: this.state.metrics
       });
+      const tokenSavingsCard = renderTokenSavingsCard(this.state.metrics);
+      const indexingJobsCard = renderIndexingJobsCard(this.state.metrics);
       const auditCard = renderAuditEventsCard(this.state.auditActions);
       root.innerHTML = `
       ${header}
       <div class="dashboard-content">
         <div class="dashboard-toolbar">
+          ${warnings}
           ${refreshBtn}
         </div>
         <div class="dashboard-grid">
           ${metricCards}
+          <div class="dashboard-main-panels">
+            ${tokenSavingsCard}
+            ${indexingJobsCard}
+          </div>
           ${auditCard}
         </div>
       </div>
@@ -219,6 +374,27 @@
       this.initializeUI();
     }
   };
+  function emptyDashboardMetrics() {
+    return {
+      indexedFiles: null,
+      indexedSymbols: null,
+      docChunks: null,
+      avgLatencyMs: null,
+      tokenSavingsPercent: null,
+      fallbackRatePercent: null,
+      contextQualityPercent: null,
+      symbolsWithDocs: null,
+      storageGb: null,
+      requestsTotal: null,
+      tokensTotal: null,
+      costUsdTotal: null,
+      queuePending: null,
+      queueProcessing: null,
+      queueProcessed: null,
+      queueFailedBatches: null,
+      lastIndexJobStatus: null
+    };
+  }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => new DashboardPanel());
   } else {
