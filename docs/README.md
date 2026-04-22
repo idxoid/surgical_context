@@ -60,7 +60,7 @@ The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/i
 
 Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, and endpoint coverage for the sidecar API.
 
-The local setup path now lives in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are SQLite-backed history/snapshots, extension streaming and settings polish, dashboard resilience, remaining prompt-contract observability, local smoke tests, and provider boundaries around the default Neo4j/LanceDB/SQLite implementations. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting are future horizons. See **[road_map.md](road_map.md)** for the canonical current backlog.
+The local setup and smoke-test path now lives in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are SQLite-backed history/snapshots, extension health/status UX, extension streaming and settings polish, dashboard resilience, remaining prompt-contract observability, and provider boundaries around the default Neo4j/LanceDB/SQLite implementations. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting are future horizons. See **[road_map.md](road_map.md)** for the canonical current backlog.
 
 ---
 

@@ -76,6 +76,33 @@ curl http://127.0.0.1:8000/status/cloud
 curl http://127.0.0.1:8000/metrics
 ```
 
+## Local Smoke Test
+
+After `bootstrap` and with the sidecar running, use:
+
+```bash
+python scripts/local_dev.py smoke
+```
+
+The smoke test checks the local daily-driver path:
+
+- extension bundles exist
+- local data/log paths exist
+- sidecar `/health` responds
+- graph provider status responds
+- code indexing works
+- docs indexing works
+- unified search returns a valid response
+- `/ask` returns context and trace metadata
+- `/impact` responds for the smoke symbol
+- `/metrics` returns dashboard-ready sidecar metrics
+
+If the repo is already indexed and you only want to check retrieval/API health:
+
+```bash
+python scripts/local_dev.py smoke --skip-index --skip-docs
+```
+
 Inside VS Code, use:
 
 - `Surgical Context: Index Workspace`

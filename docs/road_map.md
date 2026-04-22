@@ -42,7 +42,7 @@ The local product is the canonical next milestone.
 
 ### P0 - Local Release Hardening
 - [x] Add a clean local setup path: install extension dependencies, start Neo4j Docker, initialize LanceDB paths, run sidecar, launch extension dev host.
-- [ ] Add a local smoke test: clean clone -> install -> start storage -> index repo -> ask -> inspect -> impact -> dashboard.
+- [x] Add a local smoke test: clean clone -> install -> start storage -> index repo -> ask -> inspect -> impact -> dashboard.
 - [ ] Add an extension health checklist for sidecar, graph provider, vector provider, index state, LLM provider, and current workspace.
 - [ ] Make dashboard failures graceful when the sidecar is down, metrics are missing, or no index exists yet.
 - [ ] Finalize local settings UX for sidecar URL, workspace ID, model preference, auth token, storage paths, and token budget.

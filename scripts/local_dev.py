@@ -13,11 +13,15 @@ This script keeps the local daily-driver path in one place:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,6 +90,79 @@ def _sidecar_env() -> dict[str, str]:
     env.setdefault("LANCEDB_PATH", str(ROOT / "data" / "lancedb"))
     env.setdefault("DEFAULT_WORKSPACE_ID", "local/surgical_context@main")
     return env
+
+
+def _api_url(base_url: str, path: str, query: dict[str, str] | None = None) -> str:
+    url = base_url.rstrip("/") + path
+    if query:
+        url = f"{url}?{urllib.parse.urlencode(query)}"
+    return url
+
+
+def _request(
+    method: str,
+    url: str,
+    *,
+    payload: dict | None = None,
+    workspace_id: str,
+    timeout: float,
+) -> tuple[int, str]:
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Content-Type": "application/json",
+            "X-Workspace": workspace_id,
+            "X-User-Id": "local-smoke",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Cannot reach {url}: {exc.reason}") from exc
+
+
+def _request_json(
+    method: str,
+    base_url: str,
+    path: str,
+    *,
+    payload: dict | None = None,
+    workspace_id: str,
+    timeout: float,
+    query: dict[str, str] | None = None,
+) -> dict:
+    _, body = _request(
+        method,
+        _api_url(base_url, path, query),
+        payload=payload,
+        workspace_id=workspace_id,
+        timeout=timeout,
+    )
+    return json.loads(body or "{}")
+
+
+def _request_text(
+    method: str,
+    base_url: str,
+    path: str,
+    *,
+    workspace_id: str,
+    timeout: float,
+) -> str:
+    _, body = _request(
+        method,
+        _api_url(base_url, path),
+        workspace_id=workspace_id,
+        timeout=timeout,
+    )
+    return body
 
 
 def prepare_local_dirs(*, dry_run: bool = False) -> None:
@@ -228,6 +305,158 @@ def launch_code(args: argparse.Namespace) -> int:
     return _run(code_command(), dry_run=args.dry_run).returncode
 
 
+def _smoke_step(label: str, action) -> object:
+    print(f"[smoke] {label} ... ", end="", flush=True)
+    try:
+        result = action()
+    except Exception:
+        print("failed")
+        raise
+    print("ok")
+    return result
+
+
+def _assert_path(path: Path, label: str) -> None:
+    if not path.exists():
+        raise RuntimeError(f"Missing {label}: {path}")
+
+
+def smoke(args: argparse.Namespace) -> int:
+    """Run a local product smoke test against a running sidecar."""
+    base_url = args.base_url.rstrip("/")
+    workspace_id = args.workspace_id
+    project_path = Path(args.project_path).resolve()
+    docs_path = Path(args.docs_path).resolve()
+
+    _smoke_step(
+        "extension assets",
+        lambda: [
+            _assert_path(EXTENSION_DIR / "dist" / "extension.js", "extension host bundle"),
+            _assert_path(EXTENSION_DIR / "media" / "main.js", "main webview bundle"),
+            _assert_path(EXTENSION_DIR / "media" / "styles.css", "webview stylesheet"),
+        ],
+    )
+    _smoke_step(
+        "local dirs",
+        lambda: [_assert_path(path, path.relative_to(ROOT).as_posix()) for path in LOCAL_DIRS],
+    )
+    health = _smoke_step(
+        "sidecar health",
+        lambda: _request_json(
+            "GET",
+            base_url,
+            "/health",
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+        ),
+    )
+    if health.get("status") != "ok":
+        raise RuntimeError(f"Unexpected health response: {health}")
+
+    _smoke_step(
+        "cloud/provider status",
+        lambda: _request_json(
+            "GET",
+            base_url,
+            "/status/cloud",
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+        ),
+    )
+
+    if not args.skip_index:
+        _smoke_step(
+            "index code",
+            lambda: _request_json(
+                "POST",
+                base_url,
+                "/index",
+                payload={"project_path": str(project_path), "queue": False},
+                workspace_id=workspace_id,
+                timeout=args.long_timeout,
+            ),
+        )
+
+    if not args.skip_docs:
+        _smoke_step(
+            "index docs",
+            lambda: _request_json(
+                "POST",
+                base_url,
+                "/index/docs",
+                payload={"docs_path": str(docs_path)},
+                workspace_id=workspace_id,
+                timeout=args.long_timeout,
+            ),
+        )
+
+    search = _smoke_step(
+        "unified search",
+        lambda: _request_json(
+            "POST",
+            base_url,
+            "/search/unified",
+            payload={
+                "query": args.question,
+                "symbol": args.symbol,
+                "limit": 3,
+                "include_graph": True,
+                "token_budget": args.token_budget,
+            },
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+        ),
+    )
+    if "results" not in search:
+        raise RuntimeError(f"Unexpected search response: {search}")
+
+    ask = _smoke_step(
+        "ask",
+        lambda: _request_json(
+            "POST",
+            base_url,
+            "/ask",
+            payload={
+                "symbol": args.symbol,
+                "question": args.question,
+                "token_budget": args.token_budget,
+            },
+            workspace_id=workspace_id,
+            timeout=args.long_timeout,
+        ),
+    )
+    if not ask.get("context") or not ask.get("trace_id"):
+        raise RuntimeError(f"Unexpected ask response keys: {sorted(ask)}")
+
+    _smoke_step(
+        "impact",
+        lambda: _request_json(
+            "GET",
+            base_url,
+            "/impact",
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+            query={"symbol": args.symbol},
+        ),
+    )
+
+    metrics = _smoke_step(
+        "dashboard metrics",
+        lambda: _request_text(
+            "GET",
+            base_url,
+            "/metrics",
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+        ),
+    )
+    if "sidecar_" not in metrics:
+        raise RuntimeError("Metrics response did not contain sidecar metrics.")
+
+    print("\nLocal smoke test passed.")
+    return 0
+
+
 def up(args: argparse.Namespace) -> int:
     bootstrap(args)
     sidecar_cmd = sidecar_command(args)
@@ -256,7 +485,9 @@ def up(args: argparse.Namespace) -> int:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--dry-run", action="store_true", help="Print commands without running them")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print commands without running them"
+    )
     parser.add_argument("--host", default="127.0.0.1", help="Sidecar host for printed/run commands")
     parser.add_argument("--port", type=int, default=8000, help="Sidecar port")
     parser.add_argument("--reload", action="store_true", help="Run uvicorn with --reload")
@@ -275,8 +506,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(bootstrap_parser)
     bootstrap_parser.add_argument("--skip-storage", action="store_true", help="Do not start Neo4j")
     bootstrap_parser.add_argument("--skip-npm", action="store_true", help="Do not run npm install")
-    bootstrap_parser.add_argument("--force-npm", action="store_true", help="Run npm install even if node_modules exists")
-    bootstrap_parser.add_argument("--skip-compile", action="store_true", help="Do not compile extension")
+    bootstrap_parser.add_argument(
+        "--force-npm", action="store_true", help="Run npm install even if node_modules exists"
+    )
+    bootstrap_parser.add_argument(
+        "--skip-compile", action="store_true", help="Do not compile extension"
+    )
     bootstrap_parser.set_defaults(func=bootstrap)
 
     sidecar_parser = subparsers.add_parser("sidecar", help="Run the FastAPI sidecar")
@@ -284,18 +519,42 @@ def build_parser() -> argparse.ArgumentParser:
     sidecar_parser.set_defaults(func=run_sidecar)
 
     code_parser = subparsers.add_parser("code", help="Launch VS Code extension dev host")
-    code_parser.add_argument("--dry-run", action="store_true", help="Print command without running it")
+    code_parser.add_argument(
+        "--dry-run", action="store_true", help="Print command without running it"
+    )
     code_parser.set_defaults(func=launch_code)
 
-    up_parser = subparsers.add_parser("up", help="Bootstrap, run sidecar, optionally launch VS Code")
+    up_parser = subparsers.add_parser(
+        "up", help="Bootstrap, run sidecar, optionally launch VS Code"
+    )
     add_common_args(up_parser)
     up_parser.add_argument("--skip-storage", action="store_true", help="Do not start Neo4j")
     up_parser.add_argument("--skip-npm", action="store_true", help="Do not run npm install")
-    up_parser.add_argument("--force-npm", action="store_true", help="Run npm install even if node_modules exists")
+    up_parser.add_argument(
+        "--force-npm", action="store_true", help="Run npm install even if node_modules exists"
+    )
     up_parser.add_argument("--skip-compile", action="store_true", help="Do not compile extension")
-    up_parser.add_argument("--launch-code", action="store_true", help="Open VS Code after sidecar starts")
-    up_parser.add_argument("--launch-delay", type=float, default=2.0, help="Seconds to wait before launching VS Code")
+    up_parser.add_argument(
+        "--launch-code", action="store_true", help="Open VS Code after sidecar starts"
+    )
+    up_parser.add_argument(
+        "--launch-delay", type=float, default=2.0, help="Seconds to wait before launching VS Code"
+    )
     up_parser.set_defaults(func=up)
+
+    smoke_parser = subparsers.add_parser("smoke", help="Run local ask/search/impact smoke test")
+    smoke_parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    smoke_parser.add_argument("--workspace-id", default="local/surgical_context@main")
+    smoke_parser.add_argument("--project-path", default=str(ROOT))
+    smoke_parser.add_argument("--docs-path", default=str(ROOT / "docs"))
+    smoke_parser.add_argument("--symbol", default="ContextArbitrator")
+    smoke_parser.add_argument("--question", default="How does dirty state work?")
+    smoke_parser.add_argument("--token-budget", type=int, default=2000)
+    smoke_parser.add_argument("--timeout", type=float, default=10.0)
+    smoke_parser.add_argument("--long-timeout", type=float, default=180.0)
+    smoke_parser.add_argument("--skip-index", action="store_true")
+    smoke_parser.add_argument("--skip-docs", action="store_true")
+    smoke_parser.set_defaults(func=smoke)
 
     return parser
 
