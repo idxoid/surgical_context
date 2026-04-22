@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -28,6 +29,8 @@ ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_DIR = ROOT / "extension"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
+SMOKE_PROJECT_DIR = ROOT / "sidecar" / "context"
+SMOKE_DOCS_DIR = ROOT / "tests" / "fixtures" / "smoke_docs"
 
 LOCAL_DIRS = [
     ROOT / "data" / "lancedb",
@@ -56,6 +59,17 @@ def _run(
     if dry_run:
         return subprocess.CompletedProcess(cmd, 0, "", "")
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, env=env)
+
+
+def _run_checked(cmd: list[str], *, hint: str, dry_run: bool = False) -> None:
+    try:
+        _run(cmd, dry_run=dry_run)
+    except subprocess.CalledProcessError as exc:
+        message = [
+            f"Command failed with exit code {exc.returncode}: {_display_cmd(cmd)}",
+            hint,
+        ]
+        raise SystemExit("\n".join(message)) from exc
 
 
 def _tool_exists(name: str) -> bool:
@@ -165,6 +179,61 @@ def _request_text(
     return body
 
 
+def _wait_for_health(
+    *,
+    base_url: str,
+    workspace_id: str,
+    timeout: float,
+    request_timeout: float,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            health = _request_json(
+                "GET",
+                base_url,
+                "/health",
+                workspace_id=workspace_id,
+                timeout=request_timeout,
+            )
+            if health.get("status") == "ok":
+                return health
+            last_error = f"unexpected health response: {health}"
+        except RuntimeError as exc:
+            last_error = str(exc)
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"Sidecar did not become healthy at {base_url} within {timeout:.1f}s. "
+        f"Last error: {last_error}"
+    )
+
+
+def _stop_process(process: subprocess.Popen) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _wait_for_tcp(host: str, port: int, *, timeout: float, label: str) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=2.0):
+                return
+        except OSError as exc:
+            last_error = str(exc)
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"{label} did not become reachable at {host}:{port} within {timeout:.1f}s. "
+        f"Last error: {last_error}"
+    )
+
+
 def prepare_local_dirs(*, dry_run: bool = False) -> None:
     for path in LOCAL_DIRS:
         if dry_run:
@@ -218,7 +287,25 @@ def start_storage(args: argparse.Namespace) -> None:
     if compose is None:
         raise SystemExit("Docker Compose is required to start local Neo4j.")
 
-    _run([*compose, "up", "-d", "neo4j"], dry_run=args.dry_run)
+    _run_checked(
+        [*compose, "up", "-d", "neo4j"],
+        dry_run=args.dry_run,
+        hint=(
+            "Docker Compose could not start Neo4j. If this mentions an old "
+            "`surgical-network`, remove that stale network with "
+            "`docker network rm surgical-network`, or rerun with --skip-storage "
+            "if Neo4j is already running. If this mentions Docker socket "
+            "permission denied, start Docker or run from a user allowed to "
+            "access /var/run/docker.sock."
+        ),
+    )
+    if not args.dry_run:
+        _wait_for_tcp(
+            "127.0.0.1",
+            7687,
+            timeout=getattr(args, "storage_start_timeout", 90.0),
+            label="Neo4j Bolt",
+        )
 
 
 def sidecar_command(args: argparse.Namespace) -> list[str]:
@@ -310,9 +397,9 @@ def _smoke_step(label: str, action) -> object:
     try:
         result = action()
     except Exception:
-        print("failed")
+        print("failed", flush=True)
         raise
-    print("ok")
+    print("ok", flush=True)
     return result
 
 
@@ -321,12 +408,71 @@ def _assert_path(path: Path, label: str) -> None:
         raise RuntimeError(f"Missing {label}: {path}")
 
 
+def _ensure_sidecar_for_smoke(
+    args: argparse.Namespace,
+    *,
+    base_url: str,
+    workspace_id: str,
+) -> tuple[dict, subprocess.Popen | None]:
+    try:
+        health = _request_json(
+            "GET",
+            base_url,
+            "/health",
+            workspace_id=workspace_id,
+            timeout=min(args.timeout, 2.0),
+        )
+        return health, None
+    except RuntimeError as exc:
+        if args.no_start_sidecar:
+            raise RuntimeError(
+                f"Sidecar is not reachable at {base_url}. Start it with "
+                "`python scripts/local_dev.py sidecar --reload`, or run smoke "
+                "without --no-start-sidecar to let the smoke test start a "
+                "temporary sidecar."
+            ) from exc
+
+        print(f"\n[smoke] sidecar is not reachable at {base_url}; starting temporary sidecar")
+        cmd = sidecar_command(args)
+        print(f"$ {_display_cmd(cmd)}")
+        process = subprocess.Popen(cmd, cwd=ROOT, env=_sidecar_env())
+        try:
+            health = _wait_for_health(
+                base_url=base_url,
+                workspace_id=workspace_id,
+                timeout=args.sidecar_start_timeout,
+                request_timeout=min(args.timeout, 2.0),
+            )
+        except Exception:
+            _stop_process(process)
+            raise
+        return health, process
+
+
 def smoke(args: argparse.Namespace) -> int:
     """Run a local product smoke test against a running sidecar."""
-    base_url = args.base_url.rstrip("/")
+    if args.base_url:
+        base_url = args.base_url.rstrip("/")
+    else:
+        base_url = f"http://{args.host}:{args.port}"
     workspace_id = args.workspace_id
-    project_path = Path(args.project_path).resolve()
-    docs_path = Path(args.docs_path).resolve()
+    default_project_path = ROOT if args.full_repo else SMOKE_PROJECT_DIR
+    default_docs_path = ROOT / "docs" if args.full_repo else SMOKE_DOCS_DIR
+    project_path = Path(args.project_path or default_project_path).resolve()
+    docs_path = Path(args.docs_path or default_docs_path).resolve()
+
+    if args.dry_run:
+        print("Smoke would check extension assets, local dirs, sidecar health, indexes, ask, impact, and metrics.")
+        if not args.skip_storage:
+            compose = _compose_cmd() or ["docker", "compose"]
+            print(f"$ {_display_cmd([*compose, 'up', '-d', 'neo4j'])}")
+        if not args.no_start_sidecar:
+            print(f"$ {_display_cmd(sidecar_command(args))}")
+        print(f"Project path: {project_path}")
+        print(f"Docs path: {docs_path}")
+        print(f"Base URL: {base_url}")
+        print(f"Workspace: {workspace_id}")
+        return 0
 
     _smoke_step(
         "extension assets",
@@ -340,121 +486,127 @@ def smoke(args: argparse.Namespace) -> int:
         "local dirs",
         lambda: [_assert_path(path, path.relative_to(ROOT).as_posix()) for path in LOCAL_DIRS],
     )
-    health = _smoke_step(
-        "sidecar health",
-        lambda: _request_json(
-            "GET",
-            base_url,
-            "/health",
-            workspace_id=workspace_id,
-            timeout=args.timeout,
-        ),
-    )
-    if health.get("status") != "ok":
-        raise RuntimeError(f"Unexpected health response: {health}")
+    _smoke_step("Neo4j storage", lambda: start_storage(args))
 
-    _smoke_step(
-        "cloud/provider status",
-        lambda: _request_json(
-            "GET",
-            base_url,
-            "/status/cloud",
-            workspace_id=workspace_id,
-            timeout=args.timeout,
-        ),
-    )
+    sidecar_process = None
+    try:
+        health, sidecar_process = _smoke_step(
+            "sidecar health",
+            lambda: _ensure_sidecar_for_smoke(
+                args,
+                base_url=base_url,
+                workspace_id=workspace_id,
+            ),
+        )
+        if health.get("status") != "ok":
+            raise RuntimeError(f"Unexpected health response: {health}")
 
-    if not args.skip_index:
         _smoke_step(
-            "index code",
+            "cloud/provider status",
+            lambda: _request_json(
+                "GET",
+                base_url,
+                "/status/cloud",
+                workspace_id=workspace_id,
+                timeout=args.timeout,
+            ),
+        )
+
+        if not args.skip_index:
+            _smoke_step(
+                "index code",
+                lambda: _request_json(
+                    "POST",
+                    base_url,
+                    "/index",
+                    payload={"project_path": str(project_path), "queue": False},
+                    workspace_id=workspace_id,
+                    timeout=args.long_timeout,
+                ),
+            )
+
+        if not args.skip_docs:
+            _smoke_step(
+                "index docs",
+                lambda: _request_json(
+                    "POST",
+                    base_url,
+                    "/index/docs",
+                    payload={"docs_path": str(docs_path)},
+                    workspace_id=workspace_id,
+                    timeout=args.long_timeout,
+                ),
+            )
+
+        search = _smoke_step(
+            "unified search",
             lambda: _request_json(
                 "POST",
                 base_url,
-                "/index",
-                payload={"project_path": str(project_path), "queue": False},
+                "/search/unified",
+                payload={
+                    "query": args.question,
+                    "symbol": args.symbol,
+                    "limit": 3,
+                    "include_graph": True,
+                    "token_budget": args.token_budget,
+                },
+                workspace_id=workspace_id,
+                timeout=args.timeout,
+            ),
+        )
+        if "results" not in search:
+            raise RuntimeError(f"Unexpected search response: {search}")
+
+        ask = _smoke_step(
+            "ask",
+            lambda: _request_json(
+                "POST",
+                base_url,
+                "/ask",
+                payload={
+                    "symbol": args.symbol,
+                    "question": args.question,
+                    "token_budget": args.token_budget,
+                },
                 workspace_id=workspace_id,
                 timeout=args.long_timeout,
             ),
         )
+        if not ask.get("context") or not ask.get("trace_id"):
+            raise RuntimeError(f"Unexpected ask response keys: {sorted(ask)}")
 
-    if not args.skip_docs:
         _smoke_step(
-            "index docs",
+            "impact",
             lambda: _request_json(
-                "POST",
+                "GET",
                 base_url,
-                "/index/docs",
-                payload={"docs_path": str(docs_path)},
+                "/impact",
                 workspace_id=workspace_id,
-                timeout=args.long_timeout,
+                timeout=args.timeout,
+                query={"symbol": args.symbol},
             ),
         )
 
-    search = _smoke_step(
-        "unified search",
-        lambda: _request_json(
-            "POST",
-            base_url,
-            "/search/unified",
-            payload={
-                "query": args.question,
-                "symbol": args.symbol,
-                "limit": 3,
-                "include_graph": True,
-                "token_budget": args.token_budget,
-            },
-            workspace_id=workspace_id,
-            timeout=args.timeout,
-        ),
-    )
-    if "results" not in search:
-        raise RuntimeError(f"Unexpected search response: {search}")
+        metrics = _smoke_step(
+            "dashboard metrics",
+            lambda: _request_text(
+                "GET",
+                base_url,
+                "/metrics",
+                workspace_id=workspace_id,
+                timeout=args.timeout,
+            ),
+        )
+        if "sidecar_" not in metrics:
+            raise RuntimeError("Metrics response did not contain sidecar metrics.")
 
-    ask = _smoke_step(
-        "ask",
-        lambda: _request_json(
-            "POST",
-            base_url,
-            "/ask",
-            payload={
-                "symbol": args.symbol,
-                "question": args.question,
-                "token_budget": args.token_budget,
-            },
-            workspace_id=workspace_id,
-            timeout=args.long_timeout,
-        ),
-    )
-    if not ask.get("context") or not ask.get("trace_id"):
-        raise RuntimeError(f"Unexpected ask response keys: {sorted(ask)}")
-
-    _smoke_step(
-        "impact",
-        lambda: _request_json(
-            "GET",
-            base_url,
-            "/impact",
-            workspace_id=workspace_id,
-            timeout=args.timeout,
-            query={"symbol": args.symbol},
-        ),
-    )
-
-    metrics = _smoke_step(
-        "dashboard metrics",
-        lambda: _request_text(
-            "GET",
-            base_url,
-            "/metrics",
-            workspace_id=workspace_id,
-            timeout=args.timeout,
-        ),
-    )
-    if "sidecar_" not in metrics:
-        raise RuntimeError("Metrics response did not contain sidecar metrics.")
-
-    print("\nLocal smoke test passed.")
-    return 0
+        print("\nLocal smoke test passed.")
+        return 0
+    finally:
+        if sidecar_process is not None:
+            print("[smoke] stopping temporary sidecar")
+            _stop_process(sidecar_process)
 
 
 def up(args: argparse.Namespace) -> int:
@@ -493,6 +645,16 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reload", action="store_true", help="Run uvicorn with --reload")
 
 
+def add_storage_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--skip-storage", action="store_true", help="Do not start Neo4j")
+    parser.add_argument(
+        "--storage-start-timeout",
+        type=float,
+        default=90.0,
+        help="Seconds to wait for Neo4j Bolt to become reachable",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Surgical Context local development helper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -504,7 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
         "bootstrap", help="Prepare local dirs, storage, and extension build"
     )
     add_common_args(bootstrap_parser)
-    bootstrap_parser.add_argument("--skip-storage", action="store_true", help="Do not start Neo4j")
+    add_storage_args(bootstrap_parser)
     bootstrap_parser.add_argument("--skip-npm", action="store_true", help="Do not run npm install")
     bootstrap_parser.add_argument(
         "--force-npm", action="store_true", help="Run npm install even if node_modules exists"
@@ -528,7 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
         "up", help="Bootstrap, run sidecar, optionally launch VS Code"
     )
     add_common_args(up_parser)
-    up_parser.add_argument("--skip-storage", action="store_true", help="Do not start Neo4j")
+    add_storage_args(up_parser)
     up_parser.add_argument("--skip-npm", action="store_true", help="Do not run npm install")
     up_parser.add_argument(
         "--force-npm", action="store_true", help="Run npm install even if node_modules exists"
@@ -543,15 +705,45 @@ def build_parser() -> argparse.ArgumentParser:
     up_parser.set_defaults(func=up)
 
     smoke_parser = subparsers.add_parser("smoke", help="Run local ask/search/impact smoke test")
-    smoke_parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    add_common_args(smoke_parser)
+    add_storage_args(smoke_parser)
+    smoke_parser.add_argument(
+        "--base-url",
+        default="",
+        help="Existing sidecar URL. Defaults to http://<host>:<port>.",
+    )
     smoke_parser.add_argument("--workspace-id", default="local/surgical_context@main")
-    smoke_parser.add_argument("--project-path", default=str(ROOT))
-    smoke_parser.add_argument("--docs-path", default=str(ROOT / "docs"))
+    smoke_parser.add_argument(
+        "--project-path",
+        default="",
+        help="Code path to index. Defaults to sidecar/context for a fast smoke test.",
+    )
+    smoke_parser.add_argument(
+        "--docs-path",
+        default="",
+        help="Docs path to index. Defaults to tests/fixtures/smoke_docs for a fast smoke test.",
+    )
+    smoke_parser.add_argument(
+        "--full-repo",
+        action="store_true",
+        help="Use the full repo and docs/ as smoke index targets.",
+    )
     smoke_parser.add_argument("--symbol", default="ContextArbitrator")
     smoke_parser.add_argument("--question", default="How does dirty state work?")
     smoke_parser.add_argument("--token-budget", type=int, default=2000)
     smoke_parser.add_argument("--timeout", type=float, default=10.0)
     smoke_parser.add_argument("--long-timeout", type=float, default=180.0)
+    smoke_parser.add_argument(
+        "--sidecar-start-timeout",
+        type=float,
+        default=45.0,
+        help="Seconds to wait for a temporary sidecar to become healthy",
+    )
+    smoke_parser.add_argument(
+        "--no-start-sidecar",
+        action="store_true",
+        help="Fail if no sidecar is already running",
+    )
     smoke_parser.add_argument("--skip-index", action="store_true")
     smoke_parser.add_argument("--skip-docs", action="store_true")
     smoke_parser.set_defaults(func=smoke)
@@ -562,7 +754,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}")
+        return 1
 
 
 if __name__ == "__main__":

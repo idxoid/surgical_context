@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Основной навигатор: Графовая база данных
   neo4j:
@@ -31,7 +29,3 @@ services:
 
   # Опционально: Интерфейс для векторной базы (если используете Qdrant/Milvus вместо LanceDB)
   # Если вы используете LanceDB (локально в бинарнике), этот блок не нужен.
-  
-networks:
-  default:
-    name: surgical-network

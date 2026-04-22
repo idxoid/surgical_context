@@ -76,9 +76,31 @@ curl http://127.0.0.1:8000/status/cloud
 curl http://127.0.0.1:8000/metrics
 ```
 
+## Docker Compose Troubleshooting
+
+If Docker reports that `surgical-network` has an incorrect Compose label, it is a stale network from an older local setup. Remove it once:
+
+```bash
+docker network rm surgical-network
+```
+
+Then rerun:
+
+```bash
+python scripts/local_dev.py up
+```
+
+If Neo4j is already running and you only want the sidecar/extension flow:
+
+```bash
+python scripts/local_dev.py up --skip-storage
+```
+
+If Docker reports permission denied for `/var/run/docker.sock`, start Docker or run the command from a user that is allowed to access the Docker daemon.
+
 ## Local Smoke Test
 
-After `bootstrap` and with the sidecar running, use:
+After `bootstrap`, use:
 
 ```bash
 python scripts/local_dev.py smoke
@@ -88,19 +110,38 @@ The smoke test checks the local daily-driver path:
 
 - extension bundles exist
 - local data/log paths exist
-- sidecar `/health` responds
+- local Neo4j starts through Docker Compose unless `--skip-storage` is passed
+- sidecar `/health` responds; if no sidecar is running, the smoke test starts a temporary sidecar and stops it at the end
 - graph provider status responds
-- code indexing works
-- docs indexing works
+- code indexing works against the fast default slice: `sidecar/context`
+- docs indexing works against the fast default fixture: `tests/fixtures/smoke_docs`
 - unified search returns a valid response
 - `/ask` returns context and trace metadata
 - `/impact` responds for the smoke symbol
 - `/metrics` returns dashboard-ready sidecar metrics
 
+The default smoke test is intentionally small. Use the full repo mode only when you want a heavier verification pass:
+
+```bash
+python scripts/local_dev.py smoke --full-repo
+```
+
 If the repo is already indexed and you only want to check retrieval/API health:
 
 ```bash
 python scripts/local_dev.py smoke --skip-index --skip-docs
+```
+
+If Neo4j is already running and you do not want the smoke test to manage Docker:
+
+```bash
+python scripts/local_dev.py smoke --skip-storage
+```
+
+If you specifically want to require an already running sidecar:
+
+```bash
+python scripts/local_dev.py smoke --no-start-sidecar
 ```
 
 Inside VS Code, use:
