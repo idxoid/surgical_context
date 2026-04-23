@@ -1,0 +1,302 @@
+# Starter pack for real-repository benchmark work.
+#
+# Purpose:
+# - manual / semi-manual benchmark on real open-source repositories
+# - compare naive context vs Surgical Context vs heavy stuffing
+# - pressure-test symbol/file/workspace/direct_llm fallback behavior
+#
+# Notes:
+# - `core12: true` marks the first 12 questions to run before the full 24.
+# - `expected_symbols` and `expected_files` are seed hypotheses, not final labels.
+#   They should be corrected after the first human-reviewed benchmark pass.
+# - This file is intentionally separate from tests/fixtures/sample_project/questions.yaml.
+
+repositories:
+  - id: fastapi
+    name: FastAPI
+    clone_url: https://github.com/fastapi/fastapi.git
+    repo_url: https://github.com/fastapi/fastapi
+    docs_url: https://fastapi.tiangolo.com/
+    language: python
+    rationale: "Framework repo with code, docs, tests, and many dependency/explanation questions."
+
+  - id: pydantic
+    name: Pydantic
+    clone_url: https://github.com/pydantic/pydantic.git
+    repo_url: https://github.com/pydantic/pydantic
+    docs_url: https://docs.pydantic.dev/
+    language: python
+    rationale: "Validation-heavy codebase with Python and core boundary, good for inspect/explain questions."
+
+  - id: redux_toolkit
+    name: Redux Toolkit
+    clone_url: https://github.com/reduxjs/redux-toolkit.git
+    repo_url: https://github.com/reduxjs/redux-toolkit
+    docs_url: https://redux-toolkit.js.org/
+    language: typescript
+    rationale: "Monorepo with packages, docs, and API-heavy TS logic, useful for routing and impact checks."
+
+questions:
+  - id: fastapi_q01
+    repo: fastapi
+    core12: true
+    symbol: FastAPI
+    question: "How does FastAPI turn a path operation function into an APIRoute and register it in the app?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    expected_symbols: [FastAPI, APIRoute, add_api_route, api_route]
+    expected_files: [fastapi/applications.py, fastapi/routing.py]
+
+  - id: fastapi_q02
+    repo: fastapi
+    core12: true
+    symbol: Depends
+    question: "How does dependency injection get resolved before the endpoint function is called?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    expected_symbols: [Depends, solve_dependencies, get_dependant, Dependant]
+    expected_files: [fastapi/dependencies/utils.py, fastapi/dependencies/models.py]
+
+  - id: fastapi_q03
+    repo: fastapi
+    core12: true
+    symbol: run_endpoint_function
+    question: "Where does FastAPI decide whether a path operation should run as sync or async?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    expected_symbols: [run_endpoint_function, get_request_handler, APIRoute]
+    expected_files: [fastapi/routing.py]
+
+  - id: fastapi_q04
+    repo: fastapi
+    core12: true
+    symbol: serialize_response
+    question: "How are request body models validated and then passed into endpoint parameters?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    expected_symbols: [serialize_response, request_body_to_args, solve_dependencies, get_body_field]
+    expected_files: [fastapi/routing.py, fastapi/dependencies/utils.py]
+
+  - id: fastapi_q05
+    repo: fastapi
+    core12: false
+    symbol: get_openapi
+    question: "How does FastAPI generate OpenAPI for registered routes?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    expected_symbols: [get_openapi, openapi, routes]
+    expected_files: [fastapi/openapi/utils.py, fastapi/applications.py]
+
+  - id: fastapi_q06
+    repo: fastapi
+    core12: false
+    symbol: serialize_response
+    question: "If I change response model serialization behavior, what parts of the framework and tests are most likely to break?"
+    difficulty: hard
+    intent: impact_analysis
+    expected_mode: symbol
+    expected_symbols: [serialize_response, APIRoute, response_model]
+    expected_files: [fastapi/routing.py, tests]
+
+  - id: fastapi_q07
+    repo: fastapi
+    core12: false
+    symbol: FastAPI
+    question: "How are /docs and /redoc routes created and wired into the application?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    expected_symbols: [FastAPI, swagger_ui_html, redoc_html, setup]
+    expected_files: [fastapi/applications.py, fastapi/openapi/docs.py]
+
+  - id: fastapi_q08
+    repo: fastapi
+    core12: false
+    symbol: RouteContext
+    question: "Where is RouteContext implemented, and if it does not exist, what is the nearest real mechanism FastAPI uses instead?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: workspace
+    expected_symbols: [APIRoute, get_request_handler, Dependant]
+    expected_files: [fastapi/routing.py, fastapi/dependencies]
+
+  - id: pydantic_q01
+    repo: pydantic
+    core12: true
+    symbol: BaseModel
+    question: "How does BaseModel validation flow work in v2 from model construction to validated output?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    expected_symbols: [BaseModel, model_validate, __pydantic_validator__]
+    expected_files: [pydantic/main.py, pydantic]
+
+  - id: pydantic_q02
+    repo: pydantic
+    core12: true
+    symbol: BaseModel
+    question: "Which parts of Pydantic are pure Python wrappers and which parts rely on pydantic-core?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: workspace
+    expected_symbols: [BaseModel, SchemaValidator, SchemaSerializer]
+    expected_files: [pydantic/main.py, pydantic-core]
+
+  - id: pydantic_q03
+    repo: pydantic
+    core12: true
+    symbol: model_dump
+    question: "How does model_dump() get from high-level API call to actual serialization logic?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    expected_symbols: [model_dump, __pydantic_serializer__]
+    expected_files: [pydantic/main.py]
+
+  - id: pydantic_q04
+    repo: pydantic
+    core12: true
+    symbol: model_json_schema
+    question: "How does Pydantic build JSON Schema for a model?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    expected_symbols: [model_json_schema, GenerateJsonSchema, json_schema]
+    expected_files: [pydantic/json_schema.py, pydantic/main.py]
+
+  - id: pydantic_q05
+    repo: pydantic
+    core12: false
+    symbol: v1
+    question: "How is backward compatibility with Pydantic v1 exposed in the codebase?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: workspace
+    expected_symbols: [v1, BaseModel]
+    expected_files: [pydantic, docs]
+
+  - id: pydantic_q06
+    repo: pydantic
+    core12: false
+    symbol: Field
+    question: "If alias handling changes, what modules, docs, and tests are most likely to be affected?"
+    difficulty: hard
+    intent: impact_analysis
+    expected_mode: symbol
+    expected_symbols: [Field, AliasChoices, AliasPath]
+    expected_files: [pydantic/fields.py, pydantic]
+
+  - id: pydantic_q07
+    repo: pydantic
+    core12: false
+    symbol: ValidationError
+    question: "Where are validation errors assembled into the final error structure returned to the user?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    expected_symbols: [ValidationError]
+    expected_files: [pydantic]
+
+  - id: pydantic_q08
+    repo: pydantic
+    core12: false
+    symbol: SchemaRouter
+    question: "Where is SchemaRouter defined, and if it is not real, what components actually coordinate schema generation?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: workspace
+    expected_symbols: [GenerateJsonSchema, model_json_schema, json_schema]
+    expected_files: [pydantic/json_schema.py, pydantic/main.py]
+
+  - id: rtk_q01
+    repo: redux_toolkit
+    core12: true
+    symbol: createSlice
+    question: "How does createSlice turn reducer definitions into action creators and the final reducer?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    expected_symbols: [createSlice, createAction, createReducer]
+    expected_files: [packages/toolkit/src/createSlice.ts, packages/toolkit/src/createAction.ts, packages/toolkit/src/createReducer.ts]
+
+  - id: rtk_q02
+    repo: redux_toolkit
+    core12: true
+    symbol: configureStore
+    question: "How does configureStore assemble middleware, enhancers, and DevTools behavior?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    expected_symbols: [configureStore, getDefaultMiddleware]
+    expected_files: [packages/toolkit/src/configureStore.ts, packages/toolkit/src/getDefaultMiddleware.ts]
+
+  - id: rtk_q03
+    repo: redux_toolkit
+    core12: true
+    symbol: createAsyncThunk
+    question: "How does createAsyncThunk generate pending / fulfilled / rejected action flow?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    expected_symbols: [createAsyncThunk]
+    expected_files: [packages/toolkit/src/createAsyncThunk.ts]
+
+  - id: rtk_q04
+    repo: redux_toolkit
+    core12: true
+    symbol: createApi
+    question: "How does RTK Query define an API slice and connect generated endpoints into the store?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: symbol
+    expected_symbols: [createApi]
+    expected_files: [packages/toolkit/src/query, packages/toolkit/src]
+
+  - id: rtk_q05
+    repo: redux_toolkit
+    core12: false
+    symbol: createSlice
+    question: "If I change the generated action type format in createSlice, what parts of the packages and tests are likely to break?"
+    difficulty: hard
+    intent: impact_analysis
+    expected_mode: symbol
+    expected_symbols: [createSlice, createAction]
+    expected_files: [packages/toolkit/src/createSlice.ts, packages/toolkit/src/createAction.ts, packages/toolkit]
+
+  - id: rtk_q06
+    repo: redux_toolkit
+    core12: false
+    symbol: createListenerMiddleware
+    question: "How does listener middleware intercept actions and trigger side effects?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    expected_symbols: [createListenerMiddleware]
+    expected_files: [packages/toolkit/src/listenerMiddleware]
+
+  - id: rtk_q07
+    repo: redux_toolkit
+    core12: false
+    symbol: configureStore
+    question: "In this monorepo, which packages are core runtime behavior and which are docs/examples/supporting surfaces?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: workspace
+    expected_symbols: [configureStore, createSlice, createApi]
+    expected_files: [packages, docs, examples, website]
+
+  - id: rtk_q08
+    repo: redux_toolkit
+    core12: false
+    symbol: SliceRouter
+    question: "Where is SliceRouter implemented, and if it does not exist, what is the closest real mechanism that coordinates slice registration or composition?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: workspace
+    expected_symbols: [createSlice, combineSlices, combineReducers]
+    expected_files: [packages/toolkit/src/createSlice.ts, packages/toolkit/src/combineSlices.ts]

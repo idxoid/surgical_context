@@ -9,31 +9,31 @@ export class SurgicalContextCodeLensProvider implements vscode.CodeLensProvider 
     const text = document.getText();
     const lines = text.split('\n');
 
-    // Find symbol definitions (function, class, method declarations)
-    // This is a simplified regex - a real implementation would use language-specific parsing
-    const symbolRegex = /^(async\s+)?((function|class|const|let|var|interface|type|enum|export)\s+)?([a-zA-Z_$][a-zA-Z0-9_$]*)/;
-
     lines.forEach((line, lineIndex) => {
-      const match = line.match(symbolRegex);
-      if (match) {
-        const symbolName = match[4];
+      const symbol = symbolFromDefinitionLine(line);
+      if (symbol) {
+        const position = new vscode.Position(lineIndex, symbol.character);
         const range = new vscode.Range(
-          new vscode.Position(lineIndex, 0),
-          new vscode.Position(lineIndex, line.length)
+          position,
+          new vscode.Position(lineIndex, symbol.character + symbol.name.length)
         );
+        const target = {
+          filePath: document.fileName,
+          symbol: symbol.name,
+          line: lineIndex,
+          character: symbol.character,
+        };
 
-        // Ask about this symbol
         const askLens = new vscode.CodeLens(range, {
           title: '💬 Ask',
           command: 'surgicalContext.askCurrentSymbol',
-          arguments: [document.fileName, symbolName],
+          arguments: [target],
         });
 
-        // Show impact
         const impactLens = new vscode.CodeLens(range, {
           title: '📊 Impact',
           command: 'surgicalContext.showImpact',
-          arguments: [symbolName],
+          arguments: [target],
         });
 
         lenses.push(askLens, impactLens);
@@ -46,4 +46,27 @@ export class SurgicalContextCodeLensProvider implements vscode.CodeLensProvider 
   resolveCodeLens(codeLens: vscode.CodeLens): vscode.CodeLens {
     return codeLens;
   }
+}
+
+function symbolFromDefinitionLine(line: string): { name: string; character: number } | null {
+  const patterns = [
+    /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/,
+    /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
+    /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[=:]/,
+    /^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|readonly\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/,
+  ];
+  const ignored = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'function']);
+
+  for (const pattern of patterns) {
+    const match = line.match(pattern);
+    const name = match?.[1];
+    if (name && !ignored.has(name)) {
+      return {
+        name,
+        character: match.indexOf(name),
+      };
+    }
+  }
+
+  return null;
 }

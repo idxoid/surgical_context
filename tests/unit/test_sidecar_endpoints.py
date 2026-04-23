@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from sidecar.context.types import SymbolContext
+from sidecar.history import DisabledHistoryProvider
 from sidecar.indexer.job_log import IndexJobLog
 
 
@@ -105,6 +106,7 @@ def import_main_with_fakes(monkeypatch):
     feedback_dir = tempfile.mkdtemp(prefix="sidecar-feedback-test-")
     monkeypatch.setenv("FEEDBACK_SNAPSHOT_PATH", f"{feedback_dir}/snapshots.jsonl")
     monkeypatch.setenv("FEEDBACK_LOG_PATH", f"{feedback_dir}/feedback.jsonl")
+    monkeypatch.setenv("HISTORY_DB_PATH", f"{feedback_dir}/history.sqlite3")
 
     fake_lancedb = types.ModuleType("sidecar.database.lancedb_client")
 
@@ -325,6 +327,95 @@ def test_feedback_endpoint_enforces_token_user_scope(monkeypatch):
     assert exc_info.value.status_code == 403
 
 
+def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    body = main.record_history_ask(
+        main.HistoryAskRecordRequest(
+            conversation_id="dialog-local-1",
+            request_id="req-history",
+            prompt_summary="Ask about process_payment",
+            prompt_hash="prompt-hash",
+            answer_summary="Assistant response recorded",
+            answer_hash="answer-hash",
+            symbol="process_payment",
+            trace_id="trace-history",
+            feedback_token="fbk_history",
+            ask_snapshot={
+                "context": FakeCtx().to_dict(),
+                "raw_prompt": "raw user question must not be stored",
+                "code": "def secret(): pass",
+            },
+            inspector_snapshot={
+                "primary_symbol": "process_payment",
+                "content": "raw inspector content",
+            },
+            impact_snapshot={
+                "symbol": "process_payment",
+                "affected_symbols": [{"symbol": "caller", "code": "raw code"}],
+            },
+        ),
+        x_user_id="Alice",
+    )
+
+    assert body["status"] == "recorded"
+    assert body["conversation_id"] == "dialog-local-1"
+    assert body["selected_request_id"] == "req-history"
+
+    conversations = main.history_conversations(x_user_id="Alice")
+    assert conversations["conversations"][0]["id"] == body["conversation_id"]
+    assert conversations["conversations"][0]["selected_request_id"] == "req-history"
+
+    bundle = main.history_conversation(body["conversation_id"], x_user_id="Alice")
+    assert bundle["conversation"]["selected_request_id"] == "req-history"
+    assert len(bundle["messages"]) == 2
+    assert bundle["messages"][1]["ask_snapshot"]["snapshot"]["redacted_keys"] == [
+        "code",
+        "raw_prompt",
+    ]
+
+    request_bundle = main.history_request_bundle(
+        body["conversation_id"],
+        "req-history",
+        x_user_id="Alice",
+    )
+    assert request_bundle["message"]["id"] == body["assistant_message_id"]
+    assert request_bundle["ask_snapshot"]["feedback_token"] == "fbk_history"
+    assert request_bundle["inspector_snapshot"]["snapshot"]["redacted_keys"] == ["content"]
+    assert request_bundle["impact_snapshot"]["snapshot"]["affected_symbols"][0]["redacted_keys"] == [
+        "code"
+    ]
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.history_conversation(body["conversation_id"], x_user_id="Bob")
+
+    assert exc_info.value.status_code == 403
+
+
+def test_history_ask_endpoint_is_quiet_when_history_disabled(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "history_provider", DisabledHistoryProvider())
+
+    body = main.record_history_ask(
+        main.HistoryAskRecordRequest(
+            conversation_id="dialog-disabled",
+            request_id="req-disabled",
+            prompt_summary="Ask about disabled history",
+            answer_summary="No-op",
+        ),
+        x_user_id="Alice",
+    )
+
+    assert body == {
+        "status": "disabled",
+        "conversation_id": "dialog-disabled",
+        "user_message_id": "",
+        "assistant_message_id": "",
+        "selected_request_id": "req-disabled",
+    }
+    assert main.history_conversations(x_user_id="Alice") == {"conversations": []}
+
+
 def test_ask_stream_endpoint_emits_json_sse(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
@@ -342,6 +433,64 @@ def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
     assert body["context"]["mode"] == "workspace"
     assert body["context"]["budget"]["ask_level"] == "workspace"
     assert body["context"]["budget"]["missing_symbol"] == "missing"
+    assert body["context"]["budget"]["fallback_from"] == "symbol"
+    assert body["context"]["budget"]["fallback_reason"] == "symbol_not_found"
+    assert body["context"]["budget"]["fallback_ladder"] == [
+        "symbol",
+        "file",
+        "workspace",
+        "direct_llm",
+    ]
+    assert body["context"]["budget"]["warnings"] == [
+        {
+            "code": "symbol_not_found",
+            "severity": "warning",
+            "message": "Symbol 'missing' was not found; using workspace context.",
+        }
+    ]
+
+
+def test_ask_endpoint_uses_file_fallback_before_workspace(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    source_file = tmp_path / "checkout.py"
+    source_file.write_text("def checkout():\n    return 'ok'\n", encoding="utf-8")
+
+    body = main.ask(
+        main.AskRequest(
+            symbol="missing",
+            question="Where?",
+            file_path=str(source_file),
+        )
+    )
+
+    assert body["context"]["mode"] == "file"
+    assert body["context"]["primary_source"]["file_path"] == str(source_file)
+    assert body["context"]["budget"]["ask_level"] == "file"
+    assert body["context"]["budget"]["warnings"][0]["message"] == (
+        "Symbol 'missing' was not found; using file context."
+    )
+
+
+def test_ask_endpoint_falls_back_to_direct_llm_when_no_context(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    class EmptyVectorDb:
+        def search(self, query, limit=5):
+            return []
+
+        def search_symbols(self, query, limit=5, threshold=1.0):
+            return []
+
+    monkeypatch.setattr(main, "vector_db", EmptyVectorDb())
+
+    body = main.ask(main.AskRequest(symbol="missing", question="Where?"))
+
+    assert body["context"]["mode"] == "direct"
+    assert body["context"]["budget"]["ask_level"] == "direct_llm"
+    assert body["context"]["budget"]["fallback_reason"] == "symbol_not_found"
+    assert body["context"]["budget"]["warnings"][0]["message"] == (
+        "Symbol 'missing' was not found; using direct LLM context."
+    )
 
 
 def test_auth_required_rejects_missing_bearer_token(monkeypatch):
@@ -463,6 +612,39 @@ def test_index_queue_status_endpoint(monkeypatch):
 
     assert body["status"] == "ok"
     assert body["queue"]["pending"] == 0
+
+
+def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    skipped_file = tmp_path / "settings.json"
+    skipped_file.write_text('{"editor.tabSize": 2}\n', encoding="utf-8")
+    metric_calls = []
+
+    monkeypatch.setattr(
+        main.default_metrics,
+        "increment",
+        lambda name, value=1, labels=None: metric_calls.append((name, value, labels)),
+    )
+    monkeypatch.setattr(
+        "sidecar.indexer.code.index_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("index_file should not run")),
+    )
+
+    main._process_index_batch(
+        [
+            main.IndexWorkItem(
+                file_path=str(skipped_file),
+                workspace_id="local/surgical_context@main",
+                user_id="alice",
+            )
+        ]
+    )
+
+    assert (
+        "sidecar_index_queue_skipped_total",
+        1,
+        {"reason": "unsupported_extension", "workspace": "local/surgical_context@main"},
+    ) in metric_calls
 
 
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):

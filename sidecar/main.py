@@ -20,6 +20,7 @@ from sidecar.context.types import RESOLVER_VERSION, DocChunk, PromptContext, Sym
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
 from sidecar.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
+from sidecar.history import build_history_provider, hash_history_text, parse_retention_days
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.queue import EnqueueResult, IndexBatchQueue, IndexWorkItem
 from sidecar.observability import (
@@ -49,6 +50,11 @@ user_auth = UserAuth()
 audit_log = AuditLog()
 workspace_resolver = WorkspaceResolver()
 feedback_store = FeedbackStore()
+history_provider = build_history_provider(
+    mode=os.getenv("HISTORY_MODE", "local"),
+    db_path=os.getenv("HISTORY_DB_PATH", "./data/history/surgical_context.sqlite3"),
+    retention_days=parse_retention_days(os.getenv("HISTORY_RETENTION_DAYS", "")),
+)
 
 
 class IndexRequest(BaseModel):
@@ -179,6 +185,46 @@ class FeedbackResponse(BaseModel):
     outcome: str
     workspace_id: str
     trace_id: str
+
+
+class HistoryAskRecordRequest(BaseModel):
+    conversation_id: str | None = None
+    request_id: str
+    prompt_summary: str = ""
+    prompt_hash: str = ""
+    answer_summary: str = ""
+    answer_hash: str = ""
+    symbol: str = ""
+    trace_id: str = ""
+    feedback_token: str = ""
+    ask_snapshot: dict[str, Any] = Field(default_factory=dict)
+    inspector_snapshot: dict[str, Any] = Field(default_factory=dict)
+    impact_snapshot: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class HistoryAskRecordResponse(BaseModel):
+    status: str
+    conversation_id: str
+    user_message_id: str
+    assistant_message_id: str
+    selected_request_id: str
+
+
+class HistoryConversationsResponse(BaseModel):
+    conversations: list[dict[str, Any]]
+
+
+class HistoryConversationResponse(BaseModel):
+    conversation: dict[str, Any]
+    messages: list[dict[str, Any]]
+
+
+class HistoryRequestBundleResponse(BaseModel):
+    message: dict[str, Any]
+    ask_snapshot: dict[str, Any] | None
+    inspector_snapshot: dict[str, Any] | None
+    impact_snapshot: dict[str, Any] | None
 
 
 class ImpactResponse(BaseModel):
@@ -375,6 +421,45 @@ def _record_retrieval_snapshot(
     )
 
 
+def _history_conversation_for_scope(
+    conversation_id: str,
+    *,
+    workspace_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    conversation = history_provider.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Unknown history conversation")
+    if conversation["workspace_id"] != workspace_id:
+        raise HTTPException(status_code=403, detail="History conversation belongs to another workspace")
+    if conversation["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="History conversation belongs to another user")
+    return conversation
+
+
+def _history_enabled() -> bool:
+    return bool(getattr(history_provider, "enabled", True))
+
+
+def _history_snapshot(
+    req: HistoryAskRecordRequest,
+    *,
+    workspace_id: str,
+    user_id: str,
+    answer_summary: str,
+) -> dict[str, Any]:
+    return {
+        **req.ask_snapshot,
+        "request_id": req.request_id,
+        "trace_id": req.trace_id,
+        "feedback_token": req.feedback_token,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "symbol": req.symbol,
+        "answer_summary": answer_summary,
+    }
+
+
 def _read_file_context(
     file_path: str,
     *,
@@ -554,6 +639,7 @@ def _resolve_ask_context(
     workspace_id: str,
     db: Any,
 ) -> PromptContext:
+    symbol_error = ""
     if req.symbol:
         arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
         ctx = arb.get_context_for_symbol(
@@ -564,6 +650,7 @@ def _resolve_ask_context(
         if not isinstance(ctx, str):
             _context_budget(ctx)["ask_level"] = "symbol"
             return ctx
+        symbol_error = ctx
 
     if req.file_path:
         file_ctx = _context_from_file(
@@ -574,22 +661,16 @@ def _resolve_ask_context(
             user_id=user_id,
         )
         if file_ctx:
-            _context_budget(file_ctx)["ask_level"] = "file"
-            if req.symbol:
-                _context_budget(file_ctx)["missing_symbol"] = req.symbol
+            _mark_ask_fallback(file_ctx, req, "file", symbol_error)
             return file_ctx
 
     workspace_ctx = _context_from_workspace(req.question, req.token_budget)
     if workspace_ctx:
-        _context_budget(workspace_ctx)["ask_level"] = "workspace"
-        if req.symbol:
-            _context_budget(workspace_ctx)["missing_symbol"] = req.symbol
+        _mark_ask_fallback(workspace_ctx, req, "workspace", symbol_error)
         return workspace_ctx
 
     direct_ctx = _context_from_direct(req.question, req.token_budget)
-    _context_budget(direct_ctx)["ask_level"] = "direct"
-    if req.symbol:
-        _context_budget(direct_ctx)["missing_symbol"] = req.symbol
+    _mark_ask_fallback(direct_ctx, req, "direct_llm", symbol_error)
     return direct_ctx
 
 
@@ -599,6 +680,48 @@ def _context_budget(ctx: Any) -> dict[str, Any]:
         budget = {}
         ctx.budget = budget
     return budget
+
+
+def _mark_ask_fallback(
+    ctx: PromptContext,
+    req: AskRequest,
+    ask_level: str,
+    symbol_error: str = "",
+) -> None:
+    budget = _context_budget(ctx)
+    budget["ask_level"] = ask_level
+    budget["fallback_ladder"] = ["symbol", "file", "workspace", "direct_llm"]
+    if req.symbol:
+        display_level = "direct LLM" if ask_level == "direct_llm" else ask_level
+        budget["missing_symbol"] = req.symbol
+        budget["fallback_from"] = "symbol"
+        budget["fallback_reason"] = _fallback_reason(symbol_error)
+        budget["warnings"] = _append_context_warning(
+            budget.get("warnings"),
+            {
+                "code": budget["fallback_reason"],
+                "severity": "warning",
+                "message": (
+                    f"Symbol '{req.symbol}' was not found; "
+                    f"using {display_level} context."
+                ),
+            },
+        )
+
+
+def _fallback_reason(symbol_error: str) -> str:
+    if "not found" in symbol_error.lower():
+        return "symbol_not_found"
+    if symbol_error:
+        return "symbol_context_unavailable"
+    return "symbol_not_provided"
+
+
+def _append_context_warning(current: Any, warning: dict[str, str]) -> list[dict[str, str]]:
+    warnings = [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+    if not any(item.get("code") == warning["code"] for item in warnings):
+        warnings.append(warning)
+    return warnings
 
 
 def _system_prompt_for_context(ctx: PromptContext) -> str:
@@ -680,7 +803,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
     from collections import defaultdict
 
     from sidecar.indexer.anchor import resolve_pending_anchors
-    from sidecar.indexer.code import hash_file, index_file
+    from sidecar.indexer.code import hash_file, index_file, is_indexable_file
     from sidecar.parser.extractor import SymbolExtractor
 
     grouped: dict[tuple[str, str], list[IndexWorkItem]] = defaultdict(list)
@@ -692,25 +815,33 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
     for (user_id, workspace_id), group in grouped.items():
         existing_paths = [item.file_path for item in group if os.path.isfile(item.file_path)]
         missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
+        unsupported_paths = [path for path in existing_paths if not is_indexable_file(path)]
+        indexable_paths = [path for path in existing_paths if is_indexable_file(path)]
         for path in missing_paths:
             logger.warning("Skipping queued index for missing file: %s", path)
             default_metrics.increment(
                 "sidecar_index_queue_skipped_total",
                 labels={"reason": "missing_file", "workspace": workspace_id},
             )
-        if not existing_paths:
+        for path in unsupported_paths:
+            logger.info("Skipping queued index for unsupported file type: %s", path)
+            default_metrics.increment(
+                "sidecar_index_queue_skipped_total",
+                labels={"reason": "unsupported_extension", "workspace": workspace_id},
+            )
+        if not indexable_paths:
             continue
 
-        current_hashes = {path: hash_file(path) for path in existing_paths}
+        current_hashes = {path: hash_file(path) for path in indexable_paths}
         completed = 0
         with db_session(user_id=user_id) as db:
             get_file_hashes = getattr(db, "get_file_hashes", None)
             stored_hashes = (
-                get_file_hashes(existing_paths, workspace_id=workspace_id)
+                get_file_hashes(indexable_paths, workspace_id=workspace_id)
                 if callable(get_file_hashes)
                 else {}
             )
-            for path in existing_paths:
+            for path in indexable_paths:
                 file_hash = current_hashes[path]
                 if stored_hashes.get(path) == file_hash:
                     default_metrics.increment(
@@ -1330,6 +1461,200 @@ def record_feedback(
         "workspace_id": workspace_id,
         "trace_id": snapshot.trace_id,
     }
+
+
+@app.post("/history/ask", response_model=HistoryAskRecordResponse)
+def record_history_ask(
+    req: HistoryAskRecordRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Persist a sanitized ask/request snapshot for local dialog history."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    if not _history_enabled():
+        return {
+            "status": "disabled",
+            "conversation_id": req.conversation_id or "",
+            "user_message_id": "",
+            "assistant_message_id": "",
+            "selected_request_id": req.request_id,
+        }
+    if not req.request_id.strip():
+        raise HTTPException(status_code=400, detail="request_id is required")
+
+    conversation_id = req.conversation_id
+    if conversation_id:
+        conversation = history_provider.get_conversation(conversation_id)
+        if conversation:
+            _history_conversation_for_scope(
+                conversation_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+        else:
+            title = req.prompt_summary or (f"Ask about {req.symbol}" if req.symbol else "Workspace ask")
+            conversation_id = history_provider.create_conversation(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                title=title,
+                selected_request_id=req.request_id,
+                metadata={
+                    "source": "extension",
+                    "symbol": req.symbol,
+                    **req.metadata,
+                },
+            )
+    else:
+        title = req.prompt_summary or (f"Ask about {req.symbol}" if req.symbol else "Workspace ask")
+        conversation_id = history_provider.create_conversation(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            title=title,
+            selected_request_id=req.request_id,
+            metadata={
+                "source": "extension",
+                "symbol": req.symbol,
+                **req.metadata,
+            },
+        )
+
+    prompt_hash = req.prompt_hash or hash_history_text(req.prompt_summary)
+    answer_hash = req.answer_hash or hash_history_text(req.answer_summary)
+    user_message_id = history_provider.append_message(
+        conversation_id=conversation_id,
+        role="user",
+        request_id=req.request_id,
+        content_summary=req.prompt_summary,
+        content_hash=prompt_hash,
+        symbol=req.symbol,
+        trace_id=req.trace_id,
+        metadata={
+            "source": "extension",
+            "kind": "prompt",
+        },
+    )
+    assistant_message_id = history_provider.append_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        request_id=req.request_id,
+        content_summary=req.answer_summary,
+        content_hash=answer_hash,
+        symbol=req.symbol,
+        trace_id=req.trace_id,
+        feedback_token=req.feedback_token,
+        metadata={
+            "source": "extension",
+            "kind": "answer",
+            "has_feedback_token": bool(req.feedback_token),
+        },
+    )
+
+    history_provider.save_ask_snapshot(
+        assistant_message_id,
+        _history_snapshot(
+            req,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            answer_summary=req.answer_summary,
+        ),
+    )
+    if req.inspector_snapshot:
+        history_provider.save_inspector_snapshot(
+            assistant_message_id,
+            {
+                **req.inspector_snapshot,
+                "request_id": req.request_id,
+                "trace_id": req.trace_id,
+                "feedback_token": req.feedback_token,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "symbol": req.symbol,
+            },
+        )
+    if req.impact_snapshot:
+        history_provider.save_impact_snapshot(
+            assistant_message_id,
+            {
+                **req.impact_snapshot,
+                "request_id": req.request_id,
+                "trace_id": req.trace_id,
+                "feedback_token": req.feedback_token,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "symbol": req.symbol,
+            },
+        )
+    history_provider.set_selected_request(conversation_id, req.request_id)
+
+    return {
+        "status": "recorded",
+        "conversation_id": conversation_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "selected_request_id": req.request_id,
+    }
+
+
+@app.get("/history/conversations", response_model=HistoryConversationsResponse)
+def history_conversations(
+    limit: int = 30,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """List local history conversations for the current workspace and user."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    if not _history_enabled():
+        return {"conversations": []}
+    return {
+        "conversations": history_provider.list_conversations(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            limit=limit,
+        )
+    }
+
+
+@app.get("/history/conversations/{conversation_id}", response_model=HistoryConversationResponse)
+def history_conversation(
+    conversation_id: str,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Return a sanitized conversation bundle with messages and snapshots."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    _history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
+    bundle = history_provider.get_conversation_bundle(conversation_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Unknown history conversation")
+    return bundle
+
+
+@app.get(
+    "/history/conversations/{conversation_id}/requests/{request_id}",
+    response_model=HistoryRequestBundleResponse,
+)
+def history_request_bundle(
+    conversation_id: str,
+    request_id: str,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Return the snapshots for a selected request in a conversation."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    _history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
+    bundle = history_provider.get_request_bundle(conversation_id, request_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Unknown history request")
+    return bundle
 
 
 @app.get("/impact", response_model=ImpactResponse)

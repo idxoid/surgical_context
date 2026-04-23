@@ -50,14 +50,14 @@ The local product is the canonical next milestone.
 
 ### P1 - Local History and Prompt Snapshots
 - [x] Implement SQLite `HistoryProvider` for conversations, messages, ask snapshots, inspector snapshots, and impact snapshots.
-- [ ] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
-- [ ] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
-- [ ] Add retention controls and disabled/ephemeral modes for history.
-- [ ] Default policy: store metadata and response summaries; do not store raw code bodies or raw prompt bodies unless explicitly enabled.
-- [ ] Add tests for prompt-history privacy gates and snapshot retrieval.
+- [x] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
+- [x] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
+- [x] Add retention controls and disabled/ephemeral modes for history.
+- [x] Default policy: store metadata and response summaries; do not store raw code bodies or raw prompt bodies unless explicitly enabled.
+- [x] Add tests for prompt-history privacy gates and snapshot retrieval.
 
 ### P2 - Retrieval Quality and Observability
-- [ ] Finish the soft fallback ladder: missing symbol is a warning, not a failed chat; continue through file, workspace, then direct LLM.
+- [x] Finish the soft fallback ladder: missing symbol is a warning, not a failed chat; continue through file, workspace, then direct LLM.
 - [ ] Finish remaining Prompt Contract fields: `pruned[]`, ranker weights, intent distribution/confidence, and ambiguous-intent signal.
 - [ ] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally.
 - [ ] Tune unified ranking over graph + semantic candidates using the QA harness.

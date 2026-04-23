@@ -62,11 +62,21 @@ Stop the sidecar with `Ctrl+C`.
 |---|---|---|
 | `data/neo4j/` | Neo4j Docker data | No |
 | `data/lancedb/` | LanceDB vector tables | No |
-| `data/history/` | planned SQLite local history | No |
+| `data/history/` | SQLite local history | No |
 | `logs/neo4j/` | Neo4j logs | No |
 | `logs/sidecar/` | sidecar logs | No |
 
 The graph provider stores topology and metadata only. Source code stays on the filesystem. History persistence should remain metadata-first until the storage policy explicitly allows raw prompt text, response text, or source snippets.
+
+History controls are environment-driven for the local sidecar:
+
+```dotenv
+HISTORY_MODE=local
+HISTORY_DB_PATH=./data/history/surgical_context.sqlite3
+HISTORY_RETENTION_DAYS=
+```
+
+`HISTORY_MODE=disabled` makes `/history/ask` a no-op and returns empty history lists. `HISTORY_MODE=ephemeral` uses a temporary SQLite database for the current sidecar process only. Set `HISTORY_RETENTION_DAYS` to a non-negative integer to prune conversations older than that many days.
 
 ## Useful Checks
 

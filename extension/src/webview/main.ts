@@ -11,6 +11,7 @@ import {
   SettingsData,
   WebviewToHostMessage,
 } from './shared/protocol';
+import { buildContextSummary } from '../contextSummary';
 import {
   escapeHtml,
   renderAdvancedInfoAccordion,
@@ -661,6 +662,9 @@ class MainSurface {
       case 'open-related-files':
         this.showToast('Related file opener is coming soon.', 'info');
         break;
+      case 'openFile':
+        this.openFileFromImpact(target);
+        break;
       case 'create-refactor-plan':
         this.switchSurface('chat');
         this.prefillComposer(
@@ -756,6 +760,7 @@ class MainSurface {
       type: 'chat.ask',
       prompt,
       symbol: this.state.workspace.selectedSymbol || undefined,
+      conversationId: this.currentDialogId,
     });
   }
 
@@ -1115,21 +1120,7 @@ class MainSurface {
   }
 
   private summaryFromContext(context: PromptContextPayload): ContextSummaryDto {
-    const tierTokens = context.metadata.tier_tokens || {};
-    const totalTokens = Object.values(tierTokens).reduce((sum, value) => {
-      return sum + (typeof value === 'number' ? value : 0);
-    }, 0);
-    const askLevel = typeof context.budget?.ask_level === 'string'
-      ? [`level:${context.budget.ask_level}`]
-      : [];
-
-    return {
-      primaryLabel: `${context.primary_source.symbol} in ${context.primary_source.file_path}`,
-      graphCount: context.graph_context.length,
-      docsCount: context.documentation.length,
-      tokenText: `${totalTokens} tokens`,
-      chips: [...askLevel, ...(context.metadata.tiers_used || [])],
-    };
+    return buildContextSummary(context);
   }
 
   private impactFromContext(context: PromptContextPayload): ImpactResponse {
@@ -1220,13 +1211,30 @@ class MainSurface {
     content.toggleAttribute('hidden', expanded);
   }
 
+  private openFileFromImpact(target: HTMLElement): void {
+    const filePath = target.getAttribute('data-file-path');
+    if (!filePath) return;
+
+    const line = Number.parseInt(target.getAttribute('data-line') || '1', 10);
+    this.postMessage({
+      type: 'link.openFile',
+      filePath,
+      line: Number.isFinite(line) ? line : 1,
+    });
+  }
+
   private submitFeedback(target: HTMLElement): void {
     const rating = target.getAttribute('data-rating') as 'up' | 'down' | null;
     const card = target.closest('.message-card');
     const messageId = card?.getAttribute('data-message-id');
-    if (rating && messageId) {
-      this.postMessage({ type: 'feedback.submit', messageId, rating });
+    const feedbackToken = messageId
+      ? this.messages.get(messageId)?.context?.metadata?.assembly?.feedback_token
+      : undefined;
+    if (rating && messageId && feedbackToken) {
+      this.postMessage({ type: 'feedback.submit', messageId, rating, feedbackToken });
       this.showToast('Thanks for the feedback.', 'info');
+    } else if (rating) {
+      this.showToast('Feedback token is not available for this response yet.', 'warning');
     }
   }
 

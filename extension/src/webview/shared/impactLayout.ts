@@ -92,12 +92,19 @@ export function renderFilesGroup(filePaths: string[], expanded = false): string 
 
   const rows = uniquePaths
     .map(filePath => `
-      <div class="impact-row" data-file-path="${escapeHtml(filePath)}">
+      <button
+        type="button"
+        class="impact-row impact-file-row"
+        data-action="openFile"
+        data-file-path="${escapeHtml(filePath)}"
+        data-line="1"
+        title="Open ${escapeHtml(filePath)}"
+      >
         <span class="impact-chevron" aria-hidden="true">›</span>
         <span class="impact-symbol">File</span>
         <span class="impact-file">${escapeHtml(filePath)}</span>
         <span class="impact-tag indirect">related</span>
-      </div>
+      </button>
     `)
     .join('');
 

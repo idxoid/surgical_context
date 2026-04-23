@@ -51,10 +51,16 @@ export class OverlayManager {
   }
 
   getSymbolAtCursor(editor: vscode.TextEditor): string | null {
-    const pos = editor.selection.active;
-    const range = editor.document.getWordRangeAtPosition(pos);
+    return this.getSymbolAtPosition(editor.document, editor.selection.active);
+  }
+
+  getSymbolAtPosition(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): string | null {
+    const range = document.getWordRangeAtPosition(position, /[$A-Za-z_][$\w]*/);
     if (!range) return null;
-    return editor.document.getText(range);
+    return document.getText(range);
   }
 
   private scheduleSavedFile(filePath: string): void {

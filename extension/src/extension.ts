@@ -9,6 +9,13 @@ import { stateManager } from './state/ExtensionState';
 
 const SECONDARY_SIDEBAR_PROMPT_KEY = 'surgicalContext.secondarySideBarPromptShown';
 
+interface SymbolCommandTarget {
+  symbol?: string;
+  filePath?: string;
+  line?: number;
+  character?: number;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   // Create persistent status bar item
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -94,13 +101,19 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
 
     // Spec commands
-    vscode.commands.registerCommand('surgicalContext.askCurrentSymbol', async () => {
+    vscode.commands.registerCommand('surgicalContext.askCurrentSymbol', async (...args: unknown[]) => {
+      const target = await resolveSymbolCommandTarget(overlayManager, args);
+      await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
+      pushTargetState(target);
       surgicalContextView.showChat();
     }),
 
-    vscode.commands.registerCommand('surgicalContext.askSelection', async () => {
+    vscode.commands.registerCommand('surgicalContext.askSelection', async (...args: unknown[]) => {
+      const target = await resolveSymbolCommandTarget(overlayManager, args);
+      await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
+      pushTargetState(target);
       surgicalContextView.showChat();
     }),
 
@@ -109,9 +122,12 @@ export function activate(context: vscode.ExtensionContext): void {
       surgicalContextView.showInspector();
     }),
 
-    vscode.commands.registerCommand('surgicalContext.showImpact', async (symbol?: string) => {
+    vscode.commands.registerCommand('surgicalContext.showImpact', async (...args: unknown[]) => {
+      const target = await resolveSymbolCommandTarget(overlayManager, args);
+      await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
-      await surgicalContextView.showImpact(symbol);
+      pushTargetState(target);
+      await surgicalContextView.showImpact(target.symbol);
     }),
 
     vscode.commands.registerCommand('surgicalContext.findDocs', async () => {
@@ -158,13 +174,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // Legacy commands for backward compatibility
-    vscode.commands.registerCommand('surgicalContext.openChat', async () => {
+    vscode.commands.registerCommand('surgicalContext.openChat', async (...args: unknown[]) => {
+      const target = await resolveSymbolCommandTarget(overlayManager, args);
+      await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
+      pushTargetState(target);
       surgicalContextView.showChat();
     }),
 
-    vscode.commands.registerCommand('surgicalContext.askAboutCursor', async () => {
+    vscode.commands.registerCommand('surgicalContext.askAboutCursor', async (...args: unknown[]) => {
+      const target = await resolveSymbolCommandTarget(overlayManager, args);
+      await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
+      pushTargetState(target);
       surgicalContextView.showChat();
     }),
 
@@ -194,6 +216,120 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   // cleanup handled by context.subscriptions
+}
+
+async function resolveSymbolCommandTarget(
+  overlayManager: OverlayManager,
+  args: unknown[]
+): Promise<SymbolCommandTarget> {
+  const explicit = explicitTargetFromArgs(args);
+  const target = explicit || targetFromActiveEditor(overlayManager);
+
+  if (!target.symbol && target.filePath && target.line !== undefined) {
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target.filePath));
+    const position = new vscode.Position(
+      clampLine(target.line, document),
+      Math.max(0, target.character || 0)
+    );
+    target.symbol = overlayManager.getSymbolAtPosition(document, position) || undefined;
+  }
+
+  return target;
+}
+
+function explicitTargetFromArgs(args: unknown[]): SymbolCommandTarget | null {
+  const first = args[0];
+  const second = args[1];
+
+  if (isSymbolCommandTarget(first)) {
+    return { ...first };
+  }
+
+  if (first instanceof vscode.Uri) {
+    return {
+      filePath: first.fsPath,
+      ...targetFromActiveEditorIfSameFile(first.fsPath),
+    };
+  }
+
+  if (typeof first === 'string' && typeof second === 'string') {
+    return {
+      filePath: first,
+      symbol: second,
+    };
+  }
+
+  if (typeof first === 'string') {
+    return { symbol: first };
+  }
+
+  return null;
+}
+
+function isSymbolCommandTarget(value: unknown): value is SymbolCommandTarget {
+  if (!value || typeof value !== 'object') return false;
+  const target = value as Record<string, unknown>;
+  return (
+    typeof target.symbol === 'string' ||
+    typeof target.filePath === 'string' ||
+    typeof target.line === 'number'
+  );
+}
+
+function targetFromActiveEditor(overlayManager: OverlayManager): SymbolCommandTarget {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return {};
+
+  const position = editor.selection.active;
+  return {
+    filePath: editor.document.fileName,
+    symbol: overlayManager.getSymbolAtCursor(editor) || undefined,
+    line: position.line,
+    character: position.character,
+  };
+}
+
+function targetFromActiveEditorIfSameFile(filePath: string): SymbolCommandTarget {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document.fileName !== filePath) return {};
+
+  const position = editor.selection.active;
+  return {
+    line: position.line,
+    character: position.character,
+  };
+}
+
+async function applySymbolCommandTarget(target: SymbolCommandTarget): Promise<void> {
+  if (!target.filePath || target.line === undefined) return;
+
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target.filePath));
+  const editor = await vscode.window.showTextDocument(document, {
+    preview: true,
+    preserveFocus: false,
+  });
+  const position = new vscode.Position(
+    clampLine(target.line, document),
+    Math.max(0, target.character || 0)
+  );
+  editor.selection = new vscode.Selection(position, position);
+  editor.revealRange(
+    new vscode.Range(position, position),
+    vscode.TextEditorRevealType.InCenterIfOutsideViewport
+  );
+}
+
+function pushTargetState(target: SymbolCommandTarget): void {
+  const editor = vscode.window.activeTextEditor;
+  stateManager.setState({
+    selectedSymbol: target.symbol || undefined,
+    activeFile: target.filePath || editor?.document.fileName,
+    isDirty: editor?.document.isDirty ?? false,
+  });
+}
+
+function clampLine(line: number, document: vscode.TextDocument): number {
+  return Math.max(0, Math.min(line, document.lineCount - 1));
 }
 
 async function promptForSecondarySideBarPlacement(

@@ -232,7 +232,8 @@
           if (filePath) {
             vscode.postMessage({
               type: "link.openFile",
-              filePath
+              filePath,
+              line: 1
             });
           }
         });

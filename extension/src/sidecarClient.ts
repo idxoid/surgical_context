@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createHash } from 'crypto';
 import { SSECallbacks, parseSSEStream } from './utils';
 
 function getBaseUrl(): string {
@@ -112,6 +113,7 @@ export interface PromptContextPayload {
       model_route?: Record<string, unknown>;
       estimated_cost_usd?: number;
       cost_basis?: string;
+      feedback_token?: string;
     };
   };
   primary_source: ContextSymbol;
@@ -128,6 +130,30 @@ export interface AskResponse {
   model_route?: Record<string, unknown>;
   metrics?: Record<string, unknown>;
   workspace_id?: string;
+}
+
+export interface HistoryAskRecordRequest {
+  conversation_id?: string | null;
+  request_id: string;
+  prompt_summary: string;
+  prompt_hash: string;
+  answer_summary: string;
+  answer_hash: string;
+  symbol?: string;
+  trace_id?: string;
+  feedback_token?: string;
+  ask_snapshot?: Record<string, unknown>;
+  inspector_snapshot?: Record<string, unknown>;
+  impact_snapshot?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface HistoryAskRecordResponse {
+  status: string;
+  conversation_id: string;
+  user_message_id: string;
+  assistant_message_id: string;
+  selected_request_id: string;
 }
 
 export interface SearchResponse {
@@ -229,9 +255,32 @@ export interface IndexQueueResponse {
 
 export interface FeedbackEvent {
   message_id: string;
+  feedback_token?: string;
   rating: 'up' | 'down';
   comment?: string;
   context?: Record<string, unknown>;
+}
+
+export function hashHistoryText(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+export function safePromptSummary(symbol?: string, filePath?: string): string {
+  if (symbol) {
+    return `Ask about symbol ${symbol}`;
+  }
+
+  const fileName = filePath?.split(/[\\/]/).pop();
+  if (fileName) {
+    return `Ask about file ${fileName}`;
+  }
+
+  return 'Workspace ask';
+}
+
+export function safeAnswerSummary(answer: string): string {
+  const length = answer.trim().length;
+  return length > 0 ? `Assistant response recorded (${length} chars)` : 'Assistant response recorded';
 }
 
 export const SidecarClient = {
@@ -366,17 +415,25 @@ export const SidecarClient = {
     return getText('/metrics');
   },
 
+  recordAskHistory(record: HistoryAskRecordRequest): Promise<HistoryAskRecordResponse> {
+    return post('/history/ask', record);
+  },
+
   indexQueueStatus(): Promise<IndexQueueResponse> {
     return get('/index/queue');
   },
 
   async submitFeedback(event: FeedbackEvent): Promise<void> {
+    if (!event.feedback_token) {
+      console.warn('Skipping feedback without feedback token:', event.message_id);
+      return;
+    }
     try {
       await post('/feedback', {
-        message_id: event.message_id,
-        rating: event.rating,
-        comment: event.comment || '',
-        context: event.context || {},
+        feedback_token: event.feedback_token,
+        kind: event.rating === 'up' ? 'explicit_accept' : 'explicit_reject',
+        details: event.context || {},
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
       console.error('Failed to submit feedback:', error);

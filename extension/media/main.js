@@ -1,5 +1,33 @@
 "use strict";
 (() => {
+  // src/contextSummary.ts
+  function buildContextSummary(context) {
+    const tierTokens = context.metadata.tier_tokens || {};
+    const totalTokens = Object.values(tierTokens).reduce((sum, value) => {
+      return sum + (typeof value === "number" ? value : 0);
+    }, 0);
+    const askLevel = typeof context.budget?.ask_level === "string" ? context.budget.ask_level : "";
+    const warningChips = fallbackWarningChips(context);
+    return {
+      primaryLabel: `${context.primary_source.symbol} in ${context.primary_source.file_path}`,
+      graphCount: context.graph_context.length,
+      docsCount: context.documentation.length,
+      tokenText: `${totalTokens} tokens`,
+      chips: [
+        ...askLevel ? [`level:${askLevel}`] : [],
+        ...warningChips,
+        ...context.metadata.tiers_used || []
+      ]
+    };
+  }
+  function fallbackWarningChips(context) {
+    const budget = context.budget || {};
+    if (budget.fallback_reason !== "symbol_not_found" || typeof budget.ask_level !== "string") {
+      return [];
+    }
+    return ["warning:symbol not found", `fallback:${budget.ask_level}`];
+  }
+
   // src/webview/shared/layout.ts
   function escapeHtml(text) {
     const map = {
@@ -39,6 +67,7 @@
   }
   function renderMessageFooter(message) {
     const time = formatMessageTime(message.timestamp);
+    const route = formatModelRoute(message);
     const assistantFeedback = message.type === "assistant" && message.status === "done" ? `
         <button class="message-action-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
         <button class="message-action-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
@@ -46,6 +75,7 @@
     return `
     <div class="message-footer">
       <time class="message-time" datetime="${escapeHtml(time.iso)}" title="${escapeHtml(time.title)}">${escapeHtml(time.label)}</time>
+      ${route ? `<span class="message-route ${route.fallback ? "fallback" : ""}" title="${escapeHtml(route.title)}">${escapeHtml(route.label)}</span>` : ""}
       <div class="message-actions">
         ${assistantFeedback}
         <button class="message-action-button" data-action="copy" title="Copy message" aria-label="Copy message">
@@ -57,6 +87,54 @@
       </div>
     </div>
   `;
+  }
+  function formatModelRoute(message) {
+    if (message.type !== "assistant") {
+      return null;
+    }
+    const route = message.context?.metadata?.assembly?.model_route;
+    if (!route) {
+      return null;
+    }
+    const provider = routeText(route.provider) || "unknown";
+    const model = routeText(route.model);
+    const preference = routeText(route.preference);
+    const reason = routeText(route.reason);
+    const degraded = Boolean(route.degraded);
+    const fallback = degraded || reason.includes("fallback") || reason.includes("unavailable");
+    const reasonText = routeReasonLabel(reason);
+    const labelParts = [provider, model].filter(Boolean);
+    const label = `${labelParts.join(" / ") || provider}${fallback ? " \xB7 fallback" : ""}`;
+    const titleParts = [
+      `Answered by ${labelParts.join(" / ") || provider}`,
+      preference ? `Preference: ${preference}` : "",
+      reasonText,
+      degraded ? "Response was degraded." : ""
+    ].filter(Boolean);
+    return {
+      label,
+      title: titleParts.join(" | "),
+      fallback
+    };
+  }
+  function routeText(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+  function routeReasonLabel(reason) {
+    switch (reason) {
+      case "claude_unavailable_fallback":
+        return "Auto wanted Claude, but Anthropic credentials/client were unavailable; Ollama answered.";
+      case "claude_error_fallback":
+        return "Claude failed during the request; Ollama answered.";
+      case "router_selected_claude":
+        return "Router selected Claude.";
+      case "router_selected_ollama":
+        return "Router selected Ollama.";
+      case "llm_unreachable_context_only":
+        return "LLM was unreachable; context-only degraded response.";
+      default:
+        return reason ? `Route reason: ${reason}` : "";
+    }
   }
   function formatMessageTime(timestamp) {
     const date = new Date(timestamp);
@@ -125,10 +203,15 @@
       <div class="accordion-value">${escapeHtml(summary.tokenText)}</div>
     </div>
     <div class="accordion-chips">
-      ${summary.chips.map((chip) => `<span class="chip">${escapeHtml(chip)}</span>`).join("")}
+      ${summary.chips.map(renderContextChip).join("")}
     </div>
   `;
     return renderAccordion("contextSummary", "Context Summary", content, expanded);
+  }
+  function renderContextChip(chip) {
+    const className = chip.startsWith("warning:") ? "chip warning" : "chip";
+    const label = chip.startsWith("warning:") ? chip.slice("warning:".length) : chip;
+    return `<span class="${className}">${escapeHtml(label)}</span>`;
   }
   function renderAdvancedInfoAccordion(info, expanded = false) {
     if (!info) {
@@ -263,12 +346,19 @@
       return renderAffectsGroup([], "Files", expanded);
     }
     const rows = uniquePaths.map((filePath) => `
-      <div class="impact-row" data-file-path="${escapeHtml2(filePath)}">
+      <button
+        type="button"
+        class="impact-row impact-file-row"
+        data-action="openFile"
+        data-file-path="${escapeHtml2(filePath)}"
+        data-line="1"
+        title="Open ${escapeHtml2(filePath)}"
+      >
         <span class="impact-chevron" aria-hidden="true">\u203A</span>
         <span class="impact-symbol">File</span>
         <span class="impact-file">${escapeHtml2(filePath)}</span>
         <span class="impact-tag indirect">related</span>
-      </div>
+      </button>
     `).join("");
     return `
     <div class="impact-group ${expanded ? "expanded" : ""}">
@@ -1223,6 +1313,9 @@
         case "open-related-files":
           this.showToast("Related file opener is coming soon.", "info");
           break;
+        case "openFile":
+          this.openFileFromImpact(target);
+          break;
         case "create-refactor-plan":
           this.switchSurface("chat");
           this.prefillComposer(
@@ -1305,7 +1398,8 @@
       this.postMessage({
         type: "chat.ask",
         prompt,
-        symbol: this.state.workspace.selectedSymbol || void 0
+        symbol: this.state.workspace.selectedSymbol || void 0,
+        conversationId: this.currentDialogId
       });
     }
     requestSettings() {
@@ -1607,18 +1701,7 @@
       this.impactError = null;
     }
     summaryFromContext(context) {
-      const tierTokens = context.metadata.tier_tokens || {};
-      const totalTokens = Object.values(tierTokens).reduce((sum, value) => {
-        return sum + (typeof value === "number" ? value : 0);
-      }, 0);
-      const askLevel = typeof context.budget?.ask_level === "string" ? [`level:${context.budget.ask_level}`] : [];
-      return {
-        primaryLabel: `${context.primary_source.symbol} in ${context.primary_source.file_path}`,
-        graphCount: context.graph_context.length,
-        docsCount: context.documentation.length,
-        tokenText: `${totalTokens} tokens`,
-        chips: [...askLevel, ...context.metadata.tiers_used || []]
-      };
+      return buildContextSummary(context);
     }
     impactFromContext(context) {
       const affectedSymbols = context.graph_context.map((symbol) => ({
@@ -1694,13 +1777,26 @@
       group.classList.toggle("expanded", !expanded);
       content.toggleAttribute("hidden", expanded);
     }
+    openFileFromImpact(target) {
+      const filePath = target.getAttribute("data-file-path");
+      if (!filePath) return;
+      const line = Number.parseInt(target.getAttribute("data-line") || "1", 10);
+      this.postMessage({
+        type: "link.openFile",
+        filePath,
+        line: Number.isFinite(line) ? line : 1
+      });
+    }
     submitFeedback(target) {
       const rating = target.getAttribute("data-rating");
       const card = target.closest(".message-card");
       const messageId = card?.getAttribute("data-message-id");
-      if (rating && messageId) {
-        this.postMessage({ type: "feedback.submit", messageId, rating });
+      const feedbackToken = messageId ? this.messages.get(messageId)?.context?.metadata?.assembly?.feedback_token : void 0;
+      if (rating && messageId && feedbackToken) {
+        this.postMessage({ type: "feedback.submit", messageId, rating, feedbackToken });
         this.showToast("Thanks for the feedback.", "info");
+      } else if (rating) {
+        this.showToast("Feedback token is not available for this response yet.", "warning");
       }
     }
     copyMessage(target) {

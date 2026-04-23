@@ -10,6 +10,7 @@ This folder contains all project documentation. Start here to understand the sys
 - **[architectura.md](architectura.md)** — how all pieces fit together (start here)
 - **[concept.md](concept.md)** — what is Surgical Context and why it exists
 - **[idea_summary.md](idea_summary.md)** — elevator pitch
+- **[product_direction_memo.md](product_direction_memo.md)** — current product thesis, moat, cuts, and validation plan
 - **[project_gap_analysis.md](project_gap_analysis.md)** — short index to the merged project analysis
 
 ### **For Implementation**
@@ -46,6 +47,7 @@ This folder contains all project documentation. Start here to understand the sys
 
 ### **Planning & Review**
 - **[road_map.md](road_map.md)** — phases and timelines
+- **[product_direction_memo.md](product_direction_memo.md)** — narrow product direction before the next fork
 - **[project_gap_analysis.md](project_gap_analysis.md)** — index for current gaps and supporting specs
 - **[review_findings_2026-04-17.md](review_findings_2026-04-17.md)** — external review recommendations
 - **[architectural_review.md](architectural_review.md)** — technical decisions and trade-offs
@@ -60,7 +62,7 @@ The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/i
 
 Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, and endpoint coverage for the sidecar API.
 
-The local setup and smoke-test path now lives in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are SQLite-backed history/snapshots, extension health/status UX, extension streaming and settings polish, dashboard resilience, remaining prompt-contract observability, and provider boundaries around the default Neo4j/LanceDB/SQLite implementations. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting are future horizons. See **[road_map.md](road_map.md)** for the canonical current backlog.
+The local setup and smoke-test path now lives in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are retrieval fallback polish, remaining prompt-contract observability, extension accessibility/testing polish, and provider boundaries around the default Neo4j/LanceDB/SQLite implementations. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting are future horizons. See **[road_map.md](road_map.md)** for the canonical current backlog.
 
 ---
 

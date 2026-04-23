@@ -55,6 +55,19 @@ button {
   background: var(--sc-bg);
 }
 
+.surface-chat {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.surface-chat .surface-tab-bar,
+.surface-chat .accordion-stack,
+.surface-chat .composer-dock,
+.surface-chat .status-chip-row {
+  flex: 0 0 auto;
+}
+
 .surface-title {
   padding: 14px 12px 4px;
   color: var(--sc-text);
@@ -267,7 +280,7 @@ button {
   flex-direction: column;
   align-items: stretch;
   flex: 1 1 auto;
-  min-height: 180px;
+  min-height: 0;
   padding: 12px;
   overflow-y: auto;
 }
@@ -405,6 +418,18 @@ button {
 
 .message-footer .message-time {
   opacity: .78;
+}
+
+.message-route {
+  max-width: min(260px, 52vw);
+  overflow: hidden;
+  color: var(--sc-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-route.fallback {
+  color: var(--sc-warn);
 }
 
 .message-actions {
@@ -548,6 +573,12 @@ button {
   border: 1px solid var(--sc-border);
   border-radius: 999px;
   color: var(--sc-muted);
+}
+
+.chip.warning {
+  border-color: rgba(245, 158, 11, 0.35);
+  color: rgba(245, 158, 11, 0.86);
+  background: rgba(245, 158, 11, 0.06);
 }
 
 .composer-dock {
@@ -717,10 +748,16 @@ button {
   grid-template-columns: 14px minmax(96px, 1fr) minmax(72px, 1fr) auto auto auto;
   align-items: center;
   gap: 8px;
+  width: 100%;
   min-height: 34px;
   padding: 6px 8px;
+  border: 0;
   border-top: 1px solid var(--sc-border);
+  background: transparent;
+  color: inherit;
   cursor: pointer;
+  font: inherit;
+  text-align: left;
 }
 
 .impact-row:first-child {
@@ -741,9 +778,23 @@ button {
 
 .impact-file {
   color: var(--sc-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.impact-file-row {
+  grid-template-columns: 14px auto minmax(0, 1fr) auto;
+}
+
+.impact-file-row .impact-symbol {
+  color: var(--sc-muted);
+  font-weight: 400;
+}
+
+.impact-file-row .impact-file {
+  color: var(--sc-text);
 }
 
 .impact-tag {
@@ -1518,6 +1569,14 @@ button {
 
   .impact-row {
     grid-template-columns: 14px minmax(0, 1fr) auto;
+  }
+
+  .impact-file-row {
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+  }
+
+  .impact-file-row .impact-symbol {
+    display: none;
   }
 
   .impact-file {

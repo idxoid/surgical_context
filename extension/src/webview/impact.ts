@@ -152,6 +152,7 @@ class ImpactPanel {
           vscode.postMessage({
             type: 'link.openFile',
             filePath,
+            line: 1,
           });
         }
       });

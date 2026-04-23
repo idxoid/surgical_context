@@ -49,6 +49,7 @@ export function renderMessageCard(message: ChatMessage, selectedRequestId?: stri
 
 function renderMessageFooter(message: ChatMessage): string {
   const time = formatMessageTime(message.timestamp);
+  const route = formatModelRoute(message);
   const assistantFeedback = message.type === 'assistant' && message.status === 'done'
     ? `
         <button class="message-action-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
@@ -59,6 +60,7 @@ function renderMessageFooter(message: ChatMessage): string {
   return `
     <div class="message-footer">
       <time class="message-time" datetime="${escapeHtml(time.iso)}" title="${escapeHtml(time.title)}">${escapeHtml(time.label)}</time>
+      ${route ? `<span class="message-route ${route.fallback ? 'fallback' : ''}" title="${escapeHtml(route.title)}">${escapeHtml(route.label)}</span>` : ''}
       <div class="message-actions">
         ${assistantFeedback}
         <button class="message-action-button" data-action="copy" title="Copy message" aria-label="Copy message">
@@ -70,6 +72,60 @@ function renderMessageFooter(message: ChatMessage): string {
       </div>
     </div>
   `;
+}
+
+function formatModelRoute(message: ChatMessage): { label: string; title: string; fallback: boolean } | null {
+  if (message.type !== 'assistant') {
+    return null;
+  }
+
+  const route = message.context?.metadata?.assembly?.model_route;
+  if (!route) {
+    return null;
+  }
+
+  const provider = routeText(route.provider) || 'unknown';
+  const model = routeText(route.model);
+  const preference = routeText(route.preference);
+  const reason = routeText(route.reason);
+  const degraded = Boolean(route.degraded);
+  const fallback = degraded || reason.includes('fallback') || reason.includes('unavailable');
+  const reasonText = routeReasonLabel(reason);
+  const labelParts = [provider, model].filter(Boolean);
+  const label = `${labelParts.join(' / ') || provider}${fallback ? ' · fallback' : ''}`;
+  const titleParts = [
+    `Answered by ${labelParts.join(' / ') || provider}`,
+    preference ? `Preference: ${preference}` : '',
+    reasonText,
+    degraded ? 'Response was degraded.' : '',
+  ].filter(Boolean);
+
+  return {
+    label,
+    title: titleParts.join(' | '),
+    fallback,
+  };
+}
+
+function routeText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function routeReasonLabel(reason: string): string {
+  switch (reason) {
+    case 'claude_unavailable_fallback':
+      return 'Auto wanted Claude, but Anthropic credentials/client were unavailable; Ollama answered.';
+    case 'claude_error_fallback':
+      return 'Claude failed during the request; Ollama answered.';
+    case 'router_selected_claude':
+      return 'Router selected Claude.';
+    case 'router_selected_ollama':
+      return 'Router selected Ollama.';
+    case 'llm_unreachable_context_only':
+      return 'LLM was unreachable; context-only degraded response.';
+    default:
+      return reason ? `Route reason: ${reason}` : '';
+  }
 }
 
 function formatMessageTime(timestamp: number): { label: string; title: string; iso: string } {
@@ -163,10 +219,16 @@ export function renderContextSummaryAccordion(summary?: {
       <div class="accordion-value">${escapeHtml(summary.tokenText)}</div>
     </div>
     <div class="accordion-chips">
-      ${summary.chips.map(chip => `<span class="chip">${escapeHtml(chip)}</span>`).join('')}
+      ${summary.chips.map(renderContextChip).join('')}
     </div>
   `;
   return renderAccordion('contextSummary', 'Context Summary', content, expanded);
+}
+
+function renderContextChip(chip: string): string {
+  const className = chip.startsWith('warning:') ? 'chip warning' : 'chip';
+  const label = chip.startsWith('warning:') ? chip.slice('warning:'.length) : chip;
+  return `<span class="${className}">${escapeHtml(label)}</span>`;
 }
 
 export function renderAdvancedInfoAccordion(
