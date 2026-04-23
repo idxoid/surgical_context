@@ -52,7 +52,7 @@ The local product is the canonical next milestone.
 - [x] Implement SQLite `HistoryProvider` for conversations, messages, ask snapshots, inspector snapshots, and impact snapshots.
 - [x] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
 - [x] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
-- [ ] Add retention controls and disabled/ephemeral modes for history.
+- [x] Add retention controls and disabled/ephemeral modes for history.
 - [x] Default policy: store metadata and response summaries; do not store raw code bodies or raw prompt bodies unless explicitly enabled.
 - [x] Add tests for prompt-history privacy gates and snapshot retrieval.
 

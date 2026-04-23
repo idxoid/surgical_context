@@ -20,7 +20,7 @@ from sidecar.context.types import RESOLVER_VERSION, DocChunk, PromptContext, Sym
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
 from sidecar.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
-from sidecar.history import SQLiteHistoryProvider, hash_history_text
+from sidecar.history import build_history_provider, hash_history_text, parse_retention_days
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.queue import EnqueueResult, IndexBatchQueue, IndexWorkItem
 from sidecar.observability import (
@@ -50,8 +50,10 @@ user_auth = UserAuth()
 audit_log = AuditLog()
 workspace_resolver = WorkspaceResolver()
 feedback_store = FeedbackStore()
-history_provider = SQLiteHistoryProvider(
-    os.getenv("HISTORY_DB_PATH", "./data/history/surgical_context.sqlite3")
+history_provider = build_history_provider(
+    mode=os.getenv("HISTORY_MODE", "local"),
+    db_path=os.getenv("HISTORY_DB_PATH", "./data/history/surgical_context.sqlite3"),
+    retention_days=parse_retention_days(os.getenv("HISTORY_RETENTION_DAYS", "")),
 )
 
 
@@ -433,6 +435,10 @@ def _history_conversation_for_scope(
     if conversation["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="History conversation belongs to another user")
     return conversation
+
+
+def _history_enabled() -> bool:
+    return bool(getattr(history_provider, "enabled", True))
 
 
 def _history_snapshot(
@@ -1421,6 +1427,14 @@ def record_history_ask(
     """Persist a sanitized ask/request snapshot for local dialog history."""
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
+    if not _history_enabled():
+        return {
+            "status": "disabled",
+            "conversation_id": req.conversation_id or "",
+            "user_message_id": "",
+            "assistant_message_id": "",
+            "selected_request_id": req.request_id,
+        }
     if not req.request_id.strip():
         raise HTTPException(status_code=400, detail="request_id is required")
 
@@ -1548,6 +1562,8 @@ def history_conversations(
     """List local history conversations for the current workspace and user."""
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
+    if not _history_enabled():
+        return {"conversations": []}
     return {
         "conversations": history_provider.list_conversations(
             workspace_id=workspace_id,

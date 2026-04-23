@@ -1,8 +1,17 @@
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from sidecar.history import SQLiteHistoryProvider, hash_history_text, sanitize_history_payload
+from sidecar.history import (
+    DisabledHistoryProvider,
+    EphemeralSQLiteHistoryProvider,
+    SQLiteHistoryProvider,
+    build_history_provider,
+    hash_history_text,
+    parse_retention_days,
+    sanitize_history_payload,
+)
 
 
 def test_sqlite_history_provider_persists_conversations_messages_and_snapshots(tmp_path):
@@ -180,6 +189,52 @@ def test_sqlite_history_provider_does_not_truncate_text_columns(tmp_path):
     assert message_types["content_summary"] == "TEXT"
     assert message_types["metadata_json"] == "TEXT"
     assert snapshot_types["snapshot_json"] == "TEXT"
+
+
+def test_sqlite_history_provider_prunes_retained_conversations(tmp_path):
+    provider = SQLiteHistoryProvider(str(tmp_path / "history.sqlite3"), retention_days=7)
+    old_conversation_id = provider.create_conversation(workspace_id="ws", user_id="alice")
+    kept_conversation_id = provider.create_conversation(workspace_id="ws", user_id="alice")
+
+    old_timestamp = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    with sqlite3.connect(provider.db_path) as conn:
+        conn.execute(
+            "UPDATE conversations SET created_at = ?, updated_at = ? WHERE id = ?",
+            (old_timestamp, old_timestamp, old_conversation_id),
+        )
+
+    assert provider.prune_retention() == 1
+    assert [item["id"] for item in provider.list_conversations(workspace_id="ws", user_id="alice")] == [
+        kept_conversation_id
+    ]
+
+
+def test_history_provider_modes_and_retention_parsing(tmp_path):
+    disabled = build_history_provider(mode="disabled")
+    assert isinstance(disabled, DisabledHistoryProvider)
+    assert disabled.enabled is False
+    assert disabled.list_conversations(workspace_id="ws", user_id="alice") == []
+
+    ephemeral = build_history_provider(mode="ephemeral", retention_days=3)
+    assert isinstance(ephemeral, EphemeralSQLiteHistoryProvider)
+    assert ephemeral.enabled is True
+    assert ephemeral.retention_days == 3
+    assert "surgical-context-history-" in ephemeral.db_path
+
+    local = build_history_provider(
+        mode="local",
+        db_path=str(tmp_path / "history.sqlite3"),
+        retention_days=parse_retention_days("14"),
+    )
+    assert isinstance(local, SQLiteHistoryProvider)
+    assert local.retention_days == 14
+    assert parse_retention_days("") is None
+    assert parse_retention_days(None) is None
+
+    with pytest.raises(ValueError, match="zero or greater"):
+        parse_retention_days("-1")
+    with pytest.raises(ValueError, match="Unsupported HISTORY_MODE"):
+        build_history_provider(mode="other")
 
 
 def test_sanitize_history_payload_redacts_nested_raw_text():

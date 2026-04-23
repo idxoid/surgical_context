@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from sidecar.context.types import SymbolContext
+from sidecar.history import DisabledHistoryProvider
 from sidecar.indexer.job_log import IndexJobLog
 
 
@@ -389,6 +390,30 @@ def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(
         main.history_conversation(body["conversation_id"], x_user_id="Bob")
 
     assert exc_info.value.status_code == 403
+
+
+def test_history_ask_endpoint_is_quiet_when_history_disabled(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "history_provider", DisabledHistoryProvider())
+
+    body = main.record_history_ask(
+        main.HistoryAskRecordRequest(
+            conversation_id="dialog-disabled",
+            request_id="req-disabled",
+            prompt_summary="Ask about disabled history",
+            answer_summary="No-op",
+        ),
+        x_user_id="Alice",
+    )
+
+    assert body == {
+        "status": "disabled",
+        "conversation_id": "dialog-disabled",
+        "user_message_id": "",
+        "assistant_message_id": "",
+        "selected_request_id": "req-disabled",
+    }
+    assert main.history_conversations(x_user_id="Alice") == {"conversations": []}
 
 
 def test_ask_stream_endpoint_emits_json_sse(monkeypatch):
