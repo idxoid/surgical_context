@@ -1,6 +1,6 @@
 # Surgical Context Documentation
 
-This folder contains all project documentation. Start here to understand the system.
+This folder contains the current product and technical documentation for the `context-engine-refocus` branch.
 
 ---
 
@@ -56,13 +56,18 @@ This folder contains all project documentation. Start here to understand the sys
 
 ## Current Truth
 
-The active target is the **Local Developer Product**: a local-first, single-tenant VS Code tool with the Python FastAPI sidecar, local Neo4j graph, local LanceDB vectors, local SQLite history, and ask/inspect/impact workflows. This is the open-source candidate.
+The active target is the **Local Developer Product**: a local-first, single-tenant VS Code tool with the Python FastAPI sidecar, local Neo4j graph, local LanceDB vectors, local SQLite history, and an `Ask / Inspect / Impact` workflow. This is the open-source candidate.
+
+The product is now described more narrowly than before:
+
+- **not** a general AI coding platform
+- **yes** a local-first, model-agnostic context engine for code understanding and change impact
 
 The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/context modules, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
 
 Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, and endpoint coverage for the sidecar API.
 
-The local setup and smoke-test path now lives in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are retrieval fallback polish, remaining prompt-contract observability, extension accessibility/testing polish, and provider boundaries around the default Neo4j/LanceDB/SQLite implementations. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting are future horizons. See **[road_map.md](road_map.md)** for the canonical current backlog.
+The local setup and smoke-test path live in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are remaining prompt-contract observability, extension synchronization/accessibility polish, and real-repository benchmark validation. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](road_map.md)** for the canonical backlog in this branch.
 
 ---
 

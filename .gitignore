@@ -19,8 +19,9 @@ data/
 import/
 logs/
 plugins/
-QA/
 .surgical_context/
+QA/__pycache__/
+QA/baselines.jsonl
 
 # Env
 .env
@@ -42,3 +43,5 @@ dist_bin/
 my_test_project/
 .codex
 .gitignore
+
+QA/baselines.jsonl

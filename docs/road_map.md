@@ -1,76 +1,84 @@
 # Surgical Context - Road Map
 
-> **Status:** Active release target is the **Local Developer Product**: a local-first, single-tenant VS Code experience with the sidecar, local graph/vector/history, and ask/inspect/impact workflows. This is the open-source candidate.
+> **Status:** This branch (`context-engine-refocus`) treats Surgical Context as a **local-first, model-agnostic context engine for code understanding and change impact**.
 >
-> **Already shipped foundation:** typed graph edges, AFFECTS, stable UID v2, scoped call resolution, workspace-scoped graph reads/writes, doc enrichment, intent-aware prompt assembly, graceful degradation, model routing, streaming sidecar endpoint, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a working VS Code extension surface.
+> **Release target:** a Local Developer Product in VS Code with the Python sidecar, local graph/vector/history defaults, and a trustworthy `Ask / Inspect / Impact` loop.
 >
-> **Principle:** finish the local daily-driver loop before expanding into team, enterprise, SaaS, marketplace, or microservice-platform scope.
+> **Principle:** measure retrieval quality and token efficiency on real repositories before expanding platform scope.
 >
-> **See also:** [review_findings_2026-04-17.md](review_findings_2026-04-17.md), [DOCS_STYLE_GUIDE.md](DOCS_STYLE_GUIDE.md), [docs/README.md](README.md)
+> **See also:** [concept.md](concept.md), [product_direction_memo.md](product_direction_memo.md), [review_findings_2026-04-17.md](review_findings_2026-04-17.md), [docs/README.md](README.md)
 
 ---
 
-## Release Target: Local Developer Product
+## Product Direction
 
-The local product is the canonical next milestone.
+The local product is still the canonical next milestone, but the product is now described more narrowly.
 
-**In scope for v0.1:**
-- VS Code UI with Chat, Inspector, Impact, Settings, and Dashboard.
-- Python sidecar running locally.
-- Local graph provider default: Neo4j in Docker.
-- Local vector provider default: LanceDB.
-- Local history provider default: SQLite.
-- Ask/inspect/impact flows that work without a required symbol: `symbol -> file -> workspace -> direct_llm`.
-- Prompt-contract transparency: selected context, scores/provenance where available, pruning reasons, model route, trace ID, token budget.
-- Local docs indexing from the repository.
-- Local-first privacy: no raw code in the graph, no raw prompt/code history unless policy explicitly allows it.
-- One-machine development and open-source contribution path.
+### v0.1 Goal
 
-**Out of scope for v0.1:**
-- Required managed SaaS.
-- Cross-organization or cross-tenant graph.
-- Full alternate database backend support beyond provider boundaries around the defaults.
-- LLM proxy gateway as a required dependency.
-- Microservice split of the sidecar.
-- Rust/Go/C parser rewrites before profiling proves they are necessary.
+Deliver a local VS Code tool that can answer:
 
-**Single-tenant default:** keep `workspace_id` and `tenant_id` in schemas and contracts, but default `tenant_id` to `local`. Multiple local workspaces are allowed; cross-project tenant graph traversal is not required for the local release.
+- what does this code do?
+- what supports this answer?
+- what might this change break?
+
+without wasting tokens or hiding retrieval behavior.
+
+### In Scope
+
+- VS Code surfaces: Chat, Inspector, Impact, Settings, Dashboard
+- Python sidecar running locally
+- local defaults: Neo4j, LanceDB, SQLite
+- retrieval ladder: `symbol -> file -> workspace -> direct_llm`
+- prompt-contract transparency and route visibility
+- local docs indexing from the repository
+- request history and snapshots
+- benchmark validation on real repositories
+
+### Out of Scope
+
+- managed SaaS as a requirement
+- cross-tenant or cross-organization graph traversal
+- broad enterprise RBAC and policy surface
+- mandatory LLM proxy gateway
+- microservice split of the sidecar
+- parser/indexer rewrites before profiling proves a bottleneck
+- "general autonomous coding agent" competition as a release goal
+
+### Single-Tenant Default
+
+Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `local`. Multiple local workspaces are allowed; cross-project tenant graph traversal is not required for the local release.
 
 ---
 
 ## Canonical Backlog
 
-### P0 - Local Release Hardening
-- [x] Add a clean local setup path: install extension dependencies, start Neo4j Docker, initialize LanceDB paths, run sidecar, launch extension dev host.
-- [x] Add a local smoke test: clean clone -> install -> start storage -> index repo -> ask -> inspect -> impact -> dashboard.
-- [x] Add an extension health checklist for sidecar, graph provider, vector provider, index state, LLM provider, and current workspace.
-- [x] Make dashboard failures graceful when the sidecar is down, metrics are missing, or no index exists yet.
-- [x] Finalize local settings UX for sidecar URL, workspace ID, model preference, auth token, storage paths, and token budget.
-- [x] Document open-source local usage with Docker Neo4j, LanceDB, SQLite, Ollama, and optional cloud model keys.
+### P0 - Refocus and Truth
+- [ ] Rewrite product-facing docs around the context-engine thesis (`concept.md`, `idea_summary.md`, `road_map.md`, `README.md`).
+- [ ] Keep the local release boundary explicit: no platform or enterprise scope expansion without a measured reason.
+- [ ] Align the benchmark story around real repositories and real developer questions.
 
-### P1 - Local History and Prompt Snapshots
-- [x] Implement SQLite `HistoryProvider` for conversations, messages, ask snapshots, inspector snapshots, and impact snapshots.
-- [x] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
-- [x] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
-- [x] Add retention controls and disabled/ephemeral modes for history.
-- [x] Default policy: store metadata and response summaries; do not store raw code bodies or raw prompt bodies unless explicitly enabled.
-- [x] Add tests for prompt-history privacy gates and snapshot retrieval.
+### P1 - Local Daily-Driver Loop
+- [x] Clean local bootstrap and smoke path.
+- [x] Local history and request snapshots.
+- [ ] Finish streaming and selected-request synchronization so `Ask / Inspect / Impact` always point to the same request.
+- [ ] Keep dashboard, settings, and health states useful when providers are missing, local-only, or degraded.
+- [ ] Add small but solid accessibility/keyboard polish for the extension surfaces.
 
 ### P2 - Retrieval Quality and Observability
-- [x] Finish the soft fallback ladder: missing symbol is a warning, not a failed chat; continue through file, workspace, then direct LLM.
-- [ ] Finish remaining Prompt Contract fields: `pruned[]`, ranker weights, intent distribution/confidence, and ambiguous-intent signal.
+- [x] Soft fallback ladder for missing symbols.
+- [ ] Finish remaining prompt-contract fields: `pruned[]`, ranker weights, intent distribution/confidence, ambiguous-intent signal.
 - [ ] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally.
-- [ ] Tune unified ranking over graph + semantic candidates using the QA harness.
-- [ ] Add latency SLO checks for local asks and index operations.
 - [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
+- [ ] Add latency SLO checks for local asks and index operations.
+- [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
 
-### P3 - Extension Productization
-- [ ] Wire chat streaming to `/ask/stream` end to end in the webview.
-- [ ] Keep Chat, Inspector, and Impact synchronized around the currently selected ask.
-- [ ] Add keyboard/focus/accessibility polish for all webview surfaces.
-- [ ] Make command palette entries, activity placement, dashboard open behavior, and sidebar behavior predictable in development and packaged installs.
-- [ ] Add extension-side tests or smoke scripts for command registration and webview message contracts.
-- [ ] Package local dev assets cleanly and exclude generated/noisy files where appropriate.
+### P3 - Real-Repo Validation
+- [ ] Adapt the QA harness to use the real-repo question pack in [tests/fixtures/real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml).
+- [ ] Start with the `core12` subset, then expand to the full 24-question pack.
+- [ ] Compare naive context vs Surgical Context vs heavy stuffing on 2-3 real repositories.
+- [ ] Record token deltas, latency, fallback behavior, and human-reviewed grounding quality.
+- [ ] Use benchmark results to tune ranking rather than tuning by intuition.
 
 ### P4 - Provider Boundaries, Defaults First
 - [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
@@ -89,6 +97,24 @@ The local product is the canonical next milestone.
 - [ ] Add optional LLM Proxy Gateway transport for organizations that need provider-account policy, auditing, masking, quotas, or fallback outside the sidecar.
 - [ ] Split the sidecar into services only when scale requires it.
 - [ ] Consider Rust/Go/C parser or indexer hot paths only after a performance review proves Python orchestration is the bottleneck.
+
+---
+
+## Immediate 3-Week Plan
+
+### Week 1
+- tighten product docs around the context-engine thesis
+- finish `Ask / Inspect / Impact` synchronization and route visibility
+- make prompt-contract observability feel complete enough for daily use
+
+### Week 2
+- adapt the benchmark harness for the real-repo pack
+- run the `core12` questions on FastAPI, Pydantic, and Redux Toolkit
+- review which answers were grounded, weak, or overstuffed
+
+### Week 3
+- tune ranking and fallback behavior from measured results
+- decide whether the next phase is still local product hardening or extraction of a reusable context/routing backend
 
 ---
 
