@@ -20,6 +20,11 @@ _INDEXED_EXTENSIONS = {
 }
 
 
+def is_indexable_file(file_path: str) -> bool:
+    _, ext = os.path.splitext(file_path)
+    return ext.lower() in _INDEXED_EXTENSIONS
+
+
 def _load_gitignore(root: str):
     """Return a pathspec matcher for the nearest .gitignore, or None."""
     import pathspec
@@ -41,8 +46,7 @@ def _collect_files(project_path: str) -> list[str]:
             rel_root = os.path.relpath(root, ROOT)
             dirs[:] = [d for d in dirs if not spec.match_file(os.path.join(rel_root, d))]
         for name in filenames:
-            _, ext = os.path.splitext(name)
-            if ext not in _INDEXED_EXTENSIONS or name.startswith("."):
+            if name.startswith(".") or not is_indexable_file(name):
                 continue
             full = os.path.join(root, name)
             if spec:

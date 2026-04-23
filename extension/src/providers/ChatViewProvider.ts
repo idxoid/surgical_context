@@ -3,6 +3,7 @@ import { SidecarClient } from '../sidecarClient';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
 import { stateManager } from '../state/ExtensionState';
+import { buildContextSummary } from '../contextSummary';
 import {
   WebviewToHostMessage,
   HostToWebviewMessage,
@@ -199,22 +200,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const payload = context as PromptContextPayload;
         stateManager.setState({ lastContext: payload });
 
-        const metadata = payload.metadata;
-        const tierTokens = metadata.tier_tokens || {};
-        const totalTokens = Object.values(tierTokens).reduce((sum, val) => sum + (val as number), 0);
-        const askLevel = typeof payload.budget?.ask_level === 'string'
-          ? [`level:${payload.budget.ask_level}`]
-          : [];
-
         this.postMessage({
           type: 'chat.contextSummary',
-          summary: {
-            primaryLabel: `${payload.primary_source.symbol} in ${payload.primary_source.file_path}`,
-            graphCount: payload.graph_context.length,
-            docsCount: payload.documentation.length,
-            tokenText: `${totalTokens} tokens`,
-            chips: [...askLevel, ...(metadata.tiers_used || [])],
-          },
+          summary: buildContextSummary(payload),
         });
       },
       onDone: (traceId: string) => {

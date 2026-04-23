@@ -433,6 +433,64 @@ def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
     assert body["context"]["mode"] == "workspace"
     assert body["context"]["budget"]["ask_level"] == "workspace"
     assert body["context"]["budget"]["missing_symbol"] == "missing"
+    assert body["context"]["budget"]["fallback_from"] == "symbol"
+    assert body["context"]["budget"]["fallback_reason"] == "symbol_not_found"
+    assert body["context"]["budget"]["fallback_ladder"] == [
+        "symbol",
+        "file",
+        "workspace",
+        "direct_llm",
+    ]
+    assert body["context"]["budget"]["warnings"] == [
+        {
+            "code": "symbol_not_found",
+            "severity": "warning",
+            "message": "Symbol 'missing' was not found; using workspace context.",
+        }
+    ]
+
+
+def test_ask_endpoint_uses_file_fallback_before_workspace(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    source_file = tmp_path / "checkout.py"
+    source_file.write_text("def checkout():\n    return 'ok'\n", encoding="utf-8")
+
+    body = main.ask(
+        main.AskRequest(
+            symbol="missing",
+            question="Where?",
+            file_path=str(source_file),
+        )
+    )
+
+    assert body["context"]["mode"] == "file"
+    assert body["context"]["primary_source"]["file_path"] == str(source_file)
+    assert body["context"]["budget"]["ask_level"] == "file"
+    assert body["context"]["budget"]["warnings"][0]["message"] == (
+        "Symbol 'missing' was not found; using file context."
+    )
+
+
+def test_ask_endpoint_falls_back_to_direct_llm_when_no_context(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    class EmptyVectorDb:
+        def search(self, query, limit=5):
+            return []
+
+        def search_symbols(self, query, limit=5, threshold=1.0):
+            return []
+
+    monkeypatch.setattr(main, "vector_db", EmptyVectorDb())
+
+    body = main.ask(main.AskRequest(symbol="missing", question="Where?"))
+
+    assert body["context"]["mode"] == "direct"
+    assert body["context"]["budget"]["ask_level"] == "direct_llm"
+    assert body["context"]["budget"]["fallback_reason"] == "symbol_not_found"
+    assert body["context"]["budget"]["warnings"][0]["message"] == (
+        "Symbol 'missing' was not found; using direct LLM context."
+    )
 
 
 def test_auth_required_rejects_missing_bearer_token(monkeypatch):
@@ -554,6 +612,39 @@ def test_index_queue_status_endpoint(monkeypatch):
 
     assert body["status"] == "ok"
     assert body["queue"]["pending"] == 0
+
+
+def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    skipped_file = tmp_path / "settings.json"
+    skipped_file.write_text('{"editor.tabSize": 2}\n', encoding="utf-8")
+    metric_calls = []
+
+    monkeypatch.setattr(
+        main.default_metrics,
+        "increment",
+        lambda name, value=1, labels=None: metric_calls.append((name, value, labels)),
+    )
+    monkeypatch.setattr(
+        "sidecar.indexer.code.index_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("index_file should not run")),
+    )
+
+    main._process_index_batch(
+        [
+            main.IndexWorkItem(
+                file_path=str(skipped_file),
+                workspace_id="local/surgical_context@main",
+                user_id="alice",
+            )
+        ]
+    )
+
+    assert (
+        "sidecar_index_queue_skipped_total",
+        1,
+        {"reason": "unsupported_extension", "workspace": "local/surgical_context@main"},
+    ) in metric_calls
 
 
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):

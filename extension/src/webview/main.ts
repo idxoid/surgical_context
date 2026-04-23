@@ -11,6 +11,7 @@ import {
   SettingsData,
   WebviewToHostMessage,
 } from './shared/protocol';
+import { buildContextSummary } from '../contextSummary';
 import {
   escapeHtml,
   renderAdvancedInfoAccordion,
@@ -1119,21 +1120,7 @@ class MainSurface {
   }
 
   private summaryFromContext(context: PromptContextPayload): ContextSummaryDto {
-    const tierTokens = context.metadata.tier_tokens || {};
-    const totalTokens = Object.values(tierTokens).reduce((sum, value) => {
-      return sum + (typeof value === 'number' ? value : 0);
-    }, 0);
-    const askLevel = typeof context.budget?.ask_level === 'string'
-      ? [`level:${context.budget.ask_level}`]
-      : [];
-
-    return {
-      primaryLabel: `${context.primary_source.symbol} in ${context.primary_source.file_path}`,
-      graphCount: context.graph_context.length,
-      docsCount: context.documentation.length,
-      tokenText: `${totalTokens} tokens`,
-      chips: [...askLevel, ...(context.metadata.tiers_used || [])],
-    };
+    return buildContextSummary(context);
   }
 
   private impactFromContext(context: PromptContextPayload): ImpactResponse {

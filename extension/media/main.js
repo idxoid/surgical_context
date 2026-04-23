@@ -1,5 +1,33 @@
 "use strict";
 (() => {
+  // src/contextSummary.ts
+  function buildContextSummary(context) {
+    const tierTokens = context.metadata.tier_tokens || {};
+    const totalTokens = Object.values(tierTokens).reduce((sum, value) => {
+      return sum + (typeof value === "number" ? value : 0);
+    }, 0);
+    const askLevel = typeof context.budget?.ask_level === "string" ? context.budget.ask_level : "";
+    const warningChips = fallbackWarningChips(context);
+    return {
+      primaryLabel: `${context.primary_source.symbol} in ${context.primary_source.file_path}`,
+      graphCount: context.graph_context.length,
+      docsCount: context.documentation.length,
+      tokenText: `${totalTokens} tokens`,
+      chips: [
+        ...askLevel ? [`level:${askLevel}`] : [],
+        ...warningChips,
+        ...context.metadata.tiers_used || []
+      ]
+    };
+  }
+  function fallbackWarningChips(context) {
+    const budget = context.budget || {};
+    if (budget.fallback_reason !== "symbol_not_found" || typeof budget.ask_level !== "string") {
+      return [];
+    }
+    return ["warning:symbol not found", `fallback:${budget.ask_level}`];
+  }
+
   // src/webview/shared/layout.ts
   function escapeHtml(text) {
     const map = {
@@ -175,10 +203,15 @@
       <div class="accordion-value">${escapeHtml(summary.tokenText)}</div>
     </div>
     <div class="accordion-chips">
-      ${summary.chips.map((chip) => `<span class="chip">${escapeHtml(chip)}</span>`).join("")}
+      ${summary.chips.map(renderContextChip).join("")}
     </div>
   `;
     return renderAccordion("contextSummary", "Context Summary", content, expanded);
+  }
+  function renderContextChip(chip) {
+    const className = chip.startsWith("warning:") ? "chip warning" : "chip";
+    const label = chip.startsWith("warning:") ? chip.slice("warning:".length) : chip;
+    return `<span class="${className}">${escapeHtml(label)}</span>`;
   }
   function renderAdvancedInfoAccordion(info, expanded = false) {
     if (!info) {
@@ -1668,18 +1701,7 @@
       this.impactError = null;
     }
     summaryFromContext(context) {
-      const tierTokens = context.metadata.tier_tokens || {};
-      const totalTokens = Object.values(tierTokens).reduce((sum, value) => {
-        return sum + (typeof value === "number" ? value : 0);
-      }, 0);
-      const askLevel = typeof context.budget?.ask_level === "string" ? [`level:${context.budget.ask_level}`] : [];
-      return {
-        primaryLabel: `${context.primary_source.symbol} in ${context.primary_source.file_path}`,
-        graphCount: context.graph_context.length,
-        docsCount: context.documentation.length,
-        tokenText: `${totalTokens} tokens`,
-        chips: [...askLevel, ...context.metadata.tiers_used || []]
-      };
+      return buildContextSummary(context);
     }
     impactFromContext(context) {
       const affectedSymbols = context.graph_context.map((symbol) => ({

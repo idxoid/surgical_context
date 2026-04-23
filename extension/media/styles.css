@@ -575,6 +575,12 @@ button {
   color: var(--sc-muted);
 }
 
+.chip.warning {
+  border-color: rgba(245, 158, 11, 0.35);
+  color: rgba(245, 158, 11, 0.86);
+  background: rgba(245, 158, 11, 0.06);
+}
+
 .composer-dock {
   position: relative;
   margin: 8px 12px 10px;

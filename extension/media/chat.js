@@ -175,10 +175,15 @@
       <div class="accordion-value">${escapeHtml(summary.tokenText)}</div>
     </div>
     <div class="accordion-chips">
-      ${summary.chips.map((chip) => `<span class="chip">${escapeHtml(chip)}</span>`).join("")}
+      ${summary.chips.map(renderContextChip).join("")}
     </div>
   `;
     return renderAccordion("contextSummary", "Context Summary", content, expanded);
+  }
+  function renderContextChip(chip) {
+    const className = chip.startsWith("warning:") ? "chip warning" : "chip";
+    const label = chip.startsWith("warning:") ? chip.slice("warning:".length) : chip;
+    return `<span class="${className}">${escapeHtml(label)}</span>`;
   }
   function renderAdvancedInfoAccordion(info, expanded = false) {
     if (!info) {

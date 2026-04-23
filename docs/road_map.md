@@ -57,7 +57,7 @@ The local product is the canonical next milestone.
 - [x] Add tests for prompt-history privacy gates and snapshot retrieval.
 
 ### P2 - Retrieval Quality and Observability
-- [ ] Finish the soft fallback ladder: missing symbol is a warning, not a failed chat; continue through file, workspace, then direct LLM.
+- [x] Finish the soft fallback ladder: missing symbol is a warning, not a failed chat; continue through file, workspace, then direct LLM.
 - [ ] Finish remaining Prompt Contract fields: `pruned[]`, ranker weights, intent distribution/confidence, and ambiguous-intent signal.
 - [ ] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally.
 - [ ] Tune unified ranking over graph + semantic candidates using the QA harness.

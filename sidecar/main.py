@@ -639,6 +639,7 @@ def _resolve_ask_context(
     workspace_id: str,
     db: Any,
 ) -> PromptContext:
+    symbol_error = ""
     if req.symbol:
         arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
         ctx = arb.get_context_for_symbol(
@@ -649,6 +650,7 @@ def _resolve_ask_context(
         if not isinstance(ctx, str):
             _context_budget(ctx)["ask_level"] = "symbol"
             return ctx
+        symbol_error = ctx
 
     if req.file_path:
         file_ctx = _context_from_file(
@@ -659,22 +661,16 @@ def _resolve_ask_context(
             user_id=user_id,
         )
         if file_ctx:
-            _context_budget(file_ctx)["ask_level"] = "file"
-            if req.symbol:
-                _context_budget(file_ctx)["missing_symbol"] = req.symbol
+            _mark_ask_fallback(file_ctx, req, "file", symbol_error)
             return file_ctx
 
     workspace_ctx = _context_from_workspace(req.question, req.token_budget)
     if workspace_ctx:
-        _context_budget(workspace_ctx)["ask_level"] = "workspace"
-        if req.symbol:
-            _context_budget(workspace_ctx)["missing_symbol"] = req.symbol
+        _mark_ask_fallback(workspace_ctx, req, "workspace", symbol_error)
         return workspace_ctx
 
     direct_ctx = _context_from_direct(req.question, req.token_budget)
-    _context_budget(direct_ctx)["ask_level"] = "direct"
-    if req.symbol:
-        _context_budget(direct_ctx)["missing_symbol"] = req.symbol
+    _mark_ask_fallback(direct_ctx, req, "direct_llm", symbol_error)
     return direct_ctx
 
 
@@ -684,6 +680,48 @@ def _context_budget(ctx: Any) -> dict[str, Any]:
         budget = {}
         ctx.budget = budget
     return budget
+
+
+def _mark_ask_fallback(
+    ctx: PromptContext,
+    req: AskRequest,
+    ask_level: str,
+    symbol_error: str = "",
+) -> None:
+    budget = _context_budget(ctx)
+    budget["ask_level"] = ask_level
+    budget["fallback_ladder"] = ["symbol", "file", "workspace", "direct_llm"]
+    if req.symbol:
+        display_level = "direct LLM" if ask_level == "direct_llm" else ask_level
+        budget["missing_symbol"] = req.symbol
+        budget["fallback_from"] = "symbol"
+        budget["fallback_reason"] = _fallback_reason(symbol_error)
+        budget["warnings"] = _append_context_warning(
+            budget.get("warnings"),
+            {
+                "code": budget["fallback_reason"],
+                "severity": "warning",
+                "message": (
+                    f"Symbol '{req.symbol}' was not found; "
+                    f"using {display_level} context."
+                ),
+            },
+        )
+
+
+def _fallback_reason(symbol_error: str) -> str:
+    if "not found" in symbol_error.lower():
+        return "symbol_not_found"
+    if symbol_error:
+        return "symbol_context_unavailable"
+    return "symbol_not_provided"
+
+
+def _append_context_warning(current: Any, warning: dict[str, str]) -> list[dict[str, str]]:
+    warnings = [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+    if not any(item.get("code") == warning["code"] for item in warnings):
+        warnings.append(warning)
+    return warnings
 
 
 def _system_prompt_for_context(ctx: PromptContext) -> str:
@@ -765,7 +803,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
     from collections import defaultdict
 
     from sidecar.indexer.anchor import resolve_pending_anchors
-    from sidecar.indexer.code import hash_file, index_file
+    from sidecar.indexer.code import hash_file, index_file, is_indexable_file
     from sidecar.parser.extractor import SymbolExtractor
 
     grouped: dict[tuple[str, str], list[IndexWorkItem]] = defaultdict(list)
@@ -777,25 +815,33 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
     for (user_id, workspace_id), group in grouped.items():
         existing_paths = [item.file_path for item in group if os.path.isfile(item.file_path)]
         missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
+        unsupported_paths = [path for path in existing_paths if not is_indexable_file(path)]
+        indexable_paths = [path for path in existing_paths if is_indexable_file(path)]
         for path in missing_paths:
             logger.warning("Skipping queued index for missing file: %s", path)
             default_metrics.increment(
                 "sidecar_index_queue_skipped_total",
                 labels={"reason": "missing_file", "workspace": workspace_id},
             )
-        if not existing_paths:
+        for path in unsupported_paths:
+            logger.info("Skipping queued index for unsupported file type: %s", path)
+            default_metrics.increment(
+                "sidecar_index_queue_skipped_total",
+                labels={"reason": "unsupported_extension", "workspace": workspace_id},
+            )
+        if not indexable_paths:
             continue
 
-        current_hashes = {path: hash_file(path) for path in existing_paths}
+        current_hashes = {path: hash_file(path) for path in indexable_paths}
         completed = 0
         with db_session(user_id=user_id) as db:
             get_file_hashes = getattr(db, "get_file_hashes", None)
             stored_hashes = (
-                get_file_hashes(existing_paths, workspace_id=workspace_id)
+                get_file_hashes(indexable_paths, workspace_id=workspace_id)
                 if callable(get_file_hashes)
                 else {}
             )
-            for path in existing_paths:
+            for path in indexable_paths:
                 file_hash = current_hashes[path]
                 if stored_hashes.get(path) == file_hash:
                     default_metrics.increment(
