@@ -105,6 +105,7 @@ def import_main_with_fakes(monkeypatch):
     feedback_dir = tempfile.mkdtemp(prefix="sidecar-feedback-test-")
     monkeypatch.setenv("FEEDBACK_SNAPSHOT_PATH", f"{feedback_dir}/snapshots.jsonl")
     monkeypatch.setenv("FEEDBACK_LOG_PATH", f"{feedback_dir}/feedback.jsonl")
+    monkeypatch.setenv("HISTORY_DB_PATH", f"{feedback_dir}/history.sqlite3")
 
     fake_lancedb = types.ModuleType("sidecar.database.lancedb_client")
 
@@ -321,6 +322,71 @@ def test_feedback_endpoint_enforces_token_user_scope(monkeypatch):
             ),
             x_user_id="Bob",
         )
+
+    assert exc_info.value.status_code == 403
+
+
+def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    body = main.record_history_ask(
+        main.HistoryAskRecordRequest(
+            conversation_id="dialog-local-1",
+            request_id="req-history",
+            prompt_summary="Ask about process_payment",
+            prompt_hash="prompt-hash",
+            answer_summary="Assistant response recorded",
+            answer_hash="answer-hash",
+            symbol="process_payment",
+            trace_id="trace-history",
+            feedback_token="fbk_history",
+            ask_snapshot={
+                "context": FakeCtx().to_dict(),
+                "raw_prompt": "raw user question must not be stored",
+                "code": "def secret(): pass",
+            },
+            inspector_snapshot={
+                "primary_symbol": "process_payment",
+                "content": "raw inspector content",
+            },
+            impact_snapshot={
+                "symbol": "process_payment",
+                "affected_symbols": [{"symbol": "caller", "code": "raw code"}],
+            },
+        ),
+        x_user_id="Alice",
+    )
+
+    assert body["status"] == "recorded"
+    assert body["conversation_id"] == "dialog-local-1"
+    assert body["selected_request_id"] == "req-history"
+
+    conversations = main.history_conversations(x_user_id="Alice")
+    assert conversations["conversations"][0]["id"] == body["conversation_id"]
+    assert conversations["conversations"][0]["selected_request_id"] == "req-history"
+
+    bundle = main.history_conversation(body["conversation_id"], x_user_id="Alice")
+    assert bundle["conversation"]["selected_request_id"] == "req-history"
+    assert len(bundle["messages"]) == 2
+    assert bundle["messages"][1]["ask_snapshot"]["snapshot"]["redacted_keys"] == [
+        "code",
+        "raw_prompt",
+    ]
+
+    request_bundle = main.history_request_bundle(
+        body["conversation_id"],
+        "req-history",
+        x_user_id="Alice",
+    )
+    assert request_bundle["message"]["id"] == body["assistant_message_id"]
+    assert request_bundle["ask_snapshot"]["feedback_token"] == "fbk_history"
+    assert request_bundle["inspector_snapshot"]["snapshot"]["redacted_keys"] == ["content"]
+    assert request_bundle["impact_snapshot"]["snapshot"]["affected_symbols"][0]["redacted_keys"] == [
+        "code"
+    ]
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.history_conversation(body["conversation_id"], x_user_id="Bob")
 
     assert exc_info.value.status_code == 403
 

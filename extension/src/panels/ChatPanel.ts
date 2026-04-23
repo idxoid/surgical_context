@@ -159,6 +159,7 @@ export class ChatPanel {
       case 'feedback.submit':
         SidecarClient.submitFeedback({
           message_id: message.messageId,
+          feedback_token: message.feedbackToken,
           rating: message.rating,
         });
         break;

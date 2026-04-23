@@ -74,6 +74,7 @@ def test_sqlite_history_provider_persists_conversations_messages_and_snapshots(t
 
     conversations = provider.list_conversations(workspace_id="local/repo@main", user_id="alice")
     assert [conversation["id"] for conversation in conversations] == [conversation_id]
+    assert conversations[0]["selected_request_id"] == ""
     assert conversations[0]["metadata"]["redacted_keys"] == ["question"]
 
     messages = provider.list_messages(conversation_id)
@@ -89,6 +90,17 @@ def test_sqlite_history_provider_persists_conversations_messages_and_snapshots(t
     assert bundle["inspector_snapshot"]["snapshot"]["documentation"][0]["redacted_keys"] == ["content"]
     assert bundle["impact_snapshot"]["snapshot"]["affected_symbols"][0]["redacted_keys"] == ["code"]
 
+    provider.set_selected_request(conversation_id, "req-1")
+    conversation_bundle = provider.get_conversation_bundle(conversation_id)
+    request_bundle = provider.get_request_bundle(conversation_id, "req-1")
+
+    assert conversation_bundle is not None
+    assert conversation_bundle["conversation"]["selected_request_id"] == "req-1"
+    assert len(conversation_bundle["messages"]) == 2
+    assert request_bundle is not None
+    assert request_bundle["message"]["id"] == assistant_message_id
+    assert request_bundle["ask_snapshot"]["trace_id"] == "trace-1"
+
     with sqlite3.connect(provider.db_path) as conn:
         stored = "\n".join(row[0] for row in conn.execute("SELECT snapshot_json FROM ask_snapshots"))
     assert raw_question not in stored
@@ -99,11 +111,19 @@ def test_sqlite_history_provider_persists_conversations_messages_and_snapshots(t
 def test_sqlite_history_provider_enforces_scope_and_foreign_keys(tmp_path):
     provider = SQLiteHistoryProvider(str(tmp_path / "history.sqlite3"))
     conversation_id = provider.create_conversation(workspace_id="ws-a", user_id="alice")
+    explicit_conversation_id = provider.create_conversation(
+        workspace_id="ws-a",
+        user_id="alice",
+        conversation_id="dialog-client-1",
+    )
     provider.create_conversation(workspace_id="ws-a", user_id="bob")
     provider.create_conversation(workspace_id="ws-b", user_id="alice")
 
-    assert len(provider.list_conversations(workspace_id="ws-a", user_id="alice")) == 1
-    assert provider.list_conversations(workspace_id="ws-a", user_id="alice")[0]["id"] == conversation_id
+    conversation_ids = {
+        item["id"] for item in provider.list_conversations(workspace_id="ws-a", user_id="alice")
+    }
+    assert conversation_ids == {conversation_id, explicit_conversation_id}
+    assert explicit_conversation_id == "dialog-client-1"
 
     with pytest.raises(ValueError, match="Unsupported message role"):
         provider.append_message(conversation_id=conversation_id, role="developer")
@@ -113,6 +133,9 @@ def test_sqlite_history_provider_enforces_scope_and_foreign_keys(tmp_path):
 
     with pytest.raises(ValueError, match="Unknown message"):
         provider.save_ask_snapshot("missing", {"trace_id": "trace"})
+
+    with pytest.raises(ValueError, match="Unknown conversation"):
+        provider.set_selected_request("missing", "req-missing")
 
 
 def test_sqlite_history_provider_does_not_truncate_text_columns(tmp_path):

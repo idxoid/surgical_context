@@ -61,6 +61,12 @@ export class ImpactViewProvider implements vscode.WebviewViewProvider {
         if (message.filePath) {
           const uri = vscode.Uri.file(message.filePath);
           const opts: vscode.TextDocumentShowOptions = { preview: true };
+          if (message.line) {
+            opts.selection = new vscode.Range(
+              new vscode.Position(message.line - 1, 0),
+              new vscode.Position(message.line - 1, 0)
+            );
+          }
           vscode.window.showTextDocument(uri, opts);
         }
         break;

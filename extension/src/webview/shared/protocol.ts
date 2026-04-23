@@ -8,12 +8,12 @@
 
 export type WebviewToHostMessage =
   | { type: 'surface.ready' }
-  | { type: 'chat.ask'; prompt: string; symbol?: string }
+  | { type: 'chat.ask'; prompt: string; symbol?: string; conversationId?: string }
   | { type: 'chat.stop'; requestId: string }
   | { type: 'chat.retry'; messageId: string }
   | { type: 'composer.changed'; text: string; heightPx: number }
   | { type: 'accordion.toggled'; id: string; expanded: boolean }
-  | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down' }
+  | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down'; feedbackToken?: string }
   | { type: 'action.openInspector' }
   | { type: 'action.openSettings' }
   | { type: 'action.showImpact'; symbol?: string }
@@ -124,6 +124,7 @@ export interface PromptContextPayload {
       model_route?: Record<string, unknown>;
       estimated_cost_usd?: number;
       cost_basis?: string;
+      feedback_token?: string;
     };
   };
   primary_source: ContextSymbol;

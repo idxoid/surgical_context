@@ -20,6 +20,7 @@ from sidecar.context.types import RESOLVER_VERSION, DocChunk, PromptContext, Sym
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
 from sidecar.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
+from sidecar.history import SQLiteHistoryProvider, hash_history_text
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.queue import EnqueueResult, IndexBatchQueue, IndexWorkItem
 from sidecar.observability import (
@@ -49,6 +50,9 @@ user_auth = UserAuth()
 audit_log = AuditLog()
 workspace_resolver = WorkspaceResolver()
 feedback_store = FeedbackStore()
+history_provider = SQLiteHistoryProvider(
+    os.getenv("HISTORY_DB_PATH", "./data/history/surgical_context.sqlite3")
+)
 
 
 class IndexRequest(BaseModel):
@@ -179,6 +183,46 @@ class FeedbackResponse(BaseModel):
     outcome: str
     workspace_id: str
     trace_id: str
+
+
+class HistoryAskRecordRequest(BaseModel):
+    conversation_id: str | None = None
+    request_id: str
+    prompt_summary: str = ""
+    prompt_hash: str = ""
+    answer_summary: str = ""
+    answer_hash: str = ""
+    symbol: str = ""
+    trace_id: str = ""
+    feedback_token: str = ""
+    ask_snapshot: dict[str, Any] = Field(default_factory=dict)
+    inspector_snapshot: dict[str, Any] = Field(default_factory=dict)
+    impact_snapshot: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class HistoryAskRecordResponse(BaseModel):
+    status: str
+    conversation_id: str
+    user_message_id: str
+    assistant_message_id: str
+    selected_request_id: str
+
+
+class HistoryConversationsResponse(BaseModel):
+    conversations: list[dict[str, Any]]
+
+
+class HistoryConversationResponse(BaseModel):
+    conversation: dict[str, Any]
+    messages: list[dict[str, Any]]
+
+
+class HistoryRequestBundleResponse(BaseModel):
+    message: dict[str, Any]
+    ask_snapshot: dict[str, Any] | None
+    inspector_snapshot: dict[str, Any] | None
+    impact_snapshot: dict[str, Any] | None
 
 
 class ImpactResponse(BaseModel):
@@ -373,6 +417,41 @@ def _record_retrieval_snapshot(
         "sidecar_feedback_snapshots_total",
         labels={"workspace": workspace_id},
     )
+
+
+def _history_conversation_for_scope(
+    conversation_id: str,
+    *,
+    workspace_id: str,
+    user_id: str,
+) -> dict[str, Any]:
+    conversation = history_provider.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Unknown history conversation")
+    if conversation["workspace_id"] != workspace_id:
+        raise HTTPException(status_code=403, detail="History conversation belongs to another workspace")
+    if conversation["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="History conversation belongs to another user")
+    return conversation
+
+
+def _history_snapshot(
+    req: HistoryAskRecordRequest,
+    *,
+    workspace_id: str,
+    user_id: str,
+    answer_summary: str,
+) -> dict[str, Any]:
+    return {
+        **req.ask_snapshot,
+        "request_id": req.request_id,
+        "trace_id": req.trace_id,
+        "feedback_token": req.feedback_token,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "symbol": req.symbol,
+        "answer_summary": answer_summary,
+    }
 
 
 def _read_file_context(
@@ -1330,6 +1409,190 @@ def record_feedback(
         "workspace_id": workspace_id,
         "trace_id": snapshot.trace_id,
     }
+
+
+@app.post("/history/ask", response_model=HistoryAskRecordResponse)
+def record_history_ask(
+    req: HistoryAskRecordRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Persist a sanitized ask/request snapshot for local dialog history."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    if not req.request_id.strip():
+        raise HTTPException(status_code=400, detail="request_id is required")
+
+    conversation_id = req.conversation_id
+    if conversation_id:
+        conversation = history_provider.get_conversation(conversation_id)
+        if conversation:
+            _history_conversation_for_scope(
+                conversation_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+        else:
+            title = req.prompt_summary or (f"Ask about {req.symbol}" if req.symbol else "Workspace ask")
+            conversation_id = history_provider.create_conversation(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                title=title,
+                selected_request_id=req.request_id,
+                metadata={
+                    "source": "extension",
+                    "symbol": req.symbol,
+                    **req.metadata,
+                },
+            )
+    else:
+        title = req.prompt_summary or (f"Ask about {req.symbol}" if req.symbol else "Workspace ask")
+        conversation_id = history_provider.create_conversation(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            title=title,
+            selected_request_id=req.request_id,
+            metadata={
+                "source": "extension",
+                "symbol": req.symbol,
+                **req.metadata,
+            },
+        )
+
+    prompt_hash = req.prompt_hash or hash_history_text(req.prompt_summary)
+    answer_hash = req.answer_hash or hash_history_text(req.answer_summary)
+    user_message_id = history_provider.append_message(
+        conversation_id=conversation_id,
+        role="user",
+        request_id=req.request_id,
+        content_summary=req.prompt_summary,
+        content_hash=prompt_hash,
+        symbol=req.symbol,
+        trace_id=req.trace_id,
+        metadata={
+            "source": "extension",
+            "kind": "prompt",
+        },
+    )
+    assistant_message_id = history_provider.append_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        request_id=req.request_id,
+        content_summary=req.answer_summary,
+        content_hash=answer_hash,
+        symbol=req.symbol,
+        trace_id=req.trace_id,
+        feedback_token=req.feedback_token,
+        metadata={
+            "source": "extension",
+            "kind": "answer",
+            "has_feedback_token": bool(req.feedback_token),
+        },
+    )
+
+    history_provider.save_ask_snapshot(
+        assistant_message_id,
+        _history_snapshot(
+            req,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            answer_summary=req.answer_summary,
+        ),
+    )
+    if req.inspector_snapshot:
+        history_provider.save_inspector_snapshot(
+            assistant_message_id,
+            {
+                **req.inspector_snapshot,
+                "request_id": req.request_id,
+                "trace_id": req.trace_id,
+                "feedback_token": req.feedback_token,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "symbol": req.symbol,
+            },
+        )
+    if req.impact_snapshot:
+        history_provider.save_impact_snapshot(
+            assistant_message_id,
+            {
+                **req.impact_snapshot,
+                "request_id": req.request_id,
+                "trace_id": req.trace_id,
+                "feedback_token": req.feedback_token,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "symbol": req.symbol,
+            },
+        )
+    history_provider.set_selected_request(conversation_id, req.request_id)
+
+    return {
+        "status": "recorded",
+        "conversation_id": conversation_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "selected_request_id": req.request_id,
+    }
+
+
+@app.get("/history/conversations", response_model=HistoryConversationsResponse)
+def history_conversations(
+    limit: int = 30,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """List local history conversations for the current workspace and user."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    return {
+        "conversations": history_provider.list_conversations(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            limit=limit,
+        )
+    }
+
+
+@app.get("/history/conversations/{conversation_id}", response_model=HistoryConversationResponse)
+def history_conversation(
+    conversation_id: str,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Return a sanitized conversation bundle with messages and snapshots."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    _history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
+    bundle = history_provider.get_conversation_bundle(conversation_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Unknown history conversation")
+    return bundle
+
+
+@app.get(
+    "/history/conversations/{conversation_id}/requests/{request_id}",
+    response_model=HistoryRequestBundleResponse,
+)
+def history_request_bundle(
+    conversation_id: str,
+    request_id: str,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Return the snapshots for a selected request in a conversation."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    _history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
+    bundle = history_provider.get_request_bundle(conversation_id, request_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Unknown history request")
+    return bundle
 
 
 @app.get("/impact", response_model=ImpactResponse)

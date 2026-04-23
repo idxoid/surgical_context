@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { SidecarClient } from '../sidecarClient';
+import { AskHistoryInput, buildAskHistoryRecord } from '../historyRecorder';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
 import { stateManager } from '../state/ExtensionState';
@@ -56,6 +57,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     // Listen to editor changes
     this.disposables.push(
       vscode.window.onDidChangeActiveTextEditor(() => this.pushWorkspaceState()),
+      vscode.window.onDidChangeTextEditorSelection(() => this.pushWorkspaceState()),
       vscode.workspace.onDidChangeTextDocument(() => this.pushWorkspaceState()),
       vscode.workspace.onDidSaveTextDocument(() => this.pushWorkspaceState())
     );
@@ -149,7 +151,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'chat.ask':
-        await this.handleAsk(message.prompt, message.symbol);
+        await this.handleAsk(message.prompt, message.symbol, message.conversationId);
         break;
 
       case 'chat.stop':
@@ -186,6 +188,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
       case 'feedback.submit':
         SidecarClient.submitFeedback({
           message_id: message.messageId,
+          feedback_token: message.feedbackToken,
           rating: message.rating,
         });
         break;
@@ -226,13 +229,16 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleAsk(prompt: string, symbol?: string): Promise<void> {
+  private async handleAsk(prompt: string, symbol?: string, conversationId?: string): Promise<void> {
     if (!this.webviewView) return;
 
     let targetSymbol = symbol || this.currentEditorSymbol() || undefined;
     const activeFile = vscode.window.activeTextEditor?.document.fileName;
 
     const requestId = `req-${Date.now()}`;
+    const answerParts: string[] = [];
+    let streamTraceId = '';
+    let latestContext: PromptContextPayload | null = null;
 
     this.postMessage({
       type: 'chat.requestStarted',
@@ -241,7 +247,11 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     });
 
     const callbacks: SSECallbacks = {
+      onTrace: (traceId: string) => {
+        streamTraceId = traceId;
+      },
       onChunk: (chunk: string) => {
+        answerParts.push(chunk);
         this.postMessage({
           type: 'chat.streamChunk',
           requestId,
@@ -250,6 +260,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
       },
       onContext: (context: unknown) => {
         const payload = context as PromptContextPayload;
+        latestContext = payload;
         stateManager.setState({ lastContext: payload });
 
         const metadata = payload.metadata;
@@ -271,7 +282,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         });
       },
       onDone: (traceId: string) => {
-        const context = stateManager.getState().lastContext;
+        const context = latestContext || stateManager.getState().lastContext || null;
         if (context) {
           this.postMessage({
             type: 'chat.requestCompleted',
@@ -280,6 +291,16 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
             context,
           });
         }
+        void this.persistAskHistory({
+          conversationId,
+          requestId,
+          prompt,
+          answer: answerParts.join(''),
+          symbol: targetSymbol,
+          activeFile,
+          traceId: traceId || streamTraceId,
+          context,
+        });
       },
       onError: (error: string) => {
         this.postMessage({
@@ -304,6 +325,14 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         requestId,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  private async persistAskHistory(input: AskHistoryInput): Promise<void> {
+    try {
+      await SidecarClient.recordAskHistory(buildAskHistoryRecord(input));
+    } catch (error) {
+      console.warn('Failed to persist ask history:', error);
     }
   }
 

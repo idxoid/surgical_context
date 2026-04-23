@@ -50,11 +50,11 @@ The local product is the canonical next milestone.
 
 ### P1 - Local History and Prompt Snapshots
 - [x] Implement SQLite `HistoryProvider` for conversations, messages, ask snapshots, inspector snapshots, and impact snapshots.
-- [ ] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
-- [ ] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
+- [x] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
+- [x] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
 - [ ] Add retention controls and disabled/ephemeral modes for history.
-- [ ] Default policy: store metadata and response summaries; do not store raw code bodies or raw prompt bodies unless explicitly enabled.
-- [ ] Add tests for prompt-history privacy gates and snapshot retrieval.
+- [x] Default policy: store metadata and response summaries; do not store raw code bodies or raw prompt bodies unless explicitly enabled.
+- [x] Add tests for prompt-history privacy gates and snapshot retrieval.
 
 ### P2 - Retrieval Quality and Observability
 - [ ] Finish the soft fallback ladder: missing symbol is a warning, not a failed chat; continue through file, workspace, then direct LLM.

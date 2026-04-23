@@ -86,24 +86,34 @@ class SQLiteHistoryProvider:
         *,
         workspace_id: str,
         user_id: str,
+        conversation_id: str | None = None,
         title: str = "",
+        selected_request_id: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        conversation_id = self._new_id("conv")
+        conversation_id = conversation_id or self._new_id("conv")
         now = self._now()
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO conversations (
-                    id, workspace_id, user_id, title, metadata_json, created_at, updated_at
+                    id,
+                    workspace_id,
+                    user_id,
+                    title,
+                    selected_request_id,
+                    metadata_json,
+                    created_at,
+                    updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     conversation_id,
                     workspace_id,
                     user_id,
                     title,
+                    selected_request_id,
                     self._json(metadata or {}),
                     now,
                     now,
@@ -215,6 +225,20 @@ class SQLiteHistoryProvider:
             ).fetchall()
             return [self._message_row(row) for row in rows]
 
+    def set_selected_request(self, conversation_id: str, request_id: str) -> None:
+        now = self._now()
+        with self._lock, self._connect() as conn:
+            if not self._conversation_exists(conn, conversation_id):
+                raise ValueError(f"Unknown conversation: {conversation_id}")
+            conn.execute(
+                """
+                UPDATE conversations
+                SET selected_request_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (request_id, now, conversation_id),
+            )
+
     def save_ask_snapshot(self, message_id: str, snapshot: dict[str, Any]) -> None:
         self._save_snapshot("ask_snapshots", message_id, snapshot)
 
@@ -262,6 +286,44 @@ class SQLiteHistoryProvider:
                     ).fetchone()
                 ),
             }
+
+    def get_conversation_bundle(
+        self,
+        conversation_id: str,
+        *,
+        message_limit: int = 200,
+    ) -> dict[str, Any] | None:
+        conversation = self.get_conversation(conversation_id)
+        if not conversation:
+            return None
+        messages = self.list_messages(conversation_id, limit=message_limit)
+        return {
+            "conversation": conversation,
+            "messages": [
+                self.get_message_bundle(message["id"])
+                for message in messages
+            ],
+        }
+
+    def get_request_bundle(
+        self,
+        conversation_id: str,
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            message = conn.execute(
+                """
+                SELECT *
+                FROM messages
+                WHERE conversation_id = ? AND request_id = ?
+                ORDER BY CASE role WHEN 'assistant' THEN 0 ELSE 1 END, created_at DESC
+                LIMIT 1
+                """,
+                (conversation_id, request_id),
+            ).fetchone()
+        if not message:
+            return None
+        return self.get_message_bundle(message["id"])
 
     def _save_snapshot(self, table: str, message_id: str, snapshot: dict[str, Any]) -> None:
         clean_snapshot = sanitize_history_payload(snapshot)
@@ -328,6 +390,7 @@ class SQLiteHistoryProvider:
                     workspace_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     title TEXT NOT NULL DEFAULT '',
+                    selected_request_id TEXT NOT NULL DEFAULT '',
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -391,6 +454,12 @@ class SQLiteHistoryProvider:
                 );
                 """
             )
+            self._ensure_column(
+                conn,
+                "conversations",
+                "selected_request_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
 
     def _conversation_exists(self, conn: sqlite3.Connection, conversation_id: str) -> bool:
         row = conn.execute(
@@ -412,6 +481,7 @@ class SQLiteHistoryProvider:
             "workspace_id": row["workspace_id"],
             "user_id": row["user_id"],
             "title": row["title"],
+            "selected_request_id": row["selected_request_id"],
             "metadata": self._loads(row["metadata_json"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -456,6 +526,17 @@ class SQLiteHistoryProvider:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _new_id(self, prefix: str) -> str:
         return f"{prefix}_{secrets.token_urlsafe(18)}"

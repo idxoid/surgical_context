@@ -356,8 +356,9 @@
             case "feedback":
               const rating = e.currentTarget.getAttribute("data-rating");
               const messageId = e.currentTarget.closest(".message-card")?.getAttribute("data-message-id");
-              if (messageId) {
-                this.postMessage({ type: "feedback.submit", messageId, rating });
+              const feedbackToken = messageId ? this.messages.get(messageId)?.context?.metadata?.assembly?.feedback_token : void 0;
+              if (messageId && feedbackToken) {
+                this.postMessage({ type: "feedback.submit", messageId, rating, feedbackToken });
                 this.showToast("Thanks for your feedback!", "info");
               }
               break;

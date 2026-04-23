@@ -263,12 +263,19 @@
       return renderAffectsGroup([], "Files", expanded);
     }
     const rows = uniquePaths.map((filePath) => `
-      <div class="impact-row" data-file-path="${escapeHtml2(filePath)}">
+      <button
+        type="button"
+        class="impact-row impact-file-row"
+        data-action="openFile"
+        data-file-path="${escapeHtml2(filePath)}"
+        data-line="1"
+        title="Open ${escapeHtml2(filePath)}"
+      >
         <span class="impact-chevron" aria-hidden="true">\u203A</span>
         <span class="impact-symbol">File</span>
         <span class="impact-file">${escapeHtml2(filePath)}</span>
         <span class="impact-tag indirect">related</span>
-      </div>
+      </button>
     `).join("");
     return `
     <div class="impact-group ${expanded ? "expanded" : ""}">
@@ -1223,6 +1230,9 @@
         case "open-related-files":
           this.showToast("Related file opener is coming soon.", "info");
           break;
+        case "openFile":
+          this.openFileFromImpact(target);
+          break;
         case "create-refactor-plan":
           this.switchSurface("chat");
           this.prefillComposer(
@@ -1305,7 +1315,8 @@
       this.postMessage({
         type: "chat.ask",
         prompt,
-        symbol: this.state.workspace.selectedSymbol || void 0
+        symbol: this.state.workspace.selectedSymbol || void 0,
+        conversationId: this.currentDialogId
       });
     }
     requestSettings() {
@@ -1694,13 +1705,26 @@
       group.classList.toggle("expanded", !expanded);
       content.toggleAttribute("hidden", expanded);
     }
+    openFileFromImpact(target) {
+      const filePath = target.getAttribute("data-file-path");
+      if (!filePath) return;
+      const line = Number.parseInt(target.getAttribute("data-line") || "1", 10);
+      this.postMessage({
+        type: "link.openFile",
+        filePath,
+        line: Number.isFinite(line) ? line : 1
+      });
+    }
     submitFeedback(target) {
       const rating = target.getAttribute("data-rating");
       const card = target.closest(".message-card");
       const messageId = card?.getAttribute("data-message-id");
-      if (rating && messageId) {
-        this.postMessage({ type: "feedback.submit", messageId, rating });
+      const feedbackToken = messageId ? this.messages.get(messageId)?.context?.metadata?.assembly?.feedback_token : void 0;
+      if (rating && messageId && feedbackToken) {
+        this.postMessage({ type: "feedback.submit", messageId, rating, feedbackToken });
         this.showToast("Thanks for the feedback.", "info");
+      } else if (rating) {
+        this.showToast("Feedback token is not available for this response yet.", "warning");
       }
     }
     copyMessage(target) {

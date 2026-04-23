@@ -86,6 +86,54 @@ export async function parseSSEStream(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  let eventName = '';
+  let dataLines: string[] = [];
+
+  const dispatchEvent = () => {
+    if (!eventName || dataLines.length === 0) {
+      eventName = '';
+      dataLines = [];
+      return;
+    }
+
+    let data: unknown = dataLines.join('\n');
+    try {
+      data = JSON.parse(data as string);
+    } catch {
+      // Leave malformed event data as plain text for the error path.
+    }
+
+    switch (eventName) {
+      case 'trace':
+        if (typeof data === 'object' && data !== null && 'trace_id' in data) {
+          callbacks.onTrace?.((data as any).trace_id);
+        }
+        break;
+      case 'chunk':
+        if (typeof data === 'object' && data !== null && 'content' in data) {
+          callbacks.onChunk?.((data as any).content);
+        }
+        break;
+      case 'context':
+        if (typeof data === 'object' && data !== null && 'context' in data) {
+          callbacks.onContext?.((data as any).context);
+        }
+        break;
+      case 'done':
+        if (typeof data === 'object' && data !== null && 'trace_id' in data) {
+          callbacks.onDone?.((data as any).trace_id);
+        }
+        break;
+      case 'error':
+        if (typeof data === 'object' && data !== null && 'error' in data) {
+          callbacks.onError?.((data as any).error);
+        }
+        break;
+    }
+
+    eventName = '';
+    dataLines = [];
+  };
 
   try {
     while (true) {
@@ -99,54 +147,26 @@ export async function parseSSEStream(
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-
-        const parsed = parseSSELine(trimmed);
-        if (!parsed) continue;
-
-        const { event, data } = parsed;
-
-        switch (event) {
-          case 'trace':
-            if (typeof data === 'object' && data !== null && 'trace_id' in data) {
-              callbacks.onTrace?.((data as any).trace_id);
-            }
-            break;
-          case 'chunk':
-            if (typeof data === 'object' && data !== null && 'content' in data) {
-              callbacks.onChunk?.((data as any).content);
-            }
-            break;
-          case 'context':
-            if (typeof data === 'object' && data !== null && 'context' in data) {
-              callbacks.onContext?.((data as any).context);
-            }
-            break;
-          case 'done':
-            if (typeof data === 'object' && data !== null && 'trace_id' in data) {
-              callbacks.onDone?.((data as any).trace_id);
-            }
-            break;
-          case 'error':
-            if (typeof data === 'object' && data !== null && 'error' in data) {
-              callbacks.onError?.((data as any).error);
-            }
-            break;
+        const trimmed = line.trimEnd();
+        if (!trimmed) {
+          dispatchEvent();
+        } else if (trimmed.startsWith('event:')) {
+          eventName = trimmed.slice('event:'.length).trim();
+        } else if (trimmed.startsWith('data:')) {
+          dataLines.push(trimmed.slice('data:'.length).trimStart());
         }
       }
     }
 
-    // Process any remaining buffer content
     if (buffer.trim()) {
-      const parsed = parseSSELine(buffer.trim());
-      if (parsed) {
-        const { event, data } = parsed;
-        if (event === 'error' && typeof data === 'object' && data !== null && 'error' in data) {
-          callbacks.onError?.((data as any).error);
-        }
+      const trimmed = buffer.trimEnd();
+      if (trimmed.startsWith('event:')) {
+        eventName = trimmed.slice('event:'.length).trim();
+      } else if (trimmed.startsWith('data:')) {
+        dataLines.push(trimmed.slice('data:'.length).trimStart());
       }
     }
+    dispatchEvent();
   } finally {
     reader.releaseLock();
   }

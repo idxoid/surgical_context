@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { SidecarClient } from '../sidecarClient';
+import { AskHistoryInput, buildAskHistoryRecord } from '../historyRecorder';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
 import { stateManager } from '../state/ExtensionState';
@@ -138,7 +139,7 @@ export class MainPanel {
   private async handleWebviewMessage(message: WebviewToHostMessage): Promise<void> {
     switch (message.type) {
       case 'chat.ask':
-        await this.handleAsk(message.prompt, message.symbol);
+        await this.handleAsk(message.prompt, message.symbol, message.conversationId);
         break;
 
       case 'chat.stop':
@@ -155,6 +156,7 @@ export class MainPanel {
       case 'feedback.submit':
         SidecarClient.submitFeedback({
           message_id: message.messageId,
+          feedback_token: message.feedbackToken,
           rating: message.rating,
         });
         break;
@@ -179,7 +181,7 @@ export class MainPanel {
     }
   }
 
-  private async handleAsk(prompt: string, symbol?: string): Promise<void> {
+  private async handleAsk(prompt: string, symbol?: string, conversationId?: string): Promise<void> {
     if (!this.panel) return;
 
     let targetSymbol = symbol;
@@ -194,6 +196,9 @@ export class MainPanel {
     const activeFile = vscode.window.activeTextEditor?.document.fileName;
 
     const requestId = `req-${Date.now()}`;
+    const answerParts: string[] = [];
+    let streamTraceId = '';
+    let latestContext: PromptContextPayload | null = null;
 
     this.postMessage({
       type: 'chat.requestStarted',
@@ -202,7 +207,11 @@ export class MainPanel {
     });
 
     const callbacks: SSECallbacks = {
+      onTrace: (traceId: string) => {
+        streamTraceId = traceId;
+      },
       onChunk: (chunk: string) => {
+        answerParts.push(chunk);
         this.postMessage({
           type: 'chat.streamChunk',
           requestId,
@@ -211,6 +220,7 @@ export class MainPanel {
       },
       onContext: (context: unknown) => {
         const payload = context as PromptContextPayload;
+        latestContext = payload;
         stateManager.setState({ lastContext: payload });
 
         const metadata = payload.metadata;
@@ -232,7 +242,7 @@ export class MainPanel {
         });
       },
       onDone: (traceId: string) => {
-        const context = stateManager.getState().lastContext;
+        const context = latestContext || stateManager.getState().lastContext || null;
         if (context) {
           this.postMessage({
             type: 'chat.requestCompleted',
@@ -241,6 +251,16 @@ export class MainPanel {
             context,
           });
         }
+        void this.persistAskHistory({
+          conversationId,
+          requestId,
+          prompt,
+          answer: answerParts.join(''),
+          symbol: targetSymbol,
+          activeFile,
+          traceId: traceId || streamTraceId,
+          context,
+        });
       },
       onError: (error: string) => {
         this.postMessage({
@@ -265,6 +285,14 @@ export class MainPanel {
         requestId,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  private async persistAskHistory(input: AskHistoryInput): Promise<void> {
+    try {
+      await SidecarClient.recordAskHistory(buildAskHistoryRecord(input));
+    } catch (error) {
+      console.warn('Failed to persist ask history:', error);
     }
   }
 
