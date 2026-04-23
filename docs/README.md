@@ -10,6 +10,7 @@ This folder contains all project documentation. Start here to understand the sys
 - **[architectura.md](architectura.md)** — how all pieces fit together (start here)
 - **[concept.md](concept.md)** — what is Surgical Context and why it exists
 - **[idea_summary.md](idea_summary.md)** — elevator pitch
+- **[product_direction_memo.md](product_direction_memo.md)** — current product thesis, moat, cuts, and validation plan
 - **[project_gap_analysis.md](project_gap_analysis.md)** — short index to the merged project analysis
 
 ### **For Implementation**
@@ -46,6 +47,7 @@ This folder contains all project documentation. Start here to understand the sys
 
 ### **Planning & Review**
 - **[road_map.md](road_map.md)** — phases and timelines
+- **[product_direction_memo.md](product_direction_memo.md)** — narrow product direction before the next fork
 - **[project_gap_analysis.md](project_gap_analysis.md)** — index for current gaps and supporting specs
 - **[review_findings_2026-04-17.md](review_findings_2026-04-17.md)** — external review recommendations
 - **[architectural_review.md](architectural_review.md)** — technical decisions and trade-offs
