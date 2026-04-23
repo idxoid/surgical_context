@@ -12,7 +12,6 @@ export function escapeHtml(text: string): string {
 }
 
 export function renderMessageCard(message: ChatMessage, selectedRequestId?: string | null): string {
-  const timestamp = new Date(message.timestamp).toLocaleTimeString();
   const isSelected = Boolean(message.requestId && selectedRequestId === message.requestId);
   const isSelectablePrompt = message.type === 'user' && Boolean(message.requestId);
   const baseClass = `message-card ${message.type}${isSelected ? ' selected' : ''}${isSelectablePrompt ? ' selectable' : ''}`;
@@ -26,27 +25,15 @@ export function renderMessageCard(message: ChatMessage, selectedRequestId?: stri
 
   if (message.type === 'user') {
     return `
-      <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${selectionAttrs}>
-        <div class="message-header">
-          <span class="message-role">You</span>
-          <span class="message-time">${timestamp}</span>
-        </div>
+      <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${selectionAttrs} title="${escapeHtml(message.content)}">
         <div class="message-content">${escapeHtml(message.content)}</div>
+        ${renderMessageFooter(message)}
       </article>
     `;
   }
 
-  // Assistant message
   let content = `
     <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}>
-      <div class="message-header">
-        <span class="message-role">
-          <span class="message-icon" aria-hidden="true">✦</span>
-          Surgical Context
-          ${message.status === 'streaming' ? '<span class="live-dot"></span><span class="message-muted">Streaming answer...</span>' : ''}
-        </span>
-        <span class="message-time">${timestamp}</span>
-      </div>
       <div class="message-content">${escapeHtml(message.content)}</div>
   `;
 
@@ -54,18 +41,48 @@ export function renderMessageCard(message: ChatMessage, selectedRequestId?: stri
     content += `<div class="message-error">Error: ${escapeHtml(message.error)}</div>`;
   }
 
-  if (message.status === 'done') {
-    content += `
-      <div class="message-actions">
-        <button class="icon-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
-        <button class="icon-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
-        <button class="icon-button" data-action="copy" title="Copy response" aria-label="Copy response">Copy</button>
-      </div>
-    `;
-  }
+  content += renderMessageFooter(message);
 
   content += '</article>';
   return content;
+}
+
+function renderMessageFooter(message: ChatMessage): string {
+  const time = formatMessageTime(message.timestamp);
+  const assistantFeedback = message.type === 'assistant' && message.status === 'done'
+    ? `
+        <button class="message-action-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
+        <button class="message-action-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
+      `
+    : '';
+
+  return `
+    <div class="message-footer">
+      <time class="message-time" datetime="${escapeHtml(time.iso)}" title="${escapeHtml(time.title)}">${escapeHtml(time.label)}</time>
+      <div class="message-actions">
+        ${assistantFeedback}
+        <button class="message-action-button" data-action="copy" title="Copy message" aria-label="Copy message">
+          <svg class="message-action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <rect x="5" y="3" width="8" height="10" rx="1.5"></rect>
+            <path d="M3 6.5V12a2 2 0 0 0 2 2h5.5"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function formatMessageTime(timestamp: number): { label: string; title: string; iso: string } {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return { label: '', title: '', iso: '' };
+  }
+
+  return {
+    label: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    title: date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
+    iso: date.toISOString(),
+  };
 }
 
 export function renderStreamingCursor(): string {

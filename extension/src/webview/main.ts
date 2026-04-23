@@ -43,10 +43,20 @@ import {
 type Surface = 'chat' | 'inspector' | 'impact' | 'settings';
 type InspectorTab = 'primary' | 'graph' | 'docs' | 'tokens' | 'json';
 
+interface StoredDialog {
+  id: string;
+  title: string;
+  updatedAt: number;
+  messages: ChatMessage[];
+  selectedPromptRequestId: string | null;
+}
+
 class MainSurface {
   private surface: Surface = 'chat';
   private state: ChatSurfaceState | null = null;
   private messages: Map<string, ChatMessage> = new Map();
+  private dialogHistory: StoredDialog[] = [];
+  private currentDialogId = `dialog-${Date.now()}`;
   private currentStreamingRequestId: string | null = null;
   private currentContextSummary: ContextSummaryDto | null = null;
   private currentPromptContext: PromptContextPayload | null = null;
@@ -58,6 +68,7 @@ class MainSurface {
   private currentImpactSource: 'prompt' | 'graph' | null = null;
   private impactError: string | null = null;
   private impactLoading = false;
+  private historyCollapsed = true;
   private settings: SettingsData | null = null;
   private keyboardListenerAttached = false;
 
@@ -259,27 +270,51 @@ class MainSurface {
   }
 
   private renderSurfaceTabs(): string {
-    const tabs: Array<{ id: Surface; label: string }> = [
-      { id: 'chat', label: 'Chat' },
-      { id: 'inspector', label: 'Inspector' },
-      { id: 'impact', label: 'Impact' },
-      { id: 'settings', label: 'Settings' },
+    const tabs: Array<{ id: Surface; label: string; icon: string }> = [
+      { id: 'chat', label: 'Chat', icon: '◌' },
+      { id: 'inspector', label: 'Inspector', icon: '◎' },
+      { id: 'impact', label: 'Impact', icon: '⌁' },
     ];
 
     return `
       <nav class="surface-tab-bar" aria-label="Surgical Context sections">
-        ${tabs
-          .map(tab => `
+        <div class="surface-tab-group">
+          ${tabs
+            .map(tab => `
             <button
               class="surface-tab ${this.surface === tab.id ? 'active' : ''}"
               data-action="switchSurface"
               data-surface="${tab.id}"
               aria-current="${this.surface === tab.id ? 'page' : 'false'}"
+              title="${tab.label}"
+              aria-label="${tab.label}"
             >
-              ${tab.label}
+              <span aria-hidden="true">${tab.icon}</span>
             </button>
           `)
-          .join('')}
+            .join('')}
+          <button
+            class="surface-tab"
+            data-action="openDashboard"
+            title="Dashboard"
+            aria-label="Dashboard"
+          >
+            <span aria-hidden="true">▦</span>
+          </button>
+        </div>
+        <div class="surface-tab-actions">
+          ${this.surface === 'chat' ? this.renderChatSessionActions() : ''}
+          <button
+            class="surface-tab ${this.surface === 'settings' ? 'active' : ''}"
+            data-action="switchSurface"
+            data-surface="settings"
+            aria-current="${this.surface === 'settings' ? 'page' : 'false'}"
+            title="Settings"
+            aria-label="Settings"
+          >
+            <span aria-hidden="true">⚙</span>
+          </button>
+        </div>
       </nav>
     `;
   }
@@ -301,6 +336,57 @@ class MainSurface {
           docLinked: true,
         })}
       </section>
+    `;
+  }
+
+  private renderChatSessionActions(): string {
+    const dialogs = this.dialogsForHistory();
+
+    const rows = dialogs.length === 0
+      ? '<div class="chat-history-empty">No asks yet.</div>'
+      : dialogs.map(dialog => {
+        const selected = this.currentDialogId === dialog.id;
+        const label = dialog.title.length > 84
+          ? `${dialog.title.slice(0, 81)}...`
+          : dialog.title;
+        const askCount = dialog.messages.filter(message => message.type === 'user').length;
+
+        return `
+          <button
+            class="chat-history-row ${selected ? 'selected' : ''}"
+            data-action="restoreDialog"
+            data-dialog-id="${escapeHtml(dialog.id)}"
+            title="${escapeHtml(dialog.title)}"
+          >
+            <span>${escapeHtml(label)}</span>
+            <time>${askCount} ask${askCount === 1 ? '' : 's'}</time>
+          </button>
+        `;
+      }).join('');
+
+    return `
+      <div class="chat-session-actions ${this.historyCollapsed ? 'collapsed' : 'expanded'}">
+        <button
+          class="chat-history-toggle"
+          data-action="toggleHistory"
+          aria-expanded="${!this.historyCollapsed}"
+          title="History"
+          aria-label="History"
+        >
+          <span aria-hidden="true">↺</span>
+        </button>
+        <button
+          class="chat-new-dialog"
+          data-action="newDialog"
+          title="New dialog"
+          aria-label="New dialog"
+        >
+          <span aria-hidden="true">+</span>
+        </button>
+        <div class="chat-history-menu" ${this.historyCollapsed ? 'hidden' : ''}>
+          ${rows}
+        </div>
+      </div>
     `;
   }
 
@@ -518,6 +604,11 @@ class MainSurface {
     const target = event.currentTarget as HTMLElement;
     const action = target.getAttribute('data-action');
 
+    if (action === 'copy' || action === 'feedback') {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
     switch (action) {
       case 'switchSurface':
         this.switchSurface(target.getAttribute('data-surface') as Surface);
@@ -527,6 +618,18 @@ class MainSurface {
         break;
       case 'selectPrompt':
         this.selectPrompt(target.getAttribute('data-request-id'));
+        break;
+      case 'toggleHistory':
+        this.toggleHistory();
+        break;
+      case 'newDialog':
+        this.startNewDialog();
+        break;
+      case 'restoreDialog':
+        this.restoreDialog(target.getAttribute('data-dialog-id'));
+        break;
+      case 'openDashboard':
+        this.postMessage({ type: 'action.openDashboard' });
         break;
       case 'ask':
         (document.getElementById('composer-input') as HTMLTextAreaElement | null)?.focus();
@@ -778,6 +881,7 @@ class MainSurface {
       status: 'streaming',
     });
 
+    this.persistState();
     this.render();
     this.scrollToBottom();
   }
@@ -807,6 +911,7 @@ class MainSurface {
       message.status = 'done';
       this.updateConversationView();
     }
+    this.persistState();
     this.refreshAccordions();
   }
 
@@ -826,6 +931,7 @@ class MainSurface {
         error,
       });
     }
+    this.persistState();
     this.updateConversationView();
   }
 
@@ -836,6 +942,7 @@ class MainSurface {
       this.updateConversationView();
     }
     this.currentStreamingRequestId = null;
+    this.persistState();
   }
 
   private updateConversationView(): void {
@@ -876,8 +983,120 @@ class MainSurface {
       this.showToast('Prompt is still waiting for context.', 'info');
     }
 
+    this.historyCollapsed = true;
     this.persistState();
     this.render();
+  }
+
+  private toggleHistory(): void {
+    this.historyCollapsed = !this.historyCollapsed;
+    this.render();
+  }
+
+  private startNewDialog(): void {
+    if (this.currentStreamingRequestId) {
+      this.postMessage({ type: 'chat.stop', requestId: this.currentStreamingRequestId });
+    }
+    const composer = document.getElementById('composer-input') as HTMLTextAreaElement | null;
+    if (composer) {
+      composer.value = '';
+    }
+    this.persistState();
+    this.currentDialogId = `dialog-${Date.now()}`;
+    this.messages.clear();
+    this.currentStreamingRequestId = null;
+    this.currentContextSummary = null;
+    this.currentPromptContext = null;
+    this.selectedPromptRequestId = null;
+    this.pendingPrompt = null;
+    this.currentImpact = null;
+    this.currentImpactSymbol = null;
+    this.currentImpactSource = null;
+    this.impactError = null;
+    this.impactLoading = false;
+    this.historyCollapsed = true;
+    this.persistState();
+    this.render();
+  }
+
+  private restoreDialog(dialogId: string | null): void {
+    if (!dialogId) return;
+    const dialog = this.dialogHistory.find(item => item.id === dialogId);
+    if (!dialog) return;
+
+    this.persistState();
+    this.currentDialogId = dialog.id;
+    this.messages = new Map(dialog.messages.map(message => [message.id, { ...message }]));
+    this.selectedPromptRequestId = dialog.selectedPromptRequestId || this.latestContextRequestId();
+
+    const context = this.selectedPromptRequestId
+      ? this.contextForRequest(this.selectedPromptRequestId)
+      : null;
+    if (context && this.selectedPromptRequestId) {
+      this.activatePromptContext(this.selectedPromptRequestId, context);
+    } else {
+      this.currentPromptContext = null;
+      this.currentContextSummary = null;
+      this.currentImpact = null;
+      this.currentImpactSymbol = null;
+      this.currentImpactSource = null;
+      this.impactError = null;
+    }
+
+    this.historyCollapsed = true;
+    this.persistState();
+    this.render();
+    this.scrollToBottom();
+  }
+
+  private dialogsForHistory(): StoredDialog[] {
+    const current = this.currentDialogSnapshot();
+    const dialogs = current
+      ? [current, ...this.dialogHistory.filter(dialog => dialog.id !== current.id)]
+      : [...this.dialogHistory];
+    return dialogs
+      .filter(dialog => dialog.messages.length > 0)
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 30);
+  }
+
+  private currentDialogSnapshot(): StoredDialog | null {
+    const messages = Array.from(this.messages.values());
+    if (messages.length === 0) return null;
+
+    const firstPrompt = messages.find(message => message.type === 'user');
+    const latestTimestamp = Math.max(...messages.map(message => message.timestamp));
+    const title = firstPrompt?.content?.trim() || 'Untitled dialog';
+
+    return {
+      id: this.currentDialogId,
+      title,
+      updatedAt: latestTimestamp,
+      messages: messages.map(message => ({ ...message })),
+      selectedPromptRequestId: this.selectedPromptRequestId,
+    };
+  }
+
+  private saveCurrentDialogSnapshot(): void {
+    const snapshot = this.currentDialogSnapshot();
+    if (!snapshot) {
+      this.dialogHistory = this.dialogHistory.filter(dialog => dialog.id !== this.currentDialogId);
+      return;
+    }
+
+    this.dialogHistory = [
+      snapshot,
+      ...this.dialogHistory.filter(dialog => dialog.id !== snapshot.id),
+    ]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 30);
+  }
+
+  private latestContextRequestId(): string | null {
+    const messages = Array.from(this.messages.values())
+      .filter(message => Boolean(message.requestId && message.context))
+      .sort((left, right) => right.timestamp - left.timestamp);
+    return messages[0]?.requestId || null;
   }
 
   private contextForRequest(requestId: string): PromptContextPayload | null {
@@ -1029,10 +1248,13 @@ class MainSurface {
 
   private persistState(): void {
     const composer = document.getElementById('composer-input') as HTMLTextAreaElement | null;
+    this.saveCurrentDialogSnapshot();
     vscode.setState({
       composerDraft: composer?.value || '',
       expandedAccordions: this.state?.expandedAccordions || {},
       surface: this.surface,
+      currentDialogId: this.currentDialogId,
+      dialogHistory: this.dialogHistory,
     });
   }
 
@@ -1045,6 +1267,27 @@ class MainSurface {
       saved?.surface === 'settings'
     ) {
       this.surface = saved.surface;
+    }
+    if (Array.isArray(saved?.dialogHistory)) {
+      this.dialogHistory = saved.dialogHistory
+        .filter((dialog: StoredDialog) => dialog?.id && Array.isArray(dialog.messages))
+        .slice(0, 30);
+    }
+    if (typeof saved?.currentDialogId === 'string') {
+      this.currentDialogId = saved.currentDialogId;
+    }
+    const currentDialog = this.dialogHistory.find(dialog => dialog.id === this.currentDialogId);
+    if (currentDialog) {
+      this.messages = new Map(
+        currentDialog.messages.map((message: ChatMessage) => [message.id, { ...message }])
+      );
+      this.selectedPromptRequestId = currentDialog.selectedPromptRequestId || this.latestContextRequestId();
+      if (this.selectedPromptRequestId) {
+        const context = this.contextForRequest(this.selectedPromptRequestId);
+        if (context) {
+          this.activatePromptContext(this.selectedPromptRequestId, context);
+        }
+      }
     }
   }
 

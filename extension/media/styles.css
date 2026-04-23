@@ -126,25 +126,35 @@ button {
 }
 
 .surface-tab-bar {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
-  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 40px;
+  padding: 5px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--sc-border) 48%, transparent);
   background: transparent;
 }
 
-.surface-tab {
+.surface-tab-group,
+.surface-tab-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   min-width: 0;
-  min-height: 36px;
-  padding: 9px 6px 8px;
+}
+
+.surface-tab {
+  display: inline-grid;
+  place-items: center;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 4px;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--sc-muted);
   cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .surface-tab:hover {
@@ -156,7 +166,6 @@ button {
   color: var(--vscode-foreground, #ffffff);
   border-bottom-color: var(--sc-link);
   background: transparent;
-  font-weight: 600;
 }
 
 .surface-inline-action {
@@ -164,7 +173,99 @@ button {
   margin: 0 12px 12px;
 }
 
+.chat-session-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  z-index: 4;
+}
+
+.chat-history-toggle,
+.chat-new-dialog {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 3px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--sc-muted);
+  cursor: pointer;
+}
+
+.chat-history-toggle:hover,
+.chat-new-dialog:hover {
+  color: var(--sc-text);
+  background: transparent;
+}
+
+.chat-history-menu {
+  position: fixed;
+  top: 92px;
+  right: 12px;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 220px));
+  padding: 8px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius);
+  background: var(--sc-panel);
+  box-shadow: 0 12px 30px color-mix(in srgb, #000 28%, transparent);
+  overflow-y: auto;
+}
+
+.chat-history-menu[hidden] {
+  display: none;
+}
+
+.chat-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--sc-radius);
+  background: transparent;
+  color: var(--sc-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.chat-history-row:hover,
+.chat-history-row.selected {
+  border-color: color-mix(in srgb, var(--sc-link) 55%, var(--sc-border));
+  background: color-mix(in srgb, var(--sc-blue) 12%, transparent);
+}
+
+.chat-history-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-history-row time,
+.chat-history-empty {
+  color: var(--sc-muted);
+  font-size: 12px;
+}
+
+.chat-history-empty {
+  padding: 8px;
+}
+
 .conversation-viewport {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   flex: 1 1 auto;
   min-height: 180px;
   padding: 12px;
@@ -173,16 +274,21 @@ button {
 
 .message-card {
   display: block;
-  padding: 14px;
-  border: 1px solid var(--sc-border);
+  position: relative;
+  max-width: 100%;
+  padding: 6px 2px;
+  border: 1px solid transparent;
   border-radius: var(--sc-radius);
-  background: var(--sc-card);
-  margin-bottom: 12px;
+  background: transparent;
+  margin-bottom: 18px;
 }
 
 .message-card.user {
-  border-left: 3px solid var(--sc-link);
-  background: color-mix(in srgb, var(--sc-blue) 12%, var(--sc-card));
+  align-self: flex-end;
+  max-width: 82%;
+  padding: 5px 8px;
+  color: var(--sc-muted);
+  text-align: right;
 }
 
 .message-card.selectable {
@@ -191,17 +297,18 @@ button {
 
 .message-card.selectable:hover,
 .message-card.selectable:focus-visible {
-  border-color: color-mix(in srgb, var(--sc-link) 55%, var(--sc-border));
+  border-color: color-mix(in srgb, var(--sc-link) 32%, transparent);
+  background: color-mix(in srgb, var(--sc-blue) 5%, transparent);
   outline: none;
 }
 
 .message-card.selected {
-  border-color: color-mix(in srgb, var(--sc-link) 70%, var(--sc-border));
-  background: color-mix(in srgb, var(--sc-blue) 16%, var(--sc-card));
+  border-color: color-mix(in srgb, var(--sc-link) 34%, transparent);
+  background: color-mix(in srgb, var(--sc-blue) 7%, transparent);
 }
 
-.message-card.assistant.selected {
-  border-left: 3px solid var(--sc-link);
+.message-card.user.selected {
+  color: var(--sc-text);
 }
 
 .message-header {
@@ -249,6 +356,12 @@ button {
   word-break: break-word;
 }
 
+.message-card.user .message-content {
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .message-error,
 .error-state {
   padding: 10px;
@@ -258,10 +371,76 @@ button {
   background: color-mix(in srgb, var(--sc-bad) 10%, transparent);
 }
 
-.message-actions {
+.message-footer {
   display: flex;
-  gap: 8px;
-  margin-top: 14px;
+  position: absolute;
+  top: calc(100% - 1px);
+  left: 2px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  min-height: 0;
+  margin-top: 0;
+  color: var(--sc-muted);
+  font-size: 11px;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 120ms ease, visibility 120ms ease;
+}
+
+.message-card:hover .message-footer,
+.message-card:focus-within .message-footer,
+.message-card.selected .message-footer {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+}
+
+.message-card.user .message-footer {
+  right: 8px;
+  left: auto;
+  justify-content: flex-end;
+}
+
+.message-footer .message-time {
+  opacity: .78;
+}
+
+.message-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.message-action-button {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--sc-muted);
+  cursor: pointer;
+}
+
+.message-action-button:hover,
+.message-action-button:focus-visible {
+  border-color: color-mix(in srgb, var(--sc-border) 70%, transparent);
+  color: var(--sc-text);
+  outline: none;
+}
+
+.message-action-icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
 }
 
 .icon-button,

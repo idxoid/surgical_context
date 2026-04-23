@@ -159,6 +159,10 @@ export class MainPanel {
         });
         break;
 
+      case 'action.openDashboard':
+        await vscode.commands.executeCommand('surgicalContext.openDashboard');
+        break;
+
       case 'link.openFile':
         if (message.filePath) {
           const uri = vscode.Uri.file(message.filePath);

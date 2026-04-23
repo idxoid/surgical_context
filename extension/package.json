@@ -106,13 +106,6 @@
         "category": "Surgical Context"
       }
     ],
-    "submenus": [
-      {
-        "id": "surgicalContext.editorMenu",
-        "label": "Surgical Context",
-        "icon": "media/icon.svg"
-      }
-    ],
     "menus": {
       "editor/context": [
         {
@@ -133,27 +126,9 @@
       ],
       "editor/title": [
         {
-          "submenu": "surgicalContext.editorMenu",
+          "command": "surgicalContext.openChat",
           "when": "resourceExtname =~ /\\.(ts|tsx|py|js)$/",
           "group": "navigation"
-        }
-      ],
-      "surgicalContext.editorMenu": [
-        {
-          "command": "surgicalContext.openChat",
-          "group": "navigation@1"
-        },
-        {
-          "command": "surgicalContext.openDashboard",
-          "group": "navigation@2"
-        },
-        {
-          "command": "surgicalContext.reindexCurrentFile",
-          "group": "2_index@1"
-        },
-        {
-          "command": "surgicalContext.indexProject",
-          "group": "2_index@2"
         }
       ],
       "view/title": [

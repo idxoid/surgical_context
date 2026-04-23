@@ -174,6 +174,11 @@ class ChatPanel {
       btn.addEventListener('click', (e: Event) => {
         const action = (e.currentTarget as HTMLElement).getAttribute('data-action');
 
+        if (action === 'copy' || action === 'feedback') {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+
         switch (action) {
           case 'openChat':
             (document.getElementById('composer-input') as HTMLTextAreaElement | null)?.focus();
@@ -193,7 +198,7 @@ class ChatPanel {
             break;
           case 'feedback':
             const rating = (e.currentTarget as HTMLElement).getAttribute('data-rating') as 'up' | 'down';
-            const messageId = (e.currentTarget as HTMLElement).closest('.message-card')?.id;
+            const messageId = (e.currentTarget as HTMLElement).closest('.message-card')?.getAttribute('data-message-id');
             if (messageId) {
               this.postMessage({ type: 'feedback.submit', messageId, rating });
               this.showToast('Thanks for your feedback!', 'info');

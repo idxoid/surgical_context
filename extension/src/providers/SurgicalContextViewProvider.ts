@@ -179,6 +179,10 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         this.showChat();
         break;
 
+      case 'action.openDashboard':
+        await vscode.commands.executeCommand('surgicalContext.openDashboard');
+        break;
+
       case 'feedback.submit':
         SidecarClient.submitFeedback({
           message_id: message.messageId,

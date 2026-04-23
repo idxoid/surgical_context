@@ -18,6 +18,7 @@ export type WebviewToHostMessage =
   | { type: 'action.openSettings' }
   | { type: 'action.showImpact'; symbol?: string }
   | { type: 'action.openChat'; prefillSymbol?: string }
+  | { type: 'action.openDashboard' }
   | { type: 'link.openFile'; filePath: string; line?: number }
   | { type: 'dashboard.refresh' }
   | { type: 'dashboard.indexWorkspace' }

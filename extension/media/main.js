@@ -12,7 +12,6 @@
     return text.replace(/[&<>"']/g, (char) => map[char]);
   }
   function renderMessageCard(message, selectedRequestId) {
-    const timestamp = new Date(message.timestamp).toLocaleTimeString();
     const isSelected = Boolean(message.requestId && selectedRequestId === message.requestId);
     const isSelectablePrompt = message.type === "user" && Boolean(message.requestId);
     const baseClass = `message-card ${message.type}${isSelected ? " selected" : ""}${isSelectablePrompt ? " selectable" : ""}`;
@@ -21,41 +20,54 @@
     const selectionAttrs = isSelectablePrompt ? ` data-action="selectPrompt" role="button" tabindex="0" aria-pressed="${isSelected}"` : "";
     if (message.type === "user") {
       return `
-      <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${selectionAttrs}>
-        <div class="message-header">
-          <span class="message-role">You</span>
-          <span class="message-time">${timestamp}</span>
-        </div>
+      <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${selectionAttrs} title="${escapeHtml(message.content)}">
         <div class="message-content">${escapeHtml(message.content)}</div>
+        ${renderMessageFooter(message)}
       </article>
     `;
     }
     let content = `
     <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}>
-      <div class="message-header">
-        <span class="message-role">
-          <span class="message-icon" aria-hidden="true">\u2726</span>
-          Surgical Context
-          ${message.status === "streaming" ? '<span class="live-dot"></span><span class="message-muted">Streaming answer...</span>' : ""}
-        </span>
-        <span class="message-time">${timestamp}</span>
-      </div>
       <div class="message-content">${escapeHtml(message.content)}</div>
   `;
     if (message.error) {
       content += `<div class="message-error">Error: ${escapeHtml(message.error)}</div>`;
     }
-    if (message.status === "done") {
-      content += `
-      <div class="message-actions">
-        <button class="icon-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
-        <button class="icon-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
-        <button class="icon-button" data-action="copy" title="Copy response" aria-label="Copy response">Copy</button>
-      </div>
-    `;
-    }
+    content += renderMessageFooter(message);
     content += "</article>";
     return content;
+  }
+  function renderMessageFooter(message) {
+    const time = formatMessageTime(message.timestamp);
+    const assistantFeedback = message.type === "assistant" && message.status === "done" ? `
+        <button class="message-action-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
+        <button class="message-action-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
+      ` : "";
+    return `
+    <div class="message-footer">
+      <time class="message-time" datetime="${escapeHtml(time.iso)}" title="${escapeHtml(time.title)}">${escapeHtml(time.label)}</time>
+      <div class="message-actions">
+        ${assistantFeedback}
+        <button class="message-action-button" data-action="copy" title="Copy message" aria-label="Copy message">
+          <svg class="message-action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <rect x="5" y="3" width="8" height="10" rx="1.5"></rect>
+            <path d="M3 6.5V12a2 2 0 0 0 2 2h5.5"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+  `;
+  }
+  function formatMessageTime(timestamp) {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+      return { label: "", title: "", iso: "" };
+    }
+    return {
+      label: date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      title: date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }),
+      iso: date.toISOString()
+    };
   }
   function renderAccordion(id, title, content, expanded = false) {
     return `
@@ -676,6 +688,8 @@
       this.surface = "chat";
       this.state = null;
       this.messages = /* @__PURE__ */ new Map();
+      this.dialogHistory = [];
+      this.currentDialogId = `dialog-${Date.now()}`;
       this.currentStreamingRequestId = null;
       this.currentContextSummary = null;
       this.currentPromptContext = null;
@@ -687,6 +701,7 @@
       this.currentImpactSource = null;
       this.impactError = null;
       this.impactLoading = false;
+      this.historyCollapsed = true;
       this.settings = null;
       this.keyboardListenerAttached = false;
       this.initializeMessageListener();
@@ -855,23 +870,47 @@
     }
     renderSurfaceTabs() {
       const tabs = [
-        { id: "chat", label: "Chat" },
-        { id: "inspector", label: "Inspector" },
-        { id: "impact", label: "Impact" },
-        { id: "settings", label: "Settings" }
+        { id: "chat", label: "Chat", icon: "\u25CC" },
+        { id: "inspector", label: "Inspector", icon: "\u25CE" },
+        { id: "impact", label: "Impact", icon: "\u2301" }
       ];
       return `
       <nav class="surface-tab-bar" aria-label="Surgical Context sections">
-        ${tabs.map((tab) => `
+        <div class="surface-tab-group">
+          ${tabs.map((tab) => `
             <button
               class="surface-tab ${this.surface === tab.id ? "active" : ""}"
               data-action="switchSurface"
               data-surface="${tab.id}"
               aria-current="${this.surface === tab.id ? "page" : "false"}"
+              title="${tab.label}"
+              aria-label="${tab.label}"
             >
-              ${tab.label}
+              <span aria-hidden="true">${tab.icon}</span>
             </button>
           `).join("")}
+          <button
+            class="surface-tab"
+            data-action="openDashboard"
+            title="Dashboard"
+            aria-label="Dashboard"
+          >
+            <span aria-hidden="true">\u25A6</span>
+          </button>
+        </div>
+        <div class="surface-tab-actions">
+          ${this.surface === "chat" ? this.renderChatSessionActions() : ""}
+          <button
+            class="surface-tab ${this.surface === "settings" ? "active" : ""}"
+            data-action="switchSurface"
+            data-surface="settings"
+            aria-current="${this.surface === "settings" ? "page" : "false"}"
+            title="Settings"
+            aria-label="Settings"
+          >
+            <span aria-hidden="true">\u2699</span>
+          </button>
+        </div>
       </nav>
     `;
     }
@@ -891,6 +930,49 @@
         docLinked: true
       })}
       </section>
+    `;
+    }
+    renderChatSessionActions() {
+      const dialogs = this.dialogsForHistory();
+      const rows = dialogs.length === 0 ? '<div class="chat-history-empty">No asks yet.</div>' : dialogs.map((dialog) => {
+        const selected = this.currentDialogId === dialog.id;
+        const label = dialog.title.length > 84 ? `${dialog.title.slice(0, 81)}...` : dialog.title;
+        const askCount = dialog.messages.filter((message) => message.type === "user").length;
+        return `
+          <button
+            class="chat-history-row ${selected ? "selected" : ""}"
+            data-action="restoreDialog"
+            data-dialog-id="${escapeHtml(dialog.id)}"
+            title="${escapeHtml(dialog.title)}"
+          >
+            <span>${escapeHtml(label)}</span>
+            <time>${askCount} ask${askCount === 1 ? "" : "s"}</time>
+          </button>
+        `;
+      }).join("");
+      return `
+      <div class="chat-session-actions ${this.historyCollapsed ? "collapsed" : "expanded"}">
+        <button
+          class="chat-history-toggle"
+          data-action="toggleHistory"
+          aria-expanded="${!this.historyCollapsed}"
+          title="History"
+          aria-label="History"
+        >
+          <span aria-hidden="true">\u21BA</span>
+        </button>
+        <button
+          class="chat-new-dialog"
+          data-action="newDialog"
+          title="New dialog"
+          aria-label="New dialog"
+        >
+          <span aria-hidden="true">+</span>
+        </button>
+        <div class="chat-history-menu" ${this.historyCollapsed ? "hidden" : ""}>
+          ${rows}
+        </div>
+      </div>
     `;
     }
     renderImpactSurface() {
@@ -1085,6 +1167,10 @@
     handleAction(event) {
       const target = event.currentTarget;
       const action = target.getAttribute("data-action");
+      if (action === "copy" || action === "feedback") {
+        event.preventDefault();
+        event.stopPropagation();
+      }
       switch (action) {
         case "switchSurface":
           this.switchSurface(target.getAttribute("data-surface"));
@@ -1094,6 +1180,18 @@
           break;
         case "selectPrompt":
           this.selectPrompt(target.getAttribute("data-request-id"));
+          break;
+        case "toggleHistory":
+          this.toggleHistory();
+          break;
+        case "newDialog":
+          this.startNewDialog();
+          break;
+        case "restoreDialog":
+          this.restoreDialog(target.getAttribute("data-dialog-id"));
+          break;
+        case "openDashboard":
+          this.postMessage({ type: "action.openDashboard" });
           break;
         case "ask":
           document.getElementById("composer-input")?.focus();
@@ -1317,6 +1415,7 @@
         symbol,
         status: "streaming"
       });
+      this.persistState();
       this.render();
       this.scrollToBottom();
     }
@@ -1342,6 +1441,7 @@
         message.status = "done";
         this.updateConversationView();
       }
+      this.persistState();
       this.refreshAccordions();
     }
     onRequestFailed(requestId, error) {
@@ -1360,6 +1460,7 @@
           error
         });
       }
+      this.persistState();
       this.updateConversationView();
     }
     onRequestStopped(requestId) {
@@ -1369,6 +1470,7 @@
         this.updateConversationView();
       }
       this.currentStreamingRequestId = null;
+      this.persistState();
     }
     updateConversationView() {
       const viewport = document.getElementById("conversation");
@@ -1400,8 +1502,96 @@
         this.currentImpactSource = null;
         this.showToast("Prompt is still waiting for context.", "info");
       }
+      this.historyCollapsed = true;
       this.persistState();
       this.render();
+    }
+    toggleHistory() {
+      this.historyCollapsed = !this.historyCollapsed;
+      this.render();
+    }
+    startNewDialog() {
+      if (this.currentStreamingRequestId) {
+        this.postMessage({ type: "chat.stop", requestId: this.currentStreamingRequestId });
+      }
+      const composer = document.getElementById("composer-input");
+      if (composer) {
+        composer.value = "";
+      }
+      this.persistState();
+      this.currentDialogId = `dialog-${Date.now()}`;
+      this.messages.clear();
+      this.currentStreamingRequestId = null;
+      this.currentContextSummary = null;
+      this.currentPromptContext = null;
+      this.selectedPromptRequestId = null;
+      this.pendingPrompt = null;
+      this.currentImpact = null;
+      this.currentImpactSymbol = null;
+      this.currentImpactSource = null;
+      this.impactError = null;
+      this.impactLoading = false;
+      this.historyCollapsed = true;
+      this.persistState();
+      this.render();
+    }
+    restoreDialog(dialogId) {
+      if (!dialogId) return;
+      const dialog = this.dialogHistory.find((item) => item.id === dialogId);
+      if (!dialog) return;
+      this.persistState();
+      this.currentDialogId = dialog.id;
+      this.messages = new Map(dialog.messages.map((message) => [message.id, { ...message }]));
+      this.selectedPromptRequestId = dialog.selectedPromptRequestId || this.latestContextRequestId();
+      const context = this.selectedPromptRequestId ? this.contextForRequest(this.selectedPromptRequestId) : null;
+      if (context && this.selectedPromptRequestId) {
+        this.activatePromptContext(this.selectedPromptRequestId, context);
+      } else {
+        this.currentPromptContext = null;
+        this.currentContextSummary = null;
+        this.currentImpact = null;
+        this.currentImpactSymbol = null;
+        this.currentImpactSource = null;
+        this.impactError = null;
+      }
+      this.historyCollapsed = true;
+      this.persistState();
+      this.render();
+      this.scrollToBottom();
+    }
+    dialogsForHistory() {
+      const current = this.currentDialogSnapshot();
+      const dialogs = current ? [current, ...this.dialogHistory.filter((dialog) => dialog.id !== current.id)] : [...this.dialogHistory];
+      return dialogs.filter((dialog) => dialog.messages.length > 0).sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 30);
+    }
+    currentDialogSnapshot() {
+      const messages = Array.from(this.messages.values());
+      if (messages.length === 0) return null;
+      const firstPrompt = messages.find((message) => message.type === "user");
+      const latestTimestamp = Math.max(...messages.map((message) => message.timestamp));
+      const title = firstPrompt?.content?.trim() || "Untitled dialog";
+      return {
+        id: this.currentDialogId,
+        title,
+        updatedAt: latestTimestamp,
+        messages: messages.map((message) => ({ ...message })),
+        selectedPromptRequestId: this.selectedPromptRequestId
+      };
+    }
+    saveCurrentDialogSnapshot() {
+      const snapshot = this.currentDialogSnapshot();
+      if (!snapshot) {
+        this.dialogHistory = this.dialogHistory.filter((dialog) => dialog.id !== this.currentDialogId);
+        return;
+      }
+      this.dialogHistory = [
+        snapshot,
+        ...this.dialogHistory.filter((dialog) => dialog.id !== snapshot.id)
+      ].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 30);
+    }
+    latestContextRequestId() {
+      const messages = Array.from(this.messages.values()).filter((message) => Boolean(message.requestId && message.context)).sort((left, right) => right.timestamp - left.timestamp);
+      return messages[0]?.requestId || null;
     }
     contextForRequest(requestId) {
       const message = this.messages.get(requestId);
@@ -1529,16 +1719,38 @@
     }
     persistState() {
       const composer = document.getElementById("composer-input");
+      this.saveCurrentDialogSnapshot();
       vscode.setState({
         composerDraft: composer?.value || "",
         expandedAccordions: this.state?.expandedAccordions || {},
-        surface: this.surface
+        surface: this.surface,
+        currentDialogId: this.currentDialogId,
+        dialogHistory: this.dialogHistory
       });
     }
     restoreState() {
       const saved = vscode.getState();
       if (saved?.surface === "chat" || saved?.surface === "inspector" || saved?.surface === "impact" || saved?.surface === "settings") {
         this.surface = saved.surface;
+      }
+      if (Array.isArray(saved?.dialogHistory)) {
+        this.dialogHistory = saved.dialogHistory.filter((dialog) => dialog?.id && Array.isArray(dialog.messages)).slice(0, 30);
+      }
+      if (typeof saved?.currentDialogId === "string") {
+        this.currentDialogId = saved.currentDialogId;
+      }
+      const currentDialog = this.dialogHistory.find((dialog) => dialog.id === this.currentDialogId);
+      if (currentDialog) {
+        this.messages = new Map(
+          currentDialog.messages.map((message) => [message.id, { ...message }])
+        );
+        this.selectedPromptRequestId = currentDialog.selectedPromptRequestId || this.latestContextRequestId();
+        if (this.selectedPromptRequestId) {
+          const context = this.contextForRequest(this.selectedPromptRequestId);
+          if (context) {
+            this.activatePromptContext(this.selectedPromptRequestId, context);
+          }
+        }
       }
     }
     restoreComposerDraft() {
