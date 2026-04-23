@@ -39,6 +39,7 @@
   }
   function renderMessageFooter(message) {
     const time = formatMessageTime(message.timestamp);
+    const route = formatModelRoute(message);
     const assistantFeedback = message.type === "assistant" && message.status === "done" ? `
         <button class="message-action-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
         <button class="message-action-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
@@ -46,6 +47,7 @@
     return `
     <div class="message-footer">
       <time class="message-time" datetime="${escapeHtml(time.iso)}" title="${escapeHtml(time.title)}">${escapeHtml(time.label)}</time>
+      ${route ? `<span class="message-route ${route.fallback ? "fallback" : ""}" title="${escapeHtml(route.title)}">${escapeHtml(route.label)}</span>` : ""}
       <div class="message-actions">
         ${assistantFeedback}
         <button class="message-action-button" data-action="copy" title="Copy message" aria-label="Copy message">
@@ -57,6 +59,54 @@
       </div>
     </div>
   `;
+  }
+  function formatModelRoute(message) {
+    if (message.type !== "assistant") {
+      return null;
+    }
+    const route = message.context?.metadata?.assembly?.model_route;
+    if (!route) {
+      return null;
+    }
+    const provider = routeText(route.provider) || "unknown";
+    const model = routeText(route.model);
+    const preference = routeText(route.preference);
+    const reason = routeText(route.reason);
+    const degraded = Boolean(route.degraded);
+    const fallback = degraded || reason.includes("fallback") || reason.includes("unavailable");
+    const reasonText = routeReasonLabel(reason);
+    const labelParts = [provider, model].filter(Boolean);
+    const label = `${labelParts.join(" / ") || provider}${fallback ? " \xB7 fallback" : ""}`;
+    const titleParts = [
+      `Answered by ${labelParts.join(" / ") || provider}`,
+      preference ? `Preference: ${preference}` : "",
+      reasonText,
+      degraded ? "Response was degraded." : ""
+    ].filter(Boolean);
+    return {
+      label,
+      title: titleParts.join(" | "),
+      fallback
+    };
+  }
+  function routeText(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+  function routeReasonLabel(reason) {
+    switch (reason) {
+      case "claude_unavailable_fallback":
+        return "Auto wanted Claude, but Anthropic credentials/client were unavailable; Ollama answered.";
+      case "claude_error_fallback":
+        return "Claude failed during the request; Ollama answered.";
+      case "router_selected_claude":
+        return "Router selected Claude.";
+      case "router_selected_ollama":
+        return "Router selected Ollama.";
+      case "llm_unreachable_context_only":
+        return "LLM was unreachable; context-only degraded response.";
+      default:
+        return reason ? `Route reason: ${reason}` : "";
+    }
   }
   function formatMessageTime(timestamp) {
     const date = new Date(timestamp);

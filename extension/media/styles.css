@@ -420,6 +420,18 @@ button {
   opacity: .78;
 }
 
+.message-route {
+  max-width: min(260px, 52vw);
+  overflow: hidden;
+  color: var(--sc-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-route.fallback {
+  color: var(--sc-warn);
+}
+
 .message-actions {
   display: inline-flex;
   align-items: center;
