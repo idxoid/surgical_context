@@ -6,7 +6,7 @@ export const DEFAULT_SETTINGS: SettingsData = {
   workspaceId: 'local/default@main',
   modelPreference: 'auto',
   authToken: '',
-  tokenBudget: 40000,
+  tokenBudget: 4000,
   lancedbPath: './data/lancedb',
   historyPath: './data/history/surgical_context.sqlite3',
   overlaySync: true,

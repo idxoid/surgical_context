@@ -425,7 +425,7 @@ class ChatPanel {
     setTimeout(() => {
       toast.classList.remove('show');
       setTimeout(() => container.removeChild(toast), 300);
-    }, 40000);
+    }, 4000);
   }
 
   private persistState(): void {

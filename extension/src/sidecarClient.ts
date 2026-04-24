@@ -20,7 +20,7 @@ function authHeaderValue(token: string): string {
   return token.toLowerCase().startsWith('bearer ') ? token : `Bearer ${token}`;
 }
 
-function getTokenBudget(defaultValue = 40000): number {
+function getTokenBudget(defaultValue = 4000): number {
   const config = vscode.workspace.getConfiguration('surgicalContext');
   const configured = config.get<number>('tokenBudget', defaultValue);
   return Number.isFinite(configured) ? Math.max(1000, Math.min(32000, configured)) : defaultValue;
