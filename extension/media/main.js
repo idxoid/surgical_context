@@ -542,6 +542,83 @@
     </div>
   `;
   }
+  function renderApiPayloadTab(context) {
+    const primary = context.primary_source;
+    const graphItems = context.graph_context || [];
+    const docs = context.documentation || [];
+    const systemPrompt = buildSystemPrompt(context);
+    const apiRequest = {
+      model: "claude-opus-4-7",
+      max_tokens: 8096,
+      system: systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: "(User query would appear here)"
+        }
+      ]
+    };
+    const metadata = {
+      mode: context.mode,
+      intent: context.intent,
+      assembly_metadata: context.metadata?.assembly,
+      tier_tokens: context.metadata?.tier_tokens,
+      budget_info: context.budget
+    };
+    const jsonStr = JSON.stringify(
+      {
+        api_request: apiRequest,
+        context_metadata: metadata,
+        assembly_summary: {
+          primary_symbol: primary?.symbol,
+          graph_context_count: graphItems.length,
+          documentation_count: docs.length,
+          total_tokens: (context.metadata?.tokens_primary || 0) + (context.metadata?.tokens_graph || 0) + (context.metadata?.tokens_docs || 0)
+        }
+      },
+      null,
+      2
+    );
+    return `
+    <div class="json-viewer">
+      <div class="json-info">
+        <p>This is the final JSON sent to the Claude API (system prompt + context).</p>
+        <p>The <code>system</code> field contains the assembled surgical context.</p>
+      </div>
+      <button class="copy-button" data-action="copy-api-json">Copy JSON</button>
+      <pre><code>${escapeHtml3(jsonStr)}</code></pre>
+    </div>
+  `;
+  }
+  function buildSystemPrompt(context) {
+    const primary = context.primary_source;
+    const graphItems = context.graph_context || [];
+    const docs = context.documentation || [];
+    const blocks = [
+      `--- TARGET SYMBOL: ${primary?.symbol || "unknown"} ---`
+    ];
+    if (primary?.code) {
+      blocks.push(primary.code);
+    }
+    if (graphItems.length > 0) {
+      blocks.push("\n--- DEPENDENCIES ---");
+      for (const dep of graphItems) {
+        blocks.push(`
+# From ${dep.symbol} [${dep.relation}]:`);
+        if (dep.code) {
+          blocks.push(dep.code);
+        }
+      }
+    }
+    if (docs.length > 0) {
+      blocks.push("\n--- DOCUMENTATION ---");
+      for (const doc of docs) {
+        blocks.push(`[${doc.source_file}]
+${doc.content}`);
+      }
+    }
+    return blocks.join("\n");
+  }
 
   // src/webview/shared/settingsLayout.ts
   function escapeHtml4(text) {
@@ -1160,6 +1237,7 @@
             ${this.renderInspectorTabButton("docs", "Docs")}
             ${this.renderInspectorTabButton("tokens", "Tokens")}
             ${this.renderInspectorTabButton("json", "JSON")}
+            ${this.renderInspectorTabButton("api", "API")}
           </div>
         </div>
         <div class="inspector-content">
@@ -1191,6 +1269,8 @@
           return renderTokenBreakdownTab(context);
         case "json":
           return renderPromptJsonTab(context);
+        case "api":
+          return renderApiPayloadTab(context);
         case "primary":
         default:
           return renderPrimarySourceTab(context);
@@ -1411,7 +1491,7 @@
       const workspaceId = document.getElementById("workspaceId")?.value || "";
       const modelPreference = document.getElementById("modelPreference")?.value || "auto";
       const authToken = document.getElementById("authToken")?.value || "";
-      const tokenBudget = Number(document.getElementById("tokenBudget")?.value || "4000");
+      const tokenBudget = Number(document.getElementById("tokenBudget")?.value || "40000");
       const lancedbPath = document.getElementById("lancedbPath")?.value || "";
       const historyPath = document.getElementById("historyPath")?.value || "";
       const overlaySync = document.getElementById("overlaySync")?.checked || false;
@@ -1445,7 +1525,7 @@
         workspaceId: "local/default@main",
         modelPreference: "auto",
         authToken: "",
-        tokenBudget: 4e3,
+        tokenBudget: 4e4,
         lancedbPath: "./data/lancedb",
         historyPath: "./data/history/surgical_context.sqlite3",
         overlaySync: true,

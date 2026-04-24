@@ -33,6 +33,7 @@ import {
   renderGraphContextTab,
   renderPrimarySourceTab,
   renderPromptJsonTab,
+  renderApiPayloadTab,
   renderTokenBreakdownTab,
 } from './shared/inspectorLayout';
 import {
@@ -42,7 +43,7 @@ import {
 } from './shared/settingsLayout';
 
 type Surface = 'chat' | 'inspector' | 'impact' | 'settings';
-type InspectorTab = 'primary' | 'graph' | 'docs' | 'tokens' | 'json';
+type InspectorTab = 'primary' | 'graph' | 'docs' | 'tokens' | 'json' | 'api';
 
 interface StoredDialog {
   id: string;
@@ -493,6 +494,7 @@ class MainSurface {
             ${this.renderInspectorTabButton('docs', 'Docs')}
             ${this.renderInspectorTabButton('tokens', 'Tokens')}
             ${this.renderInspectorTabButton('json', 'JSON')}
+            ${this.renderInspectorTabButton('api', 'API')}
           </div>
         </div>
         <div class="inspector-content">
@@ -526,6 +528,8 @@ class MainSurface {
         return renderTokenBreakdownTab(context);
       case 'json':
         return renderPromptJsonTab(context);
+      case 'api' :
+         return renderApiPayloadTab(context);
       case 'primary':
       default:
         return renderPrimarySourceTab(context);
@@ -775,7 +779,7 @@ class MainSurface {
     const workspaceId = (document.getElementById('workspaceId') as HTMLInputElement | null)?.value || '';
     const modelPreference = (document.getElementById('modelPreference') as HTMLSelectElement | null)?.value || 'auto';
     const authToken = (document.getElementById('authToken') as HTMLInputElement | null)?.value || '';
-    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement | null)?.value || '4000');
+    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement | null)?.value || '40000');
     const lancedbPath = (document.getElementById('lancedbPath') as HTMLInputElement | null)?.value || '';
     const historyPath = (document.getElementById('historyPath') as HTMLInputElement | null)?.value || '';
     const overlaySync = (document.getElementById('overlaySync') as HTMLInputElement | null)?.checked || false;
@@ -813,7 +817,7 @@ class MainSurface {
       workspaceId: 'local/default@main',
       modelPreference: 'auto',
       authToken: '',
-      tokenBudget: 4000,
+      tokenBudget: 40000,
       lancedbPath: './data/lancedb',
       historyPath: './data/history/surgical_context.sqlite3',
       overlaySync: true,
