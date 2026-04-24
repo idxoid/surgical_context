@@ -46,7 +46,7 @@ class TestContextArbitratorBFS:
 
         assert isinstance(ctx, PromptContext)
         assert ctx.primary_source.symbol == "process_payment"
-        assert ctx.budget["limit"] == 40000
+        assert ctx.budget["limit"] == 4000
 
     def test_expand_for_symbol_not_found(self, arbitrator, mock_db):
         """Test that a non-existent symbol returns an error string."""
@@ -80,7 +80,7 @@ class TestContextArbitratorBFS:
             "file_path": "/test.py",
         }
 
-        result = arbitrator.get_context_for_symbol("huge_function", token_budget=40000)
+        result = arbitrator.get_context_for_symbol("huge_function", token_budget=4000)
 
         assert isinstance(result, str)
         assert "Error:" in result
@@ -142,7 +142,7 @@ class TestContextArbitratorBFS:
                 relevance_score=1.0,
             ),
             nodes=[],
-            budget={"limit": 40000, "spent": 108, "reserved": 100, "pruned": 0},
+            budget={"limit": 4000, "spent": 108, "reserved": 100, "pruned": 0},
         )
         vector_db = FakeVectorDb()
         arbitrator = ContextArbitrator(mock_db, vector_db=vector_db)
@@ -151,7 +151,7 @@ class TestContextArbitratorBFS:
             ctx = arbitrator.get_context_for_symbol(
                 "process_payment",
                 question="How should this payment flow work?",
-                token_budget=40000,
+                token_budget=4000,
             )
 
         assert isinstance(ctx, PromptContext)

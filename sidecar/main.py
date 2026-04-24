@@ -79,7 +79,7 @@ class IndexDocsRequest(BaseModel):
 class AskRequest(BaseModel):
     symbol: str | None = None
     question: str = "What does this code do?"
-    token_budget: int = 40000
+    token_budget: int = 4000
     file_path: str | None = None
 
 
