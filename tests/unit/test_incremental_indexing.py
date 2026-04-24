@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.indexer.code import index_file
-from sidecar.parser.protocol import SymbolMetadata
+from sidecar.parser.protocol import ImportEdge, SymbolMetadata
 
 
 def _symbol(uid: str, content_hash: str, start_line: int = 1, end_line: int = 2):
@@ -65,6 +65,43 @@ class TestIncrementalIndexing:
                 "path": "/test.py",
                 "workspace_id": "local/surgical_context@main",
             }
+
+    def test_upsert_nodes_batches_symbols_with_unwind(self):
+        tx = MagicMock()
+
+        Neo4jClient._upsert_nodes(
+            tx,
+            "/test.py",
+            "file-hash",
+            [_symbol("one", "hash-1"), _symbol("two", "hash-2")],
+            "acme/repo@main",
+        )
+
+        assert tx.run.call_count == 2
+        query = tx.run.call_args.args[0]
+        params = tx.run.call_args.kwargs
+        assert "UNWIND $symbols AS symbol" in query
+        assert params["workspace_id"] == "acme/repo@main"
+        assert len(params["symbols"]) == 2
+
+    def test_create_import_relations_batches_rows_with_unwind(self):
+        tx = MagicMock()
+
+        Neo4jClient._create_import_relations(
+            tx,
+            [
+                ImportEdge("/repo/a.py", "pkg.module_a", "direct"),
+                ImportEdge("/repo/a.py", "pkg.module_b", "direct"),
+            ],
+            "acme/repo@main",
+        )
+
+        tx.run.assert_called_once()
+        query = tx.run.call_args.args[0]
+        params = tx.run.call_args.kwargs
+        assert "UNWIND $imports AS imp" in query
+        assert params["workspace_id"] == "acme/repo@main"
+        assert len(params["imports"]) == 2
 
     def test_hash_skip_gate_with_unchanged_file(self):
         """Test that unchanged files are correctly identified."""

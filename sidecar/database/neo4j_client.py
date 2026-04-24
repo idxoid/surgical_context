@@ -222,44 +222,35 @@ class Neo4jClient:
             **workspace,
         )
 
-        for s in symbols:
-            tx.run(
-                """
-                MATCH (f:File {path: $file_path, workspace_id: $workspace_id})
-                MATCH (w:Workspace {id: $workspace_id})
-                MERGE (s:Symbol {uid: $uid})
-                SET s.name = $name,
-                    s.kind = $kind,
-                    s.hash = $content_hash,
-                    s.range = [$start, $end],
-                    s.token_estimate = $token_estimate,
-                    s.qualified_name = $qualified_name,
-                    s.signature = $signature,
-                    s.signature_hash = $signature_hash,
-                    s.signature_status = $signature_status,
-                    s.language = $language
-                MERGE (s)-[:IN_WORKSPACE]->(w)
-                MERGE (f)-[c:CONTAINS {workspace_id: $workspace_id}]->(s)
-                SET c.range = [$start, $end],
-                    c.start_line = $start,
-                    c.end_line = $end,
-                    c.hash = $content_hash
-                """,
-                file_path=file_path,
-                workspace_id=workspace_id,
-                uid=s.uid,
-                name=s.name,
-                kind=s.kind,
-                content_hash=s.content_hash,
-                start=s.start_line,
-                end=s.end_line,
-                token_estimate=s.token_estimate,
-                qualified_name=s.qualified_name,
-                signature=s.signature,
-                signature_hash=s.signature_hash,
-                signature_status=s.signature_status,
-                language=s.language,
-            )
+        if not symbols:
+            return
+        tx.run(
+            """
+            MATCH (f:File {path: $file_path, workspace_id: $workspace_id})
+            MATCH (w:Workspace {id: $workspace_id})
+            UNWIND $symbols AS symbol
+            MERGE (s:Symbol {uid: symbol.uid})
+            SET s.name = symbol.name,
+                s.kind = symbol.kind,
+                s.hash = symbol.content_hash,
+                s.range = [symbol.start, symbol.end],
+                s.token_estimate = symbol.token_estimate,
+                s.qualified_name = symbol.qualified_name,
+                s.signature = symbol.signature,
+                s.signature_hash = symbol.signature_hash,
+                s.signature_status = symbol.signature_status,
+                s.language = symbol.language
+            MERGE (s)-[:IN_WORKSPACE]->(w)
+            MERGE (f)-[c:CONTAINS {workspace_id: $workspace_id}]->(s)
+            SET c.range = [symbol.start, symbol.end],
+                c.start_line = symbol.start,
+                c.end_line = symbol.end,
+                c.hash = symbol.content_hash
+            """,
+            file_path=file_path,
+            workspace_id=workspace_id,
+            symbols=[_symbol_row(symbol) for symbol in symbols],
+        )
 
     def link_calls(self, calls: list[dict], workspace_id: str = DEFAULT_WORKSPACE_ID):
         with self.driver.session() as session:
@@ -275,66 +266,59 @@ class Neo4jClient:
 
     @staticmethod
     def _create_call_relations(tx, calls, workspace_id):
-        for call in calls:
-            rel_type = call.get("rel_type", "CALLS_DIRECT")
-            if rel_type not in _CALL_REL_TYPES:
-                rel_type = "CALLS_GUESS"
-            params = {
-                "caller_uid": call["caller_uid"],
-                "callee_uid": call.get("callee_uid"),
-                "callee_name": call.get("callee_name"),
-                "callee_qualified_name": call.get("callee_qualified_name"),
-                "workspace_id": workspace_id,
-                "confidence": float(call.get("confidence", _default_confidence(rel_type))),
-                "tier": call.get("tier", _default_tier(rel_type)),
-                "resolver": call.get("resolver", "scope-v1"),
-                "call_site_line": call.get("call_site_line"),
-            }
-            if params["callee_uid"]:
+        if not calls:
+            return
+        for rel_type, mode, rows in _grouped_call_rows(calls):
+            if mode == "uid":
                 tx.run(
                     f"""
-                    MATCH (caller:Symbol {{uid: $caller_uid}})
-                    MATCH (callee:Symbol {{uid: $callee_uid}})
+                    UNWIND $calls AS call
+                    MATCH (caller:Symbol {{uid: call.caller_uid}})
+                    MATCH (callee:Symbol {{uid: call.callee_uid}})
                     WHERE caller <> callee
                     MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
-                                                   call_site_line: $call_site_line}}]->(callee)
-                    SET r.confidence = $confidence,
-                        r.tier = $tier,
-                        r.resolver = $resolver
+                                                   call_site_line: call.call_site_line}}]->(callee)
+                    SET r.confidence = call.confidence,
+                        r.tier = call.tier,
+                        r.resolver = call.resolver
                     """,
-                    **params,
+                    calls=rows,
+                    workspace_id=workspace_id,
                 )
-            elif params["callee_qualified_name"]:
+            elif mode == "qualified_name":
                 tx.run(
                     f"""
-                    MATCH (caller:Symbol {{uid: $caller_uid}})
-                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(callee:Symbol {{qualified_name: $callee_qualified_name}})
+                    UNWIND $calls AS call
+                    MATCH (caller:Symbol {{uid: call.caller_uid}})
+                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(callee:Symbol {{qualified_name: call.callee_qualified_name}})
                     WHERE caller <> callee
                     MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
-                                                   call_site_line: $call_site_line}}]->(callee)
-                    SET r.confidence = $confidence,
-                        r.tier = $tier,
-                        r.resolver = $resolver
+                                                   call_site_line: call.call_site_line}}]->(callee)
+                    SET r.confidence = call.confidence,
+                        r.tier = call.tier,
+                        r.resolver = call.resolver
                     """,
-                    **params,
+                    calls=rows,
+                    workspace_id=workspace_id,
                 )
             else:
-                # Honest fallback: only create a guessed edge when the name is unique in this workspace.
                 tx.run(
                     f"""
-                    MATCH (caller:Symbol {{uid: $caller_uid}})
-                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(callee:Symbol {{name: $callee_name}})
-                    WHERE caller <> callee
-                    WITH caller, collect(DISTINCT callee) AS candidates
+                    UNWIND $calls AS call
+                    MATCH (caller:Symbol {{uid: call.caller_uid}})
+                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(candidate:Symbol {{name: call.callee_name}})
+                    WHERE caller <> candidate
+                    WITH call, caller, collect(DISTINCT candidate) AS candidates
                     WHERE size(candidates) = 1
-                    WITH caller, candidates[0] AS callee
+                    WITH call, caller, candidates[0] AS callee
                     MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
-                                                   call_site_line: $call_site_line}}]->(callee)
-                    SET r.confidence = $confidence,
-                        r.tier = $tier,
-                        r.resolver = $resolver
+                                                   call_site_line: call.call_site_line}}]->(callee)
+                    SET r.confidence = call.confidence,
+                        r.tier = call.tier,
+                        r.resolver = call.resolver
                     """,
-                    **params,
+                    calls=rows,
+                    workspace_id=workspace_id,
                 )
 
     def link_imports(self, imports: list[ImportEdge], workspace_id: str = DEFAULT_WORKSPACE_ID):
@@ -351,21 +335,20 @@ class Neo4jClient:
 
     @staticmethod
     def _create_import_relations(tx, imports, workspace_id):
-        for imp in imports:
-            path_suffix = imp.target_module_name.lstrip(".").replace(".", "/") + ".py"
-            tx.run(
-                """
-                MATCH (source:File {path: $source_file, workspace_id: $workspace_id})
-                MATCH (target:File {workspace_id: $workspace_id})
-                WHERE target.path ENDS WITH $path_suffix
-                  AND source <> target
-                MERGE (source)-[:IMPORTS {type: $import_type, workspace_id: $workspace_id}]->(target)
-                """,
-                source_file=imp.source_file,
-                workspace_id=workspace_id,
-                path_suffix=path_suffix,
-                import_type=imp.import_type,
-            )
+        if not imports:
+            return
+        tx.run(
+            """
+            UNWIND $imports AS imp
+            MATCH (source:File {path: imp.source_file, workspace_id: $workspace_id})
+            MATCH (target:File {workspace_id: $workspace_id})
+            WHERE target.path ENDS WITH imp.path_suffix
+              AND source <> target
+            MERGE (source)-[:IMPORTS {type: imp.import_type, workspace_id: $workspace_id}]->(target)
+            """,
+            imports=[_import_row(imp) for imp in imports],
+            workspace_id=workspace_id,
+        )
 
     def link_inheritance(
         self,
@@ -387,22 +370,22 @@ class Neo4jClient:
 
     @staticmethod
     def _create_inheritance_relations(tx, inheritance_edges, workspace_id):
-        for edge in inheritance_edges:
-            tx.run(
-                """
-                MATCH (subclass:Symbol {uid: $subclass_uid})
-                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(superclass:Symbol {name: $superclass_name})
-                MERGE (subclass)-[r:DEPENDS_ON {workspace_id: $workspace_id}]->(superclass)
-                SET r.is_interface = $is_interface,
-                    r.confidence = 0.9,
-                    r.tier = 'scoped',
-                    r.resolver = 'inheritance-v1'
-                """,
-                subclass_uid=edge.subclass_uid,
-                superclass_name=edge.superclass_name,
-                is_interface=edge.is_interface,
-                workspace_id=workspace_id,
-            )
+        if not inheritance_edges:
+            return
+        tx.run(
+            """
+            UNWIND $inheritance_edges AS edge
+            MATCH (subclass:Symbol {uid: edge.subclass_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(superclass:Symbol {name: edge.superclass_name})
+            MERGE (subclass)-[r:DEPENDS_ON {workspace_id: $workspace_id}]->(superclass)
+            SET r.is_interface = edge.is_interface,
+                r.confidence = 0.9,
+                r.tier = 'scoped',
+                r.resolver = 'inheritance-v1'
+            """,
+            inheritance_edges=[_inheritance_row(edge) for edge in inheritance_edges],
+            workspace_id=workspace_id,
+        )
 
 
 def _split_workspace_id(workspace_id: str) -> dict[str, str]:
@@ -441,3 +424,69 @@ def _default_tier(rel_type: str) -> str:
         "CALLS_INFERRED": "guess",
         "CALLS_GUESS": "guess",
     }.get(rel_type, "guess")
+
+
+def _symbol_row(symbol: SymbolMetadata) -> dict[str, object]:
+    return {
+        "uid": symbol.uid,
+        "name": symbol.name,
+        "kind": symbol.kind,
+        "content_hash": symbol.content_hash,
+        "start": symbol.start_line,
+        "end": symbol.end_line,
+        "token_estimate": symbol.token_estimate,
+        "qualified_name": symbol.qualified_name,
+        "signature": symbol.signature,
+        "signature_hash": symbol.signature_hash,
+        "signature_status": symbol.signature_status,
+        "language": symbol.language,
+    }
+
+
+def _call_row(call: dict, rel_type: str) -> dict[str, object]:
+    return {
+        "caller_uid": call["caller_uid"],
+        "callee_uid": call.get("callee_uid"),
+        "callee_name": call.get("callee_name"),
+        "callee_qualified_name": call.get("callee_qualified_name"),
+        "confidence": float(call.get("confidence", _default_confidence(rel_type))),
+        "tier": call.get("tier", _default_tier(rel_type)),
+        "resolver": call.get("resolver", "scope-v1"),
+        "call_site_line": call.get("call_site_line"),
+    }
+
+
+def _call_mode(row: dict[str, object]) -> str:
+    if row.get("callee_uid"):
+        return "uid"
+    if row.get("callee_qualified_name"):
+        return "qualified_name"
+    return "name"
+
+
+def _grouped_call_rows(calls: list[dict]) -> list[tuple[str, str, list[dict[str, object]]]]:
+    groups: dict[tuple[str, str], list[dict[str, object]]] = {}
+    for call in calls:
+        rel_type = call.get("rel_type", "CALLS_DIRECT")
+        if rel_type not in _CALL_REL_TYPES:
+            rel_type = "CALLS_GUESS"
+        row = _call_row(call, rel_type)
+        key = (rel_type, _call_mode(row))
+        groups.setdefault(key, []).append(row)
+    return [(rel_type, mode, rows) for (rel_type, mode), rows in groups.items()]
+
+
+def _import_row(imp: ImportEdge) -> dict[str, str]:
+    return {
+        "source_file": imp.source_file,
+        "path_suffix": imp.target_module_name.lstrip(".").replace(".", "/") + ".py",
+        "import_type": imp.import_type,
+    }
+
+
+def _inheritance_row(edge: InheritanceEdge) -> dict[str, object]:
+    return {
+        "subclass_uid": edge.subclass_uid,
+        "superclass_name": edge.superclass_name,
+        "is_interface": edge.is_interface,
+    }

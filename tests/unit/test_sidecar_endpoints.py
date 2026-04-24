@@ -85,7 +85,7 @@ class FakeContextArbitrator:
         self.vector_db = vector_db
         self.workspace_id = workspace_id
 
-    def get_context_for_symbol(self, symbol, question="", token_budget=4000):
+    def get_context_for_symbol(self, symbol, question="", token_budget=40000):
         if symbol == "missing":
             return "Error: Symbol 'missing' not found in graph."
         return FakeCtx()

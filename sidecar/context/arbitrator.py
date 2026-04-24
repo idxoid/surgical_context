@@ -6,11 +6,11 @@ from typing import Any
 from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.deduplicator import ContextDeduplicator
-from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.graph_expander import GraphExpander
 from sidecar.context.intent_classifier import IntentClassifier
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext
+from sidecar.context.unified_ranker import UnifiedRanker, VectorSearcher
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
@@ -35,17 +35,92 @@ class ContextArbitrator:
         self,
         symbol_name: str,
         question: str = "",
-        token_budget: int = 4000,
+        token_budget: int = 40000,
     ) -> PromptContext | str:
         """Orchestrate the pipeline: expand → deduplicate → resolve → compile (with intent-aware tier selection)."""
-        # 0. Classify intent from question (determines tier priority in compilation)
         intent = IntentClassifier.classify_intent(question)
+        cache_hits = []
+
+        if self.vector_db:
+            return self._get_context_unified(
+                symbol_name, question, token_budget, intent, cache_hits
+            )
+        return self._get_context_graph_only(
+            symbol_name, token_budget, intent, cache_hits
+        )
+
+    # ------------------------------------------------------------------
+    # Unified path (graph BFS + vector search blended)
+    # ------------------------------------------------------------------
+
+    def _get_context_unified(
+        self, symbol_name, question, token_budget, intent, cache_hits
+    ) -> PromptContext | str:
+        ranker = UnifiedRanker(
+            self.db,
+            VectorSearcher(self.vector_db),
+            workspace_id=self.workspace_id,
+        )
+
+        target = ranker.get_target(symbol_name)
+        if target is None:
+            return f"Error: Symbol '{symbol_name}' not found in graph."
+
+        reserved = UnifiedRanker.PREAMBLE_TOKENS + target.token_estimate
+        if reserved > token_budget:
+            return (
+                f"Error: Token budget {token_budget} is too small for target symbol"
+                f" (needs {reserved} tokens)."
+            )
+
+        query_str = f"{symbol_name} {question}".strip()
+        candidates, budget_info = ranker.rank(
+            target, query_str, intent, token_budget
+        )
+
+        subgraph, docs = ranker.candidates_to_subgraph(target, candidates, budget_info)
+
+        # Resolve code for all nodes
+        resolver = CodeResolver(self.overlay, workspace_id=self.workspace_id)
+        code_map = {}
+        for node in [subgraph.primary] + subgraph.nodes:
+            line_range = (node.range[0], node.range[1])
+            overlay_dirty = bool(
+                self.overlay and self.overlay.has(node.file_path, workspace_id=self.workspace_id)
+            )
+            cached = None
+            if node.file_hash and not overlay_dirty:
+                cached = self.cache.get_body(node.file_path, line_range, node.file_hash)
+            if cached is not None:
+                cache_hits.append("l1_body")
+                code_map[node.uid] = (cached.code, cached.is_dirty)
+                continue
+            code, is_dirty = resolver.resolve(node.file_path, *line_range)
+            code_map[node.uid] = (code, is_dirty)
+            if node.file_hash and not is_dirty:
+                self.cache.put_body(
+                    node.file_path,
+                    line_range,
+                    node.file_hash,
+                    CachedBody(code=code, token_count=node.token_estimate, is_dirty=False),
+                )
+
+        ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
+        ctx.budget["cache_hits"] = sorted(set(cache_hits))
+        ctx.budget["ranker"] = "unified"
+        return ctx
+
+    # ------------------------------------------------------------------
+    # Graph-only path (no vector_db — original behaviour)
+    # ------------------------------------------------------------------
+
+    def _get_context_graph_only(
+        self, symbol_name, token_budget, intent, cache_hits
+    ) -> PromptContext | str:
         intent_hash = hashlib.sha256(intent.value.encode("utf-8")).hexdigest()
         graph_version = self._graph_version()
 
-        # 1. Expand graph
         subgraph = None
-        cache_hits = []
         primary_uid = self._primary_uid(symbol_name)
         if primary_uid:
             subgraph = self.cache.get_subgraph(
@@ -71,18 +146,16 @@ class ContextArbitrator:
         if isinstance(subgraph, str):
             return subgraph
 
-        # 2. Deduplicate (remove redundant symbols and docs)
         subgraph = ContextDeduplicator().deduplicate(subgraph)
 
-        # 3. Resolve code
         resolver = CodeResolver(self.overlay, workspace_id=self.workspace_id)
         code_map = {}
         for node in [subgraph.primary] + subgraph.nodes:
             line_range = (node.range[0], node.range[1])
-            cached = None
             overlay_dirty = bool(
                 self.overlay and self.overlay.has(node.file_path, workspace_id=self.workspace_id)
             )
+            cached = None
             if node.file_hash and not overlay_dirty:
                 cached = self.cache.get_body(node.file_path, line_range, node.file_hash)
             if cached is not None:
@@ -99,14 +172,9 @@ class ContextArbitrator:
                     CachedBody(code=code, token_count=node.token_estimate, is_dirty=False),
                 )
 
-        # 4. Resolve docs before compilation so intent-aware tier selection can include them.
-        docs = []
-        if self.vector_db:
-            docs = DocResolver(self.vector_db).search(f"{symbol_name} {question}", limit=3)
-
-        # 5. Compile prompt with intent-aware tier selection
-        ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
+        ctx = PromptCompiler().compile_with_intent(subgraph, code_map, [], intent)
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
+        ctx.budget["ranker"] = "graph_only"
         return ctx
 
     def _primary_uid(self, symbol_name: str) -> str | Any | None:

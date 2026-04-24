@@ -28,11 +28,11 @@ def test_subgraph_cache_is_keyed_by_workspace_and_graph_version():
             file_hash="hash-a",
         ),
         nodes=[],
-        budget={"limit": 4000, "spent": 124, "reserved": 100, "pruned": 0},
+        budget={"limit": 40000, "spent": 124, "reserved": 100, "pruned": 0},
     )
 
-    cache.put_subgraph("u1", "intent", 4000, "acme/repo@main", 7, subgraph)
+    cache.put_subgraph("u1", "intent", 40000, "acme/repo@main", 7, subgraph)
 
-    assert cache.get_subgraph("u1", "intent", 4000, "acme/repo@main", 7) is subgraph
-    assert cache.get_subgraph("u1", "intent", 4000, "acme/repo@main", 8) is None
-    assert cache.get_subgraph("u1", "intent", 4000, "acme/repo@feature", 7) is None
+    assert cache.get_subgraph("u1", "intent", 40000, "acme/repo@main", 7) is subgraph
+    assert cache.get_subgraph("u1", "intent", 40000, "acme/repo@main", 8) is None
+    assert cache.get_subgraph("u1", "intent", 40000, "acme/repo@feature", 7) is None

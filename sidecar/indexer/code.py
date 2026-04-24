@@ -151,51 +151,20 @@ def index_file(
 
 
 def run_indexing(project_path: str, workspace_id: str | None = None):
-    db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
-    lance = LanceDBClient()
-    extractor = SymbolExtractor()
-    job_log = IndexJobLog()
-    workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
+    """Whole-project index pass.
 
-    print(f"🚀 Indexing project: {project_path} ({workspace_id})")
+    Delegates to ``sidecar.indexer.fast.run_fast_indexing``: parallel hash +
+    parse, global embedding batch, single AFFECTS rebuild. The return value
+    (stats dict) is ignored by all current callers, which matches the old
+    ``None``-returning contract.
 
-    files_to_index = _collect_files(project_path)
-    if not files_to_index:
-        print(f"❌ No files found at {project_path}")
-        db.close()
-        return
+    The single-file hot path (``index_file`` below, used by ``/overlay``
+    and ``/index/file``) is intentionally left on the per-file flow so the
+    IDE save path keeps synchronous AFFECTS semantics.
+    """
+    from sidecar.indexer.fast import run_fast_indexing
 
-    # Compute current file hashes
-    current_hashes = {}
-    for file_path in files_to_index:
-        current_hashes[file_path] = hash_file(file_path)
-
-    # Query stored hashes from Neo4j
-    stored_hashes = db.get_file_hashes(files_to_index, workspace_id=workspace_id)
-
-    # Filter to changed files only
-    changed_files = [p for p in files_to_index if current_hashes[p] != stored_hashes.get(p)]
-
-    if not changed_files:
-        print("✅ All files up-to-date, nothing to re-index.")
-        db.close()
-        return
-
-    print(f"🔄 {len(changed_files)}/{len(files_to_index)} files changed, re-indexing...")
-
-    # Re-index only changed files
-    for file_path in changed_files:
-        print(f"📄 Indexing: {file_path}")
-        with job_log.track_file_job(file_path, file_hash=current_hashes[file_path]):
-            index_file(file_path, db, lance, extractor, workspace_id=workspace_id)
-
-    # Resolve pending DocAnchors (runs over entire DB)
-    from sidecar.indexer.anchor import resolve_pending_anchors
-
-    resolve_pending_anchors(db, lance, workspace_id=workspace_id)
-
-    db.close()
-    print("✅ Indexing complete.")
+    return run_fast_indexing(project_path, workspace_id=workspace_id)
 
 
 if __name__ == "__main__":

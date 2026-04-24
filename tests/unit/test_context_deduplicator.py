@@ -45,7 +45,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=nodes,
-            budget={"limit": 4000, "spent": 130},
+            budget={"limit": 40000, "spent": 130},
         )
 
         result = deduplicator.deduplicate(subgraph)
@@ -83,7 +83,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=[node_depth_2, node_depth_1],
-            budget={"limit": 4000, "spent": 200},
+            budget={"limit": 40000, "spent": 200},
         )
 
         result = deduplicator.deduplicate(subgraph)
@@ -120,7 +120,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=[node_low, node_high],
-            budget={"limit": 4000, "spent": 180},
+            budget={"limit": 40000, "spent": 180},
         )
 
         result = deduplicator.deduplicate(subgraph)
@@ -157,7 +157,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=[node1, node2],
-            budget={"limit": 4000, "spent": 200},
+            budget={"limit": 40000, "spent": 200},
         )
 
         result = deduplicator.deduplicate(subgraph)
@@ -194,7 +194,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=[node1, node2],
-            budget={"limit": 4000, "spent": 200},
+            budget={"limit": 40000, "spent": 200},
         )
 
         result = deduplicator.deduplicate(subgraph)
@@ -218,7 +218,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=[node_unknown],
-            budget={"limit": 4000, "spent": 130},
+            budget={"limit": 40000, "spent": 130},
         )
 
         result = deduplicator.deduplicate(subgraph)
@@ -254,7 +254,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=[node1, node2],
-            budget={"limit": 4000, "spent": 160},
+            budget={"limit": 40000, "spent": 160},
         )
 
         result = deduplicator.deduplicate(subgraph)
@@ -291,7 +291,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=[node1, node2],
-            budget={"limit": 4000, "spent": 160},
+            budget={"limit": 40000, "spent": 160},
         )
 
         result = deduplicator.deduplicate(subgraph)
@@ -339,7 +339,7 @@ class TestContextDeduplicator:
         subgraph = Subgraph(
             primary=primary_node,
             nodes=[node_d3, node_d1, node_d2],
-            budget={"limit": 4000, "spent": 170},
+            budget={"limit": 40000, "spent": 170},
         )
 
         result = deduplicator.deduplicate(subgraph)

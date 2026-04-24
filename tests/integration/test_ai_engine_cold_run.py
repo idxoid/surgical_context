@@ -81,7 +81,8 @@ def sample_prompt_context():
         primary_source=primary,
         graph_context=graph,
         documentation=docs,
-        budget={"tokens_allocated": 4000, "tokens_remaining": 2500},
+        budget={"tokens_allocated": 40000
+                , "tokens_remaining": 2500},
         mode="surgical_full",
         intent="debugging",
     )

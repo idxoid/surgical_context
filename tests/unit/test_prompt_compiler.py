@@ -50,7 +50,7 @@ def sample_subgraph():
     return Subgraph(
         primary=primary,
         nodes=nodes,
-        budget={"tokens_allocated": 4000, "tokens_remaining": 3000},
+        budget={"tokens_allocated": 40000, "tokens_remaining": 3000},
     )
 
 

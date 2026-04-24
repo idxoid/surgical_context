@@ -112,9 +112,39 @@ def test_neo4j_link_calls_uses_callee_uid_when_available():
 
     query = tx.run.call_args.args[0]
     params = tx.run.call_args.kwargs
-    assert "uid: $callee_uid" in query
+    assert "uid: call.callee_uid" in query
     assert ":CALLS_SCOPED" in query
     assert params["workspace_id"] == "acme/repo@feature"
+
+
+def test_neo4j_link_calls_batches_same_resolution_mode():
+    tx = MagicMock()
+
+    Neo4jClient._create_call_relations(
+        tx,
+        [
+            {
+                "caller_uid": "caller-1",
+                "callee_uid": "callee-1",
+                "rel_type": "CALLS_SCOPED",
+                "call_site_line": 3,
+            },
+            {
+                "caller_uid": "caller-2",
+                "callee_uid": "callee-2",
+                "rel_type": "CALLS_SCOPED",
+                "call_site_line": 9,
+            },
+        ],
+        "acme/repo@feature",
+    )
+
+    tx.run.assert_called_once()
+    query = tx.run.call_args.args[0]
+    params = tx.run.call_args.kwargs
+    assert "UNWIND $calls AS call" in query
+    assert ":CALLS_SCOPED" in query
+    assert len(params["calls"]) == 2
 
 
 def test_workspace_resolver_parses_branch_header():

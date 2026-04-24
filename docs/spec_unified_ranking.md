@@ -86,6 +86,7 @@ Default weights (tuned via eval harness):
 | `ε` | 0.5 | Cost penalty (same as existing BFS) |
 
 Scores are normalized to `[0, 1]` per track before blending — otherwise raw BFS scores (~1.2 for caller edges) dominate raw cosine similarities (~0.8).
+? Normalize before blend
 
 ### 2.4 Candidate Generation
 
@@ -99,6 +100,8 @@ Scores are normalized to `[0, 1]` per track before blending — otherwise raw BF
 - Docs appearing only in vector track: keep; `graph_score = 0` unless a `COVERS` edge links the doc to any already-pooled symbol (then graph_score = prior × best_linked_symbol_score).
 
 ### 2.5 Budget Fill
+
+? consider rank_score = blended_score / log(token_cost + k)
 
 Same "skip but keep trying" loop as the current BFS, now over the unified pool sorted by blended score:
 
@@ -216,3 +219,73 @@ See [spec_prompt_contract_observability.md](spec_prompt_contract_observability.m
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — surfacing scores in the contract.
 - [spec_eval_harness.md](spec_eval_harness.md) — tuning substrate for α/β/γ/δ/ε.
 - [spec_tenant_api_graph.md](spec_tenant_api_graph.md) — planned tenant API contract candidates and direction/depth policy.
+
+
+PS: 
+Meanings:
+## PS: Marginal Utility Context Selection
+
+Current model:
+
+```text
+pool → sort by blended_score → greedy fill
+
+Proposed change:
+
+pool → sort by blended_score → incremental selection with stop condition
+Utility Function
+utility(c) =
+    blended_score(c)
+  - redundancy(c, chosen)
+  - λ * token_cost(c)
+Redundancy
+
+Start with cheap deterministic checks:
+
+same symbol UID
+overlapping line ranges
+doc chunk covers an already selected symbol
+
+Optional later enhancement:
+
+embedding similarity against already selected candidates
+
+This should be added carefully because it increases runtime complexity.
+
+Token Cost Penalty
+λ ≈ 0.003 – 0.01
+
+Tune through eval harness.
+
+Stop Condition
+for c in pool:
+    u = utility(c)
+
+    if u < min_utility:
+        break
+
+    if spent + c.token_cost > hard_cap:
+        continue
+
+    chosen.append(c)
+    spent += c.token_cost
+Expected Behavior
+
+Simple questions should stop after a few high-utility candidates:
+
+~800–1500 tokens
+
+Complex questions should continue longer because useful candidates keep passing the utility threshold:
+
+larger context, possibly above the base budget
+
+However, expansion should still be bounded by an adaptive cap:
+
+effective_cap = base_budget + trust_credit
+
+or:
+
+effective_cap = base_budget + cumulative_debit_allowance
+
+The goal is not to fill the budget.
+The goal is to stop when additional context no longer pays for its token cost.
