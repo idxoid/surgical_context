@@ -136,7 +136,7 @@ class UnifiedRanker:
 
     PREAMBLE_TOKENS = 100
 
-    # Per-intent floors: we must not stop based on marginal gain 
+    # Per-intent floors: we must not stop based on marginal gain
     # until we hit these minimums to ensure grounding.
     _INTENT_FLOORS = {
         Intent.NAVIGATION: 500,
@@ -145,6 +145,7 @@ class UnifiedRanker:
         Intent.NEW_FEATURE: 2500,
         Intent.REFACTORING: 2500,
         Intent.DESIGN_QUESTION: 3500,
+        Intent.IMPACT_ANALYSIS: 3000,
     }
 
     # Copied from GraphExpander to keep UnifiedRanker self-contained.
@@ -276,7 +277,10 @@ class UnifiedRanker:
         for c in pool:
             c.evidence_role = self._infer_role(c)
             c.intent_weight = intent_priors.get(c.kind, 0.3)
-            c.noise_factor = compute_noise_factor(c.file_path, c.name)
+            if intent == Intent.IMPACT_ANALYSIS:
+                c.noise_factor = 1.0  # tests/examples are load-bearing for impact questions
+            else:
+                c.noise_factor = compute_noise_factor(c.file_path, c.name)
 
         # 7. Normalize each track to [0, 1]
         self._normalize(pool)
@@ -839,6 +843,8 @@ class UnifiedRanker:
             return {"symbol": 0.6, "doc": 0.2}
         elif intent in (Intent.NEW_FEATURE, Intent.DESIGN_QUESTION):
             return {"symbol": 0.2, "doc": 0.6}
+        elif intent == Intent.IMPACT_ANALYSIS:
+            return {"symbol": 0.3, "doc": 0.5}  # tests/examples are load-bearing
         else:  # EXPLORATION, REFACTORING
             return {"symbol": 0.4, "doc": 0.4}
 
