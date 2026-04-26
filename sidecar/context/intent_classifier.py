@@ -12,6 +12,7 @@ class Intent(Enum):
     EXPLORATION = "exploration"  # "What does this do? How does it work?"
     NEW_FEATURE = "new_feature"  # "Add X that does Y. Implement Z."
     DESIGN_QUESTION = "design_question"  # "How should we do this? What pattern?"
+    IMPACT_ANALYSIS = "impact_analysis"  # "If I change X, what breaks? What's affected?"
 
 
 class IntentConfig:
@@ -28,6 +29,7 @@ class IntentConfig:
         Intent.EXPLORATION: ["code", "concept", "architecture", "cross_refs", "specs", "idea"],
         Intent.NEW_FEATURE: ["idea", "concept", "architecture", "specs", "cross_refs", "code"],
         Intent.DESIGN_QUESTION: ["concept", "idea", "architecture", "specs", "code", "cross_refs"],
+        Intent.IMPACT_ANALYSIS: ["cross_refs", "code", "specs", "architecture", "concept", "idea"],
     }
 
 
@@ -92,6 +94,15 @@ class IntentClassifier:
             "recommend",
             "suggestion",
         },
+        Intent.IMPACT_ANALYSIS: {
+            "most likely to break",
+            "most likely to be affected",
+            "likely to break",
+            "what would break",
+            "what parts",
+            "what breaks",
+            "are most likely",
+        },
         Intent.NAVIGATION: {
             "where",
             "locate",
@@ -129,10 +140,11 @@ class IntentClassifier:
 
         query_lower = query.lower()
 
-        # Greedy matching: debug, refactor, new feature, design, navigation, exploration
-        # Order matters: debug and refactor are more specific than exploration
+        # Greedy matching: debug, impact analysis, refactor, new feature, design, navigation, exploration
+        # Order matters: impact analysis must come before refactoring (impact contains "change")
         order = [
             Intent.DEBUGGING,
+            Intent.IMPACT_ANALYSIS,
             Intent.REFACTORING,
             Intent.NEW_FEATURE,
             Intent.DESIGN_QUESTION,
