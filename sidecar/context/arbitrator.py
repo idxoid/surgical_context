@@ -131,6 +131,7 @@ class ContextArbitrator:
 
         ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
         ctx.stopped_reason = subgraph.stopped_reason
+        ctx.mechanism = ranker._determine_mechanism(target)
         ctx.pruned_details = subgraph.pruned_details
         ctx.missing_roles = missing_roles
         ctx.budget["cache_hits"] = sorted(set(cache_hits))

@@ -39,6 +39,7 @@ class PromptContext:
     tier_tokens: dict[str, int] = field(default_factory=dict)  # token counts per tier
     trace_id: str = ""
     stopped_reason: str = ""
+    mechanism: str = ""
     pruned_details: list[dict] = field(default_factory=list)
     missing_roles: list[str] = field(default_factory=list)
     workspace_id: str = ""
