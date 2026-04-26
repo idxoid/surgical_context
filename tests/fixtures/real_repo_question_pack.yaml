@@ -97,6 +97,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
+    mechanism: fastapi_openapi_generation
+    required_roles: [public_entrypoint, schema_generator, route_registry, docs_or_concept]
     expected_symbols: [get_openapi, openapi, routes]
     expected_files: [fastapi/openapi/utils.py, fastapi/applications.py]
 
@@ -108,6 +110,8 @@ questions:
     difficulty: hard
     intent: impact_analysis
     expected_mode: symbol
+    mechanism: fastapi_serialization_impact
+    required_roles: [affected_runtime, affected_public_api, affected_tests]
     expected_symbols: [serialize_response, APIRoute, response_model]
     expected_files: [fastapi/routing.py, tests]
 
@@ -119,6 +123,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
+    mechanism: fastapi_docs_ui_wiring
+    required_roles: [public_entrypoint, ui_renderer, route_registry, docs_or_concept]
     expected_symbols: [FastAPI, swagger_ui_html, redoc_html, setup]
     expected_files: [fastapi/applications.py, fastapi/openapi/docs.py]
 
@@ -130,6 +136,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: workspace
+    mechanism: nonexistent_symbol_nearest_mechanism
+    required_roles: [negative_lookup, nearest_real_mechanism, handler_or_lifecycle, route_object]
     expected_symbols: [APIRoute, get_request_handler, Dependant]
     expected_files: [fastapi/routing.py, fastapi/dependencies]
 
@@ -141,6 +149,8 @@ questions:
     difficulty: hard
     intent: trace_dependency
     expected_mode: symbol
+    mechanism: pydantic_validation_core_bridge
+    required_roles: [public_entrypoint, model_class, validator_handle, core_runtime]
     expected_symbols: [BaseModel, model_validate, __pydantic_validator__]
     expected_files: [pydantic/main.py, pydantic]
 
@@ -152,6 +162,8 @@ questions:
     difficulty: hard
     intent: explain_behavior
     expected_mode: workspace
+    mechanism: pydantic_python_core_boundary
+    required_roles: [python_wrapper, core_runtime, serializer_handle, validator_handle]
     expected_symbols: [BaseModel, SchemaValidator, SchemaSerializer]
     expected_files: [pydantic/main.py, pydantic-core]
 
@@ -163,6 +175,8 @@ questions:
     difficulty: medium
     intent: trace_dependency
     expected_mode: symbol
+    mechanism: pydantic_serialization_bridge
+    required_roles: [public_entrypoint, serializer_handle, core_runtime]
     expected_symbols: [model_dump, __pydantic_serializer__]
     expected_files: [pydantic/main.py]
 
@@ -174,6 +188,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
+    mechanism: pydantic_json_schema_generation
+    required_roles: [public_entrypoint, schema_generator, schema_module]
     expected_symbols: [model_json_schema, GenerateJsonSchema, json_schema]
     expected_files: [pydantic/json_schema.py, pydantic/main.py]
 
@@ -185,6 +201,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: workspace
+    mechanism: pydantic_v1_compat_surface
+    required_roles: [public_entrypoint, compat_bridge, docs_or_concept]
     expected_symbols: [v1, BaseModel]
     expected_files: [pydantic, docs]
 
@@ -196,6 +214,8 @@ questions:
     difficulty: hard
     intent: impact_analysis
     expected_mode: symbol
+    mechanism: pydantic_alias_impact
+    required_roles: [affected_runtime, affected_public_api, affected_tests]
     expected_symbols: [Field, AliasChoices, AliasPath]
     expected_files: [pydantic/fields.py, pydantic]
 
@@ -207,6 +227,8 @@ questions:
     difficulty: medium
     intent: trace_dependency
     expected_mode: symbol
+    mechanism: pydantic_validation_error_assembly
+    required_roles: [public_entrypoint, core_runtime, error_model]
     expected_symbols: [ValidationError]
     expected_files: [pydantic]
 
@@ -218,6 +240,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: workspace
+    mechanism: nonexistent_symbol_nearest_mechanism
+    required_roles: [negative_lookup, nearest_real_mechanism, schema_generator, schema_module]
     expected_symbols: [GenerateJsonSchema, model_json_schema, json_schema]
     expected_files: [pydantic/json_schema.py, pydantic/main.py]
 
@@ -229,6 +253,8 @@ questions:
     difficulty: medium
     intent: trace_dependency
     expected_mode: symbol
+    mechanism: rtk_slice_generation
+    required_roles: [public_entrypoint, action_creator_factory, reducer_builder, composition_result]
     expected_symbols: [createSlice, createAction, createReducer]
     expected_files: [packages/toolkit/src/createSlice.ts, packages/toolkit/src/createAction.ts, packages/toolkit/src/createReducer.ts]
 
@@ -240,6 +266,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
+    mechanism: rtk_store_configuration
+    required_roles: [public_entrypoint, middleware_builder, enhancer_builder, devtools_config]
     expected_symbols: [configureStore, getDefaultMiddleware]
     expected_files: [packages/toolkit/src/configureStore.ts, packages/toolkit/src/getDefaultMiddleware.ts]
 
@@ -251,6 +279,8 @@ questions:
     difficulty: medium
     intent: trace_dependency
     expected_mode: symbol
+    mechanism: rtk_async_thunk_lifecycle
+    required_roles: [public_entrypoint, lifecycle_action_creators, async_executor, error_handling]
     expected_symbols: [createAsyncThunk]
     expected_files: [packages/toolkit/src/createAsyncThunk.ts]
 
@@ -262,6 +292,8 @@ questions:
     difficulty: hard
     intent: explain_behavior
     expected_mode: symbol
+    mechanism: rtk_query_api_slice
+    required_roles: [public_entrypoint, endpoint_definition, generated_api_surface, store_integration]
     expected_symbols: [createApi]
     expected_files: [packages/toolkit/src/query, packages/toolkit/src]
 
@@ -273,6 +305,8 @@ questions:
     difficulty: hard
     intent: impact_analysis
     expected_mode: symbol
+    mechanism: rtk_action_type_impact
+    required_roles: [affected_runtime, affected_public_api, affected_tests]
     expected_symbols: [createSlice, createAction]
     expected_files: [packages/toolkit/src/createSlice.ts, packages/toolkit/src/createAction.ts, packages/toolkit]
 
@@ -284,6 +318,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
+    mechanism: rtk_listener_middleware
+    required_roles: [public_entrypoint, action_interceptor, side_effect_executor, docs_or_concept]
     expected_symbols: [createListenerMiddleware]
     expected_files: [packages/toolkit/src/listenerMiddleware]
 
@@ -295,6 +331,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: workspace
+    mechanism: rtk_monorepo_structure
+    required_roles: [public_entrypoint, core_runtime, docs_or_concept, supporting_surface]
     expected_symbols: [configureStore, createSlice, createApi]
     expected_files: [packages, docs, examples, website]
 
@@ -306,5 +344,7 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: workspace
+    mechanism: nonexistent_symbol_nearest_mechanism
+    required_roles: [negative_lookup, nearest_real_mechanism, public_entrypoint, composition_result]
     expected_symbols: [createSlice, combineSlices, combineReducers]
     expected_files: [packages/toolkit/src/createSlice.ts, packages/toolkit/src/combineSlices.ts]
