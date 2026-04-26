@@ -32,35 +32,72 @@ Required topologies:
 - A module-level constant referenced by 10+ symbols — tests constant pruning.
 - A file with a syntax error — tests graceful indexer failure.
 
-### 3.2 Question set — `tests/fixtures/questions.yaml`
+### 3.2 Question set — `tests/fixtures/real_repo_question_pack.yaml`
 
 ```yaml
-- id: q001
-  symbol: process_payment
-  question: "What validates the amount before the DB write?"
-  expected_symbols: [validate_amount, PaymentError]
-  expected_doc_chunks: ["docs/payments.md::2"]
-  difficulty: easy
-  intent: trace_dependency
+- id: fastapi_q06
+  repo: fastapi
+  symbol: serialize_response
+  question: "If I change response model serialization behavior, what parts of the framework and tests are most likely to break?"
+  expected_mode: symbol
+  mechanism: fastapi_serialization_impact
+  required_roles: [affected_runtime, affected_public_api, affected_tests]
+  expected_symbols: [...]
+  expected_files: [...]
+  difficulty: medium
+  intent: impact_analysis
 ```
 
-Each entry: `id`, `symbol`, `question`, `expected_symbols` (must appear in `graph_context`), `expected_doc_chunks` (must appear in `documentation`), `difficulty` (easy/medium/hard), `intent` (`trace_dependency`, `explain_behavior`, `find_caller`, `impact_analysis`).
+Each entry: `id`, `repo`, `symbol`, `question`, `expected_mode` (`symbol` or `workspace`), **`mechanism`** (code relationship type), **`required_roles`** (list of roles ranker must fulfill), `expected_symbols`, `expected_files`, `difficulty`, `intent`.
 
-Target: 30 entries for v1, evenly split across intents. Grow to 100 before Phase 4.
+**Phase 4 additions:**
+- **`mechanism`**: Classifies which code relationship is being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`, `rtk_slice_generation`). Enables diagnosing architectural gaps vs. ranking noise.
+- **`required_roles`**: List of code roles the ranker must find (e.g., `[public_entrypoint, route_registry, handler_or_lifecycle]`). Used to compute `role_recall` metric.
+- **`expected_mode`**: Either `symbol` (should find by name) or `workspace` (correct answer is "not found" — used for negative test cases like nonexistent symbols).
+
+Target: 30 entries for Phase 2.5 (fixture), 20+ for Phase 4 (real-repo pack, FastAPI/Pydantic/Redux Toolkit).
 
 ## 4. Metrics
+
+### 4.1 Symbol Retrieval Metrics (legacy, used for fixture pack)
 
 | Metric | Formula | Failure threshold |
 |---|---|---|
 | `recall@k` | `|retrieved ∩ expected| / |expected|` at k=5 graph deps | <0.80 blocks merge |
 | `precision@k` | `|retrieved ∩ expected| / |retrieved|` | <0.60 blocks merge |
+
+### 4.2 Mechanism-Aware Metrics (Phase 4, used for real-repo pack)
+
+| Metric | Formula | Semantics |
+|---|---|---|
+| **`role_recall`** | `(required_roles not in missing_roles) / len(required_roles)` | Fraction of required code roles the ranker fulfilled. Diagnostic for code relationship discovery gaps. |
+| **`file_recall`** | `|retrieved_files ∩ expected_files| / |expected_files|` | Fraction of expected files included. Tests ranking noise and code coverage. |
+| **Intent-stratified pass gate** | See table below | Different intents have different acceptable thresholds. |
+
+**Intent-Stratified Pass Gates (Phase 4):**
+
+| Intent | role_recall floor | file_recall floor | Gate semantics |
+|---|---|---|---|
+| `explain_behavior` | 0.70 | 0.50 | **AND** (both required) |
+| `trace_dependency` | 0.80 | 0.70 | **AND** (both required) |
+| `impact_analysis` | 0.60 | 0.50 | **OR** (either sufficient) |
+
+**Rationale:**
+- **Explanation**: Moderate role coverage + moderate file coverage = good answer
+- **Tracing**: Deep understanding (80% roles) + broad coverage (70% files) required
+- **Impact**: Either test coverage (files) OR symbol coverage (roles) proves cascade exposure; don't need both
+
+### 4.3 Token and Assembly Metrics (all packs)
+
+| Metric | Formula | Failure threshold |
+|---|---|---|
 | `tokens_surgical` | tiktoken count of `to_system_prompt()` output | regression >10% blocks |
 | `tokens_carpet_bomb` | tiktoken count of all files touched by any expected symbol | baseline only |
 | `reduction_ratio` | `1 - tokens_surgical / tokens_carpet_bomb` | <0.50 blocks (target 0.60–0.80 per [architectura.md §1.3](architectura.md)) |
 | `assembly_ms_p50` | wall-clock of `ContextArbitrator.get_context_for_symbol` | >200ms blocks |
 | `assembly_ms_p95` | same, p95 | >500ms blocks |
 
-Quality metric (answer correctness) is **intentionally deferred** — it requires an LLM judge, which introduces noise and cost. Recall@k is a proxy: if the right symbols are in the context, quality is the model's problem, not ours.
+**Note:** Quality metric (answer correctness) is **intentionally deferred** — it requires an LLM judge, which introduces noise and cost. Recall@k and role_recall are proxies: if the right symbols and roles are in the context, quality is the model's problem, not ours.
 
 ## 5. Module Layout
 

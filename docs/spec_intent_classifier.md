@@ -80,6 +80,28 @@ concept → idea → architecture → specs → code → cross-refs
 
 ---
 
+### 7. Impact Analysis (Phase 4)
+**Question pattern:** "If I change X, what breaks? What are the most likely affected parts? What tests depend on this?"
+
+**Priority order:**
+```
+cross-refs → code → specs → architecture → concept → idea
+```
+
+**Special handling:** Test files and examples are **not penalized** for the `noise_factor` penalty (std 0.15). Instead, impact analysis uses `noise_factor = 1.0` because tests are load-bearing evidence of what breaks. Additionally, impact analysis questions get intent-specific priors: `symbol = 0.3` (downrank primary symbol), `doc = 0.5` (uprank test files and documentation).
+
+**Rationale:** Change impact is about finding what *depends* on you, not what you depend on. Callers (cross-refs) matter most. Code under test is high-signal — if it's not indexed as a symbol, the test file itself is evidence of cascade exposure. A minimum token floor (3000) ensures test files surface even if the ranker initially deprioritizes them.
+
+**Keywords matched:** "most likely to break", "most likely to be affected", "likely to break", "what would break", "what parts", "what breaks", "are most likely"
+
+**Ranker behavior:**
+- Floor: 3000 minimum token budget
+- Noise suppression: `noise_factor = 1.0` (tests not penalized)
+- Priors: `symbol_prior = 0.3`, `doc_prior = 0.5` (emphasize dependencies + tests)
+- Pass gate: **OR** semantics — either `role_recall ≥ 0.60` OR `file_recall ≥ 0.50` is sufficient (tests may not be indexed as symbols)
+
+---
+
 ## Content Tiers (Definition)
 
 | Tier | Content | Source |
@@ -105,12 +127,13 @@ For more sophisticated payloads, allocate budget across tier groups rather than 
 | exploration | 40 | 40 | 20 |
 | new feature | 30 | 40 | 30 |
 | design question | 35 | 35 | 30 |
+| **impact analysis** | **60** | **25** | **15** |
 
 **Primary** = top 2 tiers in priority order  
 **Secondary** = middle 2 tiers  
 **Tail** = bottom 2 tiers
 
-This prevents a single over-eager tier from starving others. Example: in debugging, code gets ~50% of the budget, cross-refs get ~30%, and specs/architecture/concepts/ideas share ~20%.
+This prevents a single over-eager tier from starving others. Example: in debugging, code gets ~50% of the budget, cross-refs get ~30%, and specs/architecture/concepts/ideas share ~20%. For impact analysis, cross-refs (callers) dominate at 60%, with code and docs splitting the remainder to capture test coverage.
 
 ---
 
