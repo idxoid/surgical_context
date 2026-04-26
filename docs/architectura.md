@@ -89,12 +89,14 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 
 ### 2.4. Observability (Partially Implemented)
 
-The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency. Runtime metrics and trace IDs exist; the remaining work is richer prompt-contract explanation and local release SLO checks.
+The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency using mechanism-aware classification. Runtime metrics and trace IDs exist; the remaining work is richer prompt-contract explanation and local release SLO checks.
 
 - **Structured logs** per pipeline stage with fields: `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`.
 - **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts, cache hit rates.
 - **Token baselines**: every `/ask` logs both the surgical token count and an estimate of the "carpet-bomb" equivalent (all open files). The delta is the core KPI.
-- **Retrieval recall@k** measured against a golden fixture set on every CI run.
+- **Mechanism-aware retrieval metrics**: questions are classified by mechanism type (code relationship tested: route registration, dependency injection, validation bridge, etc.) and evaluated using **role_recall** (fraction of required code roles fulfilled) + intent-stratified pass gates (file_recall + role_recall thresholds vary by query intent). This enables diagnosing whether failures are architectural gaps (unfixable by tuning) vs. ranking improvements (tunable).
+- **Intent-stratified evaluation**: explain_behavior queries (role ≥ 0.70, file ≥ 0.50), trace_dependency queries (role ≥ 0.80, file ≥ 0.70), impact_analysis queries (role ≥ 0.60, file ≥ 0.50 — OR gate, either signal enough).
+- **Role recall metric**: computed as (required_roles not in ctx.missing_roles) / len(required_roles). Diagnostic for code relationship gaps in the ranker.
 
 Without complete prompt-contract observability, production claims in §1.3 remain hard to debug outside benchmark runs.
 
@@ -196,16 +198,16 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
-3. **Intent classification**: detect query intent (navigation, debugging, refactor, exploration, new feature, design question) → choose tier priority order.
+3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get noise suppression (tests/examples not penalized) and intent-specific priors for ranking.
 4. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
-5. **Graph expansion** (`GraphExpander`): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) constrained by token budget + depth limit. Returns priority-scored subgraph.
+5. **Unified graph + semantic ranking** (`UnifiedRanker`): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Constrained by token budget + intent-aware noise filtering. Returns priority-scored candidates with both graph and semantic relevance.
 6. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
 7. **Deduplication** (`ContextDeduplicator`): remove redundant symbols and overlapping doc chunks.
-8. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol.
+8. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol. Signature-only resolution for distant neighbors and massive targets.
 9. **Doc retrieval** (`DocResolver`): semantic search in LanceDB `docs` table → top-k chunks. Matched chunks have `[:COVERS]` edges to code symbols.
 10. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas → tenant API context), fill budget in order.
 11. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
-12. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
+12. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract with **mechanism**, **role_recall**, and intent-stratified pass gate metadata.
 13. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
 
 ### 4.2. Cold Start
@@ -309,7 +311,7 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
 }
 ```
 
-**Implemented metadata:** `mode`, `intent`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, `budget.ask_level`, dependency `depth`, `direction`, and `relevance_score`.
+**Implemented metadata:** `mode`, `intent`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, `budget.ask_level`, dependency `depth`, `direction`, and `relevance_score`. **New in Phase 4:** `mechanism` (mechanism type tested by this question), `missing_roles` (required code roles not fulfilled), `pruned_details` (candidates pruned due to budget constraints), `stopped_reason` (why expansion stopped: pool_exhausted, floor_unfilled_no_useful_candidates, etc.), `ranker` (which ranking strategy was used: unified or graph_only), and `ranker_weights` (α, β, γ, δ, ε tuning state).
 
 **Planned metadata:** `tenant_api_context`, `api_direction`, `tenant_link_depth`, service/contract provenance, and tenant API candidate scores. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
@@ -452,3 +454,62 @@ Graph, vector, and user-history storage live behind provider connector interface
 **Trade-off:** Provider abstraction slows early implementation and requires conformance tests. Accepted, because it prevents Neo4j/LanceDB/SQLite from becoming accidental lock-in and keeps enterprise deployment options credible.
 
 **Staging:** local v0.1 only needs provider boundaries around Neo4j, LanceDB, and SQLite. Real alternate backends move to the Team/Enterprise horizon after those contracts are stable.
+
+---
+
+## Phase 4: Mechanism-Aware Retrieval Evaluation ✅ COMPLETE
+
+**Goal:** Shift from "question pass rate optimization" to "mechanism coverage diagnosis." Classify questions by mechanism (what kind of code relationship they test: route registration, dependency injection, validation bridge, etc.) and evaluate using role-based recall + intent-stratified pass gates. This enables identifying whether failures are architectural gaps (unfixable by tuning) vs. ranking improvements (tunable).
+
+### 4.1. Mechanism Classification
+Every question in the real-repo pack is annotated with:
+- **mechanism**: The code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`, `rtk_slice_generation`)
+- **required_roles**: List of code roles the ranker must fulfill for a correct answer (e.g., `[public_entrypoint, route_registry, handler_or_lifecycle]`)
+- **expected_mode**: Either `symbol` (should find by name) or `workspace` (correct answer is "not found")
+
+This enables the benchmark to report *which mechanisms the ranker handles well* and *which gaps are actual code relationship discovery failures* vs. ranking noise.
+
+### 4.2. Intent-Aware Ranker
+Added `IMPACT_ANALYSIS` intent classification and intent-aware ranking noise suppression:
+
+- **IMPACT_ANALYSIS** (keyword: "most likely to break", "what parts", "what breaks"): get noise_factor=1.0 (tests/examples not penalized) because they are load-bearing for change impact analysis
+- **Other intents** (debugging, refactoring, navigation, etc.): get standard noise_factor computed from file type (tests penalized at 0.15)
+- **Intent floors**: IMPACT_ANALYSIS gets 3000-token minimum floor + special priors (symbol=0.3, doc=0.5) to surface test files and documentation
+
+This prevents impact analysis questions from being downranked just because they hit test files.
+
+### 4.3. Role Recall Metric
+Computed as: (required_roles not in ctx.missing_roles) / len(required_roles)
+
+- Returns 1.0 if no required_roles (fallback)
+- Diagnostic signal for code relationship gaps — higher role_recall means the ranker found code from more of the required roles
+- **Note:** For non-FastAPI questions (Pydantic, RTK), the ranker's internal role names diverge from YAML required_roles — treat as diagnostic, not hard truth
+
+### 4.4. Intent-Stratified Pass Gates
+Different query intents have different acceptable metrics:
+
+| Intent | role_recall floor | file_recall floor | Gate semantics |
+|---|---|---|---|
+| explain_behavior | 0.70 | 0.50 | **AND** — must pass both |
+| trace_dependency | 0.80 | 0.70 | **AND** — must pass both |
+| impact_analysis | 0.60 | 0.50 | **OR** — either signal is enough (tests may not be symbols) |
+
+This recognizes that:
+- Navigation/dependency tracing needs both deep code understanding AND file coverage
+- Explanation can work with moderate coverage if roles are well-chosen
+- Impact analysis can work with just test file coverage OR symbol coverage (either proves cascade exposure)
+
+### 4.5. Benchmark Output
+The benchmark now displays per-question:
+```
+✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=0.50 | 1750t | pool_exhausted
+```
+
+And summary:
+```
+Pass rate:       62.5% (5/8)
+...
+Role recall:     0.74
+```
+
+This makes it clear which mechanism-intent combinations are working well vs. needing tuning.
