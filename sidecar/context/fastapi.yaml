@@ -1,0 +1,9 @@
+framework: fastapi
+rules:
+  - id: fastapi_depends
+    type: call_argument_link
+    trigger_call: Depends
+    argument_index: 0
+    rel_type: SEMANTIC_HINT
+    metadata:
+      kind: dependency_injection

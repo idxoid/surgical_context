@@ -38,6 +38,24 @@ LANCEDB_DELETE_BATCH_SIZE = int(os.getenv("LANCEDB_DELETE_BATCH_SIZE", "256"))
 DOCS_TABLE = "docs"
 SYMBOLS_TABLE = "symbols"
 
+
+def _l2_to_score(distance: float) -> float:
+    """Map LanceDB L2 distance to a [0, 1] similarity score.
+
+    SentenceTransformer ``all-MiniLM-L6-v2`` produces L2-normalized vectors,
+    so for any two unit vectors ``a`` and ``b``:
+        ||a - b||² = 2 - 2·cos(a, b)
+    LanceDB returns the *non-squared* L2 distance ``d = ||a - b||``, so:
+        cos(a, b) = 1 - d² / 2
+    Mapping cosine similarity into [0, 1] gives ``(1 + cos) / 2``.
+
+    The previous formula ``max(0, 1 - d)`` cut off at d = 1.0, which throws
+    away signal from any moderately similar pair (typical similarities give
+    d in the 0.8–1.4 range). The corrected score keeps the ranking smooth.
+    """
+    cos = 1.0 - (distance * distance) / 2.0
+    return max(0.0, min(1.0, (1.0 + cos) / 2.0))
+
 DOCS_SCHEMA = pa.schema(
     [
         pa.field("id", pa.string()),
@@ -287,21 +305,41 @@ class LanceDBClient:
             progress_callback(f"add done in {time.perf_counter() - t0:.2f}s")
 
     def get_pending(self) -> dict[str, list[str]]:
-        """Returns {chunk_id: [name, ...]} for all chunks with pending identifiers."""
-        df = self._table.to_pandas()
-        return {
-            row["id"]: list(row["pending"]) for _, row in df.iterrows() if len(row["pending"]) > 0
-        }
+        """Returns {chunk_id: [name, ...]} for all chunks with pending identifiers.
+
+        Uses Lance's native ``WHERE`` clause so the scan is pushed down at
+        the storage layer instead of materializing the full table in
+        pandas just to filter it.
+        """
+        rows = self._scan_pending(columns=["id", "pending"])
+        return {row["id"]: list(row["pending"]) for row in rows}
 
     def get_pending_rows(self) -> list[dict]:
         """Return full doc rows that still have unresolved pending identifiers."""
-        df = self._table.to_pandas()
-        return [row.to_dict() for _, row in df.iterrows() if len(row["pending"]) > 0]
+        return self._scan_pending(columns=None)
+
+    def _scan_pending(self, *, columns: list[str] | None) -> list[dict]:
+        """Lance-native filtered scan for chunks with pending identifiers."""
+        try:
+            query = self._table.search().where(
+                "array_length(pending) > 0", prefilter=True
+            ).limit(0)
+            if columns:
+                query = query.select(columns)
+            return query.to_list()
+        except Exception:
+            # Fallback for older Lance / test fakes that don't support
+            # filter-only search. Pay the to_pandas cost only on the slow
+            # path; the production path stays fast.
+            df = self._table.to_pandas()
+            return [
+                row.to_dict() for _, row in df.iterrows() if len(row["pending"]) > 0
+            ]
 
     def _set_pending_row(self, row: dict, pending: list[str]):
         chunk_id = row["id"]
         try:
-            self._table.delete(f"id = '{chunk_id}'")
+            self._table.delete(f"id = '{self._quote_delete_value(chunk_id)}'")
         except Exception:
             pass
         vector = row["vector"]
@@ -374,11 +412,23 @@ class LanceDBClient:
         return len(rows_to_add)
 
     def set_pending(self, chunk_id: str, pending: list[str]):
-        df = self._table.to_pandas()
-        row = df[df["id"] == chunk_id]
-        if row.empty:
+        try:
+            rows = (
+                self._table.search()
+                .where(f"id = '{self._quote_delete_value(chunk_id)}'", prefilter=True)
+                .limit(1)
+                .to_list()
+            )
+        except Exception:
+            df = self._table.to_pandas()
+            matched = df[df["id"] == chunk_id]
+            if matched.empty:
+                return
+            self._set_pending_row(matched.iloc[0].to_dict(), pending)
             return
-        self._set_pending_row(row.iloc[0].to_dict(), pending)
+        if not rows:
+            return
+        self._set_pending_row(rows[0], pending)
 
     def search(self, query: str, limit: int = 5) -> list[dict]:
         vec = self._embed([query])[0]
@@ -404,7 +454,7 @@ class LanceDBClient:
         output = []
         for r in results:
             distance = r.get("_distance")
-            score = None if distance is None else max(0.0, 1.0 - float(distance))
+            score = None if distance is None else _l2_to_score(float(distance))
             output.append(
                 {
                     "id": r.get("id"),
@@ -516,7 +566,7 @@ class LanceDBClient:
                         "name": r["name"],
                         "file_path": r["file_path"],
                         "distance": distance,
-                        "score": max(0.0, 1.0 - float(distance)),
+                        "score": _l2_to_score(float(distance)),
                     }
                 )
         return out

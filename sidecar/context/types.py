@@ -38,6 +38,9 @@ class PromptContext:
     intent: str = ""  # e.g. "navigation", "debugging", "refactor", etc.
     tier_tokens: dict[str, int] = field(default_factory=dict)  # token counts per tier
     trace_id: str = ""
+    stopped_reason: str = ""
+    pruned_details: list[dict] = field(default_factory=list)
+    missing_roles: list[str] = field(default_factory=list)
     workspace_id: str = ""
     resolver_version: str = RESOLVER_VERSION
     stage_timings_ms: dict[str, float] = field(default_factory=dict)
@@ -90,6 +93,9 @@ class PromptContext:
             "metadata": {
                 "query_intent": self.intent,
                 "tiers_used": tiers_used,
+                "stopped_reason": self.stopped_reason,
+                "missing_roles": self.missing_roles,
+                "pruned_count": len(self.pruned_details),
                 "tier_tokens": self.tier_tokens,
                 "tokens_primary": self.tier_tokens.get("code", 0),
                 "tokens_graph": self.tier_tokens.get("cross_refs", 0),
@@ -169,6 +175,8 @@ class SubgraphNode:
     direction: str
     depth: int
     relevance_score: float
+    evidence_role: str = ""
+    render_mode: str = "full"
     file_hash: str = ""
 
 
@@ -179,3 +187,5 @@ class Subgraph:
     primary: SubgraphNode
     nodes: list[SubgraphNode]
     budget: dict
+    stopped_reason: str = ""
+    pruned_details: list[dict] = field(default_factory=list)

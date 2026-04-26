@@ -59,9 +59,20 @@ class TreeSitterAdapter(LanguageAdapter):
         self.parser = Parser()
         self.parser.set_language(self.language)
 
-    def extract_symbols(self, source_code: str, file_path: str) -> list[SymbolMetadata]:
-        """Extract functions, classes, and module-level constants from source code."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
+    def _parse(self, source_code: str):
+        """Parse source code into a tree-sitter tree."""
+        return self.parser.parse(bytes(source_code, "utf8"))
+
+    def extract_symbols(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[SymbolMetadata]:
+        """Extract functions, classes, and module-level constants from source code.
+
+        ``tree`` may be passed by callers (e.g. ``extract_all``) that already
+        have a parsed tree-sitter tree, to avoid re-parsing.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
         query = self.language.query(self.symbol_query)
         captures = query.captures(tree.root_node)
 
@@ -125,9 +136,12 @@ class TreeSitterAdapter(LanguageAdapter):
                 )
         return symbols
 
-    def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
+    def extract_calls_from_source(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
         """Extract function call edges from source code with call type classification."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
+        if tree is None:
+            tree = self._parse(source_code)
         query = self.language.query(self.call_query)
         captures = query.captures(tree.root_node)
 
@@ -174,3 +188,18 @@ class TreeSitterAdapter(LanguageAdapter):
         qualified_name = qualified_name_for(node, source_code, file_path)
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
+
+    def extract_all(self, source_code: str, file_path: str):
+        """Parse once, then run all four extractions over the same AST.
+
+        Tree-sitter trees are immutable and cheap to share across queries
+        within a single thread. ``FastExtractor`` already gives each worker
+        its own adapter instance via ``_ThreadLocalAdapters``, so the tree
+        we hold here never crosses threads.
+        """
+        tree = self._parse(source_code)
+        symbols = self.extract_symbols(source_code, file_path, tree=tree)
+        calls = self.extract_calls_from_source(source_code, file_path, tree=tree)
+        imports = self.extract_imports(source_code, file_path, tree=tree)
+        inheritance = self.extract_inheritance(source_code, file_path, tree=tree)
+        return symbols, calls, imports, inheritance

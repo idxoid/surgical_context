@@ -1,7 +1,33 @@
 from unittest.mock import MagicMock
 
 from sidecar.indexer import anchor
-from sidecar.indexer.anchor import _add_covers_edges, _add_covers_edges_batch, _write_anchors
+from sidecar.indexer.anchor import (
+    _add_covers_edges,
+    _add_covers_edges_batch,
+    _matches_allowed_prefix,
+    _normalize_allowed_prefixes,
+    _write_anchors,
+)
+
+
+def test_normalize_allowed_prefixes_resolves_and_deduplicates(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+
+    prefixes = _normalize_allowed_prefixes(
+        [str(docs_dir), str(docs_dir / ".." / "docs"), None, ""]
+    )
+
+    assert prefixes == [str(docs_dir.resolve())]
+
+
+def test_matches_allowed_prefix_accepts_nested_file_only(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    allowed = [str(docs_dir.resolve())]
+
+    assert _matches_allowed_prefix(str(docs_dir / "a.md"), allowed) is True
+    assert _matches_allowed_prefix(str(tmp_path / "other" / "a.md"), allowed) is False
 
 
 def test_add_covers_edges_uses_unwind_for_bulk_uids():

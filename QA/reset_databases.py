@@ -197,6 +197,7 @@ def main() -> int:
             workspace_id=resolved_workspace_id,
             project_path=resolved_project_path,
             docs_path=resolved_docs_path,
+            wipe_workspace=True,
         )
 
     print("[reset] complete")

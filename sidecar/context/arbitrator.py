@@ -10,7 +10,12 @@ from sidecar.context.graph_expander import GraphExpander
 from sidecar.context.intent_classifier import IntentClassifier
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext
-from sidecar.context.unified_ranker import UnifiedRanker, VectorSearcher
+from sidecar.context.unified_ranker import (
+    DEFAULT_WEIGHTS,
+    RankerWeights,
+    UnifiedRanker,
+    VectorSearcher,
+)
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
@@ -24,18 +29,20 @@ class ContextArbitrator:
         vector_db=None,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
         cache: LayeredCache | None = None,
+        ranker_weights: RankerWeights | None = None,
     ):
         self.db = neo4j_client
         self.overlay = overlay
         self.vector_db = vector_db
         self.workspace_id = workspace_id
         self.cache = cache or default_cache
+        self.ranker_weights = ranker_weights or DEFAULT_WEIGHTS
 
     def get_context_for_symbol(
         self,
         symbol_name: str,
         question: str = "",
-        token_budget: int = 40000,
+        token_budget: int = 4000,
     ) -> PromptContext | str:
         """Orchestrate the pipeline: expand → deduplicate → resolve → compile (with intent-aware tier selection)."""
         intent = IntentClassifier.classify_intent(question)
@@ -60,6 +67,7 @@ class ContextArbitrator:
             self.db,
             VectorSearcher(self.vector_db),
             workspace_id=self.workspace_id,
+            weights=self.ranker_weights,
         )
 
         target = ranker.get_target(symbol_name)
@@ -68,17 +76,22 @@ class ContextArbitrator:
 
         reserved = UnifiedRanker.PREAMBLE_TOKENS + target.token_estimate
         if reserved > token_budget:
-            return (
-                f"Error: Token budget {token_budget} is too small for target symbol"
-                f" (needs {reserved} tokens)."
-            )
+            # Fallback: if target is massive, use a signature-only estimate (~10% of size or capped)
+            # and flag it for the resolver to only pull the head.
+            target.token_estimate = min(500, int(target.token_estimate * 0.1))
+            target.relation = "target_signature_only"
+            reserved = UnifiedRanker.PREAMBLE_TOKENS + target.token_estimate
+            if reserved > token_budget:
+                return f"Error: Token budget {token_budget} too small even for signature."
 
         query_str = f"{symbol_name} {question}".strip()
-        candidates, budget_info = ranker.rank(
+        candidates, budget_info, stopped_reason, pruned_details, missing_roles = ranker.rank(
             target, query_str, intent, token_budget
         )
 
-        subgraph, docs = ranker.candidates_to_subgraph(target, candidates, budget_info)
+        subgraph, docs = ranker.candidates_to_subgraph(
+            target, candidates, budget_info, stopped_reason, pruned_details
+        )
 
         # Resolve code for all nodes
         resolver = CodeResolver(self.overlay, workspace_id=self.workspace_id)
@@ -95,7 +108,18 @@ class ContextArbitrator:
                 cache_hits.append("l1_body")
                 code_map[node.uid] = (cached.code, cached.is_dirty)
                 continue
-            code, is_dirty = resolver.resolve(node.file_path, *line_range)
+
+            # OPTIMAL CONTEXT: Resolve signature-only for low-gain or distant neighbors
+            is_target_massive = (node.uid == subgraph.primary.uid and node.relation == "target_signature_only")
+            is_distant_neighbor = (node.render_mode == "signature_only")
+            
+            if is_target_massive or is_distant_neighbor:
+                # Pull only the head (signature + docstring) — approx first 15 lines
+                end_line = min(node.range[1], node.range[0] + 15)
+                code, is_dirty = resolver.resolve(node.file_path, node.range[0], end_line)
+            else:
+                code, is_dirty = resolver.resolve(node.file_path, *line_range)
+
             code_map[node.uid] = (code, is_dirty)
             if node.file_hash and not is_dirty:
                 self.cache.put_body(
@@ -106,8 +130,19 @@ class ContextArbitrator:
                 )
 
         ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
+        ctx.stopped_reason = subgraph.stopped_reason
+        ctx.pruned_details = subgraph.pruned_details
+        ctx.missing_roles = missing_roles
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
         ctx.budget["ranker"] = "unified"
+        w = self.ranker_weights
+        ctx.budget["ranker_weights"] = {
+            "alpha": w.alpha,
+            "beta": w.beta,
+            "gamma": w.gamma,
+            "delta": w.delta,
+            "epsilon": w.epsilon,
+        }
         return ctx
 
     # ------------------------------------------------------------------

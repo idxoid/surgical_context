@@ -24,7 +24,7 @@ def test_index_docs_returns_file_and_chunk_counts(tmp_path, monkeypatch):
     monkeypatch.setattr(
         docs_indexer,
         "link_docs_to_symbols",
-        lambda neo4j, lance, workspace_id="": linked.append(workspace_id),
+        lambda neo4j, lance, workspace_id="", **_: linked.append(workspace_id),
     )
 
     result = docs_indexer.index_docs(str(docs_dir), workspace_id="acme/repo@main")

@@ -43,7 +43,7 @@ class GraphExpander:
         self.db = neo4j_client
         self.workspace_id = workspace_id
 
-    def expand(self, symbol_name: str, token_budget: int = 40000
+    def expand(self, symbol_name: str, token_budget: int = 4000
                ) -> Subgraph | str:
         """Run token-budget BFS. Returns Subgraph or error string."""
         query = """

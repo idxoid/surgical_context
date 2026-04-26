@@ -41,6 +41,7 @@ from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.indexer.fast.collector import collect_files
 from sidecar.indexer.fast.extractor import ExtractedFile, FastExtractor, hash_file
 from sidecar.indexer.fast.schema import ensure_fast_indexes
+from sidecar.context.framework_hints import FrameworkHintsIndexer
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.silence import install as _silence
 from sidecar.workspace import WorkspaceResolver
@@ -227,6 +228,20 @@ def _apply_graph(
     reporter.stage_end("graph")
 
 
+def _framework_hints_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Apply framework-specific rules to create SEMANTIC_HINT edges."""
+    reporter.stage_start("framework_hints", total=len(diffs))
+    indexer = FrameworkHintsIndexer(db)
+    indexer.apply_rules(diffs, workspace_id)
+    reporter.stage_end("framework_hints")
+    return len(diffs)
+
+
 def _embed_phase(
     diffs: list[FileDiff],
     lance: LanceDBClient,
@@ -348,6 +363,7 @@ def run_fast_indexing(
         "parsed": 0,
         "symbols_encoded": 0,
         "symbols_removed": 0,
+        "framework_hints_applied": 0,
         "affects_rebuilt": 0,
         # Doc indexing is done by the caller (qa_benchmark calls
         # sidecar.indexer.docs.index_docs separately). We pre-seed these
@@ -414,6 +430,11 @@ def run_fast_indexing(
         _apply_graph(diffs, db, workspace_id, reporter)
         stats["timings_sec"]["graph"] = round(time.perf_counter() - t_stage, 3)
 
+        # Stage 4.5: framework hints
+        t_stage = time.perf_counter()
+        stats["framework_hints_applied"] = _framework_hints_phase(diffs, db, workspace_id, reporter)
+        stats["timings_sec"]["framework_hints"] = round(time.perf_counter() - t_stage, 3)
+
         # Stage 5: global embedding batch
         t_stage = time.perf_counter()
         encoded, removed = _embed_phase(diffs, lance, workspace_id, reporter)
@@ -438,7 +459,12 @@ def run_fast_indexing(
         from sidecar.indexer.anchor import resolve_pending_anchors
 
         reporter.stage_start("docs", total=1)
-        resolve_pending_anchors(db, lance, workspace_id=workspace_id)
+        resolve_pending_anchors(
+            db,
+            lance,
+            workspace_id=workspace_id,
+            allowed_prefixes=[project_path],
+        )
         reporter.step("docs")
         reporter.stage_end("docs")
         stats["timings_sec"]["docs"] = round(time.perf_counter() - t_stage, 3)

@@ -1,0 +1,187 @@
+Токены
+
+Дешёво, почти без потерь
+1. Уровни детализации для соседей (tiered snippets).
+Сейчас любой выбранный узел кладётся целым телом. Для соседей с низким relevance_score (нижний квартиль) или depth ≥ 2 достаточно signature + docstring, а для ещё более дальних — только сигнатуры. Парсер уже знает диапазон сигнатуры. Ожидаемо −30…50 % токенов на части graph_context, при этом LLM по-прежнему понимает контракт. Это самый большой выигрыш без архитектурных сдвигов.
+
+2. Семантический гейт поверх графового скора.
+Сейчас BFS ранжирует только по графовой топологии. Кандидат может быть структурно близким, но к вопросу нерелевантным. Одно embedding'овое сравнение question ↔ symbol.body_embedding (эмбеддинги уже лежат в LanceDB) как штраф в score(...) выкидывает 2–4 «мусорных» соседа бесплатно. Это по сути ранний кусок Phase 9.1 Unified Ranker — можно сделать как фичу в GraphExpander без новых спек.
+
+3. Минификация тела (AST-safe).
+Убрать пустые строки, pass после докстринга, избыточные блочные комментарии (не докстринги!) для узлов с depth ≥ 1. Детерминированно, обратимо для модели. +5…15 % дешевле.
+
+Средний риск, нужно мерить
+4. Question-aware бюджет вместо фиксированных 4000.
+Бенчмарк показал ровный ~883t на все вопросы — значит, простые запросы перетягивают бюджет на ненужное. Стартовать с меньшего (intent=navigation → 1500t, design_question → 4000t), и эскалировать только если классификатор даёт низкую уверенность. Нужна метрика «ответ прошёл с меньшим бюджетом?» — без этого тюнить вслепую.
+
+5. Семантический дедуп доков.
+В ContextDeduplicator._deduplicate_docs вы уже сознательно отложили: «performance cost exceeded benefit». Но если переключить с символьных нграмм на cosine между chunk embeddings (они уже есть в LanceDB), это почти бесплатно и отрежет перекрывающиеся секции спецификаций.
+
+6. Prompt caching на стабильном префиксе.
+Если на один символ задают несколько вопросов подряд — system preamble + graph_context должны идти под cache_control: ephemeral. По road_map это частично сделано в engine.py. Стоит проверить, что cache hit реально фиксируется и что префикс в прод-выдаче стабилен (нет «болтающихся» таймштампов / trace_id в кешируемой части).
+
+Что не трогать сейчас
+Дальше ужимать primary — здесь потери самые ощутимые.
+Обрезать тело по строкам без AST — ломает парсинг в модели.
+Дедуп по «похожим» символам (getter/setter boilerplate) — подождать observability (pruned[] из Phase 9.4), иначе не увидим, что выкинули лишнее.
+
+Индексы
+Прочитал code.py, extractor.py, docs.py, anchor.py, affects.py, lancedb_client.py. Узкие места видны очень чётко — перечислю по ROI.
+
+Крупные выигрыши (в разы)
+1. Один файл — одна tree-sitter прошивка.
+Сейчас в code.py:84,110,134,141 для каждого файла последовательно зовутся extractor.extract(), extract_calls(), extract_imports(), extract_inheritance() — файл читается и парсится 4 раза. Нужен один extract_all(file_path) -> (symbols, calls, imports, inheritance) поверх одного tree-sitter parse. На больших репо это 3–4× ускорение CPU-части.
+
+2. Параллелизм по файлам.
+code.py:187 — цикл for file_path in changed_files строго последовательный. index_file почти чисто per-file (Neo4j/Lance — thread-safe на запись). ThreadPoolExecutor(max_workers=os.cpu_count()) — tree-sitter отпускает GIL, IO тоже. Ожидаемо 4–8× на многоядерной машине.
+
+3. Хэширование — параллельно и с ранним пропуском.
+code.py:170-171 — hash_file читает все файлы целиком до любого решения. Для N файлов × M байт это блокирующая прелюдия. Решения: (а) ThreadPoolExecutor для хэшей, (б) сначала сравнить mtime/size со «snapshot» в Neo4j и хэшировать только кандидатов. Большинство файлов не меняется — хэш можно вообще пропустить.
+
+4. Глобальный батч эмбеддингов, а не per-file.
+code.py:129 вызывает upsert_symbol_embeddings после каждого файла. Файл на 5 символов = батч из 5 = SentenceTransformer недогружен. Переорганизовать пайплайн: сначала по всем изменённым файлам собрать symbol_docs, потом один upsert_symbol_embeddings с батчем 128+. На GPU это 5–10×, на CPU 2–3×.
+
+5. AFFECTS — один раз в конце, а не на каждый файл.
+code.py:146-150 — после каждого index_file зовётся AFFECTSIndexer.rebuild_affects(changed_uids). Это обратный BFS глубины 4 по ВСЕМУ графу, и он выполняется пока граф в промежуточном состоянии. При 100 изменённых файлов × средний changed_uids = сотни бесполезных перекрывающихся BFS. Копить changed_uids и вызвать rebuild_affects один раз после завершения цикла. Выигрыш — O(изменённых файлов) × (средний BFS cost) → к одному проходу.
+
+Средние (десятки процентов)
+6. Batch Neo4j через UNWIND.
+index_file делает ~6 отдельных транзакций per-file: upsert_file_structure, prune_symbols, clear_outgoing_symbol_edges, link_calls, delete_imports, link_imports, link_inheritance. Каждый — round-trip к bolt. Слить однотипные операции через UNWIND $rows AS row и собрать всё в 2–3 транзакции на файл. Дополнительно: батчить уже между файлами — один UNWIND на 50 файлов разом.
+
+7. Починить session churn в docs pipeline.
+anchor.py:147-151, 157-161, 192-202 — открывает новую session() на каждый hit/имя/pending внутри вложенных циклов. Для 460 чанков × ~5 hits = тысячи сессий. Решение: один session на чанк или один UNWIND на всё. Это сильно видимое время на index_docs.
+
+8. Убрать to_pandas() full-scan в Lance.
+lancedb_client.py:182-187 — get_pending() тянет всю таблицу docs в память, потом фильтрует в Python. set_pending:190-214 делает delete+insert одной строки через полный to_pandas() — O(chunks²) по IO. Использовать нативный фильтр Lance (search().where("array_length(pending) > 0")) или merge_insert.
+
+9. Batch delete в Lance.
+lancedb_client.py:284-288, 293-297 — delete по одному uid в цикле. Заменить на один delete(f"uid IN ('{a}','{b}',...)") (экранирование обязательно) или WHERE uid IN-style.
+
+10. Прифильтровать os.walk до gitignore.
+code.py:44 — os.walk спускается в node_modules, .git, .venv, dist, __pycache__ и только потом gitignore решает не парсить. Hardcode префильтр на имена директорий до вызова spec.match_file — на TS-проектах экономит секунды walk'а.
+
+Мелочи
+hash_file читает файл целиком в RAM — для JS-бандлов стоит стримить по блокам в sha256.
+compute_chunk_hash(text) в _embed вызывается дважды на один и тот же текст (lancedb_client.py:95 и 130) — мелочь, но в цикле на 10k символов заметно.
+f"id = '{chunk_id}'" и f"file_path = '{file_path}'" в Lance delete (lancedb_client.py:177, 196) — SQL-инъекция через имя файла. Заодно и починить.
+Рекомендую начинать так
+Порядок по отношению «результат / риск / размер PR»:
+
+#1 (одна парс-прошивка) + #5 (AFFECTS в конце) — это две чистые правки, нулевой риск, крупный эффект, один день работы.
+#4 (глобальный батч эмбеддингов) — тоже один день, но требует разделить index_file на фазу «парс + записать структуру» и фазу «эмбеддинги» с общим буфером.
+#2 (параллелизм по файлам) — после того как AFFECTS вынесен наружу; иначе гонка на одном и том же графе.
+Дальше — batch Neo4j/Lance и чистка docs pipeline.
+
+
+Context
+class APIRouter(routing.Router):
+    def get(...):
+        return self.api_route(path, methods=["GET"], ...)
+
+    def api_route(self, path: str, *, methods: list[str] | None = None, ...):
+        def decorator(func):
+            self.add_api_route(
+                path,
+                func,
+                methods=methods,
+                ...
+            )
+            return func
+        return decorator
+
+    def add_api_route(self, path: str, endpoint: Callable[..., Any], *, methods=None, ...):
+        route_class = route_class_override or self.route_class
+
+        route = route_class(
+            self.prefix + path,
+            endpoint=endpoint,
+            methods=methods,
+            dependencies=current_dependencies,
+            response_model=response_model,
+            response_class=current_response_class,
+            ...
+        )
+
+        self.routes.append(route)
+
+class APIRoute(routing.Route):
+    def __init__(self, path: str, endpoint: Callable[..., Any], *, methods=None, ...):
+        self.path = path
+        self.endpoint = endpoint
+        self.name = get_name(endpoint) if name is None else name
+        self.path_regex, self.path_format, self.param_convertors = compile_path(path)
+        self.methods = {method.upper() for method in methods or ["GET"]}
+
+        self.dependant = get_dependant(
+            path=self.path_format,
+            call=self.endpoint,
+            scope="function",
+        )
+
+        self._flat_dependant = get_flat_dependant(self.dependant)
+        self._embed_body_fields = _should_embed_body_fields(
+            self._flat_dependant.body_params
+        )
+
+        self.body_field = get_body_field(
+            flat_dependant=self._flat_dependant,
+            name=self.unique_id,
+            embed_body_fields=self._embed_body_fields,
+        )
+
+        self.app = request_response(self.get_route_handler())
+
+    def get_route_handler(self):
+        return get_request_handler(
+            dependant=self.dependant,
+            body_field=self.body_field,
+            response_field=self.response_field,
+            dependency_overrides_provider=self.dependency_overrides_provider,
+            ...
+        )
+def get_request_handler(dependant, body_field=None, response_field=None, ...):
+    async def app(request: Request) -> Response:
+        body = None
+
+        if body_field:
+            body_bytes = await request.body()
+            # parse JSON/form/body...
+
+        solved_result = await solve_dependencies(
+            request=request,
+            dependant=dependant,
+            body=body,
+            ...
+        )
+
+        if solved_result.errors:
+            raise RequestValidationError(...)
+
+        raw_response = await run_endpoint_function(
+            dependant=dependant,
+            values=solved_result.values,
+            is_coroutine=dependant.is_coroutine_callable,
+        )
+
+        content = await serialize_response(
+            field=response_field,
+            response_content=raw_response,
+            ...
+        )
+
+        return actual_response_class(content, ...)
+
+    return app
+
+def request_response(func):
+    async def app(scope, receive, send):
+        request = Request(scope, receive, send)
+        response = await func(request)
+        await response(scope, receive, send)
+
+    return app
+
+
+GraphExpander/scoring надо добустить по call-chain / constructor-chain, а не увеличивать общий бюджет.
+
+

@@ -28,6 +28,15 @@ class TestPythonImports:
         assert "sidecar.database.neo4j_client" in names
         assert "sidecar.context.types" in names
 
+    def test_keeps_repo_local_absolute_imports_even_if_package_name_is_common(self, adapter):
+        source = "from fastapi.routing import APIRoute\nimport fastapi.exceptions"
+        imports = adapter.extract_imports(source, "QA/repos/fastapi/fastapi/applications.py")
+
+        assert len(imports) == 2
+        names = {imp.target_module_name for imp in imports}
+        assert "fastapi.routing" in names
+        assert "fastapi.exceptions" in names
+
     def test_extract_inheritance_single(self, adapter):
         source = "class Child(Parent):\n    pass"
         inheritance = adapter.extract_inheritance(source, "test.py")

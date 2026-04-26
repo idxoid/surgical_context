@@ -141,7 +141,12 @@ def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict
 
     link_progress = _make_progress(1, "docs finalize", unit="step")
     t_stage = time.perf_counter()
-    link_stats = link_docs_to_symbols(neo4j, lance, workspace_id=workspace_id)
+    link_stats = link_docs_to_symbols(
+        neo4j,
+        lance,
+        workspace_id=workspace_id,
+        allowed_prefixes=[docs_path],
+    )
     link_seconds = time.perf_counter() - t_stage
     link_progress.update(1)
     link_progress.close()

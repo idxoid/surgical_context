@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from QA.qa_benchmark import (
     _empty_indexing_summary,
     _normalize_cleanup_prefixes,
@@ -10,7 +12,9 @@ from QA.qa_benchmark import (
     load_question_pack,
     load_questions,
     load_repository_meta,
+    resolve_questions_path,
     resolve_repo_docs_path,
+    run_benchmark,
     setup_fixture_db,
 )
 
@@ -33,6 +37,35 @@ def test_load_questions_filters_real_repo_core12_subset():
     assert len(questions) == 4
     assert all(question["repo"] == "fastapi" for question in questions)
     assert all(question["core12"] is True for question in questions)
+
+
+def test_resolve_questions_path_defaults_to_fixture_pack():
+    resolved = resolve_questions_path(None)
+
+    assert resolved.endswith("tests/fixtures/sample_project/questions.yaml")
+
+
+def test_resolve_questions_path_defaults_to_real_repo_pack_for_repo_filters():
+    resolved = resolve_questions_path(None, repo="fastapi")
+
+    assert resolved.endswith("tests/fixtures/real_repo_question_pack.yaml")
+
+
+def test_resolve_questions_path_defaults_to_real_repo_pack_for_project_paths():
+    resolved = resolve_questions_path(None, project_path="/tmp/fastapi")
+
+    assert resolved.endswith("tests/fixtures/real_repo_question_pack.yaml")
+
+
+def test_run_benchmark_rejects_empty_question_selection():
+    pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+
+    with pytest.raises(ValueError, match="No benchmark questions matched"):
+        run_benchmark(
+            questions_path=str(pack_path),
+            repo="not_a_repo",
+            no_index=True,
+        )
 
 
 def test_load_repository_meta_returns_selected_repo():

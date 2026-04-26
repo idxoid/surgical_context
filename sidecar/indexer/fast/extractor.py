@@ -7,10 +7,10 @@ file four times (symbols, calls, imports, inheritance). This module:
 2. Reuses the same source_code string for all four extractions.
 3. Uses thread-local adapter instances so tree-sitter Parsers (which are
    not thread-safe) don't race under the worker pool.
-
-Tree-sitter itself still re-parses the source inside each adapter method.
-That's a follow-up — eliminating it requires touching adapter internals,
-which this parallel track intentionally avoids.
+4. Calls ``adapter.extract_all(source, path)`` so the tree-sitter parse
+   happens exactly once per file. Adapters that don't override
+   ``extract_all`` still work — the protocol provides a default that
+   falls back to the four legacy methods.
 """
 
 import hashlib
@@ -130,15 +130,14 @@ class FastExtractor:
 
         adapter = self._adapters.get(language)
 
-        symbols = adapter.extract_symbols(source, file_path)
+        # One-shot extraction via the adapter's extract_all method. For
+        # tree-sitter adapters this means a single parse; for other
+        # adapters it falls back to the four legacy methods (no regression).
+        symbols, calls, imports, inheritance = adapter.extract_all(source, file_path)
         for sym in symbols:
             # Matches baseline's coarse 8-tokens-per-line estimate.
             line_count = sym.end_line - sym.start_line + 1
             sym.token_estimate = max(1, line_count * 8)
-
-        calls = adapter.extract_calls_from_source(source, file_path)
-        imports = adapter.extract_imports(source, file_path)
-        inheritance = adapter.extract_inheritance(source, file_path)
 
         return ExtractedFile(
             path=file_path,

@@ -56,9 +56,12 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def inheritance_query(self) -> str:
         return ""
 
-    def extract_imports(self, source_code: str, file_path: str) -> list[ImportEdge]:
+    def extract_imports(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[ImportEdge]:
         """Extract import statements from TypeScript source."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
+        if tree is None:
+            tree = self._parse(source_code)
         query = self.language.query(self.import_query)
         captures = query.captures(tree.root_node)
 
@@ -71,8 +74,13 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         return imports
 
-    def extract_inheritance(self, source_code: str, file_path: str) -> list[InheritanceEdge]:
-        """Extract class inheritance and interface implementation from TypeScript source."""
+    def extract_inheritance(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[InheritanceEdge]:
+        """Extract class inheritance and interface implementation from TypeScript source.
+
+        Line-based regex; ``tree`` is accepted for ``extract_all`` parity.
+        """
         import re
 
         edges = []
@@ -102,13 +110,16 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         return edges
 
-    def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
+    def extract_calls_from_source(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
         """Extract TypeScript calls with direct vs dynamic dispatch classification."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
+        if tree is None:
+            tree = self._parse(source_code)
         query = self.language.query("(call_expression) @call")
         captures = query.captures(tree.root_node)
 
-        symbols = self.extract_symbols(source_code, file_path)
+        symbols = self.extract_symbols(source_code, file_path, tree=tree)
         by_name: dict[str, list] = {}
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)

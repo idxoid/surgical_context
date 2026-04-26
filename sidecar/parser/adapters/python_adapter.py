@@ -1,6 +1,7 @@
 """Python language adapter using tree-sitter."""
 
 import re
+from pathlib import Path
 
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
@@ -101,8 +102,14 @@ class PythonAdapter(TreeSitterAdapter):
         "pathspec",
     }
 
-    def extract_imports(self, source_code: str, file_path: str) -> list[ImportEdge]:
-        """Extract only intra-project import statements (skips stdlib and third-party)."""
+    def extract_imports(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[ImportEdge]:
+        """Extract only intra-project import statements (skips stdlib and third-party).
+
+        Imports are line-based regex; ``tree`` is unused but accepted for
+        ``extract_all`` parity.
+        """
         imports = []
         for line in source_code.split("\n"):
             line = line.strip()
@@ -110,22 +117,35 @@ class PythonAdapter(TreeSitterAdapter):
                 parts = line[7:].split(",")
                 for part in parts:
                     module = part.strip().split(" as ")[0].strip()
-                    if module and not self._is_external(module):
+                    if module and not self._is_external(module, file_path=file_path):
                         imports.append(ImportEdge(file_path, module, "direct"))
             elif line.startswith("from "):
                 match = line.split(" import ")
                 if len(match) == 2:
                     module = match[0][5:].strip()
-                    if module and module != "." and not self._is_external(module.lstrip(".")):
+                    if (
+                        module
+                        and module != "."
+                        and not self._is_external(module.lstrip("."), file_path=file_path)
+                    ):
                         imports.append(ImportEdge(file_path, module, "from_package"))
         return imports
 
-    def _is_external(self, module: str) -> bool:
+    def _is_external(self, module: str, *, file_path: str | None = None) -> bool:
         top = module.split(".")[0]
+        if file_path and top:
+            parent_dirs = {parent.name for parent in Path(file_path).parents if parent.name}
+            if top in parent_dirs:
+                return False
         return top in self._EXTERNAL_PREFIXES
 
-    def extract_inheritance(self, source_code: str, file_path: str) -> list[InheritanceEdge]:
-        """Extract class inheritance from Python source."""
+    def extract_inheritance(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[InheritanceEdge]:
+        """Extract class inheritance from Python source.
+
+        Line-based scan; ``tree`` is accepted for ``extract_all`` parity.
+        """
         edges = []
         lines = source_code.split("\n")
         for line in lines:
@@ -142,13 +162,16 @@ class PythonAdapter(TreeSitterAdapter):
                             edges.append(InheritanceEdge(subclass_uid, base_name, False))
         return edges
 
-    def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
+    def extract_calls_from_source(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
         """Extract function calls and attach resolver metadata when statically resolvable."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
+        if tree is None:
+            tree = self._parse(source_code)
         query = self.language.query(self.call_query)
         captures = query.captures(tree.root_node)
 
-        symbols = self.extract_symbols(source_code, file_path)
+        symbols = self.extract_symbols(source_code, file_path, tree=tree)
         by_name: dict[str, list] = {}
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
@@ -304,7 +327,7 @@ class PythonAdapter(TreeSitterAdapter):
             from_match = re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", stripped)
             if from_match:
                 import_module, names = from_match.groups()
-                if self._is_external(import_module.lstrip(".")):
+                if self._is_external(import_module.lstrip("."), file_path=file_path):
                     continue
                 target_module = self._resolve_import_module(import_module, package)
                 for item in names.split(","):
@@ -322,7 +345,7 @@ class PythonAdapter(TreeSitterAdapter):
                     item = item.strip()
                     original, _, alias = item.partition(" as ")
                     target_module = original.strip()
-                    if not target_module or self._is_external(target_module):
+                    if not target_module or self._is_external(target_module, file_path=file_path):
                         continue
                     local_name = alias.strip() or target_module.split(".")[0]
                     bindings[local_name] = target_module

@@ -1,5 +1,6 @@
 import re
 import time
+from pathlib import Path
 from dataclasses import dataclass
 
 from sidecar.database.lancedb_client import LanceDBClient
@@ -350,6 +351,29 @@ def _bump_graph_version(neo4j: Neo4jClient, workspace_id: str):
         )
 
 
+def _normalize_allowed_prefixes(prefixes: list[str] | None) -> list[str]:
+    if not prefixes:
+        return []
+    normalized = []
+    for prefix in prefixes:
+        if not prefix:
+            continue
+        normalized.append(str(Path(prefix).resolve()))
+    return sorted(set(normalized))
+
+
+def _matches_allowed_prefix(file_path: str | None, prefixes: list[str]) -> bool:
+    if not prefixes:
+        return True
+    if not file_path:
+        return False
+    resolved = str(Path(file_path).resolve())
+    return any(
+        resolved == prefix or resolved.startswith(f"{prefix}/")
+        for prefix in prefixes
+    )
+
+
 def _load_name_to_uid(
     neo4j: Neo4jClient,
     symbol_vector_index,
@@ -372,6 +396,7 @@ def _prepare_doc_link_batches(
     neo4j: Neo4jClient,
     lance: LanceDBClient,
     workspace_id: str,
+    allowed_prefixes: list[str] | None = None,
 ):
     rows = lance._table.to_pandas()
     if rows.empty:
@@ -386,7 +411,22 @@ def _prepare_doc_link_batches(
         }
 
     t0 = time.perf_counter()
-    row_records = rows.to_dict("records")
+    prefixes = _normalize_allowed_prefixes(allowed_prefixes)
+    row_records = [
+        row
+        for row in rows.to_dict("records")
+        if _matches_allowed_prefix(row.get("file_path"), prefixes)
+    ]
+    if not row_records:
+        return {
+            "chunks": 0,
+            "batches": [],
+            "anchors": 0,
+            "covers": 0,
+            "related": 0,
+            "pending_updates": 0,
+            "prepare_sec": 0.0,
+        }
     symbol_vector_index = _build_symbol_vector_index(lance)
     name_to_uid = _load_name_to_uid(neo4j, symbol_vector_index, workspace_id)
 
@@ -566,8 +606,14 @@ def link_docs_to_symbols(
     neo4j: Neo4jClient,
     lance: LanceDBClient,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
+    allowed_prefixes: list[str] | None = None,
 ):
-    prepared = _prepare_doc_link_batches(neo4j, lance, workspace_id)
+    prepared = _prepare_doc_link_batches(
+        neo4j,
+        lance,
+        workspace_id,
+        allowed_prefixes=allowed_prefixes,
+    )
     if prepared["chunks"] == 0:
         return {
             "chunks": 0,
@@ -628,8 +674,19 @@ def resolve_pending_anchors(
     neo4j: Neo4jClient,
     lance: LanceDBClient,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
+    allowed_prefixes: list[str] | None = None,
 ):
-    pending_rows = lance.get_pending_rows()
+    """Resolve previously-unresolved identifier names to symbol UIDs.
+
+    Batches the per-chunk writes so we issue exactly one Cypher transaction
+    plus one Lance batch update — instead of one of each per pending row.
+    """
+    prefixes = _normalize_allowed_prefixes(allowed_prefixes)
+    pending_rows = [
+        row
+        for row in lance.get_pending_rows()
+        if _matches_allowed_prefix(row.get("file_path"), prefixes)
+    ]
     if not pending_rows:
         return
 
@@ -644,29 +701,40 @@ def resolve_pending_anchors(
         name_to_uid = {r["name"]: r["uid"] for r in result}
 
     resolved_total = 0
+    cover_rows: list[dict] = []
+    pending_updates: list[tuple[dict, list[str]]] = []
     progress = _make_progress(len(pending_rows), "docs pending", unit="chunk")
-    with neo4j.driver.session() as session:
-        for row in pending_rows:
-            chunk_id = row["id"]
-            names = _normalize_pending(row.get("pending"))
-            resolved_uids = []
-            still_pending = []
-            for name in names:
-                if name in name_to_uid:
-                    resolved_uids.append(name_to_uid[name])
-                    resolved_total += 1
-                else:
-                    still_pending.append(name)
-            if resolved_uids:
-                session.execute_write(
-                    _add_covers_edges,
-                    chunk_id,
-                    sorted(set(resolved_uids)),
-                    workspace_id,
-                )
-            lance.set_pending_row(row, still_pending)
-            progress.update(1)
+    for row in pending_rows:
+        chunk_id = row["id"]
+        names = _normalize_pending(row.get("pending"))
+        resolved_uids = []
+        still_pending = []
+        for name in names:
+            if name in name_to_uid:
+                resolved_uids.append(name_to_uid[name])
+                resolved_total += 1
+            else:
+                still_pending.append(name)
+        if resolved_uids:
+            cover_rows.append(
+                {"chunk_id": chunk_id, "uids": sorted(set(resolved_uids))}
+            )
+        if still_pending != names:
+            pending_updates.append((row, still_pending))
+        progress.update(1)
     progress.close()
+
+    if cover_rows:
+        with neo4j.driver.session() as session:
+            session.execute_write(_add_covers_edges_batch, cover_rows, workspace_id)
+
+    if pending_updates:
+        bulk_set_pending = getattr(lance, "set_pending_rows_batch", None)
+        if callable(bulk_set_pending):
+            bulk_set_pending(pending_updates)
+        else:
+            for row, still_pending in pending_updates:
+                lance.set_pending_row(row, still_pending)
 
     print(f"DocAnchor: resolved {resolved_total} pending links.")
     if resolved_total:

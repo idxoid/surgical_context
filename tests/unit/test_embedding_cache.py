@@ -204,12 +204,13 @@ def test_lancedb_client_search_symbols_by_vector_skips_query_embedding():
     hits = client.search_symbols_by_vector([1.0, 2.0], limit=3, threshold=0.4)
 
     assert client._sym_table.search_calls == [[1.0, 2.0]]
+    # Score: cos = 1 - d^2/2 = 1 - 0.04/2 = 0.98, mapped to (1+cos)/2 = 0.99
     assert hits == [
         {
             "uid": "uid-a",
             "name": "Alpha",
             "file_path": "/repo/a.py",
             "distance": 0.2,
-            "score": 0.8,
+            "score": 0.99,
         }
     ]

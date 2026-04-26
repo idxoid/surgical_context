@@ -177,7 +177,12 @@ def _run_baseline(project_path: str, workspace_id: str) -> dict:
 
         # Stage 4: resolve pending DocAnchors (baseline tail).
         t_stage = time.perf_counter()
-        resolve_pending_anchors(db, lance, workspace_id=workspace_id)
+        resolve_pending_anchors(
+            db,
+            lance,
+            workspace_id=workspace_id,
+            allowed_prefixes=[project_path],
+        )
         stats["timings_sec"]["docs"] = round(time.perf_counter() - t_stage, 3)
 
     finally:
