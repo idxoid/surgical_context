@@ -45,6 +45,8 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
+    mechanism: fastapi_route_registration
+    required_roles: [public_entrypoint, registration_step, route_object, handler_or_lifecycle]
     expected_symbols: [FastAPI, APIRoute, add_api_route, api_route]
     expected_files: [fastapi/applications.py, fastapi/routing.py]
 
@@ -56,6 +58,8 @@ questions:
     difficulty: hard
     intent: trace_dependency
     expected_mode: symbol
+    mechanism: fastapi_dependency_injection
+    required_roles: [public_entrypoint, marker_or_config, intermediate_model, dependency_solver, handler_or_lifecycle]
     expected_symbols: [Depends, solve_dependencies, get_dependant, Dependant]
     expected_files: [fastapi/dependencies/utils.py, fastapi/dependencies/models.py]
 
@@ -67,18 +71,22 @@ questions:
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
+    mechanism: fastapi_endpoint_execution
+    required_roles: [runtime_executor, handler_or_lifecycle, concurrency_decision]
     expected_symbols: [run_endpoint_function, get_request_handler, APIRoute]
     expected_files: [fastapi/routing.py]
 
   - id: fastapi_q04
     repo: fastapi
     core12: true
-    symbol: serialize_response
+    symbol: request_body_to_args
     question: "How are request body models validated and then passed into endpoint parameters?"
     difficulty: hard
     intent: trace_dependency
     expected_mode: symbol
-    expected_symbols: [serialize_response, request_body_to_args, solve_dependencies, get_body_field]
+    mechanism: fastapi_request_body_dependency_resolution
+    required_roles: [handler_or_lifecycle, body_field_builder, dependency_solver, body_argument_mapper]
+    expected_symbols: [request_body_to_args, solve_dependencies, get_body_field, get_request_handler]
     expected_files: [fastapi/routing.py, fastapi/dependencies/utils.py]
 
   - id: fastapi_q05
