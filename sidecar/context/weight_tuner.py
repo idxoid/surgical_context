@@ -39,6 +39,14 @@ def _metric_value(metrics: dict, metric: str) -> float:
     return 0.0
 
 
+def _metric_float(metrics: dict, key: str, default: float = 0.0) -> float:
+    value = metrics.get(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class TuneResult:
     """Single trial result."""
@@ -93,9 +101,22 @@ class WeightTuner:
         """Return the best result found."""
         if not self.results:
             return None
-        if self.metric_higher_is_better:
-            return max(self.results, key=lambda r: r.metric)
-        return min(self.results, key=lambda r: r.metric)
+        return max(self.results, key=self._result_sort_key)
+
+    def _result_sort_key(self, result: TuneResult) -> tuple[float, ...]:
+        """Rank results with metric-aware tie-breakers.
+
+        For ``pass_rate`` tuning we prefer:
+        1. higher pass rate
+        2. higher precision@5
+        3. lower tokens_surgical
+        """
+        primary = result.metric if self.metric_higher_is_better else -result.metric
+        if self.metric == "pass_rate":
+            precision = _metric_float(result.metrics, "precision_at_5", 0.0)
+            tokens = _metric_float(result.metrics, "tokens_surgical", float("inf"))
+            return (primary, precision, -tokens)
+        return (primary,)
 
     def format_results(self, top_k: int = 5) -> str:
         """Format results as readable table."""
@@ -104,23 +125,39 @@ class WeightTuner:
 
         sorted_results = sorted(
             self.results,
-            key=lambda r: r.metric,
-            reverse=self.metric_higher_is_better,
+            key=self._result_sort_key,
+            reverse=True,
         )
+
+        include_tiebreak_cols = self.metric == "pass_rate"
+        header = (
+            f"{'Trial':<6} {'α':<7} {'β':<7} {'γ':<7} {'δ':<7} {'ε':<7} "
+            f"{self.metric_label:<12}"
+        )
+        if include_tiebreak_cols:
+            header += f" {'P@5':<8} {'Tokens':<10}"
+        header += f" {'Time(s)':<8}"
 
         lines = [
             f"\nWeight Tuning Results (metric={self.metric_label}, top-{top_k}):",
             "=" * 120,
-            f"{'Trial':<6} {'α':<7} {'β':<7} {'γ':<7} {'δ':<7} {'ε':<7} {self.metric_label:<12} {'Time(s)':<8}",
+            header,
             "-" * 120,
         ]
 
         for result in sorted_results[:top_k]:
             w = result.weights
-            lines.append(
+            row = (
                 f"{result.trial:<6} {w.alpha:<7.3f} {w.beta:<7.3f} {w.gamma:<7.3f} "
-                f"{w.delta:<7.3f} {w.epsilon:<7.3f} {result.metric:<12.4f} {result.duration_sec:<8.1f}"
+                f"{w.delta:<7.3f} {w.epsilon:<7.3f} {result.metric:<12.4f}"
             )
+            if include_tiebreak_cols:
+                row += (
+                    f" {_metric_float(result.metrics, 'precision_at_5', 0.0):<8.4f}"
+                    f" {int(_metric_float(result.metrics, 'tokens_surgical', 0.0)):<10}"
+                )
+            row += f" {result.duration_sec:<8.1f}"
+            lines.append(row)
 
         lines.append("=" * 120)
         best = self.best_result()

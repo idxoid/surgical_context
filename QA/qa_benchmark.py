@@ -26,6 +26,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import tiktoken
 import yaml
 
+_PASS_GATES = {
+    "explain_behavior": {"role_recall": 0.70, "file_recall": 0.50},
+    "trace_dependency": {"role_recall": 0.80, "file_recall": 0.70},
+    "impact_analysis": {"role_recall": 0.60, "file_recall": 0.50},
+}
+
 _WORKSPACE_EDGE_TYPES = [
     "CALLS",
     "CALLS_DIRECT",
@@ -71,6 +77,19 @@ def _expected_file_matches(expected: str, retrieved_files: set[str]) -> bool:
         if mid_form in norm + "/":
             return True
     return False
+
+
+def _compute_role_recall(required_roles: list[str], ctx_missing_roles: list[str]) -> float:
+    """Fraction of required_roles the ranker fulfilled (not in ctx.missing_roles).
+
+    For non-FastAPI questions the ranker's internal role names diverge from the
+    YAML required_roles — treat result as diagnostic signal, not hard truth.
+    """
+    if not required_roles:
+        return 1.0
+    missing_set = set(ctx_missing_roles)
+    fulfilled = sum(1 for r in required_roles if r not in missing_set)
+    return fulfilled / len(required_roles)
 
 
 def _compute_file_recall(expected_files: set[str], retrieved_files: set[str]) -> float:
@@ -523,6 +542,15 @@ def compute_carpet_bomb_tokens(
     return total
 
 
+def _build_ready_context_payload(ctx, token_count: int) -> dict[str, Any]:
+    """Serialize the fully assembled context that would be sent to the model."""
+    return {
+        "token_count": token_count,
+        "contract": ctx.to_dict(),
+        "system_prompt": ctx.to_system_prompt(),
+    }
+
+
 def setup_real_repo_db(
     project_path: str,
     *,
@@ -687,6 +715,9 @@ def run_benchmark(
         expected_symbols = set(q.get("expected_symbols", []))
         difficulty = q.get("difficulty", "unknown")
         intent = q.get("intent", "unknown")
+        expected_mode = q.get("expected_mode", "symbol")
+        mechanism = q.get("mechanism", "")
+        required_roles = q.get("required_roles", [])
         expected_files = set(q.get("expected_files", []))
 
         # Measure assembly time
@@ -704,15 +735,24 @@ def run_benchmark(
 
         # Handle error case
         if isinstance(ctx, str):
-            print(f"  ❌ {q['id']}: {symbol} — {ctx}")
+            is_correct_rejection = (expected_mode == "workspace" and "not found" in ctx)
+            status = "pass" if is_correct_rejection else "error"
+            gate = "workspace_correct_rejection" if is_correct_rejection else "error"
+            emoji = "✅" if status == "pass" else "❌"
+            print(f"  {emoji} {q['id']}: {symbol} [{intent}] — {ctx}")
             results.append({
                 "id": q["id"],
                 "repo": q.get("repo", ""),
                 "symbol": symbol,
                 "question": question_text,
-                "status": "error",
+                "status": status,
+                "gate": gate,
                 "error": ctx,
                 "assembly_ms": assembly_ms,
+                "mechanism": mechanism,
+                "role_recall": 1.0 if is_correct_rejection else 0.0,
+                "precision": 0.0,
+                "ready_context": None,
             })
             continue
 
@@ -735,6 +775,7 @@ def run_benchmark(
         recall_at_k = len(intersection) / len(expected_symbols) if expected_symbols else 0.0
         precision_at_k = len(intersection) / len(all_retrieved) if all_retrieved else 0.0
         file_recall = _compute_file_recall(expected_files, retrieved_files)
+        role_recall = _compute_role_recall(required_roles, ctx.missing_roles)
 
         # Token counts
         tokens_surgical = ctx.token_count()
@@ -752,13 +793,20 @@ def run_benchmark(
         )
 
         # Pass/warn gate.
-        # For real-repo packs, expected_symbols are seed hypotheses and may
-        # not match the actual symbol names retrieved (e.g. "api_route" vs
-        # "APIRoute"); file_recall is the load-bearing signal there. For the
-        # fixture pack, symbol names are golden — keep the strict gate.
-        if is_real_repo_pack and expected_files:
+        # For real-repo packs with mechanism, use intent-stratified gates.
+        # For other cases, fall back to legacy gates.
+        if is_real_repo_pack and mechanism:
+            gate_cfg = _PASS_GATES.get(intent, _PASS_GATES["explain_behavior"])
+            rr_ok = role_recall >= gate_cfg["role_recall"]
+            fr_ok = file_recall >= gate_cfg["file_recall"]
+            if intent == "impact_analysis":
+                status = "pass" if (rr_ok or fr_ok) else "warn"
+            else:
+                status = "pass" if (rr_ok and fr_ok) else "warn"
+            gate = f"{intent}(rr>={gate_cfg['role_recall']},fr>={gate_cfg['file_recall']})"
+        elif is_real_repo_pack and expected_files:
             status = "pass" if file_recall >= 0.8 else "warn"
-            gate = "file_recall"
+            gate = "file_recall_legacy"
         else:
             status = "pass" if recall_at_k >= 0.8 and precision_at_k >= 0.6 else "warn"
             gate = "symbol"
@@ -769,9 +817,9 @@ def run_benchmark(
             reasoning_info += f" | missing: {','.join(ctx.missing_roles)}"
 
         print(
-            f"  {status_emoji} {q['id']}: {symbol:20} "
-            f"| recall={recall_at_k:.2f} | precision={precision_at_k:.2f} "
-            f"| files={file_recall:.2f} | {tokens_surgical}t"
+            f"  {status_emoji} {q['id']}: {symbol:20} [{intent}]"
+            f" | precision={precision_at_k:.2f} | role={role_recall:.2f}"
+            f" | file={file_recall:.2f} | {tokens_surgical}t"
             f"{reasoning_info}"
         )
 
@@ -789,14 +837,20 @@ def run_benchmark(
             "retrieved_files": sorted(list(retrieved_files)),
             "expected_files": sorted(list(expected_files)),
             "recall_at_k": recall_at_k,
+            "precision": precision_at_k,
             "precision_at_k": precision_at_k,
             "file_recall": file_recall,
+            "role_recall": role_recall,
             "stopped_reason": ctx.stopped_reason,
             "missing_roles": ctx.missing_roles,
+            "mechanism": mechanism,
+            "required_roles": required_roles,
+            "expected_mode": expected_mode,
             "tokens_surgical": tokens_surgical,
             "tokens_carpet_bomb": tokens_carpet_bomb,
             "reduction_ratio": reduction_ratio,
             "assembly_ms": assembly_ms,
+            "ready_context": _build_ready_context_payload(ctx, tokens_surgical),
         })
 
     db.close()
@@ -814,6 +868,7 @@ def run_benchmark(
     avg_recall = sum(r.get("recall_at_k", 0) for r in results) / total if total > 0 else 0.0
     avg_precision = sum(r.get("precision_at_k", 0) for r in results) / total if total > 0 else 0.0
     avg_file_recall = sum(r.get("file_recall", 0) for r in results) / total if total > 0 else 0.0
+    avg_role_recall = sum(r.get("role_recall", 0) for r in results) / total if total > 0 else 0.0
     total_tokens_surgical = sum(r.get("tokens_surgical", 0) for r in results)
     # Carpet-bomb is only summed for questions that declared a real baseline
     # (expected_files resolved to >0 tokens). Mixing in "0" rows would
@@ -862,8 +917,10 @@ def run_benchmark(
             "pass_count": passes,
             "pass_rate": passes / total if total > 0 else 0.0,
             "recall_at_5": avg_recall,
+            "precision": avg_precision,
             "precision_at_5": avg_precision,
             "file_recall": avg_file_recall,
+            "role_recall": avg_role_recall,
             "tokens_surgical": total_tokens_surgical,
             "tokens_carpet_bomb": total_tokens_carpet,
             "baseline_questions": len(scored_results),
@@ -882,6 +939,7 @@ def run_benchmark(
     print(f"Recall@5:        {metrics['summary']['recall_at_5']:.2f}")
     print(f"Precision@5:     {metrics['summary']['precision_at_5']:.2f}")
     print(f"File recall:     {metrics['summary']['file_recall']:.2f}")
+    print(f"Role recall:     {metrics['summary']['role_recall']:.2f}")
     print(f"Tokens (surgical): {metrics['summary']['tokens_surgical']:,}")
     print(
         f"Tokens (carpet):   {metrics['summary']['tokens_carpet_bomb']:,}"

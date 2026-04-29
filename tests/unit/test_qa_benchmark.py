@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -212,3 +213,74 @@ def test_setup_fixture_db_returns_indexing_stats():
     assert run_mock.call_args.kwargs["skip_affects"] is True
     assert run_mock.call_args.kwargs["workspace_id"] == "local/surgical_context@main"
     docs_mock.assert_called_once()
+
+
+def test_run_benchmark_report_includes_precision_and_ready_context():
+    question = {
+        "id": "q1",
+        "symbol": "Target",
+        "question": "How does Target work?",
+        "difficulty": "medium",
+        "intent": "explain_behavior",
+        "mechanism": "demo_mechanism",
+        "required_roles": ["public_entrypoint"],
+        "expected_symbols": ["Target", "Helper"],
+        "expected_files": ["repo/target.py"],
+    }
+
+    class _FakeContext:
+        def __init__(self):
+            self.primary_source = SimpleNamespace(symbol="Target", file_path="/tmp/repo/target.py")
+            self.graph_context = [SimpleNamespace(symbol="Helper", file_path="/tmp/repo/helper.py")]
+            self.documentation = [SimpleNamespace(source_file="/tmp/repo/docs.md")]
+            self.missing_roles = []
+            self.stopped_reason = "pool_exhausted"
+
+        def token_count(self):
+            return 321
+
+        def to_dict(self):
+            return {"primary_source": {"symbol": "Target"}, "graph_context": [{"symbol": "Helper"}]}
+
+        def to_system_prompt(self):
+            return "--- TARGET SYMBOL: Target ---\ncode"
+
+    class _FakeArbitrator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get_context_for_symbol(self, *_args, **_kwargs):
+            return _FakeContext()
+
+    class _FakeNeo4jClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    class _FakeLanceDBClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    with (
+        patch("QA.qa_benchmark.load_question_pack", return_value={"kind": "real_repo", "repositories": [], "questions": [question]}),
+        patch("QA.qa_benchmark.load_questions", return_value=[question]),
+        patch("QA.qa_benchmark.compute_carpet_bomb_tokens", return_value=1000),
+        patch("sidecar.database.neo4j_client.Neo4jClient", _FakeNeo4jClient),
+        patch("sidecar.database.lancedb_client.LanceDBClient", _FakeLanceDBClient),
+        patch("sidecar.context.arbitrator.ContextArbitrator", _FakeArbitrator),
+    ):
+        metrics = run_benchmark(
+            questions_path="ignored.yaml",
+            no_index=True,
+        )
+
+    result = metrics["results"][0]
+    assert result["precision"] == pytest.approx(1.0)
+    assert result["precision_at_k"] == pytest.approx(1.0)
+    assert result["ready_context"]["token_count"] == 321
+    assert result["ready_context"]["contract"]["primary_source"]["symbol"] == "Target"
+    assert result["ready_context"]["system_prompt"].startswith("--- TARGET SYMBOL: Target ---")
+    assert metrics["summary"]["precision"] == pytest.approx(1.0)
+    assert metrics["summary"]["precision_at_5"] == pytest.approx(1.0)

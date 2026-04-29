@@ -21,12 +21,19 @@ class PromptCompiler:
                 symbol=node.name,
                 file_path=node.file_path,
                 relation=node.relation,
+                uid=node.uid,
+                range=node.range,
+                kind=getattr(node, "kind", ""),
                 direction=node.direction,
                 depth=node.depth,
                 relevance_score=node.relevance_score,
+                graph_score=getattr(node, "graph_score", 0.0),
+                semantic_score=getattr(node, "semantic_score", 0.0),
+                blended_score=getattr(node, "blended_score", node.relevance_score),
+                intent_weight=getattr(node, "intent_weight", 0.0),
                 is_dirty=is_dirty,
                 code=code,
-                provenance=["graph", "code_resolver"],
+                provenance=getattr(node, "provenance", None) or ["graph", "code_resolver"],
             )
 
         primary = to_symbol_context(subgraph.primary)
@@ -54,12 +61,19 @@ class PromptCompiler:
                 symbol=node.name,
                 file_path=node.file_path,
                 relation=node.relation,
+                uid=node.uid,
+                range=node.range,
+                kind=getattr(node, "kind", ""),
                 direction=node.direction,
                 depth=node.depth,
                 relevance_score=node.relevance_score,
+                graph_score=getattr(node, "graph_score", 0.0),
+                semantic_score=getattr(node, "semantic_score", 0.0),
+                blended_score=getattr(node, "blended_score", node.relevance_score),
+                intent_weight=getattr(node, "intent_weight", 0.0),
                 is_dirty=is_dirty,
                 code=code,
-                provenance=["graph", "code_resolver"],
+                provenance=getattr(node, "provenance", None) or ["graph", "code_resolver"],
             )
 
         def estimate_tokens(text: str) -> int:

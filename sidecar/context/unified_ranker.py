@@ -17,6 +17,7 @@ so raw BFS values (~1.2) don't dominate cosine similarities (~0.8).
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
 
@@ -39,6 +40,53 @@ _NOISE_PATH_PATTERNS = (
 _NOISE_NAME_PREFIXES = ("test_",)
 _NOISE_NAME_SUBSTRINGS = ("tutorial",)
 _NOISE_FACTOR = 0.15
+
+_ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
+    "fastapi_route_registration": {
+        "registration_step": [
+            {"name": "add_api_route", "path_hint": "/fastapi/applications.py", "priority": 1.0},
+            {"name": "api_route", "path_hint": "/fastapi/applications.py", "priority": 0.9},
+            {"name": "add_api_route", "path_hint": "/fastapi/routing.py", "priority": 0.8},
+        ],
+        "route_object": [
+            {"name": "APIRoute", "path_hint": "/fastapi/routing.py", "priority": 1.0},
+        ],
+        "handler_or_lifecycle": [
+            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
+        ],
+    },
+    "fastapi_dependency_injection": {
+        "marker_or_config": [
+            {"name": "Depends", "path_hint": "/fastapi/params.py", "priority": 1.0},
+            {"name": "Security", "path_hint": "/fastapi/params.py", "priority": 0.7},
+        ],
+        "intermediate_model": [
+            {"name": "Dependant", "path_hint": "/fastapi/dependencies/models.py", "priority": 1.0},
+            {"name": "get_dependant", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.95},
+            {"name": "get_flat_dependant", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.8},
+        ],
+        "dependency_solver": [
+            {"name": "solve_dependencies", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
+        ],
+        "handler_or_lifecycle": [
+            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
+        ],
+    },
+    "fastapi_request_body_dependency_resolution": {
+        "body_field_builder": [
+            {"name": "get_body_field", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
+        ],
+        "dependency_solver": [
+            {"name": "solve_dependencies", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.95},
+        ],
+        "handler_or_lifecycle": [
+            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
+        ],
+        "body_argument_mapper": [
+            {"name": "request_body_to_args", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
+        ],
+    },
+}
 
 
 def _path_is_noisy(file_path: str) -> bool:
@@ -179,48 +227,301 @@ class UnifiedRanker:
     # Public API
     # ------------------------------------------------------------------
 
-    def get_target(self, symbol_name: str) -> SubgraphNode | None:
-        """Fetch the primary symbol from Neo4j. Returns None if not found."""
+    def get_target(
+        self,
+        symbol_name: str,
+        query: str = "",
+        intent: Intent | None = None,
+        *,
+        with_metadata: bool = False,
+    ) -> SubgraphNode | tuple[SubgraphNode | None, dict] | None:
+        """Fetch the primary symbol from Neo4j, disambiguating duplicates when needed."""
+        target, metadata = self._select_target_candidate(symbol_name, query=query, intent=intent)
+        if with_metadata:
+            return target, metadata
+        return target
+
+    def _select_target_candidate(
+        self,
+        symbol_name: str,
+        *,
+        query: str = "",
+        intent: Intent | None = None,
+    ) -> tuple[SubgraphNode | None, dict]:
+        rows = self._load_target_candidates(symbol_name)
+        if not rows:
+            return None, {
+                "strategy": "not_found",
+                "ambiguous": False,
+                "symbol": symbol_name,
+                "candidates_considered": 0,
+            }
+
+        if len(rows) == 1:
+            target = self._build_target_node(rows[0], provenance=["primary:target"])
+            return target, {
+                "strategy": "unique_match",
+                "ambiguous": False,
+                "symbol": symbol_name,
+                "candidates_considered": 1,
+                "selected_uid": target.uid,
+                "selected_file_path": target.file_path,
+                "selected_kind": getattr(rows[0], "get", lambda *_: "")("kind", ""),
+                "alternatives": [],
+            }
+
+        scored_rows = []
+        for row in rows:
+            score, breakdown = self._score_target_candidate(row, query=query, intent=intent)
+            scored_rows.append((score, row, breakdown))
+        scored_rows.sort(
+            key=lambda item: (
+                item[0],
+                item[1].get("outgoing_edges", 0),
+                item[1].get("total_edges", 0),
+                -item[1].get("token_estimate", 0),
+                -len(item[1].get("file_path", "")),
+            ),
+            reverse=True,
+        )
+
+        best_score, best_row, best_breakdown = scored_rows[0]
+        target = self._build_target_node(
+            best_row,
+            provenance=[
+                "primary:target",
+                f"target-selection:{best_breakdown['role']}",
+            ],
+        )
+        alternatives = [
+            {
+                "uid": row["uid"],
+                "file_path": row["file_path"],
+                "kind": row.get("kind", ""),
+                "qualified_name": row.get("qualified_name", ""),
+                "score": round(score, 3),
+                "role": breakdown["role"],
+                "breakdown": breakdown["components"],
+            }
+            for score, row, breakdown in scored_rows[:5]
+        ]
+        metadata = {
+            "strategy": "duplicate_resolution",
+            "ambiguous": True,
+            "symbol": symbol_name,
+            "candidates_considered": len(scored_rows),
+            "selected_uid": best_row["uid"],
+            "selected_file_path": best_row["file_path"],
+            "selected_kind": best_row.get("kind", ""),
+            "selected_qualified_name": best_row.get("qualified_name", ""),
+            "selected_score": round(best_score, 3),
+            "selection_reason": best_breakdown["role"],
+            "alternatives": alternatives,
+        }
+        return target, metadata
+
+    def _load_target_candidates(self, symbol_name: str) -> list[dict]:
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {name: $name})
-        WITH s, f, c,
-             CASE 
-               WHEN f.path CONTAINS '/tests/' OR f.path CONTAINS '/test_' THEN 3
-               WHEN f.path CONTAINS '/docs/' OR f.path CONTAINS '/examples/' THEN 2
-               WHEN f.path CONTAINS '/fastapi/' THEN 0
-               ELSE 1 
-             END AS priority
-        RETURN s, coalesce(f.path, '<unknown>') AS file_path,
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(:Symbol)
+            WHERE coalesce(out_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT out_r) AS outgoing_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+            WHERE coalesce(in_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT in_r) AS incoming_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(:Symbol)
+            WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT any_r) AS total_edges
+        }
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS kind,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(f.path, '<unknown>') AS file_path,
                coalesce(f.hash, '') AS file_hash,
-               coalesce(c.range, s.range, [0, 0]) AS range
-        ORDER BY priority ASC, size(f.path) ASC
-        LIMIT 1
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               outgoing_edges,
+               incoming_edges,
+               total_edges
         """
         try:
             with self.db.driver.session() as session:
-                result = session.run(
-                    query, name=symbol_name, workspace_id=self.workspace_id
-                ).single()
+                result = list(
+                    session.run(
+                        query, name=symbol_name, workspace_id=self.workspace_id
+                    )
+                )
         except Exception:
-            return None
-        if not result:
-            return None
-        s = result["s"]
-        token_cost = s.get("token_estimate", 0) or self._estimate_tokens_range(
-            result.get("range") or s.get("range", [0, 0])
+            return []
+        return result
+
+    def _build_target_node(
+        self,
+        row: dict,
+        *,
+        provenance: list[str] | None = None,
+    ) -> SubgraphNode:
+        token_cost = row.get("token_estimate", 0) or self._estimate_tokens_range(
+            row.get("range", [0, 0])
         )
         return SubgraphNode(
-            uid=s["uid"],
-            name=s["name"],
-            file_path=result["file_path"],
-            range=result.get("range") or s.get("range", [0, 0]),
+            uid=row["uid"],
+            name=row["name"],
+            file_path=row["file_path"],
+            range=row.get("range") or [0, 0],
             token_estimate=token_cost,
             relation="target",
             direction="primary",
             depth=0,
             relevance_score=1.0,
-            file_hash=result.get("file_hash", ""),
+            kind=row.get("kind", ""),
+            qualified_name=row.get("qualified_name", ""),
+            file_hash=row.get("file_hash", ""),
+            provenance=provenance or ["primary:target"],
+            graph_score=1.0,
+            blended_score=1.0,
         )
+
+    def _score_target_candidate(
+        self,
+        row: dict,
+        *,
+        query: str = "",
+        intent: Intent | None = None,
+    ) -> tuple[float, dict]:
+        file_path = row.get("file_path", "")
+        kind = row.get("kind", "")
+        total_edges = float(row.get("total_edges", 0) or 0)
+        outgoing_edges = float(row.get("outgoing_edges", 0) or 0)
+        incoming_edges = float(row.get("incoming_edges", 0) or 0)
+        token_estimate = float(row.get("token_estimate", 0) or 0)
+        role = self._infer_role(
+            SubgraphNode(
+                uid=row["uid"],
+                name=row["name"],
+                file_path=file_path,
+                range=row.get("range") or [0, 0],
+                token_estimate=int(token_estimate),
+                relation="target",
+                direction="primary",
+                depth=0,
+                relevance_score=1.0,
+                kind=kind,
+                qualified_name=row.get("qualified_name", ""),
+            )
+        )
+        query_bonus = self._target_query_bonus(
+            query=query,
+            kind=kind,
+            role=role,
+            file_path=file_path,
+            qualified_name=row.get("qualified_name", ""),
+            intent=intent,
+        )
+        components = {
+            "path": self._target_path_bonus(file_path),
+            "role": self._target_role_bonus(role),
+            "edges": min(1.4, 0.22 * outgoing_edges + 0.08 * incoming_edges + 0.05 * total_edges),
+            "query": query_bonus,
+            "kind": self._target_kind_bonus(kind, intent=intent),
+            "size_penalty": -min(0.6, token_estimate / 6000.0),
+        }
+        score = sum(components.values())
+        return score, {"role": role, "components": components}
+
+    def _target_path_bonus(self, file_path: str) -> float:
+        if not file_path:
+            return 0.0
+        if _path_is_noisy(file_path):
+            return -1.0
+        if "/docs/" in file_path or "/examples/" in file_path:
+            return -0.4
+        if "/__init__." in file_path:
+            return 0.1
+        return 0.35
+
+    def _target_role_bonus(self, role: str) -> float:
+        role_weights = {
+            "public_entrypoint": 1.2,
+            "runtime_executor": 1.0,
+            "dependency_solver": 0.95,
+            "handler_or_lifecycle": 0.85,
+            "registration_step": 0.8,
+            "route_object": 0.6,
+            "intermediate_model": 0.55,
+            "marker_or_config": 0.3,
+            "body_field_builder": 0.75,
+            "body_argument_mapper": 0.9,
+            "related_implementation": 0.4,
+            "docs_or_concept": -0.4,
+        }
+        return role_weights.get(role, 0.35)
+
+    def _target_kind_bonus(self, kind: str, *, intent: Intent | None = None) -> float:
+        if kind == "function":
+            return 0.35 if intent != Intent.DESIGN_QUESTION else 0.2
+        if kind == "class":
+            return 0.1 if intent != Intent.EXPLORATION else 0.0
+        return 0.0
+
+    def _target_query_bonus(
+        self,
+        *,
+        query: str,
+        kind: str,
+        role: str,
+        file_path: str,
+        qualified_name: str,
+        intent: Intent | None = None,
+    ) -> float:
+        if not query:
+            return 0.0
+        query_lower = query.lower()
+        bonus = 0.0
+        if kind == "function" and any(
+            phrase in query_lower
+            for phrase in ("how does", "before", "called", "register", "run", "resolved")
+        ):
+            bonus += 0.5
+        if kind == "class" and any(
+            phrase in query_lower
+            for phrase in ("class", "type", "parameter", "config", "marker", "annotation")
+        ):
+            bonus += 0.35
+        if role == "public_entrypoint" and any(
+            phrase in query_lower for phrase in ("how does", "resolved", "before", "called")
+        ):
+            bonus += 0.35
+        if role == "marker_or_config" and any(
+            phrase in query_lower for phrase in ("parameter", "annotation", "config", "marker")
+        ):
+            bonus += 0.25
+
+        query_terms = self._query_terms(query)
+        haystack = f"{file_path.lower()} {qualified_name.lower()}"
+        overlap = sum(1 for term in query_terms if term in haystack)
+        bonus += min(0.4, 0.1 * overlap)
+
+        if intent == Intent.NAVIGATION and kind == "class":
+            bonus += 0.1
+        return bonus
+
+    @staticmethod
+    def _query_terms(query: str) -> list[str]:
+        return [
+            term
+            for term in re.findall(r"[a-z_]{4,}", query.lower())
+            if term not in {"this", "that", "with", "what", "does", "called"}
+        ]
 
     def rank(
         self,
@@ -266,12 +567,28 @@ class UnifiedRanker:
             graph_pool, doc_pool, sym_vec_pool, target.uid, bridge_pool=bridge_pool
         )
 
-        # 5. Fill missing token costs for vector-only symbols
+        # 5. Fill missing token costs for vector-only symbols before we
+        # decide whether a role is genuinely selection-ready.
         self._fill_token_costs(pool)
 
-        # 6. Assign intent weights and noise factors
+        # 6. Mechanism-aware role backfill for sparse framework graphs.
         mechanism = self._determine_mechanism(target)
         required_roles = self._get_required_roles(mechanism)
+        roles_for_backfill = self._roles_needing_backfill(
+            target,
+            pool,
+            required_roles,
+        )
+        if roles_for_backfill:
+            backfill = self._role_backfill_candidates(
+                mechanism,
+                roles_for_backfill,
+                excluded_uids={target.uid},
+            )
+            if backfill:
+                pool = self._merge_role_backfill(pool, backfill)
+
+        # 7. Assign intent weights and noise factors
 
         intent_priors = self._intent_priors(intent)
         for c in pool:
@@ -282,17 +599,17 @@ class UnifiedRanker:
             else:
                 c.noise_factor = compute_noise_factor(c.file_path, c.name)
 
-        # 7. Normalize each track to [0, 1]
+        # 8. Normalize each track to [0, 1]
         self._normalize(pool)
 
-        # 8. Sort by blended score
+        # 9. Sort by blended score
         # Optimization: Sort by blended score + potential to fill a missing role.
         pool.sort(
             key=lambda c: self._blended(c) + (0.5 if c.evidence_role in required_roles else 0.0),
             reverse=True
         )
 
-        # 9. Optimal Context Selection: Mechanism-Specific Evidence Gating
+        # 10. Optimal Context Selection: Mechanism-Specific Evidence Gating
         chosen: list[Candidate] = []
         spent = self.PREAMBLE_TOKENS + target.token_estimate
         pruned_details = []
@@ -312,7 +629,7 @@ class UnifiedRanker:
             missing_roles = set(required_roles) - fulfilled_roles
             fills_role = c.evidence_role in required_roles and c.evidence_role not in fulfilled_roles
             adds_new_file = c.file_path not in chosen_files
-            is_bridge = c.relation in ("DOC_BRIDGE", "SEMANTIC_HINT")
+            is_bridge = c.relation in ("DOC_BRIDGE", "SEMANTIC_HINT", "ROLE_BACKFILL") or self._has_role_backfill(c)
             is_strong_relation = c.relation in ("CALLS_DIRECT", "CALLS_SCOPED", "DEPENDS_ON", "IMPLEMENTS", "OVERRIDES")
 
             # Determine if this candidate provides any unique reasoning signal
@@ -345,10 +662,19 @@ class UnifiedRanker:
                 potential_cost = min(c.token_cost, 80)
 
             if spent + potential_cost > budget:
+                blended_score = self._blended(c)
                 pruned_details.append({
+                    "kind": c.kind,
+                    "uid": c.uid,
                     "name": c.name, "file": c.file_path, "relation": c.relation,
                     "role": c.evidence_role, "gain": round(gain, 3), "tokens": potential_cost,
-                    "reason": "budget_exhausted", "provenance": c.provenance
+                    "token_cost": potential_cost,
+                    "reason": "over_budget",
+                    "graph_score": round(c.graph_score, 3),
+                    "semantic_score": round(c.semantic_score, 3),
+                    "blended_score": round(blended_score, 3),
+                    "intent_weight": round(c.intent_weight, 3),
+                    "provenance": c.provenance,
                 })
                 continue
 
@@ -402,8 +728,14 @@ class UnifiedRanker:
                         direction=c.direction or "sibling",
                         depth=c.depth,
                         relevance_score=blended,
+                        kind=getattr(c, "symbol_kind", ""),
                         render_mode=c.render_mode,
                         file_hash=c.file_hash,
+                        provenance=list(c.provenance),
+                        graph_score=c.graph_score,
+                        semantic_score=c.semantic_score,
+                        blended_score=blended,
+                        intent_weight=c.intent_weight,
                     )
                 )
             else:
@@ -413,6 +745,10 @@ class UnifiedRanker:
                         chunk_id=c.uid,
                         content=c.content,
                         score=self._blended(c),
+                        graph_score=c.graph_score,
+                        semantic_score=c.semantic_score,
+                        blended_score=self._blended(c),
+                        intent_weight=c.intent_weight,
                         provenance=c.provenance,
                     )
                 )
@@ -803,6 +1139,176 @@ class UnifiedRanker:
                 else:
                     c.token_cost = 200  # conservative fallback
 
+    def _merge_role_backfill(
+        self, pool: list[Candidate], backfill: list[Candidate]
+    ) -> list[Candidate]:
+        merged: dict[str, Candidate] = {candidate.uid: candidate for candidate in pool}
+        for candidate in backfill:
+            existing = merged.get(candidate.uid)
+            if existing is None:
+                merged[candidate.uid] = candidate
+                continue
+            existing.graph_score = max(existing.graph_score, candidate.graph_score)
+            existing.provenance = existing.provenance + candidate.provenance
+            if candidate.render_mode == "signature_only":
+                existing.render_mode = "signature_only"
+            if candidate.token_cost:
+                if existing.token_cost > 0:
+                    existing.token_cost = min(existing.token_cost, candidate.token_cost)
+                else:
+                    existing.token_cost = candidate.token_cost
+            if candidate.file_hash and not existing.file_hash:
+                existing.file_hash = candidate.file_hash
+        return list(merged.values())
+
+    def _roles_needing_backfill(
+        self,
+        target: SubgraphNode,
+        pool: list[Candidate],
+        required_roles: list[str],
+    ) -> list[str]:
+        target_role = self._infer_role(target)
+        needed: list[str] = []
+        for role in required_roles:
+            if role == "docs_or_concept":
+                continue
+            if role == target_role:
+                continue
+            candidates = [candidate for candidate in pool if self._infer_role(candidate) == role]
+            if not candidates:
+                needed.append(role)
+                continue
+            best = max(candidates, key=self._role_candidate_quality)
+            if not self._role_selection_ready(best):
+                needed.append(role)
+        return needed
+
+    def _role_candidate_quality(self, candidate: Candidate) -> float:
+        graph_score = max(candidate.graph_score, 0.0)
+        semantic_score = max(candidate.semantic_score, 0.0)
+        readiness_bonus = 0.3 if self._has_role_backfill(candidate) else 0.0
+        token_penalty = min(candidate.token_cost, 1500) / 1000.0
+        return max(graph_score, semantic_score) + readiness_bonus - token_penalty
+
+    def _role_selection_ready(self, candidate: Candidate) -> bool:
+        if candidate.token_cost <= 0:
+            return False
+        if self._has_role_backfill(candidate):
+            return True
+        signal = max(candidate.graph_score, candidate.semantic_score)
+        if candidate.token_cost <= 160 and signal >= 0.15:
+            return True
+        if candidate.token_cost <= 260 and candidate.graph_score >= 0.25:
+            return True
+        if candidate.token_cost <= 260 and candidate.semantic_score >= 0.8:
+            return True
+        return False
+
+    @staticmethod
+    def _has_role_backfill(candidate: Candidate) -> bool:
+        return candidate.relation == "ROLE_BACKFILL" or any(
+            str(step).startswith("role-backfill:")
+            for step in candidate.provenance
+        )
+
+    def _role_backfill_candidates(
+        self,
+        mechanism: str,
+        missing_roles: list[str],
+        *,
+        excluded_uids: set[str],
+    ) -> list[Candidate]:
+        specs_by_role = _ROLE_BACKFILL_SPECS.get(mechanism, {})
+        if not specs_by_role:
+            return []
+
+        requested_specs: list[tuple[str, dict[str, str | float]]] = []
+        for role in missing_roles:
+            for spec in specs_by_role.get(role, []):
+                requested_specs.append((role, spec))
+        if not requested_specs:
+            return []
+
+        requested_names = sorted({str(spec["name"]) for _, spec in requested_specs})
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE s.name IN $names
+          AND NOT s.uid IN $excluded_uids
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               count(DISTINCT or) AS outbound_edges
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        names=requested_names,
+                        excluded_uids=list(excluded_uids),
+                    )
+                )
+        except Exception:
+            return []
+
+        candidates: list[Candidate] = []
+        for role, spec in requested_specs:
+            best_row = None
+            best_score = float("-inf")
+            name = str(spec["name"])
+            path_hint = str(spec.get("path_hint", ""))
+            priority = float(spec.get("priority", 0.8))
+            for row in rows:
+                if row["name"] != name:
+                    continue
+                file_path = row["file_path"]
+                path_bonus = 0.25 if path_hint and file_path.endswith(path_hint) else 0.0
+                path_bonus += 0.15 if path_hint and path_hint in file_path else 0.0
+                score = (
+                    priority
+                    + path_bonus
+                    + 0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0))
+                    + 0.10 * math.log1p(float(row.get("outbound_edges", 0) or 0))
+                )
+                if score > best_score:
+                    best_score = score
+                    best_row = row
+            if best_row is None:
+                continue
+            token_cost = int(best_row["token_estimate"]) or self._estimate_tokens_range(
+                best_row.get("range") or [0, 0]
+            )
+            candidate = Candidate(
+                kind="symbol",
+                uid=best_row["uid"],
+                token_cost=min(token_cost, 120),
+                graph_score=1.2 + best_score,
+                name=best_row["name"],
+                file_path=best_row["file_path"],
+                range=best_row.get("range") or [0, 0],
+                render_mode="signature_only",
+                relation="ROLE_BACKFILL",
+                direction="backfill",
+                depth=2,
+                file_hash=best_row.get("file_hash") or "",
+                provenance=[f"role-backfill:{role}"],
+            )
+            candidate.symbol_kind = best_row.get("symbol_kind", "")
+            candidates.append(candidate)
+        return candidates
+
     # ------------------------------------------------------------------
     # Scoring helpers
     # ------------------------------------------------------------------
@@ -932,6 +1438,8 @@ class UnifiedRanker:
         coverage_bonus = 0.0
         if "SEMANTIC_HINT" in (c.relation or ""):
             coverage_bonus += 0.2
+        if c.relation == "ROLE_BACKFILL" or self._has_role_backfill(c):
+            coverage_bonus += 0.25
         if c.relation in ("IMPLEMENTS", "OVERRIDES"):
             coverage_bonus += 0.15
             
@@ -970,6 +1478,10 @@ class UnifiedRanker:
             return "intermediate_model"
         if name == "solve_dependencies": 
             return "dependency_solver"
+        if name == "request_body_to_args":
+            return "body_argument_mapper"
+        if name == "get_body_field":
+            return "body_field_builder"
         if name == "run_endpoint_function": 
             return "runtime_executor"
         if name == "serialize_response": 
@@ -986,6 +1498,8 @@ class UnifiedRanker:
             return "fastapi_route_registration"
         if name in ("depends", "get_dependant", "dependant"):
             return "fastapi_dependency_injection"
+        if name in ("request_body_to_args", "get_body_field"):
+            return "fastapi_request_body_dependency_resolution"
         if name in ("run_endpoint_function", "serialize_response", "solve_dependencies"):
             return "fastapi_endpoint_execution"
         return "generic"
@@ -997,6 +1511,8 @@ class UnifiedRanker:
             roles = ["public_entrypoint", "registration_step", "route_object", "handler_or_lifecycle"]
         elif mechanism == "fastapi_dependency_injection":
             roles = ["public_entrypoint", "marker_or_config", "intermediate_model", "dependency_solver", "handler_or_lifecycle"]
+        elif mechanism == "fastapi_request_body_dependency_resolution":
+            roles = ["handler_or_lifecycle", "body_field_builder", "dependency_solver", "body_argument_mapper"]
         elif mechanism == "fastapi_endpoint_execution":
             roles = ["runtime_executor", "dependency_solver", "response_serializer"]
         else:

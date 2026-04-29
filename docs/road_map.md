@@ -66,6 +66,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [ ] Add small but solid accessibility/keyboard polish for the extension surfaces.
 
 ### P2 - Retrieval Quality and Observability
+- [ ] Treat Phase 9.1 (Unified Ranker) and Phase 9.4 (Prompt Contract Observability) as the current retrieval-quality path, not deferred cleanup.
 - [x] Soft fallback ladder for missing symbols.
 - [ ] Finish remaining prompt-contract fields: `pruned[]`, ranker weights, intent distribution/confidence, ambiguous-intent signal.
 - [ ] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally.
@@ -102,18 +103,23 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 
 ## Immediate 3-Week Plan
 
+### Immediate Retrieval Focus
+- finish Phase 9.4 contract gaps first: `pruned[]`, `metadata.ranker.weights`, `intent.distribution`, `intent.ambiguous`, `intent.confidence`
+- use that observability to debug real-repo misses before broader ranking tweaks
+- close the concrete `fastapi_q02` class of misses: duplicate-symbol target disambiguation and doc-to-runtime bridge coverage
+
 ### Week 1
 - tighten product docs around the context-engine thesis
 - finish `Ask / Inspect / Impact` synchronization and route visibility
-- make prompt-contract observability feel complete enough for daily use
+- make prompt-contract observability complete enough to explain every retrieval include/prune decision
 
 ### Week 2
 - adapt the benchmark harness for the real-repo pack
 - run the `core12` questions on FastAPI, Pydantic, and Redux Toolkit
-- review which answers were grounded, weak, or overstuffed
+- review which answers were grounded, weak, or overstuffed, then patch ranker/contract blind spots immediately
 
 ### Week 3
-- tune ranking and fallback behavior from measured results
+- tune ranking and fallback behavior from measured results, with Phase 9.1 + 9.4 as the main lane
 - decide whether the next phase is still local product hardening or extraction of a reusable context/routing backend
 
 ---
@@ -502,17 +508,22 @@ Goal: Fix the load-bearing identity, resolution, and isolation gaps before retri
 
 ---
 
-## Phase 9: Unified Retrieval & Observability 🚧 PROPOSED
+## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE
 Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
 
 > **Specs:** [spec_unified_ranking.md](spec_unified_ranking.md), [spec_multi_label_intent.md](spec_multi_label_intent.md), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
+>
+> **Current status:** this is no longer "future work". Real-repo benchmark misses like `fastapi_q02` show that ranker behavior and contract observability are on the critical path right now.
 
 ### 9.1 Unified Ranker
-- [ ] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
-- [ ] Blended score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost (per-track normalized)
-- [ ] Overlap bonus when both signals fire on the same candidate
-- [ ] Budget-fill loop competes symbols and doc chunks on identical terms
-- [ ] Weight tuning via eval harness sweep
+- [x] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
+- [x] Blended score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost (per-track normalized)
+- [x] Overlap bonus when both signals fire on the same candidate
+- [x] Budget-fill loop competes symbols and doc chunks on identical terms
+- [x] Weight tuning via eval harness sweep
+- [ ] Target disambiguation for duplicate symbol names within one workspace (`Depends`-style collisions)
+- [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract
+- [ ] Better doc-to-runtime bridge coverage for framework mechanisms where graph edges are structurally sparse
 
 ### 9.2 Multi-Label Intent
 - [ ] `IntentDistribution` (sum-to-1 weights across 6 labels)
@@ -535,6 +546,7 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
 - [ ] `metadata.ranker.weights` — tuning state snapshotted with every response
 - [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence`
+- [ ] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
 
 ---
 
@@ -680,9 +692,9 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | **UID instability** | **Critical** | Old `sha256(file_path:name)` broke on rename/move and collided on overloads + nested funcs. | Stable UID v2 implemented; migration CLI remains cleanup | 🟡 Mitigated |
 | **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Python scoped/imported/dynamic resolver implemented; TS deep resolver remains cleanup | 🟡 Mitigated |
 | **No workspace isolation on managed graph provider** | **Critical** | Multi-user/team graph storage can collapse branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped graph reads/writes implemented | 🟡 Mitigated |
-| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1: unified ranker with blended score ([spec_unified_ranking.md](spec_unified_ranking.md)) | ❌ Open |
+| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is disambiguation + bridge quality on real repos ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 In Progress |
 | Single-label intent | High | Mixed queries (e.g. debugging+refactor) collapse to one tier strategy — loses half the answer. | Phase 9.2: `IntentDistribution` multi-label ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
 | Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3: per-edge `anchor_type` + `confidence` ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ❌ Open |
-| No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4: scores / provenance / pruned[] in contract ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | ❌ Open |
+| No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4 basics are implemented; remaining gap is full `pruned[]`, ranker weights, and intent diagnostics in the contract ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 In Progress |
 | No caching strategy | Medium | Repeated queries re-read bodies, re-run BFS, re-call LLM; the graph provider saturates before the model does. | Phase 10.1: three-layer cache ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ❌ Open |
 | Static retriever | Medium | No feedback signal — silent drift, silent miss. System cannot improve from usage. | Phase 10.2: feedback loop + `CO_RELEVANT` learned edges ([spec_learning_loop.md](spec_learning_loop.md)) | ❌ Open |

@@ -88,6 +88,35 @@ class TestIntentClassifier:
         assert IntentClassifier.classify_intent("WHERE IS THIS?") == Intent.NAVIGATION
         assert IntentClassifier.classify_intent("Why DOES this fail?") == Intent.DEBUGGING
 
+    def test_classify_with_metadata_returns_distribution(self):
+        """Keyword scoring exposes a normalized distribution and confidence."""
+        signal = IntentClassifier.classify_with_metadata(
+            "How does dependency injection work before the endpoint function is called?"
+        )
+
+        assert signal.primary == Intent.EXPLORATION
+        assert abs(sum(signal.distribution.values()) - 1.0) < 1e-9
+        assert signal.confidence > 0
+        assert signal.matched_keywords["exploration"]
+
+    def test_classify_with_metadata_marks_ambiguous_queries(self):
+        """Mixed-intent prompts should surface ambiguity instead of hiding it."""
+        signal = IntentClassifier.classify_with_metadata("Why should I add this feature?")
+
+        assert signal.primary == Intent.DEBUGGING
+        assert signal.ambiguous is True
+        assert "debugging" in signal.distribution
+        assert "new_feature" in signal.distribution
+
+    def test_empty_query_metadata_defaults_to_exploration(self):
+        """Empty queries keep the old default and expose a simple distribution."""
+        signal = IntentClassifier.classify_with_metadata("")
+
+        assert signal.primary == Intent.EXPLORATION
+        assert signal.distribution == {"exploration": 1.0}
+        assert signal.confidence == 0.0
+        assert signal.ambiguous is False
+
 
 class TestIntentConfig:
     """Test intent priority configuration."""

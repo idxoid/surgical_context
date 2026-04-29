@@ -7,7 +7,7 @@ from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.deduplicator import ContextDeduplicator
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.intent_classifier import IntentClassifier
+from sidecar.context.intent_classifier import IntentClassifier, IntentSignal
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext
 from sidecar.context.unified_ranker import (
@@ -45,15 +45,16 @@ class ContextArbitrator:
         token_budget: int = 4000,
     ) -> PromptContext | str:
         """Orchestrate the pipeline: expand → deduplicate → resolve → compile (with intent-aware tier selection)."""
-        intent = IntentClassifier.classify_intent(question)
+        intent_signal = IntentClassifier.classify_with_metadata(question)
+        intent = intent_signal.primary
         cache_hits = []
 
         if self.vector_db:
             return self._get_context_unified(
-                symbol_name, question, token_budget, intent, cache_hits
+                symbol_name, question, token_budget, intent_signal, cache_hits
             )
         return self._get_context_graph_only(
-            symbol_name, token_budget, intent, cache_hits
+            symbol_name, token_budget, intent_signal, cache_hits
         )
 
     # ------------------------------------------------------------------
@@ -61,8 +62,9 @@ class ContextArbitrator:
     # ------------------------------------------------------------------
 
     def _get_context_unified(
-        self, symbol_name, question, token_budget, intent, cache_hits
+        self, symbol_name, question, token_budget, intent_signal: IntentSignal, cache_hits
     ) -> PromptContext | str:
+        intent = intent_signal.primary
         ranker = UnifiedRanker(
             self.db,
             VectorSearcher(self.vector_db),
@@ -70,7 +72,12 @@ class ContextArbitrator:
             weights=self.ranker_weights,
         )
 
-        target = ranker.get_target(symbol_name)
+        target, target_selection = ranker.get_target(
+            symbol_name,
+            query=question,
+            intent=intent,
+            with_metadata=True,
+        )
         if target is None:
             return f"Error: Symbol '{symbol_name}' not found in graph."
 
@@ -134,6 +141,9 @@ class ContextArbitrator:
         ctx.mechanism = ranker._determine_mechanism(target)
         ctx.pruned_details = subgraph.pruned_details
         ctx.missing_roles = missing_roles
+        ctx.intent_distribution = intent_signal.distribution
+        ctx.intent_confidence = intent_signal.confidence
+        ctx.intent_ambiguous = intent_signal.ambiguous
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
         ctx.budget["ranker"] = "unified"
         w = self.ranker_weights
@@ -144,6 +154,14 @@ class ContextArbitrator:
             "delta": w.delta,
             "epsilon": w.epsilon,
         }
+        ctx.ranker_state = {
+            "strategy": "unified",
+            "weights": dict(ctx.budget["ranker_weights"]),
+            "candidates_considered": budget_info.get("pool_size", 0),
+            "candidates_selected": len(candidates),
+            "pruned_total_count": len(pruned_details),
+            "target_selection": target_selection,
+        }
         return ctx
 
     # ------------------------------------------------------------------
@@ -151,8 +169,9 @@ class ContextArbitrator:
     # ------------------------------------------------------------------
 
     def _get_context_graph_only(
-        self, symbol_name, token_budget, intent, cache_hits
+        self, symbol_name, token_budget, intent_signal: IntentSignal, cache_hits
     ) -> PromptContext | str:
+        intent = intent_signal.primary
         intent_hash = hashlib.sha256(intent.value.encode("utf-8")).hexdigest()
         graph_version = self._graph_version()
 
@@ -209,8 +228,17 @@ class ContextArbitrator:
                 )
 
         ctx = PromptCompiler().compile_with_intent(subgraph, code_map, [], intent)
+        ctx.intent_distribution = intent_signal.distribution
+        ctx.intent_confidence = intent_signal.confidence
+        ctx.intent_ambiguous = intent_signal.ambiguous
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
         ctx.budget["ranker"] = "graph_only"
+        ctx.ranker_state = {
+            "strategy": "graph_only",
+            "candidates_considered": len(subgraph.nodes),
+            "candidates_selected": len(subgraph.nodes),
+            "pruned_total_count": len(subgraph.pruned_details),
+        }
         return ctx
 
     def _primary_uid(self, symbol_name: str) -> str | Any | None:

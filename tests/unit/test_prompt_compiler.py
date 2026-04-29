@@ -127,6 +127,11 @@ class TestPromptCompilerBasic:
                 chunk_id="spec_1",
                 content="Payment processing specification",
                 score=0.73,
+                graph_score=0.18,
+                semantic_score=0.73,
+                blended_score=0.81,
+                intent_weight=0.2,
+                matched_symbols=["process_payment"],
                 provenance=["vector:docs"],
             )
         ]
@@ -142,15 +147,42 @@ class TestPromptCompilerBasic:
         ctx.token_counts = {"context": 42}
         ctx.model_route = {"provider": "ollama", "model": "llama3"}
         ctx.pruning_reasons = ["budget skipped distant import"]
+        ctx.intent_distribution = {"navigation": 0.75, "exploration": 0.25}
+        ctx.intent_confidence = 0.75
+        ctx.intent_ambiguous = True
+        ctx.pruned_details = [
+            {
+                "kind": "symbol",
+                "uid": "audit-log",
+                "name": "Audit.log",
+                "reason": "over_budget",
+                "blended_score": 0.51,
+                "token_cost": 620,
+            }
+        ]
+        ctx.ranker_state = {
+            "strategy": "unified",
+            "weights": {"alpha": 1.0, "beta": 0.8, "gamma": 0.4, "delta": 0.5, "epsilon": 0.3},
+            "candidates_considered": 12,
+            "candidates_selected": 3,
+            "target_selection": {"strategy": "duplicate_resolution", "ambiguous": True},
+        }
 
         payload = ctx.to_dict()
 
         assert payload["metadata"]["assembly"]["trace_id"] == "trace-123"
         assert payload["metadata"]["assembly"]["resolver_version"] == "context-arbitrator-v2"
         assert payload["metadata"]["pruning_reasons"] == ["budget skipped distant import"]
+        assert payload["intent_details"]["distribution"] == {"navigation": 0.75, "exploration": 0.25}
+        assert payload["intent_details"]["ambiguous"] is True
+        assert payload["metadata"]["ranker"]["weights"]["epsilon"] == 0.3
+        assert payload["metadata"]["ranker"]["target_selection"]["strategy"] == "duplicate_resolution"
         assert payload["primary_source"]["provenance"] == ["graph", "code_resolver"]
-        assert payload["primary_source"]["scores"]["relevance"] == 1.0
+        assert payload["primary_source"]["scores"]["blended_score"] == 1.0
         assert payload["documentation"][0]["score"] == 0.73
+        assert payload["documentation"][0]["scores"]["graph_score"] == 0.18
+        assert payload["documentation"][0]["matched_symbols"] == ["process_payment"]
+        assert payload["pruned"][0]["name"] == "Audit.log"
 
 
 class TestPromptCompilerWithIntent:
