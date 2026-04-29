@@ -1,6 +1,6 @@
 # Spec — Prompt Contract Observability (Phase 9)
 
-> **Status:** Proposed. Adds ranking scores, provenance, and assembly metrics to the JSON Prompt Contract. Prerequisite for the learning loop ([spec_learning_loop.md](spec_learning_loop.md)) and for debugging retrieval quality in production.
+> **Status:** Partially implemented. Ranking scores, provenance, pruning details, intent metadata, and ranker metadata are already present in the current prompt contract. Remaining gaps are consistent workspace/branch population, doc-anchor type/confidence, and richer stage timing coverage.
 
 ## 1. Problem
 
@@ -18,12 +18,13 @@ Without scores in the contract:
 
 ## 2. Design
 
-### 2.1 Full Contract
+### 2.1 Current Contract Shape
 
 ```json
 {
   "mode": "surgical_full",
-  "intent": {
+  "intent": "debugging",
+  "intent_details": {
     "primary": "debugging",
     "distribution": {"debugging": 0.6, "refactor": 0.3, "exploration": 0.1},
     "ambiguous": false,
@@ -34,26 +35,17 @@ Without scores in the contract:
     "tiers_used": ["code", "cross_refs", "specs"],
     "tier_tokens": {"code": 820, "cross_refs": 1400, "specs": 310},
     "assembly": {
-      "latency_ms": 47,
-      "graph_latency_ms": 18,
-      "vector_latency_ms": 11,
-      "rank_latency_ms": 4,
-      "compile_latency_ms": 14,
       "trace_id": "req_7f3a...",
       "workspace_id": "acme/surgical_context@main",
-      "resolver_version": "py-scope-v1"
-    },
-    "budget": {
-      "limit": 4000,
-      "spent": 3420,
-      "reserved": 500,
-      "pruned": 6,
-      "dedup_saved": 240
+      "resolver_version": "context-arbitrator-v2",
+      "cache_hits": ["l1_body"]
     },
     "ranker": {
       "weights": {"alpha": 1.0, "beta": 0.8, "gamma": 0.4, "delta": 0.5, "epsilon": 0.5},
       "candidates_considered": 47,
-      "candidates_selected": 9
+      "candidates_selected": 9,
+      "pruned_total_count": 6,
+      "target_selection": {"strategy": "duplicate_resolution"}
     }
   },
   "primary_source": {
@@ -80,8 +72,6 @@ Without scores in the contract:
       "relation": "CALLS_DIRECT",
       "direction": "callee",
       "depth": 1,
-      "edge_confidence": 1.0,
-      "edge_tier": "direct",
       "scores": {
         "graph_score": 0.87,
         "semantic_score": 0.42,
@@ -103,9 +93,7 @@ Without scores in the contract:
         "blended_score": 1.05,
         "intent_weight": 0.3
       },
-      "provenance": ["vector:sim=0.91", "graph:COVERS->process_payment"],
-      "anchor_type": "definition",
-      "anchor_confidence": 0.82
+      "provenance": ["vector:sim=0.91", "graph:COVERS->process_payment"]
     }
   ],
   "pruned": [
@@ -125,23 +113,28 @@ Without scores in the contract:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `intent.distribution` | dict | Multi-label signal ([spec_multi_label_intent.md](spec_multi_label_intent.md)) |
-| `intent.confidence` | float | Raw pre-normalization sum — distinguishes strong vs. weak classification |
-| `metadata.assembly.*_latency_ms` | int | Per-phase latency for SLO tracking + perf regression detection |
+| `intent_details.distribution` | dict | Multi-label signal ([spec_multi_label_intent.md](spec_multi_label_intent.md)) |
+| `intent_details.confidence` | float | Distinguishes strong vs. weak classification |
 | `metadata.assembly.trace_id` | str | Correlate with server logs, OpenTelemetry |
 | `metadata.assembly.workspace_id` | str | Which workspace this context came from ([spec_branch_isolation.md](spec_branch_isolation.md)) |
+| `metadata.assembly.cache_hits` | list[str] | Visibility into retrieval cache use |
 | `metadata.ranker.weights` | dict | Current tuning state — a bisectable record of what was active |
 | `metadata.ranker.candidates_*` | int | Pool-size observability — spot cases where too few candidates were generated |
+| `metadata.ranker.target_selection` | dict | Duplicate target disambiguation evidence and alternatives |
 | `*.scores.graph_score` | float | Raw graph score (normalized 0–1) |
 | `*.scores.semantic_score` | float | Raw semantic similarity (normalized 0–1) |
 | `*.scores.blended_score` | float | Final ranking score |
 | `*.scores.intent_weight` | float | Intent-driven multiplier applied |
 | `*.provenance` | list[str] | Human-readable track log — "why did this make it in?" |
-| `graph_context[].edge_confidence` | float | From [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md) |
-| `graph_context[].edge_tier` | str | Resolver tier ("direct" / "scoped" / …) |
-| `documentation[].anchor_type` | str | From [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md) |
 | `documentation[].matched_symbols` | list[str] | Which graph symbols this doc COVERS |
 | `pruned[]` | list | Candidates that missed the budget — with reason, score, cost |
+
+**Still future in the contract:**
+
+- `graph_context[].edge_confidence`
+- `graph_context[].edge_tier`
+- `documentation[].anchor_type`
+- `documentation[].anchor_confidence`
 
 ### 2.3 `pruned` Array — Why It Matters
 
@@ -154,7 +147,7 @@ Capped at 20 entries, sorted by descending `blended_score` — only the most pai
 
 ### 2.4 Backwards Compatibility
 
-- Clients reading the old shape (`intent` as string) continue to work: serializer emits `intent.primary` under the legacy key for two minor versions.
+- Clients reading the old shape continue to work: the serializer still emits `intent` as a plain string, while richer intent details live under `intent_details`.
 - Missing optional fields are never emitted as `null` — they're omitted. Old clients that ignore unknown keys keep working unchanged.
 - `primary_source`, `graph_context`, `documentation`, `budget` top-level shape is preserved. New fields nest inside — no replacements.
 
@@ -232,9 +225,10 @@ if assembly["latency_ms"] > 200:
 
 ## 5. Limitations (current)
 
-- Scores are currently unnormalized across ranker versions — comparing a score from v1 weights to v2 weights is meaningless. Mitigate via `ranker.weights` in metadata (clients can detect version drift).
-- `pruned` capped at 20 entries can hide the long tail; add `pruned_total_count` for honest reporting.
-- Latency timings rely on wall-clock; under high contention the breakdown may mis-attribute time. OpenTelemetry spans (Phase 10) fix this.
+- Scores are meaningful only within the active ranker configuration; compare across runs together with `metadata.ranker.weights`.
+- `pruned` capped at 20 entries can hide the long tail; `pruned_total_count` now mitigates this, but the long tail is still not serialized.
+- `workspace_id` is present in the schema but not yet populated consistently by the arbitrator.
+- Doc-anchor `anchor_type` / `anchor_confidence` are still future work.
 
 ## 6. Planned Extensions
 

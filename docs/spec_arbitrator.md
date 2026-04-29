@@ -1,104 +1,104 @@
 # Context Arbitrator — Spec
 
+> **Status:** Implemented. This document describes the current orchestrator behavior in `sidecar/context/arbitrator.py`.
+
 ## Overview
 
-`sidecar/context/arbitrator.py` assembles the JSON Prompt Contract for a target symbol. It is an orchestrator only: it does graph expansion, code/doc resolution, deduplication, and prompt compilation, but it does not call the LLM.
+`ContextArbitrator` assembles the JSON Prompt Contract for a target symbol. It is still an orchestrator rather than a planner: it composes intent classification, retrieval, code resolution, and prompt compilation, but it does not call the LLM itself.
 
----
+Two execution paths exist:
 
-## Class: ContextArbitrator
+- **Unified path** — used when `vector_db` is present. This is the default local product path.
+- **Graph-only fallback** — used when no vector DB is configured.
+
+## Public API
 
 ```python
-ContextArbitrator(neo4j_client, overlay: InMemoryOverlay | None = None, vector_db=None)
+ContextArbitrator(
+    neo4j_client,
+    overlay: InMemoryOverlay | None = None,
+    vector_db=None,
+    workspace_id: str = DEFAULT_WORKSPACE_ID,
+    cache: LayeredCache | None = None,
+    ranker_weights: RankerWeights | None = None,
+)
 ```
 
-### get_context_for_symbol(symbol_name, question="", token_budget=4000) -> PromptContext | str
+### `get_context_for_symbol(symbol_name, question="", token_budget=4000) -> PromptContext | str`
 
 Returns a `PromptContext`, or an error string like `Error: Symbol '...' not found in graph.` Callers translate that string into endpoint-level errors.
 
-**Pipeline:**
+## Unified Path
 
-1. **Intent classification** — `IntentClassifier.classify_intent(question)` selects the retrieval priority profile.
-2. **Graph expansion** — `GraphExpander.expand(symbol_name, token_budget)` performs priority-queue BFS over typed symbol edges and returns a `Subgraph` with budget metadata.
-3. **Deduplication** — `ContextDeduplicator.deduplicate(subgraph)` removes redundant graph nodes before code is read.
-4. **Code resolution** — `CodeResolver(overlay).resolve(file_path, start, end)` reads dirty overlay content first, then falls back to disk.
-5. **Doc resolution** — if `vector_db` is present, `DocResolver(vector_db).search(f"{symbol_name} {question}", limit=3)` returns LanceDB doc chunks before compilation.
-6. **Prompt compilation** — `PromptCompiler.compile_with_intent(...)` builds `PromptContext` with intent-aware doc tier selection.
+When `vector_db` is present, the pipeline is:
 
----
+1. **Intent classification** — `IntentClassifier.classify_with_metadata(question)` returns the primary intent plus distribution, confidence, and ambiguity signal.
+2. **Target selection** — `UnifiedRanker.get_target(...)` resolves the symbol in the active workspace and records duplicate-resolution metadata when needed.
+3. **Unified ranking** — `UnifiedRanker.rank(...)` blends graph and semantic candidates, applies mechanism-aware role backfill, and returns:
+   - selected candidates
+   - budget info
+   - stop reason
+   - pruned candidate details
+   - missing roles
+4. **Subgraph/doc split** — `UnifiedRanker.candidates_to_subgraph(...)` converts the chosen candidates back into `SubgraphNode` plus `DocChunk` objects for compilation.
+5. **Code resolution** — `CodeResolver.resolve(...)` reads dirty overlay content first, then falls back to disk. Massive targets and low-gain distant neighbors are resolved in signature-only mode.
+6. **Prompt compilation** — `PromptCompiler.compile_with_intent(...)` builds the base `PromptContext`.
+7. **Observability enrichment** — arbitrator writes mechanism, missing roles, ranker weights, target-selection metadata, cache hits, and intent metadata into the contract.
 
-## Data Objects
+## Graph-Only Fallback
 
-### PromptContext
+When no vector DB is configured, the pipeline falls back to:
 
-```python
-@dataclass
-class PromptContext:
-    primary_source: SymbolContext
-    graph_context: list[SymbolContext]
-    documentation: list[DocChunk]
-    budget: dict
-    mode: str
-    intent: str
-    tier_tokens: dict
+1. intent classification
+2. `GraphExpander.expand(...)`
+3. `ContextDeduplicator.deduplicate(...)`
+4. `CodeResolver.resolve(...)`
+5. `PromptCompiler.compile_with_intent(...)`
 
-    def to_system_prompt(self) -> str
-    def to_dict(self) -> dict
-    def token_count(self) -> int
-```
+This path is functional, but less observable and generally less retrieval-capable than the unified path.
 
-`to_dict()` is the API-facing JSON Prompt Contract. It includes `mode`, `intent`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, selected code/doc chunks, and graph budget fields.
+## PromptContext Fields the Arbitrator Owns
 
-### SymbolContext
+The arbitrator is responsible for setting or enriching:
 
-```python
-@dataclass
-class SymbolContext:
-    symbol: str
-    file_path: str
-    relation: str
-    direction: str
-    depth: int
-    relevance_score: float
-    is_dirty: bool
-    code: str
-```
+- `stopped_reason`
+- `mechanism`
+- `missing_roles`
+- `intent_distribution`
+- `intent_confidence`
+- `intent_ambiguous`
+- `budget.cache_hits`
+- `budget.ranker`
+- `budget.ranker_weights`
+- `ranker_state.strategy`
+- `ranker_state.weights`
+- `ranker_state.candidates_considered`
+- `ranker_state.candidates_selected`
+- `ranker_state.pruned_total_count`
+- `ranker_state.required_roles`
+- `ranker_state.target_selection`
 
-### DocChunk
-
-```python
-@dataclass
-class DocChunk:
-    source_file: str
-    chunk_id: str
-    content: str
-```
-
----
+The compiler owns the structural shape of `primary_source`, `graph_context`, `documentation`, and tier token accounting.
 
 ## Overlay Priority Rule
 
 | State | Source |
-|---|---|
+| --- | --- |
 | File is dirty | `InMemoryOverlay` |
 | File is clean | Local filesystem |
 
 The graph supplies symbol file paths and line ranges. Only the source of text changes when a dirty overlay exists.
 
----
-
 ## Current Limitations
 
-- The initial symbol lookup still accepts a display `Symbol.name`; workspace-scoped lookup prevents cross-branch leakage, but exact UID target selection is still a product/API improvement.
-- Workspace identity is applied to graph queries, but not yet surfaced in the JSON Prompt Contract.
-- Doc chunks do not yet expose retrieval scores, provenance details, or pruning reasons in `to_dict()`.
-- Backpressure and batching for mass file-change events live outside the arbitrator and remain roadmap work.
-
----
+- `workspace_id` exists in the contract schema but is not yet populated consistently by the arbitrator.
+- The graph-only fallback does not surface the same ranker metadata richness as the unified path.
+- Doc-anchor type/confidence is not yet injected into `documentation[]`, so all doc chunks still compete mostly on semantic and graph overlap.
+- Mechanism inference is now strong for FastAPI and partially generalized for Pydantic, but framework coverage is still uneven.
 
 ## Planned Extensions
 
-- Stable symbol identity and scoped target lookup.
-- Workspace/branch-aware graph expansion.
-- Prompt-contract observability: scores, provenance, pruning reasons, resolver version, model route, and trace ID.
-- Unified ranking across graph nodes and semantic doc chunks.
+- Consistent workspace/branch metadata in `metadata.assembly`
+- richer doc confidence/type metadata in the contract
+- clearer model-route and fallback-level surfacing in the extension
+- future tenant API expansion between workspace retrieval and direct LLM fallback

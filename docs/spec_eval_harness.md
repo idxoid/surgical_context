@@ -1,6 +1,6 @@
 # Spec — Evaluation Harness (Phase 2.5)
 
-> **Status:** Proposed. Blocks Phase 4 (SaaS) and Phase 5 (launch) per ADR-006.
+> **Status:** Implemented locally and used actively for retrieval tuning. The remaining gap is CI automation of benchmark deltas; the harness, reports, real-repo pack, and baseline appends already exist in the repo.
 
 ## 1. Purpose
 
@@ -10,12 +10,12 @@ The harness turns each claim into a CI-enforceable metric on a known fixture set
 
 ## 2. Success Criteria
 
-The harness is "done" when all four are true:
+The harness is "fully productized" when all four are true:
 
 1. `pytest tests/` runs green on a golden fixture repo with ≥30 (question → expected_symbols) pairs.
-2. `python QA/qa_benchmark.py --report` emits a JSON metrics bundle: `recall@k`, `precision@k`, `tokens_surgical`, `tokens_carpet_bomb`, `assembly_ms_p50/p95`.
+2. `python QA/qa_benchmark.py --report` emits a JSON metrics bundle: `recall@k`, `precision`, `role_recall`, `file_recall`, `tokens_surgical`, `tokens_carpet_bomb`, `assembly_ms_avg`, and per-question `ready_context`.
 3. GitHub Actions runs the bundle on every PR and posts a delta comment (regressions block merge).
-4. A single baseline row exists in `QA/baselines.jsonl` — without it, deltas are meaningless.
+4. A baseline row exists in `QA/baselines.jsonl` — without it, deltas are meaningless.
 
 ## 3. Fixture Design
 
@@ -50,9 +50,9 @@ Required topologies:
 
 Each entry: `id`, `repo`, `symbol`, `question`, `expected_mode` (`symbol` or `workspace`), **`mechanism`** (code relationship type), **`required_roles`** (list of roles ranker must fulfill), `expected_symbols`, `expected_files`, `difficulty`, `intent`.
 
-**Phase 4 additions:**
+**Current additions beyond the original Phase 2.5 design:**
 - **`mechanism`**: Classifies which code relationship is being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`, `rtk_slice_generation`). Enables diagnosing architectural gaps vs. ranking noise.
-- **`required_roles`**: List of code roles the ranker must find (e.g., `[public_entrypoint, route_registry, handler_or_lifecycle]`). Used to compute `role_recall` metric.
+- **`required_roles`**: List of code roles the ranker must find. The YAML may use legacy names, but benchmark scoring normalizes them into the canonical role taxonomy before computing `role_recall`.
 - **`expected_mode`**: Either `symbol` (should find by name) or `workspace` (correct answer is "not found" — used for negative test cases like nonexistent symbols).
 
 Target: 30 entries for Phase 2.5 (fixture), 20+ for Phase 4 (real-repo pack, FastAPI/Pydantic/Redux Toolkit).
@@ -70,7 +70,7 @@ Target: 30 entries for Phase 2.5 (fixture), 20+ for Phase 4 (real-repo pack, Fas
 
 | Metric | Formula | Semantics |
 |---|---|---|
-| **`role_recall`** | `(required_roles not in missing_roles) / len(required_roles)` | Fraction of required code roles the ranker fulfilled. Diagnostic for code relationship discovery gaps. |
+| **`role_recall`** | `normalize(required_roles - missing_roles) / len(normalize(required_roles))` | Fraction of required code roles the ranker fulfilled on the canonical role scale. Diagnostic for code relationship discovery gaps. |
 | **`file_recall`** | `|retrieved_files ∩ expected_files| / |expected_files|` | Fraction of expected files included. Tests ranking noise and code coverage. |
 | **Intent-stratified pass gate** | See table below | Different intents have different acceptable thresholds. |
 
@@ -94,8 +94,14 @@ Target: 30 entries for Phase 2.5 (fixture), 20+ for Phase 4 (real-repo pack, Fas
 | `tokens_surgical` | tiktoken count of `to_system_prompt()` output | regression >10% blocks |
 | `tokens_carpet_bomb` | tiktoken count of all files touched by any expected symbol | baseline only |
 | `reduction_ratio` | `1 - tokens_surgical / tokens_carpet_bomb` | <0.50 blocks (target 0.60–0.80 per [architectura.md §1.3](architectura.md)) |
-| `assembly_ms_p50` | wall-clock of `ContextArbitrator.get_context_for_symbol` | >200ms blocks |
-| `assembly_ms_p95` | same, p95 | >500ms blocks |
+| `assembly_ms_avg` | mean wall-clock of `ContextArbitrator.get_context_for_symbol` across the run | >200ms is a local-release warning |
+
+**Per-question report fields now include:**
+
+- `precision` as an alias alongside `precision_at_k`
+- `ready_context.token_count`
+- `ready_context.contract` (serialized prompt contract)
+- `ready_context.system_prompt`
 
 **Note:** Quality metric (answer correctness) is **intentionally deferred** — it requires an LLM judge, which introduces noise and cost. Recall@k and role_recall are proxies: if the right symbols and roles are in the context, quality is the model's problem, not ours.
 
@@ -127,6 +133,8 @@ QA/
 
 ## 6. CI Integration
 
+Target end-state:
+
 `.github/workflows/eval.yml` runs on every PR:
 
 1. Boot Neo4j + LanceDB in services.
@@ -137,6 +145,8 @@ QA/
 6. Post comment: `recall@5 0.84 → 0.87 ✅ | tokens_surgical 1.2k → 1.5k ⚠️ (+25%)`.
 
 On merge to main, a follow-up job appends a new row to `baselines.jsonl` with the commit SHA.
+
+Current repo truth: CI runs the unit suite only; benchmark-diff automation remains future work.
 
 ## 7. Non-Goals
 

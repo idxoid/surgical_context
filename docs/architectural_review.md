@@ -1,5 +1,24 @@
 # Architectural Ideas & Prioritization
 
+> **Status:** Historical review, updated with current disposition notes.
+>
+> The original document grouped ideas into future phases. Since then, several items moved into the product core: `ContextDeduplicator`, embedding versioning, typed retrieval edges, AFFECTS, intent-aware retrieval, unified ranking, benchmark-driven tuning, and prompt-contract observability. The useful remaining value in this file is the shape of the trade-offs, not the old phase labels.
+
+## Current Snapshot
+
+What is already true in the codebase:
+
+- unified graph + semantic ranking is the default local retrieval path
+- mechanism-aware benchmark evaluation is active on real repositories
+- prompt-contract observability now includes scores, provenance, pruning, ranker metadata, and benchmark `ready_context`
+- FastAPI mechanism recovery is strong enough to use as a tuning baseline
+
+What still feels architecturally important next:
+
+1. finish framework-general retrieval coverage, especially Pydantic handle recovery and Redux Toolkit validation
+2. add doc-anchor confidence/type scoring so semantic docs compete more honestly with code candidates
+3. keep provider boundaries local-first and thin until profiling proves a stronger abstraction need
+
 Evaluated by **impact/effort ratio** and **dependency preconditions**. Phase assignments reflect MVP→scaling sequence.
 
 ---

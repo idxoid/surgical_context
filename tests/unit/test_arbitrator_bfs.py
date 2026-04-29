@@ -186,8 +186,11 @@ class TestContextArbitratorBFS:
                     docs,
                 )
 
-            def _determine_mechanism(self, target):
+            def _determine_mechanism(self, target, query=""):
                 return "generic"
+
+            def _get_required_roles(self, mechanism):
+                return ["api_surface", "executor", "runtime_surface", "docs_or_concept"]
 
         with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker):
             ctx = arbitrator.get_context_for_symbol(
@@ -351,8 +354,18 @@ class TestContextArbitratorBFS:
                     ],
                 )
 
-            def _determine_mechanism(self, target):
+            def _determine_mechanism(self, target, query=""):
                 return "fastapi_dependency_injection"
+
+            def _get_required_roles(self, mechanism):
+                return [
+                    "api_surface",
+                    "config_surface",
+                    "representation_surface",
+                    "orchestrator",
+                    "runtime_surface",
+                    "docs_or_concept",
+                ]
 
         arbitrator = ContextArbitrator(
             mock_db,

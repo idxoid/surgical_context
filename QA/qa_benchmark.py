@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import tiktoken
 import yaml
 
+from sidecar.context.role_taxonomy import normalize_roles
+
 _PASS_GATES = {
     "explain_behavior": {"role_recall": 0.70, "file_recall": 0.50},
     "trace_dependency": {"role_recall": 0.80, "file_recall": 0.70},
@@ -82,14 +84,16 @@ def _expected_file_matches(expected: str, retrieved_files: set[str]) -> bool:
 def _compute_role_recall(required_roles: list[str], ctx_missing_roles: list[str]) -> float:
     """Fraction of required_roles the ranker fulfilled (not in ctx.missing_roles).
 
-    For non-FastAPI questions the ranker's internal role names diverge from the
-    YAML required_roles — treat result as diagnostic signal, not hard truth.
+    Both inputs are normalized into the canonical cross-framework taxonomy
+    before comparison so legacy pack role names and ranker-native names share
+    one scale.
     """
-    if not required_roles:
+    required = normalize_roles(required_roles)
+    if not required:
         return 1.0
-    missing_set = set(ctx_missing_roles)
-    fulfilled = sum(1 for r in required_roles if r not in missing_set)
-    return fulfilled / len(required_roles)
+    missing_set = set(normalize_roles(ctx_missing_roles))
+    fulfilled = sum(1 for r in required if r not in missing_set)
+    return fulfilled / len(required)
 
 
 def _compute_file_recall(expected_files: set[str], retrieved_files: set[str]) -> float:
@@ -770,12 +774,18 @@ def run_benchmark(
             if file_path
         }
 
+        required_roles_canonical = normalize_roles(required_roles)
+        missing_roles_canonical = normalize_roles(ctx.missing_roles)
+        ranker_required_roles = normalize_roles(
+            getattr(ctx, "ranker_state", {}).get("required_roles", [])
+        )
+
         # Compute recall@k and precision@k
         intersection = all_retrieved & expected_symbols
         recall_at_k = len(intersection) / len(expected_symbols) if expected_symbols else 0.0
         precision_at_k = len(intersection) / len(all_retrieved) if all_retrieved else 0.0
         file_recall = _compute_file_recall(expected_files, retrieved_files)
-        role_recall = _compute_role_recall(required_roles, ctx.missing_roles)
+        role_recall = _compute_role_recall(required_roles_canonical, missing_roles_canonical)
 
         # Token counts
         tokens_surgical = ctx.token_count()
@@ -843,8 +853,11 @@ def run_benchmark(
             "role_recall": role_recall,
             "stopped_reason": ctx.stopped_reason,
             "missing_roles": ctx.missing_roles,
+            "missing_roles_canonical": missing_roles_canonical,
             "mechanism": mechanism,
             "required_roles": required_roles,
+            "required_roles_canonical": required_roles_canonical,
+            "ranker_required_roles": ranker_required_roles,
             "expected_mode": expected_mode,
             "tokens_surgical": tokens_surgical,
             "tokens_carpet_bomb": tokens_carpet_bomb,

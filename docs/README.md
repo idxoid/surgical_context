@@ -27,10 +27,11 @@ This folder contains the current product and technical documentation for the `co
 - **[spec_doc_anchor.md](spec_doc_anchor.md)** — FROM/COVERS relationships
 
 **Context Assembly:**
-- **[spec_arbitrator.md](spec_arbitrator.md)** — deprecated (use individual components instead)
+- **[spec_arbitrator.md](spec_arbitrator.md)** — current orchestrator contract: unified ranking path, graph-only fallback, and prompt-contract assembly
 - **[spec_intent_classifier.md](spec_intent_classifier.md)** — query intent → content tier ranking (Phase 6 design)
 - **[spec_token_budget_bfs.md](spec_token_budget_bfs.md)** — BFS with token constraints
 - **[spec_context_deduplicator.md](spec_context_deduplicator.md)** — remove redundant symbols
+- **[spec_unified_ranking.md](spec_unified_ranking.md)** — current graph + semantic ranker, role backfill, and score blending
 
 **APIs & Infrastructure:**
 - **[spec_sidecar_api.md](spec_sidecar_api.md)** — FastAPI endpoints
@@ -41,7 +42,7 @@ This folder contains the current product and technical documentation for the `co
 - **[spec_tenant_api_graph.md](spec_tenant_api_graph.md)** — future Team/Enterprise tenant-level API contract graph
 
 **Advanced Topics:**
-- **[spec_eval_harness.md](spec_eval_harness.md)** — measuring quality (recall, precision)
+- **[spec_eval_harness.md](spec_eval_harness.md)** — real-repo benchmark harness, token metrics, and report schema
 - **[spec_embedding_versioning.md](spec_embedding_versioning.md)** — managing embedding model versions
 - **[spec_affects_index.md](spec_affects_index.md)** — reverse dependency index
 
@@ -63,11 +64,11 @@ The product is now described more narrowly than before:
 - **not** a general AI coding platform
 - **yes** a local-first, model-agnostic context engine for code understanding and change impact
 
-The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/context modules, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
+The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/context modules, a workspace-scoped unified ranker, canonical role taxonomy normalization, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
 
-Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, and endpoint coverage for the sidecar API.
+Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), and real-repo benchmark reports with `precision` plus full `ready_context`.
 
-The local setup and smoke-test path live in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are remaining prompt-contract observability, extension synchronization/accessibility polish, and real-repository benchmark validation. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](road_map.md)** for the canonical backlog in this branch.
+The local setup and smoke-test path live in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are broader real-repo benchmark coverage beyond FastAPI, stronger Pydantic/RTK mechanism recovery, doc-anchor confidence/type scoring, consistent workspace/branch metadata in the prompt contract, and extension synchronization/accessibility polish. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](road_map.md)** for the canonical backlog in this branch.
 
 ---
 

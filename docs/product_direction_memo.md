@@ -1,6 +1,8 @@
 # Product Direction Memo
 
-> **Status:** Active guidance for the next fork / product decision.
+> **Status:** Active guidance for the current local-first product line.
+>
+> **Progress since the original memo:** the repo now has a working real-repo benchmark harness, unified ranking in the sidecar, prompt-contract observability, FastAPI core12 green locally, and early Pydantic core12 coverage. The remaining question is no longer "should we measure?" but "how far can the current context engine generalize across frameworks before we widen scope again?"
 >
 > **Audience:** maintainer, early contributors, and future design discussions.
 >
@@ -234,6 +236,14 @@ Weak-fit users:
 
 The project should prove the core thesis with a small benchmark instead of more platform expansion.
 
+### Current Snapshot
+
+This validation path is now in progress, not hypothetical:
+
+- the benchmark harness runs against the committed real-repo pack in `tests/fixtures/real_repo_question_pack.yaml`
+- FastAPI `core12` has already been used to tune duplicate-target selection, role backfill, and prompt-contract observability
+- Pydantic `core12` is now evaluated on the same canonical role scale, which exposed a narrower remaining gap: reliable recovery of validator/serializer handles rather than a generic ranking failure
+
 ### Benchmark Design
 
 Use 2-3 real repositories and 20-30 real developer questions.
@@ -289,7 +299,7 @@ The idea is likely valid if the pipeline can show something close to:
 
 ### Week 2: Measure Instead of Expanding
 
-- prepare the benchmark question set
+- extend the existing benchmark question set only where it improves framework coverage
 - run naive vs surgical vs heavy-context comparisons
 - capture token, latency, and quality deltas
 - document examples where the structured retrieval clearly helps or fails

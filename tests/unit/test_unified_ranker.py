@@ -150,7 +150,7 @@ def test_duplicate_target_selection_prefers_behavioral_entrypoint():
     assert metadata["strategy"] == "duplicate_resolution"
     assert metadata["ambiguous"] is True
     assert metadata["selected_uid"] == "depends-fn"
-    assert metadata["alternatives"][0]["role"] == "public_entrypoint"
+    assert metadata["alternatives"][0]["role"] == "api_surface"
 
 
 def test_dependency_injection_role_backfill_supplies_missing_roles():
@@ -436,3 +436,121 @@ def test_request_body_role_backfill_boosts_weak_existing_role_candidates():
     assert chosen_by_name["get_request_handler"].token_cost <= 120
     assert any(step.startswith("role-backfill:") for step in chosen_by_name["solve_dependencies"].provenance)
     assert set(missing_roles) <= {"docs_or_concept"}
+
+
+def test_pydantic_basemodel_mechanism_uses_query_to_split_boundary_vs_validation():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+    target = SubgraphNode(
+        uid="basemodel",
+        name="BaseModel",
+        file_path="/repo/pydantic/main.py",
+        range=[100, 400],
+        token_estimate=200,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+
+    assert (
+        ranker._determine_mechanism(
+            target,
+            query="How does BaseModel validation flow work in v2 from model construction to validated output?",
+        )
+        == "pydantic_validation_core_bridge"
+    )
+    assert (
+        ranker._determine_mechanism(
+            target,
+            query="Which parts of Pydantic are pure Python wrappers and which parts rely on pydantic-core?",
+        )
+        == "pydantic_python_core_boundary"
+    )
+
+
+def test_pydantic_role_inference_normalizes_to_canonical_roles():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="validator",
+            name="__pydantic_validator__",
+            file_path="/repo/pydantic/main.py",
+            token_cost=40,
+        )
+    ) == "validator_handle"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="generator",
+            name="GenerateJsonSchema",
+            file_path="/repo/pydantic/json_schema.py",
+            token_cost=120,
+        )
+    ) == "schema_builder"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="runtime",
+            name="SchemaValidator",
+            file_path="/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+            token_cost=120,
+        )
+    ) == "core_runtime"
+
+
+def test_pydantic_backfill_preserves_explicit_role_overrides():
+    db = _make_backfill_db(
+        [
+            {
+                "uid": "validator-handle",
+                "name": "__pydantic_validator__",
+                "symbol_kind": "attribute",
+                "token_estimate": 24,
+                "qualified_name": "pydantic.main.BaseModel.__pydantic_validator__",
+                "file_path": "/repo/pydantic/main.py",
+                "file_hash": "a",
+                "range": [200, 204],
+                "inbound_edges": 3,
+                "outbound_edges": 1,
+            },
+            {
+                "uid": "schema-validator",
+                "name": "SchemaValidator",
+                "symbol_kind": "class",
+                "token_estimate": 120,
+                "qualified_name": "pydantic_core.SchemaValidator",
+                "file_path": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+                "file_hash": "b",
+                "range": [67, 160],
+                "inbound_edges": 8,
+                "outbound_edges": 5,
+            },
+            {
+                "uid": "schema-serializer",
+                "name": "SchemaSerializer",
+                "symbol_kind": "class",
+                "token_estimate": 120,
+                "qualified_name": "pydantic_core.SchemaSerializer",
+                "file_path": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+                "file_hash": "c",
+                "range": [295, 420],
+                "inbound_edges": 7,
+                "outbound_edges": 4,
+            },
+        ]
+    )
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+
+    backfill = ranker._role_backfill_candidates(
+        "pydantic_python_core_boundary",
+        ["validator_handle", "serializer_handle", "core_runtime"],
+        excluded_uids=set(),
+    )
+
+    by_uid = {candidate.uid: candidate for candidate in backfill}
+    assert by_uid["validator-handle"].evidence_role == "validator_handle"
+    assert by_uid["schema-validator"].evidence_role == "core_runtime"
+    assert by_uid["schema-serializer"].evidence_role == "serializer_handle"

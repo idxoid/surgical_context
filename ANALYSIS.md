@@ -1,6 +1,6 @@
 # Project vs Specs Analysis: Phase 4 & 5 Status
 
-> Historical note: this analysis is outdated and preserved for context only. The current codebase has since implemented typed semantic edges, AFFECTS, `/impact`, model routing, cloud/local fallback, audit logging, and the VS Code extension scaffold. For the current project truth, use `docs/project_gap_analysis.md` and `docs/road_map.md`.
+> Historical note: this analysis is outdated and preserved for context only. The current codebase has since implemented typed semantic edges, AFFECTS, `/impact`, model routing, cloud/local fallback, audit logging, the VS Code extension scaffold, unified ranking, canonical role normalization, and real-repo benchmark reporting. For the current project truth, use `docs/project_gap_analysis.md`, `docs/road_map.md`, and `docs/architectura.md`.
 
 ## Summary
 - **Current status:** Superseded by `docs/project_gap_analysis.md`.

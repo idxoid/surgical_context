@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from QA.qa_benchmark import (
+    _compute_role_recall,
     _empty_indexing_summary,
     _normalize_cleanup_prefixes,
     _path_matches_prefix,
@@ -18,6 +19,15 @@ from QA.qa_benchmark import (
     run_benchmark,
     setup_fixture_db,
 )
+
+
+def test_compute_role_recall_normalizes_legacy_roles_to_canonical_taxonomy():
+    recall = _compute_role_recall(
+        ["public_entrypoint", "schema_generator", "schema_module"],
+        ["api_surface", "representation_surface"],
+    )
+
+    assert recall == pytest.approx(1 / 3)
 
 
 def test_load_question_pack_reads_real_repo_metadata():

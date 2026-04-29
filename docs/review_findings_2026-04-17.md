@@ -2,6 +2,19 @@
 
 > **Context:** External review of the Surgical Context project at the end of Phase 2. Captures the standout strengths, honest risks, and six concrete recommendations surfaced during the review. Deep-dive specs exist for recommendations #1 and #2 ([spec_eval_harness.md](spec_eval_harness.md), [spec_token_budget_bfs.md](spec_token_budget_bfs.md)).
 
+## Current Disposition
+
+This review still captures the right product pressure, but several recommendations have already landed.
+
+| Recommendation | Current state |
+| --- | --- |
+| Ship the eval harness first | Landed. The QA harness now runs against fixture and real-repo packs; benchmark reports include role/file metrics, precision, and full `ready_context`. |
+| Token-budget BFS beats depth-BFS | Landed in the current retrieval stack through the unified ranker and token-budgeted candidate fill. |
+| Add `IMPORTS` / `INHERITS` before more languages | Largely landed on the retrieval side through typed/canonical edges and scoped resolution; still worth preserving as a quality principle. |
+| Kill Ollama as the demo default | Partially landed. Model routing and fallback exist, but demo/default provider choice is still a product decision rather than a solved architecture issue. |
+| `extension/` is the real gap | Landed. The extension exists; the remaining gap is request synchronization and polish, not absence. |
+| Positioning refresh | Landed in the current local-first context-engine docs, though product language still needs occasional pruning to avoid drifting back toward “general AI coding platform.” |
+
 ## Standout strengths
 
 - **ADR-001 (topology-only Neo4j)** is the real moat. Most "AI code assistants" ship source into embeddings or cloud graphs. This project can meet enterprise data-residency requirements without compromise.
@@ -52,7 +65,7 @@ Implementation: [sidecar/ai/engine.py](../sidecar/ai/engine.py) already has a st
 
 The entire "thin client" premise is unvalidated until a user can ask a question inside VS Code. Even an ugly webview chat beats `run_demo.py`. Prioritize scaffold-and-ship over polish — this is the demo that sells the idea.
 
-Current state: no `extension/` directory exists on disk. Road map has it as a Phase 1 checkbox. It should be reclassified as Phase 2.5 alongside the eval harness — both are unblockers for external validation.
+Historical note: this was correct at review time. The extension now exists on disk; the live problem has shifted to synchronization, observability presentation, and accessibility polish.
 
 ### 7. Positioning
 

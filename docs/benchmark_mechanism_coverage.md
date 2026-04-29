@@ -1,5 +1,19 @@
 # Benchmark Findings: Mechanism Coverage vs. Question Pass Rate
 
+> **Status:** Historical analysis of an early FastAPI benchmark debugging pass. Keep it for the framing, not for the exact outcomes.
+
+## Current Snapshot
+
+What changed since this note was written:
+
+- the benchmark now normalizes legacy `required_roles` into a canonical cross-framework role taxonomy before computing `role_recall`
+- FastAPI `core12` is no longer the main blocker; the local benchmark path there is strong enough to use for tuning
+- Pydantic is now the more interesting gap, and the remaining misses are narrower: validator/serializer handle recovery rather than generic “ranker can’t understand the framework”
+
+So the document's main lesson still stands:
+
+**do not tune by pass rate alone; classify failures into graph-structure gaps, doc-link gaps, and ranking noise.**
+
 ## Problem Statement
 
 Initially treated benchmark as "question score optimization" — adjusting ranker parameters to pass more questions. This led to:

@@ -136,9 +136,12 @@ class ContextArbitrator:
                     CachedBody(code=code, token_count=node.token_estimate, is_dirty=False),
                 )
 
+        mechanism = ranker._determine_mechanism(target, query=question)
+        required_roles = ranker._get_required_roles(mechanism)
+
         ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
         ctx.stopped_reason = subgraph.stopped_reason
-        ctx.mechanism = ranker._determine_mechanism(target)
+        ctx.mechanism = mechanism
         ctx.pruned_details = subgraph.pruned_details
         ctx.missing_roles = missing_roles
         ctx.intent_distribution = intent_signal.distribution
@@ -160,6 +163,7 @@ class ContextArbitrator:
             "candidates_considered": budget_info.get("pool_size", 0),
             "candidates_selected": len(candidates),
             "pruned_total_count": len(pruned_details),
+            "required_roles": required_roles,
             "target_selection": target_selection,
         }
         return ctx

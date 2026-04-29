@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from heapq import heappop, heappush
 
 from sidecar.context.intent_classifier import Intent
+from sidecar.context.role_taxonomy import normalize_role, normalize_roles
 from sidecar.context.types import DocChunk, SubgraphNode, Subgraph
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
@@ -43,47 +44,112 @@ _NOISE_FACTOR = 0.15
 
 _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
     "fastapi_route_registration": {
-        "registration_step": [
+        "factory_surface": [
             {"name": "add_api_route", "path_hint": "/fastapi/applications.py", "priority": 1.0},
             {"name": "api_route", "path_hint": "/fastapi/applications.py", "priority": 0.9},
             {"name": "add_api_route", "path_hint": "/fastapi/routing.py", "priority": 0.8},
         ],
-        "route_object": [
+        "representation_surface": [
             {"name": "APIRoute", "path_hint": "/fastapi/routing.py", "priority": 1.0},
         ],
-        "handler_or_lifecycle": [
+        "runtime_surface": [
             {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
         ],
     },
     "fastapi_dependency_injection": {
-        "marker_or_config": [
+        "config_surface": [
             {"name": "Depends", "path_hint": "/fastapi/params.py", "priority": 1.0},
             {"name": "Security", "path_hint": "/fastapi/params.py", "priority": 0.7},
         ],
-        "intermediate_model": [
+        "representation_surface": [
             {"name": "Dependant", "path_hint": "/fastapi/dependencies/models.py", "priority": 1.0},
             {"name": "get_dependant", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.95},
             {"name": "get_flat_dependant", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.8},
         ],
-        "dependency_solver": [
+        "orchestrator": [
             {"name": "solve_dependencies", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
         ],
-        "handler_or_lifecycle": [
+        "runtime_surface": [
             {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
         ],
     },
     "fastapi_request_body_dependency_resolution": {
-        "body_field_builder": [
+        "schema_builder": [
             {"name": "get_body_field", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
         ],
-        "dependency_solver": [
+        "orchestrator": [
             {"name": "solve_dependencies", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.95},
         ],
-        "handler_or_lifecycle": [
+        "runtime_surface": [
             {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
         ],
-        "body_argument_mapper": [
+        "binding_surface": [
             {"name": "request_body_to_args", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
+        ],
+    },
+    "fastapi_endpoint_execution": {
+        "executor": [
+            {"name": "run_endpoint_function", "path_hint": "/fastapi/routing.py", "priority": 1.0},
+        ],
+        "runtime_surface": [
+            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 0.95},
+        ],
+    },
+    "pydantic_validation_core_bridge": {
+        "runtime_surface": [
+            {"name": "model_validate", "path_hint": "/pydantic/main.py", "priority": 1.0},
+        ],
+        "validator_handle": [
+            {"name": "__pydantic_validator__", "path_hint": "/pydantic/main.py", "priority": 1.0},
+        ],
+        "core_runtime": [
+            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
+        ],
+    },
+    "pydantic_python_core_boundary": {
+        "validator_handle": [
+            {"name": "__pydantic_validator__", "path_hint": "/pydantic/main.py", "priority": 1.0},
+        ],
+        "serializer_handle": [
+            {"name": "SchemaSerializer", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
+        ],
+        "core_runtime": [
+            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
+        ],
+    },
+    "pydantic_serialization_bridge": {
+        "serializer_handle": [
+            {"name": "__pydantic_serializer__", "path_hint": "/pydantic/main.py", "priority": 1.0},
+        ],
+        "core_runtime": [
+            {"name": "SchemaSerializer", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
+        ],
+    },
+    "pydantic_json_schema_generation": {
+        "schema_builder": [
+            {"name": "GenerateJsonSchema", "path_hint": "/pydantic/json_schema.py", "priority": 1.0},
+        ],
+        "representation_surface": [
+            {"name": "json_schema", "path_hint": "/pydantic/json_schema.py", "priority": 0.95},
+        ],
+    },
+    "pydantic_v1_compat_surface": {
+        "compat_bridge": [
+            {"name": "v1", "path_hint": "/pydantic/__init__.py", "priority": 1.0},
+        ],
+        "api_surface": [
+            {"name": "BaseModel", "path_hint": "/pydantic/v1/main.py", "priority": 0.9},
+        ],
+    },
+    "pydantic_validation_error_assembly": {
+        "api_surface": [
+            {"name": "model_validate", "path_hint": "/pydantic/main.py", "priority": 1.0},
+        ],
+        "core_runtime": [
+            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
+        ],
+        "error_surface": [
+            {"name": "ValidationError", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
         ],
     },
 }
@@ -451,17 +517,21 @@ class UnifiedRanker:
 
     def _target_role_bonus(self, role: str) -> float:
         role_weights = {
-            "public_entrypoint": 1.2,
-            "runtime_executor": 1.0,
-            "dependency_solver": 0.95,
-            "handler_or_lifecycle": 0.85,
-            "registration_step": 0.8,
-            "route_object": 0.6,
-            "intermediate_model": 0.55,
-            "marker_or_config": 0.3,
-            "body_field_builder": 0.75,
-            "body_argument_mapper": 0.9,
-            "related_implementation": 0.4,
+            "api_surface": 1.2,
+            "executor": 1.0,
+            "orchestrator": 0.95,
+            "validator_handle": 0.95,
+            "serializer_handle": 0.9,
+            "binding_surface": 0.9,
+            "runtime_surface": 0.85,
+            "factory_surface": 0.8,
+            "schema_builder": 0.75,
+            "error_surface": 0.75,
+            "representation_surface": 0.6,
+            "core_runtime": 0.55,
+            "config_surface": 0.3,
+            "compat_bridge": 0.45,
+            "supporting_surface": 0.4,
             "docs_or_concept": -0.4,
         }
         return role_weights.get(role, 0.35)
@@ -497,14 +567,24 @@ class UnifiedRanker:
             for phrase in ("class", "type", "parameter", "config", "marker", "annotation")
         ):
             bonus += 0.35
-        if role == "public_entrypoint" and any(
+        if role == "api_surface" and any(
             phrase in query_lower for phrase in ("how does", "resolved", "before", "called")
         ):
             bonus += 0.35
-        if role == "marker_or_config" and any(
+        if role == "config_surface" and any(
             phrase in query_lower for phrase in ("parameter", "annotation", "config", "marker")
         ):
             bonus += 0.25
+        if role == "schema_builder" and "schema" in query_lower:
+            bonus += 0.25
+        if role in ("validator_handle", "core_runtime") and any(
+            phrase in query_lower for phrase in ("validate", "validation", "validated", "core")
+        ):
+            bonus += 0.2
+        if role == "serializer_handle" and any(
+            phrase in query_lower for phrase in ("dump", "serialize", "serialization", "json")
+        ):
+            bonus += 0.2
 
         query_terms = self._query_terms(query)
         haystack = f"{file_path.lower()} {qualified_name.lower()}"
@@ -572,7 +652,7 @@ class UnifiedRanker:
         self._fill_token_costs(pool)
 
         # 6. Mechanism-aware role backfill for sparse framework graphs.
-        mechanism = self._determine_mechanism(target)
+        mechanism = self._determine_mechanism(target, query=query)
         required_roles = self._get_required_roles(mechanism)
         roles_for_backfill = self._roles_needing_backfill(
             target,
@@ -592,7 +672,7 @@ class UnifiedRanker:
 
         intent_priors = self._intent_priors(intent)
         for c in pool:
-            c.evidence_role = self._infer_role(c)
+            c.evidence_role = self._role_of(c)
             c.intent_weight = intent_priors.get(c.kind, 0.3)
             if intent == Intent.IMPACT_ANALYSIS:
                 c.noise_factor = 1.0  # tests/examples are load-bearing for impact questions
@@ -605,7 +685,7 @@ class UnifiedRanker:
         # 9. Sort by blended score
         # Optimization: Sort by blended score + potential to fill a missing role.
         pool.sort(
-            key=lambda c: self._blended(c) + (0.5 if c.evidence_role in required_roles else 0.0),
+            key=lambda c: self._blended(c) + (0.5 if self._role_of(c) in required_roles else 0.0),
             reverse=True
         )
 
@@ -614,7 +694,7 @@ class UnifiedRanker:
         spent = self.PREAMBLE_TOKENS + target.token_estimate
         pruned_details = []
         chosen_files = {target.file_path}
-        fulfilled_roles = {self._infer_role(target)}
+        fulfilled_roles = {self._role_of(target)}
 
         stopped_reason = "pool_exhausted"
         min_floor = self._INTENT_FLOORS.get(intent, 1200)
@@ -623,7 +703,12 @@ class UnifiedRanker:
         useful_candidates_seen = 0
 
         for c in pool:
-            gain = self._calculate_marginal_gain(c, chosen, target)
+            gain = self._calculate_marginal_gain(
+                c,
+                chosen,
+                target,
+                required_roles=required_roles,
+            )
 
             # Selection Gating Logic: Mechanism-Aware
             missing_roles = set(required_roles) - fulfilled_roles
@@ -1159,6 +1244,8 @@ class UnifiedRanker:
                     existing.token_cost = candidate.token_cost
             if candidate.file_hash and not existing.file_hash:
                 existing.file_hash = candidate.file_hash
+            if candidate.evidence_role and not existing.evidence_role:
+                existing.evidence_role = candidate.evidence_role
         return list(merged.values())
 
     def _roles_needing_backfill(
@@ -1167,14 +1254,14 @@ class UnifiedRanker:
         pool: list[Candidate],
         required_roles: list[str],
     ) -> list[str]:
-        target_role = self._infer_role(target)
+        target_role = self._role_of(target)
         needed: list[str] = []
         for role in required_roles:
             if role == "docs_or_concept":
                 continue
             if role == target_role:
                 continue
-            candidates = [candidate for candidate in pool if self._infer_role(candidate) == role]
+            candidates = [candidate for candidate in pool if self._role_of(candidate) == role]
             if not candidates:
                 needed.append(role)
                 continue
@@ -1303,6 +1390,7 @@ class UnifiedRanker:
                 direction="backfill",
                 depth=2,
                 file_hash=best_row.get("file_hash") or "",
+                evidence_role=role,
                 provenance=[f"role-backfill:{role}"],
             )
             candidate.symbol_kind = best_row.get("symbol_kind", "")
@@ -1419,14 +1507,19 @@ class UnifiedRanker:
             return rel_type.lower()
         return "sibling"
 
-    def _calculate_marginal_gain(self, c: Candidate, chosen: list[Candidate], target: SubgraphNode) -> float:
+    def _calculate_marginal_gain(
+        self,
+        c: Candidate,
+        chosen: list[Candidate],
+        target: SubgraphNode,
+        *,
+        required_roles: list[str],
+    ) -> float:
         """marginal_gain = base_score + role_bonus + coverage_bonus + bridge_bonus - redundancy_penalty"""
         base_score = self._blended(c)
         
         # 1. Role Bonus: Does this symbol fulfill a missing requirement for the mechanism?
         role_bonus = 0.0
-        mechanism = self._determine_mechanism(target)
-        required_roles = self._get_required_roles(mechanism)
         if c.evidence_role in required_roles:
             is_fulfilled = any(cc.evidence_role == c.evidence_role for cc in chosen)
             if not is_fulfilled:
@@ -1453,47 +1546,88 @@ class UnifiedRanker:
 
         return base_score + role_bonus + coverage_bonus + bridge_bonus - redundancy_penalty
 
+    def _role_of(self, c: Candidate | SubgraphNode) -> str:
+        explicit = getattr(c, "evidence_role", "")
+        if explicit:
+            return normalize_role(explicit)
+        return normalize_role(self._infer_role(c))
+
     def _infer_role(self, c: Candidate | SubgraphNode) -> str:
-        """Heuristic to map symbols to framework reasoning roles."""
-        if hasattr(c, 'kind') and c.kind == "doc": return "docs_or_concept"
-        name = c.name.lower()
+        """Heuristic to map symbols to canonical reasoning roles."""
+        if getattr(c, "kind", "") == "doc":
+            return "docs_or_concept"
 
-        # 1. Dependency Injection Roles (Specific marker checks first)
-        if name == "depends" and "fastapi/params.py" in c.file_path:
-            return "marker_or_config"
-        if name == "security" and "/fastapi/security/" in c.file_path:
-            return "marker_or_config"
-        if name == "depends": 
-            return "public_entrypoint"
+        name = (c.name or "").lower()
+        file_path = (getattr(c, "file_path", "") or "").lower()
+        qualified_name = (getattr(c, "qualified_name", "") or "").lower()
 
-        # 2. Route Registration Roles
-        if name in ("fastapi", "apirouter"): return "public_entrypoint"
-        if name in ("api_route", "add_api_route", "websocket_route"): 
-            return "registration_step"
-        if name in ("apiroute", "apiwebsocketroute"): 
-            return "route_object"
+        # FastAPI dependency injection markers
+        if name == "depends" and "fastapi/params.py" in file_path:
+            return "config_surface"
+        if name == "security" and "/fastapi/security/" in file_path:
+            return "config_surface"
+        if name == "depends":
+            return "api_surface"
 
-        # 3. Lifecycle & Execution loop
-        if name in ("dependant", "get_dependant", "get_flat_dependant"): 
-            return "intermediate_model"
-        if name == "solve_dependencies": 
-            return "dependency_solver"
+        # FastAPI route registration
+        if name in ("fastapi", "apirouter"):
+            return "api_surface"
+        if name in ("api_route", "add_api_route", "websocket_route"):
+            return "factory_surface"
+        if name in ("apiroute", "apiwebsocketroute"):
+            return "representation_surface"
+
+        # FastAPI execution and wiring
+        if name in ("dependant", "get_dependant", "get_flat_dependant"):
+            return "representation_surface"
+        if name == "solve_dependencies":
+            return "orchestrator"
         if name == "request_body_to_args":
-            return "body_argument_mapper"
+            return "binding_surface"
         if name == "get_body_field":
-            return "body_field_builder"
-        if name == "run_endpoint_function": 
-            return "runtime_executor"
-        if name == "serialize_response": 
-            return "response_serializer"
-        if name in ("get_request_handler", "get_route_handler", "request_response"): 
-            return "handler_or_lifecycle"
-            
-        return "related_implementation"
+            return "schema_builder"
+        if name == "run_endpoint_function":
+            return "executor"
+        if name == "serialize_response":
+            return "serializer_handle"
+        if name in ("get_request_handler", "get_route_handler", "request_response"):
+            return "runtime_surface"
 
-    def _determine_mechanism(self, target: SubgraphNode) -> str:
+        # Pydantic compatibility
+        if name == "v1" or "/pydantic/v1/" in file_path or ".v1." in qualified_name:
+            return "compat_bridge"
+
+        # Pydantic public API / wrappers
+        if name in ("basemodel", "field", "create_model"):
+            return "api_surface"
+        if name in ("model_validate", "model_dump", "model_json_schema"):
+            return "api_surface"
+        if name == "json_schema" and "/pydantic/json_schema.py" in file_path:
+            return "representation_surface"
+        if name == "generatejsonschema":
+            return "schema_builder"
+
+        # Pydantic handles and runtime
+        if name == "__pydantic_validator__":
+            return "validator_handle"
+        if name == "__pydantic_serializer__":
+            return "serializer_handle"
+        if name in ("schemavalidator", "schemaserializer"):
+            return "core_runtime"
+        if name == "validationerror":
+            return "error_surface"
+
+        # Impact-analysis anchors
+        if name in ("aliaschoices", "aliaspath"):
+            return "impact_public_api"
+
+        return "supporting_surface"
+
+    def _determine_mechanism(self, target: SubgraphNode, query: str = "") -> str:
         """Map target symbol to a known framework mechanism."""
         name = target.name.lower()
+        query_lower = query.lower()
+        file_path = (target.file_path or "").lower()
         if name in ("fastapi", "apirouter", "add_api_route", "api_route"):
             return "fastapi_route_registration"
         if name in ("depends", "get_dependant", "dependant"):
@@ -1502,25 +1636,62 @@ class UnifiedRanker:
             return "fastapi_request_body_dependency_resolution"
         if name in ("run_endpoint_function", "serialize_response", "solve_dependencies"):
             return "fastapi_endpoint_execution"
+        if name == "basemodel":
+            if any(
+                phrase in query_lower
+                for phrase in ("pure python", "wrapper", "wrappers", "pydantic-core", "rely on pydantic-core")
+            ):
+                return "pydantic_python_core_boundary"
+            return "pydantic_validation_core_bridge"
+        if name in ("model_validate", "__pydantic_validator__", "schemavalidator"):
+            if "wrapper" in query_lower or "pydantic-core" in query_lower:
+                return "pydantic_python_core_boundary"
+            return "pydantic_validation_core_bridge"
+        if name in ("model_dump", "__pydantic_serializer__", "schemaserializer"):
+            if "wrapper" in query_lower or "pydantic-core" in query_lower:
+                return "pydantic_python_core_boundary"
+            return "pydantic_serialization_bridge"
+        if name in ("model_json_schema", "generatejsonschema", "json_schema"):
+            return "pydantic_json_schema_generation"
+        if name == "validationerror":
+            return "pydantic_validation_error_assembly"
+        if name in ("field", "aliaschoices", "aliaspath"):
+            return "pydantic_alias_impact"
+        if name == "v1" or "/pydantic/v1/" in file_path:
+            return "pydantic_v1_compat_surface"
         return "generic"
 
     def _get_required_roles(self, mechanism: str) -> list[str]:
         """Return the set of evidence roles required for a minimally sufficient context."""
         roles = []
         if mechanism == "fastapi_route_registration":
-            roles = ["public_entrypoint", "registration_step", "route_object", "handler_or_lifecycle"]
+            roles = ["api_surface", "factory_surface", "representation_surface", "runtime_surface"]
         elif mechanism == "fastapi_dependency_injection":
-            roles = ["public_entrypoint", "marker_or_config", "intermediate_model", "dependency_solver", "handler_or_lifecycle"]
+            roles = ["api_surface", "config_surface", "representation_surface", "orchestrator", "runtime_surface"]
         elif mechanism == "fastapi_request_body_dependency_resolution":
-            roles = ["handler_or_lifecycle", "body_field_builder", "dependency_solver", "body_argument_mapper"]
+            roles = ["runtime_surface", "schema_builder", "orchestrator", "binding_surface"]
         elif mechanism == "fastapi_endpoint_execution":
-            roles = ["runtime_executor", "dependency_solver", "response_serializer"]
+            roles = ["executor", "runtime_surface"]
+        elif mechanism == "pydantic_validation_core_bridge":
+            roles = ["api_surface", "runtime_surface", "validator_handle", "core_runtime"]
+        elif mechanism == "pydantic_python_core_boundary":
+            roles = ["api_surface", "validator_handle", "serializer_handle", "core_runtime"]
+        elif mechanism == "pydantic_serialization_bridge":
+            roles = ["api_surface", "serializer_handle", "core_runtime"]
+        elif mechanism == "pydantic_json_schema_generation":
+            roles = ["api_surface", "schema_builder", "representation_surface"]
+        elif mechanism == "pydantic_v1_compat_surface":
+            roles = ["api_surface", "compat_bridge", "docs_or_concept"]
+        elif mechanism == "pydantic_alias_impact":
+            roles = ["impact_runtime", "impact_public_api", "impact_test_surface"]
+        elif mechanism == "pydantic_validation_error_assembly":
+            roles = ["api_surface", "core_runtime", "error_surface"]
         else:
-            roles = ["public_entrypoint", "runtime_executor", "handler_or_lifecycle"]
+            roles = ["api_surface", "executor", "runtime_surface"]
 
         # Docs are universally useful for grounding concepts
         roles.append("docs_or_concept")
-        return roles
+        return normalize_roles(roles)
 
     # ------------------------------------------------------------------
     # Neo4j helpers
