@@ -13,10 +13,11 @@ What is already true in the codebase:
 - prompt-contract observability now includes scores, provenance, pruning, ranker metadata, and benchmark `ready_context`
 - FastAPI mechanism recovery is strong enough to use as a tuning baseline
 - Redux Toolkit local benchmark coverage is strong enough to use as a second real-repo retrieval baseline, including listener middleware
+- Pydantic now also clears the full local pack, which gives us a third real-repo retrieval baseline instead of a framework-specific holdout
 
 What still feels architecturally important next:
 
-1. finish framework-general retrieval coverage, especially Pydantic handle and bridge recovery
+1. improve precision on the now-green baselines, especially Pydantic impact-analysis and doc-noise control
 2. add doc-anchor confidence/type scoring so semantic docs compete more honestly with code candidates
 3. keep provider boundaries local-first and thin until profiling proves a stronger abstraction need
 

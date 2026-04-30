@@ -177,6 +177,53 @@ def test_duplicate_target_selection_prefers_behavioral_entrypoint():
     assert metadata["alternatives"][0]["role"] == "api_surface"
 
 
+def test_duplicate_target_selection_prefers_main_pydantic_entrypoint_for_model_dump():
+    db = _make_target_db(
+        [
+            {
+                "uid": "root-model-dump",
+                "name": "model_dump",
+                "kind": "function",
+                "qualified_name": "pydantic.root_model.RootModel.model_dump",
+                "token_estimate": 224,
+                "file_path": "/repo/pydantic/root_model.py",
+                "file_hash": "a",
+                "range": [120, 180],
+                "outgoing_edges": 1,
+                "incoming_edges": 2,
+                "total_edges": 3,
+            },
+            {
+                "uid": "base-model-dump",
+                "name": "model_dump",
+                "kind": "function",
+                "qualified_name": "pydantic.main.BaseModel.model_dump",
+                "token_estimate": 520,
+                "file_path": "/repo/pydantic/main.py",
+                "file_hash": "b",
+                "range": [420, 620],
+                "outgoing_edges": 0,
+                "incoming_edges": 0,
+                "total_edges": 0,
+            },
+        ]
+    )
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+
+    target, metadata = ranker.get_target(
+        "model_dump",
+        query="How does model_dump() get from high-level API call to actual serialization logic?",
+        intent=Intent.EXPLORATION,
+        with_metadata=True,
+    )
+
+    assert target is not None
+    assert target.uid == "base-model-dump"
+    assert target.file_path.endswith("main.py")
+    assert metadata["strategy"] == "duplicate_resolution"
+    assert metadata["selected_uid"] == "base-model-dump"
+
+
 def test_dependency_injection_role_backfill_supplies_missing_roles():
     db = _make_backfill_db(
         [
@@ -588,6 +635,28 @@ def test_capability_roles_reduce_pydantic_handle_backfill_when_equivalent_symbol
 
     assert "validator_handle" not in needed
     assert "core_runtime" not in needed
+
+
+def test_capability_roles_add_generic_impact_runtime_and_test_surfaces():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+
+    runtime_symbol = Candidate(
+        kind="symbol",
+        uid="field",
+        name="Field",
+        file_path="/repo/pydantic/fields.py",
+        token_cost=80,
+    )
+    test_symbol = Candidate(
+        kind="symbol",
+        uid="parent",
+        name="Parent",
+        file_path="/repo/tests/test_aliases.py",
+        token_cost=60,
+    )
+
+    assert "impact_runtime" in ranker._roles_of(runtime_symbol)
+    assert "impact_test_surface" in ranker._roles_of(test_symbol)
 
 
 def test_pydantic_backfill_preserves_explicit_role_overrides():

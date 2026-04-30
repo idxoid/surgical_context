@@ -599,6 +599,11 @@ class UnifiedRanker:
             phrase in query_lower for phrase in ("dump", "serialize", "serialization", "json")
         ):
             bonus += 0.2
+        if "high-level api" in query_lower or "high level api" in query_lower:
+            if "/main.py" in file_path.lower() or "basemodel" in qualified_name.lower():
+                bonus += 0.45
+        if "rootmodel" in qualified_name.lower() and "rootmodel" not in query_lower and "root model" not in query_lower:
+            bonus -= 0.35
 
         query_terms = self._query_terms(query)
         haystack = f"{file_path.lower()} {qualified_name.lower()}"

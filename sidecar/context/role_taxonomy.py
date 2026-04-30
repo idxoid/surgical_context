@@ -184,13 +184,42 @@ def infer_supporting_roles(
     if not haystack:
         return []
 
+    lowered_path = (file_path or "").lower()
+    inferred: list[str] = []
+
     # Some public APIs are thin wrappers in name only: their implementation body
     # already contains the orchestration/execution path we care about, but the
     # nested helpers are not indexed as standalone symbols.
     if (name or "").strip().lower() == "createlistenermiddleware":
-        return ["orchestrator", "executor"]
+        inferred.extend(["orchestrator", "executor"])
 
-    inferred: list[str] = []
+    if "/tests/" in lowered_path or lowered_path.endswith("_test.py") or "/test_" in lowered_path:
+        inferred.append("impact_test_surface")
+
+    # Runtime source symbols are often the direct evidence needed for impact
+    # analysis even if their primary role is "public API" or another
+    # non-impact-specific category.
+    if primary in {
+        "api_surface",
+        "factory_surface",
+        "composition_surface",
+        "representation_surface",
+        "config_surface",
+        "schema_builder",
+        "binding_surface",
+        "orchestrator",
+        "runtime_surface",
+        "integration_surface",
+        "executor",
+        "validator_handle",
+        "serializer_handle",
+        "core_runtime",
+        "error_surface",
+        "compat_bridge",
+        "supporting_surface",
+    } and "/docs/" not in lowered_path and "/examples/" not in lowered_path:
+        inferred.append("impact_runtime")
+
     for role, patterns in _CAPABILITY_ROLE_PATTERNS.items():
         if normalize_role(role) == primary:
             continue

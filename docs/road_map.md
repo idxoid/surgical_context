@@ -73,7 +73,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
 - [ ] Add latency SLO checks for local asks and index operations.
 - [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
-- [ ] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles and the new wrapper-body support, with Pydantic still the main open validation target.
+- [ ] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles and the new wrapper-body support, with the next pressure point now being precision on impact-style retrieval rather than basic coverage.
 
 ### P3 - Real-Repo Validation
 - [x] Adapt the QA harness to use the real-repo question pack in [tests/fixtures/real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml).
@@ -105,7 +105,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 ## Immediate 3-Week Plan
 
 ### Immediate Retrieval Focus
-- expand the now-shipped canonical role taxonomy beyond FastAPI, with Pydantic handle and bridge recovery now the main unfinished lane after the Redux Toolkit listener-middleware pass
+- keep broadening the now-shipped canonical role taxonomy beyond FastAPI, while shifting the next retrieval pass from "make Pydantic pass" to "make Pydantic impact-analysis and doc-heavy paths less noisy"
 - keep using real-repo benchmark reports plus `ready_context` payloads to debug misses before changing weights
 - finish doc-anchor confidence/type scoring so docs stop acting like undifferentiated semantic noise
 
