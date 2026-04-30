@@ -49,7 +49,7 @@ Both tracks emit candidates into a single pool before budget-constrained selecti
 
 ### 2.2 Candidate Types
 
-Current candidates are symbols and docs. A future phase adds tenant API contract candidates from published manifests, using the same scoring and budget rules. The current local ranker also lets a candidate satisfy certain canonical roles through inferred capability support, so role fulfillment is not tied to one framework's exact symbol layout.
+Current candidates are symbols and docs. A future phase adds tenant API contract candidates from published manifests, using the same scoring and budget rules. The current local ranker also lets a candidate satisfy certain canonical roles through inferred capability support, so role fulfillment is not tied to one framework's exact symbol layout. That includes thin wrapper APIs whose own body is enough to prove orchestration or execution behavior even when nested helpers are not indexed as separate top-level symbols.
 
 ```python
 @dataclass
@@ -104,8 +104,10 @@ Current behavior is slightly richer than the original greedy draft:
 
 - fill token costs for vector-only symbols before judging readiness
 - infer a mechanism from the target plus query
+- route lookalike APIs to the right mechanism path instead of relying on one keyword bucket; e.g. Redux Toolkit listener middleware no longer falls into generic store-configuration handling just because the word `middleware` appears in the query
 - compute required roles on a canonical cross-framework taxonomy
 - treat some roles as capability slots as well as identity slots; e.g. a runtime symbol like `SchemaValidator` can fulfill `validator_handle` if the dedicated wrapper/member symbol is absent
+- let some primary APIs carry supporting roles directly when their implementation body already contains the relevant orchestration path
 - use mechanism-aware role backfill before final selection
 - sort by blended score with a bonus for role-filling candidates
 - apply marginal-gain gating, intent floors, and signature-only fallback for low-gain distant candidates

@@ -696,6 +696,18 @@ def test_generic_ts_js_mechanisms_cover_redux_style_queries():
         relevance_score=1.0,
         kind="variable",
     )
+    create_listener_middleware = SubgraphNode(
+        uid="createListenerMiddleware",
+        name="createListenerMiddleware",
+        file_path="/repo/packages/toolkit/src/listenerMiddleware/index.ts",
+        range=[330, 562],
+        token_estimate=240,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="variable",
+    )
 
     assert (
         ranker._determine_mechanism(
@@ -724,6 +736,13 @@ def test_generic_ts_js_mechanisms_cover_redux_style_queries():
             query="How does RTK Query define an API slice and connect generated endpoints into the store?",
         )
         == "api_store_integration_pipeline"
+    )
+    assert (
+        ranker._determine_mechanism(
+            create_listener_middleware,
+            query="How does listener middleware intercept actions and trigger side effects?",
+        )
+        == "listener_orchestration_pipeline"
     )
 
 
@@ -784,6 +803,37 @@ def test_generic_ts_js_role_inference_covers_redux_style_symbols():
             token_cost=20,
         )
     ) == "integration_surface"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="listener-api",
+            name="createListenerMiddleware",
+            file_path="/repo/packages/toolkit/src/listenerMiddleware/index.ts",
+            token_cost=20,
+        )
+    ) == "api_surface"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="add-listener",
+            name="addListener",
+            file_path="/repo/packages/toolkit/src/listenerMiddleware/index.ts",
+            token_cost=20,
+        )
+    ) == "orchestrator"
+
+
+def test_listener_middleware_api_carries_supporting_execution_roles():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+    target = Candidate(
+        kind="symbol",
+        uid="listener-api",
+        name="createListenerMiddleware",
+        file_path="/repo/packages/toolkit/src/listenerMiddleware/index.ts",
+        token_cost=120,
+    )
+
+    assert set(ranker._roles_of(target)) >= {"api_surface", "orchestrator", "executor"}
 
 
 def test_editorial_docs_get_downranked_relative_to_mechanism_docs():

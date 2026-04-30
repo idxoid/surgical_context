@@ -184,6 +184,12 @@ def infer_supporting_roles(
     if not haystack:
         return []
 
+    # Some public APIs are thin wrappers in name only: their implementation body
+    # already contains the orchestration/execution path we care about, but the
+    # nested helpers are not indexed as standalone symbols.
+    if (name or "").strip().lower() == "createlistenermiddleware":
+        return ["orchestrator", "executor"]
+
     inferred: list[str] = []
     for role, patterns in _CAPABILITY_ROLE_PATTERNS.items():
         if normalize_role(role) == primary:

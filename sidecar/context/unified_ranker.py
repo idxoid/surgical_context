@@ -2009,8 +2009,24 @@ class UnifiedRanker:
             return "error_surface"
 
         # Generic TS/JS public API and builder patterns
-        if name in ("createslice", "configurestore", "createasyncthunk", "createapi"):
+        if name in (
+            "createslice",
+            "configurestore",
+            "createasyncthunk",
+            "createapi",
+            "createlistenermiddleware",
+        ):
             return "api_surface"
+        if name in (
+            "addlistener",
+            "removelistener",
+            "clearalllisteners",
+            "startlistening",
+            "stoplistening",
+        ):
+            return "orchestrator"
+        if name == "notifylistener":
+            return "executor"
         if name in (
             "createaction",
             "createreducer",
@@ -2080,6 +2096,11 @@ class UnifiedRanker:
             "action creator" in query_lower and "reducer" in query_lower
         ):
             return "state_factory_pipeline"
+        if name == "createlistenermiddleware" or (
+            "listener middleware" in query_lower
+            and ("intercept" in query_lower or "side effect" in query_lower)
+        ):
+            return "listener_orchestration_pipeline"
         if name == "configurestore" or any(
             phrase in query_lower for phrase in ("middleware", "enhancers", "devtools")
         ):
@@ -2121,6 +2142,8 @@ class UnifiedRanker:
             roles = ["api_surface", "core_runtime", "error_surface"]
         elif mechanism == "state_factory_pipeline":
             roles = ["api_surface", "factory_surface", "composition_surface"]
+        elif mechanism == "listener_orchestration_pipeline":
+            roles = ["api_surface", "orchestrator", "executor"]
         elif mechanism == "runtime_configuration_pipeline":
             roles = ["api_surface", "composition_surface", "config_surface"]
         elif mechanism == "async_lifecycle_pipeline":
