@@ -62,6 +62,27 @@ function func2() {}
         assert symbols[0].kind == "variable"
         assert symbols[0].signature_status == "fallback_export"
 
+    def test_extracts_exported_function_via_text_fallback_when_ast_misses(self, adapter):
+        source = """
+export function buildCreateSlice() {
+  return function createSlice() {
+    return createReducer()
+  }
+}
+"""
+
+        with patch(
+            "sidecar.parser.adapters.treesitter_base.TreeSitterAdapter.extract_symbols",
+            return_value=[],
+        ):
+            symbols = adapter.extract_symbols(source, "createSlice.ts")
+
+        build = next(symbol for symbol in symbols if symbol.name == "buildCreateSlice")
+        assert build.kind == "function"
+        assert build.start_line == 2
+        assert build.end_line == 6
+        assert build.signature_status == "fallback_export"
+
     def test_extract_calls(self, adapter):
         source = """
 function foo() {
@@ -123,6 +144,19 @@ class Worker {
         assert call["rel_type"] == "CALLS_DYNAMIC"
         assert call["tier"] == "dynamic"
         assert "callee_uid" not in call
+
+    def test_extract_calls_from_exported_const_wrapper(self, adapter):
+        source = """
+export const createApi = buildCreateApi(coreModule())
+function buildCreateApi() {}
+function coreModule() {}
+"""
+        calls = adapter.extract_calls_from_source(source, "api.ts")
+
+        assert any(call.get("callee_name") == "buildCreateApi" for call in calls)
+        assert any(call.get("callee_name") == "coreModule" for call in calls)
+        create_api_uid = adapter._uid("api.ts", "createApi")
+        assert all(call["caller_uid"] == create_api_uid for call in calls)
 
     def test_language_name(self, adapter):
         assert adapter.language_name == "typescript"

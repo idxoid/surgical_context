@@ -98,6 +98,18 @@ ROLE_ALIASES: dict[str, str] = {
 
 
 _CAPABILITY_ROLE_PATTERNS: dict[str, dict[str, tuple[str, ...]]] = {
+    "composition_surface": {
+        "include": (
+            r"(^|[._])(compose|composed|combiner?|combined|reducer|enhancer|middleware)([._]|$)",
+            r"reducer",
+            r"build[a-z0-9_]*",
+        ),
+        "exclude": (
+            r"validationerror",
+            r"serializer",
+            r"validator",
+        ),
+    },
     "validator_handle": {
         "include": (
             r"(^|[._])(validate|validator)([._]|$)",

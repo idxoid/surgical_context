@@ -15,8 +15,10 @@ Requires:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -172,6 +174,39 @@ def _empty_indexing_summary(*, skipped: bool = False) -> dict[str, Any]:
         "timings_sec": {},
         "docs_timings_sec": {},
     }
+
+
+def default_report_output_path(
+    *,
+    repo: str | None = None,
+    project_path: str | None = None,
+    core12_only: bool = False,
+    now: float | None = None,
+) -> str:
+    """Return a stable default JSON report path for ad-hoc benchmark runs."""
+    if repo:
+        label = repo
+    elif project_path:
+        label = Path(project_path).name or "project"
+    else:
+        label = "fixture"
+    label = re.sub(r"[^a-zA-Z0-9_.-]+", "_", label).strip("_") or "benchmark"
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now or time.time()))
+    suffix = "_core12" if core12_only else ""
+    filename = f"qa_benchmark_{label}{suffix}_{timestamp}.json"
+    return str((Path(tempfile.gettempdir()) / filename).resolve())
+
+
+def write_metrics_report(metrics: dict[str, Any], report_path: str) -> str:
+    """Write metrics JSON and return the resolved absolute path."""
+    resolved = Path(report_path).resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(metrics)
+    payload["report_path"] = str(resolved)
+    with open(resolved, "w") as f:
+        json.dump(payload, f, indent=2)
+    metrics["report_path"] = str(resolved)
+    return str(resolved)
 
 
 def _normalize_cleanup_prefixes(*paths: str | None) -> list[str]:
@@ -1076,11 +1111,18 @@ def main():
         ranker_weights=ranker_weights,
     )
 
-    if args.report:
-        with open(args.report, "w") as f:
-            json.dump(metrics, f, indent=2)
-        print(f"Metrics saved to: {args.report}")
+    report_path = write_metrics_report(
+        metrics,
+        args.report
+        or default_report_output_path(
+            repo=args.repo,
+            project_path=args.project_path,
+            core12_only=args.core12,
+        ),
+    )
+    print(f"Report JSON:     {report_path}")
 
+    if args.report:
         # Append to baselines.jsonl for historical tracking
         baseline_file = Path(__file__).parent / "baselines.jsonl"
         with open(baseline_file, "a") as f:

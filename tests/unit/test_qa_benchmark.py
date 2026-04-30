@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,15 +10,18 @@ from QA.qa_benchmark import (
     _empty_indexing_summary,
     _normalize_cleanup_prefixes,
     _path_matches_prefix,
+    default_report_output_path,
     default_repo_checkout_path,
     ensure_repo_checkout,
     load_question_pack,
     load_questions,
     load_repository_meta,
+    main,
     resolve_questions_path,
     resolve_repo_docs_path,
     run_benchmark,
     setup_fixture_db,
+    write_metrics_report,
 )
 
 
@@ -182,6 +186,48 @@ def test_empty_indexing_summary_marks_skipped_run():
     assert summary["docs_chunks_indexed"] == 0
     assert summary["timings_sec"] == {}
     assert summary["docs_timings_sec"] == {}
+
+
+def test_default_report_output_path_includes_repo_and_core12_suffix():
+    report_path = default_report_output_path(
+        repo="redux_toolkit",
+        core12_only=True,
+        now=1_777_486_905.0,
+    )
+
+    assert "qa_benchmark_redux_toolkit_core12_" in report_path
+    assert report_path.endswith(".json")
+
+
+def test_write_metrics_report_persists_json_and_report_path(tmp_path):
+    report_path = tmp_path / "report.json"
+    metrics = {"summary": {"pass_rate": 1.0}}
+
+    written = write_metrics_report(metrics, str(report_path))
+
+    assert written == str(report_path.resolve())
+    payload = json.loads(report_path.read_text())
+    assert payload["summary"]["pass_rate"] == 1.0
+    assert payload["report_path"] == str(report_path.resolve())
+    assert metrics["report_path"] == str(report_path.resolve())
+
+
+def test_main_auto_writes_report_and_prints_path_when_report_flag_omitted(tmp_path, capsys):
+    fake_metrics = {"summary": {"pass_rate": 1.0}}
+    auto_report = tmp_path / "auto-report.json"
+
+    with (
+        patch("QA.qa_benchmark.run_benchmark", return_value=fake_metrics),
+        patch("QA.qa_benchmark.default_report_output_path", return_value=str(auto_report)),
+        patch("sys.argv", ["qa_benchmark.py", "--no-index"]),
+    ):
+        exit_code = main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert f"Report JSON:     {auto_report.resolve()}" in captured.out
+    payload = json.loads(auto_report.read_text())
+    assert payload["report_path"] == str(auto_report.resolve())
 
 
 def test_setup_fixture_db_returns_indexing_stats():

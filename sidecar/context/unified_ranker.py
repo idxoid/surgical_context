@@ -20,6 +20,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
+from pathlib import Path
 
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.role_taxonomy import (
@@ -45,6 +46,12 @@ _NOISE_PATH_PATTERNS = (
 _NOISE_NAME_PREFIXES = ("test_",)
 _NOISE_NAME_SUBSTRINGS = ("tutorial",)
 _NOISE_FACTOR = 0.15
+_LOW_SIGNAL_DOC_PATH_PATTERNS = (
+    "/migrating-",
+    "/comparison.",
+    "/comparison.md",
+    "/release-notes",
+)
 
 _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
     "fastapi_route_registration": {
@@ -174,7 +181,7 @@ def _name_is_noisy(name: str) -> bool:
     return any(sub in lower for sub in _NOISE_NAME_SUBSTRINGS)
 
 
-def compute_noise_factor(file_path: str, name: str) -> float:
+def compute_noise_factor(file_path: str, name: str, *, kind: str = "symbol") -> float:
     """Multiplicative score multiplier in [0, 1].
 
     Returns 1.0 for clean candidates and ``_NOISE_FACTOR`` for ones that
@@ -183,6 +190,8 @@ def compute_noise_factor(file_path: str, name: str) -> float:
     """
     if _path_is_noisy(file_path) or _name_is_noisy(name):
         return _NOISE_FACTOR
+    if kind == "doc" and any(pat in (file_path or "").lower() for pat in _LOW_SIGNAL_DOC_PATH_PATTERNS):
+        return 0.35
     return 1.0
 
 
@@ -672,6 +681,24 @@ class UnifiedRanker:
             )
             if backfill:
                 pool = self._merge_role_backfill(pool, backfill)
+                roles_for_backfill = self._roles_needing_backfill(
+                    target,
+                    pool,
+                    required_roles,
+                )
+        recovery_roles = (
+            required_roles
+            if self._needs_structural_recovery(target)
+            else roles_for_backfill
+        )
+        if recovery_roles:
+            recovery = self._generic_role_recovery_candidates(
+                target,
+                recovery_roles,
+                excluded_uids={target.uid},
+            )
+            if recovery:
+                pool = self._merge_role_backfill(pool, recovery)
 
         # 7. Assign intent weights and noise factors
 
@@ -683,7 +710,7 @@ class UnifiedRanker:
             if intent == Intent.IMPACT_ANALYSIS:
                 c.noise_factor = 1.0  # tests/examples are load-bearing for impact questions
             else:
-                c.noise_factor = compute_noise_factor(c.file_path, c.name)
+                c.noise_factor = compute_noise_factor(c.file_path, c.name, kind=c.kind)
 
         # 8. Normalize each track to [0, 1]
         self._normalize(pool)
@@ -1410,6 +1437,332 @@ class UnifiedRanker:
             candidate.symbol_kind = best_row.get("symbol_kind", "")
             candidates.append(candidate)
         return candidates
+
+    def _generic_role_recovery_candidates(
+        self,
+        target: SubgraphNode,
+        roles: list[str],
+        *,
+        excluded_uids: set[str],
+    ) -> list[Candidate]:
+        scoped_roles = set(normalize_roles(roles))
+        if not scoped_roles:
+            return []
+
+        rows: list[tuple[str, dict]] = []
+        rows.extend(
+            ("same_file", row)
+            for row in self._same_file_symbol_rows(target.file_path, excluded_uids=excluded_uids)
+        )
+        rows.extend(
+            ("imported_file", row)
+            for row in self._imported_symbol_rows(target.file_path, excluded_uids=excluded_uids)
+        )
+        if not rows:
+            return []
+
+        candidates: list[Candidate] = []
+        for origin, row in rows:
+            candidate = self._recovery_candidate_from_row(
+                row,
+                origin=origin,
+                scoped_roles=scoped_roles,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+        deduped: dict[str, Candidate] = {}
+        for candidate in candidates:
+            existing = deduped.get(candidate.uid)
+            if existing is None or existing.graph_score < candidate.graph_score:
+                deduped[candidate.uid] = candidate
+        return list(deduped.values())
+
+    def _same_file_symbol_rows(
+        self,
+        file_path: str,
+        *,
+        excluded_uids: set[str],
+    ) -> list[dict]:
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               count(DISTINCT or) AS outbound_edges
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        file_path=file_path,
+                        excluded_uids=list(excluded_uids),
+                    )
+                )
+        except Exception:
+            return []
+
+    def _imported_symbol_rows(
+        self,
+        file_path: str,
+        *,
+        excluded_uids: set[str],
+    ) -> list[dict]:
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[:IMPORTS]->(dep:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, dep, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(dep.path, '<unknown>') AS file_path,
+               coalesce(dep.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               count(DISTINCT or) AS outbound_edges
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        file_path=file_path,
+                        excluded_uids=list(excluded_uids),
+                    )
+                )
+        except Exception:
+            rows = []
+
+        fallback_paths = [
+            path
+            for path in self._resolve_filesystem_import_paths(file_path)
+            if path not in {row.get("file_path") for row in rows}
+        ]
+        if fallback_paths:
+            rows.extend(
+                self._symbol_rows_for_file_paths(
+                    fallback_paths,
+                    excluded_uids=excluded_uids,
+                )
+            )
+        return rows
+
+    def _symbol_rows_for_file_paths(
+        self,
+        file_paths: list[str],
+        *,
+        excluded_uids: set[str],
+    ) -> list[dict]:
+        if not file_paths:
+            return []
+
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE f.path IN $file_paths
+          AND NOT s.uid IN $excluded_uids
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               count(DISTINCT or) AS outbound_edges
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        file_paths=file_paths,
+                        excluded_uids=list(excluded_uids),
+                    )
+                )
+        except Exception:
+            return []
+
+    def _resolve_filesystem_import_paths(self, file_path: str) -> list[str]:
+        path = Path(file_path)
+        if not path.exists():
+            return []
+
+        adapter = self._adapter_for_path(path)
+        if adapter is None:
+            return []
+
+        try:
+            source = path.read_text(encoding="utf-8")
+        except Exception:
+            return []
+
+        resolved: set[str] = set()
+        for edge in adapter.extract_imports(source, str(path)):
+            if edge.import_type != "relative":
+                continue
+            resolved.update(self._resolve_relative_import_targets(path, edge.target_module_name))
+        return sorted(resolved)
+
+    def _adapter_for_path(self, path: Path):
+        suffix = path.suffix.lower()
+        if suffix in {".ts", ".tsx"}:
+            from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
+
+            return TypeScriptAdapter()
+        if suffix in {".py", ".pyi"}:
+            from sidecar.parser.adapters.python_adapter import PythonAdapter
+
+            return PythonAdapter()
+        return None
+
+    def _resolve_relative_import_targets(
+        self,
+        source_path: Path,
+        import_source: str,
+    ) -> list[str]:
+        source = (import_source or "").strip()
+        if not source.startswith("."):
+            return []
+
+        candidates: list[Path] = []
+        if "/" in source or source.startswith("./") or source.startswith("../"):
+            base = (source_path.parent / source).resolve()
+            candidates.extend(self._path_resolution_candidates(base))
+        else:
+            leading = len(source) - len(source.lstrip("."))
+            remainder = source.lstrip(".").replace(".", "/")
+            base_dir = source_path.parent
+            for _ in range(max(leading - 1, 0)):
+                base_dir = base_dir.parent
+            base = (base_dir / remainder).resolve() if remainder else base_dir.resolve()
+            candidates.extend(self._path_resolution_candidates(base))
+
+        return [str(candidate) for candidate in candidates if candidate.exists()]
+
+    @staticmethod
+    def _path_resolution_candidates(base: Path) -> list[Path]:
+        if base.suffix:
+            return [base]
+        return [
+            base.with_suffix(".ts"),
+            base.with_suffix(".tsx"),
+            base / "index.ts",
+            base / "index.tsx",
+            base.with_suffix(".py"),
+            base.with_suffix(".pyi"),
+            base / "__init__.py",
+        ]
+
+    def _recovery_candidate_from_row(
+        self,
+        row: dict,
+        *,
+        origin: str,
+        scoped_roles: set[str],
+    ) -> Candidate | None:
+        raw_token_cost = int(row["token_estimate"]) or self._estimate_tokens_range(
+            row.get("range") or [0, 0]
+        )
+        name_lower = (row["name"] or "").lower()
+        file_stem = Path(row["file_path"]).stem.lower()
+        is_stem_match = file_stem == name_lower
+        is_builder_surface = name_lower.startswith(
+            ("build", "create", "configure", "combine", "compose")
+        )
+        token_cost = min(
+            raw_token_cost,
+            80 if is_stem_match else 120 if is_builder_surface else 180,
+        )
+        probe = Candidate(
+            kind="symbol",
+            uid=row["uid"],
+            token_cost=token_cost,
+            name=row["name"],
+            file_path=row["file_path"],
+            range=row.get("range") or [0, 0],
+            file_hash=row.get("file_hash") or "",
+        )
+        probe.symbol_kind = row.get("symbol_kind", "")
+        probe.qualified_name = row.get("qualified_name", "")
+
+        primary_role = self._role_of(probe)
+        supporting_roles = self._supporting_roles_of(probe)
+        candidate_roles = normalize_roles([primary_role, *supporting_roles])
+        matched_roles = [role for role in candidate_roles if role in scoped_roles]
+        if not matched_roles:
+            return None
+        matched_roles.sort(key=lambda role: (role == primary_role, role == "docs_or_concept"))
+
+        origin_bonus = 0.45 if origin == "same_file" else 0.35
+        stem_bonus = 0.35 if is_stem_match else 0.12 if is_builder_surface else 0.0
+        role_bonus = 0.18 * len(matched_roles)
+        edge_bonus = (
+            0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0))
+            + 0.10 * math.log1p(float(row.get("outbound_edges", 0) or 0))
+        )
+        candidate = Candidate(
+            kind="symbol",
+            uid=row["uid"],
+            token_cost=token_cost,
+            graph_score=1.0 + origin_bonus + stem_bonus + role_bonus + edge_bonus,
+            name=row["name"],
+            file_path=row["file_path"],
+            range=row.get("range") or [0, 0],
+            render_mode="signature_only",
+            relation="ROLE_BACKFILL",
+            direction="backfill",
+            depth=1 if origin == "same_file" else 2,
+            file_hash=row.get("file_hash") or "",
+            evidence_role=matched_roles[0],
+            supporting_roles=[role for role in candidate_roles if role != matched_roles[0]],
+            provenance=[f"{origin}-backfill:{matched_roles[0]}"],
+        )
+        candidate.symbol_kind = row.get("symbol_kind", "")
+        candidate.qualified_name = row.get("qualified_name", "")
+        return candidate
+
+    def _needs_structural_recovery(self, target: SubgraphNode) -> bool:
+        """Identify thin wrapper targets that benefit from file/import recovery.
+
+        These symbols often act as public API facades over heavier builder
+        functions. Static call edges can be sparse or parser-recovery can miss
+        the inner implementation entirely, so we proactively widen the pool to
+        nearby same-file/imported helpers.
+        """
+        if (target.kind or "") == "variable":
+            return True
+        if target.token_estimate and target.token_estimate <= 40:
+            return True
+        start, end = (target.range or [0, 0])[:2]
+        return bool(start and end and start == end)
 
     # ------------------------------------------------------------------
     # Scoring helpers

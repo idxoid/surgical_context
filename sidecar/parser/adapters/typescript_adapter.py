@@ -20,6 +20,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
     _EXPORTED_VAR_FALLBACK_RE = re.compile(
         r"(?m)^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b"
     )
+    _EXPORTED_FUNC_FALLBACK_RE = re.compile(
+        r"(?m)^export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b"
+    )
 
     @property
     def language_name(self) -> str:
@@ -75,17 +78,44 @@ class TypeScriptAdapter(TreeSitterAdapter):
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
         existing_names = {symbol.name for symbol in symbols}
 
+        for match in self._EXPORTED_FUNC_FALLBACK_RE.finditer(source_code):
+            name = match.group(1)
+            if name in existing_names:
+                continue
+
+            start_line, end_line, content = self._fallback_symbol_span(
+                source_code,
+                match.start(),
+            )
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            qualified_name = f"{module_name_from_path(file_path)}.{name}"
+            symbols.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="function",
+                    start_line=start_line,
+                    end_line=end_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="fallback_export",
+                    language=self.language_name,
+                )
+            )
+            existing_names.add(name)
+
         for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
             name = match.group(1)
             if name in existing_names:
                 continue
 
-            line_start = match.start()
-            line_end = source_code.find("\n", line_start)
-            if line_end == -1:
-                line_end = len(source_code)
-            content = source_code[line_start:line_end]
-            start_line = source_code.count("\n", 0, line_start) + 1
+            start_line, end_line, content = self._fallback_symbol_span(
+                source_code,
+                match.start(),
+            )
             signature = normalize_signature(f"{name}()->_", self.language_name)
             qualified_name = f"{module_name_from_path(file_path)}.{name}"
             symbols.append(
@@ -94,7 +124,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     name=name,
                     kind="variable",
                     start_line=start_line,
-                    end_line=start_line,
+                    end_line=end_line,
                     content_hash=self._hash(content),
                     file_path=file_path,
                     qualified_name=qualified_name,
@@ -210,13 +240,13 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if not func_node:
                 continue
 
-            parent = node.parent
-            while parent and parent.type not in self.parent_types:
-                parent = parent.parent
+            parent = self._enclosing_symbol_owner(node)
             if not parent:
                 continue
 
-            caller_uid = self._uid_for_node(parent, source_code, file_path)
+            caller_uid = self._caller_uid_for_owner(parent, source_code, file_path)
+            if not caller_uid:
+                continue
             callee_uid = None
             call_name = ""
             rel_type = "CALLS_DIRECT"
@@ -259,6 +289,49 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         return calls
 
+    def _fallback_symbol_span(
+        self,
+        source_code: str,
+        start_offset: int,
+    ) -> tuple[int, int, str]:
+        """Best-effort line span for exported symbol text fallbacks.
+
+        For simple `export const` wrappers we keep the single line. For exported
+        functions, we try to capture the full brace-delimited body so prompt
+        resolution can recover implementation context even when tree-sitter is
+        in error-recovery mode.
+        """
+        line_start = source_code.rfind("\n", 0, start_offset) + 1
+        start_line = source_code.count("\n", 0, line_start) + 1
+        line_end = source_code.find("\n", start_offset)
+        search_from = start_offset
+        close_paren = source_code.find(")", start_offset)
+        if close_paren != -1 and (line_end == -1 or close_paren <= line_end + 200):
+            search_from = close_paren
+        brace_start = source_code.find("{", search_from)
+
+        if brace_start == -1 or (line_end != -1 and brace_start > line_end):
+            if line_end == -1:
+                line_end = len(source_code)
+            content = source_code[line_start:line_end]
+            return start_line, start_line, content
+
+        depth = 0
+        end_offset = len(source_code)
+        for idx in range(brace_start, len(source_code)):
+            char = source_code[idx]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end_offset = idx + 1
+                    break
+
+        end_line = source_code.count("\n", 0, end_offset) + 1
+        content = source_code[line_start:end_offset]
+        return start_line, end_line, content
+
     def _uid(self, file_path: str, name: str) -> str:
         qualified_name = f"{module_name_from_path(file_path)}.{name}"
         return compute_uid(qualified_name, f"{name}()->_", self.language_name)
@@ -267,6 +340,36 @@ class TypeScriptAdapter(TreeSitterAdapter):
         qualified_name = qualified_name_for(node, source_code, file_path)
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
+
+    def _enclosing_symbol_owner(self, node):
+        parent = node.parent
+        while parent:
+            if parent.type in self.parent_types:
+                return parent
+            if parent.type == "variable_declarator" and self._is_top_level_variable_declarator(parent):
+                return parent
+            parent = parent.parent
+        return None
+
+    def _caller_uid_for_owner(self, node, source_code: str, file_path: str) -> str | None:
+        if node.type == "variable_declarator":
+            name_node = node.child_by_field_name("name")
+            if not name_node:
+                return None
+            name = source_code[name_node.start_byte : name_node.end_byte]
+            return self._uid(file_path, name)
+        return self._uid_for_node(node, source_code, file_path)
+
+    @staticmethod
+    def _is_top_level_variable_declarator(node) -> bool:
+        parent = node.parent
+        while parent:
+            if parent.type == "program":
+                return True
+            if parent.type in {"function_declaration", "method_definition", "class_declaration"}:
+                return False
+            parent = parent.parent
+        return False
 
     def _resolve_method_uid(
         self, caller_node, method_name: str, by_name: dict[str, list]
