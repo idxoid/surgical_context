@@ -49,7 +49,7 @@ Both tracks emit candidates into a single pool before budget-constrained selecti
 
 ### 2.2 Candidate Types
 
-Current candidates are symbols and docs. A future phase adds tenant API contract candidates from published manifests, using the same scoring and budget rules.
+Current candidates are symbols and docs. A future phase adds tenant API contract candidates from published manifests, using the same scoring and budget rules. The current local ranker also lets a candidate satisfy certain canonical roles through inferred capability support, so role fulfillment is not tied to one framework's exact symbol layout.
 
 ```python
 @dataclass
@@ -105,6 +105,7 @@ Current behavior is slightly richer than the original greedy draft:
 - fill token costs for vector-only symbols before judging readiness
 - infer a mechanism from the target plus query
 - compute required roles on a canonical cross-framework taxonomy
+- treat some roles as capability slots as well as identity slots; e.g. a runtime symbol like `SchemaValidator` can fulfill `validator_handle` if the dedicated wrapper/member symbol is absent
 - use mechanism-aware role backfill before final selection
 - sort by blended score with a bonus for role-filling candidates
 - apply marginal-gain gating, intent floors, and signature-only fallback for low-gain distant candidates
@@ -211,7 +212,7 @@ See [spec_prompt_contract_observability.md](spec_prompt_contract_observability.m
 ## 6. Limitations (current)
 
 - Tenant API candidates are not implemented yet; the ranker is still workspace-local.
-- Canonical role normalization is in place, but framework-general recovery is still uneven; FastAPI is strong, while Pydantic still has narrower handle-retrieval gaps.
+- Canonical role normalization is in place, and handle-style capability inference now reduces dependence on framework-specific dunder/member indexing. The current generic fingerprint set is still narrow and should expand carefully before we rely on it for broader framework families.
 - Doc chunks linked via `COVERS` to multiple symbols currently pick the max symbol score; better fusion (softmax, sum-with-penalty) is still open.
 - Vector search runs at query time; cache at the query-embedding layer remains a future optimization (see [spec_retrieval_cache.md](spec_retrieval_cache.md)).
 

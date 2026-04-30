@@ -22,7 +22,11 @@ from dataclasses import dataclass, field
 from heapq import heappop, heappush
 
 from sidecar.context.intent_classifier import Intent
-from sidecar.context.role_taxonomy import normalize_role, normalize_roles
+from sidecar.context.role_taxonomy import (
+    infer_supporting_roles,
+    normalize_role,
+    normalize_roles,
+)
 from sidecar.context.types import DocChunk, SubgraphNode, Subgraph
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
@@ -210,6 +214,7 @@ class Candidate:
     range: list[int] = field(default_factory=lambda: [0, 0])
     render_mode: str = "full"
     evidence_role: str = ""
+    supporting_roles: list[str] = field(default_factory=list)
     relation: str = ""
     direction: str = ""
     depth: int = 0
@@ -673,6 +678,7 @@ class UnifiedRanker:
         intent_priors = self._intent_priors(intent)
         for c in pool:
             c.evidence_role = self._role_of(c)
+            c.supporting_roles = self._supporting_roles_of(c)
             c.intent_weight = intent_priors.get(c.kind, 0.3)
             if intent == Intent.IMPACT_ANALYSIS:
                 c.noise_factor = 1.0  # tests/examples are load-bearing for impact questions
@@ -685,7 +691,7 @@ class UnifiedRanker:
         # 9. Sort by blended score
         # Optimization: Sort by blended score + potential to fill a missing role.
         pool.sort(
-            key=lambda c: self._blended(c) + (0.5 if self._role_of(c) in required_roles else 0.0),
+            key=lambda c: self._blended(c) + (0.5 if self._candidate_matches_any_role(c, required_roles) else 0.0),
             reverse=True
         )
 
@@ -694,7 +700,7 @@ class UnifiedRanker:
         spent = self.PREAMBLE_TOKENS + target.token_estimate
         pruned_details = []
         chosen_files = {target.file_path}
-        fulfilled_roles = {self._role_of(target)}
+        fulfilled_roles = set(self._roles_of(target))
 
         stopped_reason = "pool_exhausted"
         min_floor = self._INTENT_FLOORS.get(intent, 1200)
@@ -712,7 +718,8 @@ class UnifiedRanker:
 
             # Selection Gating Logic: Mechanism-Aware
             missing_roles = set(required_roles) - fulfilled_roles
-            fills_role = c.evidence_role in required_roles and c.evidence_role not in fulfilled_roles
+            candidate_roles = self._roles_of(c)
+            fills_role = any(role in required_roles and role not in fulfilled_roles for role in candidate_roles)
             adds_new_file = c.file_path not in chosen_files
             is_bridge = c.relation in ("DOC_BRIDGE", "SEMANTIC_HINT", "ROLE_BACKFILL") or self._has_role_backfill(c)
             is_strong_relation = c.relation in ("CALLS_DIRECT", "CALLS_SCOPED", "DEPENDS_ON", "IMPLEMENTS", "OVERRIDES")
@@ -752,7 +759,9 @@ class UnifiedRanker:
                     "kind": c.kind,
                     "uid": c.uid,
                     "name": c.name, "file": c.file_path, "relation": c.relation,
-                    "role": c.evidence_role, "gain": round(gain, 3), "tokens": potential_cost,
+                    "role": c.evidence_role,
+                    "supporting_roles": candidate_roles,
+                    "gain": round(gain, 3), "tokens": potential_cost,
                     "token_cost": potential_cost,
                     "reason": "over_budget",
                     "graph_score": round(c.graph_score, 3),
@@ -770,7 +779,7 @@ class UnifiedRanker:
             chosen.append(c)
             spent += potential_cost
             chosen_files.add(c.file_path)
-            fulfilled_roles.add(c.evidence_role)
+            fulfilled_roles.update(candidate_roles)
 
         # If we ran out of useful candidates before hitting the floor, adjust the
         # stopped reason. For sparse targets like `Depends` (marker classes), the floor
@@ -1246,6 +1255,10 @@ class UnifiedRanker:
                 existing.file_hash = candidate.file_hash
             if candidate.evidence_role and not existing.evidence_role:
                 existing.evidence_role = candidate.evidence_role
+            if candidate.supporting_roles:
+                existing.supporting_roles = normalize_roles(
+                    list(getattr(existing, "supporting_roles", [])) + list(candidate.supporting_roles)
+                )
         return list(merged.values())
 
     def _roles_needing_backfill(
@@ -1254,14 +1267,14 @@ class UnifiedRanker:
         pool: list[Candidate],
         required_roles: list[str],
     ) -> list[str]:
-        target_role = self._role_of(target)
+        target_roles = set(self._roles_of(target))
         needed: list[str] = []
         for role in required_roles:
             if role == "docs_or_concept":
                 continue
-            if role == target_role:
+            if role in target_roles:
                 continue
-            candidates = [candidate for candidate in pool if self._role_of(candidate) == role]
+            candidates = [candidate for candidate in pool if role in self._roles_of(candidate)]
             if not candidates:
                 needed.append(role)
                 continue
@@ -1391,6 +1404,7 @@ class UnifiedRanker:
                 depth=2,
                 file_hash=best_row.get("file_hash") or "",
                 evidence_role=role,
+                supporting_roles=[],
                 provenance=[f"role-backfill:{role}"],
             )
             candidate.symbol_kind = best_row.get("symbol_kind", "")
@@ -1520,9 +1534,12 @@ class UnifiedRanker:
         
         # 1. Role Bonus: Does this symbol fulfill a missing requirement for the mechanism?
         role_bonus = 0.0
-        if c.evidence_role in required_roles:
-            is_fulfilled = any(cc.evidence_role == c.evidence_role for cc in chosen)
-            if not is_fulfilled:
+        candidate_roles = [role for role in self._roles_of(c) if role in required_roles]
+        if candidate_roles:
+            chosen_roles = set(self._roles_of(target))
+            for chosen_candidate in chosen:
+                chosen_roles.update(self._roles_of(chosen_candidate))
+            if any(role not in chosen_roles for role in candidate_roles):
                 role_bonus = 0.5  # High-priority evidence signal
 
         # 2. Coverage Bonus: Does this symbol complete a structural chain?
@@ -1551,6 +1568,27 @@ class UnifiedRanker:
         if explicit:
             return normalize_role(explicit)
         return normalize_role(self._infer_role(c))
+
+    def _supporting_roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
+        explicit = normalize_roles(getattr(c, "supporting_roles", []) or [])
+        inferred = infer_supporting_roles(
+            name=c.name or "",
+            qualified_name=getattr(c, "qualified_name", "") or "",
+            file_path=getattr(c, "file_path", "") or "",
+            primary_role=self._role_of(c),
+        )
+        return normalize_roles([*explicit, *inferred])
+
+    def _roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
+        return normalize_roles([self._role_of(c), *self._supporting_roles_of(c)])
+
+    def _candidate_matches_any_role(
+        self,
+        c: Candidate | SubgraphNode,
+        required_roles: list[str],
+    ) -> bool:
+        required = set(normalize_roles(required_roles))
+        return any(role in required for role in self._roles_of(c))
 
     def _infer_role(self, c: Candidate | SubgraphNode) -> str:
         """Heuristic to map symbols to canonical reasoning roles."""

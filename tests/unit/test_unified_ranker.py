@@ -501,6 +501,71 @@ def test_pydantic_role_inference_normalizes_to_canonical_roles():
     ) == "core_runtime"
 
 
+def test_capability_roles_infer_validator_and_serializer_support_without_dunder_symbols():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+
+    schema_validator = Candidate(
+        kind="symbol",
+        uid="schema-validator",
+        name="SchemaValidator",
+        file_path="/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+        token_cost=120,
+    )
+    model_dump = Candidate(
+        kind="symbol",
+        uid="model-dump",
+        name="model_dump",
+        file_path="/repo/pydantic/main.py",
+        token_cost=80,
+    )
+
+    assert set(ranker._roles_of(schema_validator)) >= {"core_runtime", "validator_handle"}
+    assert set(ranker._roles_of(model_dump)) >= {"api_surface", "serializer_handle"}
+
+
+def test_capability_roles_reduce_pydantic_handle_backfill_when_equivalent_symbols_exist():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+    target = SubgraphNode(
+        uid="basemodel",
+        name="BaseModel",
+        file_path="/repo/pydantic/main.py",
+        range=[100, 400],
+        token_estimate=200,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    pool = [
+        Candidate(
+            kind="symbol",
+            uid="model-validate",
+            name="model_validate",
+            file_path="/repo/pydantic/main.py",
+            token_cost=90,
+            semantic_score=0.9,
+        ),
+        Candidate(
+            kind="symbol",
+            uid="schema-validator",
+            name="SchemaValidator",
+            file_path="/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+            token_cost=120,
+            graph_score=0.8,
+        ),
+    ]
+
+    needed = ranker._roles_needing_backfill(
+        target,
+        pool,
+        ["api_surface", "validator_handle", "core_runtime"],
+    )
+
+    assert "validator_handle" not in needed
+    assert "core_runtime" not in needed
+
+
 def test_pydantic_backfill_preserves_explicit_role_overrides():
     db = _make_backfill_db(
         [

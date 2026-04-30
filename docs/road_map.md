@@ -73,7 +73,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
 - [ ] Add latency SLO checks for local asks and index operations.
 - [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
-- [ ] Extend canonical role coverage beyond FastAPI: finish Pydantic handle recovery and then validate Redux Toolkit against the same role taxonomy.
+- [ ] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles, then validate Redux Toolkit against the same role taxonomy.
 
 ### P3 - Real-Repo Validation
 - [x] Adapt the QA harness to use the real-repo question pack in [tests/fixtures/real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml).
