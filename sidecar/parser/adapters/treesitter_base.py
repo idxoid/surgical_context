@@ -111,9 +111,15 @@ class TreeSitterAdapter(LanguageAdapter):
                         language=self.language_name,
                     )
                 )
-            elif tag == "var.def":
+            elif tag.startswith("var."):
                 name = var_names.get(node.id)
-                if not name or not name.isupper():
+                if not name or not self.should_include_variable_symbol(
+                    node,
+                    tag,
+                    name,
+                    source_code=source_code,
+                    file_path=file_path,
+                ):
                     continue
                 content = node.text.decode("utf-8")
                 qualified_name = ".".join([self._module_name(file_path), name])
@@ -135,6 +141,23 @@ class TreeSitterAdapter(LanguageAdapter):
                     )
                 )
         return symbols
+
+    def should_include_variable_symbol(
+        self,
+        node,
+        tag: str,
+        name: str,
+        *,
+        source_code: str,
+        file_path: str,
+    ) -> bool:
+        """Decide whether a captured module-level variable should be indexed.
+
+        The default remains conservative: only UPPER_CASE constants are treated
+        as symbols. Language adapters can override this for ecosystems where
+        exported lexical declarations are part of the public API surface.
+        """
+        return name.isupper()
 
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None

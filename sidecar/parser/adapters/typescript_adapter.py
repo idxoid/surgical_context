@@ -1,17 +1,25 @@
 """TypeScript language adapter using tree-sitter."""
 
+import re
+
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
-from sidecar.parser.protocol import ImportEdge, InheritanceEdge
+from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.parser.uid import (
     compute_uid,
     module_name_from_path,
+    normalize_signature,
     qualified_name_for,
     signature_from_node,
+    signature_hash,
 )
 
 
 class TypeScriptAdapter(TreeSitterAdapter):
     """TypeScript parser adapter."""
+
+    _EXPORTED_VAR_FALLBACK_RE = re.compile(
+        r"(?m)^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b"
+    )
 
     @property
     def language_name(self) -> str:
@@ -32,6 +40,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             (method_definition name: (property_identifier) @func.name) @func.def
             (class_declaration name: (type_identifier) @class.name) @class.def
             (program (lexical_declaration (variable_declarator name: (identifier) @var.name) @var.def))
+            (program (export_statement (lexical_declaration (variable_declarator name: (identifier) @var.name) @var.exported_def)))
         """
 
     @property
@@ -51,6 +60,74 @@ class TypeScriptAdapter(TreeSitterAdapter):
             (import_statement source: (string) @import.source) @import.stmt
             (import_specifier (identifier) @import.name) @import.spec
         """
+
+    def extract_symbols(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[SymbolMetadata]:
+        """Extract TS symbols with a fallback for exported lexical APIs.
+
+        Tree-sitter can recover imperfectly on very type-heavy files and skip
+        otherwise simple `export const foo = ...` declarations. We still want
+        those public API surfaces indexed, so we add a conservative text
+        fallback for top-level exported lexical declarations that were not
+        surfaced by the AST query.
+        """
+        symbols = super().extract_symbols(source_code, file_path, tree=tree)
+        existing_names = {symbol.name for symbol in symbols}
+
+        for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
+            name = match.group(1)
+            if name in existing_names:
+                continue
+
+            line_start = match.start()
+            line_end = source_code.find("\n", line_start)
+            if line_end == -1:
+                line_end = len(source_code)
+            content = source_code[line_start:line_end]
+            start_line = source_code.count("\n", 0, line_start) + 1
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            qualified_name = f"{module_name_from_path(file_path)}.{name}"
+            symbols.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="variable",
+                    start_line=start_line,
+                    end_line=start_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="fallback_export",
+                    language=self.language_name,
+                )
+            )
+            existing_names.add(name)
+        return symbols
+
+    def should_include_variable_symbol(
+        self,
+        node,
+        tag: str,
+        name: str,
+        *,
+        source_code: str,
+        file_path: str,
+    ) -> bool:
+        """Treat exported lexical declarations as public API symbols.
+
+        TypeScript libraries commonly publish their top-level API as
+        ``export const foo = ...`` rather than ``function foo()``. Indexing
+        those declarations makes retrieval work across TS codebases without
+        hard-coding framework names like Redux Toolkit.
+        """
+        if super().should_include_variable_symbol(
+            node, tag, name, source_code=source_code, file_path=file_path
+        ):
+            return True
+        return tag == "var.exported_def"
 
     @property
     def inheritance_query(self) -> str:

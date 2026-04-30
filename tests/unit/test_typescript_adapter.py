@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch
 
 from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
 
@@ -32,6 +33,34 @@ function func2() {}
         assert len(symbols) == 3
         names = {s.name for s in symbols}
         assert names == {"func1", "MyClass", "func2"}
+
+    def test_extracts_exported_lower_camel_const_as_public_api_symbol(self, adapter):
+        source = "export const createSlice = buildCreateSlice()"
+        symbols = adapter.extract_symbols(source, "createSlice.ts")
+
+        assert len(symbols) == 1
+        assert symbols[0].name == "createSlice"
+        assert symbols[0].kind == "variable"
+
+    def test_does_not_extract_non_exported_lower_camel_const(self, adapter):
+        source = "const localHelper = buildCreateSlice()"
+        symbols = adapter.extract_symbols(source, "helpers.ts")
+
+        assert symbols == []
+
+    def test_extracts_exported_const_via_text_fallback_when_ast_misses(self, adapter):
+        source = "export const createSlice = buildCreateSlice()"
+
+        with patch(
+            "sidecar.parser.adapters.treesitter_base.TreeSitterAdapter.extract_symbols",
+            return_value=[],
+        ):
+            symbols = adapter.extract_symbols(source, "createSlice.ts")
+
+        assert len(symbols) == 1
+        assert symbols[0].name == "createSlice"
+        assert symbols[0].kind == "variable"
+        assert symbols[0].signature_status == "fallback_export"
 
     def test_extract_calls(self, adapter):
         source = """

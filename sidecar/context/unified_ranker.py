@@ -1655,6 +1655,32 @@ class UnifiedRanker:
         if name == "validationerror":
             return "error_surface"
 
+        # Generic TS/JS public API and builder patterns
+        if name in ("createslice", "configurestore", "createasyncthunk", "createapi"):
+            return "api_surface"
+        if name in (
+            "createaction",
+            "createreducer",
+            "buildcreateslice",
+            "buildcreateapi",
+            "getdefaultmiddleware",
+            "getdefaultenhancers",
+            "asyncthunkcreator",
+        ):
+            return "factory_surface"
+        if any(token in name for token in ("middleware", "enhancer", "compose")):
+            return "composition_surface"
+        if "devtools" in name or name.endswith("config") or "options" in name:
+            return "config_surface"
+        if any(token in name for token in ("rejected", "reject", "error", "failure")):
+            return "error_surface"
+        if any(token in name for token in ("endpoint", "queryentry", "api")):
+            return "representation_surface"
+        if any(token in name for token in ("store", "dispatch", "inject", "module")):
+            return "integration_surface"
+        if any(token in name for token in ("thunk", "listener", "execute", "run")):
+            return "executor"
+
         # Impact-analysis anchors
         if name in ("aliaschoices", "aliaspath"):
             return "impact_public_api"
@@ -1697,6 +1723,22 @@ class UnifiedRanker:
             return "pydantic_alias_impact"
         if name == "v1" or "/pydantic/v1/" in file_path:
             return "pydantic_v1_compat_surface"
+        if name == "createslice" or (
+            "action creator" in query_lower and "reducer" in query_lower
+        ):
+            return "state_factory_pipeline"
+        if name == "configurestore" or any(
+            phrase in query_lower for phrase in ("middleware", "enhancers", "devtools")
+        ):
+            return "runtime_configuration_pipeline"
+        if name == "createasyncthunk" or any(
+            phrase in query_lower for phrase in ("pending", "fulfilled", "rejected", "async thunk")
+        ):
+            return "async_lifecycle_pipeline"
+        if name == "createapi" or (
+            "api slice" in query_lower and ("endpoint" in query_lower or "store" in query_lower)
+        ):
+            return "api_store_integration_pipeline"
         return "generic"
 
     def _get_required_roles(self, mechanism: str) -> list[str]:
@@ -1724,6 +1766,14 @@ class UnifiedRanker:
             roles = ["impact_runtime", "impact_public_api", "impact_test_surface"]
         elif mechanism == "pydantic_validation_error_assembly":
             roles = ["api_surface", "core_runtime", "error_surface"]
+        elif mechanism == "state_factory_pipeline":
+            roles = ["api_surface", "factory_surface", "composition_surface"]
+        elif mechanism == "runtime_configuration_pipeline":
+            roles = ["api_surface", "composition_surface", "config_surface"]
+        elif mechanism == "async_lifecycle_pipeline":
+            roles = ["api_surface", "factory_surface", "executor", "error_surface"]
+        elif mechanism == "api_store_integration_pipeline":
+            roles = ["api_surface", "representation_surface", "integration_surface"]
         else:
             roles = ["api_surface", "executor", "runtime_surface"]
 

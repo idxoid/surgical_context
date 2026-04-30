@@ -619,3 +619,144 @@ def test_pydantic_backfill_preserves_explicit_role_overrides():
     assert by_uid["validator-handle"].evidence_role == "validator_handle"
     assert by_uid["schema-validator"].evidence_role == "core_runtime"
     assert by_uid["schema-serializer"].evidence_role == "serializer_handle"
+
+
+def test_generic_ts_js_mechanisms_cover_redux_style_queries():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+
+    create_slice = SubgraphNode(
+        uid="createSlice",
+        name="createSlice",
+        file_path="/repo/packages/toolkit/src/createSlice.ts",
+        range=[854, 854],
+        token_estimate=20,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="variable",
+    )
+    configure_store = SubgraphNode(
+        uid="configureStore",
+        name="configureStore",
+        file_path="/repo/packages/toolkit/src/configureStore.ts",
+        range=[121, 180],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    create_async_thunk = SubgraphNode(
+        uid="createAsyncThunk",
+        name="createAsyncThunk",
+        file_path="/repo/packages/toolkit/src/createAsyncThunk.ts",
+        range=[520, 620],
+        token_estimate=120,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="variable",
+    )
+    create_api = SubgraphNode(
+        uid="createApi",
+        name="createApi",
+        file_path="/repo/packages/toolkit/src/query/core/index.ts",
+        range=[4, 4],
+        token_estimate=20,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="variable",
+    )
+
+    assert (
+        ranker._determine_mechanism(
+            create_slice,
+            query="How does createSlice turn reducer definitions into action creators and the final reducer?",
+        )
+        == "state_factory_pipeline"
+    )
+    assert (
+        ranker._determine_mechanism(
+            configure_store,
+            query="How does configureStore assemble middleware, enhancers, and DevTools behavior?",
+        )
+        == "runtime_configuration_pipeline"
+    )
+    assert (
+        ranker._determine_mechanism(
+            create_async_thunk,
+            query="How does createAsyncThunk generate pending / fulfilled / rejected action flow?",
+        )
+        == "async_lifecycle_pipeline"
+    )
+    assert (
+        ranker._determine_mechanism(
+            create_api,
+            query="How does RTK Query define an API slice and connect generated endpoints into the store?",
+        )
+        == "api_store_integration_pipeline"
+    )
+
+
+def test_generic_ts_js_role_inference_covers_redux_style_symbols():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="createSlice",
+            name="createSlice",
+            file_path="/repo/packages/toolkit/src/createSlice.ts",
+            token_cost=20,
+        )
+    ) == "api_surface"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="createAction",
+            name="createAction",
+            file_path="/repo/packages/toolkit/src/createAction.ts",
+            token_cost=20,
+        )
+    ) == "factory_surface"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="composeWithDevTools",
+            name="composeWithDevTools",
+            file_path="/repo/packages/toolkit/src/devtoolsExtension.ts",
+            token_cost=20,
+        )
+    ) == "composition_surface"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="requestThunk1",
+            name="requestThunk1",
+            file_path="/repo/packages/toolkit/src/createAsyncThunk.ts",
+            token_cost=20,
+        )
+    ) == "executor"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="getEndpointDefinition",
+            name="getEndpointDefinition",
+            file_path="/repo/packages/toolkit/src/query/core/module.ts",
+            token_cost=20,
+        )
+    ) == "representation_surface"
+    assert ranker._infer_role(
+        Candidate(
+            kind="symbol",
+            uid="dispatch",
+            name="dispatch",
+            file_path="/repo/packages/toolkit/src/query/core/module.ts",
+            token_cost=20,
+        )
+    ) == "integration_surface"
