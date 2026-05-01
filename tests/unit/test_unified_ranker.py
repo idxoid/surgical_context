@@ -320,6 +320,115 @@ def test_dependency_injection_role_backfill_supplies_missing_roles():
     assert set(missing_roles) <= {"docs_or_concept"}
 
 
+def test_pydantic_validation_flow_backfill_supplies_transition_steps():
+    db = _make_backfill_db(
+        [
+            {
+                "uid": "model-validate",
+                "name": "model_validate",
+                "symbol_kind": "function",
+                "token_estimate": 96,
+                "qualified_name": "pydantic.main.BaseModel.model_validate",
+                "file_path": "/repo/pydantic/main.py",
+                "file_hash": "a",
+                "range": [694, 740],
+                "inbound_edges": 3,
+                "outbound_edges": 2,
+            },
+            {
+                "uid": "basemodel-init",
+                "name": "__init__",
+                "symbol_kind": "function",
+                "token_estimate": 120,
+                "qualified_name": "pydantic.main.BaseModel.__init__",
+                "file_path": "/repo/pydantic/main.py",
+                "file_hash": "b",
+                "range": [253, 270],
+                "inbound_edges": 2,
+                "outbound_edges": 3,
+            },
+            {
+                "uid": "complete-model-class",
+                "name": "complete_model_class",
+                "symbol_kind": "function",
+                "token_estimate": 220,
+                "qualified_name": "pydantic._internal._model_construction.complete_model_class",
+                "file_path": "/repo/pydantic/_internal/_model_construction.py",
+                "file_hash": "c",
+                "range": [606, 727],
+                "inbound_edges": 6,
+                "outbound_edges": 5,
+            },
+            {
+                "uid": "pydantic-validator",
+                "name": "__pydantic_validator__",
+                "symbol_kind": "attribute",
+                "token_estimate": 24,
+                "qualified_name": "pydantic.main.BaseModel.__pydantic_validator__",
+                "file_path": "/repo/pydantic/main.py",
+                "file_hash": "d",
+                "range": [120, 121],
+                "inbound_edges": 5,
+                "outbound_edges": 1,
+            },
+            {
+                "uid": "schema-validator",
+                "name": "SchemaValidator",
+                "symbol_kind": "class",
+                "token_estimate": 180,
+                "qualified_name": "pydantic_core._pydantic_core.SchemaValidator",
+                "file_path": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+                "file_hash": "e",
+                "range": [67, 152],
+                "inbound_edges": 7,
+                "outbound_edges": 4,
+            },
+            {
+                "uid": "validate-python",
+                "name": "validate_python",
+                "symbol_kind": "function",
+                "token_estimate": 160,
+                "qualified_name": "pydantic_core._pydantic_core.SchemaValidator.validate_python",
+                "file_path": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+                "file_hash": "f",
+                "range": [91, 131],
+                "inbound_edges": 4,
+                "outbound_edges": 2,
+            },
+        ]
+    )
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+    target = SubgraphNode(
+        uid="basemodel",
+        name="BaseModel",
+        file_path="/repo/pydantic/main.py",
+        range=[111, 620],
+        token_estimate=900,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+        qualified_name="pydantic.main.BaseModel",
+    )
+
+    ranker._graph_candidates = lambda *args, **kwargs: []
+    ranker._doc_candidates = lambda *args, **kwargs: []
+    ranker._sym_vec_candidates = lambda *args, **kwargs: []
+    ranker._doc_bridge_candidates = lambda *args, **kwargs: []
+
+    chosen, _, _, _, missing_roles = ranker.rank(
+        target,
+        "How does BaseModel validation flow work in v2 from model construction to validated output?",
+        Intent.EXPLORATION,
+        4000,
+    )
+
+    chosen_names = {candidate.name for candidate in chosen}
+    assert {"model_validate", "__init__", "complete_model_class", "__pydantic_validator__", "SchemaValidator", "validate_python"} <= chosen_names
+    assert set(missing_roles) <= {"docs_or_concept"}
+
+
 def test_request_body_role_backfill_maps_request_body_mechanism():
     db = _make_backfill_db(
         [

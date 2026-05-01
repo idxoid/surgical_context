@@ -107,14 +107,25 @@ _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
         ],
     },
     "pydantic_validation_core_bridge": {
+        "construction_surface": [
+            {"name": "__init__", "path_hint": "/pydantic/main.py", "priority": 1.0},
+        ],
         "runtime_surface": [
             {"name": "model_validate", "path_hint": "/pydantic/main.py", "priority": 1.0},
+        ],
+        "orchestrator": [
+            {"name": "complete_model_class", "path_hint": "/pydantic/_internal/_model_construction.py", "priority": 1.0},
         ],
         "validator_handle": [
             {"name": "__pydantic_validator__", "path_hint": "/pydantic/main.py", "priority": 1.0},
         ],
         "core_runtime": [
             {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
+        ],
+        "executor": [
+            {"name": "validate_python", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
+            {"name": "validate_json", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
+            {"name": "validate_strings", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
         ],
     },
     "pydantic_python_core_boundary": {
@@ -534,6 +545,7 @@ class UnifiedRanker:
             "api_surface": 1.2,
             "executor": 1.0,
             "orchestrator": 0.95,
+            "construction_surface": 0.9,
             "validator_handle": 0.95,
             "serializer_handle": 0.9,
             "binding_surface": 0.9,
@@ -1998,16 +2010,22 @@ class UnifiedRanker:
             return "api_surface"
         if name in ("model_validate", "model_dump", "model_json_schema"):
             return "api_surface"
+        if name == "__init__" and "basemodel.__init__" in qualified_name:
+            return "construction_surface"
         if name == "json_schema" and "/pydantic/json_schema.py" in file_path:
             return "representation_surface"
         if name == "generatejsonschema":
             return "schema_builder"
+        if name == "complete_model_class":
+            return "orchestrator"
 
         # Pydantic handles and runtime
         if name == "__pydantic_validator__":
             return "validator_handle"
         if name == "__pydantic_serializer__":
             return "serializer_handle"
+        if name in ("validate_python", "validate_json", "validate_strings") and "schemavalidator" in qualified_name:
+            return "executor"
         if name in ("schemavalidator", "schemaserializer"):
             return "core_runtime"
         if name == "validationerror":
@@ -2132,7 +2150,7 @@ class UnifiedRanker:
         elif mechanism == "fastapi_endpoint_execution":
             roles = ["executor", "runtime_surface"]
         elif mechanism == "pydantic_validation_core_bridge":
-            roles = ["api_surface", "runtime_surface", "validator_handle", "core_runtime"]
+            roles = ["api_surface", "construction_surface", "runtime_surface", "validator_handle", "core_runtime", "orchestrator", "executor"]
         elif mechanism == "pydantic_python_core_boundary":
             roles = ["api_surface", "validator_handle", "serializer_handle", "core_runtime"]
         elif mechanism == "pydantic_serialization_bridge":
