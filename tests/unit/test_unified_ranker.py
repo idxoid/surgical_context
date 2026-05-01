@@ -6,6 +6,7 @@ from sidecar.context.unified_ranker import (
     Candidate,
     UnifiedRanker,
     VectorSearcher,
+    _NOISE_FACTOR,
     compute_noise_factor,
 )
 
@@ -1025,6 +1026,386 @@ def test_editorial_docs_get_downranked_relative_to_mechanism_docs():
         "overview",
         kind="doc",
     ) == 1.0
+
+
+def test_tests_get_softer_penalty_for_exploration_intent():
+    from sidecar.context.intent_classifier import Intent
+
+    # default (no intent) — hard penalty
+    assert compute_noise_factor("/repo/tests/test_foo.py", "test_bar") == _NOISE_FACTOR
+
+    # EXPLORATION — softer penalty so tests can supplement explain_behavior context
+    assert compute_noise_factor(
+        "/repo/tests/test_foo.py", "test_bar", intent=Intent.EXPLORATION
+    ) == 0.3
+
+    # IMPACT_ANALYSIS is handled at call-site (noise_factor=1.0 set directly), not here
+    # but compute_noise_factor itself still applies the standard path for non-EXPLORATION
+    assert compute_noise_factor(
+        "/repo/tests/test_foo.py", "test_bar", intent=Intent.NAVIGATION
+    ) == _NOISE_FACTOR
+
+    # clean files unaffected regardless of intent
+    assert compute_noise_factor("/repo/src/utils.py", "helper", intent=Intent.EXPLORATION) == 1.0
+
+
+def test_docs_deferred_until_code_breadth_met():
+    """High-scoring docs should not crowd out low-scoring code candidates while
+    coverage breadth (distinct code files) is below the deferral threshold.
+
+    Regression: fastapi_q02 was burning ~2k tokens on tutorial docs while
+    `Dependant`/`get_dependant` lost to the marginal-gain stop. The fix is to
+    hold docs until ≥3 code files are seated, then replay them.
+    """
+    code_paths = [f"/repo/src/mod_{i}.py" for i in range(4)]
+    code_uids = [f"sym-{i}" for i in range(4)]
+    doc_paths = [f"/repo/docs/tutorial_{i}.md" for i in range(5)]
+    db = _make_db(
+        allowed_paths=code_paths + doc_paths + ["/repo/src/main.py"],
+        allowed_uids=code_uids + ["primary"],
+    )
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+
+    target = SubgraphNode(
+        uid="primary",
+        name="primary_func",
+        file_path="/repo/src/main.py",
+        range=[1, 10],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    # Build a pool: 5 high-scoring docs + 4 lower-scoring code symbols across
+    # 4 distinct files. Without deferral, docs would be picked first by score
+    # and consume budget before code breadth is established.
+    # Code symbols with spread graph_scores (so min-max normalization keeps
+    # them above zero) and a CALLS_DIRECT relation. Below docs but well above
+    # the marginal-gain floor.
+    code_candidates = [
+        Candidate(
+            uid=f"sym-{i}",
+            name=f"helper_{i}",
+            file_path=f"/repo/src/mod_{i}.py",
+            kind="symbol",
+            range=[1, 10],
+            token_cost=80,
+            graph_score=0.9 - 0.1 * i,
+            semantic_score=0.7 - 0.05 * i,
+            relation="CALLS_DIRECT",
+            direction="out",
+            depth=1,
+            provenance=["graph"],
+        )
+        for i in range(4)
+    ]
+    # Docs with spread semantic scores so they would normally be picked first.
+    doc_candidates = [
+        Candidate(
+            uid=f"doc-{i}",
+            name=f"tutorial_{i}",
+            file_path=f"/repo/docs/tutorial_{i}.md",
+            kind="doc",
+            range=[1, 10],
+            token_cost=200,
+            graph_score=0.0,
+            semantic_score=0.99 - 0.01 * i,
+            relation="DOC_BRIDGE",
+            direction="related",
+            depth=1,
+            provenance=["doc"],
+        )
+        for i in range(5)
+    ]
+
+    ranker._graph_candidates = lambda *a, **kw: code_candidates
+    ranker._doc_candidates = lambda *a, **kw: doc_candidates
+    ranker._sym_vec_candidates = lambda *a, **kw: []
+    ranker._doc_bridge_candidates = lambda *a, **kw: []
+
+    chosen, _, _, _, _ = ranker.rank(
+        target,
+        "primary_func how does this work",
+        Intent.EXPLORATION,
+        budget=1500,
+    )
+
+    chosen_code_files = {c.file_path for c in chosen if c.kind != "doc"}
+    chosen_doc_count = sum(1 for c in chosen if c.kind == "doc")
+
+    # Code breadth is established before docs eat the budget.
+    assert len(chosen_code_files) >= 3, (
+        f"Expected ≥3 distinct code files seated before docs; got {chosen_code_files}"
+    )
+    # Docs may or may not fit after code, but they no longer dominate.
+    assert chosen_doc_count <= len(chosen_code_files), (
+        f"Docs ({chosen_doc_count}) outnumbered code files ({len(chosen_code_files)})"
+    )
+
+
+def test_openapi_generation_mechanism_dispatch():
+    """`get_openapi` and friends should resolve to fastapi_openapi_generation
+    with the right required roles, instead of falling through to the generic
+    fallback (which asks for executor + runtime_surface — wrong for this flow)."""
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+
+    for name, file_path in [
+        ("get_openapi", "/repo/fastapi/openapi/utils.py"),
+        ("openapi", "/repo/fastapi/applications.py"),
+        ("get_openapi_path", "/repo/fastapi/openapi/utils.py"),
+        ("get_fields_from_routes", "/repo/fastapi/openapi/utils.py"),
+    ]:
+        target = SubgraphNode(
+            uid=f"u-{name}",
+            name=name,
+            file_path=file_path,
+            range=[1, 10],
+            token_estimate=100,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+            kind="function",
+        )
+        assert ranker._determine_mechanism(target, "How does FastAPI generate OpenAPI?") == "fastapi_openapi_generation"
+
+    required = ranker._get_required_roles("fastapi_openapi_generation")
+    assert "api_surface" in required
+    assert "schema_builder" in required
+    assert "factory_surface" in required
+    # Must NOT include the generic fallback's irrelevant roles.
+    assert "executor" not in required
+    assert "runtime_surface" not in required
+
+
+def test_role_filler_outranks_unrelated_high_score_docs():
+    """Regression for fastapi_q05: a candidate that's the unique source of a
+    missing required role must (a) be sorted above unrelated high-scoring docs
+    and (b) bypass the low-gain floor that would otherwise drop it. `openapi`
+    in fastapi/applications.py is large (256 tokens) with weak graph signal,
+    yielding negative blended score, but it's the unique api_surface for
+    openapi-generation and must seat regardless.
+    """
+    db = _make_db(
+        allowed_paths=["/repo/src/openapi.py", "/repo/src/main.py"] + [f"/repo/docs/d{i}.md" for i in range(5)],
+        allowed_uids=["primary", "openapi-uid"],
+    )
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="primary",
+        name="get_openapi",
+        file_path="/repo/src/main.py",
+        range=[1, 10],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    # The lone api_surface candidate — large, weak blended score on its own.
+    api_filler = Candidate(
+        uid="openapi-uid",
+        name="openapi",
+        file_path="/repo/src/openapi.py",
+        kind="symbol",
+        range=[1, 10],
+        token_cost=256,
+        graph_score=0.3,
+        semantic_score=0.2,
+        relation="CALLS_DIRECT",
+        direction="out",
+        depth=1,
+        provenance=["graph"],
+        evidence_role="api_surface",
+    )
+    # Five unrelated high-score docs that don't fill api_surface.
+    docs = [
+        Candidate(
+            uid=f"doc-{i}",
+            name=f"d{i}",
+            file_path=f"/repo/docs/d{i}.md",
+            kind="doc",
+            range=[1, 10],
+            token_cost=200,
+            graph_score=0.6,
+            semantic_score=0.95,
+            relation="DOC_BRIDGE",
+            direction="related",
+            depth=1,
+            provenance=["doc"],
+        )
+        for i in range(5)
+    ]
+
+    ranker._graph_candidates = lambda *a, **kw: [api_filler]
+    ranker._doc_candidates = lambda *a, **kw: docs
+    ranker._sym_vec_candidates = lambda *a, **kw: []
+    ranker._doc_bridge_candidates = lambda *a, **kw: []
+
+    chosen, _, _, _, missing = ranker.rank(
+        target,
+        "get_openapi how does FastAPI generate OpenAPI for registered routes?",
+        Intent.EXPLORATION,
+        budget=1500,
+    )
+
+    # The api_surface filler must be selected (otherwise the role stays missing).
+    chosen_names = {c.name for c in chosen}
+    assert "openapi" in chosen_names, f"api_surface filler not chosen; got {chosen_names}"
+    assert "api_surface" not in missing
+
+
+def test_test_symbols_do_not_claim_production_roles():
+    """Regression: `test_fastapi_cli_not_installed` was being assigned
+    `representation_surface` because its name contains "api". That falsely
+    "fulfilled" the role and blocked role-backfill from supplying real
+    candidates like `Dependant`/`get_dependant`.
+    """
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+
+    test_candidate = Candidate(
+        uid="test-1",
+        name="test_fastapi_cli_not_installed",
+        file_path="/repo/tests/test_fastapi_cli.py",
+        kind="symbol",
+        range=[1, 10],
+        token_cost=80,
+        graph_score=0.0,
+        semantic_score=0.5,
+        relation="DOC_BRIDGE",
+        direction="related",
+        depth=1,
+        provenance=["doc-bridge"],
+    )
+    api_key_candidate = Candidate(
+        uid="apikey-1",
+        name="APIKeyHeader",
+        file_path="/repo/fastapi/security/api_key.py",
+        kind="symbol",
+        range=[1, 10],
+        token_cost=80,
+        graph_score=0.3,
+        semantic_score=0.0,
+        relation="DEPENDS_ON",
+        direction="out",
+        depth=1,
+        provenance=["graph"],
+    )
+    error_candidate = Candidate(
+        uid="err-1",
+        name="FastAPIError",
+        file_path="/repo/fastapi/exceptions.py",
+        kind="symbol",
+        range=[1, 10],
+        token_cost=40,
+        graph_score=0.2,
+        semantic_score=0.0,
+        relation="DEPENDS_ON",
+        direction="out",
+        depth=1,
+        provenance=["graph"],
+    )
+    pydantic_test_candidate = Candidate(
+        uid="ptest-1",
+        name="test_model_validate_submodel",
+        file_path="/repo/tests/test_validate_call.py",
+        kind="symbol",
+        range=[1, 10],
+        token_cost=80,
+        graph_score=0.0,
+        semantic_score=0.5,
+        relation="DOC_BRIDGE",
+        direction="related",
+        depth=1,
+        provenance=["doc-bridge"],
+    )
+
+    assert "representation_surface" not in ranker._roles_of(test_candidate)
+    assert "api_surface" not in ranker._roles_of(pydantic_test_candidate)
+    assert ranker._role_of(pydantic_test_candidate) == "supporting_surface"
+    assert "representation_surface" not in ranker._roles_of(api_key_candidate)
+    assert ranker._role_of(error_candidate) == "error_surface"
+
+    # Genuine api-named symbols should still resolve to a surface role
+    # (not fall through to `supporting_surface`). The exact role depends on
+    # whether a more specific identity match wins above the generic regex.
+    base_api = Candidate(
+        uid="ba-1", name="baseApi", file_path="/repo/src/baseApi.ts",
+        kind="symbol", range=[1,10], token_cost=80, graph_score=0.5,
+        semantic_score=0.0, relation="CALLS_DIRECT", direction="out",
+        depth=1, provenance=["graph"],
+    )
+    assert ranker._role_of(base_api) == "representation_surface"
+    # `createApi` matches an explicit identity entry above the generic regex
+    # and resolves to api_surface — that's intentional, not a regression.
+    create_api = Candidate(
+        uid="ca-1", name="createApi", file_path="/repo/src/createApi.ts",
+        kind="symbol", range=[1,10], token_cost=80, graph_score=0.5,
+        semantic_score=0.0, relation="CALLS_DIRECT", direction="out",
+        depth=1, provenance=["graph"],
+    )
+    assert ranker._role_of(create_api) == "api_surface"
+
+
+def test_docs_not_deferred_for_impact_analysis():
+    """IMPACT_ANALYSIS already weights docs heavily on purpose; the deferral
+    pass must not interfere there."""
+    doc_paths = [f"/repo/docs/spec_{i}.md" for i in range(3)]
+    db = _make_db(allowed_paths=doc_paths + ["/repo/src/main.py"], allowed_uids=["primary"])
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+
+    target = SubgraphNode(
+        uid="primary",
+        name="primary_func",
+        file_path="/repo/src/main.py",
+        range=[1, 10],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    doc_candidates = [
+        Candidate(
+            uid=f"doc-{i}",
+            name=f"spec_{i}",
+            file_path=f"/repo/docs/spec_{i}.md",
+            kind="doc",
+            range=[1, 10],
+            token_cost=200,
+            graph_score=0.0,
+            semantic_score=0.95,
+            relation="DOC_BRIDGE",
+            direction="related",
+            depth=1,
+            provenance=["doc"],
+        )
+        for i in range(3)
+    ]
+
+    ranker._graph_candidates = lambda *a, **kw: []
+    ranker._doc_candidates = lambda *a, **kw: doc_candidates
+    ranker._sym_vec_candidates = lambda *a, **kw: []
+    ranker._doc_bridge_candidates = lambda *a, **kw: []
+
+    chosen, _, _, _, _ = ranker.rank(
+        target,
+        "primary_func what breaks if I change this",
+        Intent.IMPACT_ANALYSIS,
+        budget=2000,
+    )
+
+    chosen_doc_count = sum(1 for c in chosen if c.kind == "doc")
+    assert chosen_doc_count >= 1, "IMPACT_ANALYSIS should still admit docs without deferral"
 
 
 def test_generic_role_recovery_uses_same_file_and_imported_symbols():

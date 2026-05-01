@@ -46,6 +46,7 @@ _NOISE_PATH_PATTERNS = (
 _NOISE_NAME_PREFIXES = ("test_",)
 _NOISE_NAME_SUBSTRINGS = ("tutorial",)
 _NOISE_FACTOR = 0.15
+_EXPLORATION_NOISE_FACTOR = 0.3
 _LOW_SIGNAL_DOC_PATH_PATTERNS = (
     "/migrating-",
     "/comparison.",
@@ -104,6 +105,19 @@ _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
         ],
         "runtime_surface": [
             {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 0.95},
+        ],
+    },
+    "fastapi_openapi_generation": {
+        "api_surface": [
+            {"name": "openapi", "path_hint": "/fastapi/applications.py", "priority": 1.0},
+        ],
+        "schema_builder": [
+            {"name": "get_openapi", "path_hint": "/fastapi/openapi/utils.py", "priority": 1.0},
+            {"name": "get_openapi_path", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.85},
+            {"name": "get_fields_from_routes", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.8},
+        ],
+        "factory_surface": [
+            {"name": "get_openapi_operation_metadata", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.9},
         ],
     },
     "pydantic_validation_core_bridge": {
@@ -192,14 +206,26 @@ def _name_is_noisy(name: str) -> bool:
     return any(sub in lower for sub in _NOISE_NAME_SUBSTRINGS)
 
 
-def compute_noise_factor(file_path: str, name: str, *, kind: str = "symbol") -> float:
+def compute_noise_factor(
+    file_path: str,
+    name: str,
+    *,
+    kind: str = "symbol",
+    intent: Intent | None = None,
+) -> float:
     """Multiplicative score multiplier in [0, 1].
 
     Returns 1.0 for clean candidates and ``_NOISE_FACTOR`` for ones that
     look like tests, tutorials, or framework examples — those rarely
     answer "how does X work" questions but otherwise consume budget.
+
+    EXPLORATION (explain_behavior): tests get a softer penalty so they
+    can surface as supplementary context when code/docs don't fill the budget.
     """
-    if _path_is_noisy(file_path) or _name_is_noisy(name):
+    is_noisy = _path_is_noisy(file_path) or _name_is_noisy(name)
+    if is_noisy:
+        if intent == Intent.EXPLORATION:
+            return _EXPLORATION_NOISE_FACTOR
         return _NOISE_FACTOR
     if kind == "doc" and any(pat in (file_path or "").lower() for pat in _LOW_SIGNAL_DOC_PATH_PATTERNS):
         return 0.35
@@ -727,17 +753,41 @@ class UnifiedRanker:
             if intent == Intent.IMPACT_ANALYSIS:
                 c.noise_factor = 1.0  # tests/examples are load-bearing for impact questions
             else:
-                c.noise_factor = compute_noise_factor(c.file_path, c.name, kind=c.kind)
+                c.noise_factor = compute_noise_factor(c.file_path, c.name, kind=c.kind, intent=intent)
 
         # 8. Normalize each track to [0, 1]
         self._normalize(pool)
 
-        # 9. Sort by blended score
-        # Optimization: Sort by blended score + potential to fill a missing role.
-        pool.sort(
-            key=lambda c: self._blended(c) + (0.5 if self._candidate_matches_any_role(c, required_roles) else 0.0),
-            reverse=True
-        )
+        # 9. Sort by blended score, with priority for role-fillers that the
+        # target doesn't already cover. A candidate that's the *only* source
+        # of a required role must outrank docs that satisfy `docs_or_concept`
+        # for free, even if its blended score is poor (e.g. `openapi` in
+        # fastapi/applications.py is large with weak graph signal, but it's
+        # the unique api_surface for openapi-generation).
+        target_roles_set = set(self._roles_of(target))
+        # `docs_or_concept` is trivially fillable by any doc; treating it as
+        # an "unfilled required role" would let every doc claim the big bonus
+        # and crowd out real role-fillers.
+        unfilled_required = (set(required_roles) - target_roles_set) - {"docs_or_concept"}
+
+        # Required roles minus the trivially-filled `docs_or_concept` — only
+        # roles in this set deserve a sort-order bump, otherwise every doc
+        # claims the bonus and the priority lift is meaningless.
+        non_trivial_required = set(required_roles) - {"docs_or_concept"}
+
+        def _sort_key(c: Candidate) -> tuple:
+            base = self._blended(c)
+            roles = set(self._roles_of(c))
+            # Tier 0 (best): candidates that fill a missing required role the
+            # target itself doesn't cover. These must beat raw doc-relevance
+            # so a large/weak role-filler still seats before unrelated docs.
+            if roles & unfilled_required:
+                return (2, base)
+            if roles & non_trivial_required:
+                return (1, base)
+            return (0, base)
+
+        pool.sort(key=_sort_key, reverse=True)
 
         # 10. Optimal Context Selection: Mechanism-Specific Evidence Gating
         chosen: list[Candidate] = []
@@ -751,6 +801,55 @@ class UnifiedRanker:
         min_gain = 0.12  # Threshold for stopping
         low_gain_floor = 0.02  # Protect against pure junk
         useful_candidates_seen = 0
+
+        # Doc-tier deferral: when symbols still owe coverage breadth, hold docs
+        # back so they don't crowd out role-filling code. A doc may "claim" a
+        # role via supporting_roles and starve real graph candidates that would
+        # bring in additional expected files (e.g. fastapi `Dependant`/`get_dependant`
+        # in models.py losing budget to 20+ tutorial chunks).
+        # IMPACT_ANALYSIS is exempt — its tier prior already favors docs.
+        defer_docs = intent != Intent.IMPACT_ANALYSIS
+        min_code_files_before_docs = 3
+        deferred_docs: list[Candidate] = []
+
+        def _is_code_file(c: Candidate) -> bool:
+            return c.kind != "doc"
+
+        def _try_select(c: Candidate, gain: float, candidate_roles: list[str]) -> str | None:
+            """Attempt to seat ``c``. Returns None on success, or a skip reason."""
+            nonlocal spent
+            potential_cost = c.token_cost
+            if c.depth >= 2 and gain < 0.25:
+                potential_cost = min(c.token_cost, 80)
+
+            if spent + potential_cost > budget:
+                blended_score = self._blended(c)
+                pruned_details.append({
+                    "kind": c.kind,
+                    "uid": c.uid,
+                    "name": c.name, "file": c.file_path, "relation": c.relation,
+                    "role": c.evidence_role,
+                    "supporting_roles": candidate_roles,
+                    "gain": round(gain, 3), "tokens": potential_cost,
+                    "token_cost": potential_cost,
+                    "reason": "over_budget",
+                    "graph_score": round(c.graph_score, 3),
+                    "semantic_score": round(c.semantic_score, 3),
+                    "blended_score": round(blended_score, 3),
+                    "intent_weight": round(c.intent_weight, 3),
+                    "provenance": c.provenance,
+                })
+                return "over_budget"
+
+            if c.depth >= 2 and gain < 0.25:
+                c.render_mode = "signature_only"
+                c.token_cost = potential_cost
+
+            chosen.append(c)
+            spent += potential_cost
+            chosen_files.add(c.file_path)
+            fulfilled_roles.update(candidate_roles)
+            return None
 
         for c in pool:
             gain = self._calculate_marginal_gain(
@@ -779,6 +878,23 @@ class UnifiedRanker:
             if is_useful:
                 useful_candidates_seen += 1
 
+            # Tests/examples/tutorial snippets can be useful for impact
+            # analysis, but for behavior/flow questions they should not enter
+            # merely because semantic/doc-bridge retrieval found similar names.
+            # Let them through only when they fill a required role; otherwise
+            # production code and focused docs should own the budget.
+            is_noisy_code = c.kind != "doc" and c.noise_factor < 1.0
+            if intent != Intent.IMPACT_ANALYSIS and is_noisy_code and not fills_role:
+                continue
+
+            # Hold docs aside until we have enough code coverage. Once code
+            # breadth is met, the second pass below replays them in order.
+            if defer_docs and c.kind == "doc":
+                code_files_chosen = len({x.file_path for x in chosen if _is_code_file(x)})
+                if code_files_chosen < min_code_files_before_docs:
+                    deferred_docs.append(c)
+                    continue
+
             if gain < min_gain:
                 # Only break if floor is met AND no required roles are missing
                 if spent >= min_floor and not missing_roles:
@@ -787,43 +903,38 @@ class UnifiedRanker:
 
                 if not is_useful:
                     continue
-                if gain < low_gain_floor:
+                if c.kind == "doc" and not fills_role:
+                    continue
+                # Unique role-fillers bypass the low-gain floor — without them
+                # the role stays unfilled and downstream reasoning loses
+                # critical evidence. A large/weak symbol with negative blended
+                # score (e.g. fastapi `openapi` in applications.py: 256 tokens
+                # of largely-static config logic) still earns its seat here.
+                if gain < low_gain_floor and not fills_role:
                     continue
 
-            # OPTIMAL CONTEXT: Tiered snippets
-            # If score is low or depth is high, mark for signature-only resolution.
-            # We update the cost here so budget accounting remains accurate.
-            potential_cost = c.token_cost
-            if c.depth >= 2 and gain < 0.25:
-                potential_cost = min(c.token_cost, 80)
+            _try_select(c, gain, candidate_roles)
 
-            if spent + potential_cost > budget:
-                blended_score = self._blended(c)
-                pruned_details.append({
-                    "kind": c.kind,
-                    "uid": c.uid,
-                    "name": c.name, "file": c.file_path, "relation": c.relation,
-                    "role": c.evidence_role,
-                    "supporting_roles": candidate_roles,
-                    "gain": round(gain, 3), "tokens": potential_cost,
-                    "token_cost": potential_cost,
-                    "reason": "over_budget",
-                    "graph_score": round(c.graph_score, 3),
-                    "semantic_score": round(c.semantic_score, 3),
-                    "blended_score": round(blended_score, 3),
-                    "intent_weight": round(c.intent_weight, 3),
-                    "provenance": c.provenance,
-                })
-                continue
-
-            if c.depth >= 2 and gain < 0.25:
-                c.render_mode = "signature_only"
-                c.token_cost = potential_cost
-
-            chosen.append(c)
-            spent += potential_cost
-            chosen_files.add(c.file_path)
-            fulfilled_roles.update(candidate_roles)
+        # Second pass: deferred docs, now that code-file breadth is established
+        # (or the main pass exhausted the pool). Re-evaluate gain against the
+        # current ``chosen`` set so docs that became redundant are still skipped.
+        if deferred_docs and stopped_reason != "marginal_gain_threshold":
+            for c in deferred_docs:
+                if spent >= budget:
+                    break
+                gain = self._calculate_marginal_gain(
+                    c, chosen, target, required_roles=required_roles,
+                )
+                candidate_roles = self._roles_of(c)
+                fills_role = any(
+                    role in required_roles and role not in fulfilled_roles
+                    for role in candidate_roles
+                )
+                if gain < min_gain and not fills_role:
+                    continue
+                if gain < low_gain_floor and not fills_role:
+                    continue
+                _try_select(c, gain, candidate_roles)
 
         # If we ran out of useful candidates before hitting the floor, adjust the
         # stopped reason. For sparse targets like `Depends` (marker classes), the floor
@@ -1969,6 +2080,15 @@ class UnifiedRanker:
         file_path = (getattr(c, "file_path", "") or "").lower()
         qualified_name = (getattr(c, "qualified_name", "") or "").lower()
 
+        # Tests should never inherit production roles via fuzzy substring matches.
+        # `test_fastapi_cli_not_installed` was claiming `representation_surface`
+        # because "api" appears in its name, blocking real role-backfill of
+        # `Dependant`/`get_dependant` for fastapi dependency-injection queries.
+        is_test_path = "/tests/" in file_path or "/test_" in file_path or file_path.endswith("_test.py")
+        is_test_name = name.startswith("test_") or name.startswith("_test_")
+        if is_test_path or is_test_name:
+            return "supporting_surface"
+
         # FastAPI dependency injection markers
         if name == "depends" and "fastapi/params.py" in file_path:
             return "config_surface"
@@ -2000,6 +2120,14 @@ class UnifiedRanker:
             return "serializer_handle"
         if name in ("get_request_handler", "get_route_handler", "request_response"):
             return "runtime_surface"
+
+        # FastAPI OpenAPI generation
+        if name == "openapi" and "applications.py" in file_path:
+            return "api_surface"
+        if name in ("get_openapi", "get_openapi_path", "get_fields_from_routes"):
+            return "schema_builder"
+        if name == "get_openapi_operation_metadata":
+            return "factory_surface"
 
         # Pydantic compatibility
         if name == "v1" or "/pydantic/v1/" in file_path or ".v1." in qualified_name:
@@ -2066,7 +2194,21 @@ class UnifiedRanker:
             return "config_surface"
         if any(token in name for token in ("rejected", "reject", "error", "failure")):
             return "error_surface"
-        if any(token in name for token in ("endpoint", "queryentry", "api")):
+        # `endpoint`/`queryentry` are specific enough to substring-match. `api`
+        # is too generic — match only at a name boundary so `apiSlice`,
+        # `createApi`, `api_route` qualify but not `APIKeyHeader` or
+        # `FastAPIError`. Match the original (pre-lowercased) name to keep
+        # camelCase boundaries detectable.
+        if any(token in name for token in ("endpoint", "queryentry")):
+            return "representation_surface"
+        original_name = c.name or ""
+        if (
+            re.search(r"(^|[._])api([._]|$)", name)
+            or name.endswith("api")
+            or re.match(r"^api[A-Z]", original_name)
+            or re.search(r"(?:^|[._A-Z])Api(?=[A-Z_.]|$)", original_name)
+            or original_name.endswith("Api")
+        ):
             return "representation_surface"
         if any(token in name for token in ("store", "dispatch", "inject", "module")):
             return "integration_surface"
@@ -2092,6 +2234,8 @@ class UnifiedRanker:
             return "fastapi_request_body_dependency_resolution"
         if name in ("run_endpoint_function", "serialize_response", "solve_dependencies"):
             return "fastapi_endpoint_execution"
+        if name in ("get_openapi", "openapi", "get_openapi_path", "get_fields_from_routes"):
+            return "fastapi_openapi_generation"
         if name == "basemodel":
             if any(
                 phrase in query_lower
@@ -2149,6 +2293,8 @@ class UnifiedRanker:
             roles = ["runtime_surface", "schema_builder", "orchestrator", "binding_surface"]
         elif mechanism == "fastapi_endpoint_execution":
             roles = ["executor", "runtime_surface"]
+        elif mechanism == "fastapi_openapi_generation":
+            roles = ["api_surface", "schema_builder", "factory_surface"]
         elif mechanism == "pydantic_validation_core_bridge":
             roles = ["api_surface", "construction_surface", "runtime_surface", "validator_handle", "core_runtime", "orchestrator", "executor"]
         elif mechanism == "pydantic_python_core_boundary":
