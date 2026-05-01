@@ -54,9 +54,9 @@ index_docs(docs_path)
 - For each chunk:
   1. `_write_anchor()` — create DocAnchor node, set `File.doc_type`, create `FROM {type: "doc"}` edge
   2. Semantic search: `lance.search_symbols(chunk_text, threshold=1.5)` → hits
-  3. For each hit: `_add_covers_edge()` — create `COVERS` + `FROM {type: "code"}` edge to symbol's file
+  3. For each hit: classify anchor type/confidence and create `COVERS {anchor_type, confidence, primary_bias, resolver}` + `FROM {type: "code"}` edge to symbol's file
   4. Identifier extraction: regex match CamelCase, UPPER_CASE, snake_case names
-  5. For each extracted name: if found in Neo4j, create `COVERS` + `FROM {type: "code"}`; else add to pending
+  5. For each extracted name: if found in Neo4j, create typed/confident `COVERS` + `FROM {type: "code"}`; else add to pending
   6. `_link_related_docs()` — extract doc references (spec_*.md, architectura.md, etc.), create typed `FROM {type: "spec"|"architecture"|...}` edges
 
 ---
@@ -87,6 +87,19 @@ Each DocAnchor can have multiple FROM edges with different `type` properties:
 
 This enables rich knowledge graph queries: given a code symbol, find all doc chunks that mention it AND the specs/architecture they reference.
 
+## COVERS Relationship Metadata
+
+`COVERS` edges are no longer boolean-only. The linker writes:
+
+| Property | Meaning |
+|---|---|
+| `anchor_type` | `definition`, `example`, `reference`, `warning`, or `deprecated` |
+| `confidence` | Link confidence in `[0, 1]`, based on resolver type, symbol mention, heading match, and code-style mention |
+| `primary_bias` | `1.0` for a single/focal symbol, lower for secondary symbols in multi-symbol chunks |
+| `resolver` | `identifier`, `semantic`, or `pending_identifier` |
+
+UnifiedRanker consumes these properties when giving vector-retrieved doc chunks graph overlap credit and when using DocAnchor co-mentions as semantic bridge edges.
+
 ---
 
 ## Limitations (current)
@@ -96,6 +109,7 @@ This enables rich knowledge graph queries: given a code symbol, find all doc chu
 - Chunk IDs are positional — if a section moves within a file, its chunk ID changes and old DocAnchor edges become orphaned until re-indexing.
 - Doc reference extraction uses simple regex (`[text](docs/file.md)` or bare filenames) — does not follow transitive references.
 - Semantic threshold `SIMILARITY_THRESHOLD = 1.5` is fixed — not tunable per query (designed for all-MiniLM-L6-v2 model, cosine distance scale 0–2).
+- Anchor type/confidence is heuristic v1 and may need locale or repo-style tuning for non-English docs.
 
 ---
 

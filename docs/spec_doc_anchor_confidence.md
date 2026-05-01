@@ -1,10 +1,10 @@
 # Spec — DocAnchor Confidence & Type (Phase 9)
 
-> **Status:** Proposed. Extends [spec_doc_anchor.md](spec_doc_anchor.md) with confidence scores, anchor type classification, and multi-symbol weighting. Current anchors are flat — every `COVERS` edge is treated as equally authoritative.
+> **Status:** Implemented in `sidecar/indexer/anchor.py` and consumed by `UnifiedRanker`. Existing flat `COVERS` edges remain readable through fallback defaults; newly indexed docs write `anchor_type`, `confidence`, `primary_bias`, and `resolver`.
 
 ## 1. Problem
 
-`(DocAnchor)-[:COVERS]->(Symbol)` is a boolean link: either the chunk covers the symbol or it doesn't. Retrieval consequences:
+Before Phase 9.3, `(DocAnchor)-[:COVERS]->(Symbol)` was a boolean link: either the chunk covered the symbol or it did not. Retrieval consequences:
 
 - A spec chapter titled "**Definition** of process_payment" is weighted identically to a spec that mentions `process_payment` as **an example** of what *not* to do.
 - A chunk that covers 5 symbols contributes equally to retrieval for each — even though one of them is the main topic and the others are tangential.
@@ -21,18 +21,18 @@ Each `COVERS` edge carries an `anchor_type`:
 | Type | Meaning | Default Weight |
 |---|---|---|
 | `definition` | Chunk defines, documents, or specifies this symbol | 1.0 |
-| `example` | Chunk uses the symbol as an example / in a code block | 0.7 |
-| `reference` | Chunk mentions the symbol name without elaborating | 0.4 |
-| `warning` | Chunk describes caveats, bugs, or anti-patterns for this symbol | 0.9 |
-| `deprecated` | Chunk marks the symbol as deprecated | 0.6 |
+| `warning` | Chunk describes caveats, bugs, or anti-patterns for this symbol | 0.95 |
+| `deprecated` | Chunk marks the symbol as deprecated or migration-related | 0.85 |
+| `reference` | Chunk mentions the symbol name without elaborating | 0.65 |
+| `example` | Chunk uses the symbol as an example / in a code block | 0.45 |
 
 Classification rules (heuristic v1):
 
-- `definition`: chunk title matches symbol name OR chunk is the first section where the symbol appears in a spec-tagged doc.
-- `example`: symbol appears inside a fenced code block AND is not in a heading.
-- `reference`: symbol appears in prose only, not in headings or code blocks.
-- `warning`: chunk contains a warning-family marker (`⚠️`, "Warning:", "Deprecated:", "Known issue").
-- `deprecated`: chunk contains "deprecated" as a heading or leading keyword.
+- `deprecated`: chunk contains deprecated / migration / removed / renamed language.
+- `warning`: chunk contains warning-family markers such as "warning", "caution", "danger", "security", or "important".
+- `example`: chunk contains a fenced code block or lives under tutorial/example paths.
+- `definition`: chunk lives under reference docs or contains API-ish headings/terms such as parameters, returns, class, function, method, signature.
+- `reference`: fallback for prose mentions.
 
 Classifier is deterministic; output recorded as an edge property. Re-classification only required when the chunk or symbol changes.
 
@@ -40,19 +40,13 @@ Classifier is deterministic; output recorded as an edge property. Re-classificat
 
 Each `COVERS` edge carries a `confidence: float` in `[0, 1]`:
 
-```
-confidence = 0.4 * similarity_score_normalized
-           + 0.3 * name_mention_score
-           + 0.2 * heading_match_score
-           + 0.1 * code_block_match_score
-```
+The implemented v1 score is deterministic and intentionally cheap:
 
-Components:
-
-- `similarity_score_normalized`: cosine similarity between chunk embedding and symbol body embedding, mapped from `[SIMILARITY_THRESHOLD, 2.0]` → `[0, 1]`.
-- `name_mention_score`: frequency of the symbol's name in the chunk, log-scaled and capped. `0.0` if never mentioned; `1.0` if mentioned ≥ 5 times.
-- `heading_match_score`: `1.0` if the symbol name appears in any chunk heading, else `0.0`.
-- `code_block_match_score`: `1.0` if the symbol name appears inside a fenced code block, else `0.0`.
+- resolver base: direct identifier links start higher than pending identifier links, which start higher than semantic-only links.
+- exact symbol name mention boosts confidence.
+- heading mention boosts confidence.
+- code-style mention such as backticks or call syntax boosts confidence.
+- definition / warning / deprecated chunks get a small lift; example chunks get a small penalty.
 
 Anchor classification and confidence are computed in the same pass to avoid a second read.
 
@@ -81,8 +75,7 @@ Effect: a chunk that mostly documents `process_payment` but also references `val
     anchor_type: "definition",
     confidence: 0.82,
     primary_bias: 1.0,
-    similarity: 1.73,
-    resolver: "anchor-v2"
+    resolver: "identifier"
 }]->(s:Symbol)
 ```
 
@@ -92,35 +85,17 @@ Effect: a chunk that mostly documents `process_payment` but also references `val
 
 Unified ranker ([spec_unified_ranking.md](spec_unified_ranking.md)) consumes these fields:
 
-- Doc candidate `graph_score` = `primary_bias * confidence * anchor_type_weight`.
-- Overlap bonus only fires when `anchor_type in {definition, warning}` — example/reference overlaps are noisier and shouldn't get the double-signal boost.
+- Doc candidate graph boost is derived from `primary_bias * confidence * anchor_type_weight`, blended with the linked symbol's graph score.
+- Doc bridge candidates include anchor quality in provenance (`doc-bridge:h1,strength=...,anchor_q=...`).
+- Prompt contract entries expose `documentation[].anchor_type`, `documentation[].anchor_confidence`, `documentation[].primary_bias`, and a nested `documentation[].anchor` object.
 
 ## 3. API / Interface
 
-```python
-# sidecar/indexer/anchor.py — extended
+Implemented helper surface:
 
-@dataclass
-class AnchorClassification:
-    anchor_type: str         # "definition" | "example" | "reference" | "warning" | "deprecated"
-    confidence: float        # 0.0 – 1.0
-    primary_bias: float      # 1.0 for primary symbol, 0.6 for others
-
-class AnchorClassifier:
-    def classify(
-        self,
-        chunk: DocChunk,
-        symbol: Symbol,
-        similarity: float,
-    ) -> AnchorClassification: ...
-
-    def classify_batch(
-        self,
-        chunk: DocChunk,
-        candidate_symbols: list[Symbol],
-    ) -> list[AnchorClassification]:
-        """Runs single-symbol classify and applies primary_bias distribution."""
-```
+- `_classify_anchor_type(chunk_text, file_path)`
+- `_anchor_confidence(chunk_text, file_path, symbol_name, resolver, semantic_score=0.0)`
+- `_cover_link(uid, symbol_name, chunk_text, file_path, resolver, semantic_score, link_count)`
 
 Indexer pipeline inserts a classification step between vector lookup and edge emission:
 
@@ -140,15 +115,28 @@ chunk = DocChunk(
             "Internally calls `validate_amount` to enforce business rules.\n"
 )
 
-classifier = AnchorClassifier()
-
 # Primary symbol — heading match, name in code fence, high similarity
-c1 = classifier.classify(chunk, symbol=process_payment, similarity=1.84)
-# AnchorClassification(anchor_type="definition", confidence=0.94, primary_bias=1.0)
+c1 = _cover_link(
+    process_payment.uid,
+    "process_payment",
+    chunk.content,
+    chunk.source_file,
+    resolver="identifier",
+    link_count=2,
+)
+# {"anchor_type": "definition", "confidence": 0.9+, "primary_bias": 0.9+}
 
 # Secondary symbol — prose mention only
-c2 = classifier.classify(chunk, symbol=validate_amount, similarity=1.52)
-# AnchorClassification(anchor_type="reference", confidence=0.42, primary_bias=0.6)
+c2 = _cover_link(
+    validate_amount.uid,
+    "validate_amount",
+    chunk.content,
+    chunk.source_file,
+    resolver="semantic",
+    semantic_score=0.42,
+    link_count=2,
+)
+# {"anchor_type": "definition", "confidence": 0.6-ish, "primary_bias": 0.65}
 
 # BFS retrieval for process_payment sees c1 at full weight.
 # BFS retrieval for validate_amount sees c2 de-emphasized.
@@ -157,14 +145,13 @@ c2 = classifier.classify(chunk, symbol=validate_amount, similarity=1.52)
 ## 5. Limitations (current)
 
 - Heuristic classifier is English-oriented — markers like "Warning:" don't fire in other languages. Mitigation: accept locale-specific keyword lists as config.
-- `primary_bias` is a hard 1.0 / 0.6 split. Softer distributions (softmax over confidences) possible; defer until harness shows it matters.
+- `primary_bias` is currently a simple focal/secondary heuristic (`1.0` for single-symbol chunks, lower for multi-symbol chunks, heading mentions lifted). Softer distributions (softmax over confidences) possible; defer until harness shows it matters.
 - Anchor type doesn't distinguish between "tutorial example" and "regression example" — both collapse to `example`. Finer taxonomy is Planned.
 
 ## 6. Planned Extensions
 
-- **Temporal decay:** deprecated anchors get confidence decay over time — older `deprecated` is stronger signal than newer.
 - **Reverse anchors:** code-to-doc edges (`DOCUMENTED_BY`) for "find specs that cover this symbol" queries; symmetric to current `COVERS`.
-- **LLM-assisted classification:** for ambiguous chunks (e.g. "I re-implemented `process_payment`"), defer to a small LLM call. Only when heuristic confidence < 0.3.
+- **LLM-assisted classification:** for ambiguous chunks (e.g. "I re-implemented `process_payment`"), defer to a small LLM call. Only when heuristic confidence is weak.
 
 ## 7. Related
 

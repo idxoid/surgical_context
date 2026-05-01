@@ -38,6 +38,9 @@ class DocChunk:
     intent_weight: float = 0.0
     matched_symbols: list[str] = field(default_factory=list)
     provenance: list[str] = field(default_factory=list)
+    anchor_type: str = ""
+    anchor_confidence: float = 0.0
+    primary_bias: float = 0.0
 
 
 @dataclass
@@ -155,6 +158,14 @@ class PromptContext:
                     },
                     "matched_symbols": doc.matched_symbols,
                     "provenance": doc.provenance or ["vector:docs"],
+                    "anchor_type": doc.anchor_type,
+                    "anchor_confidence": doc.anchor_confidence,
+                    "primary_bias": doc.primary_bias,
+                    "anchor": {
+                        "type": doc.anchor_type,
+                        "confidence": doc.anchor_confidence,
+                        "primary_bias": doc.primary_bias,
+                    },
                 }
                 for doc in self.documentation
             ],

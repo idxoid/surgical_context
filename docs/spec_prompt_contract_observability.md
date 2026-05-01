@@ -93,7 +93,15 @@ Without scores in the contract:
         "blended_score": 1.05,
         "intent_weight": 0.3
       },
-      "provenance": ["vector:sim=0.91", "graph:COVERS->process_payment"]
+      "anchor_type": "definition",
+      "anchor_confidence": 0.92,
+      "primary_bias": 1.0,
+      "anchor": {
+        "type": "definition",
+        "confidence": 0.92,
+        "primary_bias": 1.0
+      },
+      "provenance": ["vector:sim=0.91", "graph:COVERS->process_payment,type=definition,conf=0.92"]
     }
   ],
   "pruned": [
@@ -127,14 +135,16 @@ Without scores in the contract:
 | `*.scores.intent_weight` | float | Intent-driven multiplier applied |
 | `*.provenance` | list[str] | Human-readable track log — "why did this make it in?" |
 | `documentation[].matched_symbols` | list[str] | Which graph symbols this doc COVERS |
+| `documentation[].anchor_type` | string | Best linked DocAnchor type for this chunk (`definition`, `example`, `reference`, `warning`, `deprecated`) |
+| `documentation[].anchor_confidence` | float | Best linked COVERS confidence for this chunk |
+| `documentation[].primary_bias` | float | Best linked focal-symbol weighting |
+| `documentation[].anchor` | dict | Nested mirror of type/confidence/primary_bias for UI clients that prefer grouped metadata |
 | `pruned[]` | list | Candidates that missed the budget — with reason, score, cost |
 
 **Still future in the contract:**
 
 - `graph_context[].edge_confidence`
 - `graph_context[].edge_tier`
-- `documentation[].anchor_type`
-- `documentation[].anchor_confidence`
 
 ### 2.3 `pruned` Array — Why It Matters
 
@@ -228,7 +238,7 @@ if assembly["latency_ms"] > 200:
 - Scores are meaningful only within the active ranker configuration; compare across runs together with `metadata.ranker.weights`.
 - `pruned` capped at 20 entries can hide the long tail; `pruned_total_count` now mitigates this, but the long tail is still not serialized.
 - `workspace_id` is present in the schema but not yet populated consistently by the arbitrator.
-- Doc-anchor `anchor_type` / `anchor_confidence` are still future work.
+- Doc-anchor `anchor_type` / `anchor_confidence` are populated only when a selected doc has a `COVERS` overlap with ranked graph symbols; vector-only docs keep empty/zero defaults.
 
 ## 6. Planned Extensions
 

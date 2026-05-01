@@ -162,7 +162,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
   - `[:FROM {type: "doc"}]` — source doc file
   - `[:FROM {type: "code"}]` — code files containing covered symbols
   - `[:FROM {type: "spec"|"architecture"|"concept"|"idea"}]` — referenced project docs
-  - `[:COVERS]` — code symbols mentioned in chunk
+  - `[:COVERS {anchor_type, confidence, primary_bias, resolver}]` — code symbols mentioned in chunk, with link quality metadata for ranking
   - Lazy `pending` resolution for forward references (symbols indexed after docs)
 
 **API Contracts (Planned):**
@@ -270,7 +270,7 @@ Scenario: user edits `process_payment`, hasn't saved.
 | IMPORTS | (File)→(File) | Internal project import |
 | AFFECTS | (Symbol)→(Symbol) | Reverse dependency materialization |
 | FROM | (DocAnchor)→(File) | Doc chunk origin — `type` property: `"doc"` (source doc file), `"code"` (code file containing covered symbols), `"spec"` / `"architecture"` / `"concept"` / `"idea"` (referenced project docs) |
-| COVERS | (DocAnchor)→(Symbol) | Doc chunk describes this code symbol |
+| COVERS | (DocAnchor)→(Symbol) | Doc chunk describes this code symbol; properties: `anchor_type`, `confidence`, `primary_bias`, `resolver` |
 | MODIFIED_IN | (Symbol)→(Commit) | Symbol change history (planned) |
 
 **Planned tenant API relationships:**
@@ -307,16 +307,23 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
     { "symbol": "string", "file_path": "string", "relation": "CALLS", "is_dirty": false, "code": "string" }
   ],
   "documentation": [
-    { "chunk_id": "string", "source_file": "string", "content": "string" }
+    {
+      "chunk_id": "string",
+      "source_file": "string",
+      "content": "string",
+      "anchor_type": "definition",
+      "anchor_confidence": 0.92,
+      "primary_bias": 1.0
+    }
   ]
 }
 ```
 
-**Implemented metadata:** `mode`, `intent`, `intent_details` (`primary`, `distribution`, `ambiguous`, `confidence`), `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth` / `direction`, per-candidate `scores`, `provenance`, `pruned[]`, `stopped_reason`, `missing_roles`, `metadata.ranker.strategy`, `metadata.ranker.weights`, `metadata.ranker.candidates_*`, `metadata.ranker.pruned_total_count`, and `metadata.assembly` fields such as `trace_id`, `workspace_id` slot, `resolver_version`, `cache_hits`, `model_route`, and `feedback_token`.
+**Implemented metadata:** `mode`, `intent`, `intent_details` (`primary`, `distribution`, `ambiguous`, `confidence`), `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth` / `direction`, per-candidate `scores`, `provenance`, doc-anchor `anchor_type` / `anchor_confidence` / `primary_bias`, `pruned[]`, `stopped_reason`, `missing_roles`, `metadata.ranker.strategy`, `metadata.ranker.weights`, `metadata.ranker.candidates_*`, `metadata.ranker.pruned_total_count`, and `metadata.assembly` fields such as `trace_id`, `workspace_id` slot, `resolver_version`, `cache_hits`, `model_route`, and `feedback_token`.
 
 **Planned metadata:** `tenant_api_context`, `api_direction`, `tenant_link_depth`, service/contract provenance, and tenant API candidate scores. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
-**Known gap:** project/workspace/branch metadata is not yet populated consistently from the arbitrator, and doc-anchor type/confidence is not yet surfaced.
+**Known gap:** project/workspace/branch metadata is not yet populated consistently from the arbitrator. Doc-anchor type/confidence is implemented for graph-overlap docs; vector-only docs still carry empty/zero anchor defaults.
 
 ### 5.4. BFS Retrieval Cypher
 

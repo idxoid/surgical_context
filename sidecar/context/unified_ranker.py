@@ -28,9 +28,8 @@ from sidecar.context.role_taxonomy import (
     normalize_role,
     normalize_roles,
 )
-from sidecar.context.types import DocChunk, SubgraphNode, Subgraph
+from sidecar.context.types import DocChunk, Subgraph, SubgraphNode
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
-
 
 # Path fragments that almost always signal noise relative to "explain how
 # this works" framework questions. Multiplicative downrank — never a hard
@@ -53,6 +52,13 @@ _LOW_SIGNAL_DOC_PATH_PATTERNS = (
     "/comparison.md",
     "/release-notes",
 )
+_ANCHOR_TYPE_WEIGHTS = {
+    "definition": 1.0,
+    "warning": 0.95,
+    "deprecated": 0.85,
+    "reference": 0.65,
+    "example": 0.45,
+}
 _IMPACT_TOPIC_STOPWORDS = {
     "affected",
     "affect",
@@ -335,10 +341,23 @@ class Candidate:
     file_hash: str = ""
     # doc metadata
     content: str = ""
+    anchor_type: str = ""
+    anchor_confidence: float = 0.0
+    primary_bias: float = 0.0
 
     @property
     def overlap(self) -> bool:
         return self.graph_score > 0 and self.semantic_score > 0
+
+
+def anchor_edge_quality(
+    anchor_type: str,
+    confidence: float,
+    primary_bias: float,
+) -> float:
+    """Normalize DocAnchor edge properties into a [0, 1] quality score."""
+    type_weight = _ANCHOR_TYPE_WEIGHTS.get(anchor_type or "reference", 0.65)
+    return max(0.05, min(1.0, type_weight * confidence * primary_bias))
 
 
 class VectorSearcher:
@@ -1020,7 +1039,6 @@ class UnifiedRanker:
             missing_roles = set(required_roles) - fulfilled_roles
             candidate_roles = self._roles_of(c)
             fills_role = any(role in required_roles and role not in fulfilled_roles for role in candidate_roles)
-            adds_new_file = c.file_path not in chosen_files
             is_bridge = c.relation in ("DOC_BRIDGE", "SEMANTIC_HINT", "ROLE_BACKFILL") or self._has_role_backfill(c)
             is_strong_relation = c.relation in ("CALLS_DIRECT", "CALLS_SCOPED", "DEPENDS_ON", "IMPLEMENTS", "OVERRIDES")
 
@@ -1161,6 +1179,9 @@ class UnifiedRanker:
                         blended_score=self._blended(c),
                         intent_weight=c.intent_weight,
                         provenance=c.provenance,
+                        anchor_type=c.anchor_type,
+                        anchor_confidence=c.anchor_confidence,
+                        primary_bias=c.primary_bias,
                     )
                 )
         return Subgraph(
@@ -1329,10 +1350,10 @@ class UnifiedRanker:
         if not seed_uids:
             return []
         query = """
-        MATCH (a:DocAnchor)-[:COVERS]->(s:Symbol)
+        MATCH (a:DocAnchor)-[seed_edge:COVERS]->(s:Symbol)
         WHERE s.uid IN $seed_uids
           AND coalesce(a.workspace_id, $workspace_id) = $workspace_id
-        MATCH (a)-[:COVERS]->(other:Symbol)
+        MATCH (a)-[other_edge:COVERS]->(other:Symbol)
         WHERE NOT other.uid IN $excluded
         OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(other)
         WITH other,
@@ -1340,7 +1361,18 @@ class UnifiedRanker:
              coalesce(c.range, other.range, [0, 0]) AS range,
              coalesce(other.token_estimate, 0) AS token_estimate,
              coalesce(f.hash, '') AS file_hash,
-             count(DISTINCT a) AS bridge_strength
+             count(DISTINCT a) AS bridge_strength,
+             max(
+                coalesce(other_edge.confidence, seed_edge.confidence, 0.65)
+                * coalesce(other_edge.primary_bias, seed_edge.primary_bias, 0.7)
+                * CASE coalesce(other_edge.anchor_type, seed_edge.anchor_type, 'reference')
+                    WHEN 'definition' THEN 1.0
+                    WHEN 'warning' THEN 0.95
+                    WHEN 'deprecated' THEN 0.85
+                    WHEN 'example' THEN 0.45
+                    ELSE 0.65
+                  END
+             ) AS anchor_quality
         WHERE bridge_strength >= $min_strength
         RETURN other.uid AS uid,
                other.name AS name,
@@ -1348,8 +1380,9 @@ class UnifiedRanker:
                range,
                token_estimate,
                file_hash,
-               bridge_strength
-        ORDER BY bridge_strength DESC
+               bridge_strength,
+               anchor_quality
+        ORDER BY bridge_strength DESC, anchor_quality DESC
         LIMIT $limit
         """
         try:
@@ -1372,7 +1405,8 @@ class UnifiedRanker:
             strength = int(r["bridge_strength"])
             # log1p so 1 anchor → 0.69, 3 anchors → 1.39, 10 → 2.40 (pre-norm).
             # hop_decay shrinks the contribution for transitive (2-hop) bridges.
-            score = math.log1p(strength) * hop_decay
+            quality = max(0.0, min(1.0, float(r.get("anchor_quality") or 0.0)))
+            score = math.log1p(strength) * (0.7 + (0.5 * quality)) * hop_decay
             token_cost = (
                 int(r["token_estimate"])
                 or self._estimate_tokens_range(r.get("range") or [0, 0])
@@ -1392,7 +1426,9 @@ class UnifiedRanker:
                     direction="bridge",
                     depth=depth,
                     file_hash=r.get("file_hash") or "",
-                    provenance=[f"doc-bridge:{hop_label},strength={strength}"],
+                    provenance=[
+                        f"doc-bridge:{hop_label},strength={strength},anchor_q={quality:.2f}"
+                    ],
                 )
             )
         return candidates
@@ -1499,12 +1535,31 @@ class UnifiedRanker:
         doc_ids = [c.uid for c in docs if c.uid in pool]
         pooled_sym_uids = {uid for uid, c in pool.items() if c.kind == "symbol"}
         if doc_ids and pooled_sym_uids:
-            for chunk_id, sym_uid in self._get_covers_links(doc_ids, pooled_sym_uids):
+            for link in self._get_covers_links(doc_ids, pooled_sym_uids):
+                chunk_id = link["chunk_id"]
+                sym_uid = link["sym_uid"]
                 if chunk_id in pool and sym_uid in pool:
                     doc_c = pool[chunk_id]
+                    quality = anchor_edge_quality(
+                        link["anchor_type"],
+                        link["confidence"],
+                        link["primary_bias"],
+                    )
                     linked = pool[sym_uid].graph_score
-                    doc_c.graph_score = max(doc_c.graph_score, linked * 0.6)
-                    doc_c.provenance.append(f"graph:COVERS→{sym_uid[:8]}")
+                    boost = linked * (0.35 + (0.65 * quality))
+                    doc_c.graph_score = max(doc_c.graph_score, boost)
+                    if quality > anchor_edge_quality(
+                        doc_c.anchor_type,
+                        doc_c.anchor_confidence,
+                        doc_c.primary_bias or 1.0,
+                    ):
+                        doc_c.anchor_type = link["anchor_type"]
+                        doc_c.anchor_confidence = link["confidence"]
+                        doc_c.primary_bias = link["primary_bias"]
+                    doc_c.provenance.append(
+                        "graph:COVERS->"
+                        f"{sym_uid[:8]},type={link['anchor_type']},conf={link['confidence']:.2f}"
+                    )
 
         return list(pool.values())
 
@@ -2545,13 +2600,18 @@ class UnifiedRanker:
 
     def _get_covers_links(
         self, chunk_ids: list[str], symbol_uids: set[str]
-    ) -> list[tuple[str, str]]:
+    ) -> list[dict]:
         if not chunk_ids or not symbol_uids:
             return []
         query = """
-        MATCH (a:DocAnchor {workspace_id: $workspace_id})-[:COVERS]->(s:Symbol)
+        MATCH (a:DocAnchor {workspace_id: $workspace_id})-[r:COVERS]->(s:Symbol)
         WHERE a.chunk_id IN $chunk_ids AND s.uid IN $symbol_uids
-        RETURN a.chunk_id AS chunk_id, s.uid AS sym_uid
+        RETURN a.chunk_id AS chunk_id,
+               s.uid AS sym_uid,
+               coalesce(r.anchor_type, 'reference') AS anchor_type,
+               coalesce(r.confidence, 0.65) AS confidence,
+               coalesce(r.primary_bias, 0.7) AS primary_bias,
+               coalesce(r.resolver, 'legacy') AS resolver
         """
         try:
             with self.db.driver.session() as session:
@@ -2561,7 +2621,17 @@ class UnifiedRanker:
                     symbol_uids=list(symbol_uids),
                     workspace_id=self.workspace_id,
                 )
-                return [(r["chunk_id"], r["sym_uid"]) for r in result]
+                return [
+                    {
+                        "chunk_id": r["chunk_id"],
+                        "sym_uid": r["sym_uid"],
+                        "anchor_type": r["anchor_type"],
+                        "confidence": float(r["confidence"] or 0.0),
+                        "primary_bias": float(r["primary_bias"] or 0.0),
+                        "resolver": r["resolver"],
+                    }
+                    for r in result
+                ]
         except Exception:
             return []
 

@@ -255,7 +255,7 @@ Goal: Connect the semantic layer via documentation.
 - [x] Markdown processing pipeline: section-aware chunking + embedding generation (`sidecar/indexer/docs.py`)
 
 ### Semantic Connections
-- [x] DocAnchor in Neo4j: `chunk_id`-only node, `[:FROM]` to File, `[:COVERS]` to Symbols, lazy `pending` resolution via LanceDB (`sidecar/indexer/anchor.py`)
+- [x] DocAnchor in Neo4j: `chunk_id`-only node, `[:FROM]` to File, typed/confident `[:COVERS]` to Symbols, lazy `pending` resolution via LanceDB (`sidecar/indexer/anchor.py`)
 
 ### RAG Optimization
 - [x] Hybrid Search: Vector Search (semantics) → Graph Expansion (code) (`/ask` appends top-3 doc chunks to context)
@@ -537,10 +537,12 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [ ] `is_ambiguous()` signal in contract for client UX / routing decisions
 
 ### 9.3 DocAnchor Confidence & Type
-- [ ] Anchor type classification: definition / example / reference / warning / deprecated
-- [ ] Per-edge confidence score (similarity + name mention + heading + code-block signals)
-- [ ] Multi-symbol weighting: `primary_bias` = 1.0 for focal symbol, 0.6 for others
-- [ ] Edge properties: `anchor_type`, `confidence`, `primary_bias`, `resolver`
+- [x] Anchor type classification: definition / example / reference / warning / deprecated
+- [x] Per-edge confidence score (resolver + name mention + heading + code-style mention signals)
+- [x] Multi-symbol weighting: `primary_bias` = 1.0 for single/focal symbol, reduced for secondary symbols
+- [x] Edge properties: `anchor_type`, `confidence`, `primary_bias`, `resolver`
+- [x] UnifiedRanker consumes anchor quality for doc graph boost and DocAnchor bridge provenance
+- [x] Prompt contract surfaces `documentation[].anchor_type`, `anchor_confidence`, `primary_bias`, and nested `anchor`
 
 ### 9.4 Prompt Contract Observability
 - [x] Per-candidate basic `scores` block (graph relevance / semantic score)
@@ -698,7 +700,7 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | **No workspace isolation on managed graph provider** | **Critical** | Multi-user/team graph storage can collapse branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped graph reads/writes implemented | 🟡 Mitigated |
 | Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is disambiguation + bridge quality on real repos ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 In Progress |
 | Single-label intent | High | Mixed queries (e.g. debugging+refactor) collapse to one tier strategy — loses half the answer. | Phase 9.2: `IntentDistribution` multi-label ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
-| Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3: per-edge `anchor_type` + `confidence` ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ❌ Open |
+| Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3 implemented: per-edge `anchor_type`, `confidence`, `primary_bias`, and resolver-aware ranker consumption ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ✅ Resolved |
 | No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4 basics are implemented; remaining gap is full `pruned[]`, ranker weights, and intent diagnostics in the contract ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 In Progress |
 | No caching strategy | Medium | Repeated queries re-read bodies, re-run BFS, re-call LLM; the graph provider saturates before the model does. | Phase 10.1: three-layer cache ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ❌ Open |
 | Static retriever | Medium | No feedback signal — silent drift, silent miss. System cannot improve from usage. | Phase 10.2: feedback loop + `CO_RELEVANT` learned edges ([spec_learning_loop.md](spec_learning_loop.md)) | ❌ Open |

@@ -4,6 +4,9 @@ from sidecar.indexer import anchor
 from sidecar.indexer.anchor import (
     _add_covers_edges,
     _add_covers_edges_batch,
+    _anchor_confidence,
+    _classify_anchor_type,
+    _cover_link,
     _matches_allowed_prefix,
     _normalize_allowed_prefixes,
     _write_anchors,
@@ -37,9 +40,11 @@ def test_add_covers_edges_uses_unwind_for_bulk_uids():
 
     query = tx.run.call_args.args[0]
     params = tx.run.call_args.kwargs
-    assert "UNWIND $uids AS uid" in query
+    assert "UNWIND $links AS link" in query
+    assert "r.anchor_type" in query
     assert params["chunk_id"] == "chunk-1"
-    assert params["uids"] == ["uid-a", "uid-b"]
+    assert [link["uid"] for link in params["links"]] == ["uid-a", "uid-b"]
+    assert params["links"][0]["anchor_type"] == "reference"
     assert params["workspace_id"] == "acme/repo@main"
 
 
@@ -58,12 +63,47 @@ def test_add_covers_edges_batch_uses_unwind_for_bulk_chunks():
     query = tx.run.call_args.args[0]
     params = tx.run.call_args.kwargs
     assert "UNWIND $rows AS row" in query
-    assert "UNWIND row.uids AS uid" in query
-    assert params["rows"] == [
-        {"chunk_id": "chunk-1", "uids": ["uid-a", "uid-b"]},
-        {"chunk_id": "chunk-2", "uids": ["uid-c"]},
-    ]
+    assert "UNWIND row.links AS link" in query
+    assert "r.confidence" in query
+    assert [link["uid"] for link in params["rows"][0]["links"]] == ["uid-a", "uid-b"]
+    assert params["rows"][1]["links"][0]["uid"] == "uid-c"
     assert params["workspace_id"] == "acme/repo@main"
+
+
+def test_anchor_type_classifier_distinguishes_doc_modes():
+    assert _classify_anchor_type("This API is deprecated and will be removed.") == "deprecated"
+    assert _classify_anchor_type("!!! warning\nDo not call this from async code.") == "warning"
+    assert _classify_anchor_type("```python\nModel()\n```") == "example"
+    assert _classify_anchor_type("## Parameters\nReturns a configured value.") == "definition"
+    assert _classify_anchor_type("A short prose note.") == "reference"
+
+
+def test_cover_link_carries_confidence_type_and_primary_bias():
+    text = "# `BaseModel`\n\n## Parameters\nCall `model_validate(obj)`."
+    link = _cover_link("uid-model", "BaseModel", text, "/docs/reference/models.md")
+
+    assert link["anchor_type"] == "definition"
+    assert link["confidence"] > 0.8
+    assert link["primary_bias"] == 1.0
+    assert link["resolver"] == "identifier"
+
+
+def test_semantic_anchor_confidence_is_lower_than_exact_identifier():
+    exact = _anchor_confidence(
+        "`BaseModel` validates input",
+        "/docs/reference/models.md",
+        "BaseModel",
+        resolver="identifier",
+    )
+    semantic = _anchor_confidence(
+        "A prose-only model validation overview",
+        "/docs/concepts/models.md",
+        "BaseModel",
+        resolver="semantic",
+        semantic_score=0.3,
+    )
+
+    assert exact > semantic
 
 
 def test_write_anchors_uses_unwind_for_bulk_chunks():

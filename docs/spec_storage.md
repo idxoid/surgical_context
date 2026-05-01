@@ -51,7 +51,7 @@ Opens a `neo4j.GraphDatabase.driver` connection. Call `.close()` when done. Side
 | `CALLS_*` | `(Symbol)→(Symbol)` | `CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`, `CALLS_GUESS`; carries `workspace_id`, `confidence`, `tier`, `resolver`, `call_site_line` |
 | `AFFECTS` | `(Symbol)→(Symbol)` | Workspace-local reverse dependency materialization |
 | `FROM` | `(DocAnchor)→(File)` | Doc chunk originates from this file |
-| `COVERS` | `(DocAnchor)→(Symbol)` | Doc chunk describes this symbol |
+| `COVERS` | `(DocAnchor)→(Symbol)` | Doc chunk describes this symbol; carries `workspace_id`, `anchor_type`, `confidence`, `primary_bias`, `resolver` |
 
 ### Methods
 

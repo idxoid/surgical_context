@@ -290,6 +290,33 @@ class TestPromptCompilerWithIntent:
         assert len(ctx.documentation) == 2
         assert all(doc.source_file == "docs/rtk-query/overview.md" for doc in ctx.documentation)
 
+    def test_prompt_contract_includes_doc_anchor_metadata(self, sample_subgraph, sample_code_map):
+        compiler = PromptCompiler()
+        docs = [
+            DocChunk(
+                source_file="docs/reference/models.md",
+                chunk_id="doc-1",
+                content="BaseModel reference",
+                score=0.8,
+                anchor_type="definition",
+                anchor_confidence=0.92,
+                primary_bias=1.0,
+            )
+        ]
+
+        ctx = compiler.compile(sample_subgraph, sample_code_map, docs)
+        payload = ctx.to_dict()
+
+        doc = payload["documentation"][0]
+        assert doc["anchor_type"] == "definition"
+        assert doc["anchor_confidence"] == 0.92
+        assert doc["primary_bias"] == 1.0
+        assert doc["anchor"] == {
+            "type": "definition",
+            "confidence": 0.92,
+            "primary_bias": 1.0,
+        }
+
     def test_compile_with_intent_respects_tier_priority(
         self, sample_subgraph, sample_code_map, sample_docs
     ):

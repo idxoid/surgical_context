@@ -1,7 +1,7 @@
 import re
 import time
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
@@ -10,6 +10,7 @@ from sidecar.workspace import DEFAULT_WORKSPACE_ID
 SIMILARITY_THRESHOLD = 1.5
 IDENTIFIER_LINK_SKIP_THRESHOLD = 2
 DOC_LINK_BATCH_SIZE = 128
+ANCHOR_TYPES = {"definition", "example", "reference", "warning", "deprecated"}
 
 _IDENTIFIER_RE = re.compile(
     r"\b([A-Z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9_]*_[A-Z0-9_]+|[a-z][a-z0-9]*_[a-z0-9_]+)\b"
@@ -75,6 +76,144 @@ def _classify_doc_type(file_path: str) -> str:
     return "documentation"
 
 
+def _classify_anchor_type(chunk_text: str, file_path: str = "") -> str:
+    """Classify how strongly a doc chunk is meant to describe a symbol."""
+    text = chunk_text.lower()
+    path = file_path.lower()
+    if re.search(r"\b(deprecated|deprecation|migration|migrate|removed|renamed)\b", text):
+        return "deprecated"
+    if re.search(r"\b(warning|caution|danger|security|important|avoid)\b", text):
+        return "warning"
+    if "```" in chunk_text or "/examples/" in path or "/tutorial/" in path:
+        return "example"
+    if (
+        "/reference/" in path
+        or re.search(r"^#{1,4}\s+.*\b(api|reference|parameters?|returns?|class|function|method)\b", text, re.M)
+        or re.search(r"\b(arguments?|parameters?|returns?|raises|signature)\b", text)
+    ):
+        return "definition"
+    return "reference"
+
+
+def _clamp(value: float, low: float = 0.05, high: float = 1.0) -> float:
+    return min(high, max(low, value))
+
+
+def _symbol_name_in_heading(symbol_name: str, chunk_text: str) -> bool:
+    if not symbol_name:
+        return False
+    pattern = re.compile(rf"^#{{1,6}}\s+.*\b{re.escape(symbol_name)}\b", re.M)
+    return bool(pattern.search(chunk_text))
+
+
+def _symbol_name_has_code_mention(symbol_name: str, chunk_text: str) -> bool:
+    if not symbol_name:
+        return False
+    return f"`{symbol_name}`" in chunk_text or f"{symbol_name}(" in chunk_text
+
+
+def _anchor_confidence(
+    chunk_text: str,
+    file_path: str,
+    symbol_name: str,
+    *,
+    resolver: str,
+    semantic_score: float = 0.0,
+) -> float:
+    """Score a COVERS edge without storing chunk content in Neo4j."""
+    anchor_type = _classify_anchor_type(chunk_text, file_path)
+    if resolver == "identifier":
+        confidence = 0.68
+    elif resolver == "pending_identifier":
+        confidence = 0.62
+    else:
+        confidence = max(0.25, min(0.72, float(semantic_score or 0.0)))
+
+    if symbol_name and re.search(rf"\b{re.escape(symbol_name)}\b", chunk_text):
+        confidence += 0.14
+    if _symbol_name_in_heading(symbol_name, chunk_text):
+        confidence += 0.10
+    if _symbol_name_has_code_mention(symbol_name, chunk_text):
+        confidence += 0.08
+    if anchor_type in {"definition", "warning", "deprecated"}:
+        confidence += 0.05
+    elif anchor_type == "example":
+        confidence -= 0.04
+    return round(_clamp(confidence), 3)
+
+
+def _cover_link(
+    uid: str,
+    symbol_name: str = "",
+    chunk_text: str = "",
+    file_path: str = "",
+    *,
+    resolver: str = "identifier",
+    semantic_score: float = 0.0,
+    link_count: int = 1,
+) -> dict:
+    anchor_type = _classify_anchor_type(chunk_text, file_path)
+    primary_bias = 1.0 if link_count <= 1 else 0.65
+    if symbol_name and _symbol_name_in_heading(symbol_name, chunk_text):
+        primary_bias = max(primary_bias, 0.9)
+    return {
+        "uid": uid,
+        "anchor_type": anchor_type,
+        "confidence": _anchor_confidence(
+            chunk_text,
+            file_path,
+            symbol_name,
+            resolver=resolver,
+            semantic_score=semantic_score,
+        ),
+        "primary_bias": round(primary_bias, 3),
+        "resolver": resolver,
+    }
+
+
+def _merge_cover_link(links_by_uid: dict[str, dict], link: dict) -> None:
+    existing = links_by_uid.get(link["uid"])
+    if existing is None or float(link.get("confidence", 0.0)) > float(existing.get("confidence", 0.0)):
+        links_by_uid[link["uid"]] = link
+
+
+def _normalize_cover_links(
+    *,
+    uids: list[str] | None = None,
+    links: list[dict] | None = None,
+    resolver: str = "identifier",
+) -> list[dict]:
+    normalized: list[dict] = []
+    for link in links or []:
+        uid = link.get("uid")
+        if not uid:
+            continue
+        anchor_type = link.get("anchor_type") if link.get("anchor_type") in ANCHOR_TYPES else "reference"
+        normalized.append(
+            {
+                "uid": uid,
+                "anchor_type": anchor_type,
+                "confidence": float(link.get("confidence", 0.6)),
+                "primary_bias": float(link.get("primary_bias", 0.6)),
+                "resolver": link.get("resolver") or resolver,
+            }
+        )
+    for uid in uids or []:
+        normalized.append(
+            {
+                "uid": uid,
+                "anchor_type": "reference",
+                "confidence": 0.6,
+                "primary_bias": 1.0 if len(uids or []) <= 1 else 0.65,
+                "resolver": resolver,
+            }
+        )
+    deduped: dict[str, dict] = {}
+    for link in normalized:
+        _merge_cover_link(deduped, link)
+    return sorted(deduped.values(), key=lambda item: item["uid"])
+
+
 def _extract_doc_references(chunk_text: str) -> list[str]:
     """Extract doc filenames referenced in a chunk (markdown links or bare filenames)."""
     refs = []
@@ -126,31 +265,17 @@ def _write_anchors(tx, rows: list[dict], workspace_id: str):
 
 def _add_covers_edge(tx, chunk_id: str, uid: str, workspace_id: str):
     """Create COVERS edge and a FROM {type: "code"} edge to the symbol's containing file."""
+    links = _normalize_cover_links(uids=[uid])
     tx.run(
         """
         MATCH (a:DocAnchor {chunk_id: $chunk_id, workspace_id: $workspace_id})
-        MATCH (s:Symbol {uid: $uid})
-        MERGE (a)-[:COVERS {workspace_id: $workspace_id}]->(s)
-        WITH a, s
-        MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s)
-        SET f.doc_type = coalesce(f.doc_type, 'code')
-        MERGE (a)-[:FROM {type: "code"}]->(f)
-        """,
-        chunk_id=chunk_id,
-        uid=uid,
-        workspace_id=workspace_id,
-    )
-
-
-def _add_covers_edges(tx, chunk_id: str, uids: list[str], workspace_id: str):
-    if not uids:
-        return
-    tx.run(
-        """
-        MATCH (a:DocAnchor {chunk_id: $chunk_id, workspace_id: $workspace_id})
-        UNWIND $uids AS uid
-        MATCH (s:Symbol {uid: uid})
-        MERGE (a)-[:COVERS {workspace_id: $workspace_id}]->(s)
+        UNWIND $links AS link
+        MATCH (s:Symbol {uid: link.uid})
+        MERGE (a)-[r:COVERS {workspace_id: $workspace_id}]->(s)
+        SET r.anchor_type = coalesce(link.anchor_type, 'reference'),
+            r.confidence = coalesce(link.confidence, 0.6),
+            r.primary_bias = coalesce(link.primary_bias, 0.6),
+            r.resolver = coalesce(link.resolver, 'identifier')
         WITH a, collect(DISTINCT s) AS symbols
         UNWIND symbols AS sym
         MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(sym)
@@ -158,7 +283,33 @@ def _add_covers_edges(tx, chunk_id: str, uids: list[str], workspace_id: str):
         MERGE (a)-[:FROM {type: "code"}]->(f)
         """,
         chunk_id=chunk_id,
-        uids=uids,
+        links=links,
+        workspace_id=workspace_id,
+    )
+
+
+def _add_covers_edges(tx, chunk_id: str, uids: list[str], workspace_id: str):
+    links = _normalize_cover_links(uids=uids)
+    if not links:
+        return
+    tx.run(
+        """
+        MATCH (a:DocAnchor {chunk_id: $chunk_id, workspace_id: $workspace_id})
+        UNWIND $links AS link
+        MATCH (s:Symbol {uid: link.uid})
+        MERGE (a)-[r:COVERS {workspace_id: $workspace_id}]->(s)
+        SET r.anchor_type = coalesce(link.anchor_type, 'reference'),
+            r.confidence = coalesce(link.confidence, 0.6),
+            r.primary_bias = coalesce(link.primary_bias, 0.6),
+            r.resolver = coalesce(link.resolver, 'identifier')
+        WITH a, collect(DISTINCT s) AS symbols
+        UNWIND symbols AS sym
+        MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(sym)
+        SET f.doc_type = coalesce(f.doc_type, 'code')
+        MERGE (a)-[:FROM {type: "code"}]->(f)
+        """,
+        chunk_id=chunk_id,
+        links=links,
         workspace_id=workspace_id,
     )
 
@@ -166,20 +317,35 @@ def _add_covers_edges(tx, chunk_id: str, uids: list[str], workspace_id: str):
 def _add_covers_edges_batch(tx, rows: list[dict], workspace_id: str):
     if not rows:
         return
+    normalized_rows = [
+        {
+            "chunk_id": row["chunk_id"],
+            "links": _normalize_cover_links(
+                uids=row.get("uids"),
+                links=row.get("links"),
+                resolver=row.get("resolver", "identifier"),
+            ),
+        }
+        for row in rows
+    ]
     tx.run(
         """
         UNWIND $rows AS row
         MATCH (a:DocAnchor {chunk_id: row.chunk_id, workspace_id: $workspace_id})
-        UNWIND row.uids AS uid
-        MATCH (s:Symbol {uid: uid})
-        MERGE (a)-[:COVERS {workspace_id: $workspace_id}]->(s)
+        UNWIND row.links AS link
+        MATCH (s:Symbol {uid: link.uid})
+        MERGE (a)-[r:COVERS {workspace_id: $workspace_id}]->(s)
+        SET r.anchor_type = coalesce(link.anchor_type, 'reference'),
+            r.confidence = coalesce(link.confidence, 0.6),
+            r.primary_bias = coalesce(link.primary_bias, 0.6),
+            r.resolver = coalesce(link.resolver, 'identifier')
         WITH a, collect(DISTINCT s) AS symbols
         UNWIND symbols AS sym
         MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(sym)
         SET f.doc_type = coalesce(f.doc_type, 'code')
         MERGE (a)-[:FROM {type: "code"}]->(f)
         """,
-        rows=rows,
+        rows=normalized_rows,
         workspace_id=workspace_id,
     )
 
@@ -460,6 +626,20 @@ def _prepare_doc_link_batches(
 
             resolved_uids = set(identifier_matches.values())
             matched_names = set(identifier_matches)
+            link_count = max(1, len(resolved_uids))
+            links_by_uid: dict[str, dict] = {}
+            for name, uid in identifier_matches.items():
+                _merge_cover_link(
+                    links_by_uid,
+                    _cover_link(
+                        uid,
+                        name,
+                        chunk_text,
+                        file_path,
+                        resolver="identifier",
+                        link_count=link_count,
+                    ),
+                )
 
             if len(resolved_uids) < IDENTIFIER_LINK_SKIP_THRESHOLD:
                 semantic_states.append(
@@ -469,6 +649,7 @@ def _prepare_doc_link_batches(
                         "pending": pending,
                         "resolved_uids": resolved_uids,
                         "matched_names": matched_names,
+                        "links_by_uid": links_by_uid,
                     }
                 )
             else:
@@ -486,7 +667,10 @@ def _prepare_doc_link_batches(
                     cover_rows.append(
                         {
                             "chunk_id": chunk_id,
-                            "uids": sorted(resolved_uids),
+                            "links": sorted(
+                                links_by_uid.values(),
+                                key=lambda item: item["uid"],
+                            ),
                         }
                     )
 
@@ -539,9 +723,24 @@ def _prepare_doc_link_batches(
                 pending = list(state["pending"])
                 resolved_uids = set(state["resolved_uids"])
                 matched_names = set(state["matched_names"])
+                links_by_uid = dict(state["links_by_uid"])
 
                 matched_names.update(h["name"] for h in hits)
                 resolved_uids.update(h["uid"] for h in hits)
+                link_count = max(1, len(resolved_uids))
+                for hit in hits:
+                    _merge_cover_link(
+                        links_by_uid,
+                        _cover_link(
+                            hit["uid"],
+                            hit.get("name", ""),
+                            chunk_text,
+                            file_path,
+                            resolver="semantic",
+                            semantic_score=float(hit.get("score") or 0.0),
+                            link_count=link_count,
+                        ),
+                    )
                 pending = [name for name in pending if name not in matched_names]
 
                 current_pending = _normalize_pending(row.get("pending"))
@@ -559,7 +758,10 @@ def _prepare_doc_link_batches(
                     cover_rows.append(
                         {
                             "chunk_id": chunk_id,
-                            "uids": sorted(resolved_uids),
+                            "links": sorted(
+                                links_by_uid.values(),
+                                key=lambda item: item["uid"],
+                            ),
                         }
                     )
 
@@ -706,18 +908,35 @@ def resolve_pending_anchors(
     progress = _make_progress(len(pending_rows), "docs pending", unit="chunk")
     for row in pending_rows:
         chunk_id = row["id"]
+        chunk_text = row.get("chunk", "")
+        file_path = row.get("file_path", "")
         names = _normalize_pending(row.get("pending"))
-        resolved_uids = []
+        links_by_uid: dict[str, dict] = {}
         still_pending = []
         for name in names:
             if name in name_to_uid:
-                resolved_uids.append(name_to_uid[name])
+                uid = name_to_uid[name]
+                _merge_cover_link(
+                    links_by_uid,
+                    _cover_link(
+                        uid,
+                        name,
+                        chunk_text,
+                        file_path,
+                        resolver="pending_identifier",
+                        link_count=max(1, len(names)),
+                    ),
+                )
                 resolved_total += 1
             else:
                 still_pending.append(name)
-        if resolved_uids:
+        if links_by_uid:
             cover_rows.append(
-                {"chunk_id": chunk_id, "uids": sorted(set(resolved_uids))}
+                {
+                    "chunk_id": chunk_id,
+                    "links": sorted(links_by_uid.values(), key=lambda item: item["uid"]),
+                    "resolver": "pending_identifier",
+                }
             )
         if still_pending != names:
             pending_updates.append((row, still_pending))

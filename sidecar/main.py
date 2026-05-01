@@ -376,6 +376,9 @@ def _doc_record(doc: Any) -> dict[str, Any]:
         "source_file": getattr(doc, "source_file", ""),
         "score": getattr(doc, "score", None),
         "provenance": getattr(doc, "provenance", []),
+        "anchor_type": getattr(doc, "anchor_type", ""),
+        "anchor_confidence": getattr(doc, "anchor_confidence", 0.0),
+        "primary_bias": getattr(doc, "primary_bias", 0.0),
     }
 
 
