@@ -249,7 +249,16 @@ ${doc.content}`);
           case "inspector.loaded":
             console.log("inspector.loaded message received, context:", message.context);
             this.context = message.context || null;
+            this.symbol = message.symbol;
+            this.question = message.question;
             this.render();
+            break;
+          case "inspector.notAvailable":
+            console.log("inspector.notAvailable message received:", message.message);
+            this.context = null;
+            this.symbol = void 0;
+            this.question = void 0;
+            this.renderNotAvailable(message.message);
             break;
         }
       });
@@ -310,9 +319,12 @@ ${doc.content}`);
           tabContent = renderTokenBreakdownTab(this.context);
           break;
       }
+      const headerTitle = this.symbol ? `Context Inspector \u2014 ${this.symbol}` : "Context Inspector";
+      const questionHtml = this.question ? `<p class="inspector-question"><em>Question: ${escapeHtml(this.question)}</em></p>` : "";
       root.innerHTML = `
       <div class="inspector-header">
-        <h2>Context Inspector</h2>
+        <h2>${escapeHtml(headerTitle)}</h2>
+        ${questionHtml}
       </div>
       ${tabButtons}
       <div class="inspector-content">
@@ -320,6 +332,20 @@ ${doc.content}`);
       </div>
     `;
       this.attachTabListeners();
+    }
+    renderNotAvailable(message) {
+      const root = document.getElementById("root");
+      if (!root) return;
+      root.innerHTML = `
+      <div class="inspector-empty">
+        <div style="padding: 20px; text-align: center;">
+          <p style="margin: 0; color: var(--vscode-foreground);">${escapeHtml(message)}</p>
+          <p style="margin: 10px 0 0 0; font-size: 12px; color: var(--vscode-descriptionForeground);">
+            Click <strong>Ask</strong> about a symbol to get started.
+          </p>
+        </div>
+      </div>
+    `;
     }
     attachTabListeners() {
       document.querySelectorAll(".tab-button").forEach((btn) => {

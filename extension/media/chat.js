@@ -590,7 +590,7 @@
       setTimeout(() => {
         toast.classList.remove("show");
         setTimeout(() => container.removeChild(toast), 300);
-      }, 4e4);
+      }, 4e3);
     }
     persistState() {
       const composer = document.getElementById("composer-input");

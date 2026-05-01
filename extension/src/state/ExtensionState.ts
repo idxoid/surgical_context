@@ -1,10 +1,19 @@
 import { PromptContextPayload } from '../sidecarClient';
 
+export interface LastRequest {
+  symbol?: string;
+  question?: string;
+  timestamp: number;
+  context?: PromptContextPayload;
+  answer: string;
+}
+
 export interface ExtensionState {
   selectedSymbol: string | undefined;
   activeFile: string | undefined;
   isDirty: boolean;
   lastContext: PromptContextPayload | undefined;
+  lastRequest: LastRequest | undefined;
   sidecarHealth: 'up' | 'down' | 'degraded';
   cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline';
   workspaceId: string;
@@ -16,6 +25,7 @@ export const defaultState: ExtensionState = {
   activeFile: undefined,
   isDirty: false,
   lastContext: undefined,
+  lastRequest: undefined,
   sidecarHealth: 'degraded',
   cloudStatus: 'offline',
   workspaceId: 'local/default@main',
@@ -41,6 +51,23 @@ class StateManager {
   subscribe(listener: (state: ExtensionState) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Clear lastRequest if more than 15 minutes have passed.
+   * Called when editor changes symbol or on periodic checks.
+   */
+  clearLastRequestIfStale(): void {
+    const state = this.state;
+    if (!state.lastRequest) return;
+
+    const now = Date.now();
+    const ttlMs = 15 * 60 * 1000;
+    const elapsed = now - state.lastRequest.timestamp;
+
+    if (elapsed > ttlMs) {
+      this.setState({ lastRequest: undefined });
+    }
   }
 
   private notifyListeners(): void {

@@ -87,17 +87,45 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 
 ---
 
-### 2.4. Observability (Partially Implemented)
+### 2.4. Observability (Phase 9 In Progress)
 
-The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency using mechanism-aware classification. Runtime metrics, trace IDs, and prompt-contract retrieval metadata exist; the remaining work is clearer extension surfacing, doc confidence/type scoring, and local release SLO checks.
+The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency using mechanism-aware classification. Runtime metrics, trace IDs, and prompt-contract retrieval metadata exist; the main remaining work is extension surfacing of ranking details, doc confidence/type scoring in the UI, and local release SLO checks.
 
-- **Structured logs** per pipeline stage with fields: `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`.
-- **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts, cache hit rates.
-- **Token baselines**: every `/ask` logs both the surgical token count and an estimate of the "carpet-bomb" equivalent (all open files). The delta is the core KPI.
-- **Mechanism-aware retrieval metrics**: questions are classified by mechanism type (code relationship tested: route registration, dependency injection, validation bridge, etc.) and evaluated using **role_recall** (fraction of required code roles fulfilled) + intent-stratified pass gates (file_recall + role_recall thresholds vary by query intent). The benchmark normalizes legacy framework-specific role names into a canonical cross-framework taxonomy before scoring, so FastAPI/Pydantic/RTK are compared on the same scale.
-- **Intent-stratified evaluation**: explain_behavior queries (role ≥ 0.70, file ≥ 0.50), trace_dependency queries (role ≥ 0.80, file ≥ 0.70), impact_analysis queries (role ≥ 0.60, file ≥ 0.50 — OR gate, either signal enough).
-- **Role recall metric**: computed after canonical-role normalization as `(required_roles - missing_roles) / len(required_roles)`. Diagnostic for code relationship gaps in the ranker.
-- **Benchmark artifact quality**: each report now includes explicit `precision` plus a full `ready_context` payload (`token_count`, serialized contract, and rendered system prompt) for each question.
+**Phase 9.1 — Unified Ranker ✅ COMPLETE**
+- **Blended score formula**: `score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost` (normalized per track)
+- **Graph signal**: BFS with typed edges (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, DEPENDS_ON, IMPLEMENTS, OVERRIDES)
+- **Semantic signal**: vector search + similarity threshold tuning (0.4 → 1.5)
+- **Intent signal**: query intent → tier priority → budget allocation
+- **Overlap bonus**: when both graph and semantic fire on the same candidate
+- **Cost term**: token budget vs. symbol body size
+- **Mechanism-aware routing**: query intent + symbol type → role backfill strategy (e.g., impact_analysis on serialization routes through test-coverage roles)
+- **Target disambiguation**: when workspace has multiple same-name symbols, route by usage context and qualified name
+
+**Phase 9.3 — DocAnchor Confidence & Type ✅ COMPLETE**
+- **Anchor type classification**: definition / example / reference / warning / deprecated
+- **Per-edge confidence**: `(resolver + name_mention + heading_proximity + code_style_mention)` normalized to [0, 1]
+- **Primary bias**: 1.0 for focal symbols, reduced for secondary mentions (prevents over-weighting)
+- **Consumed by ranker**: doc anchors with high confidence and focal primary_bias score higher
+
+**Phase 9.4 — Prompt Contract Observability 🚧 IN PROGRESS**
+- ✅ **Basic scores**: `{graph_relevance, semantic_score}` per candidate
+- ✅ **Provenance**: why each symbol was selected (source: "graph BFS", "semantic search", "fallback")
+- ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
+- ✅ **Assembly phases**: latency per stage (extract, rank, deduplicate, resolve, compile)
+- 🚧 **Pruned array**: candidates that missed budget, with reason (deferred to later in Week 1)
+- 🚧 **Ranker weights snapshot**: α, β, γ, δ, ε values per response (deferred to later in Week 1)
+- 🚧 **Intent distribution**: multi-label confidence across 6 intents (Phase 9.2 deferred)
+
+**Supporting Infrastructure:**
+- **Structured logs**: per pipeline stage with `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`
+- **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts, cache hit rates
+- **Token accounting**: both surgical count + "carpet-bomb" estimate; delta is the core KPI
+- **Mechanism-aware retrieval metrics**: questions classified by code relationship type + evaluated on **role_recall** (required roles fulfilled) + intent-stratified pass gates
+- **Intent-stratified evaluation**:
+  - `explain_behavior`: role ≥ 0.70 AND file ≥ 0.50
+  - `trace_dependency`: role ≥ 0.80 AND file ≥ 0.70
+  - `impact_analysis`: role ≥ 0.60 OR file ≥ 0.50 (either signal sufficient)
+- **Benchmark artifacts**: each report includes explicit precision + full `ready_context` payload (token count, serialized contract, rendered system prompt)
 
 Without complete prompt-contract observability, production claims in §1.3 remain hard to debug outside benchmark runs.
 
@@ -199,17 +227,18 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
-3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking.
-4. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
-5. **Unified graph + semantic ranking** (`UnifiedRanker`): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Mechanism-aware role backfill, query-sensitive mechanism routing, duplicate-target disambiguation, package/module fallback targets, and canonical role normalization run inside this layer. Thin wrapper APIs can also satisfy capability roles from their own implementation body when nested helpers are not indexed as standalone symbols. Selection is constrained by token budget + intent-aware noise filtering and returns candidates with graph, semantic, and blended scores.
-6. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
-7. **Subgraph/doc split** (`UnifiedRanker.candidates_to_subgraph(...)`): convert the chosen ranked candidates back into `SubgraphNode` plus `DocChunk` objects for prompt compilation.
-8. **Deduplication** (`ContextDeduplicator` on the graph-only path): remove redundant symbols and overlapping doc chunks when the unified ranker is not active.
-9. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol. Signature-only resolution for distant neighbors and massive targets.
-10. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas → tenant API context), fill budget in order.
-11. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
-12. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract with `intent_details`, `scores`, `provenance`, `pruned[]`, `metadata.ranker`, and assembly metadata. Benchmark reports additionally persist this same contract as `ready_context`.
-13. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
+3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking (Phase 6 + Phase 4 enhancements).
+4. **Mechanism determination** (Phase 4): if intent = `impact_analysis`, classify the code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`) → informs role backfill strategy and impact-analysis precision controls.
+5. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
+6. **Unified graph + semantic ranking** (`UnifiedRanker` — Phase 9.1): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Mechanism-aware role backfill, query-sensitive mechanism routing, duplicate-target disambiguation, package/module fallback targets, and canonical role normalization run inside this layer. Thin wrapper APIs can also satisfy capability roles from their own implementation body when nested helpers are not indexed as standalone symbols. Selection is constrained by token budget + intent-aware noise filtering and returns candidates with graph, semantic, blended scores, and anchor confidence (Phase 9.3).
+7. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
+8. **Subgraph/doc split** (`UnifiedRanker.candidates_to_subgraph(...)`): convert the chosen ranked candidates back into `SubgraphNode` plus `DocChunk` objects for prompt compilation.
+9. **Deduplication** (`ContextDeduplicator` on the graph-only path): remove redundant symbols and overlapping doc chunks when the unified ranker is not active.
+10. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol. Signature-only resolution for distant neighbors and massive targets.
+11. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas → tenant API context), fill budget in order.
+12. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
+13. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract with `intent_details`, `scores`, `provenance`, `pruned[]` (Phase 9.4), `metadata.ranker` (Phase 9.4), and assembly metadata. Benchmark reports additionally persist this same contract as `ready_context`.
+14. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
 
 ### 4.2. Cold Start
 1. FS scan for `.py`/`.ts`/`.tsx` files (gitignore-aware, dirs pruned).

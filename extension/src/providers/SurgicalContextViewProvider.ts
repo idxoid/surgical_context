@@ -71,15 +71,41 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
 
   public showInspector(): void {
     this.postMessage({ type: 'surface.showInspector' });
-    this.pushInspectorContext();
+
+    // Read from shared lastRequest state (stored by Ask)
+    const state = stateManager.getState();
+    if (state.lastRequest?.context) {
+      this.postMessage({
+        type: 'inspector.loaded',
+        context: state.lastRequest.context,
+        symbol: state.lastRequest.symbol,
+        question: state.lastRequest.question,
+      });
+    } else {
+      this.postMessage({
+        type: 'inspector.notAvailable',
+        message: 'No context available. Ask about a symbol first.',
+      });
+    }
   }
 
   public async showImpact(symbol?: string): Promise<void> {
-    const targetSymbol = symbol || this.currentEditorSymbol();
+    // Priority: explicit symbol > lastRequest.symbol > editor cursor > fail
+    let targetSymbol = symbol;
+
+    if (!targetSymbol) {
+      const lastRequest = stateManager.getState().lastRequest;
+      if (lastRequest?.symbol) {
+        targetSymbol = lastRequest.symbol;
+      } else {
+        targetSymbol = this.currentEditorSymbol() || undefined;
+      }
+    }
+
     if (!targetSymbol) {
       this.postMessage({
         type: 'impact.loadFailed',
-        error: 'No symbol selected. Position your cursor on a symbol to run impact analysis.',
+        error: 'No symbol selected. Position your cursor on a symbol or ask about it first.',
       });
       return;
     }
@@ -270,8 +296,21 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         });
       },
       onDone: (traceId: string) => {
+        const answer = answerParts.join('');
         const context = latestContext || stateManager.getState().lastContext || null;
+
+        // Store full request in shared state for Inspector/Impact to read
         if (context) {
+          stateManager.setState({
+            lastRequest: {
+              symbol: targetSymbol,
+              question: prompt,
+              timestamp: Date.now(),
+              context,
+              answer,
+            },
+          });
+
           this.postMessage({
             type: 'chat.requestCompleted',
             requestId,
@@ -279,11 +318,12 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
             context,
           });
         }
+
         void this.persistAskHistory({
           conversationId,
           requestId,
           prompt,
-          answer: answerParts.join(''),
+          answer,
           symbol: targetSymbol,
           activeFile,
           traceId: traceId || streamTraceId,
@@ -345,10 +385,23 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   }
 
   private pushInspectorContext(): void {
-    this.postMessage({
-      type: 'inspector.loaded',
-      context: stateManager.getState().lastContext || null,
-    });
+    // Prefer lastRequest.context (from Ask), fall back to lastContext for backward compat
+    const state = stateManager.getState();
+    const context = state.lastRequest?.context || state.lastContext || null;
+
+    if (context) {
+      this.postMessage({
+        type: 'inspector.loaded',
+        context,
+        symbol: state.lastRequest?.symbol,
+        question: state.lastRequest?.question,
+      });
+    } else {
+      this.postMessage({
+        type: 'inspector.notAvailable',
+        message: 'No context available. Ask about a symbol first.',
+      });
+    }
   }
 
   private pushSettings(): void {

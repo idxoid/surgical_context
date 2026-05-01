@@ -510,14 +510,14 @@ Goal: Fix the load-bearing identity, resolution, and isolation gaps before retri
 
 ---
 
-## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE
+## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1 & 9.3 COMPLETE)
 Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
 
 > **Specs:** [spec_unified_ranking.md](spec_unified_ranking.md), [spec_multi_label_intent.md](spec_multi_label_intent.md), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
 >
-> **Current status:** this is no longer "future work". Real-repo benchmark misses like `fastapi_q02` show that ranker behavior and contract observability are on the critical path right now.
+> **Current status:** 9.1 (unified ranker) and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is ~70% complete. 9.2 (multi-label intent) is deferred to Phase 10. Real-repo benchmark misses like `fastapi_q02` show that ranker behavior and contract observability are on the critical path for Week 2 validation.
 
-### 9.1 Unified Ranker
+### 9.1 Unified Ranker ✅ COMPLETE
 - [x] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
 - [x] Blended score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost (per-track normalized)
 - [x] Overlap bonus when both signals fire on the same candidate
@@ -525,18 +525,19 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] Weight tuning via eval harness sweep
 - [x] Target disambiguation for duplicate symbol names within one workspace (`Depends`-style collisions)
 - [x] Module/package fallback targets for workspace-level questions such as `pydantic.v1`
-- [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract
 - [x] Better mechanism routing/backfill for FastAPI serialization impact (`serialize_response` now routes to impact roles and targeted tests)
-- [ ] Better doc-to-runtime bridge coverage for framework mechanisms where graph edges are structurally sparse
+- [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract (deferred)
+- [ ] Better doc-to-runtime bridge coverage for framework mechanisms where graph edges are structurally sparse (deferred to Week 2 post-benchmark)
 
-### 9.2 Multi-Label Intent
+### 9.2 Multi-Label Intent ❌ DEFERRED
 - [ ] `IntentDistribution` (sum-to-1 weights across 6 labels)
 - [ ] Classifier returns partial scores per label → normalized distribution
 - [ ] Tier priority = weighted sum across intent distribution
 - [ ] Budget split across tiers in proportion to blended tier score (floor per tier)
 - [ ] `is_ambiguous()` signal in contract for client UX / routing decisions
+> **Decision:** Phase 9.2 punted to Phase 10 pending real-repo validation of 9.1 performance. Phase 9.1 single-label routing is sufficient for local v0.1 launch.
 
-### 9.3 DocAnchor Confidence & Type
+### 9.3 DocAnchor Confidence & Type ✅ COMPLETE
 - [x] Anchor type classification: definition / example / reference / warning / deprecated
 - [x] Per-edge confidence score (resolver + name mention + heading + code-style mention signals)
 - [x] Multi-symbol weighting: `primary_bias` = 1.0 for single/focal symbol, reduced for secondary symbols
@@ -544,15 +545,15 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] UnifiedRanker consumes anchor quality for doc graph boost and DocAnchor bridge provenance
 - [x] Prompt contract surfaces `documentation[].anchor_type`, `anchor_confidence`, `primary_bias`, and nested `anchor`
 
-### 9.4 Prompt Contract Observability
+### 9.4 Prompt Contract Observability 🚧 IN PROGRESS (~70% COMPLETE)
 - [x] Per-candidate basic `scores` block (graph relevance / semantic score)
 - [x] `provenance` list on every symbol and doc chunk
 - [x] Budget-level `metadata.pruning_reasons`
-- [ ] `pruned[]` array — candidates that missed the budget, with reason
 - [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
-- [ ] `metadata.ranker.weights` — tuning state snapshotted with every response
-- [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence`
 - [x] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
+- [ ] `pruned[]` array — candidates that missed the budget, with reason (Week 1)
+- [ ] `metadata.ranker.weights` — tuning state snapshotted with every response (Week 1)
+- [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence` (Phase 9.2, deferred)
 
 ---
 

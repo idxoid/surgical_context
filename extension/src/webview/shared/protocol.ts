@@ -44,7 +44,8 @@ export type HostToWebviewMessage =
   | { type: 'workspace.updated'; activeFile: string | null; symbol: string | null; isDirty: boolean }
   | { type: 'backend.updated'; sidecarHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline' }
   | { type: 'toast.show'; level: 'info' | 'warning' | 'error'; message: string }
-  | { type: 'inspector.loaded'; context: PromptContextPayload | null }
+  | { type: 'inspector.loaded'; context: PromptContextPayload | null; symbol?: string; question?: string }
+  | { type: 'inspector.notAvailable'; message: string }
   | { type: 'impact.loading' }
   | { type: 'impact.loaded'; symbol: string; impact: ImpactResponse }
   | { type: 'impact.loadFailed'; error: string }

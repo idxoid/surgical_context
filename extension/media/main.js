@@ -1525,7 +1525,7 @@ ${doc.content}`);
         workspaceId: "local/default@main",
         modelPreference: "auto",
         authToken: "",
-        tokenBudget: 4e4,
+        tokenBudget: 4e3,
         lancedbPath: "./data/lancedb",
         historyPath: "./data/history/surgical_context.sqlite3",
         overlaySync: true,
