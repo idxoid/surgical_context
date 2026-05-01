@@ -7,6 +7,7 @@ from sidecar.context.unified_ranker import (
     UnifiedRanker,
     VectorSearcher,
     _NOISE_FACTOR,
+    compute_impact_noise_factor,
     compute_noise_factor,
 )
 
@@ -81,6 +82,17 @@ def _make_recovery_db(*, same_file_rows=None, imported_rows=None):
     db = MagicMock()
     db.driver = driver
     return db
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def single(self):
+        return self.rows[0] if self.rows else None
 
 
 class _FakeVector:
@@ -650,6 +662,42 @@ def test_pydantic_basemodel_mechanism_uses_query_to_split_boundary_vs_validation
     )
 
 
+def test_module_target_fallback_resolves_package_without_symbol():
+    session = MagicMock()
+    module_path = "/repo/pydantic/v1/__init__.py"
+
+    def run(query, **params):
+        if "RETURN s.uid AS uid" in query:
+            return _FakeResult([])
+        if "RETURN f.path AS path" in query:
+            return _FakeResult([{"path": module_path, "file_hash": "abc"}])
+        return _FakeResult([])
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+
+    target, metadata = ranker.get_target(
+        "v1",
+        query="How is backward compatibility with Pydantic v1 exposed in the codebase?",
+        intent=Intent.EXPLORATION,
+        with_metadata=True,
+    )
+
+    assert target is not None
+    assert target.name == "v1"
+    assert target.kind == "module"
+    assert target.file_path == module_path
+    assert metadata["strategy"] == "module_fallback"
+    assert ranker._role_of(target) == "compat_bridge"
+    assert ranker._determine_mechanism(target, "Pydantic v1 compatibility") == "pydantic_v1_compat_surface"
+
+
 def test_pydantic_role_inference_normalizes_to_canonical_roles():
     ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
 
@@ -1049,6 +1097,29 @@ def test_tests_get_softer_penalty_for_exploration_intent():
     assert compute_noise_factor("/repo/src/utils.py", "helper", intent=Intent.EXPLORATION) == 1.0
 
 
+def test_impact_noise_keeps_only_topic_related_tests_unpenalized():
+    query = "If alias handling changes, what modules, docs, and tests are most likely to be affected?"
+
+    assert compute_impact_noise_factor(
+        "/repo/tests/test_aliases.py",
+        "test_basic_alias",
+        query=query,
+        target_name="Field",
+    ) == 1.0
+    assert compute_impact_noise_factor(
+        "/repo/tests/test_computed_fields.py",
+        "test_computed_field_alias",
+        query=query,
+        target_name="Field",
+    ) == 1.0
+    assert compute_impact_noise_factor(
+        "/repo/pydantic-core/tests/serializers/test_union.py",
+        "test_union_serializer",
+        query=query,
+        target_name="Field",
+    ) == _NOISE_FACTOR
+
+
 def test_docs_deferred_until_code_breadth_met():
     """High-scoring docs should not crowd out low-scoring code candidates while
     coverage breadth (distinct code files) is below the deferral threshold.
@@ -1180,6 +1251,34 @@ def test_openapi_generation_mechanism_dispatch():
     # Must NOT include the generic fallback's irrelevant roles.
     assert "executor" not in required
     assert "runtime_surface" not in required
+
+
+def test_fastapi_serialization_impact_dispatches_to_impact_roles():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="serialize-response",
+        name="serialize_response",
+        file_path="/repo/fastapi/routing.py",
+        range=[1, 80],
+        token_estimate=180,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    assert (
+        ranker._determine_mechanism(
+            target,
+            "If I change response model serialization behavior, what parts of the framework and tests break?",
+        )
+        == "fastapi_serialization_impact"
+    )
+
+    required = ranker._get_required_roles("fastapi_serialization_impact")
+    assert set(required) >= {"impact_runtime", "impact_public_api", "impact_test_surface"}
+    assert "executor" not in required
 
 
 def test_role_filler_outranks_unrelated_high_score_docs():

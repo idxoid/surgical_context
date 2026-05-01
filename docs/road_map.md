@@ -73,7 +73,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
 - [ ] Add latency SLO checks for local asks and index operations.
 - [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
-- [ ] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles and the new wrapper-body support, with the next pressure point now being precision on impact-style retrieval rather than basic coverage.
+- [ ] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles, wrapper-body support, topic-aware impact retrieval, and module/package fallback targets.
 
 ### P3 - Real-Repo Validation
 - [x] Adapt the QA harness to use the real-repo question pack in [tests/fixtures/real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml).
@@ -105,8 +105,9 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 ## Immediate 3-Week Plan
 
 ### Immediate Retrieval Focus
-- keep broadening the now-shipped canonical role taxonomy beyond FastAPI, while shifting the next retrieval pass from "make Pydantic pass" to "make Pydantic impact-analysis and doc-heavy paths less noisy"
+- keep broadening the now-shipped canonical role taxonomy beyond FastAPI, with the current baseline green across FastAPI, Pydantic, and Redux Toolkit
 - keep using real-repo benchmark reports plus `ready_context` payloads to debug misses before changing weights
+- continue precision work on doc-heavy and broad RTK/Pydantic paths, after the first topic-aware impact-noise pass and module/package fallback target support
 - finish doc-anchor confidence/type scoring so docs stop acting like undifferentiated semantic noise
 
 ### Week 1
@@ -522,8 +523,10 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] Overlap bonus when both signals fire on the same candidate
 - [x] Budget-fill loop competes symbols and doc chunks on identical terms
 - [x] Weight tuning via eval harness sweep
-- [ ] Target disambiguation for duplicate symbol names within one workspace (`Depends`-style collisions)
+- [x] Target disambiguation for duplicate symbol names within one workspace (`Depends`-style collisions)
+- [x] Module/package fallback targets for workspace-level questions such as `pydantic.v1`
 - [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract
+- [x] Better mechanism routing/backfill for FastAPI serialization impact (`serialize_response` now routes to impact roles and targeted tests)
 - [ ] Better doc-to-runtime bridge coverage for framework mechanisms where graph edges are structurally sparse
 
 ### 9.2 Multi-Label Intent
@@ -547,7 +550,7 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
 - [ ] `metadata.ranker.weights` — tuning state snapshotted with every response
 - [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence`
-- [ ] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
+- [x] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
 
 ---
 

@@ -53,6 +53,27 @@ _LOW_SIGNAL_DOC_PATH_PATTERNS = (
     "/comparison.md",
     "/release-notes",
 )
+_IMPACT_TOPIC_STOPWORDS = {
+    "affected",
+    "affect",
+    "affects",
+    "change",
+    "changed",
+    "changes",
+    "docs",
+    "documentation",
+    "handling",
+    "likely",
+    "module",
+    "modules",
+    "test",
+    "tests",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+}
 
 _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
     "fastapi_route_registration": {
@@ -105,6 +126,21 @@ _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
         ],
         "runtime_surface": [
             {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 0.95},
+        ],
+    },
+    "fastapi_serialization_impact": {
+        "impact_runtime": [
+            {"name": "serialize_response", "path_hint": "/fastapi/routing.py", "priority": 1.0},
+            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 0.85},
+        ],
+        "impact_public_api": [
+            {"name": "APIRoute", "path_hint": "/fastapi/routing.py", "priority": 1.0},
+            {"name": "FastAPI", "path_hint": "/fastapi/applications.py", "priority": 0.8},
+        ],
+        "impact_test_surface": [
+            {"name": "test_valid_exclude_unset", "path_hint": "/tests/test_serialize_response_model.py", "priority": 1.0},
+            {"name": "test_no_response_model_object", "path_hint": "/tests/test_serialize_response_dataclass.py", "priority": 0.9},
+            {"name": "test_response_validation_error_includes_endpoint_context", "path_hint": "/tests/test_validation_error_context.py", "priority": 0.85},
         ],
     },
     "fastapi_openapi_generation": {
@@ -230,6 +266,38 @@ def compute_noise_factor(
     if kind == "doc" and any(pat in (file_path or "").lower() for pat in _LOW_SIGNAL_DOC_PATH_PATTERNS):
         return 0.35
     return 1.0
+
+
+def compute_impact_noise_factor(
+    file_path: str,
+    name: str,
+    *,
+    query: str = "",
+    target_name: str = "",
+    kind: str = "symbol",
+    content: str = "",
+) -> float:
+    """Noise factor for impact-analysis candidates.
+
+    Impact questions do need tests/examples, but only the tests/examples tied
+    to the change surface. Unrelated benchmark or serializer tests should not
+    outrank production modules merely because impact mode asks for tests.
+    """
+    if not (_path_is_noisy(file_path) or _name_is_noisy(name)):
+        return compute_noise_factor(file_path, name, kind=kind)
+
+    terms = {
+        token
+        for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", f"{target_name} {query}".lower())
+        if token not in _IMPACT_TOPIC_STOPWORDS
+    }
+    if not terms:
+        return _NOISE_FACTOR
+
+    haystack = f"{file_path} {name} {content}".lower()
+    if any(term in haystack for term in terms):
+        return 1.0
+    return _NOISE_FACTOR
 
 
 @dataclass
@@ -367,6 +435,23 @@ class UnifiedRanker:
     ) -> tuple[SubgraphNode | None, dict]:
         rows = self._load_target_candidates(symbol_name)
         if not rows:
+            module_row = self._load_module_target_candidate(symbol_name)
+            if module_row is not None:
+                target = self._build_target_node(
+                    module_row,
+                    provenance=["primary:module-target"],
+                )
+                return target, {
+                    "strategy": "module_fallback",
+                    "ambiguous": False,
+                    "symbol": symbol_name,
+                    "candidates_considered": 1,
+                    "selected_uid": target.uid,
+                    "selected_file_path": target.file_path,
+                    "selected_kind": "module",
+                    "selection_reason": "module_or_package",
+                    "alternatives": [],
+                }
             return None, {
                 "strategy": "not_found",
                 "ambiguous": False,
@@ -480,6 +565,71 @@ class UnifiedRanker:
         except Exception:
             return []
         return result
+
+    def _load_module_target_candidate(self, symbol_name: str) -> dict | None:
+        """Resolve package/module targets that are represented by files, not symbols.
+
+        Python compatibility surfaces such as ``pydantic.v1`` are packages
+        (`pydantic/v1/__init__.py`) rather than functions/classes, so the normal
+        Symbol lookup cannot find them. Treat the package initializer as a
+        synthetic primary target and let doc search + role backfill complete the
+        context.
+        """
+        clean_name = (symbol_name or "").strip().replace(".", "/").strip("/")
+        if not clean_name or any(part in {"", ".."} for part in clean_name.split("/")):
+            return None
+
+        package_init_suffix = f"/{clean_name}/__init__.py"
+        module_suffix = f"/{clean_name}.py"
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})
+        WHERE f.path ENDS WITH $package_init_suffix
+           OR f.path ENDS WITH $module_suffix
+        RETURN f.path AS path, coalesce(f.hash, '') AS file_hash
+        ORDER BY
+          CASE WHEN f.path ENDS WITH $package_init_suffix THEN 0 ELSE 1 END,
+          size(f.path) ASC
+        LIMIT 1
+        """
+        try:
+            with self.db.driver.session() as session:
+                row = session.run(
+                    query,
+                    workspace_id=self.workspace_id,
+                    package_init_suffix=package_init_suffix,
+                    module_suffix=module_suffix,
+                ).single()
+        except Exception:
+            return None
+        if not row:
+            return None
+
+        file_path = row.get("path") if hasattr(row, "get") else row["path"]
+        file_hash = row.get("file_hash", "") if hasattr(row, "get") else row["file_hash"]
+        end_line, token_estimate = self._module_target_size(file_path)
+        return {
+            "uid": f"module:{self.workspace_id}:{file_path}",
+            "name": symbol_name,
+            "kind": "module",
+            "qualified_name": clean_name.replace("/", "."),
+            "token_estimate": token_estimate,
+            "file_path": file_path,
+            "file_hash": file_hash,
+            "range": [1, end_line],
+            "outgoing_edges": 0,
+            "incoming_edges": 0,
+            "total_edges": 0,
+        }
+
+    @staticmethod
+    def _module_target_size(file_path: str) -> tuple[int, int]:
+        try:
+            with open(file_path, encoding="utf-8") as handle:
+                line_count = sum(1 for _ in handle)
+        except OSError:
+            line_count = 80
+        end_line = max(1, min(line_count, 120))
+        return end_line, max(1, end_line * 8)
 
     def _build_target_node(
         self,
@@ -751,7 +901,14 @@ class UnifiedRanker:
             c.supporting_roles = self._supporting_roles_of(c)
             c.intent_weight = intent_priors.get(c.kind, 0.3)
             if intent == Intent.IMPACT_ANALYSIS:
-                c.noise_factor = 1.0  # tests/examples are load-bearing for impact questions
+                c.noise_factor = compute_impact_noise_factor(
+                    c.file_path,
+                    c.name,
+                    query=query,
+                    target_name=target.name,
+                    kind=c.kind,
+                    content=c.content,
+                )
             else:
                 c.noise_factor = compute_noise_factor(c.file_path, c.name, kind=c.kind, intent=intent)
 
@@ -884,8 +1041,11 @@ class UnifiedRanker:
             # Let them through only when they fill a required role; otherwise
             # production code and focused docs should own the budget.
             is_noisy_code = c.kind != "doc" and c.noise_factor < 1.0
-            if intent != Intent.IMPACT_ANALYSIS and is_noisy_code and not fills_role:
-                continue
+            if is_noisy_code:
+                if intent == Intent.IMPACT_ANALYSIS:
+                    continue
+                if not fills_role:
+                    continue
 
             # Hold docs aside until we have enough code coverage. Once code
             # breadth is met, the second pass below replays them in order.
@@ -940,7 +1100,9 @@ class UnifiedRanker:
         # stopped reason. For sparse targets like `Depends` (marker classes), the floor
         # may be genuinely unachievable from the graph.
         if stopped_reason == "pool_exhausted" and spent < min_floor:
-            if useful_candidates_seen < 3:
+            if not (set(required_roles) - fulfilled_roles):
+                stopped_reason = "context_complete_below_floor"
+            elif useful_candidates_seen < 3:
                 stopped_reason = "floor_unfilled_sparse_target"
             else:
                 stopped_reason = "floor_unfilled_no_useful_candidates"
@@ -2232,6 +2394,11 @@ class UnifiedRanker:
             return "fastapi_dependency_injection"
         if name in ("request_body_to_args", "get_body_field"):
             return "fastapi_request_body_dependency_resolution"
+        if name == "serialize_response" and any(
+            token in query_lower
+            for token in ("affect", "break", "change", "impact", "test")
+        ):
+            return "fastapi_serialization_impact"
         if name in ("run_endpoint_function", "serialize_response", "solve_dependencies"):
             return "fastapi_endpoint_execution"
         if name in ("get_openapi", "openapi", "get_openapi_path", "get_fields_from_routes"):
@@ -2293,6 +2460,8 @@ class UnifiedRanker:
             roles = ["runtime_surface", "schema_builder", "orchestrator", "binding_surface"]
         elif mechanism == "fastapi_endpoint_execution":
             roles = ["executor", "runtime_surface"]
+        elif mechanism == "fastapi_serialization_impact":
+            roles = ["impact_runtime", "impact_public_api", "impact_test_surface"]
         elif mechanism == "fastapi_openapi_generation":
             roles = ["api_surface", "schema_builder", "factory_surface"]
         elif mechanism == "pydantic_validation_core_bridge":

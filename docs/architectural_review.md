@@ -17,7 +17,7 @@ What is already true in the codebase:
 
 What still feels architecturally important next:
 
-1. improve precision on the now-green baselines, especially Pydantic impact-analysis and doc-noise control
+1. improve precision on the now-green baselines, especially broad/doc-heavy Pydantic and Redux Toolkit retrieval paths
 2. add doc-anchor confidence/type scoring so semantic docs compete more honestly with code candidates
 3. keep provider boundaries local-first and thin until profiling proves a stronger abstraction need
 

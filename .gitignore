@@ -22,6 +22,7 @@ plugins/
 .surgical_context/
 QA/__pycache__/
 QA/baselines.jsonl
+QA/repos/*
 
 # Env
 .env

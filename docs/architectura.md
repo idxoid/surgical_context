@@ -199,9 +199,9 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
-3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get noise suppression (tests/examples not penalized) and intent-specific priors for ranking.
+3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking.
 4. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
-5. **Unified graph + semantic ranking** (`UnifiedRanker`): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Mechanism-aware role backfill, query-sensitive mechanism routing, duplicate-target disambiguation, and canonical role normalization run inside this layer. Thin wrapper APIs can also satisfy capability roles from their own implementation body when nested helpers are not indexed as standalone symbols. Selection is constrained by token budget + intent-aware noise filtering and returns candidates with graph, semantic, and blended scores.
+5. **Unified graph + semantic ranking** (`UnifiedRanker`): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Mechanism-aware role backfill, query-sensitive mechanism routing, duplicate-target disambiguation, package/module fallback targets, and canonical role normalization run inside this layer. Thin wrapper APIs can also satisfy capability roles from their own implementation body when nested helpers are not indexed as standalone symbols. Selection is constrained by token budget + intent-aware noise filtering and returns candidates with graph, semantic, and blended scores.
 6. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
 7. **Subgraph/doc split** (`UnifiedRanker.candidates_to_subgraph(...)`): convert the chosen ranked candidates back into `SubgraphNode` plus `DocChunk` objects for prompt compilation.
 8. **Deduplication** (`ContextDeduplicator` on the graph-only path): remove redundant symbols and overlapping doc chunks when the unified ranker is not active.
@@ -473,11 +473,12 @@ This enables the benchmark to report *which mechanisms the ranker handles well* 
 ### 4.2. Intent-Aware Ranker
 Added `IMPACT_ANALYSIS` intent classification and intent-aware ranking noise suppression:
 
-- **IMPACT_ANALYSIS** (keyword: "most likely to break", "what parts", "what breaks"): get noise_factor=1.0 (tests/examples not penalized) because they are load-bearing for change impact analysis
+- **IMPACT_ANALYSIS** (keyword: "most likely to break", "what parts", "what breaks"): tests/examples are load-bearing, but only topic-related noisy candidates keep `noise_factor=1.0`; unrelated tests/examples retain the standard noisy-candidate penalty
 - **Other intents** (debugging, refactoring, navigation, etc.): get standard noise_factor computed from file type (tests penalized at 0.15)
 - **Intent floors**: IMPACT_ANALYSIS gets 3000-token minimum floor + special priors (symbol=0.3, doc=0.5) to surface test files and documentation
+- **Compact completion**: when all required roles are fulfilled below an intent floor and no useful candidates remain, the ranker reports `context_complete_below_floor` instead of treating the result as a floor failure
 
-This prevents impact analysis questions from being downranked just because they hit test files.
+This prevents impact analysis questions from being downranked just because they hit relevant test files, while avoiding unrelated benchmark/test noise.
 
 ### 4.3. Role Recall Metric
 Computed after canonical-role normalization as: `(required_roles not in ctx.missing_roles) / len(required_roles)`
@@ -503,7 +504,15 @@ This recognizes that:
 ### 4.5. Benchmark Output
 The benchmark now displays per-question:
 ```
-✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=0.50 | 1750t | pool_exhausted
+✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=1.00 | 839t | context_complete_below_floor
+```
+
+Current local snapshot after the UnifiedRanker hardening pass:
+
+```text
+✅ fastapi_q03: run_endpoint_function [explain_behavior] | role=1.00 | file=1.00 | 2123t | context_complete_below_floor
+✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=1.00 | 839t | context_complete_below_floor
+✅ pydantic_q05: v1 [explain_behavior] | role=1.00 | file=1.00 | 1319t | module_fallback target
 ```
 
 And summary:

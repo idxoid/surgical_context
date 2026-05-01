@@ -88,15 +88,15 @@ concept → idea → architecture → specs → code → cross-refs
 cross-refs → code → specs → architecture → concept → idea
 ```
 
-**Special handling:** Test files and examples are **not penalized** for the `noise_factor` penalty (std 0.15). Instead, impact analysis uses `noise_factor = 1.0` because tests are load-bearing evidence of what breaks. Additionally, impact analysis questions get intent-specific priors: `symbol = 0.3` (downrank primary symbol), `doc = 0.5` (uprank test files and documentation).
+**Special handling:** Test files and examples are load-bearing evidence for impact questions, but they are no longer globally unpenalized. Impact analysis uses topic-sensitive noise control: tests/examples keep full weight only when their path, name, or content overlaps the changed surface from the target/query. Unrelated benchmark or tutorial tests keep the standard noisy-candidate penalty. Impact analysis also keeps intent-specific priors: `symbol = 0.3` (downrank primary symbol), `doc = 0.5` (uprank test files and documentation).
 
-**Rationale:** Change impact is about finding what *depends* on you, not what you depend on. Callers (cross-refs) matter most. Code under test is high-signal — if it's not indexed as a symbol, the test file itself is evidence of cascade exposure. A minimum token floor (3000) ensures test files surface even if the ranker initially deprioritizes them.
+**Rationale:** Change impact is about finding what *depends* on you, not what you depend on. Callers (cross-refs) matter most. Code under test is high-signal — if it is tied to the changed surface. Topic-sensitive noise keeps affected tests visible while preventing unrelated benchmark suites from satisfying impact roles by accident. A minimum token floor (3000) remains a grounding target, but compact contexts that fulfill all required roles may stop below floor with `context_complete_below_floor`.
 
 **Keywords matched:** "most likely to break", "most likely to be affected", "likely to break", "what would break", "what parts", "what breaks", "are most likely"
 
 **Ranker behavior:**
 - Floor: 3000 minimum token budget
-- Noise suppression: `noise_factor = 1.0` (tests not penalized)
+- Noise suppression: topic-related tests/examples keep `noise_factor = 1.0`; unrelated noisy candidates keep the standard penalty
 - Priors: `symbol_prior = 0.3`, `doc_prior = 0.5` (emphasize dependencies + tests)
 - Pass gate: **OR** semantics — either `role_recall ≥ 0.60` OR `file_recall ≥ 0.50` is sufficient (tests may not be indexed as symbols)
 

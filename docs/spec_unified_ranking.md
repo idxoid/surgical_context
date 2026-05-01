@@ -105,13 +105,14 @@ Current behavior is slightly richer than the original greedy draft:
 - fill token costs for vector-only symbols before judging readiness
 - infer a mechanism from the target plus query
 - route lookalike APIs to the right mechanism path instead of relying on one keyword bucket; e.g. Redux Toolkit listener middleware no longer falls into generic store-configuration handling just because the word `middleware` appears in the query
+- resolve package/module-level targets when no symbol exists; e.g. `pydantic.v1` can use `pydantic/v1/__init__.py` as a synthetic primary module target instead of returning a false "symbol not found" success
 - compute required roles on a canonical cross-framework taxonomy
 - treat some roles as capability slots as well as identity slots; e.g. a runtime symbol like `SchemaValidator` can fulfill `validator_handle` if the dedicated wrapper/member symbol is absent
 - let some primary APIs carry supporting roles directly when their implementation body already contains the relevant orchestration path
-- let generic runtime/test signals fulfill impact-analysis roles so benchmark coverage is not tied to one framework's exact naming scheme
+- let generic runtime/test signals fulfill impact-analysis roles so benchmark coverage is not tied to one framework's exact naming scheme, while applying topic-sensitive noise control so unrelated tests do not satisfy impact roles by accident
 - use mechanism-aware role backfill before final selection
 - sort by blended score with a bonus for role-filling candidates
-- apply marginal-gain gating, intent floors, and signature-only fallback for low-gain distant candidates
+- apply marginal-gain gating, intent floors, `context_complete_below_floor`, and signature-only fallback for low-gain distant candidates
 
 The original greedy fill still describes the backbone, but the implementation now protects coverage quality rather than only raw score order.
 
@@ -160,7 +161,7 @@ class UnifiedRanker:
         ...
 
     def get_target(...):
-        """Workspace-scoped target resolution with duplicate disambiguation."""
+        """Workspace-scoped target resolution with duplicate disambiguation and module/package fallback."""
 
     def rank(
         self,
