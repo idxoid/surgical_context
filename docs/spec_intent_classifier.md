@@ -4,6 +4,8 @@
 
 **Purpose:** Detect the user's query intent and rank retrieval tiers (code, specs, architecture, concepts, ideas) accordingly. Enables adaptive payload assembly — different intents prioritize different content types.
 
+**Current status:** Implemented as a deterministic keyword classifier in `sidecar/context/intent_classifier.py`. The classifier returns a primary intent plus observability metadata (`distribution`, `confidence`, `ambiguous`, `matched_keywords`). Full multi-label routing remains deferred: the current ranker still routes by one primary intent, while preserving the distribution in the prompt contract for debugging.
+
 ---
 
 ## Intent Types & Priority Orderings
@@ -141,12 +143,48 @@ This prevents a single over-eager tier from starving others. Example: in debuggi
 
 **Input:** User query (text)
 
-**Process:** TBD — options include:
-- Regex pattern matching on keywords ("where", "why", "change", "add", etc.)
-- Lightweight LLM classification (small model or prompt-cached Claude)
-- Hybrid (regex + LLM fallback)
+**Current process:** deterministic keyword matching.
+
+- Lowercase the query.
+- Match standalone keywords with word boundaries and phrase keywords by substring.
+- Score each matching intent by keyword specificity: multi-word phrases score higher than short generic words.
+- Choose the primary intent by fixed precedence among intents that matched at least one keyword.
+- Compute a normalized distribution across all matched intents.
+- Mark `ambiguous=true` when the second-best score is close to the strongest score.
+- Default to `exploration` with confidence `0.0` when no keyword matches.
+
+**Primary intent precedence:**
+
+```
+debugging → impact_analysis → refactor → new_feature → design_question → navigation → exploration
+```
+
+This precedence is intentional but imperfect. For example, a query that includes both "why" and "where" routes as debugging; a query that includes "add" and "best way" routes as new_feature before design_question. The distribution/ambiguous metadata exists so these mixed cases are visible even before full multi-label routing.
+
+**Deferred alternatives:**
+- Lightweight LLM classification for ambiguous queries.
+- Hybrid regex + LLM fallback.
+- Learned classifier from feedback traces.
 
 **Output:** Intent label + metadata (confidence, matched keywords)
+
+Current serialized metadata:
+
+```json
+{
+  "primary": "impact_analysis",
+  "distribution": {
+    "impact_analysis": 0.68,
+    "debugging": 0.32
+  },
+  "confidence": 0.68,
+  "ambiguous": true,
+  "matched_keywords": {
+    "impact_analysis": ["what breaks"],
+    "debugging": ["break"]
+  }
+}
+```
 
 ---
 
@@ -220,10 +258,18 @@ If the top N tiers in the priority order produce zero matches:
 
 ## Status
 
-**Phase:** 6+ (post-Phase 5)  
-**Reason:** Currently precision is low due to fixture scope, not BFS tuning. Fix retrieval quality first.
+**Phase:** Phase 6.1 implemented; Phase 9.2 multi-label routing deferred.  
+**Reason:** The current keyword classifier is good enough for local v0.1 routing and observability, but mixed queries still collapse to one primary strategy. Retrieval precision is now a higher priority than replacing the classifier.
 
-**When to implement:**
-- After Phase 5 (AFFECTS index, typed edges) is stable
-- Once doc-code semantic linking improves
-- When retrieval precision reaches >60% on golden set
+**Implemented:**
+- Seven intent labels: navigation, debugging, refactor, exploration, new_feature, design_question, impact_analysis.
+- Keyword-based primary classification.
+- Intent distribution, confidence, ambiguous flag, and matched keyword metadata.
+- Prompt contract serialization under `intent_details`.
+- Impact-analysis special handling in the ranker: higher floor, topic-sensitive test/example noise, and OR pass gate.
+
+**Still deferred:**
+- Multi-label budget routing from `intent.distribution`.
+- LLM fallback for ambiguous intent.
+- Feedback-trained classifier.
+- User-facing UI affordance when intent is ambiguous.
