@@ -14,7 +14,7 @@ The harness is "fully productized" when all four are true:
 
 1. `pytest tests/` runs green on a golden fixture repo with ≥30 (question → expected_symbols) pairs.
 2. `python QA/qa_benchmark.py` always emits a JSON metrics bundle and prints its path at the end of the run. `--report` is now an explicit output-path override, not the switch that enables report writing. The bundle includes `recall@k`, `precision`, `role_recall`, `file_recall`, `tokens_surgical`, `tokens_carpet_bomb`, `assembly_ms_avg`, and per-question `ready_context`.
-3. Each run also appends a compact pointer row to `QA/benchmark_runs.jsonl` unless `--no-snapshot-manifest` is passed. The row records repo, core12 flag, commit, branch, report path, pass rate, precision, recall, tokens, reduction, and assembly time so `/tmp` reports remain discoverable.
+3. Each run also appends a compact pointer row to `QA/benchmark_runs.jsonl` unless `--no-snapshot-manifest` is passed. The row records repo, core12 flag, commit, branch, report path, pass rate, precision, recall, tokens, reduction, and assembly time so `/tmp` reports remain discoverable. `QA/benchmark_runs.py` prints the recent rows, compares the latest rows for a repo, and audits `ready_context.contract.pruned[]` reasons from the referenced full reports.
 4. GitHub Actions runs the bundle on every PR and posts a delta comment (regressions block merge).
 5. A baseline row exists in `QA/baselines.jsonl` — without it, deltas are meaningless.
 
@@ -133,6 +133,7 @@ tests/
     test_index_endpoint.py       # full /index flow on sample_project
 QA/
   qa_benchmark.py                # reframed: loads questions.yaml, emits metrics JSON
+  benchmark_runs.py              # inspect benchmark_runs.jsonl and audit pruned[] reasons
   baselines.jsonl                # one row per commit on main
   judges/
     recall.py
