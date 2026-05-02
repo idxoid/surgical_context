@@ -1049,6 +1049,7 @@ class UnifiedRanker:
         chosen: list[Candidate] = []
         spent = self.PREAMBLE_TOKENS + target.token_estimate
         pruned_details = []
+        pruned_uids: set[str] = set()
         chosen_files = {target.file_path}
         fulfilled_roles = set(self._roles_of(target))
 
@@ -1071,6 +1072,50 @@ class UnifiedRanker:
         def _is_code_file(c: Candidate) -> bool:
             return c.kind != "doc"
 
+        def _record_pruned(
+            c: Candidate,
+            reason: str,
+            *,
+            gain: float | None = None,
+            token_cost: int | None = None,
+            candidate_roles: list[str] | None = None,
+        ) -> None:
+            if c.uid in pruned_uids:
+                return
+            pruned_uids.add(c.uid)
+            blended_score = self._blended(c)
+            roles = candidate_roles if candidate_roles is not None else self._roles_of(c)
+            cost = token_cost if token_cost is not None else c.token_cost
+            pruned_details.append(
+                {
+                    "kind": c.kind,
+                    "uid": c.uid,
+                    "name": c.name,
+                    "file": c.file_path,
+                    "file_path": c.file_path,
+                    "relation": c.relation,
+                    "role": c.evidence_role,
+                    "supporting_roles": roles,
+                    "gain": round(gain, 3) if gain is not None else None,
+                    "tokens": cost,
+                    "token_cost": cost,
+                    "reason": reason,
+                    "scores": {
+                        "graph_score": round(c.graph_score, 3),
+                        "semantic_score": round(c.semantic_score, 3),
+                        "blended_score": round(blended_score, 3),
+                        "intent_weight": round(c.intent_weight, 3),
+                        "noise_factor": round(c.noise_factor, 3),
+                    },
+                    "graph_score": round(c.graph_score, 3),
+                    "semantic_score": round(c.semantic_score, 3),
+                    "blended_score": round(blended_score, 3),
+                    "intent_weight": round(c.intent_weight, 3),
+                    "noise_factor": round(c.noise_factor, 3),
+                    "provenance": c.provenance,
+                }
+            )
+
         def _try_select(c: Candidate, gain: float, candidate_roles: list[str]) -> str | None:
             """Attempt to seat ``c``. Returns None on success, or a skip reason."""
             nonlocal spent
@@ -1079,22 +1124,13 @@ class UnifiedRanker:
                 potential_cost = min(c.token_cost, 80)
 
             if spent + potential_cost > budget:
-                blended_score = self._blended(c)
-                pruned_details.append({
-                    "kind": c.kind,
-                    "uid": c.uid,
-                    "name": c.name, "file": c.file_path, "relation": c.relation,
-                    "role": c.evidence_role,
-                    "supporting_roles": candidate_roles,
-                    "gain": round(gain, 3), "tokens": potential_cost,
-                    "token_cost": potential_cost,
-                    "reason": "over_budget",
-                    "graph_score": round(c.graph_score, 3),
-                    "semantic_score": round(c.semantic_score, 3),
-                    "blended_score": round(blended_score, 3),
-                    "intent_weight": round(c.intent_weight, 3),
-                    "provenance": c.provenance,
-                })
+                _record_pruned(
+                    c,
+                    "over_budget",
+                    gain=gain,
+                    token_cost=potential_cost,
+                    candidate_roles=candidate_roles,
+                )
                 return "over_budget"
 
             if c.depth >= 2 and gain < 0.25:
@@ -1107,7 +1143,8 @@ class UnifiedRanker:
             fulfilled_roles.update(candidate_roles)
             return None
 
-        for c in pool:
+        stop_index: int | None = None
+        for idx, c in enumerate(pool):
             gain = self._calculate_marginal_gain(
                 c,
                 chosen,
@@ -1141,8 +1178,20 @@ class UnifiedRanker:
             is_noisy_code = c.kind != "doc" and c.noise_factor < 1.0
             if is_noisy_code:
                 if intent == Intent.IMPACT_ANALYSIS:
+                    _record_pruned(
+                        c,
+                        "impact_noise_penalty",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
                     continue
                 if not fills_role:
+                    _record_pruned(
+                        c,
+                        "noise_penalty",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
                     continue
 
             # Hold docs aside until we have enough code coverage. Once code
@@ -1157,11 +1206,30 @@ class UnifiedRanker:
                 # Only break if floor is met AND no required roles are missing
                 if spent >= min_floor and not missing_roles:
                     stopped_reason = "marginal_gain_threshold"
+                    _record_pruned(
+                        c,
+                        "marginal_gain_threshold",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
+                    stop_index = idx
                     break
 
                 if not is_useful:
+                    _record_pruned(
+                        c,
+                        "low_utility",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
                     continue
                 if c.kind == "doc" and not fills_role:
+                    _record_pruned(
+                        c,
+                        "low_marginal_gain",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
                     continue
                 # Unique role-fillers bypass the low-gain floor — without them
                 # the role stays unfilled and downstream reasoning loses
@@ -1169,9 +1237,21 @@ class UnifiedRanker:
                 # score (e.g. fastapi `openapi` in applications.py: 256 tokens
                 # of largely-static config logic) still earns its seat here.
                 if gain < low_gain_floor and not fills_role:
+                    _record_pruned(
+                        c,
+                        "low_gain_floor",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
                     continue
 
             _try_select(c, gain, candidate_roles)
+
+        if stop_index is not None:
+            for c in pool[stop_index + 1:]:
+                _record_pruned(c, "not_considered_after_threshold")
+            for c in deferred_docs:
+                _record_pruned(c, "deferred_doc_not_replayed_after_threshold")
 
         # Second pass: deferred docs, now that code-file breadth is established
         # (or the main pass exhausted the pool). Re-evaluate gain against the
@@ -1179,7 +1259,8 @@ class UnifiedRanker:
         if deferred_docs and stopped_reason != "marginal_gain_threshold":
             for c in deferred_docs:
                 if spent >= budget:
-                    break
+                    _record_pruned(c, "over_budget_after_doc_deferral")
+                    continue
                 gain = self._calculate_marginal_gain(
                     c, chosen, target, required_roles=required_roles,
                 )
@@ -1189,8 +1270,20 @@ class UnifiedRanker:
                     for role in candidate_roles
                 )
                 if gain < min_gain and not fills_role:
+                    _record_pruned(
+                        c,
+                        "deferred_doc_low_marginal_gain",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
                     continue
                 if gain < low_gain_floor and not fills_role:
+                    _record_pruned(
+                        c,
+                        "deferred_doc_low_gain_floor",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
                     continue
                 _try_select(c, gain, candidate_roles)
 
@@ -1213,6 +1306,7 @@ class UnifiedRanker:
             "floor": min_floor,
             "reserved": self.PREAMBLE_TOKENS,
             "pool_size": len(pool),
+            "pruned": len(pruned_details),
         }
         return chosen, budget_info, stopped_reason, pruned_details, missing_roles
 

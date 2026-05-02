@@ -148,12 +148,14 @@ Without scores in the contract:
 
 ### 2.3 `pruned` Array — Why It Matters
 
-Current contract drops budget-pruned candidates silently. For debugging retrieval, the pruned list is often the most important part of the answer:
+The contract now records candidates that missed selection, not only candidates that exceeded the token budget. For debugging retrieval, the pruned list is often the most important part of the answer:
 
 - "Did `validate_amount` miss because it scored low, or because it was cost-prohibitive?"
 - "How many candidates were pruned — 2 or 200?" signals whether the budget is the bottleneck.
 
 Capped at 20 entries, sorted by descending `blended_score` — only the most painful exclusions surface.
+
+Current reasons include `over_budget`, `noise_penalty`, `impact_noise_penalty`, `low_utility`, `low_marginal_gain`, `low_gain_floor`, `marginal_gain_threshold`, `not_considered_after_threshold`, `deferred_doc_not_replayed_after_threshold`, and doc-deferral variants. Each entry includes flat score fields plus a nested `scores` block, token cost, role evidence, supporting roles, noise factor, and provenance.
 
 ### 2.4 Backwards Compatibility
 

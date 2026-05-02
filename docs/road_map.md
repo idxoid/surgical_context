@@ -546,14 +546,14 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] UnifiedRanker consumes anchor quality for doc graph boost and DocAnchor bridge provenance
 - [x] Prompt contract surfaces `documentation[].anchor_type`, `anchor_confidence`, `primary_bias`, and nested `anchor`
 
-### 9.4 Prompt Contract Observability 🚧 IN PROGRESS (~70% COMPLETE)
+### 9.4 Prompt Contract Observability 🚧 IN PROGRESS (~85% COMPLETE)
 - [x] Per-candidate basic `scores` block (graph relevance / semantic score)
 - [x] `provenance` list on every symbol and doc chunk
 - [x] Budget-level `metadata.pruning_reasons`
 - [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
 - [x] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
-- [ ] `pruned[]` array — candidates that missed the budget, with reason (Week 1)
-- [ ] `metadata.ranker.weights` — tuning state snapshotted with every response (Week 1)
+- [x] `pruned[]` array — candidates that missed the budget, with reason, scores, cost, roles, noise factor, and provenance
+- [x] `metadata.ranker.weights` — tuning state snapshotted with every response
 - [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence` (Phase 9.2, deferred)
 
 ---
@@ -703,6 +703,6 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is disambiguation + bridge quality on real repos ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 In Progress |
 | Single-label intent | High | Mixed queries (e.g. debugging+refactor) collapse to one tier strategy — loses half the answer. | Phase 9.2: `IntentDistribution` multi-label ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
 | Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3 implemented: per-edge `anchor_type`, `confidence`, `primary_bias`, and resolver-aware ranker consumption ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ✅ Resolved |
-| No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4 basics are implemented; remaining gap is full `pruned[]`, ranker weights, and intent diagnostics in the contract ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 In Progress |
+| No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4 now surfaces selected scores/provenance, ranker weights, and `pruned[]`; remaining gap is full multi-label intent diagnostics ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 In Progress |
 | No caching strategy | Medium | Repeated queries re-read bodies, re-run BFS, re-call LLM; the graph provider saturates before the model does. | Phase 10.1: three-layer cache ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ❌ Open |
 | Static retriever | Medium | No feedback signal — silent drift, silent miss. System cannot improve from usage. | Phase 10.2: feedback loop + `CO_RELEVANT` learned edges ([spec_learning_loop.md](spec_learning_loop.md)) | ❌ Open |

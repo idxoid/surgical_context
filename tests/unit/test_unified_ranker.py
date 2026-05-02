@@ -1119,6 +1119,68 @@ def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
     ) == 1.0
 
 
+def test_rank_records_pruned_reasons_and_score_breakdown():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+    target = SubgraphNode(
+        uid="configureStore",
+        name="configureStore",
+        file_path="/repo/packages/toolkit/src/configureStore.ts",
+        range=[121, 180],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    huge_role_filler = Candidate(
+        kind="symbol",
+        uid="getDefaultMiddleware",
+        name="getDefaultMiddleware",
+        file_path="/repo/packages/toolkit/src/getDefaultMiddleware.ts",
+        token_cost=500,
+        graph_score=0.9,
+        semantic_score=0.8,
+        relation="ROLE_BACKFILL",
+        evidence_role="composition_surface",
+        provenance=["role-backfill:composition_surface"],
+    )
+    noisy_test = Candidate(
+        kind="symbol",
+        uid="test_configure_store_noise",
+        name="test_unrelated_listener_case",
+        file_path="/repo/packages/toolkit/src/tests/configureStore.test.ts",
+        token_cost=80,
+        graph_score=0.7,
+        semantic_score=0.7,
+        relation="CALLS_DIRECT",
+        provenance=["graph:CALLS_DIRECT"],
+    )
+
+    ranker._graph_candidates = lambda *a, **kw: [huge_role_filler, noisy_test]
+    ranker._doc_candidates = lambda *a, **kw: []
+    ranker._sym_vec_candidates = lambda *a, **kw: []
+    ranker._doc_bridge_candidates = lambda *a, **kw: []
+
+    _, budget_info, _, pruned, _ = ranker.rank(
+        target,
+        "configureStore assemble middleware and enhancers",
+        Intent.EXPLORATION,
+        budget=300,
+    )
+
+    by_uid = {item["uid"]: item for item in pruned}
+    assert budget_info["pruned"] == len(pruned)
+    assert by_uid["getDefaultMiddleware"]["reason"] == "over_budget"
+    assert by_uid["test_configure_store_noise"]["reason"] == "noise_penalty"
+    assert (
+        by_uid["getDefaultMiddleware"]["scores"]["blended_score"]
+        == by_uid["getDefaultMiddleware"]["blended_score"]
+    )
+    assert "noise_factor" in by_uid["test_configure_store_noise"]["scores"]
+
+
 def test_listener_middleware_api_carries_supporting_execution_roles():
     ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
     target = Candidate(
