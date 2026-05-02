@@ -68,6 +68,22 @@ repositories:
     language: typescript
     rationale: "Enterprise-grade TypeScript framework with decorators, dependency injection, and modular architecture—tests architectural patterns and complex metadata systems."
 
+  - id: sqlalchemy
+    name: SQLAlchemy
+    clone_url: https://github.com/sqlalchemy/sqlalchemy.git
+    repo_url: https://github.com/sqlalchemy/sqlalchemy
+    docs_url: https://docs.sqlalchemy.org/
+    language: python
+    rationale: "Python ORM/database toolkit with complex declarative patterns, lazy loading, and query builder architecture—tests sophisticated Python metaprogramming and data access patterns."
+
+  - id: vue
+    name: Vue
+    clone_url: https://github.com/vuejs/vue.git
+    repo_url: https://github.com/vuejs/vue
+    docs_url: https://vuejs.org/
+    language: typescript
+    rationale: "JavaScript/TypeScript frontend framework with reactive systems, component lifecycle, and template compilation—tests UI framework patterns and reactive state management."
+
 questions:
   - id: fastapi_q01
     repo: fastapi
@@ -614,3 +630,107 @@ questions:
     required_roles: [public_entrypoint, validator, transformer, middleware_pattern]
     expected_symbols: [Pipe, PipeTransform, ValidationPipe]
     expected_files: [packages/core/pipes, packages/common/pipes]
+
+  - id: sqlalchemy_q01
+    repo: sqlalchemy
+    core12: true
+    symbol: declarative_base
+    question: "How does SQLAlchemy's declarative base system map Python classes to database tables?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: sqlalchemy_declarative_mapping
+    required_roles: [public_entrypoint, metaprogramming, mapper, table_registry]
+    expected_symbols: [declarative_base, Column, Table, Mapper]
+    expected_files: [lib/sqlalchemy/orm/decl_api.py, lib/sqlalchemy/orm/mapper.py]
+
+  - id: sqlalchemy_q02
+    repo: sqlalchemy
+    core12: true
+    symbol: Query
+    question: "How does SQLAlchemy Query builder lazily construct and execute SQL statements?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: sqlalchemy_query_lazy_execution
+    required_roles: [public_entrypoint, builder_pattern, lazy_executor, sql_compiler]
+    expected_symbols: [Query, Select, ClauseElement, compile]
+    expected_files: [lib/sqlalchemy/orm/query.py, lib/sqlalchemy/sql]
+
+  - id: sqlalchemy_q03
+    repo: sqlalchemy
+    core12: true
+    symbol: Session
+    question: "How does SQLAlchemy Session manage object identity, lazy loading, and database transactions?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: sqlalchemy_session_identity_management
+    required_roles: [public_entrypoint, identity_map, lazy_loader, transaction_handler]
+    expected_symbols: [Session, SessionMaker, Identity, LazyLoader]
+    expected_files: [lib/sqlalchemy/orm/session.py]
+
+  - id: sqlalchemy_q04
+    repo: sqlalchemy
+    core12: false
+    symbol: relationship
+    question: "How do SQLAlchemy relationships handle foreign key resolution and collection management?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: sqlalchemy_relationship_loading
+    required_roles: [public_entrypoint, fk_resolver, collection_manager, lazy_loader]
+    expected_symbols: [relationship, RelationshipProperty, Loader]
+    expected_files: [lib/sqlalchemy/orm/relationships.py, lib/sqlalchemy/orm/strategies.py]
+
+  - id: vue_q01
+    repo: vue
+    core12: true
+    symbol: createApp
+    question: "How does Vue's createApp initialize a reactive application and mount components?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: vue_app_initialization
+    required_roles: [public_entrypoint, reactive_system, component_factory, lifecycle_handler]
+    expected_symbols: [createApp, App, Component, mount]
+    expected_files: [packages/runtime-core/src/apiCreateApp.ts]
+
+  - id: vue_q02
+    repo: vue
+    core12: true
+    symbol: Ref
+    question: "How does Vue's Ref system create reactive values and track dependencies?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: vue_reactivity_ref_system
+    required_roles: [public_entrypoint, reactive_proxy, dependency_tracker, change_notifier]
+    expected_symbols: [Ref, reactive, track, trigger]
+    expected_files: [packages/reactivity/src/ref.ts, packages/reactivity/src/reactive.ts]
+
+  - id: vue_q03
+    repo: vue
+    core12: true
+    symbol: render
+    question: "How does Vue's render system compile templates and update the DOM?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: vue_template_compilation_rendering
+    required_roles: [public_entrypoint, template_compiler, vnode_builder, patch_engine]
+    expected_symbols: [render, compile, createVNode, patch]
+    expected_files: [packages/compiler-core/src, packages/runtime-core/src/renderer.ts]
+
+  - id: vue_q04
+    repo: vue
+    core12: false
+    symbol: watch
+    question: "How does Vue's watch function set up reactive watchers and handle side effects?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: vue_watcher_setup
+    required_roles: [public_entrypoint, dependency_tracker, effect_executor, cleanup_handler]
+    expected_symbols: [watch, watchEffect, Watcher]
+    expected_files: [packages/runtime-core/src/apiWatch.ts]
