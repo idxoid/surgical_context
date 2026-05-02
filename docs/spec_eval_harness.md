@@ -75,6 +75,15 @@ Target: 30 entries for Phase 2.5 (fixture), 20+ for Phase 4 (real-repo pack, Fas
 | **`file_recall`** | `|retrieved_files ∩ expected_files| / |expected_files|` | Fraction of expected files included. Tests ranking noise and code coverage. |
 | **Intent-stratified pass gate** | See table below | Different intents have different acceptable thresholds. |
 
+**Validity caveat:** `role_recall = 1.00` on every positive question means the
+ranker covers every role currently encoded in the pack; it does not, by itself,
+prove that the role annotations are complete or independent. Because some roles
+were refined during benchmark debugging, reports should present `role_recall`
+as "coverage of the current formalized mechanism taxonomy" and pair it with
+`precision_at_5`, `file_recall`, `ready_context`, and `pruned[]` inspection. A
+stronger claim requires a pre-registered or independently reviewed role-label
+pass before ranker tuning.
+
 **Intent-Stratified Pass Gates (Phase 4):**
 
 | Intent | role_recall floor | file_recall floor | Gate semantics |

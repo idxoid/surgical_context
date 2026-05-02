@@ -14,6 +14,38 @@ So the document's main lesson still stands:
 
 **do not tune by pass rate alone; classify failures into graph-structure gaps, doc-link gaps, and ranking noise.**
 
+### Validity Note: Role Recall Saturation
+
+In the current real-repo benchmark snapshots, `role_recall` has become saturated:
+for the positive questions we track across FastAPI, Pydantic, and Redux Toolkit,
+the ranker now reports `role_recall = 1.00` question by question, not merely on
+average. That is useful, but it should not be presented as proof without a
+methodology caveat.
+
+There are two honest interpretations:
+
+**Optimistic:** the mechanism-aware ranker can now recover every relationship
+type we have formalized as `required_roles`. In this reading, the remaining
+work has shifted from mechanism coverage to precision: fewer sibling-subsystem
+neighbors, fewer broad docs, and fewer low-gain candidates.
+
+**Skeptical:** some `required_roles` were refined while debugging the ranker,
+with knowledge of what the current system returns. If an independent reviewer
+annotated the same questions before seeing retrieval output, they might choose
+stricter or different roles, and `role_recall` could drop.
+
+The right claim for an article is therefore modest:
+
+> On the current curated benchmark, the system covers all pre-existing
+> mechanism roles it is evaluated against. This is strong evidence that the
+> role taxonomy is operationally useful, but it is not yet independent proof
+> that the taxonomy is complete or unbiased.
+
+The next benchmark hardening step is an independent role-label pass: freeze the
+question text, expected files/symbols, mechanism, and `required_roles` before
+running or tuning the ranker. Until then, `precision_at_5`, `file_recall`,
+`ready_context`, and `pruned[]` should be discussed alongside `role_recall`.
+
 ## Problem Statement
 
 Initially treated benchmark as "question score optimization" — adjusting ranker parameters to pass more questions. This led to:
