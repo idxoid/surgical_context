@@ -85,12 +85,12 @@ def _delta(curr: Any, prev: Any, unit: str, precision: int, higher_is_better: bo
         return "-"
     diff = float(curr) - float(prev)
     improved = diff > 0 if higher_is_better else diff < 0
-    marker = "+" if improved else "-" if diff else "="
+    marker = "↑" if improved else "↓" if diff else "="
     if unit == "%":
-        return f"{marker}{diff * 100:.{precision}f}%"
+        return f"{marker} {diff * 100:+.{precision}f}%"
     if precision == 0:
-        return f"{marker}{int(diff):+,d}"
-    return f"{marker}{diff:+.{precision}f}"
+        return f"{marker} {int(diff):+,d}"
+    return f"{marker} {diff:+.{precision}f}"
 
 
 def print_runs(entries: list[dict[str, Any]]) -> None:

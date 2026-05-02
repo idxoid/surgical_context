@@ -39,8 +39,12 @@ _NOISE_PATH_PATTERNS = (
     "/test_",
     "/__tests__/",
     "/docs_src/",
+    "/docs/virtual/",
     "/examples/",
     "/example/",
+    "/__testfixtures__/",
+    "/testfixtures/",
+    "/codemods/",
 )
 _NOISE_NAME_PREFIXES = ("test_",)
 _NOISE_NAME_SUBSTRINGS = ("tutorial",)
@@ -93,8 +97,12 @@ _FOCUS_QUERY_STOPWORDS = _IMPACT_TOPIC_STOPWORDS | {
     "from",
     "generate",
     "generated",
+    "enhancer",
+    "enhancers",
     "into",
     "logic",
+    "middleware",
+    "middlewares",
     "most",
     "operation",
     "parts",
@@ -1145,16 +1153,23 @@ class UnifiedRanker:
 
         stop_index: int | None = None
         for idx, c in enumerate(pool):
+            # Selection Gating Logic: Mechanism-Aware
+            missing_roles = set(required_roles) - fulfilled_roles
+            candidate_roles = self._selection_roles(
+                c,
+                target,
+                query=query,
+                mechanism=mechanism,
+                intent=intent,
+                required_roles=required_roles,
+            )
             gain = self._calculate_marginal_gain(
                 c,
                 chosen,
                 target,
                 required_roles=required_roles,
+                candidate_roles=candidate_roles,
             )
-
-            # Selection Gating Logic: Mechanism-Aware
-            missing_roles = set(required_roles) - fulfilled_roles
-            candidate_roles = self._roles_of(c)
             fills_role = any(role in required_roles and role not in fulfilled_roles for role in candidate_roles)
             is_bridge = c.relation in ("DOC_BRIDGE", "SEMANTIC_HINT", "ROLE_BACKFILL") or self._has_role_backfill(c)
             is_strong_relation = c.relation in ("CALLS_DIRECT", "CALLS_SCOPED", "DEPENDS_ON", "IMPLEMENTS", "OVERRIDES")
@@ -1261,10 +1276,21 @@ class UnifiedRanker:
                 if spent >= budget:
                     _record_pruned(c, "over_budget_after_doc_deferral")
                     continue
-                gain = self._calculate_marginal_gain(
-                    c, chosen, target, required_roles=required_roles,
+                candidate_roles = self._selection_roles(
+                    c,
+                    target,
+                    query=query,
+                    mechanism=mechanism,
+                    intent=intent,
+                    required_roles=required_roles,
                 )
-                candidate_roles = self._roles_of(c)
+                gain = self._calculate_marginal_gain(
+                    c,
+                    chosen,
+                    target,
+                    required_roles=required_roles,
+                    candidate_roles=candidate_roles,
+                )
                 fills_role = any(
                     role in required_roles and role not in fulfilled_roles
                     for role in candidate_roles
@@ -2349,19 +2375,10 @@ class UnifiedRanker:
         if intent == Intent.IMPACT_ANALYSIS or mechanism == "workspace_structure":
             return 1.0
 
-        required = set(normalize_roles(required_roles)) - {"docs_or_concept"}
-        primary_role = self._role_of(candidate)
-        if candidate.kind != "doc" and (
-            primary_role in required or self._has_role_backfill(candidate)
-        ):
-            return 1.0
-
-        if self._candidate_matches_query_topic(candidate, target, query=query):
-            return 1.0
-
         path = (candidate.file_path or "").lower()
         target_path = (target.file_path or "").lower()
         query_terms = set(self._focus_query_terms(query))
+        has_explicit_role_backfill = self._has_role_backfill(candidate)
 
         subsystem_rules = (
             ("/query/", {"query", "rtk", "api", "endpoint", "endpoints", "subscription"}),
@@ -2374,7 +2391,16 @@ class UnifiedRanker:
                 continue
             if query_terms & topic_terms:
                 return 1.0
-            return 0.15 if candidate.kind != "doc" else 0.45
+            if not has_explicit_role_backfill:
+                return 0.15 if candidate.kind != "doc" else 0.45
+
+        required = set(normalize_roles(required_roles)) - {"docs_or_concept"}
+        primary_role = self._role_of(candidate)
+        if candidate.kind != "doc" and (primary_role in required or has_explicit_role_backfill):
+            return 1.0
+
+        if self._candidate_matches_query_topic(candidate, target, query=query):
+            return 1.0
 
         if candidate.kind != "doc" and candidate.depth >= 5:
             return 0.25 if candidate.depth >= 7 else 0.45
@@ -2490,18 +2516,22 @@ class UnifiedRanker:
         target: SubgraphNode,
         *,
         required_roles: list[str],
+        candidate_roles: list[str] | None = None,
     ) -> float:
         """marginal_gain = base_score + role_bonus + coverage_bonus + bridge_bonus - redundancy_penalty"""
         base_score = self._blended(c)
         
         # 1. Role Bonus: Does this symbol fulfill a missing requirement for the mechanism?
         role_bonus = 0.0
-        candidate_roles = [role for role in self._roles_of(c) if role in required_roles]
-        if candidate_roles:
+        roles_for_gain = [
+            role for role in (candidate_roles if candidate_roles is not None else self._roles_of(c))
+            if role in required_roles
+        ]
+        if roles_for_gain:
             chosen_roles = set(self._roles_of(target))
             for chosen_candidate in chosen:
                 chosen_roles.update(self._roles_of(chosen_candidate))
-            if any(role not in chosen_roles for role in candidate_roles):
+            if any(role not in chosen_roles for role in roles_for_gain):
                 role_bonus = 0.5  # High-priority evidence signal
 
         # 2. Coverage Bonus: Does this symbol complete a structural chain?
@@ -2551,6 +2581,30 @@ class UnifiedRanker:
 
     def _roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
         return normalize_roles([self._role_of(c), *self._supporting_roles_of(c)])
+
+    def _selection_roles(
+        self,
+        c: Candidate,
+        target: SubgraphNode,
+        *,
+        query: str,
+        mechanism: str,
+        intent: Intent,
+        required_roles: list[str],
+    ) -> list[str]:
+        roles = self._roles_of(c)
+        if (
+            c.kind == "doc"
+            or c.noise_factor >= 1.0
+            or intent == Intent.IMPACT_ANALYSIS
+            or mechanism == "workspace_structure"
+            or self._has_role_backfill(c)
+            or self._candidate_matches_query_topic(c, target, query=query)
+        ):
+            return roles
+
+        required = set(normalize_roles(required_roles))
+        return [role for role in roles if role not in required]
 
     def _candidate_matches_any_role(
         self,

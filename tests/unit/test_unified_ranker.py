@@ -1090,6 +1090,15 @@ def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
         token_cost=80,
         depth=4,
     )
+    off_topic_role_candidate = Candidate(
+        kind="symbol",
+        uid="hasPendingRequests",
+        name="hasPendingRequests",
+        file_path="/repo/packages/toolkit/src/query/core/buildMiddleware/invalidationByTags.ts",
+        token_cost=80,
+        depth=3,
+        evidence_role="composition_surface",
+    )
     focused_devtools_candidate = Candidate(
         kind="symbol",
         uid="composeWithDevTools",
@@ -1109,6 +1118,23 @@ def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
         intent=Intent.EXPLORATION,
         required_roles=required,
     ) < 1.0
+    assert ranker._topic_focus_factor(
+        off_topic_role_candidate,
+        target,
+        query=query,
+        mechanism="runtime_configuration_pipeline",
+        intent=Intent.EXPLORATION,
+        required_roles=required,
+    ) < 1.0
+    off_topic_role_candidate.noise_factor = 0.15
+    assert "composition_surface" not in ranker._selection_roles(
+        off_topic_role_candidate,
+        target,
+        query=query,
+        mechanism="runtime_configuration_pipeline",
+        intent=Intent.EXPLORATION,
+        required_roles=required,
+    )
     assert ranker._topic_focus_factor(
         focused_devtools_candidate,
         target,
@@ -1179,6 +1205,19 @@ def test_rank_records_pruned_reasons_and_score_breakdown():
         == by_uid["getDefaultMiddleware"]["blended_score"]
     )
     assert "noise_factor" in by_uid["test_configure_store_noise"]["scores"]
+
+
+def test_low_signal_virtual_and_fixture_paths_are_noisy():
+    assert compute_noise_factor(
+        "/repo/docs/virtual/matchers/index.ts",
+        "requestThunk1",
+        kind="symbol",
+    ) < 1.0
+    assert compute_noise_factor(
+        "/repo/packages/rtk-codemods/transforms/createSliceBuilder/__testfixtures__/basic.ts",
+        "incrementAsync",
+        kind="symbol",
+    ) < 1.0
 
 
 def test_listener_middleware_api_carries_supporting_execution_roles():
