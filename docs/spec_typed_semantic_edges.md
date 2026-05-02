@@ -1,246 +1,247 @@
 # Spec — Typed Semantic Edges (Phase 5)
 
-> **Status:** Proposed. Replaces the single `CALLS` relationship type with semantically precise edge types. Affects indexer, BFS scoring, and graph schema.
+> **Status:** Implemented for typed call edges and ranker traversal. The graph now supports and consumes `CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`, and `CALLS_GUESS`; legacy `CALLS` is still accepted as a compatibility fallback. `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, and `SEMANTIC_HINT` are supported by traversal/scoring, but parser emission is uneven: inheritance currently writes `DEPENDS_ON` with metadata, not dedicated `IMPLEMENTS`/`OVERRIDES` edges, and `REFERENCES` is schema/ranker-ready but not broadly emitted.
 
 ## 1. Problem
 
-The current graph uses three edge types for all relationships:
+The original graph used one broad `CALLS` edge for every call-like relationship. That was too coarse:
 
-```
-(Symbol)-[:CALLS]->(Symbol)
-(Symbol)-[:DEPENDS_ON]->(Symbol)
-(Symbol)-[:IMPORTS]->(Symbol)
-```
+- a scoped/static call is stronger than a guessed name match
+- an imported call has better evidence than a global name collision
+- a method dispatch through `self` or an object is weaker than a direct function call
+- a heuristic `getattr`/`eval` pattern should not rank like ordinary control flow
 
-All `CALLS` edges are treated equally in BFS scoring. This is wrong:
+Typed semantic edges give BFS, AFFECTS, and UnifiedRanker a confidence signal before semantic search or role backfill even runs.
 
-- A **direct static call** (`validate(x)`) is high-confidence — the callee always runs when the line is reached.
-- A **dynamic dispatch** (`self.handler(x)`) is ambiguous — the callee depends on runtime type.
-- A **decorator call** (`@cached`) is a control-flow modifier, not a data-flow dependency.
-- An **inferred call** from string patterns (`getattr(obj, 'process')()`) is low-confidence.
+## 2. Current Edge Types
 
-Treating these identically means the BFS scoring function rewards or penalizes every call equally, reducing retrieval precision.
+### 2.1 CALLS Family
 
-## 2. New Edge Types
-
-### CALLS family
-
-| Edge Type | Meaning | Confidence | BFS Prior |
+| Edge Type | Meaning | Current source | Confidence/Prior |
 |---|---|---|---|
-| `CALLS_DIRECT` | Static callable reference at call site | High | 1.0 |
-| `CALLS_DYNAMIC` | Method dispatch via `self.`, virtual call, duck typing | Medium | 0.7 |
-| `CALLS_INFERRED` | String-pattern or heuristic call (getattr, eval, plugin) | Low | 0.4 |
+| `CALLS_DIRECT` | Direct static call fallback | Python/TS parser, migration | 1.0 |
+| `CALLS_SCOPED` | Python call resolved to a unique symbol in local scope/file graph | Python parser + scoped resolver | 0.9 |
+| `CALLS_IMPORTED` | Python identifier resolved through import binding | Python parser + imports | 0.85 |
+| `CALLS_DYNAMIC` | Method/member dispatch (`self.x()`, `obj.x()`, `this.x()`) | Python/TS parser | 0.7 |
+| `CALLS_INFERRED` | Known indirect call pattern (`getattr`, `eval`, etc.) | Python parser | 0.4 |
+| `CALLS_GUESS` | Unresolved or ambiguous name match | Python parser / Neo4j fallback | 0.4 |
+| `CALLS` | Legacy compatibility edge | old graphs only | treated as direct |
 
-### DEPENDS_ON family
+### 2.2 Other Relationship Types
 
-| Edge Type | Meaning | Confidence | BFS Prior |
-|---|---|---|---|
-| `IMPLEMENTS` | Class implements interface or abstract base | High | 1.1 |
-| `OVERRIDES` | Method overrides parent class method | High | 1.1 |
-| `DEPENDS_ON` | General type/import dependency (unchanged) | Medium | 0.8 |
-| `REFERENCES` | Weak reference (type annotation only, comment mention) | Low | 0.3 |
-
-### Removed / Consolidated
-
-- `CALLS` — removed; replaced by CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED
-- `IMPORTS` — retained unchanged at file level (File→File edges are not split)
+| Edge Type | Meaning | Current status |
+|---|---|---|
+| `DEPENDS_ON` | General type/inheritance/import-style symbol dependency | Implemented |
+| `IMPLEMENTS` | Class implements interface/abstract contract | Traversal/scoring support; not broadly emitted |
+| `OVERRIDES` | Method overrides parent method | Traversal/scoring support; not broadly emitted |
+| `REFERENCES` | Weak symbol reference/type-only mention | Schema/scoring support; not broadly emitted |
+| `SEMANTIC_HINT` | Framework/doc-derived semantic relationship | Consumed by UnifiedRanker; produced by framework hint paths |
+| `IMPORTS` | File-to-file imports | Retained at file level |
 
 ## 3. Detection Logic
 
-### 3.1 CALLS_DIRECT
+### 3.1 Python Adapter
 
-Condition: call site is a static reference — a simple `Name` or `Attribute` node where the object is not `self` or an interface variable.
+Implemented in `sidecar/parser/adapters/python_adapter.py`.
 
-```python
-# Python examples → CALLS_DIRECT
-validate_amount(x)
-utils.format(x)
-PaymentError()
-```
+Current call classification:
 
-Tree-sitter check: `call.function` node is `identifier` or `attribute` where attribute root is a module-level name (not a parameter or `self`).
+- `identifier()` defaults to `CALLS_DIRECT`.
+- Imported identifiers become `CALLS_IMPORTED` and carry `callee_qualified_name`.
+- Unique local-scope matches become `CALLS_SCOPED` and carry `callee_uid`.
+- Ambiguous unresolved identifiers become `CALLS_GUESS`.
+- `self.method()` and other attribute calls become `CALLS_DYNAMIC`.
+- known indirect invocation names such as `getattr`, `setattr`, `operator.methodcaller`, `exec`, `eval`, `compile`, `__import__`, and `importlib.import_module` become `CALLS_INFERRED`.
 
-### 3.2 CALLS_DYNAMIC
+Relationship metadata written with calls:
 
-Condition: method call on `self`, an instance variable, or a known interface/abstract parameter.
-
-```python
-# Python examples → CALLS_DYNAMIC
-self.validate(x)
-handler.process(x)
-obj.run()
-```
-
-Tree-sitter check: `call.function` node is `attribute` where root is `self`, or root name appears in constructor parameter list (dependency injection pattern).
-
-### 3.3 CALLS_INFERRED
-
-Condition: indirect invocation via `getattr`, `operator.methodcaller`, string formatting, or known dispatch patterns.
-
-```python
-# Python examples → CALLS_INFERRED
-getattr(obj, method_name)()
-operator.methodcaller('process')(obj)
-globals()[fn_name]()
-```
-
-Tree-sitter check: call contains `getattr` with a variable string, or call function is itself a call expression (higher-order dispatch).
-
-### 3.4 IMPLEMENTS / OVERRIDES
-
-Condition: determined from class definition inheritance and method name matching.
-
-```python
-# IMPLEMENTS → class B(A) where A has abstract methods
-class PaymentProcessor(BaseProcessor):  # B IMPLEMENTS A
-
-# OVERRIDES → method defined in both B and parent A
-def validate(self):  # PaymentProcessor.validate OVERRIDES BaseProcessor.validate
-```
-
-Tree-sitter check: class node has `bases`; for each base, look up existing `DEPENDS_ON` edge to parent symbols. For `OVERRIDES`, cross-reference method names in parent class body.
-
-### 3.5 REFERENCES
-
-Condition: symbol appears in type annotation only (not called or instantiated), or in a comment/docstring.
-
-```python
-# REFERENCES — type hint only, never instantiated or called
-def process(payment: Payment) -> None:  # process REFERENCES Payment
-```
-
-Tree-sitter check: symbol appears in `type_annotation` nodes only, with no corresponding `call` or `instantiation`.
-
-## 4. Schema Changes
-
-### Neo4j
-
-No new node types. New relationship types only. Backward-compatible: old `CALLS` edges can coexist with new types during migration.
-
-```cypher
-// New relationship types (all properties same as current CALLS)
-CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, IMPLEMENTS, OVERRIDES, REFERENCES
-```
-
-Add indexes on all new relationship types:
-```cypher
-CREATE INDEX rel_calls_direct FOR ()-[r:CALLS_DIRECT]-() ON (r.uid)
-```
-
-### BFS Cypher Update
-
-Current:
-```cypher
-MATCH (s:Symbol {uid: $uid})-[r:CALLS|DEPENDS_ON]-(n:Symbol)
-```
-
-Updated:
-```cypher
-MATCH (s:Symbol {uid: $uid})-[r:CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES]-(n:Symbol)
-```
-
-### Scoring Table Update
-
-In `GraphExpander.RELATION_PRIOR`:
-
-```python
-RELATION_PRIOR = {
-    "CALLS_DIRECT_out":   1.0,
-    "CALLS_DIRECT_in":    1.2,
-    "CALLS_DYNAMIC_out":  0.7,
-    "CALLS_DYNAMIC_in":   0.9,
-    "CALLS_INFERRED_out": 0.4,
-    "CALLS_INFERRED_in":  0.5,
-    "IMPLEMENTS_out":     1.1,  # class → interface (understand the contract)
-    "IMPLEMENTS_in":      0.8,  # interface ← implementation
-    "OVERRIDES_out":      1.1,  # method → parent (understand the base)
-    "OVERRIDES_in":       0.9,  # parent ← override (discover extensions)
-    "DEPENDS_ON_out":     0.8,
-    "DEPENDS_ON_in":      0.6,
-    "REFERENCES_out":     0.3,
-    "REFERENCES_in":      0.2,
+```json
+{
+  "rel_type": "CALLS_SCOPED",
+  "tier": "scoped",
+  "confidence": 0.9,
+  "resolver": "py-scope-v1",
+  "call_site_line": 42
 }
 ```
 
-## 5. Migration
+### 3.2 TypeScript Adapter
 
-### From existing graph
+Implemented in `sidecar/parser/adapters/typescript_adapter.py`.
 
-Existing `CALLS` edges → reclassified to `CALLS_DIRECT` by default (conservative: assume static call). Dynamic edges are added on next re-index.
+Current call classification:
+
+- top-level identifier calls default to `CALLS_DIRECT`
+- member expressions become `CALLS_DYNAMIC`
+- `this.method()` attempts local method UID resolution when possible
+
+TypeScript support is intentionally simpler than Python scoped/imported resolution today.
+
+### 3.3 Inheritance and References
+
+Inheritance extraction exists, but `Neo4jClient.link_inheritance(...)` currently writes:
 
 ```cypher
-// One-time migration
-MATCH (a)-[r:CALLS]->(b)
-CREATE (a)-[:CALLS_DIRECT {uid: r.uid}]->(b)
-DELETE r
+(subclass)-[:DEPENDS_ON {is_interface, confidence: 0.9, tier: "scoped", resolver: "inheritance-v1"}]->(superclass)
 ```
 
-Run before Phase 5 indexer deployment. Can be rolled back by reverting to `CALLS` with a complementary migration.
+The original design called for dedicated `IMPLEMENTS` and `OVERRIDES` edges. Consumers already include those relationship types, so emitting them later is backward-compatible.
 
-### Incremental re-index
+`REFERENCES` indexes and scoring exist, but parser-side reference extraction remains future work.
 
-New `index_file()` calls emit CALLS_DIRECT / CALLS_DYNAMIC / CALLS_INFERRED based on detection logic. Old `CALLS` edges from un-re-indexed files remain as `CALLS_DIRECT` (via migration above) until the file is re-indexed.
+## 4. Graph Writes and Schema
 
-## 6. Parser Changes
+`Neo4jClient.link_calls(...)` groups call rows by `rel_type` and resolution mode, then writes typed relationships with:
 
-### Python Adapter
+- `workspace_id`
+- `call_site_line`
+- `confidence`
+- `tier`
+- `resolver`
 
-Update `PythonAdapter._extract_calls()` to return `(callee_uid, edge_type)` pairs instead of `callee_uid` strings.
+Supported modes:
 
-Signature change:
+- `uid` — direct target UID
+- `qualified_name` — imported target
+- name fallback — only links if exactly one candidate exists
+
+`sidecar/database/schema_migration.py` supports:
+
+```bash
+python -m sidecar.database.schema_migration status
+python -m sidecar.database.schema_migration create-indexes
+python -m sidecar.database.schema_migration migrate-edges [--drop-old]
+```
+
+The migration converts old `CALLS` edges to `CALLS_DIRECT` conservatively and can create relationship indexes for:
+
+- `CALLS_DIRECT`
+- `CALLS_DYNAMIC`
+- `CALLS_INFERRED`
+- `IMPLEMENTS`
+- `OVERRIDES`
+- `REFERENCES`
+
+The newer `CALLS_SCOPED`, `CALLS_IMPORTED`, and `CALLS_GUESS` types are used by the live parser/ranker path but are not fully reflected in the older migration script's index list.
+
+## 5. Retrieval Consumption
+
+### 5.1 GraphExpander
+
+`sidecar/context/graph_expander.py` traverses:
+
+```cypher
+CALLS
+CALLS_DIRECT
+CALLS_SCOPED
+CALLS_IMPORTED
+CALLS_DYNAMIC
+CALLS_INFERRED
+CALLS_GUESS
+DEPENDS_ON
+IMPLEMENTS
+OVERRIDES
+REFERENCES
+```
+
+Current relation priors:
+
 ```python
-# Before
-def _extract_calls(self, tree, source) -> list[str]
-
-# After
-def _extract_calls(self, tree, source) -> list[tuple[str, str]]
-# Returns list of (callee_name, edge_type)
+CALLS_DIRECT_out:   1.0
+CALLS_DIRECT_in:    1.2
+CALLS_SCOPED_out:   0.9
+CALLS_SCOPED_in:    1.1
+CALLS_IMPORTED_out: 0.85
+CALLS_IMPORTED_in:  1.0
+CALLS_DYNAMIC_out:  0.7
+CALLS_DYNAMIC_in:   0.9
+CALLS_INFERRED_out: 0.4
+CALLS_INFERRED_in:  0.5
+CALLS_GUESS_out:    0.4
+CALLS_GUESS_in:     0.5
+CALLS_out:          1.0
+CALLS_in:           1.2
+DEPENDS_ON:         0.8
+IMPORTS:            0.6
+IMPLEMENTS:         1.1
+OVERRIDES:          1.1
+REFERENCES:         0.3
 ```
 
-### TypeScript Adapter
+### 5.2 UnifiedRanker
 
-Same signature change. TypeScript dynamic detection is simpler: any `this.method()` is CALLS_DYNAMIC; top-level function calls are CALLS_DIRECT.
+`sidecar/context/unified_ranker.py` mirrors the same typed edge priors and additionally consumes `SEMANTIC_HINT` with a strong prior. Typed relationships are used for:
 
-### LanguageAdapter Protocol
+- graph candidate score
+- direction labels
+- strong-relation gating
+- AFFECTS reverse traversal
+- role/backfill recovery queries
 
-Update `LanguageAdapter.extract_calls()` protocol signature accordingly.
+Legacy `CALLS` remains accepted and is treated like `CALLS_DIRECT`.
+
+## 6. AFFECTS Integration
+
+`sidecar/indexer/affects.py` derives reverse dependency reachability from:
+
+```python
+CALLS_DIRECT
+CALLS_DYNAMIC
+CALLS_INFERRED
+CALLS_SCOPED
+CALLS_IMPORTED
+CALLS_GUESS
+DEPENDS_ON
+IMPLEMENTS
+OVERRIDES
+```
+
+This means even guessed/inferred edges can contribute to impact reachability, but their weaker ranking priors still reduce their chance of dominating prompt context.
 
 ## 7. Tests
 
-`tests/unit/test_python_adapter_call_types.py`:
+Implemented coverage includes:
 
-| Test | Condition |
-|---|---|
-| `test_direct_call_edge_type` | `validate(x)` → `CALLS_DIRECT` |
-| `test_self_call_edge_type` | `self.process(x)` → `CALLS_DYNAMIC` |
-| `test_getattr_call_edge_type` | `getattr(obj, fn)()` → `CALLS_INFERRED` |
-| `test_class_implements_edge` | Class inheriting abstract base → `IMPLEMENTS` |
-| `test_method_overrides_edge` | Method with same name as parent → `OVERRIDES` |
-| `test_type_annotation_only` | Parameter type hint, never called → `REFERENCES` |
+- `tests/unit/test_typescript_adapter.py`
+  - direct calls become `CALLS_DIRECT`
+  - member/`this` calls become `CALLS_DYNAMIC`
+- `tests/unit/test_p1_retrieval_correctness.py`
+  - Python scoped/imported call extraction
+  - Neo4j `link_calls` uses `callee_uid` and batches same resolution mode
+- `tests/integration/test_phase5_validation.py`
+  - typed semantic edge smoke validation
+- ranker tests in `tests/unit/test_unified_ranker.py`
+  - typed relation handling in graph candidates and scoring paths
+- AFFECTS tests in `tests/unit/test_affects_indexer.py`
+  - typed edge family used for reverse dependency loading
 
-`tests/unit/test_graph_expander_scored_by_type.py`:
+## 8. Current Success Criteria
 
-| Test | Condition |
-|---|---|
-| `test_direct_scores_higher_than_dynamic` | `CALLS_DIRECT` relation scores > `CALLS_DYNAMIC` at same depth |
-| `test_inferred_is_lowest_priority` | `CALLS_INFERRED` scores < all other types |
-| `test_implements_scores_above_depends_on` | `IMPLEMENTS` prior > `DEPENDS_ON` prior |
-| `test_references_skipped_on_tight_budget` | `REFERENCES` node is dropped first when budget is tight |
+Implemented:
 
-## 8. Success Criteria
+1. Parser emits typed call rows for Python and TypeScript.
+2. Neo4j writes typed call relationships with confidence/tier/resolver metadata.
+3. GraphExpander and UnifiedRanker traverse and score typed edges.
+4. AFFECTS derives reverse impact from typed edges.
+5. Legacy `CALLS` remains compatible.
 
-1. Parser unit tests: correct edge type for each call pattern.
-2. BFS scoring: `CALLS_DIRECT` nodes ranked higher than `CALLS_DYNAMIC` at same depth.
-3. QA benchmark: no regression in recall@k; precision@k improves by at least 0.05.
-4. Migration script runs cleanly on existing development graph.
+Still deferred:
+
+1. Emit dedicated `IMPLEMENTS` / `OVERRIDES` edges instead of only metadata-rich `DEPENDS_ON`.
+2. Emit `REFERENCES` from type annotations/comments.
+3. Update schema migration/index creation for `CALLS_SCOPED`, `CALLS_IMPORTED`, and `CALLS_GUESS`.
+4. Add more parser tests for Python dynamic/inferred edge cases.
+5. Use typed-edge confidence more directly in UnifiedRanker blending, not only relation priors.
 
 ## 9. Phase Sequencing
 
 Depends on:
-- Phase 3.5 `CALLS`, `DEPENDS_ON`, `IMPORTS` edges ✅
-- Phase 4 ContextDeduplicator (independent but recommended first — easier to measure precision improvement with dedup noise removed)
 
-Does NOT require:
-- LanceDB changes
-- PromptCompiler changes
-- Overlay changes
+- Phase 3.5 incremental graph indexing ✅
+
+Enables:
+
+- AFFECTS index ✅
+- Unified graph scoring ✅
+- Mechanism-aware benchmark diagnosis ✅
+- Future confidence-aware retrieval and cache invalidation
