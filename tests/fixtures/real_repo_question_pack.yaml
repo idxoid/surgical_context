@@ -36,6 +36,38 @@ repositories:
     language: typescript
     rationale: "Monorepo with packages, docs, and API-heavy TS logic, useful for routing and impact checks."
 
+  - id: django
+    name: Django
+    clone_url: https://github.com/django/django.git
+    repo_url: https://github.com/django/django
+    docs_url: https://docs.djangoproject.com/
+    language: python
+    rationale: "Large monolithic Python framework with ORM, middleware, and request lifecycle—good for testing architectural knowledge and subsystem interactions."
+
+  - id: flask
+    name: Flask
+    clone_url: https://github.com/pallets/flask.git
+    repo_url: https://github.com/pallets/flask
+    docs_url: https://flask.palletsprojects.com/
+    language: python
+    rationale: "Lightweight framework with minimal core and extension system; useful for testing simplified patterns and routing complexity."
+
+  - id: express
+    name: Express
+    clone_url: https://github.com/expressjs/express.git
+    repo_url: https://github.com/expressjs/express
+    docs_url: https://expressjs.com/
+    language: javascript
+    rationale: "Lightweight Node.js HTTP framework with middleware, routing, and request/response chains—good for testing minimal-core patterns and middleware interactions."
+
+  - id: nestjs
+    name: NestJS
+    clone_url: https://github.com/nestjs/nest.git
+    repo_url: https://github.com/nestjs/nest
+    docs_url: https://docs.nestjs.com/
+    language: typescript
+    rationale: "Enterprise-grade TypeScript framework with decorators, dependency injection, and modular architecture—tests architectural patterns and complex metadata systems."
+
 questions:
   - id: fastapi_q01
     repo: fastapi
@@ -348,3 +380,237 @@ questions:
     required_roles: [negative_lookup, nearest_real_mechanism, public_entrypoint, composition_result]
     expected_symbols: [createSlice, combineSlices, combineReducers]
     expected_files: [packages/toolkit/src/createSlice.ts, packages/toolkit/src/combineSlices.ts]
+
+  - id: django_q01
+    repo: django
+    core12: true
+    symbol: WSGIHandler
+    question: "How does Django's request handling flow from WSGI entry point through middleware to view dispatch?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: django_wsgi_request_pipeline
+    required_roles: [public_entrypoint, middleware_registry, request_router, handler_or_lifecycle]
+    expected_symbols: [WSGIHandler, get_wsgi_application, load_middleware, _view_middleware]
+    expected_files: [django/core/wsgi.py, django/core/handlers, django/core/handlers/wsgi.py]
+
+  - id: django_q02
+    repo: django
+    core12: true
+    symbol: QuerySet
+    question: "How does QuerySet lazy evaluation and chaining work internally?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: django_queryset_lazy_evaluation
+    required_roles: [public_entrypoint, builder_pattern, lazy_executor, sql_compiler]
+    expected_symbols: [QuerySet, Query, SQLCompiler, _fetch_all]
+    expected_files: [django/db/models/query.py, django/db/models/sql]
+
+  - id: django_q03
+    repo: django
+    core12: true
+    symbol: ModelForm
+    question: "How does ModelForm map model fields to form fields and handle validation?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: django_modelform_field_mapping
+    required_roles: [public_entrypoint, field_generator, model_introspection, validator_bridge]
+    expected_symbols: [ModelForm, fields_for_model, ModelFormOptions]
+    expected_files: [django/forms/models.py]
+
+  - id: django_q04
+    repo: django
+    core12: true
+    symbol: MigrationExecutor
+    question: "How does Django's migration system apply and track database schema changes?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: django_migration_execution
+    required_roles: [public_entrypoint, migration_loader, operation_executor, state_tracker]
+    expected_symbols: [MigrationExecutor, MigrationLoader, Operation]
+    expected_files: [django/db/migrations/executor.py, django/db/migrations/loader.py]
+
+  - id: django_q05
+    repo: django
+    core12: false
+    symbol: Model
+    question: "If the ORM field descriptor protocol changes, which parts of Django tests and public APIs would break?"
+    difficulty: hard
+    intent: impact_analysis
+    expected_mode: symbol
+    mechanism: django_field_descriptor_impact
+    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    expected_symbols: [Field, Model, DeferredAttribute]
+    expected_files: [django/db/models/fields, django/db/models, django/tests]
+
+  - id: flask_q01
+    repo: flask
+    core12: true
+    symbol: Flask
+    question: "How does Flask's application factory pattern and request context management work?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: flask_app_context_lifecycle
+    required_roles: [public_entrypoint, context_manager, request_lifecycle, view_dispatcher]
+    expected_symbols: [Flask, RequestContext, AppContext, push]
+    expected_files: [src/flask/app.py, src/flask/ctx.py]
+
+  - id: flask_q02
+    repo: flask
+    core12: true
+    symbol: Blueprint
+    question: "How does Blueprint registration and deferred route registration work in Flask?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: flask_blueprint_registration
+    required_roles: [public_entrypoint, deferred_registration, route_registry, composition_pattern]
+    expected_symbols: [Blueprint, register_blueprint, deferred_functions]
+    expected_files: [src/flask/blueprints.py]
+
+  - id: flask_q03
+    repo: flask
+    core12: true
+    symbol: request
+    question: "How is the Flask global 'request' proxy implemented and how does it resolve the correct context?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: flask_proxy_resolution
+    required_roles: [public_entrypoint, context_accessor, thread_local, proxy_mechanism]
+    expected_symbols: [request, LocalProxy, _request_ctx_stack]
+    expected_files: [src/flask/globals.py, src/flask/wrappers.py]
+
+  - id: flask_q04
+    repo: flask
+    core12: true
+    symbol: before_request
+    question: "How does Flask's before_request and after_request decorators get invoked during request handling?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: flask_request_hooks
+    required_roles: [public_entrypoint, hook_registry, request_processor, handler_or_lifecycle]
+    expected_symbols: [before_request, after_request, preprocess_request, do_teardown_request]
+    expected_files: [src/flask/app.py]
+
+  - id: flask_q05
+    repo: flask
+    core12: false
+    symbol: Flask
+    question: "If Flask's routing dispatch mechanism changes, what test suites and example code would be affected?"
+    difficulty: hard
+    intent: impact_analysis
+    expected_mode: symbol
+    mechanism: flask_routing_impact
+    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    expected_symbols: [route, add_url_rule, url_map, Map]
+    expected_files: [src/flask/app.py, tests]
+
+  - id: express_q01
+    repo: express
+    core12: true
+    symbol: app
+    question: "How does Express routing dispatch a request through matched handlers?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: express_routing_dispatch
+    required_roles: [public_entrypoint, route_matcher, handler_executor, middleware_chain]
+    expected_symbols: [app, use, listen, handle]
+    expected_files: [lib/express.js, lib/router/index.js]
+
+  - id: express_q02
+    repo: express
+    core12: true
+    symbol: middleware
+    question: "How does Express execute middleware in sequence and pass control with next()?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: express_middleware_execution
+    required_roles: [public_entrypoint, middleware_registry, handler_executor, control_flow]
+    expected_symbols: [use, next, handle, apply]
+    expected_files: [lib/router/index.js, lib/middleware]
+
+  - id: express_q03
+    repo: express
+    core12: true
+    symbol: Router
+    question: "How does Express Router enable modular route definitions and sub-applications?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: express_router_composition
+    required_roles: [public_entrypoint, route_builder, composition_pattern, mounting]
+    expected_symbols: [Router, use, mount]
+    expected_files: [lib/router/index.js, lib/express.js]
+
+  - id: express_q04
+    repo: express
+    core12: false
+    symbol: response
+    question: "How are response methods like send() and json() implemented and chained?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: express_response_methods
+    required_roles: [public_entrypoint, response_builder, serializer, header_handler]
+    expected_symbols: [send, json, status, set]
+    expected_files: [lib/response.js]
+
+  - id: nestjs_q01
+    repo: nestjs
+    core12: true
+    symbol: Controller
+    question: "How does NestJS use decorators to map HTTP routes to controller methods?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: nestjs_decorator_routing
+    required_roles: [public_entrypoint, decorator_processor, metadata_registry, route_builder]
+    expected_symbols: [Controller, Get, Post, RequestMapping]
+    expected_files: [packages/common/decorators, packages/core/router]
+
+  - id: nestjs_q02
+    repo: nestjs
+    core12: true
+    symbol: Injectable
+    question: "How does NestJS's dependency injection container resolve and inject dependencies?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: nestjs_dependency_injection
+    required_roles: [public_entrypoint, di_container, provider_registry, instance_resolver]
+    expected_symbols: [Injectable, Inject, Module, createNestApplication]
+    expected_files: [packages/core/injector, packages/core/module]
+
+  - id: nestjs_q03
+    repo: nestjs
+    core12: true
+    symbol: Module
+    question: "How does NestJS Module decorators organize and compose application features?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: nestjs_module_composition
+    required_roles: [public_entrypoint, module_registry, composition_pattern, import_system]
+    expected_symbols: [Module, imports, controllers, providers]
+    expected_files: [packages/core/module, packages/core/metadata-scanner]
+
+  - id: nestjs_q04
+    repo: nestjs
+    core12: false
+    symbol: Pipe
+    question: "How do NestJS Pipes handle request validation and transformation?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: nestjs_pipe_validation
+    required_roles: [public_entrypoint, validator, transformer, middleware_pattern]
+    expected_symbols: [Pipe, PipeTransform, ValidationPipe]
+    expected_files: [packages/core/pipes, packages/common/pipes]
