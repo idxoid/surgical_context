@@ -197,6 +197,11 @@ def default_report_output_path(
     return str((Path(tempfile.gettempdir()) / filename).resolve())
 
 
+def default_snapshot_manifest_path() -> str:
+    """Return the local JSONL registry path for benchmark report snapshots."""
+    return str((Path(__file__).parent / "benchmark_runs.jsonl").resolve())
+
+
 def write_metrics_report(metrics: dict[str, Any], report_path: str) -> str:
     """Write metrics JSON and return the resolved absolute path."""
     resolved = Path(report_path).resolve()
@@ -206,6 +211,67 @@ def write_metrics_report(metrics: dict[str, Any], report_path: str) -> str:
     with open(resolved, "w") as f:
         json.dump(payload, f, indent=2)
     metrics["report_path"] = str(resolved)
+    return str(resolved)
+
+
+def _git_output(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=Path(__file__).parent.parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip()
+
+
+def build_snapshot_manifest_row(
+    metrics: dict[str, Any],
+    report_path: str,
+    *,
+    git_commit: str | None = None,
+    git_branch: str | None = None,
+) -> dict[str, Any]:
+    """Build a compact JSONL row pointing to a full benchmark report."""
+    summary = metrics.get("summary", {})
+    question_pack = metrics.get("question_pack", {})
+    indexing = metrics.get("indexing", {})
+    return {
+        "timestamp": metrics.get("timestamp"),
+        "report_path": str(Path(report_path).resolve()),
+        "git_commit": git_commit if git_commit is not None else _git_output("rev-parse", "HEAD"),
+        "git_branch": git_branch if git_branch is not None else _git_output("branch", "--show-current"),
+        "repo": question_pack.get("repo_filter") or "",
+        "core12_only": bool(question_pack.get("core12_only")),
+        "workspace_id": question_pack.get("workspace_id") or "",
+        "question_pack": question_pack.get("path") or "",
+        "indexing_skipped": bool(indexing.get("skipped")),
+        "total_questions": summary.get("total_questions", 0),
+        "pass_count": summary.get("pass_count", 0),
+        "pass_rate": summary.get("pass_rate", 0.0),
+        "precision_at_5": summary.get("precision_at_5", summary.get("precision", 0.0)),
+        "file_recall": summary.get("file_recall", 0.0),
+        "role_recall": summary.get("role_recall", 0.0),
+        "tokens_surgical": summary.get("tokens_surgical", 0),
+        "reduction_ratio": summary.get("reduction_ratio", 0.0),
+        "assembly_ms_avg": summary.get("assembly_ms_avg", 0.0),
+    }
+
+
+def append_snapshot_manifest(
+    metrics: dict[str, Any],
+    report_path: str,
+    manifest_path: str | None = None,
+) -> str:
+    """Append one compact benchmark snapshot row and return the manifest path."""
+    resolved = Path(manifest_path or default_snapshot_manifest_path()).resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    row = build_snapshot_manifest_row(metrics, report_path)
+    with open(resolved, "a") as f:
+        f.write(json.dumps(row, sort_keys=True) + "\n")
     return str(resolved)
 
 
@@ -1029,6 +1095,16 @@ def main():
         default=None,
     )
     parser.add_argument(
+        "--snapshot-manifest",
+        help="Append a compact JSONL row pointing to the report (default: QA/benchmark_runs.jsonl)",
+        default=None,
+    )
+    parser.add_argument(
+        "--no-snapshot-manifest",
+        action="store_true",
+        help="Do not append to the benchmark snapshot manifest",
+    )
+    parser.add_argument(
         "--questions",
         help="Path to questions.yaml",
         default=None,
@@ -1121,6 +1197,14 @@ def main():
         ),
     )
     print(f"Report JSON:     {report_path}")
+
+    if not args.no_snapshot_manifest:
+        manifest_path = append_snapshot_manifest(
+            metrics,
+            report_path,
+            args.snapshot_manifest,
+        )
+        print(f"Snapshot index:  {manifest_path}")
 
     if args.report:
         # Append to baselines.jsonl for historical tracking

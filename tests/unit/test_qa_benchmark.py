@@ -10,8 +10,11 @@ from QA.qa_benchmark import (
     _empty_indexing_summary,
     _normalize_cleanup_prefixes,
     _path_matches_prefix,
-    default_report_output_path,
+    append_snapshot_manifest,
+    build_snapshot_manifest_row,
     default_repo_checkout_path,
+    default_report_output_path,
+    default_snapshot_manifest_path,
     ensure_repo_checkout,
     load_question_pack,
     load_questions,
@@ -212,13 +215,58 @@ def test_write_metrics_report_persists_json_and_report_path(tmp_path):
     assert metrics["report_path"] == str(report_path.resolve())
 
 
+def test_append_snapshot_manifest_writes_compact_report_pointer(tmp_path):
+    metrics = {
+        "timestamp": 123.0,
+        "question_pack": {
+            "path": "questions.yaml",
+            "repo_filter": "fastapi",
+            "core12_only": True,
+            "workspace_id": "local/fastapi@main",
+        },
+        "indexing": {"skipped": True},
+        "summary": {
+            "total_questions": 4,
+            "pass_count": 4,
+            "pass_rate": 1.0,
+            "precision_at_5": 0.5,
+            "file_recall": 1.0,
+            "role_recall": 1.0,
+            "tokens_surgical": 10418,
+            "reduction_ratio": 0.936,
+            "assembly_ms_avg": 275.1,
+        },
+    }
+    report_path = tmp_path / "report.json"
+    manifest_path = tmp_path / "benchmark_runs.jsonl"
+
+    row = build_snapshot_manifest_row(
+        metrics,
+        str(report_path),
+        git_commit="abc123",
+        git_branch="topic",
+    )
+    written = append_snapshot_manifest(metrics, str(report_path), str(manifest_path))
+
+    assert row["repo"] == "fastapi"
+    assert row["core12_only"] is True
+    assert row["git_commit"] == "abc123"
+    assert written == str(manifest_path.resolve())
+    payload = json.loads(manifest_path.read_text().splitlines()[0])
+    assert payload["report_path"] == str(report_path.resolve())
+    assert payload["pass_rate"] == 1.0
+    assert payload["precision_at_5"] == 0.5
+
+
 def test_main_auto_writes_report_and_prints_path_when_report_flag_omitted(tmp_path, capsys):
     fake_metrics = {"summary": {"pass_rate": 1.0}}
     auto_report = tmp_path / "auto-report.json"
+    manifest_path = tmp_path / "benchmark_runs.jsonl"
 
     with (
         patch("QA.qa_benchmark.run_benchmark", return_value=fake_metrics),
         patch("QA.qa_benchmark.default_report_output_path", return_value=str(auto_report)),
+        patch("QA.qa_benchmark.default_snapshot_manifest_path", return_value=str(manifest_path)),
         patch("sys.argv", ["qa_benchmark.py", "--no-index"]),
     ):
         exit_code = main()
@@ -226,8 +274,12 @@ def test_main_auto_writes_report_and_prints_path_when_report_flag_omitted(tmp_pa
     captured = capsys.readouterr()
     assert exit_code == 0
     assert f"Report JSON:     {auto_report.resolve()}" in captured.out
+    assert f"Snapshot index:  {manifest_path.resolve()}" in captured.out
     payload = json.loads(auto_report.read_text())
     assert payload["report_path"] == str(auto_report.resolve())
+    manifest_payload = json.loads(manifest_path.read_text().splitlines()[0])
+    assert manifest_payload["report_path"] == str(auto_report.resolve())
+    assert default_snapshot_manifest_path().endswith("QA/benchmark_runs.jsonl")
 
 
 def test_setup_fixture_db_returns_indexing_stats():

@@ -118,7 +118,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 ### Week 2
 - run the `core12` questions on FastAPI, Pydantic, and Redux Toolkit after each retrieval change, then spot-check the full RTK pack when mechanism routing changes touch JS/TS behavior
 - review which answers were grounded, weak, or overstuffed, then patch ranker and doc-link blind spots immediately
-- start keeping benchmark snapshots by repo so regressions are easy to spot in review
+- keep benchmark snapshots by repo in `QA/benchmark_runs.jsonl` so regressions are easy to spot in review
 
 ### Week 3
 - tune ranking and fallback behavior from measured results, with canonical roles and mechanism coverage as the main lane
