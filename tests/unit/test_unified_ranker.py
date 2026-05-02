@@ -3,10 +3,10 @@ from unittest.mock import MagicMock
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
+    _NOISE_FACTOR,
     Candidate,
     UnifiedRanker,
     VectorSearcher,
-    _NOISE_FACTOR,
     compute_impact_noise_factor,
     compute_noise_factor,
 )
@@ -971,6 +971,13 @@ def test_generic_ts_js_mechanisms_cover_redux_style_queries():
         )
         == "listener_orchestration_pipeline"
     )
+    assert (
+        ranker._determine_mechanism(
+            configure_store,
+            query="In this monorepo, which packages are core runtime behavior and which are docs/examples/supporting surfaces?",
+        )
+        == "workspace_structure"
+    )
 
 
 def test_generic_ts_js_role_inference_covers_redux_style_symbols():
@@ -1048,6 +1055,68 @@ def test_generic_ts_js_role_inference_covers_redux_style_symbols():
             token_cost=20,
         )
     ) == "orchestrator"
+
+    assert "core_runtime" in ranker._roles_of(
+        Candidate(
+            kind="symbol",
+            uid="configureStore",
+            name="configureStore",
+            file_path="/repo/packages/toolkit/src/configureStore.ts",
+            token_cost=20,
+        )
+    )
+
+
+def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+    target = SubgraphNode(
+        uid="configureStore",
+        name="configureStore",
+        file_path="/repo/packages/toolkit/src/configureStore.ts",
+        range=[121, 180],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    off_topic_query_candidate = Candidate(
+        kind="symbol",
+        uid="selectQueryEntry",
+        name="selectQueryEntry",
+        file_path="/repo/packages/toolkit/src/query/core/buildSelectors.ts",
+        token_cost=80,
+        depth=4,
+    )
+    focused_devtools_candidate = Candidate(
+        kind="symbol",
+        uid="composeWithDevTools",
+        name="composeWithDevTools",
+        file_path="/repo/packages/toolkit/src/devtoolsExtension.ts",
+        token_cost=80,
+        depth=2,
+    )
+
+    query = "How does configureStore assemble middleware, enhancers, and DevTools behavior?"
+    required = ["api_surface", "composition_surface", "config_surface", "docs_or_concept"]
+    assert ranker._topic_focus_factor(
+        off_topic_query_candidate,
+        target,
+        query=query,
+        mechanism="runtime_configuration_pipeline",
+        intent=Intent.EXPLORATION,
+        required_roles=required,
+    ) < 1.0
+    assert ranker._topic_focus_factor(
+        focused_devtools_candidate,
+        target,
+        query=query,
+        mechanism="runtime_configuration_pipeline",
+        intent=Intent.EXPLORATION,
+        required_roles=required,
+    ) == 1.0
 
 
 def test_listener_middleware_api_carries_supporting_execution_roles():

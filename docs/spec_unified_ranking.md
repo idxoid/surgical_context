@@ -110,6 +110,7 @@ Current behavior is slightly richer than the original greedy draft:
 - treat some roles as capability slots as well as identity slots; e.g. a runtime symbol like `SchemaValidator` can fulfill `validator_handle` if the dedicated wrapper/member symbol is absent
 - let some primary APIs carry supporting roles directly when their implementation body already contains the relevant orchestration path
 - let generic runtime/test signals fulfill impact-analysis roles so benchmark coverage is not tied to one framework's exact naming scheme, while applying topic-sensitive noise control so unrelated tests do not satisfy impact roles by accident
+- apply topic-focused subsystem penalties for non-impact questions, preserving explicit role-fillers while downranking unrelated distant candidates from sibling subsystems such as query, listener, entity, and tooling internals
 - use mechanism-aware role backfill before final selection
 - sort by blended score with a bonus for role-filling candidates
 - apply marginal-gain gating, intent floors, `context_complete_below_floor`, and signature-only fallback for low-gain distant candidates

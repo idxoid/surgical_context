@@ -80,6 +80,30 @@ _IMPACT_TOPIC_STOPWORDS = {
     "which",
     "with",
 }
+_FOCUS_QUERY_STOPWORDS = _IMPACT_TOPIC_STOPWORDS | {
+    "about",
+    "actual",
+    "assemble",
+    "behavior",
+    "build",
+    "codebase",
+    "does",
+    "final",
+    "flow",
+    "from",
+    "generate",
+    "generated",
+    "into",
+    "logic",
+    "most",
+    "operation",
+    "parts",
+    "passed",
+    "returned",
+    "turn",
+    "user",
+    "work",
+}
 
 _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
     "fastapi_route_registration": {
@@ -228,6 +252,54 @@ _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
         ],
         "error_surface": [
             {"name": "ValidationError", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
+        ],
+    },
+    "state_factory_pipeline": {
+        "factory_surface": [
+            {"name": "createAction", "path_hint": "/packages/toolkit/src/createAction.ts", "priority": 1.0},
+            {"name": "createReducer", "path_hint": "/packages/toolkit/src/createReducer.ts", "priority": 0.95},
+            {"name": "buildCreateSlice", "path_hint": "/packages/toolkit/src/createSlice.ts", "priority": 0.8},
+        ],
+        "composition_surface": [
+            {"name": "createReducer", "path_hint": "/packages/toolkit/src/createReducer.ts", "priority": 0.9},
+        ],
+    },
+    "runtime_configuration_pipeline": {
+        "composition_surface": [
+            {"name": "getDefaultMiddleware", "path_hint": "/packages/toolkit/src/getDefaultMiddleware.ts", "priority": 1.0},
+            {"name": "getDefaultEnhancers", "path_hint": "/packages/toolkit/src/getDefaultEnhancers.ts", "priority": 0.95},
+        ],
+        "config_surface": [
+            {"name": "composeWithDevTools", "path_hint": "/packages/toolkit/src/devtoolsExtension.ts", "priority": 0.95},
+            {"name": "devToolsEnhancer", "path_hint": "/packages/toolkit/src/devtoolsExtension.ts", "priority": 0.9},
+        ],
+    },
+    "async_lifecycle_pipeline": {
+        "factory_surface": [
+            {"name": "createAction", "path_hint": "/packages/toolkit/src/createAction.ts", "priority": 0.9},
+        ],
+        "executor": [
+            {"name": "createAsyncThunk", "path_hint": "/packages/toolkit/src/createAsyncThunk.ts", "priority": 1.0},
+        ],
+    },
+    "api_store_integration_pipeline": {
+        "representation_surface": [
+            {"name": "coreModule", "path_hint": "/packages/toolkit/src/query/core/module.ts", "priority": 1.0},
+            {"name": "injectEndpoint", "path_hint": "/packages/toolkit/src/query/core/module.ts", "priority": 0.9},
+        ],
+        "integration_surface": [
+            {"name": "buildCreateApi", "path_hint": "/packages/toolkit/src/query/createApi.ts", "priority": 1.0},
+            {"name": "setupListeners", "path_hint": "/packages/toolkit/src/query/core/setupListeners.ts", "priority": 0.75},
+        ],
+    },
+    "listener_orchestration_pipeline": {
+        "orchestrator": [
+            {"name": "addListener", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 1.0},
+            {"name": "createListenerEntry", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 0.9},
+        ],
+        "executor": [
+            {"name": "runTask", "path_hint": "/packages/toolkit/src/listenerMiddleware/task.ts", "priority": 1.0},
+            {"name": "notifyListener", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 0.85},
         ],
     },
 }
@@ -930,6 +1002,14 @@ class UnifiedRanker:
                 )
             else:
                 c.noise_factor = compute_noise_factor(c.file_path, c.name, kind=c.kind, intent=intent)
+                c.noise_factor *= self._topic_focus_factor(
+                    c,
+                    target,
+                    query=query,
+                    mechanism=mechanism,
+                    intent=intent,
+                    required_roles=required_roles,
+                )
 
         # 8. Normalize each track to [0, 1]
         self._normalize(pool)
@@ -2154,6 +2234,96 @@ class UnifiedRanker:
         else:  # EXPLORATION, REFACTORING
             return {"symbol": 0.4, "doc": 0.4}
 
+    def _topic_focus_factor(
+        self,
+        candidate: Candidate,
+        target: SubgraphNode,
+        *,
+        query: str,
+        mechanism: str,
+        intent: Intent,
+        required_roles: list[str],
+    ) -> float:
+        """Downrank candidates from unrelated subsystems without hard-coding repos.
+
+        The graph can legally connect far-away framework subsystems through
+        generic helpers like `dispatch`, `middleware`, or `batch`. Those links
+        are useful for workspace-wide questions, but they drown focused API
+        questions in unrelated RTK Query/listener/entity internals. Keep role
+        fillers and explicitly-mentioned topics; penalize everything else.
+        """
+        if intent == Intent.IMPACT_ANALYSIS or mechanism == "workspace_structure":
+            return 1.0
+
+        required = set(normalize_roles(required_roles)) - {"docs_or_concept"}
+        primary_role = self._role_of(candidate)
+        if candidate.kind != "doc" and (
+            primary_role in required or self._has_role_backfill(candidate)
+        ):
+            return 1.0
+
+        if self._candidate_matches_query_topic(candidate, target, query=query):
+            return 1.0
+
+        path = (candidate.file_path or "").lower()
+        target_path = (target.file_path or "").lower()
+        query_terms = set(self._focus_query_terms(query))
+
+        subsystem_rules = (
+            ("/query/", {"query", "rtk", "api", "endpoint", "endpoints", "subscription"}),
+            ("/listenermiddleware/", {"listener", "listeners", "side", "effect", "effects"}),
+            ("/entities/", {"entity", "entities", "adapter", "sort", "sorted"}),
+            ("/scripts/", {"script", "scripts", "tooling", "triage", "release"}),
+        )
+        for marker, topic_terms in subsystem_rules:
+            if marker not in path or marker in target_path:
+                continue
+            if query_terms & topic_terms:
+                return 1.0
+            return 0.15 if candidate.kind != "doc" else 0.45
+
+        if candidate.kind != "doc" and candidate.depth >= 5:
+            return 0.25 if candidate.depth >= 7 else 0.45
+
+        if candidate.kind == "doc":
+            low_anchor = candidate.anchor_type in ("", "reference") and (
+                not candidate.anchor_confidence or candidate.anchor_confidence < 0.4
+            )
+            if low_anchor:
+                return 0.65
+
+        return 1.0
+
+    def _candidate_matches_query_topic(
+        self,
+        candidate: Candidate | SubgraphNode,
+        target: SubgraphNode,
+        *,
+        query: str,
+    ) -> bool:
+        terms = set(self._focus_query_terms(query))
+        terms.update(self._focus_query_terms(target.name or ""))
+        if not terms:
+            return False
+        haystack = " ".join(
+            part.lower()
+            for part in (
+                getattr(candidate, "name", "") or "",
+                getattr(candidate, "file_path", "") or "",
+                getattr(candidate, "qualified_name", "") or "",
+            )
+            if part
+        )
+        return any(term in haystack for term in terms)
+
+    @staticmethod
+    def _focus_query_terms(text: str) -> list[str]:
+        return [
+            term
+            for term in re.findall(r"[a-z][a-z0-9_]{3,}", (text or "").lower())
+            if term not in _FOCUS_QUERY_STOPWORDS
+        ]
+
     def _raw_graph_score(
         self,
         neighbor: dict,
@@ -2269,12 +2439,20 @@ class UnifiedRanker:
 
     def _supporting_roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
         explicit = normalize_roles(getattr(c, "supporting_roles", []) or [])
+        file_path = getattr(c, "file_path", "") or ""
         inferred = infer_supporting_roles(
             name=c.name or "",
             qualified_name=getattr(c, "qualified_name", "") or "",
-            file_path=getattr(c, "file_path", "") or "",
+            file_path=file_path,
             primary_role=self._role_of(c),
         )
+        lowered_path = file_path.lower()
+        if (
+            "/packages/toolkit/src/" in lowered_path
+            and "/docs/" not in lowered_path
+            and "/examples/" not in lowered_path
+        ):
+            inferred.append("core_runtime")
         return normalize_roles([*explicit, *inferred])
 
     def _roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
@@ -2481,6 +2659,10 @@ class UnifiedRanker:
             return "pydantic_alias_impact"
         if name == "v1" or "/pydantic/v1/" in file_path:
             return "pydantic_v1_compat_surface"
+        if "monorepo" in query_lower or (
+            "core runtime" in query_lower and ("docs" in query_lower or "examples" in query_lower)
+        ):
+            return "workspace_structure"
         if name == "createslice" or (
             "action creator" in query_lower and "reducer" in query_lower
         ):
@@ -2543,6 +2725,8 @@ class UnifiedRanker:
             roles = ["api_surface", "factory_surface", "executor", "error_surface"]
         elif mechanism == "api_store_integration_pipeline":
             roles = ["api_surface", "representation_surface", "integration_surface"]
+        elif mechanism == "workspace_structure":
+            roles = ["api_surface", "core_runtime", "docs_or_concept", "supporting_surface"]
         else:
             roles = ["api_surface", "executor", "runtime_surface"]
 

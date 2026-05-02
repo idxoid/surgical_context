@@ -525,6 +525,7 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] Weight tuning via eval harness sweep
 - [x] Target disambiguation for duplicate symbol names within one workspace (`Depends`-style collisions)
 - [x] Module/package fallback targets for workspace-level questions such as `pydantic.v1`
+- [x] Topic-aware subsystem noise control for focused API questions, so distant graph links through broad helpers do not crowd out relevant runtime/doc candidates
 - [x] Better mechanism routing/backfill for FastAPI serialization impact (`serialize_response` now routes to impact roles and targeted tests)
 - [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract (deferred)
 - [ ] Better doc-to-runtime bridge coverage for framework mechanisms where graph edges are structurally sparse (deferred to Week 2 post-benchmark)
