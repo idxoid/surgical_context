@@ -8,6 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.parser.registry import REGISTRY
 
 PROFILE_SCHEMA_VERSION = 1
@@ -160,6 +161,60 @@ _NEUTRAL_NON_CODE_EXTENSIONS = {
     "<no_ext>",
 }
 
+_ARCHETYPE_ROLE_PLANS: Mapping[str, tuple[str, ...]] = {
+    "route_registration": ("api_surface", "factory_surface", "representation_surface", "runtime_surface"),
+    "request_response_lifecycle": ("api_surface", "composition_surface", "runtime_surface", "executor"),
+    "dependency_injection": ("api_surface", "config_surface", "orchestrator", "runtime_surface"),
+    "middleware_pipeline": ("api_surface", "factory_surface", "composition_surface", "runtime_surface"),
+    "middleware_hooks": ("api_surface", "factory_surface", "orchestrator", "runtime_surface"),
+    "decorator_declares_handler": ("api_surface", "factory_surface", "orchestrator", "runtime_surface"),
+    "module_composition": ("api_surface", "composition_surface", "integration_surface", "runtime_surface"),
+    "factory_api_generation": ("api_surface", "factory_surface", "representation_surface", "integration_surface"),
+    "action_reducer_binding": ("api_surface", "factory_surface", "composition_surface", "runtime_surface"),
+    "validation_pipeline": ("api_surface", "validator_handle", "core_runtime", "runtime_surface"),
+    "serialization_pipeline": ("api_surface", "serializer_handle", "core_runtime", "runtime_surface"),
+    "schema_generation": ("api_surface", "schema_builder", "representation_surface"),
+    "orm_mapping": ("api_surface", "factory_surface", "representation_surface", "core_runtime"),
+    "declarative_mapping": ("api_surface", "factory_surface", "representation_surface", "core_runtime"),
+    "query_builder": ("api_surface", "composition_surface", "executor", "runtime_surface"),
+    "session_identity_map": ("api_surface", "representation_surface", "runtime_surface", "executor"),
+    "migration_system": ("api_surface", "factory_surface", "executor", "runtime_surface"),
+    "request_context": ("api_surface", "binding_surface", "runtime_surface"),
+    "component_lifecycle": ("api_surface", "factory_surface", "runtime_surface"),
+    "reactivity_graph": ("api_surface", "representation_surface", "orchestrator", "runtime_surface"),
+    "template_compilation": ("api_surface", "orchestrator", "representation_surface", "executor"),
+    "c_runtime_dispatch": ("api_surface", "executor", "runtime_surface"),
+    "query_planner": ("api_surface", "orchestrator", "representation_surface", "executor"),
+    "storage_engine": ("api_surface", "core_runtime", "runtime_surface"),
+}
+
+_ARCHETYPE_STRATEGIES: Mapping[str, str] = {
+    "route_registration": "registration_flow",
+    "request_response_lifecycle": "runtime_flow_trace",
+    "dependency_injection": "dependency_resolution_trace",
+    "middleware_pipeline": "middleware_pipeline_trace",
+    "middleware_hooks": "lifecycle_hook_trace",
+    "decorator_declares_handler": "decorator_metadata_trace",
+    "module_composition": "module_composition_trace",
+    "factory_api_generation": "factory_generation_trace",
+    "action_reducer_binding": "factory_generation_trace",
+    "validation_pipeline": "validation_flow_trace",
+    "serialization_pipeline": "serialization_flow_trace",
+    "schema_generation": "schema_generation_trace",
+    "orm_mapping": "declarative_mapping_trace",
+    "declarative_mapping": "declarative_mapping_trace",
+    "query_builder": "builder_execution_trace",
+    "session_identity_map": "runtime_state_trace",
+    "migration_system": "operation_execution_trace",
+    "request_context": "context_binding_trace",
+    "component_lifecycle": "lifecycle_trace",
+    "reactivity_graph": "reactive_dependency_trace",
+    "template_compilation": "compiler_pipeline_trace",
+    "c_runtime_dispatch": "unsupported_static_surface_fallback",
+    "query_planner": "unsupported_static_surface_fallback",
+    "storage_engine": "unsupported_static_surface_fallback",
+}
+
 
 @dataclass(frozen=True)
 class RepositoryProfileInputs:
@@ -229,6 +284,7 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
     signal_blob = f"{inputs.project_path}\n{path_blob}\n{sample}"
     framework_signals = _detect_framework_signals(signal_blob)
     dynamic_surfaces = _detect_dynamic_surfaces(signal_blob, unsupported_extensions)
+    strategy_profile = _build_strategy_profile(framework_signals, dynamic_surfaces)
 
     capability_flags = _capability_flags(
         supported_ratio=supported_ratio,
@@ -285,7 +341,9 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
         "mechanism_profile": {
             "framework_signals": framework_signals,
             "dynamic_surfaces": dynamic_surfaces,
+            "archetypes": strategy_profile["mechanism_archetypes"],
         },
+        "strategy_profile": strategy_profile,
         "capabilities": capability_flags,
         "reasoning_contract": reasoning_contract,
         "warnings": readiness["warnings"],
@@ -332,6 +390,13 @@ def build_empty_repository_profile(
         "mechanism_profile": {
             "framework_signals": [],
             "dynamic_surfaces": [],
+            "archetypes": [],
+        },
+        "strategy_profile": {
+            "selected_strategy": "unprofiled",
+            "role_plan": [],
+            "mechanism_archetypes": [],
+            "fallbacks": ["direct_symbol"],
         },
         "capabilities": {
             "code_navigation": "unknown",
@@ -358,11 +423,12 @@ def summarize_repository_profile(profile: Mapping) -> str:
     mechanisms = profile.get("mechanism_profile", {}).get("framework_signals", [])
     top_mechanisms = ", ".join(item.get("name", "") for item in mechanisms[:3]) or "none"
     capabilities = profile.get("capabilities", {})
+    strategy = (profile.get("strategy_profile") or {}).get("selected_strategy", "unknown")
     return (
         f"{profile.get('retrieval_readiness', 'unknown')} "
         f"(indexability={profile.get('indexability', 'unknown')}, "
         f"langs={top_langs}, mechanisms={top_mechanisms}, "
-        f"impact={capabilities.get('impact_analysis', 'unknown')})"
+        f"strategy={strategy}, impact={capabilities.get('impact_analysis', 'unknown')})"
     )
 
 
@@ -455,6 +521,91 @@ def _detect_dynamic_surfaces(blob: str, unsupported_extensions: Counter) -> list
     if any(ext in unsupported_extensions for ext in (".c", ".h", ".cc", ".cpp", ".hpp")):
         surfaces.add("macros_or_c")
     return sorted(surfaces)
+
+
+def _build_strategy_profile(
+    framework_signals: list[dict],
+    dynamic_surfaces: list[str],
+) -> dict:
+    archetype_scores: dict[str, dict] = {}
+    for signal in framework_signals:
+        framework_confidence = float(signal.get("confidence") or 0.0)
+        for mechanism in signal.get("mechanisms") or []:
+            _merge_archetype(
+                archetype_scores,
+                mechanism,
+                confidence=framework_confidence,
+                evidence=[signal.get("name", ""), *(signal.get("evidence") or [])],
+            )
+
+    surface_to_archetype = {
+        "decorators": "decorator_declares_handler",
+        "registries": "route_registration",
+        "metaprogramming": "declarative_mapping",
+        "templates": "template_compilation",
+        "generated_api": "factory_api_generation",
+        "macros_or_c": "c_runtime_dispatch",
+    }
+    for surface in dynamic_surfaces:
+        archetype = surface_to_archetype.get(surface)
+        if archetype:
+            _merge_archetype(
+                archetype_scores,
+                archetype,
+                confidence=0.55,
+                evidence=[surface],
+            )
+
+    archetypes = sorted(
+        archetype_scores.values(),
+        key=lambda item: item["confidence"],
+        reverse=True,
+    )
+    role_plan: list[str] = []
+    for archetype in archetypes[:4]:
+        role_plan.extend(archetype["role_plan"])
+    role_plan = normalize_roles([*role_plan, "docs_or_concept"])
+    selected_strategy = (
+        archetypes[0]["strategy"] if archetypes else "generic_symbol_context"
+    )
+    fallbacks = ["direct_symbol", "semantic_docs"]
+    if any(item["type"] in {"route_registration", "factory_api_generation"} for item in archetypes):
+        fallbacks.append("concept_to_symbol")
+    if any(item["type"] in {"c_runtime_dispatch", "query_planner", "storage_engine"} for item in archetypes):
+        fallbacks.append("docs_files_fallback")
+
+    return {
+        "selected_strategy": selected_strategy,
+        "role_plan": role_plan,
+        "mechanism_archetypes": archetypes,
+        "fallbacks": fallbacks,
+    }
+
+
+def _merge_archetype(
+    archetypes: dict[str, dict],
+    archetype: str,
+    *,
+    confidence: float,
+    evidence: list[str],
+) -> None:
+    role_plan = normalize_roles(_ARCHETYPE_ROLE_PLANS.get(archetype, ()))
+    if not role_plan:
+        return
+    current = archetypes.get(archetype)
+    if current is None:
+        archetypes[archetype] = {
+            "type": archetype,
+            "strategy": _ARCHETYPE_STRATEGIES.get(archetype, "mechanism_trace"),
+            "confidence": round(confidence, 3),
+            "role_plan": role_plan,
+            "evidence": [item for item in evidence if item][:6],
+        }
+        return
+    current["confidence"] = round(max(float(current["confidence"]), confidence), 3)
+    current["role_plan"] = normalize_roles([*current["role_plan"], *role_plan])
+    merged_evidence = [*current["evidence"], *[item for item in evidence if item]]
+    current["evidence"] = list(dict.fromkeys(merged_evidence))[:6]
 
 
 def _capability_flags(

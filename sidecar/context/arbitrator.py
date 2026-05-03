@@ -177,6 +177,7 @@ class ContextArbitrator:
             "pruned_total_count": len(pruned_details),
             "required_roles": required_roles,
             "target_selection": target_selection,
+            "strategy_profile": getattr(ranker, "strategy_profile", {}),
         }
         return ctx
 

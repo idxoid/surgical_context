@@ -233,6 +233,7 @@ def test_append_snapshot_manifest_writes_compact_report_pointer(tmp_path):
                 "indexability": "medium",
                 "retrieval_readiness": "partial",
                 "capabilities": {"impact_analysis": "shallow_partial"},
+                "strategy_profile": {"selected_strategy": "registration_flow"},
             },
         },
         "summary": {
@@ -264,6 +265,7 @@ def test_append_snapshot_manifest_writes_compact_report_pointer(tmp_path):
     assert row["repository_readiness"] == "partial"
     assert row["impact_readiness"] == "shallow_partial"
     assert row["repository_profile_store"] == "neo4j_workspace"
+    assert row["selected_strategy"] == "registration_flow"
     assert written == str(manifest_path.resolve())
     payload = json.loads(manifest_path.read_text().splitlines()[0])
     assert payload["report_path"] == str(report_path.resolve())

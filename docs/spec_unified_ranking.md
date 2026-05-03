@@ -51,6 +51,8 @@ Both tracks emit candidates into a single pool before budget-constrained selecti
 
 Current candidates are symbols and docs. A future phase adds tenant API contract candidates from published manifests, using the same scoring and budget rules. The current local ranker also lets a candidate satisfy certain canonical roles through inferred capability support, so role fulfillment is not tied to one framework's exact symbol layout. That includes thin wrapper APIs whose own body is enough to prove orchestration or execution behavior even when nested helpers are not indexed as separate top-level symbols.
 
+The ranker also reads the index-time `repository_profile.strategy_profile` from the Neo4j `Workspace`. When a target/query does not map to one of the known hand-authored mechanisms, the ranker can fall back to auto-detected mechanism archetypes such as `middleware_pipeline`, `decorator_declares_handler`, `declarative_mapping`, or `template_compilation`. These archetypes provide a repository-specific `role_plan`, so unknown repos can still ask for the right evidence classes instead of defaulting to the generic `api_surface/executor/runtime_surface` trio.
+
 ```python
 @dataclass
 class Candidate:

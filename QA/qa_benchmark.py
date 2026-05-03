@@ -247,6 +247,7 @@ def build_snapshot_manifest_row(
     indexing = metrics.get("indexing", {})
     profile = indexing.get("repository_profile") or {}
     capabilities = profile.get("capabilities") or {}
+    strategy = profile.get("strategy_profile") or {}
     return {
         "timestamp": metrics.get("timestamp"),
         "report_path": str(Path(report_path).resolve()),
@@ -260,6 +261,7 @@ def build_snapshot_manifest_row(
         "repository_readiness": profile.get("retrieval_readiness", ""),
         "repository_indexability": profile.get("indexability", ""),
         "repository_profile_store": indexing.get("repository_profile_store", ""),
+        "selected_strategy": strategy.get("selected_strategy", ""),
         "impact_readiness": capabilities.get("impact_analysis", ""),
         "total_questions": summary.get("total_questions", 0),
         "pass_count": summary.get("pass_count", 0),
@@ -892,6 +894,7 @@ def run_benchmark(
         ranker_required_roles = normalize_roles(
             getattr(ctx, "ranker_state", {}).get("required_roles", [])
         )
+        strategy_profile = getattr(ctx, "ranker_state", {}).get("strategy_profile", {}) or {}
 
         # Compute recall@k and precision@k
         intersection = all_retrieved & expected_symbols
@@ -971,6 +974,9 @@ def run_benchmark(
             "required_roles": required_roles,
             "required_roles_canonical": required_roles_canonical,
             "ranker_required_roles": ranker_required_roles,
+            "selected_strategy": strategy_profile.get("selected_strategy", ""),
+            "strategy_role_plan": strategy_profile.get("role_plan", []),
+            "strategy_archetypes": strategy_profile.get("mechanism_archetypes", []),
             "expected_mode": expected_mode,
             "tokens_surgical": tokens_surgical,
             "tokens_carpet_bomb": tokens_carpet_bomb,

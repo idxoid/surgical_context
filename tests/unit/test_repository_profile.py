@@ -60,8 +60,12 @@ def test_repository_profile_detects_framework_and_shallow_impact(tmp_path: Path)
     assert profile["indexability"] == "high"
     assert profile["languages"]["supported"]["python"] == 1
     assert profile["mechanism_profile"]["framework_signals"][0]["name"] == "django"
+    assert profile["strategy_profile"]["selected_strategy"] == "registration_flow"
+    assert "factory_surface" in profile["strategy_profile"]["role_plan"]
+    assert profile["mechanism_profile"]["archetypes"][0]["type"] == "route_registration"
     assert profile["capabilities"]["impact_analysis"] == "shallow"
     assert "reachability-based impact candidates" in profile["reasoning_contract"]["allowed"]
+    assert "strategy=registration_flow" in summarize_repository_profile(profile)
     assert "impact=shallow" in summarize_repository_profile(profile)
 
 

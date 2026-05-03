@@ -58,6 +58,7 @@ The profile includes:
 - call/import/inheritance density
 - framework and mechanism signals
 - dynamic surfaces such as decorators, registries, templates, generated APIs, metaprogramming, and C/macros
+- mechanism archetypes and a repository-specific retrieval strategy profile
 - capability flags for code navigation, static call reasoning, decorator/runtime registry semantics, doc-code bridge, and impact analysis
 - a `reasoning_contract` with allowed and risky reasoning modes
 
@@ -71,6 +72,18 @@ Example:
     "code_navigation": "medium",
     "static_call_reasoning": "low",
     "impact_analysis": "shallow_partial"
+  },
+  "strategy_profile": {
+    "selected_strategy": "middleware_pipeline_trace",
+    "role_plan": ["api_surface", "factory_surface", "composition_surface", "runtime_surface"],
+    "mechanism_archetypes": [
+      {
+        "type": "middleware_pipeline",
+        "confidence": 0.78,
+        "role_plan": ["api_surface", "factory_surface", "composition_surface", "runtime_surface"]
+      }
+    ],
+    "fallbacks": ["direct_symbol", "semantic_docs", "concept_to_symbol"]
   },
   "reasoning_contract": {
     "allowed": ["symbol/file navigation over indexed languages"],
@@ -149,6 +162,7 @@ The fast project indexer builds a repository profile after graph/doc-anchor phas
 - observed symbols/calls/imports/inheritance
 - AFFECTS rebuild status
 - lightweight path/source signals from changed files
+- mechanism archetypes inferred from framework and dynamic-surface signals
 
 The result is included under `stats["repository_profile"]`, persisted to the Neo4j `Workspace`, and printed as a compact readiness line. `stats["repository_profile_store"]` is `neo4j_workspace` when persistence succeeds. If a project pass finds no changed files, the fast indexer loads the existing profile from the workspace when available.
 

@@ -506,6 +506,8 @@ class UnifiedRanker:
         self.vector = vector_searcher
         self.workspace_id = workspace_id
         self.weights = weights
+        self.repository_profile = self._load_repository_profile()
+        self.strategy_profile = self.repository_profile.get("strategy_profile", {})
 
     # ------------------------------------------------------------------
     # Public API
@@ -2820,8 +2822,9 @@ class UnifiedRanker:
             and ("intercept" in query_lower or "side effect" in query_lower)
         ):
             return "listener_orchestration_pipeline"
-        if name == "configurestore" or any(
-            phrase in query_lower for phrase in ("middleware", "enhancers", "devtools")
+        if name == "configurestore" or (
+            ("/packages/toolkit/" in file_path or "redux" in file_path or "configurestore" in query_lower)
+            and any(phrase in query_lower for phrase in ("middleware", "enhancers", "devtools"))
         ):
             return "runtime_configuration_pipeline"
         if name == "createasyncthunk" or any(
@@ -2832,12 +2835,17 @@ class UnifiedRanker:
             "api slice" in query_lower and ("endpoint" in query_lower or "store" in query_lower)
         ):
             return "api_store_integration_pipeline"
+        auto_mechanism = self._auto_mechanism_from_strategy(target, query=query)
+        if auto_mechanism:
+            return auto_mechanism
         return "generic"
 
     def _get_required_roles(self, mechanism: str) -> list[str]:
         """Return the set of evidence roles required for a minimally sufficient context."""
         roles = []
-        if mechanism == "fastapi_route_registration":
+        if mechanism.startswith("auto:"):
+            roles = self._roles_for_auto_mechanism(mechanism.removeprefix("auto:"))
+        elif mechanism == "fastapi_route_registration":
             roles = ["api_surface", "factory_surface", "representation_surface", "runtime_surface"]
         elif mechanism == "fastapi_dependency_injection":
             roles = ["api_surface", "config_surface", "representation_surface", "orchestrator", "runtime_surface"]
@@ -2876,11 +2884,49 @@ class UnifiedRanker:
         elif mechanism == "workspace_structure":
             roles = ["api_surface", "core_runtime", "docs_or_concept", "supporting_surface"]
         else:
-            roles = ["api_surface", "executor", "runtime_surface"]
+            roles = self._strategy_role_plan() or ["api_surface", "executor", "runtime_surface"]
 
         # Docs are universally useful for grounding concepts
         roles.append("docs_or_concept")
         return normalize_roles(roles)
+
+    def _load_repository_profile(self) -> dict:
+        get_profile = getattr(self.db, "get_repository_profile", None)
+        if not callable(get_profile):
+            return {}
+        try:
+            profile = get_profile(workspace_id=self.workspace_id)
+        except Exception:
+            return {}
+        return profile if isinstance(profile, dict) else {}
+
+    def _strategy_role_plan(self) -> list[str]:
+        return normalize_roles((self.strategy_profile or {}).get("role_plan") or [])
+
+    def _roles_for_auto_mechanism(self, archetype: str) -> list[str]:
+        for item in (self.strategy_profile or {}).get("mechanism_archetypes") or []:
+            if item.get("type") == archetype:
+                return normalize_roles(item.get("role_plan") or [])
+        return self._strategy_role_plan()
+
+    def _auto_mechanism_from_strategy(self, target: SubgraphNode, query: str = "") -> str:
+        archetypes = (self.strategy_profile or {}).get("mechanism_archetypes") or []
+        if not archetypes:
+            return ""
+        haystack = " ".join(
+            part.lower()
+            for part in (target.name or "", target.file_path or "", query or "")
+            if part
+        )
+        for item in archetypes:
+            archetype = item.get("type", "")
+            evidence = " ".join(str(piece).lower() for piece in item.get("evidence") or [])
+            terms = set(self._focus_query_terms(archetype.replace("_", " ")))
+            terms.update(self._focus_query_terms(evidence))
+            if terms and any(term in haystack for term in terms):
+                return f"auto:{archetype}"
+        top = archetypes[0].get("type", "")
+        return f"auto:{top}" if top else ""
 
     # ------------------------------------------------------------------
     # Neo4j helpers

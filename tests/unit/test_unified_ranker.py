@@ -980,6 +980,52 @@ def test_generic_ts_js_mechanisms_cover_redux_style_queries():
     )
 
 
+def test_auto_strategy_profile_supplies_mechanism_and_roles_for_unknown_repo():
+    db = _make_db()
+    db.get_repository_profile.return_value = {
+        "strategy_profile": {
+            "selected_strategy": "middleware_pipeline_trace",
+            "role_plan": ["api_surface", "composition_surface", "runtime_surface"],
+            "mechanism_archetypes": [
+                {
+                    "type": "middleware_pipeline",
+                    "strategy": "middleware_pipeline_trace",
+                    "confidence": 0.78,
+                    "role_plan": ["api_surface", "factory_surface", "composition_surface", "runtime_surface"],
+                    "evidence": ["express", "Router(", "app.use"],
+                }
+            ],
+        }
+    }
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/express@main")
+    target = SubgraphNode(
+        uid="router",
+        name="Router",
+        file_path="/repo/lib/router/index.js",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    mechanism = ranker._determine_mechanism(
+        target,
+        query="How does Express middleware execution call next handlers?",
+    )
+
+    assert mechanism == "auto:middleware_pipeline"
+    assert ranker._get_required_roles(mechanism) == [
+        "api_surface",
+        "factory_surface",
+        "composition_surface",
+        "runtime_surface",
+        "docs_or_concept",
+    ]
+
+
 def test_generic_ts_js_role_inference_covers_redux_style_symbols():
     ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
 
