@@ -1,5 +1,6 @@
 """Unit tests for incremental indexing with hash-based skip logic."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 from sidecar.database.neo4j_client import Neo4jClient
@@ -49,6 +50,30 @@ class TestIncrementalIndexing:
             mock_session.run.return_value = mock_records
             result = db.get_file_hashes(["/file1.py", "/file2.py"])
             assert result == {"/file1.py": "hash1", "/file2.py": "hash2"}
+
+    def test_repository_profile_round_trips_through_workspace_metadata(self):
+        db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
+        mock_session = MagicMock()
+        profile = {
+            "schema_version": 1,
+            "workspace_id": "local/repo@main",
+            "indexability": "medium",
+        }
+
+        with patch.object(db.driver, "session") as mock_ctx:
+            mock_ctx.return_value.__enter__.return_value = mock_session
+            db.save_repository_profile(profile, workspace_id="local/repo@main")
+            call_args = mock_session.run.call_args
+            assert "repository_profile_json" in call_args.args[0]
+            assert json.loads(call_args.kwargs["profile_json"]) == profile
+
+        mock_session = MagicMock()
+        mock_session.run.return_value.single.return_value = {
+            "profile_json": json.dumps(profile)
+        }
+        with patch.object(db.driver, "session") as mock_ctx:
+            mock_ctx.return_value.__enter__.return_value = mock_session
+            assert db.get_repository_profile("local/repo@main") == profile
 
     def test_delete_symbols_for_file_with_mock_session(self):
         """Test that delete_symbols_for_file sends correct Cypher."""

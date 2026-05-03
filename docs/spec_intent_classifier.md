@@ -2,9 +2,9 @@
 
 ## Overview
 
-**Purpose:** Detect the user's query intent and rank retrieval tiers (code, specs, architecture, concepts, ideas) accordingly. Enables adaptive payload assembly — different intents prioritize different content types.
+**Purpose:** Detect the user's query intent, resolve it against the index-time repository capability contract, and rank retrieval tiers (code, specs, architecture, concepts, ideas) accordingly. Enables adaptive payload assembly while making unsupported or shallow reasoning explicit.
 
-**Current status:** Implemented as a deterministic keyword classifier in `sidecar/context/intent_classifier.py`. The classifier returns a primary intent plus observability metadata (`distribution`, `confidence`, `ambiguous`, `matched_keywords`). Full multi-label routing remains deferred: the current ranker still routes by one primary intent, while preserving the distribution in the prompt contract for debugging.
+**Current status:** Implemented as a deterministic keyword classifier plus an Intent Resolution Contract in `sidecar/context/intent_classifier.py`. The classifier returns a primary desired intent plus observability metadata (`distribution`, `confidence`, `ambiguous`, `matched_keywords`). The resolver then intersects that desired intent with the `repository_profile` emitted by indexing and records an `effective_mode`, available capabilities, and risks. Full multi-label routing remains deferred: the current ranker still routes by one primary intent, while preserving the distribution and resolution metadata in the prompt contract for debugging.
 
 ---
 
@@ -114,6 +114,56 @@ cross-refs → code → specs → architecture → concept → idea
 | **architecture** | `architectura.md` | DocResolver (FROM {type: "architecture"}) |
 | **concept** | `concept.md` | DocResolver (FROM {type: "concept"}) |
 | **idea** | `idea_*.md` documents | DocResolver (FROM {type: "idea"}) |
+
+---
+
+## Intent Resolution Contract
+
+Intent has two layers:
+
+1. **Desired intent** — what the user appears to ask for.
+2. **Effective mode** — what the current repository index can responsibly support.
+
+This prevents shallow text classification from pretending that every repo can satisfy every question type. For example, an impact query on a repo whose profile says `impact_analysis = shallow_partial` becomes `shallow_reachability_impact`, not definitive blast-radius analysis.
+
+Serialized shape:
+
+```json
+{
+  "desired_intent": "impact_analysis",
+  "effective_mode": "shallow_reachability_impact",
+  "degraded": true,
+  "required_capabilities": [
+    "impact_analysis",
+    "static_call_reasoning",
+    "runtime_registry_semantics"
+  ],
+  "available_capabilities": {
+    "impact_analysis": "shallow_partial",
+    "static_call_reasoning": "medium",
+    "runtime_registry_semantics": "low"
+  },
+  "repository_readiness": "partial",
+  "risks": [
+    "impact may miss dynamic/framework/test-surface edges"
+  ]
+}
+```
+
+Current effective modes include:
+
+| Desired intent | Effective modes |
+|---|---|
+| navigation | `exact_symbol_navigation`, `low_confidence_navigation` |
+| debugging | `code_grounded_debugging`, `limited_debugging_context` |
+| refactor | `reverse_dependency_refactor_candidates`, `limited_refactor_search` |
+| exploration | `code_grounded_explanation`, `docs_grounded_explanation`, `mechanism_explanation_with_caveats` |
+| new_feature | `design_context_planning` |
+| design_question | `design_reasoning` |
+| impact_analysis | `reachability_impact_candidates`, `shallow_reachability_impact`, `unsupported_impact_request` |
+| any | `unprofiled_intent_routing` when no repository profile is available |
+
+The resolution is emitted in the prompt contract under `intent_details.resolution` and mirrored as `metadata.effective_intent_mode`.
 
 ---
 
@@ -265,6 +315,8 @@ If the top N tiers in the priority order produce zero matches:
 - Seven intent labels: navigation, debugging, refactor, exploration, new_feature, design_question, impact_analysis.
 - Keyword-based primary classification.
 - Intent distribution, confidence, ambiguous flag, and matched keyword metadata.
+- Intent Resolution Contract against the index-time `repository_profile`.
+- Prompt contract serialization of `effective_mode`, available capabilities, and risks.
 - Prompt contract serialization under `intent_details`.
 - Impact-analysis special handling in the ranker: higher floor, topic-sensitive test/example noise, and OR pass gate.
 

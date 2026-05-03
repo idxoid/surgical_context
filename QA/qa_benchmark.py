@@ -178,7 +178,7 @@ def _empty_indexing_summary(*, skipped: bool = False) -> dict[str, Any]:
         "repository_profile": build_empty_repository_profile(
             reason="benchmark_indexing_skipped" if skipped else "not_built"
         ),
-        "repository_profile_path": "",
+        "repository_profile_store": "",
     }
 
 
@@ -259,8 +259,7 @@ def build_snapshot_manifest_row(
         "indexing_skipped": bool(indexing.get("skipped")),
         "repository_readiness": profile.get("retrieval_readiness", ""),
         "repository_indexability": profile.get("indexability", ""),
-        "repository_profile_path": indexing.get("repository_profile_path")
-        or profile.get("profile_path", ""),
+        "repository_profile_store": indexing.get("repository_profile_store", ""),
         "impact_readiness": capabilities.get("impact_analysis", ""),
         "total_questions": summary.get("total_questions", 0),
         "pass_count": summary.get("pass_count", 0),
@@ -1092,8 +1091,8 @@ def run_benchmark(
             from sidecar.indexer.repository_profile import summarize_repository_profile
 
             print(f"Readiness:       {summarize_repository_profile(profile)}")
-            if metrics["indexing"].get("repository_profile_path"):
-                print(f"Profile JSON:    {metrics['indexing']['repository_profile_path']}")
+            if metrics["indexing"].get("repository_profile_store"):
+                print(f"Profile store:   {metrics['indexing']['repository_profile_store']}")
         if metrics["indexing"].get("docs_timings_sec"):
             print(
                 "Docs timings:    "

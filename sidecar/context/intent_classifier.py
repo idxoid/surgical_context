@@ -46,6 +46,38 @@ class IntentSignal:
     matched_keywords: dict[str, list[str]] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class IntentResolution:
+    """Desired user intent resolved against repository capabilities."""
+
+    desired_intent: str
+    effective_mode: str
+    confidence: float
+    ambiguous: bool
+    degraded: bool
+    required_capabilities: list[str]
+    available_capabilities: dict[str, str]
+    repository_readiness: str = ""
+    repository_indexability: str = ""
+    allowed_reasoning: list[str] = field(default_factory=list)
+    risks: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "desired_intent": self.desired_intent,
+            "effective_mode": self.effective_mode,
+            "confidence": self.confidence,
+            "ambiguous": self.ambiguous,
+            "degraded": self.degraded,
+            "required_capabilities": self.required_capabilities,
+            "available_capabilities": self.available_capabilities,
+            "repository_readiness": self.repository_readiness,
+            "repository_indexability": self.repository_indexability,
+            "allowed_reasoning": self.allowed_reasoning,
+            "risks": self.risks,
+        }
+
+
 class IntentClassifier:
     """Classify query intent using keyword heuristics."""
 
@@ -241,3 +273,173 @@ class IntentClassifier:
     def get_tier_priority(intent: Intent) -> list[str]:
         """Return tier priority ordering for a given intent."""
         return IntentConfig.PRIORITY[intent]
+
+    @classmethod
+    def resolve_with_profile(
+        cls,
+        query: str,
+        repository_profile: dict | None = None,
+    ) -> IntentResolution:
+        """Resolve desired query intent against index-time repository capabilities."""
+        signal = cls.classify_with_metadata(query)
+        return cls.resolve_signal_with_profile(signal, repository_profile)
+
+    @classmethod
+    def resolve_signal_with_profile(
+        cls,
+        signal: IntentSignal,
+        repository_profile: dict | None = None,
+    ) -> IntentResolution:
+        profile = repository_profile if isinstance(repository_profile, dict) else {}
+        capabilities = profile.get("capabilities") or {}
+        contract = profile.get("reasoning_contract") or {}
+        required = cls._required_capabilities(signal.primary)
+        available = {
+            capability: cls._capability_status(capability, capabilities)
+            for capability in required
+        }
+        effective_mode, degraded, risks = cls._effective_mode(
+            signal.primary,
+            available,
+            capabilities,
+            profile,
+        )
+        profile_risks = list(contract.get("risky") or [])
+        if profile_risks:
+            risks.extend(profile_risks)
+
+        return IntentResolution(
+            desired_intent=signal.primary.value,
+            effective_mode=effective_mode,
+            confidence=signal.confidence,
+            ambiguous=signal.ambiguous,
+            degraded=degraded,
+            required_capabilities=required,
+            available_capabilities=available,
+            repository_readiness=str(profile.get("retrieval_readiness") or ""),
+            repository_indexability=str(profile.get("indexability") or ""),
+            allowed_reasoning=list(contract.get("allowed") or []),
+            risks=_dedupe_preserve_order(risks),
+        )
+
+    @staticmethod
+    def _required_capabilities(intent: Intent) -> list[str]:
+        return {
+            Intent.NAVIGATION: ["code_navigation"],
+            Intent.DEBUGGING: ["code_navigation", "static_call_reasoning"],
+            Intent.REFACTORING: ["code_navigation", "static_call_reasoning", "impact_analysis"],
+            Intent.EXPLORATION: ["code_navigation", "static_call_reasoning", "doc_code_bridge"],
+            Intent.NEW_FEATURE: ["doc_code_bridge", "code_navigation"],
+            Intent.DESIGN_QUESTION: ["doc_code_bridge"],
+            Intent.IMPACT_ANALYSIS: [
+                "impact_analysis",
+                "static_call_reasoning",
+                "runtime_registry_semantics",
+            ],
+        }[intent]
+
+    @staticmethod
+    def _capability_status(capability: str, capabilities: dict) -> str:
+        return str(capabilities.get(capability) or "unknown")
+
+    @classmethod
+    def _effective_mode(
+        cls,
+        intent: Intent,
+        available: dict[str, str],
+        capabilities: dict,
+        profile: dict,
+    ) -> tuple[str, bool, list[str]]:
+        if not profile:
+            return (
+                "unprofiled_intent_routing",
+                True,
+                ["repository profile is unavailable; intent is only a text routing hint"],
+            )
+
+        risks: list[str] = []
+        readiness = str(profile.get("retrieval_readiness") or "")
+        if readiness in {"unsupported_symbol_surface", "limited"}:
+            risks.append("repository readiness is low; retrieval may need fallback context")
+
+        if intent == Intent.IMPACT_ANALYSIS:
+            impact = available.get("impact_analysis", "unknown")
+            if impact == "shallow":
+                return (
+                    "reachability_impact_candidates",
+                    True,
+                    ["impact is reachability-based, not causal breakage proof"],
+                )
+            if impact == "shallow_partial":
+                return (
+                    "shallow_reachability_impact",
+                    True,
+                    ["impact may miss dynamic/framework/test-surface edges"],
+                )
+            return (
+                "unsupported_impact_request",
+                True,
+                ["impact analysis is not supported by the current index profile"],
+            )
+
+        if intent == Intent.NAVIGATION:
+            mode = "exact_symbol_navigation" if cls._is_usable(available["code_navigation"]) else "low_confidence_navigation"
+            return mode, mode != "exact_symbol_navigation", risks
+
+        if intent == Intent.DEBUGGING:
+            usable = cls._is_usable(available["code_navigation"]) and cls._is_usable(
+                available["static_call_reasoning"]
+            )
+            return (
+                "code_grounded_debugging" if usable else "limited_debugging_context",
+                not usable,
+                risks,
+            )
+
+        if intent == Intent.REFACTORING:
+            impact = available.get("impact_analysis", "unknown")
+            usable = impact in {"shallow", "shallow_partial"}
+            return (
+                "reverse_dependency_refactor_candidates" if usable else "limited_refactor_search",
+                True,
+                risks + ["refactor blast radius is candidate-based until validated"],
+            )
+
+        if intent == Intent.EXPLORATION:
+            dynamic = (capabilities.get("decorator_semantics"), capabilities.get("runtime_registry_semantics"))
+            if any(value == "medium" for value in dynamic):
+                return (
+                    "mechanism_explanation_with_caveats",
+                    True,
+                    risks + ["framework/runtime semantics need mechanism validation"],
+                )
+            return (
+                "code_grounded_explanation"
+                if cls._is_usable(available["code_navigation"])
+                else "docs_grounded_explanation",
+                not cls._is_usable(available["code_navigation"]),
+                risks,
+            )
+
+        if intent == Intent.NEW_FEATURE:
+            return "design_context_planning", False, risks
+
+        if intent == Intent.DESIGN_QUESTION:
+            return "design_reasoning", False, risks
+
+        return "unprofiled_intent_routing", True, risks
+
+    @staticmethod
+    def _is_usable(status: str) -> bool:
+        return status in {"high", "medium", "shallow", "shallow_partial"}
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

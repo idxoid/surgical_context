@@ -1,3 +1,5 @@
+import json
+
 from neo4j import GraphDatabase
 
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
@@ -130,6 +132,47 @@ class Neo4jClient:
                 row = session.run(query, workspace_id=workspace_id).single()
                 counts[key] = int(row["count"] if row else 0)
         return counts
+
+    def save_repository_profile(
+        self,
+        profile: dict,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> None:
+        """Persist the index-time repository readiness profile on the Workspace."""
+        payload = json.dumps(profile, sort_keys=True)
+        with self.driver.session() as session:
+            session.run(
+                """
+                MERGE (w:Workspace {id: $workspace_id})
+                SET w.repository_profile_json = $profile_json,
+                    w.repository_profile_schema_version = $schema_version,
+                    w.repository_profile_updated_at = timestamp()
+                """,
+                workspace_id=workspace_id,
+                profile_json=payload,
+                schema_version=profile.get("schema_version", 1),
+            )
+
+    def get_repository_profile(
+        self,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> dict | None:
+        """Load the index-time repository readiness profile from the Workspace."""
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                RETURN w.repository_profile_json AS profile_json
+                """,
+                workspace_id=workspace_id,
+            ).single()
+        if not row or not row["profile_json"]:
+            return None
+        try:
+            payload = json.loads(row["profile_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def prune_symbols_for_file(
         self,

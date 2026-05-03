@@ -3,10 +3,7 @@ from pathlib import Path
 from sidecar.indexer.repository_profile import (
     RepositoryProfileInputs,
     build_repository_profile,
-    read_repository_profile,
-    repository_profile_path,
     summarize_repository_profile,
-    write_repository_profile,
 )
 
 
@@ -68,23 +65,21 @@ def test_repository_profile_detects_framework_and_shallow_impact(tmp_path: Path)
     assert "impact=shallow" in summarize_repository_profile(profile)
 
 
-def test_repository_profile_persists_by_workspace_id(tmp_path: Path):
-    profile = {
-        "workspace_id": "local/repo@feature/test",
-        "indexability": "medium",
-        "retrieval_readiness": "partial",
-        "languages": {"supported": {"python": 1}},
-        "mechanism_profile": {"framework_signals": []},
-        "capabilities": {"impact_analysis": "shallow_partial"},
-    }
+def test_repository_profile_is_plain_db_storable_payload(tmp_path: Path):
+    source = tmp_path / "app.py"
+    source.write_text("def handler():\n    return 1\n", encoding="utf-8")
 
-    written = write_repository_profile(profile, profile_dir=tmp_path)
-    loaded = read_repository_profile("local/repo@feature/test", profile_dir=tmp_path)
+    profile = build_repository_profile(
+        RepositoryProfileInputs(
+            project_path=str(tmp_path),
+            workspace_id="local/repo@main",
+            collected_files=[str(source)],
+            parsed_files=1,
+            symbols_indexed=1,
+            calls_indexed=0,
+        )
+    )
 
-    assert Path(written).exists()
-    assert Path(written) == repository_profile_path(
-        "local/repo@feature/test", profile_dir=tmp_path
-    ).resolve()
-    assert loaded is not None
-    assert loaded["workspace_id"] == "local/repo@feature/test"
-    assert loaded["profile_path"] == written
+    assert profile["workspace_id"] == "local/repo@main"
+    assert "profile_path" not in profile
+    assert profile["schema_version"] == 1

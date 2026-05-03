@@ -7,7 +7,7 @@ from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.deduplicator import ContextDeduplicator
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.intent_classifier import IntentClassifier, IntentSignal
+from sidecar.context.intent_classifier import IntentClassifier, IntentResolution, IntentSignal
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext
 from sidecar.context.unified_ranker import (
@@ -46,15 +46,19 @@ class ContextArbitrator:
     ) -> PromptContext | str:
         """Orchestrate the pipeline: expand → deduplicate → resolve → compile (with intent-aware tier selection)."""
         intent_signal = IntentClassifier.classify_with_metadata(question)
+        intent_resolution = IntentClassifier.resolve_signal_with_profile(
+            intent_signal,
+            self._repository_profile(),
+        )
         intent = intent_signal.primary
         cache_hits = []
 
         if self.vector_db:
             return self._get_context_unified(
-                symbol_name, question, token_budget, intent_signal, cache_hits
+                symbol_name, question, token_budget, intent_signal, intent_resolution, cache_hits
             )
         return self._get_context_graph_only(
-            symbol_name, token_budget, intent_signal, cache_hits
+            symbol_name, token_budget, intent_signal, intent_resolution, cache_hits
         )
 
     # ------------------------------------------------------------------
@@ -62,7 +66,13 @@ class ContextArbitrator:
     # ------------------------------------------------------------------
 
     def _get_context_unified(
-        self, symbol_name, question, token_budget, intent_signal: IntentSignal, cache_hits
+        self,
+        symbol_name,
+        question,
+        token_budget,
+        intent_signal: IntentSignal,
+        intent_resolution: IntentResolution,
+        cache_hits,
     ) -> PromptContext | str:
         intent = intent_signal.primary
         ranker = UnifiedRanker(
@@ -147,6 +157,8 @@ class ContextArbitrator:
         ctx.intent_distribution = intent_signal.distribution
         ctx.intent_confidence = intent_signal.confidence
         ctx.intent_ambiguous = intent_signal.ambiguous
+        ctx.intent_effective_mode = intent_resolution.effective_mode
+        ctx.intent_resolution = intent_resolution.to_dict()
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
         ctx.budget["ranker"] = "unified"
         w = self.ranker_weights
@@ -173,7 +185,12 @@ class ContextArbitrator:
     # ------------------------------------------------------------------
 
     def _get_context_graph_only(
-        self, symbol_name, token_budget, intent_signal: IntentSignal, cache_hits
+        self,
+        symbol_name,
+        token_budget,
+        intent_signal: IntentSignal,
+        intent_resolution: IntentResolution,
+        cache_hits,
     ) -> PromptContext | str:
         intent = intent_signal.primary
         intent_hash = hashlib.sha256(intent.value.encode("utf-8")).hexdigest()
@@ -235,6 +252,8 @@ class ContextArbitrator:
         ctx.intent_distribution = intent_signal.distribution
         ctx.intent_confidence = intent_signal.confidence
         ctx.intent_ambiguous = intent_signal.ambiguous
+        ctx.intent_effective_mode = intent_resolution.effective_mode
+        ctx.intent_resolution = intent_resolution.to_dict()
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
         ctx.budget["ranker"] = "graph_only"
         ctx.ranker_state = {
@@ -244,6 +263,16 @@ class ContextArbitrator:
             "pruned_total_count": len(subgraph.pruned_details),
         }
         return ctx
+
+    def _repository_profile(self) -> dict | None:
+        get_profile = getattr(self.db, "get_repository_profile", None)
+        if not callable(get_profile):
+            return None
+        try:
+            profile = get_profile(workspace_id=self.workspace_id)
+        except Exception:
+            return None
+        return profile if isinstance(profile, dict) else None
 
     def _primary_uid(self, symbol_name: str) -> str | Any | None:
         query = """

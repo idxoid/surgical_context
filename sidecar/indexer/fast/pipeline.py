@@ -47,9 +47,7 @@ from sidecar.indexer.repository_profile import (
     RepositoryProfileInputs,
     build_empty_repository_profile,
     build_repository_profile,
-    read_repository_profile,
     summarize_repository_profile,
-    write_repository_profile,
 )
 from sidecar.silence import install as _silence
 from sidecar.workspace import WorkspaceResolver
@@ -415,12 +413,18 @@ def _profile_sample_texts(
     return sample_texts
 
 
-def _use_repository_profile(stats: dict, profile: dict) -> None:
+def _use_repository_profile(
+    stats: dict,
+    profile: dict,
+    db: Neo4jClient,
+    workspace_id: str,
+) -> None:
     """Attach and persist the repository profile for downstream consumers."""
-    profile_path = write_repository_profile(profile)
-    profile["profile_path"] = profile_path
+    save_profile = getattr(db, "save_repository_profile", None)
+    if callable(save_profile):
+        save_profile(profile, workspace_id=workspace_id)
     stats["repository_profile"] = profile
-    stats["repository_profile_path"] = profile_path
+    stats["repository_profile_store"] = "neo4j_workspace"
 
 
 def run_fast_indexing(
@@ -475,7 +479,7 @@ def run_fast_indexing(
         "repository_profile": build_empty_repository_profile(
             project_path, workspace_id, reason="not_built"
         ),
-        "repository_profile_path": "",
+        "repository_profile_store": "",
     }
 
     t0 = time.perf_counter()
@@ -507,6 +511,8 @@ def run_fast_indexing(
                 build_empty_repository_profile(
                     project_path, workspace_id, reason="no_indexable_files"
                 ),
+                db,
+                workspace_id,
             )
             print(f"❌ No indexable files under {project_path}")
             return stats
@@ -522,10 +528,13 @@ def run_fast_indexing(
         stats["timings_sec"]["hash"] = round(time.perf_counter() - t_stage, 3)
 
         if not changed_files:
-            existing_profile = read_repository_profile(workspace_id)
+            get_profile = getattr(db, "get_repository_profile", None)
+            existing_profile = (
+                get_profile(workspace_id=workspace_id) if callable(get_profile) else None
+            )
             if existing_profile:
                 stats["repository_profile"] = existing_profile
-                stats["repository_profile_path"] = existing_profile.get("profile_path", "")
+                stats["repository_profile_store"] = "neo4j_workspace"
             else:
                 _use_repository_profile(
                     stats,
@@ -537,6 +546,8 @@ def run_fast_indexing(
                         stats,
                         db,
                     ),
+                    db,
+                    workspace_id,
                 )
             print(
                 "   readiness="
@@ -599,15 +610,17 @@ def run_fast_indexing(
         stats["timings_sec"]["docs"] = round(time.perf_counter() - t_stage, 3)
         _use_repository_profile(
                 stats,
-                _build_profile_from_diffs(
-                    project_path,
-                    workspace_id,
+            _build_profile_from_diffs(
+                project_path,
+                workspace_id,
                     files,
                     diffs,
-                    stats,
-                    db,
-                ),
-            )
+                stats,
+                db,
+            ),
+            db,
+            workspace_id,
+        )
 
     finally:
         db.close()

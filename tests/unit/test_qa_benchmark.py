@@ -228,7 +228,7 @@ def test_append_snapshot_manifest_writes_compact_report_pointer(tmp_path):
         },
         "indexing": {
             "skipped": True,
-            "repository_profile_path": "/tmp/profile.json",
+            "repository_profile_store": "neo4j_workspace",
             "repository_profile": {
                 "indexability": "medium",
                 "retrieval_readiness": "partial",
@@ -263,7 +263,7 @@ def test_append_snapshot_manifest_writes_compact_report_pointer(tmp_path):
     assert row["git_commit"] == "abc123"
     assert row["repository_readiness"] == "partial"
     assert row["impact_readiness"] == "shallow_partial"
-    assert row["repository_profile_path"] == "/tmp/profile.json"
+    assert row["repository_profile_store"] == "neo4j_workspace"
     assert written == str(manifest_path.resolve())
     payload = json.loads(manifest_path.read_text().splitlines()[0])
     assert payload["report_path"] == str(report_path.resolve())

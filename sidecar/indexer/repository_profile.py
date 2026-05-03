@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import os
-import json
-import re
 import time
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable, Mapping
 
 from sidecar.parser.registry import REGISTRY
@@ -348,57 +345,7 @@ def build_empty_repository_profile(
             "risky": ["indexing did not produce a repository profile"],
         },
         "warnings": [reason],
-}
-
-
-def default_repository_profile_dir() -> Path:
-    """Return the local sidecar directory for repository profile manifests."""
-    return Path(os.getenv("REPOSITORY_PROFILE_DIR", ".surgical_context/repository_profiles"))
-
-
-def repository_profile_path(
-    workspace_id: str,
-    *,
-    profile_dir: str | os.PathLike[str] | None = None,
-) -> Path:
-    """Return the durable manifest path for a workspace profile."""
-    base = Path(profile_dir) if profile_dir is not None else default_repository_profile_dir()
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", workspace_id).strip("_") or "default"
-    return base / f"{slug}.json"
-
-
-def write_repository_profile(
-    profile: Mapping,
-    *,
-    profile_dir: str | os.PathLike[str] | None = None,
-) -> str:
-    """Persist a repository profile manifest and return its absolute path."""
-    workspace_id = str(profile.get("workspace_id") or "default")
-    path = repository_profile_path(workspace_id, profile_dir=profile_dir).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = dict(profile)
-    payload["profile_path"] = str(path)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return str(path)
-
-
-def read_repository_profile(
-    workspace_id: str,
-    *,
-    profile_dir: str | os.PathLike[str] | None = None,
-) -> dict | None:
-    """Load the durable repository profile for a workspace if it exists."""
-    path = repository_profile_path(workspace_id, profile_dir=profile_dir)
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    payload.setdefault("profile_path", str(path.resolve()))
-    return payload
+    }
 
 
 def summarize_repository_profile(profile: Mapping) -> str:

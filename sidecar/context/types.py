@@ -54,6 +54,8 @@ class PromptContext:
     intent_distribution: dict[str, float] = field(default_factory=dict)
     intent_confidence: float = 0.0
     intent_ambiguous: bool = False
+    intent_effective_mode: str = ""
+    intent_resolution: dict[str, Any] = field(default_factory=dict)
     tier_tokens: dict[str, int] = field(default_factory=dict)  # token counts per tier
     trace_id: str = ""
     stopped_reason: str = ""
@@ -116,9 +118,12 @@ class PromptContext:
                 "distribution": self.intent_distribution,
                 "ambiguous": self.intent_ambiguous,
                 "confidence": self.intent_confidence,
+                "effective_mode": self.intent_effective_mode,
+                "resolution": self.intent_resolution,
             },
             "metadata": {
                 "query_intent": self.intent,
+                "effective_intent_mode": self.intent_effective_mode,
                 "tiers_used": tiers_used,
                 "stopped_reason": self.stopped_reason,
                 "missing_roles": self.missing_roles,

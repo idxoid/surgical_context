@@ -38,13 +38,18 @@ Indexing now produces a `repository_profile` in its returned stats. This is the 
 
 Implemented in `sidecar/indexer/repository_profile.py`.
 
-Profiles are also persisted as local manifests under:
+Profiles are persisted on the Neo4j `Workspace` node as index metadata:
 
-```text
-.surgical_context/repository_profiles/<workspace_id>.json
+```cypher
+(:Workspace {
+  id,
+  repository_profile_json,
+  repository_profile_schema_version,
+  repository_profile_updated_at
+})
 ```
 
-The directory can be overridden with `REPOSITORY_PROFILE_DIR`. This lets an up-to-date index pass reuse the last profile instead of returning an empty "nothing changed" state.
+This keeps sidecar metadata out of the user's checkout. An up-to-date index pass can reuse the last profile from the graph instead of returning an empty "nothing changed" state.
 
 The profile includes:
 
@@ -55,7 +60,6 @@ The profile includes:
 - dynamic surfaces such as decorators, registries, templates, generated APIs, metaprogramming, and C/macros
 - capability flags for code navigation, static call reasoning, decorator/runtime registry semantics, doc-code bridge, and impact analysis
 - a `reasoning_contract` with allowed and risky reasoning modes
-- `profile_path`, when the profile has been persisted
 
 Example:
 
@@ -146,7 +150,7 @@ The fast project indexer builds a repository profile after graph/doc-anchor phas
 - AFFECTS rebuild status
 - lightweight path/source signals from changed files
 
-The result is included under `stats["repository_profile"]`, persisted to `.surgical_context/repository_profiles/`, and printed as a compact readiness line. `stats["repository_profile_path"]` points to the durable manifest. If a project pass finds no changed files, the fast indexer loads the existing manifest for the workspace when available.
+The result is included under `stats["repository_profile"]`, persisted to the Neo4j `Workspace`, and printed as a compact readiness line. `stats["repository_profile_store"]` is `neo4j_workspace` when persistence succeeds. If a project pass finds no changed files, the fast indexer loads the existing profile from the workspace when available.
 
 The single-file hot path does not currently rebuild the full repository profile.
 
