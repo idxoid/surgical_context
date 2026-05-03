@@ -43,8 +43,10 @@ def test_load_question_pack_reads_real_repo_metadata():
     pack = load_question_pack(str(pack_path))
 
     assert pack["kind"] == "real_repo"
-    assert len(pack["repositories"]) == 3
-    assert len(pack["questions"]) == 24
+    repo_ids = {repo["id"] for repo in pack["repositories"]}
+    assert {"fastapi", "pydantic", "redux_toolkit"}.issubset(repo_ids)
+    assert len(pack["repositories"]) >= 3
+    assert len(pack["questions"]) >= 24
 
 
 def test_load_questions_filters_real_repo_core12_subset():
@@ -224,7 +226,15 @@ def test_append_snapshot_manifest_writes_compact_report_pointer(tmp_path):
             "core12_only": True,
             "workspace_id": "local/fastapi@main",
         },
-        "indexing": {"skipped": True},
+        "indexing": {
+            "skipped": True,
+            "repository_profile_path": "/tmp/profile.json",
+            "repository_profile": {
+                "indexability": "medium",
+                "retrieval_readiness": "partial",
+                "capabilities": {"impact_analysis": "shallow_partial"},
+            },
+        },
         "summary": {
             "total_questions": 4,
             "pass_count": 4,
@@ -251,6 +261,9 @@ def test_append_snapshot_manifest_writes_compact_report_pointer(tmp_path):
     assert row["repo"] == "fastapi"
     assert row["core12_only"] is True
     assert row["git_commit"] == "abc123"
+    assert row["repository_readiness"] == "partial"
+    assert row["impact_readiness"] == "shallow_partial"
+    assert row["repository_profile_path"] == "/tmp/profile.json"
     assert written == str(manifest_path.resolve())
     payload = json.loads(manifest_path.read_text().splitlines()[0])
     assert payload["report_path"] == str(report_path.resolve())

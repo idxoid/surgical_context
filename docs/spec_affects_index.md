@@ -1,6 +1,6 @@
 # Spec — Reverse Dependency AFFECTS Index (Phase 5)
 
-> **Status:** Implemented for local workspace indexing. `AFFECTSIndexer` materializes workspace-scoped symbol-to-symbol reverse dependency edges, the fast indexer rebuilds them once per project pass, the single-file index path rebuilds them synchronously for changed symbols, and `/impact` exposes affected symbols/files. File-level materialized edges, per-edge depth metadata, staleness tracking, and rebuild CLI remain deferred.
+> **Status:** Implemented for local workspace indexing. `AFFECTSIndexer` materializes workspace-scoped symbol-to-symbol reverse dependency edges, the fast indexer rebuilds them once per project pass, the single-file index path rebuilds them synchronously for changed symbols, and `/impact` exposes affected symbols/files. Current impact analysis is intentionally shallow: it is bounded reverse reachability over the relationships the indexer already understands, not a causal model of behavioral breakage. File-level materialized edges, per-edge depth metadata, staleness tracking, and rebuild CLI remain deferred.
 
 ## 1. Problem
 
@@ -11,6 +11,19 @@ The incremental indexer tracks **file-level** changes via SHA256 hash comparison
 3. **Impact analysis** — "what breaks if I change A?" needs a reverse traversal.
 
 `AFFECTS` is the materialized reverse dependency index for those cases.
+
+### 1.1 Current Scope Caveat
+
+Today, `AFFECTS` answers "what code is reachable from this change through known reverse dependency edges?" It does not yet answer the stronger product question "what will actually break?"
+
+That distinction matters for benchmark interpretation and product UX:
+
+- Runtime and framework mechanisms that are not represented as graph edges are invisible to impact.
+- Dynamic dispatch, decorators, registries, templates, generated APIs, and macro-like systems may be under-modeled.
+- Returned affected symbols/files are candidate evidence, not a ranked causal blast-radius proof.
+- Tests/examples are useful impact evidence only when retrieval can tie them to the changed surface.
+
+The current `/impact` surface should therefore be described as **likely related dependents** or **reachability-based impact**, not definitive change fallout.
 
 ## 2. Current Design
 

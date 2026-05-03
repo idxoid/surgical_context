@@ -2,7 +2,7 @@
 
 ## Overview
 
-`sidecar/indexer/code.py` — full project code indexing pipeline. Walks a directory, extracts symbols and typed function calls, embeds symbol bodies, resolves pending DocAnchors, and rebuilds the AFFECTS reverse-dependency index.
+`sidecar/indexer/code.py` — full project code indexing pipeline. Walks a directory, extracts symbols and typed function calls, embeds symbol bodies, resolves pending DocAnchors, rebuilds the AFFECTS reverse-dependency index, and emits a repository readiness profile.
 
 Entry points:
 - CLI: `python sidecar/indexer/code.py [path]` (defaults to repo root)
@@ -29,6 +29,55 @@ _INDEXED_EXTENSIONS = {ext for adapter in REGISTRY.supported_adapters() for ext 
 Currently: `.py`, `.pyi` (Python), `.ts`, `.tsx` (TypeScript).
 
 New languages can be added by creating an adapter in `sidecar/parser/adapters/` — no core changes needed.
+
+---
+
+## Repository Readiness Profile
+
+Indexing now produces a `repository_profile` in its returned stats. This is the index-time capability contract for the repo: it records not only what was indexed, but what kinds of reasoning are safe to attempt.
+
+Implemented in `sidecar/indexer/repository_profile.py`.
+
+Profiles are also persisted as local manifests under:
+
+```text
+.surgical_context/repository_profiles/<workspace_id>.json
+```
+
+The directory can be overridden with `REPOSITORY_PROFILE_DIR`. This lets an up-to-date index pass reuse the last profile instead of returning an empty "nothing changed" state.
+
+The profile includes:
+
+- supported and unsupported language/file surfaces
+- parse coverage and symbol density
+- call/import/inheritance density
+- framework and mechanism signals
+- dynamic surfaces such as decorators, registries, templates, generated APIs, metaprogramming, and C/macros
+- capability flags for code navigation, static call reasoning, decorator/runtime registry semantics, doc-code bridge, and impact analysis
+- a `reasoning_contract` with allowed and risky reasoning modes
+- `profile_path`, when the profile has been persisted
+
+Example:
+
+```json
+{
+  "indexability": "medium",
+  "retrieval_readiness": "partial",
+  "capabilities": {
+    "code_navigation": "medium",
+    "static_call_reasoning": "low",
+    "impact_analysis": "shallow_partial"
+  },
+  "reasoning_contract": {
+    "allowed": ["symbol/file navigation over indexed languages"],
+    "risky": ["impact is shallow and may miss dynamic/framework edges"]
+  }
+}
+```
+
+This profile should be treated as part of indexing, not as benchmark logic. Benchmark and UI surfaces may read it, but they should not be the first layer to discover that a repo has an unsupported language surface, missing symbol surface, or shallow impact model.
+
+The current implementation is deliberately conservative. It does not claim full framework understanding; it only declares the boundaries that the current graph/parser/doc bridge can support.
 
 ---
 
@@ -87,6 +136,20 @@ After all symbols for a file are upserted, delete stale `AFFECTS` edges and reco
 
 Called synchronously at end of `index_file()` — blocks until AFFECTS edges are rebuilt. Future: batch across files.
 
+### Phase 6 — Repository readiness profile (project pass)
+
+The fast project indexer builds a repository profile after graph/doc-anchor phases using:
+
+- collected files and extension distribution
+- parsed file count
+- observed symbols/calls/imports/inheritance
+- AFFECTS rebuild status
+- lightweight path/source signals from changed files
+
+The result is included under `stats["repository_profile"]`, persisted to `.surgical_context/repository_profiles/`, and printed as a compact readiness line. `stats["repository_profile_path"]` points to the durable manifest. If a project pass finds no changed files, the fast indexer loads the existing manifest for the workspace when available.
+
+The single-file hot path does not currently rebuild the full repository profile.
+
 ---
 
 ## File Hash & Incremental Indexing
@@ -107,9 +170,10 @@ This reduces indexing time for large repos with few changes. Full re-index still
 
 ## Limitations (current)
 
-- AFFECTS rebuild is synchronous per file — scales linearly. Future: batch across files or use background workers.
-- No parallel file processing — single-threaded walk. Future: `concurrent.futures.ThreadPoolExecutor`.
-- Phase 1 and 2 each open every file individually (2× reads). Could merge into single tree-sitter parse.
+- The repository profile is a conservative first-pass contract, not a deep framework model.
+- Framework and dynamic-surface detection uses lightweight path/source signals; it should guide routing and diagnosis, not replace mechanism-specific evidence.
+- The single-file hot path does not currently refresh the full repository profile.
+- Current impact capability is still shallow: AFFECTS reachability does not prove behavioral breakage.
 
 ---
 

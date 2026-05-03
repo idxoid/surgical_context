@@ -74,6 +74,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [ ] Add latency SLO checks for local asks and index operations.
 - [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
 - [ ] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles, wrapper-body support, topic-aware impact retrieval, and module/package fallback targets.
+- [ ] Treat impact analysis as shallow until proven otherwise: current `AFFECTS` is bounded reverse reachability, not a full causal blast-radius model across framework registries, generated APIs, templates, runtime dispatch, and tests.
 
 ### P3 - Real-Repo Validation
 - [x] Adapt the QA harness to use the real-repo question pack in [tests/fixtures/real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml).
@@ -109,6 +110,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - keep using real-repo benchmark reports plus `ready_context` payloads to debug misses before changing weights
 - continue precision work on doc-heavy and broad RTK/Pydantic paths, after the first topic-aware impact-noise pass and module/package fallback target support
 - finish doc-anchor confidence/type scoring so docs stop acting like undifferentiated semantic noise
+- define index-time repository readiness and mechanism discovery, including an explicit impact-readiness signal so unsupported or shallow impact results are not mistaken for ranker failures
 
 ### Week 1
 - tighten remaining product docs around the current local-first context-engine thesis

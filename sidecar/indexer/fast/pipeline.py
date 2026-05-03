@@ -43,6 +43,14 @@ from sidecar.indexer.fast.extractor import ExtractedFile, FastExtractor, hash_fi
 from sidecar.indexer.fast.schema import ensure_fast_indexes
 from sidecar.context.framework_hints import FrameworkHintsIndexer
 from sidecar.indexer.job_log import IndexJobLog
+from sidecar.indexer.repository_profile import (
+    RepositoryProfileInputs,
+    build_empty_repository_profile,
+    build_repository_profile,
+    read_repository_profile,
+    summarize_repository_profile,
+    write_repository_profile,
+)
 from sidecar.silence import install as _silence
 from sidecar.workspace import WorkspaceResolver
 
@@ -324,6 +332,97 @@ def _affects_phase(
     return len(union)
 
 
+def _build_profile_from_diffs(
+    project_path: str,
+    workspace_id: str,
+    files: list[str],
+    diffs: list[FileDiff],
+    stats: dict,
+    db: Neo4jClient,
+) -> dict:
+    """Build the index-time reasoning contract from this indexing pass."""
+    counts = _workspace_profile_counts(db, workspace_id, diffs)
+    sample_texts = _profile_sample_texts(project_path, files, diffs)
+
+    inputs = RepositoryProfileInputs(
+        project_path=project_path,
+        workspace_id=workspace_id,
+        collected_files=files,
+        parsed_files=counts["files"],
+        symbols_indexed=counts["symbols"],
+        symbols_removed=int(stats.get("symbols_removed") or 0),
+        calls_indexed=counts["calls"],
+        imports_indexed=counts["imports"],
+        inheritance_indexed=counts["inheritance"],
+        affects_rebuilt=counts["affects"],
+        skip_affects=bool(stats.get("skip_affects")),
+        sample_texts=sample_texts,
+    )
+    return build_repository_profile(inputs)
+
+
+def _workspace_profile_counts(
+    db: Neo4jClient,
+    workspace_id: str,
+    diffs: list[FileDiff],
+) -> dict[str, int]:
+    get_counts = getattr(db, "get_workspace_profile_counts", None)
+    if callable(get_counts):
+        counts = get_counts(workspace_id=workspace_id)
+        return {
+            "files": int(counts.get("files") or 0),
+            "symbols": int(counts.get("symbols") or 0),
+            "calls": int(counts.get("calls") or 0),
+            "imports": int(counts.get("imports") or 0),
+            "inheritance": int(counts.get("inheritance") or 0),
+            "affects": int(counts.get("affects") or 0),
+        }
+    return {
+        "files": len(diffs),
+        "symbols": sum(len(diff.extracted.symbols) for diff in diffs),
+        "calls": sum(len(diff.extracted.calls) for diff in diffs),
+        "imports": sum(len(diff.extracted.imports) for diff in diffs),
+        "inheritance": sum(len(diff.extracted.inheritance) for diff in diffs),
+        "affects": 0,
+    }
+
+
+def _profile_sample_texts(
+    project_path: str,
+    files: list[str],
+    diffs: list[FileDiff],
+    *,
+    limit: int = 80,
+) -> list[str]:
+    sample_texts: list[str] = []
+    seen: set[str] = set()
+    for diff in diffs[:limit]:
+        rel = os.path.relpath(diff.extracted.path, project_path)
+        sample_texts.append(f"# {rel}\n{diff.extracted.source[:1200]}")
+        seen.add(diff.extracted.path)
+    for path in files:
+        if len(sample_texts) >= limit:
+            break
+        if path in seen:
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                source = fh.read(1200)
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = os.path.relpath(path, project_path)
+        sample_texts.append(f"# {rel}\n{source}")
+    return sample_texts
+
+
+def _use_repository_profile(stats: dict, profile: dict) -> None:
+    """Attach and persist the repository profile for downstream consumers."""
+    profile_path = write_repository_profile(profile)
+    profile["profile_path"] = profile_path
+    stats["repository_profile"] = profile
+    stats["repository_profile_path"] = profile_path
+
+
 def run_fast_indexing(
     project_path: str,
     workspace_id: str | None = None,
@@ -373,6 +472,10 @@ def run_fast_indexing(
         "docs_chunks_indexed": 0,
         "docs_timings_sec": {},
         "timings_sec": {},
+        "repository_profile": build_empty_repository_profile(
+            project_path, workspace_id, reason="not_built"
+        ),
+        "repository_profile_path": "",
     }
 
     t0 = time.perf_counter()
@@ -399,6 +502,12 @@ def run_fast_indexing(
         stats["collected"] = len(files)
         stats["timings_sec"]["collect"] = round(time.perf_counter() - t_stage, 3)
         if not files:
+            _use_repository_profile(
+                stats,
+                build_empty_repository_profile(
+                    project_path, workspace_id, reason="no_indexable_files"
+                ),
+            )
             print(f"❌ No indexable files under {project_path}")
             return stats
 
@@ -413,6 +522,26 @@ def run_fast_indexing(
         stats["timings_sec"]["hash"] = round(time.perf_counter() - t_stage, 3)
 
         if not changed_files:
+            existing_profile = read_repository_profile(workspace_id)
+            if existing_profile:
+                stats["repository_profile"] = existing_profile
+                stats["repository_profile_path"] = existing_profile.get("profile_path", "")
+            else:
+                _use_repository_profile(
+                    stats,
+                    _build_profile_from_diffs(
+                        project_path,
+                        workspace_id,
+                        files,
+                        [],
+                        stats,
+                        db,
+                    ),
+                )
+            print(
+                "   readiness="
+                f"{summarize_repository_profile(stats['repository_profile'])}"
+            )
             print("✅ All files up-to-date, nothing to re-index.")
             return stats
         print(f"🔄 {len(changed_files)}/{len(files)} files changed")
@@ -468,6 +597,17 @@ def run_fast_indexing(
         reporter.step("docs")
         reporter.stage_end("docs")
         stats["timings_sec"]["docs"] = round(time.perf_counter() - t_stage, 3)
+        _use_repository_profile(
+                stats,
+                _build_profile_from_diffs(
+                    project_path,
+                    workspace_id,
+                    files,
+                    diffs,
+                    stats,
+                    db,
+                ),
+            )
 
     finally:
         db.close()
@@ -476,5 +616,6 @@ def run_fast_indexing(
     print(f"✅ Fast indexing complete in {stats['timings_sec']['total']}s")
     print(f"   parsed={stats['parsed']} encoded={stats['symbols_encoded']} "
           f"affects={stats['affects_rebuilt']}")
+    print(f"   readiness={summarize_repository_profile(stats['repository_profile'])}")
     print(f"   timings={stats['timings_sec']}")
     return stats

@@ -91,6 +91,46 @@ class Neo4jClient:
                 for r in result
             }
 
+    def get_workspace_profile_counts(
+        self, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> dict[str, int]:
+        """Return workspace-level counts used by the repository readiness profile."""
+        queries = {
+            "files": """
+                MATCH (f:File {workspace_id: $workspace_id})
+                RETURN count(DISTINCT f) AS count
+            """,
+            "symbols": """
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                RETURN count(DISTINCT s) AS count
+            """,
+            "calls": """
+                MATCH (:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN count(r) AS count
+            """,
+            "imports": """
+                MATCH (:File {workspace_id: $workspace_id})-[r:IMPORTS]->(:File {workspace_id: $workspace_id})
+                RETURN count(r) AS count
+            """,
+            "inheritance": """
+                MATCH (:Symbol)-[r:DEPENDS_ON|IMPLEMENTS|OVERRIDES]->(:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN count(r) AS count
+            """,
+            "affects": """
+                MATCH (:Symbol)-[r:AFFECTS]->(:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN count(r) AS count
+            """,
+        }
+        counts: dict[str, int] = {}
+        with self.driver.session() as session:
+            for key, query in queries.items():
+                row = session.run(query, workspace_id=workspace_id).single()
+                counts[key] = int(row["count"] if row else 0)
+        return counts
+
     def prune_symbols_for_file(
         self,
         file_path: str,

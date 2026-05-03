@@ -159,6 +159,8 @@ def _make_progress_reporter(prefix: str = ""):
 
 
 def _empty_indexing_summary(*, skipped: bool = False) -> dict[str, Any]:
+    from sidecar.indexer.repository_profile import build_empty_repository_profile
+
     return {
         "performed": False if skipped else True,
         "skipped": skipped,
@@ -173,6 +175,10 @@ def _empty_indexing_summary(*, skipped: bool = False) -> dict[str, Any]:
         "docs_chunks_indexed": 0,
         "timings_sec": {},
         "docs_timings_sec": {},
+        "repository_profile": build_empty_repository_profile(
+            reason="benchmark_indexing_skipped" if skipped else "not_built"
+        ),
+        "repository_profile_path": "",
     }
 
 
@@ -239,6 +245,8 @@ def build_snapshot_manifest_row(
     summary = metrics.get("summary", {})
     question_pack = metrics.get("question_pack", {})
     indexing = metrics.get("indexing", {})
+    profile = indexing.get("repository_profile") or {}
+    capabilities = profile.get("capabilities") or {}
     return {
         "timestamp": metrics.get("timestamp"),
         "report_path": str(Path(report_path).resolve()),
@@ -249,6 +257,11 @@ def build_snapshot_manifest_row(
         "workspace_id": question_pack.get("workspace_id") or "",
         "question_pack": question_pack.get("path") or "",
         "indexing_skipped": bool(indexing.get("skipped")),
+        "repository_readiness": profile.get("retrieval_readiness", ""),
+        "repository_indexability": profile.get("indexability", ""),
+        "repository_profile_path": indexing.get("repository_profile_path")
+        or profile.get("profile_path", ""),
+        "impact_readiness": capabilities.get("impact_analysis", ""),
         "total_questions": summary.get("total_questions", 0),
         "pass_count": summary.get("pass_count", 0),
         "pass_rate": summary.get("pass_rate", 0.0),
@@ -1074,6 +1087,13 @@ def run_benchmark(
             "Index timings:   "
             f"{metrics['indexing']['timings_sec']}"
         )
+        profile = metrics["indexing"].get("repository_profile")
+        if profile:
+            from sidecar.indexer.repository_profile import summarize_repository_profile
+
+            print(f"Readiness:       {summarize_repository_profile(profile)}")
+            if metrics["indexing"].get("repository_profile_path"):
+                print(f"Profile JSON:    {metrics['indexing']['repository_profile_path']}")
         if metrics["indexing"].get("docs_timings_sec"):
             print(
                 "Docs timings:    "
