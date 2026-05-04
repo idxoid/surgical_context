@@ -168,6 +168,66 @@ The result is included under `stats["repository_profile"]`, persisted to the Neo
 
 The single-file hot path does not currently rebuild the full repository profile.
 
+### Phase 7 — Repository role taxonomy (Pass 1)
+
+Implemented in `sidecar/indexer/role_clustering.py`. A per-repository role taxonomy derived from call-graph topology, intended to replace the hand-curated role naming heuristics that currently live in `mechanism_registry`, `repository_profile._MECHANISM_PATTERNS` / `_ARCHETYPE_ROLE_PLANS`, and `unified_ranker._infer_role`. No name patterns, no path heuristics, no preloaded framework knowledge — a symbol's role comes from its position in the graph.
+
+**Pipeline order.** The fast pipeline runs Pass 1 between Phase 4 (DocAnchor resolution) and Phase 6 (repository readiness profile), so the taxonomy sees both CALLS-style edges and COVERS edges. The single-file hot path does not run Pass 1.
+
+**Per-symbol structural features.** For every Symbol the pass extracts:
+- `fan_in`, `fan_out` — counts of incoming/outgoing CALLS-family edges
+- `cross_package_in`, `cross_package_out` — same counts restricted to edges whose endpoints sit in different file directories
+- `depth_from_public` — BFS distance from any "public" symbol following outgoing CALLS edges; public = a graph source (no callers) that has at least one callee
+- `doc_anchor_count` — incoming `:COVERS` edges from `:DocAnchor` chunks
+- weighted doc-anchor signals — `definition`, `reference`, and `example` weights derived from `COVERS.anchor_type`, `COVERS.confidence`, and `COVERS.primary_bias`
+- `kind` flags (class-like vs function-like)
+
+Features are log-transformed and standardized (zero mean, unit variance) before clustering.
+
+**Clustering.** k-means in `K ∈ [5, 8]`; the pass picks the K with the highest silhouette score on the standardized features. For large repositories, silhouette scoring is computed on a deterministic sample of symbols so Pass 1 does not dominate indexing time. Output:
+- `RoleTaxonomy` — `feature_names`, `clusters`, `chosen_k`, `silhouette`, `sample_size`. Each cluster has a `centroid`, `member_count`, and a `signature` listing the top-3 features that distinguish it from the global mean (e.g. `["log_fan_in:+", "depth_from_public:-", "is_function:+"]`).
+- `uid → cluster_id` map for every indexed symbol.
+
+**Role catalog autoresolve.** Cluster ids are local to a re-index, so Pass 1 also builds a `RoleCatalog` from each cluster's centroid shape. The catalog maps portable structural archetypes to confidence-ranked clusters:
+
+```json
+{
+  "active_entrypoint": [
+    {"cluster_id": 5, "confidence": 0.82, "evidence": ["log_fan_out:+", "leaf_score:-", "depth_from_public:-"]}
+  ],
+  "runtime_handle": [
+    {"cluster_id": 4, "confidence": 0.88, "evidence": ["log_fan_in:+", "cross_package_in_ratio:+"]}
+  ]
+}
+```
+
+Canonical roles resolve through archetype preferences instead of direct cluster equality. For example, `runtime_surface` resolves to `active_entrypoint`, `runtime_handle`, and `executor`; `api_surface` resolves to `passive_api_surface` and `active_entrypoint`. Passive/config surfaces use typed doc-anchor weight, not raw doc count, so definition/reference anchors can lift public API clusters while example-heavy or weak anchors contribute less. Consumers should treat the result as a scoring preference, not a hard filter.
+
+**Persistence.** Pass 1 writes the taxonomy and role catalog onto the Neo4j `Workspace`, then writes the cluster id onto every `Symbol`:
+
+```cypher
+(:Workspace {
+  id,
+  role_taxonomy_json,
+  role_taxonomy_schema_version,
+  role_catalog_json,
+  role_catalog_schema_version,
+  role_taxonomy_updated_at
+})
+
+(:Symbol { uid, ..., derived_role_id })
+```
+
+`stats["role_taxonomy"]` exposes `chosen_k`, `silhouette`, and `sample_size` for benchmark and progress logs. `stats["role_catalog"]` exposes the number of archetypes and canonical role mappings. Timing is recorded under `stats["timings_sec"]["role_clustering"]`.
+
+**Consumers.** Pass 1 is intentionally side-effect-only for ranking: it persists `derived_role_id`, `role_taxonomy_json`, and `role_catalog_json`, but no query-time code path uses those fields for selection yet. Cutting `mechanism_registry`, `repository_profile`, and `unified_ranker._infer_role` over to the role catalog is a follow-up step. Until that happens, the framework-specific heuristics still drive ranking; Pass 1 just produces the universal substitute next to them so it can be validated on real graphs first.
+
+**Trade-offs.**
+- Cluster boundaries may not align with human intuition. The derived "role 3" can group `APIRoute` and `Dependant` together (both data-class-like, leaf-ish) while separating `add_api_route` from `api_route` if their fan-in differs. That is fine for ranking but means the benchmark cannot match by mechanism string equality across repos.
+- Cluster ids are not stable across re-indexes if the graph changes meaningfully. The `signature` is the durable identity of a cluster; consumers should match on signature shape, not on raw `cluster_id`.
+- Full silhouette scoring is `O(n²)` per K, so the implementation uses deterministic sampling for larger repositories. The score is a model-selection heuristic, not a benchmark metric.
+- Pass 1 runs on every full project pass, even when changes are small. The "no changed files" branch reuses the existing taxonomy from the Workspace.
+
 ---
 
 ## File Hash & Incremental Indexing
@@ -190,8 +250,9 @@ This reduces indexing time for large repos with few changes. Full re-index still
 
 - The repository profile is a conservative first-pass contract, not a deep framework model.
 - Framework and dynamic-surface detection uses lightweight path/source signals; it should guide routing and diagnosis, not replace mechanism-specific evidence.
-- The single-file hot path does not currently refresh the full repository profile.
+- The single-file hot path does not currently refresh the full repository profile or rerun Pass 1.
 - Current impact capability is still shallow: AFFECTS reachability does not prove behavioral breakage.
+- Pass 1 produces the role taxonomy but no consumer reads it yet — `mechanism_registry`, `repository_profile._MECHANISM_PATTERNS`, and `unified_ranker._infer_role` are still the active sources of role decisions.
 
 ---
 

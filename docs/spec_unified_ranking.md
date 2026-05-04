@@ -51,7 +51,11 @@ Both tracks emit candidates into a single pool before budget-constrained selecti
 
 Current candidates are symbols and docs. A future phase adds tenant API contract candidates from published manifests, using the same scoring and budget rules. The current local ranker also lets a candidate satisfy certain canonical roles through inferred capability support, so role fulfillment is not tied to one framework's exact symbol layout. That includes thin wrapper APIs whose own body is enough to prove orchestration or execution behavior even when nested helpers are not indexed as separate top-level symbols.
 
-The ranker also reads the index-time `repository_profile.strategy_profile` from the Neo4j `Workspace`. When a target/query does not map to one of the known hand-authored mechanisms, the ranker can fall back to auto-detected mechanism archetypes such as `middleware_pipeline`, `decorator_declares_handler`, `declarative_mapping`, or `template_compilation`. These archetypes provide a repository-specific `role_plan`, so unknown repos can still ask for the right evidence classes instead of defaulting to the generic `api_surface/executor/runtime_surface` trio.
+The ranker also reads the index-time `repository_profile.strategy_profile` from the Neo4j `Workspace`. Known framework families are no longer embedded directly in the ranker as a long chain of conditionals; they live in `sidecar/context/mechanism_registry.py` as preloaded mechanism profiles. The registry maps target/query evidence to mechanism names and canonical role plans for known families such as FastAPI, Pydantic, and Redux Toolkit.
+
+When a target/query does not map to one of those preloaded profiles, the ranker falls back to auto-detected mechanism archetypes such as `middleware_pipeline`, `decorator_declares_handler`, `declarative_mapping`, or `template_compilation`. These archetypes provide a repository-specific `role_plan`, so unknown repos can still ask for the right evidence classes instead of defaulting to the generic `api_surface/executor/runtime_surface` trio.
+
+The preloaded mechanism profiles, repository archetype heuristics, and the ranker-side `_infer_role` routing are all forms of the same hand-curated framework knowledge — they encode "name X in framework Y plays role Z" in different layers. The universal replacement is the index-time role taxonomy and role catalog described in `spec_indexer.md` (Phase 7, Pass 1): clusters of symbols by structural position in the call graph, written onto each `Symbol` as `derived_role_id`, and a `role_catalog_json` mapping canonical roles to confidence-ranked cluster preferences through structural archetypes. Pass 1 ships the catalog alongside the existing heuristics so it can be validated on real graphs first; the consumer cutover (mechanism registry, repository profile, `_infer_role`) is a follow-up step that reads the catalog instead of computing roles from name patterns.
 
 ```python
 @dataclass
@@ -108,6 +112,7 @@ Current behavior is slightly richer than the original greedy draft:
 - infer a mechanism from the target plus query
 - route lookalike APIs to the right mechanism path instead of relying on one keyword bucket; e.g. Redux Toolkit listener middleware no longer falls into generic store-configuration handling just because the word `middleware` appears in the query
 - resolve package/module-level targets when no symbol exists; e.g. `pydantic.v1` can use `pydantic/v1/__init__.py` as a synthetic primary module target instead of returning a false "symbol not found" success
+- resolve known framework mechanisms through the preloaded mechanism registry, then fall back to index-time repository strategy profiles for unfamiliar repositories
 - compute required roles on a canonical cross-framework taxonomy
 - treat some roles as capability slots as well as identity slots; e.g. a runtime symbol like `SchemaValidator` can fulfill `validator_handle` if the dedicated wrapper/member symbol is absent
 - let some primary APIs carry supporting roles directly when their implementation body already contains the relevant orchestration path

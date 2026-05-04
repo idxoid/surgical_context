@@ -23,6 +23,11 @@ from heapq import heappop, heappush
 from pathlib import Path
 
 from sidecar.context.intent_classifier import Intent
+from sidecar.context.mechanism_registry import (
+    determine_preloaded_mechanism,
+    required_roles_for_mechanism,
+    role_backfill_specs_for_mechanism,
+)
 from sidecar.context.role_taxonomy import (
     infer_supporting_roles,
     normalize_role,
@@ -112,206 +117,6 @@ _FOCUS_QUERY_STOPWORDS = _IMPACT_TOPIC_STOPWORDS | {
     "user",
     "work",
 }
-
-_ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
-    "fastapi_route_registration": {
-        "factory_surface": [
-            {"name": "add_api_route", "path_hint": "/fastapi/applications.py", "priority": 1.0},
-            {"name": "api_route", "path_hint": "/fastapi/applications.py", "priority": 0.9},
-            {"name": "add_api_route", "path_hint": "/fastapi/routing.py", "priority": 0.8},
-        ],
-        "representation_surface": [
-            {"name": "APIRoute", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-        "runtime_surface": [
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-    },
-    "fastapi_dependency_injection": {
-        "config_surface": [
-            {"name": "Depends", "path_hint": "/fastapi/params.py", "priority": 1.0},
-            {"name": "Security", "path_hint": "/fastapi/params.py", "priority": 0.7},
-        ],
-        "representation_surface": [
-            {"name": "Dependant", "path_hint": "/fastapi/dependencies/models.py", "priority": 1.0},
-            {"name": "get_dependant", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.95},
-            {"name": "get_flat_dependant", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.8},
-        ],
-        "orchestrator": [
-            {"name": "solve_dependencies", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
-        ],
-        "runtime_surface": [
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-    },
-    "fastapi_request_body_dependency_resolution": {
-        "schema_builder": [
-            {"name": "get_body_field", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
-        ],
-        "orchestrator": [
-            {"name": "solve_dependencies", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.95},
-        ],
-        "runtime_surface": [
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-        "binding_surface": [
-            {"name": "request_body_to_args", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
-        ],
-    },
-    "fastapi_endpoint_execution": {
-        "executor": [
-            {"name": "run_endpoint_function", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-        "runtime_surface": [
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 0.95},
-        ],
-    },
-    "fastapi_serialization_impact": {
-        "impact_runtime": [
-            {"name": "serialize_response", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 0.85},
-        ],
-        "impact_public_api": [
-            {"name": "APIRoute", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-            {"name": "FastAPI", "path_hint": "/fastapi/applications.py", "priority": 0.8},
-        ],
-        "impact_test_surface": [
-            {"name": "test_valid_exclude_unset", "path_hint": "/tests/test_serialize_response_model.py", "priority": 1.0},
-            {"name": "test_no_response_model_object", "path_hint": "/tests/test_serialize_response_dataclass.py", "priority": 0.9},
-            {"name": "test_response_validation_error_includes_endpoint_context", "path_hint": "/tests/test_validation_error_context.py", "priority": 0.85},
-        ],
-    },
-    "fastapi_openapi_generation": {
-        "api_surface": [
-            {"name": "openapi", "path_hint": "/fastapi/applications.py", "priority": 1.0},
-        ],
-        "schema_builder": [
-            {"name": "get_openapi", "path_hint": "/fastapi/openapi/utils.py", "priority": 1.0},
-            {"name": "get_openapi_path", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.85},
-            {"name": "get_fields_from_routes", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.8},
-        ],
-        "factory_surface": [
-            {"name": "get_openapi_operation_metadata", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.9},
-        ],
-    },
-    "pydantic_validation_core_bridge": {
-        "construction_surface": [
-            {"name": "__init__", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "runtime_surface": [
-            {"name": "model_validate", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "orchestrator": [
-            {"name": "complete_model_class", "path_hint": "/pydantic/_internal/_model_construction.py", "priority": 1.0},
-        ],
-        "validator_handle": [
-            {"name": "__pydantic_validator__", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "core_runtime": [
-            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-        "executor": [
-            {"name": "validate_python", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
-            {"name": "validate_json", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-            {"name": "validate_strings", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-    },
-    "pydantic_python_core_boundary": {
-        "validator_handle": [
-            {"name": "__pydantic_validator__", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "serializer_handle": [
-            {"name": "SchemaSerializer", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
-        ],
-        "core_runtime": [
-            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-    },
-    "pydantic_serialization_bridge": {
-        "serializer_handle": [
-            {"name": "__pydantic_serializer__", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "core_runtime": [
-            {"name": "SchemaSerializer", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-    },
-    "pydantic_json_schema_generation": {
-        "schema_builder": [
-            {"name": "GenerateJsonSchema", "path_hint": "/pydantic/json_schema.py", "priority": 1.0},
-        ],
-        "representation_surface": [
-            {"name": "json_schema", "path_hint": "/pydantic/json_schema.py", "priority": 0.95},
-        ],
-    },
-    "pydantic_v1_compat_surface": {
-        "compat_bridge": [
-            {"name": "v1", "path_hint": "/pydantic/__init__.py", "priority": 1.0},
-        ],
-        "api_surface": [
-            {"name": "BaseModel", "path_hint": "/pydantic/v1/main.py", "priority": 0.9},
-        ],
-    },
-    "pydantic_validation_error_assembly": {
-        "api_surface": [
-            {"name": "model_validate", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "core_runtime": [
-            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-        "error_surface": [
-            {"name": "ValidationError", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
-        ],
-    },
-    "state_factory_pipeline": {
-        "factory_surface": [
-            {"name": "createAction", "path_hint": "/packages/toolkit/src/createAction.ts", "priority": 1.0},
-            {"name": "createReducer", "path_hint": "/packages/toolkit/src/createReducer.ts", "priority": 0.95},
-            {"name": "buildCreateSlice", "path_hint": "/packages/toolkit/src/createSlice.ts", "priority": 0.8},
-        ],
-        "composition_surface": [
-            {"name": "createReducer", "path_hint": "/packages/toolkit/src/createReducer.ts", "priority": 0.9},
-        ],
-    },
-    "runtime_configuration_pipeline": {
-        "composition_surface": [
-            {"name": "getDefaultMiddleware", "path_hint": "/packages/toolkit/src/getDefaultMiddleware.ts", "priority": 1.0},
-            {"name": "getDefaultEnhancers", "path_hint": "/packages/toolkit/src/getDefaultEnhancers.ts", "priority": 0.95},
-        ],
-        "config_surface": [
-            {"name": "composeWithDevTools", "path_hint": "/packages/toolkit/src/devtoolsExtension.ts", "priority": 0.95},
-            {"name": "devToolsEnhancer", "path_hint": "/packages/toolkit/src/devtoolsExtension.ts", "priority": 0.9},
-        ],
-    },
-    "async_lifecycle_pipeline": {
-        "factory_surface": [
-            {"name": "createAction", "path_hint": "/packages/toolkit/src/createAction.ts", "priority": 0.9},
-        ],
-        "executor": [
-            {"name": "createAsyncThunk", "path_hint": "/packages/toolkit/src/createAsyncThunk.ts", "priority": 1.0},
-        ],
-    },
-    "api_store_integration_pipeline": {
-        "representation_surface": [
-            {"name": "coreModule", "path_hint": "/packages/toolkit/src/query/core/module.ts", "priority": 1.0},
-            {"name": "injectEndpoint", "path_hint": "/packages/toolkit/src/query/core/module.ts", "priority": 0.9},
-        ],
-        "integration_surface": [
-            {"name": "buildCreateApi", "path_hint": "/packages/toolkit/src/query/createApi.ts", "priority": 1.0},
-            {"name": "setupListeners", "path_hint": "/packages/toolkit/src/query/core/setupListeners.ts", "priority": 0.75},
-        ],
-    },
-    "listener_orchestration_pipeline": {
-        "orchestrator": [
-            {"name": "addListener", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 1.0},
-            {"name": "createListenerEntry", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 0.9},
-        ],
-        "executor": [
-            {"name": "runTask", "path_hint": "/packages/toolkit/src/listenerMiddleware/task.ts", "priority": 1.0},
-            {"name": "notifyListener", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 0.85},
-        ],
-    },
-}
-
 
 def _path_is_noisy(file_path: str) -> bool:
     if not file_path:
@@ -508,6 +313,9 @@ class UnifiedRanker:
         self.weights = weights
         self.repository_profile = self._load_repository_profile()
         self.strategy_profile = self.repository_profile.get("strategy_profile", {})
+        self.role_catalog = self._load_role_catalog()
+        self._derived_role_by_uid = self._load_derived_role_map()
+        self._cluster_to_role = self._build_cluster_to_role_map()
 
     # ------------------------------------------------------------------
     # Public API
@@ -1892,7 +1700,7 @@ class UnifiedRanker:
         *,
         excluded_uids: set[str],
     ) -> list[Candidate]:
-        specs_by_role = _ROLE_BACKFILL_SPECS.get(mechanism, {})
+        specs_by_role = role_backfill_specs_for_mechanism(mechanism)
         if not specs_by_role:
             return []
 
@@ -2617,7 +2425,32 @@ class UnifiedRanker:
         return any(role in required for role in self._roles_of(c))
 
     def _infer_role(self, c: Candidate | SubgraphNode) -> str:
-        """Heuristic to map symbols to canonical reasoning roles."""
+        """Map a symbol to a canonical reasoning role.
+
+        Primary path: read ``derived_role_id`` from the index-time role
+        catalog (Pass 1, `spec_indexer.md` Phase 7). Universal — no name
+        patterns. The cluster is mapped to its strongest canonical role
+        via ``_cluster_to_role``.
+
+        Legacy fallback: framework-specific name patterns. Active when
+        the workspace has no role catalog (pre-Pass-1 index, or unit
+        tests with mocked Neo4j). Scheduled for deletion once test
+        fixtures provide Pass 1 data.
+        """
+        if getattr(c, "kind", "") == "doc":
+            return "docs_or_concept"
+
+        if self._cluster_to_role:
+            uid = getattr(c, "uid", "") or ""
+            cluster_id = self._derived_role_by_uid.get(uid)
+            if cluster_id is not None:
+                role = self._cluster_to_role.get(cluster_id)
+                if role:
+                    return role
+        return self._infer_role_legacy(c)
+
+    def _infer_role_legacy(self, c: Candidate | SubgraphNode) -> str:
+        """Pre-Pass-1 name-pattern role dispatch. Delete once tests are fixturized."""
         if getattr(c, "kind", "") == "doc":
             return "docs_or_concept"
 
@@ -2768,73 +2601,9 @@ class UnifiedRanker:
 
     def _determine_mechanism(self, target: SubgraphNode, query: str = "") -> str:
         """Map target symbol to a known framework mechanism."""
-        name = target.name.lower()
-        query_lower = query.lower()
-        file_path = (target.file_path or "").lower()
-        if name in ("fastapi", "apirouter", "add_api_route", "api_route"):
-            return "fastapi_route_registration"
-        if name in ("depends", "get_dependant", "dependant"):
-            return "fastapi_dependency_injection"
-        if name in ("request_body_to_args", "get_body_field"):
-            return "fastapi_request_body_dependency_resolution"
-        if name == "serialize_response" and any(
-            token in query_lower
-            for token in ("affect", "break", "change", "impact", "test")
-        ):
-            return "fastapi_serialization_impact"
-        if name in ("run_endpoint_function", "serialize_response", "solve_dependencies"):
-            return "fastapi_endpoint_execution"
-        if name in ("get_openapi", "openapi", "get_openapi_path", "get_fields_from_routes"):
-            return "fastapi_openapi_generation"
-        if name == "basemodel":
-            if any(
-                phrase in query_lower
-                for phrase in ("pure python", "wrapper", "wrappers", "pydantic-core", "rely on pydantic-core")
-            ):
-                return "pydantic_python_core_boundary"
-            return "pydantic_validation_core_bridge"
-        if name in ("model_validate", "__pydantic_validator__", "schemavalidator"):
-            if "wrapper" in query_lower or "pydantic-core" in query_lower:
-                return "pydantic_python_core_boundary"
-            return "pydantic_validation_core_bridge"
-        if name in ("model_dump", "__pydantic_serializer__", "schemaserializer"):
-            if "wrapper" in query_lower or "pydantic-core" in query_lower:
-                return "pydantic_python_core_boundary"
-            return "pydantic_serialization_bridge"
-        if name in ("model_json_schema", "generatejsonschema", "json_schema"):
-            return "pydantic_json_schema_generation"
-        if name == "validationerror":
-            return "pydantic_validation_error_assembly"
-        if name in ("field", "aliaschoices", "aliaspath"):
-            return "pydantic_alias_impact"
-        if name == "v1" or "/pydantic/v1/" in file_path:
-            return "pydantic_v1_compat_surface"
-        if "monorepo" in query_lower or (
-            "core runtime" in query_lower and ("docs" in query_lower or "examples" in query_lower)
-        ):
-            return "workspace_structure"
-        if name == "createslice" or (
-            "action creator" in query_lower and "reducer" in query_lower
-        ):
-            return "state_factory_pipeline"
-        if name == "createlistenermiddleware" or (
-            "listener middleware" in query_lower
-            and ("intercept" in query_lower or "side effect" in query_lower)
-        ):
-            return "listener_orchestration_pipeline"
-        if name == "configurestore" or (
-            ("/packages/toolkit/" in file_path or "redux" in file_path or "configurestore" in query_lower)
-            and any(phrase in query_lower for phrase in ("middleware", "enhancers", "devtools"))
-        ):
-            return "runtime_configuration_pipeline"
-        if name == "createasyncthunk" or any(
-            phrase in query_lower for phrase in ("pending", "fulfilled", "rejected", "async thunk")
-        ):
-            return "async_lifecycle_pipeline"
-        if name == "createapi" or (
-            "api slice" in query_lower and ("endpoint" in query_lower or "store" in query_lower)
-        ):
-            return "api_store_integration_pipeline"
+        preloaded = determine_preloaded_mechanism(target, query=query)
+        if preloaded:
+            return preloaded
         auto_mechanism = self._auto_mechanism_from_strategy(target, query=query)
         if auto_mechanism:
             return auto_mechanism
@@ -2845,46 +2614,10 @@ class UnifiedRanker:
         roles = []
         if mechanism.startswith("auto:"):
             roles = self._roles_for_auto_mechanism(mechanism.removeprefix("auto:"))
-        elif mechanism == "fastapi_route_registration":
-            roles = ["api_surface", "factory_surface", "representation_surface", "runtime_surface"]
-        elif mechanism == "fastapi_dependency_injection":
-            roles = ["api_surface", "config_surface", "representation_surface", "orchestrator", "runtime_surface"]
-        elif mechanism == "fastapi_request_body_dependency_resolution":
-            roles = ["runtime_surface", "schema_builder", "orchestrator", "binding_surface"]
-        elif mechanism == "fastapi_endpoint_execution":
-            roles = ["executor", "runtime_surface"]
-        elif mechanism == "fastapi_serialization_impact":
-            roles = ["impact_runtime", "impact_public_api", "impact_test_surface"]
-        elif mechanism == "fastapi_openapi_generation":
-            roles = ["api_surface", "schema_builder", "factory_surface"]
-        elif mechanism == "pydantic_validation_core_bridge":
-            roles = ["api_surface", "construction_surface", "runtime_surface", "validator_handle", "core_runtime", "orchestrator", "executor"]
-        elif mechanism == "pydantic_python_core_boundary":
-            roles = ["api_surface", "validator_handle", "serializer_handle", "core_runtime"]
-        elif mechanism == "pydantic_serialization_bridge":
-            roles = ["api_surface", "serializer_handle", "core_runtime"]
-        elif mechanism == "pydantic_json_schema_generation":
-            roles = ["api_surface", "schema_builder", "representation_surface"]
-        elif mechanism == "pydantic_v1_compat_surface":
-            roles = ["api_surface", "compat_bridge", "docs_or_concept"]
-        elif mechanism == "pydantic_alias_impact":
-            roles = ["impact_runtime", "impact_public_api", "impact_test_surface"]
-        elif mechanism == "pydantic_validation_error_assembly":
-            roles = ["api_surface", "core_runtime", "error_surface"]
-        elif mechanism == "state_factory_pipeline":
-            roles = ["api_surface", "factory_surface", "composition_surface"]
-        elif mechanism == "listener_orchestration_pipeline":
-            roles = ["api_surface", "orchestrator", "executor"]
-        elif mechanism == "runtime_configuration_pipeline":
-            roles = ["api_surface", "composition_surface", "config_surface"]
-        elif mechanism == "async_lifecycle_pipeline":
-            roles = ["api_surface", "factory_surface", "executor", "error_surface"]
-        elif mechanism == "api_store_integration_pipeline":
-            roles = ["api_surface", "representation_surface", "integration_surface"]
-        elif mechanism == "workspace_structure":
-            roles = ["api_surface", "core_runtime", "docs_or_concept", "supporting_surface"]
         else:
-            roles = self._strategy_role_plan() or ["api_surface", "executor", "runtime_surface"]
+            roles = required_roles_for_mechanism(mechanism)
+            if not roles:
+                roles = self._strategy_role_plan() or ["api_surface", "executor", "runtime_surface"]
 
         # Docs are universally useful for grounding concepts
         roles.append("docs_or_concept")
@@ -2899,6 +2632,62 @@ class UnifiedRanker:
         except Exception:
             return {}
         return profile if isinstance(profile, dict) else {}
+
+    def _load_role_catalog(self) -> dict:
+        """Load the index-time role catalog produced by Pass 1."""
+        from sidecar.indexer.role_clustering import get_role_catalog
+
+        try:
+            catalog = get_role_catalog(self.db, self.workspace_id)
+        except Exception:
+            return {}
+        return catalog if isinstance(catalog, dict) else {}
+
+    def _load_derived_role_map(self) -> dict[str, int]:
+        """Read every Symbol's `derived_role_id` for this workspace."""
+        if not self.role_catalog:
+            return {}
+        try:
+            with self.db.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                    WHERE s.derived_role_id IS NOT NULL
+                    RETURN s.uid AS uid, s.derived_role_id AS cid
+                    """,
+                    workspace_id=self.workspace_id,
+                )
+                return {r["uid"]: int(r["cid"]) for r in rows if r["uid"] is not None}
+        except Exception:
+            return {}
+
+    def _build_cluster_to_role_map(self) -> dict[int, str]:
+        """Pick a single primary canonical role per cluster.
+
+        For every canonical role in the catalog, take its top resolved
+        cluster (`resolve_role_clusters` already preserves archetype
+        preference order). When multiple roles claim the same cluster as
+        their top match, the role with the highest confidence wins;
+        sort is stable so ties break on catalog iteration order.
+        """
+        if not self.role_catalog:
+            return {}
+        from sidecar.indexer.role_clustering import resolve_role_clusters
+
+        cluster_claims: dict[int, list[tuple[str, float]]] = {}
+        for role in self.role_catalog.get("role_to_archetypes") or []:
+            matches = resolve_role_clusters(self.role_catalog, role)
+            if not matches:
+                continue
+            top = matches[0]
+            cluster_claims.setdefault(int(top["cluster_id"]), []).append(
+                (role, float(top["confidence"]))
+            )
+        result: dict[int, str] = {}
+        for cid, claims in cluster_claims.items():
+            claims.sort(key=lambda item: item[1], reverse=True)
+            result[cid] = claims[0][0]
+        return result
 
     def _strategy_role_plan(self) -> list[str]:
         return normalize_roles((self.strategy_profile or {}).get("role_plan") or [])

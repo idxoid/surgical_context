@@ -36,12 +36,12 @@ sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 )
 
+from sidecar.context.framework_hints import FrameworkHintsIndexer
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.indexer.fast.collector import collect_files
 from sidecar.indexer.fast.extractor import ExtractedFile, FastExtractor, hash_file
 from sidecar.indexer.fast.schema import ensure_fast_indexes
-from sidecar.context.framework_hints import FrameworkHintsIndexer
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.repository_profile import (
     RepositoryProfileInputs,
@@ -608,13 +608,40 @@ def run_fast_indexing(
         reporter.step("docs")
         reporter.stage_end("docs")
         stats["timings_sec"]["docs"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 7.5: Pass 1 — derive a per-repo role taxonomy from
+        # call-graph topology and persist it on Workspace + Symbol nodes.
+        # Universal replacement for the framework-specific naming heuristics
+        # baked into mechanism_registry / repository_profile / unified_ranker.
+        t_stage = time.perf_counter()
+        from sidecar.indexer.role_clustering import (
+            build_role_catalog,
+            derive_and_persist_role_taxonomy,
+        )
+
+        reporter.stage_start("role_clustering", total=1)
+        taxonomy = derive_and_persist_role_taxonomy(db, workspace_id)
+        role_catalog = build_role_catalog(taxonomy)
+        reporter.step("role_clustering")
+        reporter.stage_end("role_clustering")
+        stats["timings_sec"]["role_clustering"] = round(time.perf_counter() - t_stage, 3)
+        stats["role_taxonomy"] = {
+            "chosen_k": taxonomy.chosen_k,
+            "silhouette": round(taxonomy.silhouette, 4),
+            "sample_size": taxonomy.sample_size,
+        }
+        stats["role_catalog"] = {
+            "archetypes": len(role_catalog.archetypes),
+            "roles": len(role_catalog.role_to_archetypes),
+        }
+
         _use_repository_profile(
-                stats,
+            stats,
             _build_profile_from_diffs(
                 project_path,
                 workspace_id,
-                    files,
-                    diffs,
+                files,
+                diffs,
                 stats,
                 db,
             ),
