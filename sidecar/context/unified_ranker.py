@@ -2450,7 +2450,7 @@ class UnifiedRanker:
         return self._infer_role_legacy(c)
 
     def _infer_role_legacy(self, c: Candidate | SubgraphNode) -> str:
-        """Pre-Pass-1 name-pattern role dispatch. Delete once tests are fixturized."""
+        """Name-pattern role dispatch fallback. Active when role catalog unavailable (pre-Pass-1 index or unit tests)."""
         if getattr(c, "kind", "") == "doc":
             return "docs_or_concept"
 
