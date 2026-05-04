@@ -56,3 +56,5 @@ graphify-out/
 # Extension node_modules (exclude from graphify)
 extension/node_modules/
 extension/dist/README*
+AI_RULES.md
+CODEX.md
