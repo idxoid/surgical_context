@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+from tree_sitter import Query
+
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
 from sidecar.parser.uid import (
@@ -168,8 +170,14 @@ class PythonAdapter(TreeSitterAdapter):
         """Extract function calls and attach resolver metadata when statically resolvable."""
         if tree is None:
             tree = self._parse(source_code)
-        query = self.language.query(self.call_query)
-        captures = query.captures(tree.root_node)
+        query = Query(self.language, self.call_query)
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for match_id, captures_dict in query.matches(tree.root_node):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
 
         symbols = self.extract_symbols(source_code, file_path, tree=tree)
         by_name: dict[str, list] = {}

@@ -2,6 +2,8 @@
 
 import re
 
+from tree_sitter import Query
+
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.parser.uid import (
@@ -169,8 +171,14 @@ class TypeScriptAdapter(TreeSitterAdapter):
         """Extract import statements from TypeScript source."""
         if tree is None:
             tree = self._parse(source_code)
-        query = self.language.query(self.import_query)
-        captures = query.captures(tree.root_node)
+        query = Query(self.language, self.import_query)
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for match_id, captures_dict in query.matches(tree.root_node):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
 
         imports = []
         for node, tag in captures:
@@ -223,8 +231,14 @@ class TypeScriptAdapter(TreeSitterAdapter):
         """Extract TypeScript calls with direct vs dynamic dispatch classification."""
         if tree is None:
             tree = self._parse(source_code)
-        query = self.language.query("(call_expression) @call")
-        captures = query.captures(tree.root_node)
+        query = Query(self.language, "(call_expression) @call")
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for match_id, captures_dict in query.matches(tree.root_node):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
 
         symbols = self.extract_symbols(source_code, file_path, tree=tree)
         by_name: dict[str, list] = {}

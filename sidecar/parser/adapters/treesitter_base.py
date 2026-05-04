@@ -3,7 +3,7 @@
 from abc import abstractmethod
 from hashlib import sha256
 
-from tree_sitter import Language, Parser
+from tree_sitter import Language, Parser, Query
 
 from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata
 from sidecar.parser.uid import (
@@ -48,16 +48,15 @@ class TreeSitterAdapter(LanguageAdapter):
         if lang_name == "python":
             from tree_sitter_python import language as lang_ptr
 
-            self.language = Language(lang_ptr(), lang_name)
+            self.language = Language(lang_ptr())
         elif lang_name == "typescript":
             from tree_sitter_typescript import language_typescript as lang_ptr
 
-            self.language = Language(lang_ptr(), lang_name)
+            self.language = Language(lang_ptr())
         else:
             raise ValueError(f"Unsupported language: {lang_name}")
 
-        self.parser = Parser()
-        self.parser.set_language(self.language)
+        self.parser = Parser(self.language)
 
     def _parse(self, source_code: str):
         """Parse source code into a tree-sitter tree."""
@@ -73,8 +72,14 @@ class TreeSitterAdapter(LanguageAdapter):
         """
         if tree is None:
             tree = self._parse(source_code)
-        query = self.language.query(self.symbol_query)
-        captures = query.captures(tree.root_node)
+        query = Query(self.language, self.symbol_query)
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for match_id, captures_dict in query.matches(tree.root_node):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
 
         # Collect var.name nodes keyed by their parent var.def node id
         var_names: dict[int, str] = {}
@@ -165,8 +170,14 @@ class TreeSitterAdapter(LanguageAdapter):
         """Extract function call edges from source code with call type classification."""
         if tree is None:
             tree = self._parse(source_code)
-        query = self.language.query(self.call_query)
-        captures = query.captures(tree.root_node)
+        query = Query(self.language, self.call_query)
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for match_id, captures_dict in query.matches(tree.root_node):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
 
         calls = []
         for node, tag in captures:
