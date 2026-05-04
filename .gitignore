@@ -50,13 +50,13 @@ QA/baselines.jsonl
 
 CLAUDE.md
 
-# Graphify
-graphify-out/cache/
+# Graphify (keep only graph.json, graph.html, GRAPH_REPORT.md in git)
+graphify-out/
+!graphify-out/graph.json
+!graphify-out/graph.html
+!graphify-out/GRAPH_REPORT.md
+!graphify-out/.gitkeep
 
 # Extension node_modules (exclude from graphify)
 extension/node_modules/
 extension/dist/README*
-graphify-out/cost.json
-graphify-out/GRAPH_REPORT.md
-graphify-out/graph.html
-graphify-out/graph.json
