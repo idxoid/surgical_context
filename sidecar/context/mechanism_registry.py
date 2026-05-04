@@ -284,21 +284,6 @@ _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
             {"name": "ValidationError", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
         ],
     },
-    "pydantic_alias_impact": {
-        "impact_runtime": [
-            {"name": "field", "path_hint": "/pydantic/fields.py", "priority": 1.0},
-            {"name": "model_dump", "path_hint": "/pydantic/main.py", "priority": 0.9},
-        ],
-        "impact_public_api": [
-            {"name": "BaseModel", "path_hint": "/pydantic/main.py", "priority": 0.95},
-            {"name": "Field", "path_hint": "/pydantic/fields.py", "priority": 0.9},
-            {"name": "ConfigDict", "path_hint": "/pydantic/config.py", "priority": 0.8},
-        ],
-        "impact_test_surface": [
-            {"name": "test_model", "path_hint": "/tests/", "priority": 0.7},
-            {"name": "test_field", "path_hint": "/tests/", "priority": 0.7},
-        ],
-    },
     "state_factory_pipeline": {
         "factory_surface": [
             {"name": "createAction", "path_hint": "/packages/toolkit/src/createAction.ts", "priority": 1.0},
