@@ -2427,15 +2427,11 @@ class UnifiedRanker:
     def _infer_role(self, c: Candidate | SubgraphNode) -> str:
         """Map a symbol to a canonical reasoning role.
 
-        Primary path: read ``derived_role_id`` from the index-time role
-        catalog (Pass 1, `spec_indexer.md` Phase 7). Universal — no name
-        patterns. The cluster is mapped to its strongest canonical role
-        via ``_cluster_to_role``.
-
-        Legacy fallback: framework-specific name patterns. Active when
-        the workspace has no role catalog (pre-Pass-1 index, or unit
-        tests with mocked Neo4j). Scheduled for deletion once test
-        fixtures provide Pass 1 data.
+        Reads ``derived_role_id`` from the index-time role catalog
+        (Pass 1, `spec_indexer.md` Phase 7) and resolves the cluster to
+        its strongest canonical role via ``_cluster_to_role``. Universal,
+        structural — no name patterns. When no catalog is available the
+        method returns the neutral ``supporting_surface``.
         """
         if getattr(c, "kind", "") == "doc":
             return "docs_or_concept"
