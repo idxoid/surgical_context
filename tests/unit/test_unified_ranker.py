@@ -1036,63 +1036,6 @@ def test_docs_not_deferred_for_impact_analysis():
     assert chosen_doc_count >= 1, "IMPACT_ANALYSIS should still admit docs without deferral"
 
 
-def test_generic_role_recovery_uses_same_file_and_imported_symbols():
-    db = _make_recovery_db(
-        same_file_rows=[
-            {
-                "uid": "build-create-slice",
-                "name": "buildCreateSlice",
-                "symbol_kind": "function",
-                "token_estimate": 220,
-                "qualified_name": "redux.createSlice.buildCreateSlice",
-                "file_path": "/repo/packages/toolkit/src/createSlice.ts",
-                "file_hash": "a",
-                "range": [568, 821],
-                "inbound_edges": 2,
-                "outbound_edges": 6,
-            },
-        ],
-        imported_rows=[
-            {
-                "uid": "create-reducer",
-                "name": "createReducer",
-                "symbol_kind": "function",
-                "token_estimate": 180,
-                "qualified_name": "redux.createReducer.createReducer",
-                "file_path": "/repo/packages/toolkit/src/createReducer.ts",
-                "file_hash": "b",
-                "range": [141, 224],
-                "inbound_edges": 5,
-                "outbound_edges": 4,
-            },
-        ],
-    )
-    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
-    target = SubgraphNode(
-        uid="createSlice",
-        name="createSlice",
-        file_path="/repo/packages/toolkit/src/createSlice.ts",
-        range=[854, 854],
-        token_estimate=20,
-        relation="target",
-        direction="primary",
-        depth=0,
-        relevance_score=1.0,
-        kind="variable",
-    )
-
-    candidates = ranker._generic_role_recovery_candidates(
-        target,
-        ["factory_surface", "composition_surface"],
-        excluded_uids={target.uid},
-    )
-
-    by_name = {candidate.name: candidate for candidate in candidates}
-    assert by_name["buildCreateSlice"].evidence_role in {"factory_surface", "composition_surface"}
-    assert "composition_surface" in by_name["buildCreateSlice"].supporting_roles or by_name["buildCreateSlice"].evidence_role == "composition_surface"
-    assert by_name["createReducer"].evidence_role == "composition_surface"
-
-
 def test_filesystem_import_recovery_resolves_relative_typescript_imports(tmp_path):
     repo = tmp_path / "repo" / "packages" / "toolkit" / "src"
     repo.mkdir(parents=True)

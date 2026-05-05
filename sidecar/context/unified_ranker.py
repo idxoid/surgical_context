@@ -2373,20 +2373,10 @@ class UnifiedRanker:
 
     def _supporting_roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
         explicit = normalize_roles(getattr(c, "supporting_roles", []) or [])
-        file_path = getattr(c, "file_path", "") or ""
         inferred = infer_supporting_roles(
-            name=c.name or "",
-            qualified_name=getattr(c, "qualified_name", "") or "",
-            file_path=file_path,
+            file_path=getattr(c, "file_path", "") or "",
             primary_role=self._role_of(c),
         )
-        lowered_path = file_path.lower()
-        if (
-            "/packages/toolkit/src/" in lowered_path
-            and "/docs/" not in lowered_path
-            and "/examples/" not in lowered_path
-        ):
-            inferred.append("core_runtime")
         return normalize_roles([*explicit, *inferred])
 
     def _roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
