@@ -4,6 +4,10 @@ The ranker should not learn FastAPI/Pydantic/RTK behavior from benchmark
 questions. This registry keeps known mechanism profiles in one replaceable
 place, while repository-derived strategy profiles remain the generic fallback
 for unknown codebases.
+
+Design artifact, not dead code: keep this module until query-time ranking
+consumes the indexer-produced role catalog (see ``docs/spec_indexer.md``).
+Do not delete as cleanup-only churn.
 """
 
 from __future__ import annotations
