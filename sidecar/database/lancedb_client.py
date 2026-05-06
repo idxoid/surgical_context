@@ -16,6 +16,7 @@ from sidecar.database.embedding_registry import (
     compute_embedding_hash,
     get_model_metadata,
 )
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 DB_PATH = os.getenv("LANCEDB_PATH", "./data/lancedb")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
@@ -60,6 +61,7 @@ def _l2_to_score(distance: float) -> float:
 DOCS_SCHEMA = pa.schema(
     [
         pa.field("id", pa.string()),
+        pa.field("workspace_id", pa.string()),
         pa.field("file_path", pa.string()),
         pa.field("chunk", pa.string()),
         pa.field("pending", pa.list_(pa.string())),
@@ -71,6 +73,7 @@ DOCS_SCHEMA = pa.schema(
 SYMBOLS_SCHEMA = pa.schema(
     [
         pa.field("uid", pa.string()),
+        pa.field("workspace_id", pa.string()),
         pa.field("name", pa.string()),
         pa.field("file_path", pa.string()),
         pa.field("code", pa.string()),
@@ -95,14 +98,30 @@ class LanceDBClient:
         )
         self._embed_throttle_seconds = throttle_ms / 1000
         self._embedding_stats = {"cache_hits": 0, "cache_misses": 0, "encoded": 0}
-        if DOCS_TABLE not in self._db.table_names():
-            self._table = self._db.create_table(DOCS_TABLE, schema=DOCS_SCHEMA)
-        else:
-            self._table = self._db.open_table(DOCS_TABLE)
-        if SYMBOLS_TABLE not in self._db.table_names():
-            self._sym_table = self._db.create_table(SYMBOLS_TABLE, schema=SYMBOLS_SCHEMA)
-        else:
-            self._sym_table = self._db.open_table(SYMBOLS_TABLE)
+        self._table = self._open_or_reset_table(
+            DOCS_TABLE,
+            DOCS_SCHEMA,
+            required_columns={"id", "workspace_id", "file_path", "chunk", "pending", "vector"},
+        )
+        self._sym_table = self._open_or_reset_table(
+            SYMBOLS_TABLE,
+            SYMBOLS_SCHEMA,
+            required_columns={"uid", "workspace_id", "name", "file_path", "code", "vector"},
+        )
+
+    def _open_or_reset_table(self, name: str, schema: pa.Schema, *, required_columns: set[str]):
+        if name not in self._db.table_names():
+            return self._db.create_table(name, schema=schema)
+        table = self._db.open_table(name)
+        try:
+            current = set(table.schema.names)
+        except Exception:
+            current = set()
+        if required_columns.issubset(current):
+            return table
+        # No in-place migration: reset table and force full reindex.
+        self._db.drop_table(name)
+        return self._db.create_table(name, schema=schema)
 
     @staticmethod
     def _quote_delete_value(value: str) -> str:
@@ -111,6 +130,7 @@ class LanceDBClient:
     def _delete_doc_rows(
         self,
         file_paths: list[str],
+        workspace_id: str,
         *,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -121,14 +141,21 @@ class LanceDBClient:
         for start in range(0, total, batch_size):
             batch = file_paths[start : start + batch_size]
             predicate = " OR ".join(
-                f"file_path = '{self._quote_delete_value(file_path)}'" for file_path in batch
+                (
+                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                    f"AND file_path = '{self._quote_delete_value(file_path)}')"
+                )
+                for file_path in batch
             )
             try:
                 self._table.delete(predicate)
             except Exception:
                 for file_path in batch:
                     try:
-                        self._table.delete(f"file_path = '{self._quote_delete_value(file_path)}'")
+                        self._table.delete(
+                            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                            f"AND file_path = '{self._quote_delete_value(file_path)}')"
+                        )
                     except Exception:
                         pass
             if progress_callback:
@@ -137,6 +164,7 @@ class LanceDBClient:
     def _delete_symbol_rows(
         self,
         uids: list[str],
+        workspace_id: str,
         *,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -146,13 +174,22 @@ class LanceDBClient:
         total = len(uids)
         for start in range(0, total, batch_size):
             batch = uids[start : start + batch_size]
-            predicate = " OR ".join(f"uid = '{self._quote_delete_value(uid)}'" for uid in batch)
+            predicate = " OR ".join(
+                (
+                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                    f"AND uid = '{self._quote_delete_value(uid)}')"
+                )
+                for uid in batch
+            )
             try:
                 self._sym_table.delete(predicate)
             except Exception:
                 for uid in batch:
                     try:
-                        self._sym_table.delete(f"uid = '{self._quote_delete_value(uid)}'")
+                        self._sym_table.delete(
+                            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                            f"AND uid = '{self._quote_delete_value(uid)}')"
+                        )
                     except Exception:
                         pass
             if progress_callback:
@@ -240,12 +277,20 @@ class LanceDBClient:
             "cache": cache_stats,
         }
 
-    def upsert_chunks(self, file_path: str, chunks: list[str]):
-        self.upsert_chunk_batches([(file_path, chunks)])
+    def upsert_chunks(
+        self,
+        file_path: str,
+        chunks: list[str],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        self.upsert_chunk_batches([(file_path, chunks)], workspace_id=workspace_id)
 
     def upsert_chunk_batches(
         self,
         file_chunks: list[tuple[str, list[str]]],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         entries: list[tuple[str, int, str]] = []
@@ -276,6 +321,7 @@ class LanceDBClient:
             rows.append(
                 {
                     "id": f"{file_path}::{i}",
+                    "workspace_id": workspace_id,
                     "file_path": file_path,
                     "chunk": chunk,
                     "pending": [],
@@ -294,7 +340,7 @@ class LanceDBClient:
         if progress_callback:
             progress_callback(f"delete existing rows: {len(file_paths)}")
         t0 = time.perf_counter()
-        self._delete_doc_rows(file_paths, progress_callback=progress_callback)
+        self._delete_doc_rows(file_paths, workspace_id, progress_callback=progress_callback)
         if progress_callback:
             progress_callback(f"delete done in {time.perf_counter() - t0:.2f}s")
             progress_callback(f"add rows: {len(rows)}")
@@ -303,24 +349,32 @@ class LanceDBClient:
         if progress_callback:
             progress_callback(f"add done in {time.perf_counter() - t0:.2f}s")
 
-    def get_pending(self) -> dict[str, list[str]]:
+    def get_pending(self, *, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict[str, list[str]]:
         """Returns {chunk_id: [name, ...]} for all chunks with pending identifiers.
 
         Uses Lance's native ``WHERE`` clause so the scan is pushed down at
         the storage layer instead of materializing the full table in
         pandas just to filter it.
         """
-        rows = self._scan_pending(columns=["id", "pending"])
+        rows = self._scan_pending(columns=["id", "pending"], workspace_id=workspace_id)
         return {row["id"]: list(row["pending"]) for row in rows}
 
-    def get_pending_rows(self) -> list[dict]:
+    def get_pending_rows(self, *, workspace_id: str = DEFAULT_WORKSPACE_ID) -> list[dict]:
         """Return full doc rows that still have unresolved pending identifiers."""
-        return self._scan_pending(columns=None)
+        return self._scan_pending(columns=None, workspace_id=workspace_id)
 
-    def _scan_pending(self, *, columns: list[str] | None) -> list[dict]:
+    def _scan_pending(self, *, columns: list[str] | None, workspace_id: str) -> list[dict]:
         """Lance-native filtered scan for chunks with pending identifiers."""
         try:
-            query = self._table.search().where("array_length(pending) > 0", prefilter=True).limit(0)
+            query = (
+                self._table.search()
+                .where(
+                    "workspace_id = "
+                    f"'{self._quote_delete_value(workspace_id)}' AND array_length(pending) > 0",
+                    prefilter=True,
+                )
+                .limit(0)
+            )
             if columns:
                 query = query.select(columns)
             return query.to_list()
@@ -329,12 +383,20 @@ class LanceDBClient:
             # filter-only search. Pay the to_pandas cost only on the slow
             # path; the production path stays fast.
             df = self._table.to_pandas()
-            return [row.to_dict() for _, row in df.iterrows() if len(row["pending"]) > 0]
+            return [
+                row.to_dict()
+                for _, row in df.iterrows()
+                if row.get("workspace_id") == workspace_id and len(row["pending"]) > 0
+            ]
 
     def _set_pending_row(self, row: dict, pending: list[str]):
         chunk_id = row["id"]
+        workspace_id = row.get("workspace_id", DEFAULT_WORKSPACE_ID)
         try:
-            self._table.delete(f"id = '{self._quote_delete_value(chunk_id)}'")
+            self._table.delete(
+                f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                f"AND id = '{self._quote_delete_value(chunk_id)}')"
+            )
         except Exception:
             pass
         vector = row["vector"]
@@ -345,6 +407,7 @@ class LanceDBClient:
             [
                 {
                     "id": chunk_id,
+                    "workspace_id": workspace_id,
                     "file_path": row["file_path"],
                     "chunk": row["chunk"],
                     "pending": pending,
@@ -377,17 +440,19 @@ class LanceDBClient:
 
         # Build the IN-list for the delete predicate. Lance does not
         # parameterize delete strings, so we escape single quotes manually.
-        ids: list[str] = []
+        keys: list[tuple[str, str]] = []
         rows_to_add: list[dict] = []
         for row, pending in updates:
             chunk_id = row["id"]
-            ids.append(chunk_id)
+            workspace_id = row.get("workspace_id", DEFAULT_WORKSPACE_ID)
+            keys.append((workspace_id, chunk_id))
             vector = row["vector"]
             if hasattr(vector, "tolist"):
                 vector = vector.tolist()
             rows_to_add.append(
                 {
                     "id": chunk_id,
+                    "workspace_id": workspace_id,
                     "file_path": row["file_path"],
                     "chunk": row["chunk"],
                     "pending": pending,
@@ -396,9 +461,15 @@ class LanceDBClient:
                 }
             )
 
-        in_list = ",".join("'" + rid.replace("'", "''") + "'" for rid in ids)
+        predicates = " OR ".join(
+            (
+                f"(workspace_id = '{self._quote_delete_value(ws)}' "
+                f"AND id = '{self._quote_delete_value(cid)}')"
+            )
+            for ws, cid in keys
+        )
         try:
-            self._table.delete(f"id IN ({in_list})")
+            self._table.delete(predicates)
         except Exception:
             # Match the resilience of _set_pending_row — missing rows are
             # not an error; add() will insert them fresh below.
@@ -406,17 +477,27 @@ class LanceDBClient:
         self._table.add(rows_to_add)
         return len(rows_to_add)
 
-    def set_pending(self, chunk_id: str, pending: list[str]):
+    def set_pending(
+        self,
+        chunk_id: str,
+        pending: list[str],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
         try:
             rows = (
                 self._table.search()
-                .where(f"id = '{self._quote_delete_value(chunk_id)}'", prefilter=True)
+                .where(
+                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                    f"AND id = '{self._quote_delete_value(chunk_id)}')",
+                    prefilter=True,
+                )
                 .limit(1)
                 .to_list()
             )
         except Exception:
             df = self._table.to_pandas()
-            matched = df[df["id"] == chunk_id]
+            matched = df[(df["id"] == chunk_id) & (df["workspace_id"] == workspace_id)]
             if matched.empty:
                 return
             self._set_pending_row(matched.iloc[0].to_dict(), pending)
@@ -425,9 +506,16 @@ class LanceDBClient:
             return
         self._set_pending_row(rows[0], pending)
 
-    def search(self, query: str, limit: int = 5) -> list[dict]:
+    def search(
+        self, query: str, limit: int = 5, *, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> list[dict]:
         vec = self._embed([query])[0]
-        results = self._table.search(vec).limit(limit).to_list()
+        results = (
+            self._table.search(vec)
+            .where(f"workspace_id = '{self._quote_delete_value(workspace_id)}'", prefilter=True)
+            .limit(limit)
+            .to_list()
+        )
 
         # Guard against cross-model queries (skip check for unversioned rows)
         for r in results:
@@ -464,6 +552,8 @@ class LanceDBClient:
     def upsert_symbol_embeddings(
         self,
         symbols: list[dict],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
         progress_callback: Callable[[str], None] | None = None,
     ):
         """symbols: list of {uid, name, file_path, code}"""
@@ -487,6 +577,7 @@ class LanceDBClient:
             rows.append(
                 {
                     "uid": s["uid"],
+                    "workspace_id": str(s.get("workspace_id") or workspace_id),
                     "name": s["name"],
                     "file_path": s["file_path"],
                     "code": s["code"],
@@ -505,7 +596,7 @@ class LanceDBClient:
         if progress_callback:
             progress_callback(f"delete existing rows: {len(uids)}")
         t0 = time.perf_counter()
-        self._delete_symbol_rows(uids, progress_callback=progress_callback)
+        self._delete_symbol_rows(uids, workspace_id, progress_callback=progress_callback)
         if progress_callback:
             progress_callback(f"delete done in {time.perf_counter() - t0:.2f}s")
             progress_callback(f"add rows: {len(rows)}")
@@ -514,25 +605,46 @@ class LanceDBClient:
         if progress_callback:
             progress_callback(f"add done in {time.perf_counter() - t0:.2f}s")
 
-    def delete_symbol_embeddings(self, uids: list[str]):
+    def delete_symbol_embeddings(
+        self,
+        uids: list[str],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
         """Remove symbol embedding rows for deleted symbols."""
-        self._delete_symbol_rows(uids)
+        self._delete_symbol_rows(uids, workspace_id)
 
-    def search_symbols(self, query: str, limit: int = 5, threshold: float = 0.4) -> list[dict]:
+    def search_symbols(
+        self,
+        query: str,
+        limit: int = 5,
+        threshold: float = 0.4,
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[dict]:
         """Returns symbols semantically similar to query, with cosine distance."""
         vec = self._embed([query])[0]
-        return self.search_symbols_by_vector(vec, limit=limit, threshold=threshold)
+        return self.search_symbols_by_vector(
+            vec, limit=limit, threshold=threshold, workspace_id=workspace_id
+        )
 
     def search_symbols_by_vector(
         self,
         vector: list[float],
         limit: int = 5,
         threshold: float = 0.4,
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
     ) -> list[dict]:
         """Returns symbols semantically similar to a precomputed embedding vector."""
         if hasattr(vector, "tolist"):
             vector = vector.tolist()
-        results = self._sym_table.search(vector).limit(limit).to_list()
+        results = (
+            self._sym_table.search(vector)
+            .where(f"workspace_id = '{self._quote_delete_value(workspace_id)}'", prefilter=True)
+            .limit(limit)
+            .to_list()
+        )
 
         # Guard against cross-model queries (skip check for unversioned rows)
         for r in results:

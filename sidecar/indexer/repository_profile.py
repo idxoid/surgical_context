@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 import time
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Iterable, Mapping
 
 from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.parser.registry import REGISTRY

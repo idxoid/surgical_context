@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
 
@@ -157,6 +158,46 @@ function coreModule() {}
         assert any(call.get("callee_name") == "coreModule" for call in calls)
         create_api_uid = adapter._uid("api.ts", "createApi")
         assert all(call["caller_uid"] == create_api_uid for call in calls)
+
+    def test_extract_calls_marks_named_import_call_as_calls_imported(self, adapter):
+        source = """
+import { createRouter } from "vue-router";
+
+function bootstrap() {
+  createRouter();
+}
+"""
+        calls = adapter.extract_calls_from_source(source, "bootstrap.ts")
+        call = next(call for call in calls if call.get("callee_name") == "createRouter")
+
+        assert call["rel_type"] == "CALLS_IMPORTED"
+        assert call["tier"] == "imported"
+        assert call["callee_qualified_name"] == "vue-router.createRouter"
+
+    def test_extract_calls_marks_namespace_member_call_as_calls_imported(self, adapter):
+        source = """
+import * as core from "@nestjs/core";
+
+function bootstrap() {
+  core.NestFactory();
+}
+"""
+        calls = adapter.extract_calls_from_source(source, "main.ts")
+        call = next(call for call in calls if call.get("callee_name") == "NestFactory")
+
+        assert call["rel_type"] == "CALLS_IMPORTED"
+        assert call["tier"] == "imported"
+        assert call["callee_qualified_name"] == "@nestjs.core.NestFactory"
+
+    def test_extract_symbols_includes_exported_interface_via_fallback(self, adapter):
+        source = """
+export interface Ref<T = unknown> {
+  value: T
+}
+"""
+        symbols = adapter.extract_symbols(source, "ref.ts")
+        names = {symbol.name for symbol in symbols}
+        assert "Ref" in names
 
     def test_language_name(self, adapter):
         assert adapter.language_name == "typescript"

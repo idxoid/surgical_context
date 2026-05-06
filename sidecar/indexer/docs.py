@@ -130,11 +130,12 @@ def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict
     if hasattr(lance, "upsert_chunk_batches"):
         lance.upsert_chunk_batches(
             file_chunks,
+            workspace_id=workspace_id,
             progress_callback=lambda msg: print(f"[docs upsert] {msg}"),
         )
     else:
         for path, chunks in file_chunks:
-            lance.upsert_chunks(path, chunks)
+            lance.upsert_chunks(path, chunks, workspace_id=workspace_id)
     upsert_seconds += time.perf_counter() - t_stage
     upsert_progress.update(1)
     upsert_progress.close()

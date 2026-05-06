@@ -14,11 +14,10 @@ from __future__ import annotations
 import itertools
 import json
 import time
-from dataclasses import dataclass, asdict
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import asdict, dataclass
 
 from sidecar.context.unified_ranker import RankerWeights
-
 
 _METRIC_ALIASES = {
     "recall@5": "recall_at_5",

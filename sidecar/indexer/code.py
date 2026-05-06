@@ -6,11 +6,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.indexer.job_log import IndexJobLog
 from sidecar.parser.extractor import SymbolExtractor
 from sidecar.parser.registry import REGISTRY
 from sidecar.silence import install as _silence
-from sidecar.workspace import DEFAULT_WORKSPACE_ID, WorkspaceResolver
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 _silence()
 
@@ -126,10 +125,16 @@ def index_file(
         for s in symbols
         if s.uid in changed_uid_set
     ]
-    lance.upsert_symbol_embeddings(symbol_docs)
+    try:
+        lance.upsert_symbol_embeddings(symbol_docs, workspace_id=workspace_id)
+    except TypeError:
+        lance.upsert_symbol_embeddings(symbol_docs)
     delete_symbol_embeddings = getattr(lance, "delete_symbol_embeddings", None)
     if callable(delete_symbol_embeddings):
-        delete_symbol_embeddings(removed_uids)
+        try:
+            delete_symbol_embeddings(removed_uids, workspace_id=workspace_id)
+        except TypeError:
+            delete_symbol_embeddings(removed_uids)
 
     imports = extractor.extract_imports(file_path)
     delete_imports = getattr(db, "delete_imports_for_file", None)

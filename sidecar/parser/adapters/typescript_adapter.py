@@ -1,6 +1,7 @@
 """TypeScript language adapter using tree-sitter."""
 
 import re
+from pathlib import Path
 
 from tree_sitter import Query
 
@@ -24,6 +25,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
     )
     _EXPORTED_FUNC_FALLBACK_RE = re.compile(
         r"(?m)^export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b"
+    )
+    _EXPORTED_TYPE_FALLBACK_RE = re.compile(
+        r"(?m)^export\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)\b"
     )
 
     @property
@@ -125,6 +129,34 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     uid=compute_uid(qualified_name, signature, self.language_name),
                     name=name,
                     kind="variable",
+                    start_line=start_line,
+                    end_line=end_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="fallback_export",
+                    language=self.language_name,
+                )
+            )
+            existing_names.add(name)
+
+        for match in self._EXPORTED_TYPE_FALLBACK_RE.finditer(source_code):
+            name = match.group(1)
+            if name in existing_names:
+                continue
+            start_line, end_line, content = self._fallback_symbol_span(
+                source_code,
+                match.start(),
+            )
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            qualified_name = f"{module_name_from_path(file_path)}.{name}"
+            symbols.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="class",
                     start_line=start_line,
                     end_line=end_line,
                     content_hash=self._hash(content),
@@ -243,6 +275,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
 
+        import_bindings = self._extract_import_bindings(source_code, file_path)
         calls = []
         for node, tag in captures:
             if tag != "call":
@@ -267,6 +300,10 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
             if func_node.type == "identifier":
                 call_name = source_code[func_node.start_byte : func_node.end_byte]
+                if call_name in import_bindings:
+                    rel_type = "CALLS_IMPORTED"
+                    tier = "imported"
+                    confidence = 0.9
             elif func_node.type == "member_expression":
                 named_children = [child for child in func_node.children if child.is_named]
                 if len(named_children) < 2:
@@ -280,6 +317,10 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 confidence = 0.7
                 if receiver_text == "this":
                     callee_uid = self._resolve_method_uid(parent, call_name, by_name)
+                elif receiver_text in import_bindings:
+                    rel_type = "CALLS_IMPORTED"
+                    tier = "imported"
+                    confidence = 0.9
             else:
                 continue
 
@@ -297,9 +338,97 @@ class TypeScriptAdapter(TreeSitterAdapter):
             }
             if callee_uid:
                 call["callee_uid"] = callee_uid
+            if rel_type == "CALLS_IMPORTED":
+                if func_node.type == "identifier":
+                    call["callee_qualified_name"] = import_bindings[call_name]
+                else:
+                    receiver_node = [child for child in func_node.children if child.is_named][0]
+                    receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
+                    base = import_bindings.get(receiver_text, "")
+                    if base:
+                        call["callee_qualified_name"] = f"{base}.{call_name}"
             calls.append(call)
 
         return calls
+
+    def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
+        bindings: dict[str, str] = {}
+        for match in re.finditer(
+            r"import\s+([^;]+?)\s+from\s+['\"]([^'\"]+)['\"]",
+            source_code,
+        ):
+            spec = match.group(1).strip()
+            source = self._normalize_import_source(file_path, match.group(2).strip())
+            if not spec or not source:
+                continue
+            if spec.startswith("{") and spec.endswith("}"):
+                self._parse_named_import_bindings(spec[1:-1], source, bindings)
+            elif spec.startswith("* as "):
+                alias = spec[len("* as ") :].strip()
+                if alias:
+                    bindings[alias] = source
+            elif "," in spec:
+                default_alias, rest = spec.split(",", 1)
+                default_alias = default_alias.strip()
+                if default_alias:
+                    bindings[default_alias] = source
+                rest = rest.strip()
+                if rest.startswith("{") and rest.endswith("}"):
+                    self._parse_named_import_bindings(rest[1:-1], source, bindings)
+            else:
+                bindings[spec] = source
+        for match in re.finditer(
+            r"const\s+\{\s*([^}]+)\s*\}\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            source_code,
+        ):
+            source = self._normalize_import_source(file_path, match.group(2).strip())
+            self._parse_named_import_bindings(match.group(1), source, bindings)
+        for match in re.finditer(
+            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            source_code,
+        ):
+            alias = match.group(1).strip()
+            source = self._normalize_import_source(file_path, match.group(2).strip())
+            if alias and source:
+                bindings[alias] = source
+        return bindings
+
+    @staticmethod
+    def _parse_named_import_bindings(spec: str, source: str, out: dict[str, str]) -> None:
+        for part in spec.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            if " as " in token:
+                imported, alias = token.split(" as ", 1)
+                imported = imported.strip()
+                alias = alias.strip()
+            elif ":" in token:
+                imported, alias = token.split(":", 1)
+                imported = imported.strip()
+                alias = alias.strip()
+            else:
+                imported = token
+                alias = token
+            if alias and imported:
+                out[alias] = f"{source}.{imported}"
+
+    def _normalize_import_source(self, file_path: str, source: str) -> str:
+        if not source:
+            return ""
+        if not source.startswith("."):
+            return source.replace("/", ".")
+        base = Path(file_path).parent
+        resolved = (base / source).resolve()
+        candidates = [
+            resolved.with_suffix(".ts"),
+            resolved.with_suffix(".tsx"),
+            resolved / "index.ts",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return module_name_from_path(str(candidate))
+        return source.lstrip("./").replace("/", ".")
 
     def _fallback_symbol_span(
         self,

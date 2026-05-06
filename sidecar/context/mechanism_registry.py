@@ -25,7 +25,30 @@ ROLE_CATALOG_MECHANISM_BACKFILL_KEY = "mechanism_role_backfill"
 
 _REQUIRED_ROLES: dict[str, tuple[str, ...]] = {}
 
-_ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {}
+_ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
+    # Generic registration pipeline fallback used by auto mechanism inference.
+    # Keeps framework literals out of ranker policy while letting "registration_flow"
+    # questions recover role evidence from common registration/runtime symbol names.
+    "auto:registration_flow": {
+        "api_surface": [
+            {"name": "Blueprint", "path_hint": "/blueprint", "priority": 0.95},
+            {"name": "request", "path_hint": "/globals", "priority": 0.82},
+        ],
+        "factory_surface": [
+            {"name": "register_blueprint", "path_hint": "/app", "priority": 0.92},
+            {"name": "record", "path_hint": "/blueprint", "priority": 0.86},
+        ],
+        "representation_surface": [
+            {"name": "deferred_functions", "path_hint": "/blueprint", "priority": 0.88},
+            {"name": "make_setup_state", "path_hint": "/blueprint", "priority": 0.82},
+        ],
+        "runtime_surface": [
+            {"name": "wsgi_app", "path_hint": "/app", "priority": 0.9},
+            {"name": "full_dispatch_request", "path_hint": "/app", "priority": 0.86},
+            {"name": "dispatch_request", "path_hint": "/app", "priority": 0.83},
+        ],
+    }
+}
 
 
 def _roles_from_role_catalog_override(

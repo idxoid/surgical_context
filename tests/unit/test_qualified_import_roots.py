@@ -1,5 +1,3 @@
-import pytest
-
 from sidecar.parser.qualified_import_roots import (
     clear_qualified_import_roots_cache,
     get_qualified_import_roots,

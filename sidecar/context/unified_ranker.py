@@ -16,9 +16,9 @@ so raw BFS values (~1.2) don't dominate cosine similarities (~0.8).
 
 from __future__ import annotations
 
-from collections import Counter
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from pathlib import Path
@@ -29,6 +29,14 @@ from sidecar.context.mechanism_registry import (
     pick_mechanism_by_role_overlap,
     required_roles_for_mechanism,
     role_backfill_specs_for_mechanism,
+)
+from sidecar.context.ranker import (
+    BudgetSelector,
+    GraphCandidateSource,
+    RoleBackfill,
+    SubgraphAssembler,
+    TargetSelector,
+    VectorCandidateSource,
 )
 from sidecar.context.role_taxonomy import (
     infer_supporting_roles,
@@ -115,6 +123,23 @@ _REPRESENTATION_SIGNAL_PATH_TOKENS = (
 _TRACE_DEPENDS_RUNTIME_NAMES: frozenset[str] = frozenset(
     {"solve_dependencies", "get_dependant", "Dependant"}
 )
+_TRACE_HOOK_RUNTIME_TRIGGER_NAMES: frozenset[str] = frozenset(
+    {"before_request", "after_request", "teardown_request", "wsgi_app", "dispatch_request"}
+)
+_TRACE_HOOK_RUNTIME_NAMES: frozenset[str] = frozenset(
+    {
+        "before_request",
+        "after_request",
+        "before_app_request",
+        "after_app_request",
+        "preprocess_request",
+        "process_response",
+        "do_teardown_request",
+        "full_dispatch_request",
+        "dispatch_request",
+        "wsgi_app",
+    }
+)
 _RUNTIME_SIGNAL_TOKENS = (
     "run",
     "runtime",
@@ -136,6 +161,67 @@ _API_SIGNAL_TOKENS = (
     "dependency",
     "param",
     "request",
+)
+_REGISTRATION_FLOW_TARGET_TOKENS = (
+    "wsgi",
+    "handler",
+    "blueprint",
+    "request",
+    "middleware",
+    "route",
+    "app",
+)
+_REGISTRATION_FLOW_PATH_TOKENS = (
+    "/handlers/",
+    "/wsgi",
+    "/blueprint",
+    "/globals",
+    "/middleware",
+    "/app",
+)
+_REGISTRATION_FACTORY_TOKENS = (
+    "register",
+    "record",
+    "setup",
+    "blueprint",
+)
+_REGISTRATION_REPRESENTATION_TOKENS = (
+    "state",
+    "context",
+    "request",
+    "response",
+    "setup",
+)
+_REGISTRATION_RUNTIME_TOKENS = (
+    "dispatch",
+    "wsgi",
+    "middleware",
+    "request",
+    "handle",
+)
+_HOOK_FLOW_TARGET_TOKENS = (
+    "before_request",
+    "after_request",
+    "teardown_request",
+    "preprocess_request",
+    "dispatch",
+    "wsgi",
+    "lifecycle",
+    "hook",
+)
+_HOOK_FLOW_PATH_TOKENS = (
+    "/app.py",
+    "/scaffold",
+    "/globals",
+    "/ctx",
+    "/handlers/",
+)
+_HOOK_RUNTIME_TOKENS = (
+    "preprocess_request",
+    "do_teardown_request",
+    "full_dispatch_request",
+    "dispatch_request",
+    "wsgi_app",
 )
 _LOW_SIGNAL_DOC_PATH_PATTERNS = (
     "/migrating-",
@@ -336,8 +422,17 @@ class VectorSearcher:
     def __init__(self, lancedb_client):
         self.db = lancedb_client
 
-    def search_docs(self, query: str, limit: int = 30) -> list[dict]:
-        raw = self.db.search(query, limit)
+    def search_docs(
+        self,
+        query: str,
+        limit: int = 30,
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[dict]:
+        try:
+            raw = self.db.search(query, limit, workspace_id=workspace_id)
+        except TypeError:
+            raw = self.db.search(query, limit)
         return [
             {
                 "chunk_id": r.get("id", f"{r['file_path']}::chunk"),
@@ -348,9 +443,20 @@ class VectorSearcher:
             for r in raw
         ]
 
-    def search_symbols(self, query: str, limit: int = 30) -> list[dict]:
+    def search_symbols(
+        self,
+        query: str,
+        limit: int = 30,
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[dict]:
         # threshold=1.0 means accept all distances (we normalize later)
-        return self.db.search_symbols(query, limit=limit, threshold=1.0)
+        try:
+            return self.db.search_symbols(
+                query, limit=limit, threshold=1.0, workspace_id=workspace_id
+            )
+        except TypeError:
+            return self.db.search_symbols(query, limit=limit, threshold=1.0)
 
 
 class UnifiedRanker:
@@ -411,6 +517,12 @@ class UnifiedRanker:
         self.role_catalog = self._load_role_catalog()
         self._derived_role_by_uid = self._load_derived_role_map()
         self._cluster_to_role = self._build_cluster_to_role_map()
+        self.target_selector = TargetSelector(self)
+        self.graph_candidate_source = GraphCandidateSource(self)
+        self.vector_candidate_source = VectorCandidateSource(self)
+        self.role_backfill = RoleBackfill(self)
+        self.budget_selector = BudgetSelector(self)
+        self.subgraph_assembler = SubgraphAssembler(self)
 
     # ------------------------------------------------------------------
     # Public API
@@ -425,10 +537,12 @@ class UnifiedRanker:
         with_metadata: bool = False,
     ) -> SubgraphNode | tuple[SubgraphNode | None, dict] | None:
         """Fetch the primary symbol from Neo4j, disambiguating duplicates when needed."""
-        target, metadata = self._select_target_candidate(symbol_name, query=query, intent=intent)
-        if with_metadata:
-            return target, metadata
-        return target
+        return self.target_selector.get_target(
+            symbol_name,
+            query=query,
+            intent=intent,
+            with_metadata=with_metadata,
+        )
 
     def _select_target_candidate(
         self,
@@ -437,94 +551,9 @@ class UnifiedRanker:
         query: str = "",
         intent: Intent | None = None,
     ) -> tuple[SubgraphNode | None, dict]:
-        rows = self._load_target_candidates(symbol_name)
-        if not rows:
-            module_row = self._load_module_target_candidate(symbol_name)
-            if module_row is not None:
-                target = self._build_target_node(
-                    module_row,
-                    provenance=["primary:module-target"],
-                )
-                return target, {
-                    "strategy": "module_fallback",
-                    "ambiguous": False,
-                    "symbol": symbol_name,
-                    "candidates_considered": 1,
-                    "selected_uid": target.uid,
-                    "selected_file_path": target.file_path,
-                    "selected_kind": "module",
-                    "selection_reason": "module_or_package",
-                    "alternatives": [],
-                }
-            return None, {
-                "strategy": "not_found",
-                "ambiguous": False,
-                "symbol": symbol_name,
-                "candidates_considered": 0,
-            }
-
-        if len(rows) == 1:
-            target = self._build_target_node(rows[0], provenance=["primary:target"])
-            return target, {
-                "strategy": "unique_match",
-                "ambiguous": False,
-                "symbol": symbol_name,
-                "candidates_considered": 1,
-                "selected_uid": target.uid,
-                "selected_file_path": target.file_path,
-                "selected_kind": getattr(rows[0], "get", lambda *_: "")("kind", ""),
-                "alternatives": [],
-            }
-
-        scored_rows = []
-        for row in rows:
-            score, breakdown = self._score_target_candidate(row, query=query, intent=intent)
-            scored_rows.append((score, row, breakdown))
-        scored_rows.sort(
-            key=lambda item: (
-                item[0],
-                item[1].get("outgoing_edges", 0),
-                item[1].get("total_edges", 0),
-                -item[1].get("token_estimate", 0),
-                -len(item[1].get("file_path", "")),
-            ),
-            reverse=True,
+        return self.target_selector._select_target_candidate(
+            symbol_name, query=query, intent=intent
         )
-
-        best_score, best_row, best_breakdown = scored_rows[0]
-        target = self._build_target_node(
-            best_row,
-            provenance=[
-                "primary:target",
-                f"target-selection:{best_breakdown['role']}",
-            ],
-        )
-        alternatives = [
-            {
-                "uid": row["uid"],
-                "file_path": row["file_path"],
-                "kind": row.get("kind", ""),
-                "qualified_name": row.get("qualified_name", ""),
-                "score": round(score, 3),
-                "role": breakdown["role"],
-                "breakdown": breakdown["components"],
-            }
-            for score, row, breakdown in scored_rows[:5]
-        ]
-        metadata = {
-            "strategy": "duplicate_resolution",
-            "ambiguous": True,
-            "symbol": symbol_name,
-            "candidates_considered": len(scored_rows),
-            "selected_uid": best_row["uid"],
-            "selected_file_path": best_row["file_path"],
-            "selected_kind": best_row.get("kind", ""),
-            "selected_qualified_name": best_row.get("qualified_name", ""),
-            "selected_score": round(best_score, 3),
-            "selection_reason": best_breakdown["role"],
-            "alternatives": alternatives,
-        }
-        return target, metadata
 
     def _load_target_candidates(self, symbol_name: str) -> list[dict]:
         query = """
@@ -1436,7 +1465,16 @@ class UnifiedRanker:
         stopped_reason: str = "",
         pruned_details: list = None,
     ) -> tuple[Subgraph, list[DocChunk]]:
+        return self.subgraph_assembler.candidates_to_subgraph(
+            (target, candidates, budget_info, stopped_reason, pruned_details)
+        )
+
+    def _candidates_to_subgraph_impl(
+        self,
+        payload: tuple[SubgraphNode, list[Candidate], dict, str, list | None],
+    ) -> tuple[Subgraph, list[DocChunk]]:
         """Split ranked candidates back into Subgraph + DocChunks for PromptCompiler."""
+        target, candidates, budget_info, stopped_reason, pruned_details = payload
         nodes = []
         docs = []
         for c in candidates:
@@ -1499,6 +1537,14 @@ class UnifiedRanker:
     _CHAIN_PURSUIT_INTENTS = frozenset({Intent.DESIGN_QUESTION, Intent.EXPLORATION})
 
     def _graph_candidates(
+        self,
+        target_uid: str,
+        pool_size: int,
+        intent: Intent | None = None,
+    ) -> list[Candidate]:
+        return self.graph_candidate_source.graph_candidates(target_uid, pool_size, intent=intent)
+
+    def _graph_candidates_impl(
         self,
         target_uid: str,
         pool_size: int,
@@ -1580,7 +1626,12 @@ class UnifiedRanker:
         )
 
     def _doc_candidates(self, query: str, limit: int) -> list[Candidate]:
-        raw = self._filter_doc_hits_to_workspace(self.vector.search_docs(query, limit=limit))
+        return self.vector_candidate_source.doc_candidates(query, limit)
+
+    def _doc_candidates_impl(self, query: str, limit: int) -> list[Candidate]:
+        raw = self._filter_doc_hits_to_workspace(
+            self.vector.search_docs(query, limit=limit, workspace_id=self.workspace_id)
+        )
         return [
             Candidate(
                 kind="doc",
@@ -1621,7 +1672,12 @@ class UnifiedRanker:
         )
 
     def _sym_vec_candidates(self, query: str, limit: int) -> list[Candidate]:
-        raw = self._filter_symbol_hits_to_workspace(self.vector.search_symbols(query, limit=limit))
+        return self.vector_candidate_source.sym_vec_candidates(query, limit)
+
+    def _sym_vec_candidates_impl(self, query: str, limit: int) -> list[Candidate]:
+        raw = self._filter_symbol_hits_to_workspace(
+            self.vector.search_symbols(query, limit=limit, workspace_id=self.workspace_id)
+        )
         return [
             Candidate(
                 kind="symbol",
@@ -1916,6 +1972,11 @@ class UnifiedRanker:
     def _merge_role_backfill(
         self, pool: list[Candidate], backfill: list[Candidate]
     ) -> list[Candidate]:
+        return self.role_backfill.merge_role_backfill(pool, backfill)
+
+    def _merge_role_backfill_impl(
+        self, pool: list[Candidate], backfill: list[Candidate]
+    ) -> list[Candidate]:
         merged: dict[str, Candidate] = {candidate.uid: candidate for candidate in pool}
         for candidate in backfill:
             existing = merged.get(candidate.uid)
@@ -1998,6 +2059,15 @@ class UnifiedRanker:
         *,
         excluded_uids: set[str],
     ) -> list[Candidate]:
+        def _row_matches_spec_name(row: dict, wanted: str) -> bool:
+            if row.get("name") == wanted:
+                return True
+            qn = str(row.get("qualified_name") or "")
+            if not qn:
+                return False
+            # Accept exact qualified tail segment match: "...foo.Bar" for wanted "Bar".
+            return qn.endswith(f".{wanted}")
+
         specs_by_role = role_backfill_specs_for_mechanism(
             mechanism,
             role_catalog=self.role_catalog or None,
@@ -2013,10 +2083,20 @@ class UnifiedRanker:
             return []
 
         requested_names = sorted({str(spec["name"]) for _, spec in requested_specs})
+        requested_path_hints = sorted(
+            {
+                str(spec.get("path_hint", ""))
+                for _, spec in requested_specs
+                if str(spec.get("path_hint", "")).strip()
+            }
+        )
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-        WHERE s.name IN $names
-          AND NOT s.uid IN $excluded_uids
+        WHERE NOT s.uid IN $excluded_uids
+          AND (
+            s.name IN $names
+            OR any(hint IN $path_hints WHERE f.path CONTAINS hint)
+          )
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
         WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
         WITH s, f, c, count(DISTINCT cr) AS inbound_edges
@@ -2040,6 +2120,7 @@ class UnifiedRanker:
                         query,
                         workspace_id=self.workspace_id,
                         names=requested_names,
+                        path_hints=requested_path_hints,
                         excluded_uids=list(excluded_uids),
                     )
                 )
@@ -2054,7 +2135,7 @@ class UnifiedRanker:
             path_hint = str(spec.get("path_hint", ""))
             priority = float(spec.get("priority", 0.8))
             for row in rows:
-                if row["name"] != name:
+                if not _row_matches_spec_name(row, name):
                     continue
                 file_path = row["file_path"]
                 path_bonus = 0.25 if path_hint and file_path.endswith(path_hint) else 0.0
@@ -2230,7 +2311,12 @@ class UnifiedRanker:
         unrelated matches; names are generic FastAPI entrypoints only when the
         primary symbol is ``Depends``.
         """
-        if (target.name or "") != "Depends":
+        target_name = target.name or ""
+        if target_name == "Depends":
+            names = list(_TRACE_DEPENDS_RUNTIME_NAMES)
+        elif target_name in _TRACE_HOOK_RUNTIME_TRIGGER_NAMES:
+            names = list(_TRACE_HOOK_RUNTIME_NAMES)
+        else:
             return []
         pkg_prefix = self._package_root_prefix(target.file_path or "") or ""
         query = """
@@ -2265,7 +2351,7 @@ class UnifiedRanker:
                     session.run(
                         query,
                         workspace_id=self.workspace_id,
-                        names=list(_TRACE_DEPENDS_RUNTIME_NAMES),
+                        names=names,
                         excluded_uids=list(excluded_uids),
                         pkg_prefix=pkg_prefix,
                     )
@@ -2333,6 +2419,68 @@ class UnifiedRanker:
         except Exception:
             return []
 
+    def _trace_dependency_parent_dir_symbol_rows(
+        self,
+        seed_rows: list[dict],
+        *,
+        excluded_uids: set[str],
+        max_rows: int = 36,
+    ) -> list[dict]:
+        """Expand trace seeds one directory upward for wrapper->runtime bridges.
+
+        Helps when lifecycle APIs live in nested modules (for example ``x/sansio/*``)
+        while request orchestration occurs in the parent package module.
+        """
+        parent_prefixes: set[str] = set()
+        for row in seed_rows:
+            fp = (row.get("file_path") or "").replace("\\", "/")
+            if "/" not in fp:
+                continue
+            parent = fp.rsplit("/", 1)[0].rstrip("/")
+            if "/" not in parent:
+                continue
+            grandparent = parent.rsplit("/", 1)[0].rstrip("/")
+            if not grandparent:
+                continue
+            parent_prefixes.add(f"{grandparent}/")
+        if not parent_prefixes:
+            return []
+
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+          AND any(prefix IN $parent_prefixes WHERE f.path STARTS WITH prefix)
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               count(DISTINCT or) AS outbound_edges
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        excluded_uids=list(excluded_uids),
+                        parent_prefixes=sorted(parent_prefixes),
+                        limit=max_rows,
+                    )
+                )
+        except Exception:
+            return []
+
     def _trace_dependency_import_anchor_candidates(
         self,
         target: SubgraphNode,
@@ -2354,6 +2502,9 @@ class UnifiedRanker:
 
         scoped = set(normalize_roles(required_roles))
         existing_uids = {c.uid for c in pool if getattr(c, "uid", "")}
+        hook_flow_context = self._is_hook_flow_context(
+            target=target, mechanism=mechanism, query=query
+        )
         runtime_rows = self._trace_dependency_runtime_symbol_rows(
             target,
             excluded_uids=excluded_uids,
@@ -2362,10 +2513,18 @@ class UnifiedRanker:
             runtime_rows,
             excluded_uids=excluded_uids,
         )
+        parent_rows = (
+            self._trace_dependency_parent_dir_symbol_rows(
+                runtime_rows,
+                excluded_uids=excluded_uids,
+            )
+            if hook_flow_context
+            else []
+        )
         imported_rows = self._imported_symbol_rows(target.file_path, excluded_uids=excluded_uids)
         merged: list[dict] = []
         seen_merge: set[str] = set()
-        for row in (*runtime_rows, *sibling_rows, *imported_rows):
+        for row in (*runtime_rows, *sibling_rows, *parent_rows, *imported_rows):
             uid = str(row.get("uid") or "")
             if uid and uid not in seen_merge:
                 seen_merge.add(uid)
@@ -2689,10 +2848,30 @@ class UnifiedRanker:
         primary_role = self._role_of(probe)
         supporting_roles = self._supporting_roles_of(probe)
         candidate_roles = normalize_roles([primary_role, *supporting_roles])
-        factory_signal = self._factory_surface_recovery_signal(row, target=target)
-        api_signal = self._api_surface_recovery_signal(row, target=target)
-        representation_signal = self._representation_surface_recovery_signal(row, target=target)
-        runtime_signal = self._runtime_surface_recovery_signal(row, target=target)
+        registration_flow_context = self._is_registration_flow_context(
+            target=target,
+            scoped_roles=scoped_roles,
+        )
+        factory_signal = self._factory_surface_recovery_signal(
+            row,
+            target=target,
+            registration_flow_context=registration_flow_context,
+        )
+        api_signal = self._api_surface_recovery_signal(
+            row,
+            target=target,
+            registration_flow_context=registration_flow_context,
+        )
+        representation_signal = self._representation_surface_recovery_signal(
+            row,
+            target=target,
+            registration_flow_context=registration_flow_context,
+        )
+        runtime_signal = self._runtime_surface_recovery_signal(
+            row,
+            target=target,
+            registration_flow_context=registration_flow_context,
+        )
         if "api_surface" in scoped_roles and api_signal:
             candidate_roles = normalize_roles([*candidate_roles, "api_surface"])
         if "factory_surface" in scoped_roles and factory_signal:
@@ -2714,6 +2893,8 @@ class UnifiedRanker:
             0.18 if ("representation_surface" in matched_roles and representation_signal) else 0.0
         )
         runtime_bonus = 0.20 if ("runtime_surface" in matched_roles and runtime_signal) else 0.0
+        if registration_flow_context and "runtime_surface" in matched_roles and runtime_signal:
+            runtime_bonus += 0.06
         role_bonus = 0.18 * len(matched_roles)
         edge_bonus = 0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.10 * math.log1p(
             float(row.get("outbound_edges", 0) or 0)
@@ -2754,6 +2935,7 @@ class UnifiedRanker:
         row: dict,
         *,
         target: SubgraphNode,
+        registration_flow_context: bool = False,
     ) -> bool:
         """Heuristic factory-surface signal from target-local recovery rows."""
         kind = (row.get("symbol_kind") or "").lower()
@@ -2777,8 +2959,20 @@ class UnifiedRanker:
         edge_hint = (
             float(row.get("outbound_edges", 0) or 0) + float(row.get("inbound_edges", 0) or 0)
         ) >= 1.0
+        reg_hint = (
+            registration_flow_context
+            and self._registration_flow_recovery_hint(row, target=target)
+            and any(token in haystack for token in _REGISTRATION_FACTORY_TOKENS)
+        )
 
-        score = int(prefix_hit) + int(token_hit) + int(path_hit) + int(target_hit) + int(edge_hint)
+        score = (
+            int(prefix_hit)
+            + int(token_hit)
+            + int(path_hit)
+            + int(target_hit)
+            + int(edge_hint)
+            + int(reg_hint)
+        )
         return score >= 2
 
     def _api_surface_recovery_signal(
@@ -2786,6 +2980,7 @@ class UnifiedRanker:
         row: dict,
         *,
         target: SubgraphNode,
+        registration_flow_context: bool = False,
     ) -> bool:
         kind = (row.get("symbol_kind") or "").lower()
         if kind and kind not in {"function", "method", "class"}:
@@ -2797,7 +2992,12 @@ class UnifiedRanker:
         haystack = " ".join([name, qualified, file_path, target_ctx])
         token_hit = any(token in haystack for token in _API_SIGNAL_TOKENS)
         edge_hint = float(row.get("outbound_edges", 0) or 0) >= 1.0
-        score = int(token_hit) + int(edge_hint)
+        reg_hint = (
+            registration_flow_context
+            and self._registration_flow_recovery_hint(row, target=target)
+            and any(token in haystack for token in ("request", "app", "blueprint", "handler"))
+        )
+        score = int(token_hit) + int(edge_hint) + int(reg_hint)
         return score >= 2
 
     def _representation_surface_recovery_signal(
@@ -2805,6 +3005,7 @@ class UnifiedRanker:
         row: dict,
         *,
         target: SubgraphNode,
+        registration_flow_context: bool = False,
     ) -> bool:
         kind = (row.get("symbol_kind") or "").lower()
         if kind and kind not in {"function", "method", "class"}:
@@ -2821,12 +3022,18 @@ class UnifiedRanker:
             t in haystack for t in ("schema", "model", "field", "response")
         )
         edge_hint = float(row.get("inbound_edges", 0) or 0) >= 1.0
+        reg_hint = (
+            registration_flow_context
+            and self._registration_flow_recovery_hint(row, target=target)
+            and any(token in haystack for token in _REGISTRATION_REPRESENTATION_TOKENS)
+        )
         score = (
             int(token_hit)
             + int(path_hit)
             + int(target_dep_like and (token_hit or path_hit))
             + int(class_bonus)
             + int(edge_hint)
+            + int(reg_hint)
         )
         return score >= 2
 
@@ -2835,6 +3042,7 @@ class UnifiedRanker:
         row: dict,
         *,
         target: SubgraphNode,
+        registration_flow_context: bool = False,
     ) -> bool:
         kind = (row.get("symbol_kind") or "").lower()
         if kind and kind not in {"function", "method", "class"}:
@@ -2849,8 +3057,75 @@ class UnifiedRanker:
             float(row.get("outbound_edges", 0) or 0) >= 1.0
             or float(row.get("inbound_edges", 0) or 0) >= 2.0
         )
-        score = int(token_hit) + int(edge_hint)
+        reg_hint = (
+            registration_flow_context
+            and self._registration_flow_recovery_hint(row, target=target)
+            and any(token in haystack for token in _REGISTRATION_RUNTIME_TOKENS)
+        )
+        hook_hint = self._hook_flow_recovery_hint(row, target=target) and any(
+            token in haystack for token in _HOOK_RUNTIME_TOKENS
+        )
+        score = int(token_hit) + int(edge_hint) + int(reg_hint) + int(hook_hint)
         return score >= 2
+
+    def _is_registration_flow_context(
+        self,
+        *,
+        target: SubgraphNode,
+        scoped_roles: set[str],
+    ) -> bool:
+        if "deferred_registration" in scoped_roles:
+            return True
+        path = (target.file_path or "").lower()
+        name = (target.name or "").lower()
+        role_hint = {"api_surface", "factory_surface", "runtime_surface"}.intersection(scoped_roles)
+        if not role_hint:
+            return False
+        haystack = f"{name} {path}"
+        return any(token in haystack for token in _REGISTRATION_FLOW_TARGET_TOKENS)
+
+    def _registration_flow_recovery_hint(self, row: dict, *, target: SubgraphNode) -> bool:
+        """Shared cue pack for framework registration/request handler flows.
+
+        Keeps Flask/Django-like registration traces from looking framework-specific
+        while still requiring structural/name/path evidence.
+        """
+        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
+        row_ctx = " ".join(
+            [
+                str(row.get("name") or "").lower(),
+                str(row.get("qualified_name") or "").lower(),
+                str(row.get("file_path") or "").lower(),
+            ]
+        )
+        target_hit = any(token in target_ctx for token in _REGISTRATION_FLOW_TARGET_TOKENS)
+        row_hit = any(token in row_ctx for token in _REGISTRATION_FLOW_TARGET_TOKENS)
+        path_hit = any(token in row_ctx for token in _REGISTRATION_FLOW_PATH_TOKENS)
+        return (target_hit and row_hit) or path_hit
+
+    def _hook_flow_recovery_hint(self, row: dict, *, target: SubgraphNode) -> bool:
+        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
+        row_ctx = " ".join(
+            [
+                str(row.get("name") or "").lower(),
+                str(row.get("qualified_name") or "").lower(),
+                str(row.get("file_path") or "").lower(),
+            ]
+        )
+        target_hit = any(token in target_ctx for token in _HOOK_FLOW_TARGET_TOKENS)
+        row_hit = any(token in row_ctx for token in _HOOK_FLOW_TARGET_TOKENS)
+        path_hit = any(token in row_ctx for token in _HOOK_FLOW_PATH_TOKENS)
+        return (target_hit and row_hit) or (target_hit and path_hit)
+
+    def _is_hook_flow_context(self, *, target: SubgraphNode, mechanism: str, query: str) -> bool:
+        m = (mechanism or "").lower()
+        q = (query or "").lower()
+        if "hook" in m or "lifecycle" in m:
+            return True
+        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
+        if any(token in target_ctx for token in _HOOK_FLOW_TARGET_TOKENS):
+            return True
+        return "before_request" in q or "after_request" in q
 
     def _needs_structural_recovery(self, target: SubgraphNode) -> bool:
         """Identify thin wrapper targets that benefit from file/import recovery.
@@ -3092,13 +3367,40 @@ class UnifiedRanker:
         q = (query or "").lower()
         if "depend" in m or "trace_dependency" in m:
             return True
+        if "hook" in m or "lifecycle" in m:
+            return True
         if "dependency injection" in q:
             return True
         if "inject" in q and "depend" in q:
             return True
+        if "before_request" in q or "after_request" in q:
+            return True
         return False
 
     def _calculate_marginal_gain(
+        self,
+        c: Candidate,
+        chosen: list[Candidate],
+        target: SubgraphNode,
+        *,
+        intent: Intent | None = None,
+        mechanism: str = "",
+        query: str = "",
+        required_roles: list[str],
+        candidate_roles: list[str] | None = None,
+    ) -> float:
+        return self.budget_selector.calculate_marginal_gain(
+            c=c,
+            chosen=chosen,
+            target=target,
+            intent=intent,
+            mechanism=mechanism,
+            query=query,
+            required_roles=required_roles,
+            candidate_roles=candidate_roles,
+        )
+
+    def _calculate_marginal_gain_impl(
         self,
         c: Candidate,
         chosen: list[Candidate],
@@ -3150,12 +3452,22 @@ class UnifiedRanker:
             path_lc = (c.file_path or "").lower().replace("\\", "/")
             if "/dependencies/" in path_lc:
                 file_coverage_bonus += 0.14
+            if any(token in path_lc for token in _HOOK_FLOW_PATH_TOKENS):
+                file_coverage_bonus += 0.10
+            if "registration_flow" in (mechanism or "").lower() and any(
+                token in path_lc for token in _REGISTRATION_FLOW_PATH_TOKENS
+            ):
+                file_coverage_bonus += 0.12
             if c.file_path and c.file_path != target.file_path:
                 chosen_files = {cc.file_path for cc in chosen}
                 if c.file_path not in chosen_files:
                     file_coverage_bonus += 0.22
             if c.relation in ("DEPENDS_ON", "CALLS_DIRECT", "CALLS_SCOPED", "CALLS_IMPORTED"):
                 file_coverage_bonus += 0.06
+            if "registration_flow" in (mechanism or "").lower() and "runtime_surface" in (
+                candidate_roles or self._roles_of(c)
+            ):
+                file_coverage_bonus += 0.08
 
         # 4. Redundancy Penalty: Diminishing returns for many symbols in the same file.
         same_file_count = sum(1 for cc in chosen if cc.file_path == c.file_path)

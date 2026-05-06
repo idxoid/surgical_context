@@ -405,3 +405,75 @@ class TestContextArbitratorBFS:
         assert payload["metadata"]["ranker"]["pruned_total_count"] == 1
         assert payload["intent_details"]["primary"] == "exploration"
         assert payload["pruned"][0]["name"] == "Audit.log"
+
+    def test_explain_behavior_missing_symbol_uses_concept_anchor_fallback(self, mock_db):
+        """Missing conceptual symbols can resolve to anchor symbols for explain-style prompts."""
+        arbitrator = ContextArbitrator(mock_db, vector_db=Mock())
+        target = SubgraphNode(
+            uid="anchor-use",
+            name="use",
+            file_path="lib/application.js",
+            range=[1, 10],
+            token_estimate=40,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+        )
+
+        class FakeRanker:
+            PREAMBLE_TOKENS = 100
+
+            def __init__(self, db, vector_searcher, workspace_id=None, weights=None):
+                pass
+
+            def get_target(self, symbol_name, query="", intent=None, with_metadata=False):
+                if symbol_name == "middleware":
+                    return (None, {"strategy": "not_found"}) if with_metadata else None
+                if symbol_name == "use":
+                    meta = {"strategy": "unique_match", "selected_uid": "anchor-use"}
+                    return (target, meta) if with_metadata else target
+                return (None, {"strategy": "not_found"}) if with_metadata else None
+
+            def rank(self, target, query, intent, budget):
+                return (
+                    [],
+                    {"limit": budget, "spent": 140, "reserved": 100, "pool_size": 0},
+                    "",
+                    [],
+                    [],
+                )
+
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
+                return (
+                    Subgraph(
+                        primary=target,
+                        nodes=[],
+                        budget=budget_info,
+                        stopped_reason=stopped_reason,
+                        pruned_details=pruned_details,
+                    ),
+                    [],
+                )
+
+            def _determine_mechanism(self, target, query=""):
+                return "generic"
+
+            def _get_required_roles(self, mechanism):
+                return []
+
+        with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker):
+            ctx = arbitrator.get_context_for_symbol(
+                "middleware",
+                question="How does middleware sequencing work?",
+                token_budget=2000,
+            )
+
+        assert isinstance(ctx, PromptContext)
+        assert ctx.primary_source.symbol == "use"
+        target_meta = ctx.ranker_state.get("target_selection", {})
+        assert target_meta.get("strategy") == "concept_anchor_fallback"
+        assert target_meta.get("missing_symbol") == "middleware"
+        assert target_meta.get("anchor_symbol") == "use"

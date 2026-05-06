@@ -415,7 +415,7 @@ def _normalize_pending(value) -> list[str]:
         return [value]
 
 
-def _build_symbol_vector_index(lance):
+def _build_symbol_vector_index(lance, workspace_id: str):
     sym_table = getattr(lance, "_sym_table", None)
     if sym_table is None:
         return None
@@ -429,6 +429,10 @@ def _build_symbol_vector_index(lance):
         return None
     if rows.empty:
         return None
+    if hasattr(rows, "columns") and "workspace_id" in rows.columns:
+        rows = rows[rows["workspace_id"] == workspace_id]
+        if rows.empty:
+            return None
 
     uids = []
     names = []
@@ -580,6 +584,18 @@ def _prepare_doc_link_batches(
             "pending_updates": 0,
             "prepare_sec": 0.0,
         }
+    if hasattr(rows, "columns") and "workspace_id" in rows.columns:
+        rows = rows[rows["workspace_id"] == workspace_id]
+        if rows.empty:
+            return {
+                "chunks": 0,
+                "batches": [],
+                "anchors": 0,
+                "covers": 0,
+                "related": 0,
+                "pending_updates": 0,
+                "prepare_sec": 0.0,
+            }
 
     t0 = time.perf_counter()
     prefixes = _normalize_allowed_prefixes(allowed_prefixes)
@@ -598,7 +614,7 @@ def _prepare_doc_link_batches(
             "pending_updates": 0,
             "prepare_sec": 0.0,
         }
-    symbol_vector_index = _build_symbol_vector_index(lance)
+    symbol_vector_index = _build_symbol_vector_index(lance, workspace_id)
     name_to_uid = _load_name_to_uid(neo4j, symbol_vector_index, workspace_id)
 
     batches = []
@@ -706,17 +722,33 @@ def _prepare_doc_link_batches(
                 for state in semantic_states:
                     vector = state["row"].get("vector")
                     if vector is not None:
-                        hits = lance.search_symbols_by_vector(
-                            vector,
-                            limit=5,
-                            threshold=SIMILARITY_THRESHOLD,
-                        )
+                        try:
+                            hits = lance.search_symbols_by_vector(
+                                vector,
+                                limit=5,
+                                threshold=SIMILARITY_THRESHOLD,
+                                workspace_id=workspace_id,
+                            )
+                        except TypeError:
+                            hits = lance.search_symbols_by_vector(
+                                vector,
+                                limit=5,
+                                threshold=SIMILARITY_THRESHOLD,
+                            )
                     else:
-                        hits = lance.search_symbols(
-                            state["chunk_text"],
-                            limit=5,
-                            threshold=SIMILARITY_THRESHOLD,
-                        )
+                        try:
+                            hits = lance.search_symbols(
+                                state["chunk_text"],
+                                limit=5,
+                                threshold=SIMILARITY_THRESHOLD,
+                                workspace_id=workspace_id,
+                            )
+                        except TypeError:
+                            hits = lance.search_symbols(
+                                state["chunk_text"],
+                                limit=5,
+                                threshold=SIMILARITY_THRESHOLD,
+                            )
                     semantic_hits.append(hits)
 
             for state, hits in zip(semantic_states, semantic_hits, strict=False):
@@ -889,7 +921,7 @@ def resolve_pending_anchors(
     prefixes = _normalize_allowed_prefixes(allowed_prefixes)
     pending_rows = [
         row
-        for row in lance.get_pending_rows()
+        for row in lance.get_pending_rows(workspace_id=workspace_id)
         if _matches_allowed_prefix(row.get("file_path"), prefixes)
     ]
     if not pending_rows:

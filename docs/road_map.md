@@ -87,6 +87,7 @@ Current snapshot:
 - FastAPI `core12` retrieval baseline is green, including `Depends` trace path recovery.
 - Pydantic and Redux Toolkit local packs are broadly green with remaining precision tails on broad/doc-heavy questions.
 - Flask and Django mostly pass with role/file-coverage tails; Express still needs target-resolution and JS export-shape improvements before meaningful ranker tuning.
+- `UnifiedRanker` decomposition (big-bang first cut) is implemented: new `sidecar/context/ranker/*` components (`TargetSelector`, `GraphCandidateSource`, `VectorCandidateSource`, `RoleBackfill`, `BudgetSelector`, `SubgraphAssembler`) are wired, with `UnifiedRanker` kept as compatibility facade.
 
 ### P4 - Provider Boundaries, Defaults First
 - [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
@@ -109,6 +110,20 @@ Current snapshot:
 ---
 
 ## Immediate 3-Week Plan
+
+### Next execution lanes (agreed)
+
+1. **Baseline lock (green lanes)**  
+   Keep `fastapi`, `pydantic`, `redux_toolkit`, and `sqlalchemy` as control baselines; avoid broad ranker changes that regress these packs.
+
+2. **Python tail closure (non-impact)**  
+   Prioritize residual role/file tails in `django` and `flask` (trace/explain questions) without widening the impact-analysis scope.
+
+3. **JS framework target-resolution lane**  
+   Treat `express` / `vue` / `nestjs` failures primarily as symbol/exports/target-resolution work before ranker-weight tuning.
+
+4. **Impact-analysis lane (deferred)**  
+   Continue to treat impact as a separate iteration after the non-impact retrieval lanes stabilize.
 
 ### Immediate Retrieval Focus
 - keep broadening the now-shipped canonical role taxonomy beyond FastAPI, with the current baseline green across FastAPI, Pydantic, and Redux Toolkit
@@ -531,6 +546,7 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] Overlap bonus when both signals fire on the same candidate
 - [x] Budget-fill loop competes symbols and doc chunks on identical terms
 - [x] Weight tuning via eval harness sweep
+- [x] Decompose `UnifiedRanker` internals into focused components under `sidecar/context/ranker/`, while preserving `get_target(...)`, `rank(...)`, `candidates_to_subgraph(...)` contracts used by Arbitrator/QA
 - [x] Target disambiguation for duplicate symbol names within one workspace (`Depends`-style collisions)
 - [x] Module/package fallback targets for workspace-level questions such as `pydantic.v1`
 - [x] Topic-aware subsystem noise control for focused API questions, so distant graph links through broad helpers do not crowd out relevant runtime/doc candidates

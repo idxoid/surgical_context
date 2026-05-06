@@ -550,7 +550,7 @@ def _context_from_file(
             provenance=["file"],
         ),
         graph_context=[],
-        documentation=_search_docs(f"{file_path} {question}", limit=3),
+        documentation=_search_docs(f"{file_path} {question}", limit=3, workspace_id=workspace_id),
         mode="file",
         intent=intent.value,
         tier_tokens={"code": estimate_text_tokens(code)},
@@ -559,9 +559,11 @@ def _context_from_file(
     return ctx
 
 
-def _context_from_workspace(question: str, token_budget: int) -> PromptContext | None:
-    docs = _search_docs(question, limit=5)
-    symbols = _search_symbols(question, limit=5)
+def _context_from_workspace(
+    question: str, token_budget: int, *, workspace_id: str
+) -> PromptContext | None:
+    docs = _search_docs(question, limit=5, workspace_id=workspace_id)
+    symbols = _search_symbols(question, limit=5, workspace_id=workspace_id)
     if not docs and not symbols:
         return None
 
@@ -604,19 +606,19 @@ def _context_from_direct(question: str, token_budget: int) -> PromptContext:
     )
 
 
-def _search_docs(query: str, limit: int) -> list[DocChunk]:
+def _search_docs(query: str, limit: int, *, workspace_id: str) -> list[DocChunk]:
     try:
-        return DocResolver(vector_db).search(query, limit=limit)
+        return DocResolver(vector_db).search(query, limit=limit, workspace_id=workspace_id)
     except Exception:
         return []
 
 
-def _search_symbols(query: str, limit: int) -> list[SymbolContext]:
+def _search_symbols(query: str, limit: int, *, workspace_id: str) -> list[SymbolContext]:
     search_symbols = getattr(vector_db, "search_symbols", None)
     if not callable(search_symbols):
         return []
     try:
-        raw_symbols = search_symbols(query, limit=limit, threshold=1.0)
+        raw_symbols = search_symbols(query, limit=limit, threshold=1.0, workspace_id=workspace_id)
     except Exception:
         return []
     return [
@@ -629,6 +631,23 @@ def _search_symbols(query: str, limit: int) -> list[SymbolContext]:
         )
         for symbol in raw_symbols
     ]
+
+
+def _vector_search_docs(query: str, limit: int, *, workspace_id: str) -> list[dict[str, Any]]:
+    try:
+        return vector_db.search(query, limit, workspace_id=workspace_id)
+    except TypeError:
+        return vector_db.search(query, limit)
+
+
+def _vector_search_symbols(query: str, limit: int, *, workspace_id: str) -> list[dict[str, Any]]:
+    search_symbols = getattr(vector_db, "search_symbols", None)
+    if not callable(search_symbols):
+        return []
+    try:
+        return search_symbols(query, limit, threshold=1.0, workspace_id=workspace_id)
+    except TypeError:
+        return search_symbols(query, limit, threshold=1.0)
 
 
 def _doc_tier_tokens(docs: list[DocChunk]) -> dict[str, int]:
@@ -669,7 +688,9 @@ def _resolve_ask_context(
             _mark_ask_fallback(file_ctx, req, "file", symbol_error)
             return file_ctx
 
-    workspace_ctx = _context_from_workspace(req.question, req.token_budget)
+    workspace_ctx = _context_from_workspace(
+        req.question, req.token_budget, workspace_id=workspace_id
+    )
     if workspace_ctx:
         _mark_ask_fallback(workspace_ctx, req, "workspace", symbol_error)
         return workspace_ctx
@@ -756,11 +777,14 @@ def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
     file_hash = hash_file(file_path)
     with job_log.track_file_job(file_path, file_hash=file_hash) as tracked_job_id:
         with db_session(user_id=user_id) as db:
+            extractor = SymbolExtractor()
+            if hasattr(extractor, "project_root"):
+                extractor.project_root = os.path.dirname(file_path)
             index_file(
                 file_path,
                 db,
                 vector_db,
-                SymbolExtractor(),
+                extractor,
                 workspace_id=workspace_id,
             )
             resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
@@ -835,6 +859,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
             )
         if not indexable_paths:
             continue
+        extractor.project_root = os.path.commonpath(indexable_paths) if indexable_paths else None
 
         current_hashes = {path: hash_file(path) for path in indexable_paths}
         completed = 0
@@ -1069,8 +1094,8 @@ def search(
     x_workspace: str = Header(None),
 ):
     _resolve_request_user(x_user_id, authorization)
-    _resolve_workspace(x_workspace)
-    return {"results": vector_db.search(req.query, req.limit)}
+    workspace_id = _resolve_workspace(x_workspace)
+    return {"results": _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)}
 
 
 @app.post("/search/unified", response_model=UnifiedSearchResponse)
@@ -1089,7 +1114,7 @@ def unified_search(
     results: list[UnifiedSearchResult] = []
     try:
         with trace.stage("vector_docs"):
-            docs = vector_db.search(req.query, req.limit)
+            docs = _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)
         for rank, doc in enumerate(docs):
             score = doc.get("score")
             results.append(
@@ -1105,10 +1130,9 @@ def unified_search(
                 }
             )
 
-        search_symbols = getattr(vector_db, "search_symbols", None)
-        if callable(search_symbols):
-            with trace.stage("vector_symbols"):
-                symbols = search_symbols(req.query, req.limit, threshold=1.0)
+        with trace.stage("vector_symbols"):
+            symbols = _vector_search_symbols(req.query, req.limit, workspace_id=workspace_id)
+        if symbols:
             for rank, symbol in enumerate(symbols):
                 score = symbol.get("score")
                 if score is None and symbol.get("distance") is not None:

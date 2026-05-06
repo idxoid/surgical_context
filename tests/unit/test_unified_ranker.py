@@ -54,7 +54,7 @@ def _make_backfill_db(rows):
     session = MagicMock()
 
     def run(query, **params):
-        if "WHERE s.name IN $names" in query and "ROLE_BACKFILL" not in query:
+        if "s.name IN $names" in query and "ROLE_BACKFILL" not in query:
             return rows
         return []
 

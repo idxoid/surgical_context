@@ -89,7 +89,17 @@ class ContextArbitrator:
             with_metadata=True,
         )
         if target is None:
-            return f"Error: Symbol '{symbol_name}' not found in graph."
+            fallback_target, fallback_selection = self._resolve_concept_anchor_target(
+                ranker,
+                symbol_name=symbol_name,
+                question=question,
+                intent=intent,
+            )
+            if fallback_target is not None:
+                target = fallback_target
+                target_selection = fallback_selection
+            else:
+                return f"Error: Symbol '{symbol_name}' not found in graph."
 
         reserved = UnifiedRanker.PREAMBLE_TOKENS + target.token_estimate
         if reserved > token_budget:
@@ -182,6 +192,51 @@ class ContextArbitrator:
             "strategy_profile": getattr(ranker, "strategy_profile", {}),
         }
         return ctx
+
+    @staticmethod
+    def _should_try_concept_anchor_fallback(question: str) -> bool:
+        q = (question or "").lower()
+        return any(token in q for token in ("how ", "how does", "how do", "behavior", "works"))
+
+    @staticmethod
+    def _concept_anchor_candidates(symbol_name: str) -> list[str]:
+        concept = (symbol_name or "").strip().lower()
+        concept_map = {
+            "middleware": ["use", "handle", "router", "route"],
+        }
+        return concept_map.get(concept, [])
+
+    def _resolve_concept_anchor_target(
+        self,
+        ranker: UnifiedRanker,
+        *,
+        symbol_name: str,
+        question: str,
+        intent,
+    ) -> tuple[object | None, dict]:
+        if not self._should_try_concept_anchor_fallback(question):
+            return None, {}
+        anchors = self._concept_anchor_candidates(symbol_name)
+        if not anchors:
+            return None, {}
+            return None, {}
+        for anchor in anchors:
+            candidate, metadata = ranker.get_target(
+                anchor,
+                query=question,
+                intent=intent,
+                with_metadata=True,
+            )
+            if candidate is not None:
+                metadata = {
+                    **(metadata or {}),
+                    "strategy": "concept_anchor_fallback",
+                    "missing_symbol": symbol_name,
+                    "anchor_symbol": anchor,
+                    "anchors_considered": anchors,
+                }
+                return candidate, metadata
+        return None, {}
 
     # ------------------------------------------------------------------
     # Graph-only path (no vector_db — original behaviour)

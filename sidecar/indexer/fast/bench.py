@@ -37,8 +37,7 @@ sys.path.append(
 
 from tqdm import tqdm
 
-from sidecar.indexer.fast.pipeline import ProgressReporter, run_fast_indexing
-
+from sidecar.indexer.fast.pipeline import run_fast_indexing
 
 # ---------------------------------------------------------------------------
 # tqdm-backed progress reporter for the fast pipeline.

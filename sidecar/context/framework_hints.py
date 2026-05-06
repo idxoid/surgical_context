@@ -14,8 +14,10 @@ in repo YAML. Until then, ``*.yaml`` here remains an indexer-time escape hatch.
 """
 
 import os
-import yaml
 from typing import Any
+
+import yaml
+
 from sidecar.database.neo4j_client import Neo4jClient
 
 
@@ -52,7 +54,7 @@ class FrameworkHintsIndexer:
         for filename in os.listdir(rules_dir):
             if filename.endswith(".yaml") or filename.endswith(".yml"):
                 try:
-                    with open(os.path.join(rules_dir, filename), "r") as f:
+                    with open(os.path.join(rules_dir, filename)) as f:
                         data = yaml.safe_load(f)
                         if data and "rules" in data:
                             all_rules.extend(data["rules"])

@@ -1,6 +1,7 @@
 """JavaScript language adapter using tree-sitter."""
 
 import re
+from pathlib import Path
 
 from tree_sitter import Query
 
@@ -25,6 +26,15 @@ class JavaScriptAdapter(TreeSitterAdapter):
     _EXPORTED_FUNC_FALLBACK_RE = re.compile(
         r"(?m)^exports\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function|^export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b"
     )
+    _MODULE_EXPORT_FUNC_FALLBACK_RE = re.compile(
+        r"(?m)^module\.exports\s*=\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b"
+    )
+    _PROPERTY_FUNC_FALLBACK_RE = re.compile(
+        r"(?m)^[ \t]*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
+    )
+    _PROPERTY_ARROW_FALLBACK_RE = re.compile(
+        r"(?m)^[ \t]*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
+    )
 
     @property
     def language_name(self) -> str:
@@ -43,6 +53,8 @@ class JavaScriptAdapter(TreeSitterAdapter):
         return """
             (function_declaration (identifier) @func.name) @func.def
             (class_declaration (type_identifier) @class.name) @class.def
+            (program (lexical_declaration (variable_declarator name: (identifier) @var.name) @var.top_level))
+            (program (variable_declaration (variable_declarator name: (identifier) @var.name) @var.top_level))
         """
 
     @property
@@ -100,6 +112,83 @@ class JavaScriptAdapter(TreeSitterAdapter):
             )
             existing_names.add(name)
 
+        for match in self._MODULE_EXPORT_FUNC_FALLBACK_RE.finditer(source_code):
+            name = match.group(1)
+            if not name or name in existing_names:
+                continue
+
+            start_line, end_line, content = self._fallback_symbol_span(
+                source_code,
+                match.start(),
+            )
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            qualified_name = f"{module_name_from_path(file_path)}.{name}"
+            symbols.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="function",
+                    start_line=start_line,
+                    end_line=end_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="fallback_export",
+                    language=self.language_name,
+                )
+            )
+            existing_names.add(name)
+        for match in self._PROPERTY_FUNC_FALLBACK_RE.finditer(source_code):
+            name = (match.group(2) or match.group(1) or "").strip()
+            if not name or name in existing_names:
+                continue
+            start_line, end_line, content = self._fallback_symbol_span(source_code, match.start())
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            qualified_name = f"{module_name_from_path(file_path)}.{name}"
+            symbols.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="function",
+                    start_line=start_line,
+                    end_line=end_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="fallback_export",
+                    language=self.language_name,
+                )
+            )
+            existing_names.add(name)
+        for match in self._PROPERTY_ARROW_FALLBACK_RE.finditer(source_code):
+            name = (match.group(1) or "").strip()
+            if not name or name in existing_names:
+                continue
+            start_line, end_line, content = self._fallback_symbol_span(source_code, match.start())
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            qualified_name = f"{module_name_from_path(file_path)}.{name}"
+            symbols.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="function",
+                    start_line=start_line,
+                    end_line=end_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="fallback_export",
+                    language=self.language_name,
+                )
+            )
+            existing_names.add(name)
+
         for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
             name = match.group(1) or match.group(2)
             if not name or name in existing_names:
@@ -109,6 +198,29 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 source_code,
                 match.start(),
             )
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            qualified_name = f"{module_name_from_path(file_path)}.{name}"
+            symbols.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="variable",
+                    start_line=start_line,
+                    end_line=end_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="fallback_export",
+                    language=self.language_name,
+                )
+            )
+            existing_names.add(name)
+        for name, start_offset in self._module_export_object_keys(source_code):
+            if not name or name in existing_names:
+                continue
+            start_line, end_line, content = self._fallback_symbol_span(source_code, start_offset)
             signature = normalize_signature(f"{name}()->_", self.language_name)
             qualified_name = f"{module_name_from_path(file_path)}.{name}"
             symbols.append(
@@ -144,7 +256,23 @@ class JavaScriptAdapter(TreeSitterAdapter):
             node, tag, name, source_code=source_code, file_path=file_path
         ):
             return True
-        return tag == "var.exported_def"
+        if tag == "var.exported_def":
+            return True
+        if tag == "var.top_level":
+            value = node.child_by_field_name("value")
+            if value is None:
+                return False
+            return value.type in {
+                "call_expression",
+                "new_expression",
+                "await_expression",
+                "arrow_function",
+                "function_expression",
+                "member_expression",
+                "object",
+                "array",
+            }
+        return False
 
     @property
     def inheritance_query(self) -> str:
@@ -222,6 +350,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
 
+        import_bindings = self._extract_import_bindings(source_code, file_path)
         calls = []
         for node, tag in captures:
             if tag != "call":
@@ -246,6 +375,10 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
             if func_node.type == "identifier":
                 call_name = source_code[func_node.start_byte : func_node.end_byte]
+                if call_name in import_bindings:
+                    rel_type = "CALLS_IMPORTED"
+                    tier = "imported"
+                    confidence = 0.9
             elif func_node.type == "member_expression":
                 named_children = [child for child in func_node.children if child.is_named]
                 if len(named_children) < 2:
@@ -259,6 +392,10 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 confidence = 0.7
                 if receiver_text == "this":
                     callee_uid = self._resolve_method_uid(parent, call_name, by_name)
+                elif receiver_text in import_bindings:
+                    rel_type = "CALLS_IMPORTED"
+                    tier = "imported"
+                    confidence = 0.9
             else:
                 continue
 
@@ -276,9 +413,121 @@ class JavaScriptAdapter(TreeSitterAdapter):
             }
             if callee_uid:
                 call["callee_uid"] = callee_uid
+            if rel_type == "CALLS_IMPORTED":
+                if func_node.type == "identifier":
+                    call["callee_qualified_name"] = import_bindings[call_name]
+                else:
+                    receiver_node = [child for child in func_node.children if child.is_named][0]
+                    receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
+                    base = import_bindings.get(receiver_text, "")
+                    if base:
+                        call["callee_qualified_name"] = f"{base}.{call_name}"
             calls.append(call)
 
         return calls
+
+    def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
+        bindings: dict[str, str] = {}
+        for match in re.finditer(
+            r"import\s+([^;]+?)\s+from\s+['\"]([^'\"]+)['\"]",
+            source_code,
+        ):
+            spec = match.group(1).strip()
+            source = self._normalize_import_source(file_path, match.group(2).strip())
+            if not spec or not source:
+                continue
+            if spec.startswith("{") and spec.endswith("}"):
+                self._parse_named_import_bindings(spec[1:-1], source, bindings)
+            elif spec.startswith("* as "):
+                alias = spec[len("* as ") :].strip()
+                if alias:
+                    bindings[alias] = source
+            elif "," in spec:
+                default_alias, rest = spec.split(",", 1)
+                default_alias = default_alias.strip()
+                if default_alias:
+                    bindings[default_alias] = source
+                rest = rest.strip()
+                if rest.startswith("{") and rest.endswith("}"):
+                    self._parse_named_import_bindings(rest[1:-1], source, bindings)
+            else:
+                bindings[spec] = source
+        for match in re.finditer(
+            r"const\s+\{\s*([^}]+)\s*\}\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            source_code,
+        ):
+            source = self._normalize_import_source(file_path, match.group(2).strip())
+            self._parse_named_import_bindings(match.group(1), source, bindings)
+        for match in re.finditer(
+            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            source_code,
+        ):
+            alias = match.group(1).strip()
+            source = self._normalize_import_source(file_path, match.group(2).strip())
+            if alias and source:
+                bindings[alias] = source
+        return bindings
+
+    @staticmethod
+    def _parse_named_import_bindings(spec: str, source: str, out: dict[str, str]) -> None:
+        for part in spec.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            if " as " in token:
+                imported, alias = token.split(" as ", 1)
+                imported = imported.strip()
+                alias = alias.strip()
+            elif ":" in token:
+                imported, alias = token.split(":", 1)
+                imported = imported.strip()
+                alias = alias.strip()
+            else:
+                imported = token
+                alias = token
+            if alias and imported:
+                out[alias] = f"{source}.{imported}"
+
+    def _normalize_import_source(self, file_path: str, source: str) -> str:
+        if not source:
+            return ""
+        if not source.startswith("."):
+            return source.replace("/", ".")
+        base = Path(file_path).parent
+        resolved = (base / source).resolve()
+        candidates = [
+            resolved.with_suffix(".js"),
+            resolved.with_suffix(".jsx"),
+            resolved / "index.js",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return module_name_from_path(str(candidate))
+        return source.lstrip("./").replace("/", ".")
+
+    @staticmethod
+    def _module_export_object_keys(source_code: str) -> list[tuple[str, int]]:
+        out: list[tuple[str, int]] = []
+        match = re.search(r"module\.exports\s*=\s*\{", source_code)
+        if not match:
+            return out
+        start = match.end()
+        depth = 1
+        idx = start
+        while idx < len(source_code) and depth > 0:
+            char = source_code[idx]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            idx += 1
+        if depth != 0:
+            return out
+        body = source_code[start : idx - 1]
+        for prop in re.finditer(r"([A-Za-z_$][\w$]*)\s*(?::\s*[A-Za-z_$][\w$]*)?\s*(?:,|$)", body):
+            name = prop.group(1)
+            out.append((name, start + prop.start()))
+        return out
 
     def _fallback_symbol_span(
         self,

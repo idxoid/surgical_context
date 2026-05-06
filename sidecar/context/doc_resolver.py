@@ -1,3 +1,5 @@
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
+
 """DocResolver — LanceDB semantic retrieval."""
 
 from sidecar.context.types import DocChunk
@@ -9,9 +11,15 @@ class DocResolver:
     def __init__(self, lancedb_client):
         self.db = lancedb_client
 
-    def search(self, query: str, limit: int = 3) -> list[DocChunk]:
+    def search(
+        self, query: str, limit: int = 3, *, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> list[DocChunk]:
         """Semantic search returning top-k doc chunks."""
-        raw = self.db.search(query, limit)
+        try:
+            raw = self.db.search(query, limit, workspace_id=workspace_id)
+        except TypeError:
+            # Backward compatibility for test fakes/older clients.
+            raw = self.db.search(query, limit)
         return [
             DocChunk(
                 source_file=d["file_path"],

@@ -114,6 +114,14 @@ def test_role_catalog_overrides_backfill_specs():
     assert builtin == {}
 
 
+def test_builtin_backfill_specs_include_auto_registration_flow():
+    specs = role_backfill_specs_for_mechanism("auto:registration_flow")
+    assert "factory_surface" in specs
+    assert any(row["name"] == "register_blueprint" for row in specs["factory_surface"])
+    assert "runtime_surface" in specs
+    assert any(row["name"] == "wsgi_app" for row in specs["runtime_surface"])
+
+
 def test_pick_mechanism_by_role_overlap_requires_two_distinct_roles():
     assert pick_mechanism_by_role_overlap(["executor"]) == ""
     assert pick_mechanism_by_role_overlap(["executor", "executor"]) == ""

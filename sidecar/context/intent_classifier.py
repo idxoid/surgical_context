@@ -1,8 +1,8 @@
 """Intent classification — detect user query type to guide context assembly."""
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-import re
 
 
 class Intent(Enum):

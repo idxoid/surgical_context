@@ -162,6 +162,7 @@ def _parse_one(
 
 def _parse_phase(
     changed_files: list[str],
+    project_path: str,
     file_hashes: dict[str, str],
     db: Neo4jClient,
     workspace_id: str,
@@ -170,7 +171,7 @@ def _parse_phase(
     reporter: ProgressReporter,
 ) -> list[FileDiff]:
     """Parallel extraction + diff computation."""
-    extractor = FastExtractor()
+    extractor = FastExtractor(project_root=project_path)
     results: list[FileDiff] = []
 
     def _task(path: str) -> FileDiff | None:
@@ -281,13 +282,17 @@ def _embed_phase(
         print(f"[embed] {message}")
 
     if symbol_docs:
-        lance.upsert_symbol_embeddings(symbol_docs, progress_callback=_emit_embed_progress)
+        lance.upsert_symbol_embeddings(
+            symbol_docs,
+            workspace_id=workspace_id,
+            progress_callback=_emit_embed_progress,
+        )
     reporter.step("embed")
 
     if removed_uids:
         delete_embeddings = getattr(lance, "delete_symbol_embeddings", None)
         if callable(delete_embeddings):
-            delete_embeddings(removed_uids)
+            delete_embeddings(removed_uids, workspace_id=workspace_id)
         reporter.step("embed")
     reporter.stage_end("embed")
 
@@ -551,7 +556,14 @@ def run_fast_indexing(
         # Stage 3: parallel parse
         t_stage = time.perf_counter()
         diffs = _parse_phase(
-            changed_files, current_hashes, db, workspace_id, parse_workers, job_log, reporter
+            changed_files,
+            project_path,
+            current_hashes,
+            db,
+            workspace_id,
+            parse_workers,
+            job_log,
+            reporter,
         )
         stats["parsed"] = len(diffs)
         stats["timings_sec"]["parse"] = round(time.perf_counter() - t_stage, 3)

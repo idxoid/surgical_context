@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-
 ROLE_ALIASES: dict[str, str] = {
     # Stable / shared roles
     "docs_or_concept": "docs_or_concept",
