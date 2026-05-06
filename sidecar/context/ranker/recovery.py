@@ -499,11 +499,11 @@ class StructuralRecovery:
 
         seen_paths = {row.get("file_path") for row in rows}
         fallback_paths: list[str] = []
-        for path in self.host._resolve_filesystem_import_paths(file_path):
+        for path in self.resolve_filesystem_import_paths(file_path):
             if path and path not in seen_paths:
                 fallback_paths.append(path)
                 seen_paths.add(path)
-        for path in self.host._resolve_intra_repo_package_import_paths(file_path):
+        for path in self.resolve_intra_repo_package_import_paths(file_path):
             if path and path not in seen_paths:
                 fallback_paths.append(path)
                 seen_paths.add(path)

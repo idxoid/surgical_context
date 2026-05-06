@@ -1572,6 +1572,45 @@ class UnifiedRanker:
     def _one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
         return self.role_fulfilment.one_hop_connected_symbol_uids(target_uid, limit=limit)
 
+    # StructuralRecovery entrypoints (tests may patch these on UnifiedRanker)
+    def _same_file_symbol_rows(self, file_path: str, *, excluded_uids: set[str]):
+        return self.structural_recovery.same_file_symbol_rows(file_path, excluded_uids=excluded_uids)
+
+    def _imported_symbol_rows(self, file_path: str, *, excluded_uids: set[str]):
+        return self.structural_recovery.imported_symbol_rows(file_path, excluded_uids=excluded_uids)
+
+    def _recovery_candidate_from_row(
+        self,
+        row: dict,
+        *,
+        origin: str,
+        scoped_roles: set[str],
+        target: SubgraphNode,
+    ):
+        return self.structural_recovery.recovery_candidate_from_row(
+            row,
+            origin=origin,
+            scoped_roles=scoped_roles,
+            target=target,
+        )
+
+    def _trace_dependency_runtime_symbol_rows(
+        self,
+        target: SubgraphNode,
+        *,
+        excluded_uids: set[str],
+    ):
+        return self.structural_recovery.trace_dependency_runtime_symbol_rows(
+            target,
+            excluded_uids=excluded_uids,
+        )
+
+    def _resolve_filesystem_import_paths(self, file_path: str) -> list[str]:
+        return self.structural_recovery.resolve_filesystem_import_paths(file_path)
+
+    def _resolve_intra_repo_package_import_paths(self, file_path: str) -> list[str]:
+        return self.structural_recovery.resolve_intra_repo_package_import_paths(file_path)
+
     def _calculate_marginal_gain(
         self,
         c: Candidate,
@@ -1677,6 +1716,71 @@ class UnifiedRanker:
             - redundancy_penalty
         )
 
+    def _load_repository_profile(self) -> dict:
+        get_profile = getattr(self.db, "get_repository_profile", None)
+        if not callable(get_profile):
+            return {}
+        try:
+            profile = get_profile(workspace_id=self.workspace_id)
+        except Exception:
+            return {}
+        return profile if isinstance(profile, dict) else {}
+
+    def _load_role_catalog(self) -> dict:
+        """Load the index-time role catalog produced by Pass 1."""
+        from sidecar.indexer.role_clustering import get_role_catalog
+
+        try:
+            catalog = get_role_catalog(self.db, self.workspace_id)
+        except Exception:
+            return {}
+        return catalog if isinstance(catalog, dict) else {}
+
+    def _load_derived_role_map(self) -> dict[str, int]:
+        """Read every Symbol's `derived_role_id` for this workspace."""
+        if not self.role_catalog:
+            return {}
+        try:
+            with self.db.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                    WHERE s.derived_role_id IS NOT NULL
+                    RETURN s.uid AS uid, s.derived_role_id AS cid
+                    """,
+                    workspace_id=self.workspace_id,
+                )
+                return {r["uid"]: int(r["cid"]) for r in rows if r["uid"] is not None}
+        except Exception:
+            return {}
+
+    def _build_cluster_to_role_map(self) -> dict[int, str]:
+        """Pick a single primary canonical role per cluster.
+
+        For every canonical role in the catalog, take its top resolved
+        cluster (`resolve_role_clusters` already preserves archetype
+        preference order). When multiple roles claim the same cluster as
+        their top match, the role with the highest confidence wins;
+        sort is stable so ties break on catalog iteration order.
+        """
+        if not self.role_catalog:
+            return {}
+        from sidecar.indexer.role_clustering import resolve_role_clusters
+
+        cluster_claims: dict[int, list[tuple[str, float]]] = {}
+        for role in self.role_catalog.get("role_to_archetypes") or []:
+            matches = resolve_role_clusters(self.role_catalog, role)
+            if not matches:
+                continue
+            top = matches[0]
+            cluster_claims.setdefault(int(top["cluster_id"]), []).append(
+                (role, float(top["confidence"]))
+            )
+        result: dict[int, str] = {}
+        for cid, claims in cluster_claims.items():
+            claims.sort(key=lambda item: item[1], reverse=True)
+            result[cid] = claims[0][0]
+        return result
 
     # Neo4j helpers
     # ------------------------------------------------------------------
