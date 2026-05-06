@@ -286,7 +286,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
-        for match_id, captures_dict in query.matches(tree.root_node):
+        for _match_id, captures_dict in query.matches(tree.root_node):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))
@@ -340,7 +340,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
-        for match_id, captures_dict in query.matches(tree.root_node):
+        for _match_id, captures_dict in query.matches(tree.root_node):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))

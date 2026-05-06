@@ -50,7 +50,6 @@ class ContextArbitrator:
             intent_signal,
             self._repository_profile(),
         )
-        intent = intent_signal.primary
         cache_hits = []
 
         if self.vector_db:

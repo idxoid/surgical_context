@@ -462,7 +462,7 @@ def summarize_repository_profile(profile: Mapping) -> str:
 
 def _scan_extensions(project_path: str) -> Counter:
     counts: Counter[str] = Counter()
-    for root, dirs, filenames in os.walk(project_path):
+    for _root, dirs, filenames in os.walk(project_path):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
         for name in filenames:
             if name.startswith("."):
