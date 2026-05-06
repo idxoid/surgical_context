@@ -76,8 +76,8 @@ Optional later: **HistoryProvider** (SQLite sessions). Defaults stay Neo4j + Lan
 
 ## Migration order (agreed)
 
-1. **RetrievalTrace** in prompt contract + schema version (**implemented first**).
-2. Protocols + fake providers + narrow contract tests on kernel-shaped code.
+1. **RetrievalTrace** in prompt contract + schema version (**done**).
+2. Protocols + fake providers + narrow contract tests (**done**): `sidecar/retrieval/protocols.py`, `fakes.py`, `tests/unit/test_retrieval_protocols.py`. Production `VectorSearcher` satisfies `VectorSearchProvider`; Arbitrator still wires concrete clients — adapter injection comes next.
 3. Physical package `sidecar/retrieval/` as imports move from `context/ranker` without behavior change.
 4. Mandatory manifest written by indexer; sidecar reads by `workspace_id`.
 5. Mechanism packs after trace + providers stabilize.
