@@ -18,19 +18,12 @@ from __future__ import annotations
 
 import math
 import re
-from collections import Counter
-from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from pathlib import Path
 from typing import Any, cast
 
 from sidecar.context.intent_classifier import Intent
-from sidecar.context.mechanism_registry import (
-    determine_preloaded_mechanism,
-    pick_mechanism_by_role_overlap,
-    required_roles_for_mechanism,
-    role_backfill_specs_for_mechanism,
-)
+from sidecar.context.mechanism_registry import role_backfill_specs_for_mechanism
 from sidecar.context.ranker import (
     BudgetSelector,
     GraphCandidateSource,
@@ -39,253 +32,32 @@ from sidecar.context.ranker import (
     TargetSelector,
     VectorCandidateSource,
 )
-from sidecar.context.role_taxonomy import (
-    infer_supporting_roles,
-    normalize_role,
-    normalize_roles,
+from sidecar.context.ranker.candidate_pool import (
+    Candidate,
+    DEFAULT_WEIGHTS,
+    RankerWeights,
+    VectorSearcher,
+    anchor_edge_quality,
 )
+from sidecar.context.ranker.pruning import BudgetPruner
+from sidecar.context.ranker.recovery import StructuralRecovery
+from sidecar.context.ranker.role_fulfilment import RoleFulfilment
+from sidecar.context.ranker.scoring import RankerScoring
+from sidecar.context.ranker.signal_constants import (
+    HOOK_FLOW_PATH_TOKENS as _HOOK_FLOW_PATH_TOKENS,
+    IMPACT_TOPIC_STOPWORDS as _IMPACT_TOPIC_STOPWORDS,
+    LOW_SIGNAL_DOC_PATH_PATTERNS as _LOW_SIGNAL_DOC_PATH_PATTERNS,
+    NOISE_FACTOR as _NOISE_FACTOR,
+    NOISE_NAME_PREFIXES as _NOISE_NAME_PREFIXES,
+    NOISE_NAME_SUBSTRINGS as _NOISE_NAME_SUBSTRINGS,
+    NOISE_PATH_PATTERNS as _NOISE_PATH_PATTERNS,
+    EXPLORATION_NOISE_FACTOR as _EXPLORATION_NOISE_FACTOR,
+    REGISTRATION_FLOW_PATH_TOKENS as _REGISTRATION_FLOW_PATH_TOKENS,
+    TRACE_DEPENDS_RUNTIME_NAMES as _TRACE_DEPENDS_RUNTIME_NAMES,
+)
+from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.context.types import DocChunk, Subgraph, SubgraphNode
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
-
-# Path fragments that almost always signal noise relative to "explain how
-# this works" framework questions. Multiplicative downrank — never a hard
-# skip, so questions specifically about testing or examples still land.
-_NOISE_PATH_PATTERNS = (
-    "/tests/",
-    "/test_",
-    "/__tests__/",
-    "/docs_src/",
-    "/docs/virtual/",
-    "/examples/",
-    "/example/",
-    "/__testfixtures__/",
-    "/testfixtures/",
-    "/codemods/",
-)
-_NOISE_NAME_PREFIXES = ("test_",)
-_NOISE_NAME_SUBSTRINGS = ("tutorial",)
-_NOISE_FACTOR = 0.15
-_EXPLORATION_NOISE_FACTOR = 0.3
-_FACTORY_SIGNAL_PREFIXES = (
-    "build",
-    "create",
-    "configure",
-    "compose",
-    "combine",
-    "register",
-    "include",
-    "mount",
-    "setup",
-    "add_",
-    "add",
-)
-_FACTORY_SIGNAL_TOKENS = (
-    "factory",
-    "builder",
-    "route",
-    "router",
-    "openapi",
-    "schema",
-)
-_FACTORY_SIGNAL_PATH_TOKENS = (
-    "/routing",
-    "/routes",
-    "/router",
-    "/openapi",
-    "/application",
-    "/applications",
-)
-_REPRESENTATION_SIGNAL_TOKENS = (
-    "schema",
-    "model",
-    "response",
-    "request",
-    "payload",
-    "json",
-    "field",
-    "serialize",
-    "parse",
-    "param",
-    "params",
-    "depend",
-    "dependency",
-    "annotation",
-    "typing",
-)
-_REPRESENTATION_SIGNAL_PATH_TOKENS = (
-    "/dependencies/",
-    "/params",
-    "/param_",
-    "/models",
-    "/fields",
-)
-# DI runtime hooks usually live under ``…/dependencies/*.py`` while ``Depends`` is declared
-# under ``param_functions`` / ``params`` without an IMPORTS chain to ``utils.py``.
-_TRACE_DEPENDS_RUNTIME_NAMES: frozenset[str] = frozenset(
-    {"solve_dependencies", "get_dependant", "Dependant"}
-)
-_TRACE_HOOK_RUNTIME_TRIGGER_NAMES: frozenset[str] = frozenset(
-    {"before_request", "after_request", "teardown_request", "wsgi_app", "dispatch_request"}
-)
-_TRACE_HOOK_RUNTIME_NAMES: frozenset[str] = frozenset(
-    {
-        "before_request",
-        "after_request",
-        "before_app_request",
-        "after_app_request",
-        "preprocess_request",
-        "process_response",
-        "do_teardown_request",
-        "full_dispatch_request",
-        "dispatch_request",
-        "wsgi_app",
-    }
-)
-_RUNTIME_SIGNAL_TOKENS = (
-    "run",
-    "runtime",
-    "execute",
-    "dispatch",
-    "resolve",
-    "handle",
-    "route",
-    "dependency",
-    "middleware",
-    "endpoint",
-)
-_API_SIGNAL_TOKENS = (
-    "api",
-    "route",
-    "router",
-    "endpoint",
-    "depend",
-    "dependency",
-    "param",
-    "request",
-)
-_REGISTRATION_FLOW_TARGET_TOKENS = (
-    "wsgi",
-    "handler",
-    "blueprint",
-    "request",
-    "middleware",
-    "route",
-    "app",
-)
-_REGISTRATION_FLOW_PATH_TOKENS = (
-    "/handlers/",
-    "/wsgi",
-    "/blueprint",
-    "/globals",
-    "/middleware",
-    "/app",
-)
-_REGISTRATION_FACTORY_TOKENS = (
-    "register",
-    "record",
-    "setup",
-    "blueprint",
-)
-_REGISTRATION_REPRESENTATION_TOKENS = (
-    "state",
-    "context",
-    "request",
-    "response",
-    "setup",
-)
-_REGISTRATION_RUNTIME_TOKENS = (
-    "dispatch",
-    "wsgi",
-    "middleware",
-    "request",
-    "handle",
-)
-_HOOK_FLOW_TARGET_TOKENS = (
-    "before_request",
-    "after_request",
-    "teardown_request",
-    "preprocess_request",
-    "dispatch",
-    "wsgi",
-    "lifecycle",
-    "hook",
-)
-_HOOK_FLOW_PATH_TOKENS = (
-    "/app.py",
-    "/scaffold",
-    "/globals",
-    "/ctx",
-    "/handlers/",
-)
-_HOOK_RUNTIME_TOKENS = (
-    "preprocess_request",
-    "do_teardown_request",
-    "full_dispatch_request",
-    "dispatch_request",
-    "wsgi_app",
-)
-_LOW_SIGNAL_DOC_PATH_PATTERNS = (
-    "/migrating-",
-    "/comparison.",
-    "/comparison.md",
-    "/release-notes",
-)
-_ANCHOR_TYPE_WEIGHTS = {
-    "definition": 1.0,
-    "warning": 0.95,
-    "deprecated": 0.85,
-    "reference": 0.65,
-    "example": 0.45,
-}
-_IMPACT_TOPIC_STOPWORDS = {
-    "affected",
-    "affect",
-    "affects",
-    "change",
-    "changed",
-    "changes",
-    "docs",
-    "documentation",
-    "handling",
-    "likely",
-    "module",
-    "modules",
-    "test",
-    "tests",
-    "what",
-    "when",
-    "where",
-    "which",
-    "with",
-}
-_FOCUS_QUERY_STOPWORDS = _IMPACT_TOPIC_STOPWORDS | {
-    "about",
-    "actual",
-    "assemble",
-    "behavior",
-    "build",
-    "codebase",
-    "does",
-    "final",
-    "flow",
-    "from",
-    "generate",
-    "generated",
-    "enhancer",
-    "enhancers",
-    "into",
-    "logic",
-    "middleware",
-    "middlewares",
-    "most",
-    "operation",
-    "parts",
-    "passed",
-    "returned",
-    "turn",
-    "user",
-    "work",
-}
 
 
 def _path_is_noisy(file_path: str) -> bool:
@@ -310,15 +82,7 @@ def compute_noise_factor(
     kind: str = "symbol",
     intent: Intent | None = None,
 ) -> float:
-    """Multiplicative score multiplier in [0, 1].
-
-    Returns 1.0 for clean candidates and ``_NOISE_FACTOR`` for ones that
-    look like tests, tutorials, or framework examples — those rarely
-    answer "how does X work" questions but otherwise consume budget.
-
-    EXPLORATION (explain_behavior): tests get a softer penalty so they
-    can surface as supplementary context when code/docs don't fill the budget.
-    """
+    """Multiplicative score multiplier in [0, 1]."""
     is_noisy = _path_is_noisy(file_path) or _name_is_noisy(name)
     if is_noisy:
         if intent == Intent.EXPLORATION:
@@ -340,12 +104,7 @@ def compute_impact_noise_factor(
     kind: str = "symbol",
     content: str = "",
 ) -> float:
-    """Noise factor for impact-analysis candidates.
-
-    Impact questions do need tests/examples, but only the tests/examples tied
-    to the change surface. Unrelated benchmark or serializer tests should not
-    outrank production modules merely because impact mode asks for tests.
-    """
+    """Noise factor for impact-analysis candidates."""
     if not (_path_is_noisy(file_path) or _name_is_noisy(name)):
         return compute_noise_factor(file_path, name, kind=kind)
 
@@ -361,114 +120,6 @@ def compute_impact_noise_factor(
     if any(term in haystack for term in terms):
         return 1.0
     return _NOISE_FACTOR
-
-
-@dataclass
-class RankerWeights:
-    alpha: float = 1.0  # graph structural score
-    beta: float = 0.8  # semantic similarity score
-    gamma: float = 0.4  # intent tier prior
-    delta: float = 0.5  # overlap bonus (both signals fired)
-    epsilon: float = 0.3  # token cost penalty per 100 tokens
-
-
-DEFAULT_WEIGHTS = RankerWeights()
-
-
-@dataclass
-class Candidate:
-    kind: str  # "symbol" | "doc"
-    uid: str  # symbol UID or doc chunk_id
-    token_cost: int
-    graph_score: float = 0.0
-    semantic_score: float = 0.0
-    intent_weight: float = 0.0
-    noise_factor: float = 1.0  # multiplicative downrank for tests/tutorials
-    provenance: list[str] = field(default_factory=list)
-    # symbol metadata
-    name: str = ""
-    symbol_kind: str = ""
-    qualified_name: str = ""
-    file_path: str = ""
-    range: list[int] = field(default_factory=lambda: [0, 0])
-    render_mode: str = "full"
-    evidence_role: str = ""
-    supporting_roles: list[str] = field(default_factory=list)
-    relation: str = ""
-    direction: str = ""
-    depth: int = 0
-    file_hash: str = ""
-    # doc metadata
-    content: str = ""
-    anchor_type: str = ""
-    anchor_confidence: float = 0.0
-    primary_bias: float = 0.0
-
-    @property
-    def overlap(self) -> bool:
-        return self.graph_score > 0 and self.semantic_score > 0
-
-
-def anchor_edge_quality(
-    anchor_type: str,
-    confidence: float,
-    primary_bias: float,
-) -> float:
-    """Normalize DocAnchor edge properties into a [0, 1] quality score."""
-    type_weight = _ANCHOR_TYPE_WEIGHTS.get(anchor_type or "reference", 0.65)
-    return max(0.05, min(1.0, type_weight * confidence * primary_bias))
-
-
-class VectorSearcher:
-    """Thin wrapper around LanceDB for use by UnifiedRanker."""
-
-    def __init__(self, lancedb_client):
-        self.db = lancedb_client
-
-    def search_docs(
-        self,
-        query: str,
-        limit: int = 30,
-        *,
-        workspace_id: str = DEFAULT_WORKSPACE_ID,
-    ) -> list[dict]:
-        try:
-            raw = self.db.search(query, limit, workspace_id=workspace_id)
-        except TypeError:
-            raw = self.db.search(query, limit)
-        return cast(
-            list[dict[str, Any]],
-            [
-                {
-                    "chunk_id": r.get("id", f"{r['file_path']}::chunk"),
-                    "file_path": r["file_path"],
-                    "content": r["chunk"],
-                    "score": float(r.get("score") or 0.0),
-                }
-                for r in raw
-            ],
-        )
-
-    def search_symbols(
-        self,
-        query: str,
-        limit: int = 30,
-        *,
-        workspace_id: str = DEFAULT_WORKSPACE_ID,
-    ) -> list[dict]:
-        # threshold=1.0 means accept all distances (we normalize later)
-        try:
-            return cast(
-                list[dict[str, Any]],
-                self.db.search_symbols(
-                    query, limit=limit, threshold=1.0, workspace_id=workspace_id
-                ),
-            )
-        except TypeError:
-            return cast(
-                list[dict[str, Any]],
-                self.db.search_symbols(query, limit=limit, threshold=1.0),
-            )
 
 
 class UnifiedRanker:
@@ -529,6 +180,10 @@ class UnifiedRanker:
         self.role_catalog = self._load_role_catalog()
         self._derived_role_by_uid = self._load_derived_role_map()
         self._cluster_to_role = self._build_cluster_to_role_map()
+        self.role_fulfilment = RoleFulfilment(self)
+        self.scoring = RankerScoring(self)
+        self.structural_recovery = StructuralRecovery(self)
+        self.budget_pruner = BudgetPruner(self)
         self.target_selector = TargetSelector(self)
         self.graph_candidate_source = GraphCandidateSource(self)
         self.vector_candidate_source = VectorCandidateSource(self)
@@ -1014,460 +669,16 @@ class UnifiedRanker:
 
         pool.sort(key=_sort_key, reverse=True)
 
-        # 10. Optimal Context Selection: Mechanism-Specific Evidence Gating
-        chosen: list[Candidate] = []
-        spent = self.PREAMBLE_TOKENS + target.token_estimate
-        base_budget = budget
-        max_expansion_multiplier = 3.0
-        effective_cap = int(base_budget * max_expansion_multiplier)
-        # "Credit/debit" budget model:
-        # - start with 2x credit (so total cap is ~3x base)
-        # - consume credit when we go above base budget
-        # - allow a bounded debit only when we're still closing required roles
-        budget_balance = effective_cap - base_budget
-        max_debit = int(base_budget * 0.25)
-        pruned_details = []
-        pruned_uids: set[str] = set()
-        chosen_files = {target.file_path}
-        fulfilled_roles = set(self._roles_of(target))
-        trace_mode = self._trace_dependency_gain_mode(mechanism, query)
-
-        stopped_reason = "pool_exhausted"
-        min_floor = self._INTENT_FLOORS.get(intent, 1200)
-        min_gain = 0.12  # Threshold for stopping
-        low_gain_floor = 0.02  # Protect against pure junk
-        useful_candidates_seen = 0
-        no_progress_streak = 0
-        expansion_stall_limit = 8
-        # For DI/trace questions, role sets can be "complete" while file-level
-        # evidence still lives in other modules; do not take marginal-gain early
-        # exit until the context spans enough distinct code files.
-        min_trace_code_file_breadth = 3
-
-        # Doc-tier deferral: when symbols still owe coverage breadth, hold docs
-        # back so they don't crowd out role-filling code. A doc may "claim" a
-        # role via supporting_roles and starve real graph candidates that would
-        # bring in additional expected files (e.g. fastapi `Dependant`/`get_dependant`
-        # in models.py losing budget to 20+ tutorial chunks).
-        # IMPACT_ANALYSIS is exempt — its tier prior already favors docs.
-        defer_docs = intent != Intent.IMPACT_ANALYSIS
-        min_code_files_before_docs = 3
-        deferred_docs: list[Candidate] = []
-
-        def _is_code_file(c: Candidate) -> bool:
-            return c.kind != "doc"
-
-        def _record_pruned(
-            c: Candidate,
-            reason: str,
-            *,
-            gain: float | None = None,
-            token_cost: int | None = None,
-            candidate_roles: list[str] | None = None,
-        ) -> None:
-            if c.uid in pruned_uids:
-                return
-            pruned_uids.add(c.uid)
-            blended_score = self._blended(c)
-            roles = candidate_roles if candidate_roles is not None else self._roles_of(c)
-            cost = token_cost if token_cost is not None else c.token_cost
-            pruned_details.append(
-                {
-                    "kind": c.kind,
-                    "uid": c.uid,
-                    "name": c.name,
-                    "file": c.file_path,
-                    "file_path": c.file_path,
-                    "relation": c.relation,
-                    "role": c.evidence_role,
-                    "supporting_roles": roles,
-                    "gain": round(gain, 3) if gain is not None else None,
-                    "tokens": cost,
-                    "token_cost": cost,
-                    "reason": reason,
-                    "scores": {
-                        "graph_score": round(c.graph_score, 3),
-                        "semantic_score": round(c.semantic_score, 3),
-                        "blended_score": round(blended_score, 3),
-                        "intent_weight": round(c.intent_weight, 3),
-                        "noise_factor": round(c.noise_factor, 3),
-                    },
-                    "graph_score": round(c.graph_score, 3),
-                    "semantic_score": round(c.semantic_score, 3),
-                    "blended_score": round(blended_score, 3),
-                    "intent_weight": round(c.intent_weight, 3),
-                    "noise_factor": round(c.noise_factor, 3),
-                    "provenance": c.provenance,
-                }
-            )
-
-        def _try_select(c: Candidate, gain: float, candidate_roles: list[str]) -> str | None:
-            """Attempt to seat ``c``. Returns None on success, or a skip reason."""
-            nonlocal spent, budget_balance
-            potential_cost = c.token_cost
-            if c.depth >= 2 and gain < 0.25:
-                potential_cost = min(c.token_cost, 80)
-            if potential_cost > int(base_budget * 1.1):
-                _record_pruned(
-                    c,
-                    "over_budget",
-                    gain=gain,
-                    token_cost=potential_cost,
-                    candidate_roles=candidate_roles,
-                )
-                return "over_budget"
-
-            if spent + potential_cost > effective_cap:
-                _record_pruned(
-                    c,
-                    "over_effective_cap",
-                    gain=gain,
-                    token_cost=potential_cost,
-                    candidate_roles=candidate_roles,
-                )
-                return "over_effective_cap"
-            if (
-                spent + potential_cost > base_budget
-                and c.kind == "doc"
-                and "docs_or_concept" in candidate_roles
-                and "docs_or_concept" not in fulfilled_roles
-            ):
-                compressed = min(potential_cost, 120)
-                if spent + compressed <= effective_cap:
-                    c.render_mode = "signature_only"
-                    c.token_cost = compressed
-                    potential_cost = compressed
-
-            closes_missing_role = any(
-                role in required_roles and role not in fulfilled_roles for role in candidate_roles
-            )
-            if trace_mode and c.kind != "doc" and (c.file_path or ""):
-                already = {x.file_path for x in chosen if x.file_path} | {target.file_path or ""}
-                if c.file_path not in already:
-                    closes_missing_role = True
-            if spent + potential_cost > base_budget:
-                overflow = spent + potential_cost - base_budget
-                projected_balance = budget_balance - overflow
-                if projected_balance < -max_debit and not closes_missing_role:
-                    _record_pruned(
-                        c,
-                        "budget_balance_debit_limit",
-                        gain=gain,
-                        token_cost=potential_cost,
-                        candidate_roles=candidate_roles,
-                    )
-                    return "budget_balance_debit_limit"
-                if not closes_missing_role and gain < min_gain:
-                    _record_pruned(
-                        c,
-                        "expansion_low_gain",
-                        gain=gain,
-                        token_cost=potential_cost,
-                        candidate_roles=candidate_roles,
-                    )
-                    return "expansion_low_gain"
-                budget_balance = projected_balance
-
-            if c.depth >= 2 and gain < 0.25:
-                c.render_mode = "signature_only"
-                c.token_cost = potential_cost
-
-            chosen.append(c)
-            spent += potential_cost
-            chosen_files.add(c.file_path)
-            fulfilled_roles.update(candidate_roles)
-            # Role-closing candidates repay some budget debt/usage.
-            if closes_missing_role and spent > base_budget:
-                budget_balance = min(
-                    effective_cap - base_budget,
-                    budget_balance + int(min(potential_cost * 0.5, base_budget * 0.1)),
-                )
-            return None
-
-        stop_index: int | None = None
-        for idx, c in enumerate(pool):
-            # Selection Gating Logic: Mechanism-Aware
-            missing_roles = set(required_roles) - fulfilled_roles
-            candidate_roles = self._selection_roles(
-                c,
-                target,
-                query=query,
-                mechanism=mechanism,
-                intent=intent,
-                required_roles=required_roles,
-            )
-            gain = self._calculate_marginal_gain(
-                c,
-                chosen,
-                target,
-                intent=intent,
-                mechanism=mechanism,
-                query=query,
-                required_roles=required_roles,
-                candidate_roles=candidate_roles,
-            )
-            fills_role = any(
-                role in required_roles and role not in fulfilled_roles for role in candidate_roles
-            )
-            adds_new_trace_file = (
-                trace_mode
-                and c.kind != "doc"
-                and (c.file_path or "")
-                and c.file_path not in chosen_files
-            )
-            fills_role_or_trace = fills_role or adds_new_trace_file
-            is_bridge = c.relation in (
-                "DOC_BRIDGE",
-                "SEMANTIC_HINT",
-                "ROLE_BACKFILL",
-            ) or self._has_role_backfill(c)
-            is_strong_relation = c.relation in (
-                "CALLS_DIRECT",
-                "CALLS_SCOPED",
-                "DEPENDS_ON",
-                "IMPLEMENTS",
-                "OVERRIDES",
-            )
-
-            # Determine if this candidate provides any unique reasoning signal
-            is_useful = (
-                fills_role
-                or adds_new_trace_file
-                or is_bridge
-                or is_strong_relation
-                or (self._blended(c) > 0.15)
-            )
-
-            if is_useful:
-                useful_candidates_seen += 1
-            # Docs almost never add trace file breadth; noisy junk we skip below is
-            # not a failed expansion attempt. Counting them toward the stall streak
-            # stopped trace_dependency runs early (expansion_no_progress) before
-            # symbols deeper in the sorted pool (e.g. fastapi ``dependencies/*``).
-            skips_noise_without_trace_role = (
-                c.kind != "doc"
-                and c.noise_factor < 1.0
-                and intent != Intent.IMPACT_ANALYSIS
-                and not fills_role_or_trace
-            )
-            if fills_role_or_trace:
-                no_progress_streak = 0
-            elif (trace_mode and c.kind == "doc") or skips_noise_without_trace_role:
-                pass
-            else:
-                no_progress_streak += 1
-
-            if (
-                spent > base_budget
-                and no_progress_streak >= expansion_stall_limit
-                and not fills_role_or_trace
-            ):
-                stopped_reason = "expansion_no_progress"
-                _record_pruned(
-                    c,
-                    "expansion_no_progress",
-                    gain=gain,
-                    candidate_roles=candidate_roles,
-                )
-                stop_index = idx
-                break
-
-            # Tests/examples/tutorial snippets can be useful for impact
-            # analysis, but for behavior/flow questions they should not enter
-            # merely because semantic/doc-bridge retrieval found similar names.
-            # Let them through only when they fill a required role; otherwise
-            # production code and focused docs should own the budget.
-            is_noisy_code = c.kind != "doc" and c.noise_factor < 1.0
-            if is_noisy_code:
-                if intent == Intent.IMPACT_ANALYSIS:
-                    _record_pruned(
-                        c,
-                        "impact_noise_penalty",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    continue
-                if not fills_role_or_trace:
-                    _record_pruned(
-                        c,
-                        "noise_penalty",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    continue
-
-            # Hold docs aside until we have enough code coverage. Once code
-            # breadth is met, the second pass below replays them in order.
-            if defer_docs and c.kind == "doc":
-                code_files_chosen = len({x.file_path for x in chosen if _is_code_file(x)})
-                if code_files_chosen < min_code_files_before_docs:
-                    deferred_docs.append(c)
-                    continue
-
-            if gain < min_gain:
-                # Only break if floor is met AND no required roles are missing
-                if spent >= min_floor and not missing_roles:
-                    distinct_code_files = len({x.file_path for x in chosen if _is_code_file(x)})
-                    if trace_mode and distinct_code_files < min_trace_code_file_breadth:
-                        _record_pruned(
-                            c,
-                            "marginal_gain_deferred_trace_breadth",
-                            gain=gain,
-                            candidate_roles=candidate_roles,
-                        )
-                        continue
-                    stopped_reason = "marginal_gain_threshold"
-                    _record_pruned(
-                        c,
-                        "marginal_gain_threshold",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    stop_index = idx
-                    break
-
-                if not is_useful:
-                    _record_pruned(
-                        c,
-                        "low_utility",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    continue
-                if c.kind == "doc" and not fills_role:
-                    _record_pruned(
-                        c,
-                        "low_marginal_gain",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    continue
-                # Unique role-fillers bypass the low-gain floor — without them
-                # the role stays unfilled and downstream reasoning loses
-                # critical evidence. A large/weak symbol with negative blended
-                # score (e.g. fastapi `openapi` in applications.py: 256 tokens
-                # of largely-static config logic) still earns its seat here.
-                if gain < low_gain_floor and not fills_role_or_trace:
-                    _record_pruned(
-                        c,
-                        "low_gain_floor",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    continue
-
-            _try_select(c, gain, candidate_roles)
-
-        if stop_index is not None:
-            for c in pool[stop_index + 1 :]:
-                _record_pruned(c, "not_considered_after_threshold")
-            for c in deferred_docs:
-                _record_pruned(c, "deferred_doc_not_replayed_after_threshold")
-
-        # Second pass: deferred docs, now that code-file breadth is established
-        # (or the main pass exhausted the pool). Re-evaluate gain against the
-        # current ``chosen`` set so docs that became redundant are still skipped.
-        if deferred_docs and stopped_reason != "marginal_gain_threshold":
-            for c in deferred_docs:
-                if spent >= budget:
-                    _record_pruned(c, "over_budget_after_doc_deferral")
-                    continue
-                candidate_roles = self._selection_roles(
-                    c,
-                    target,
-                    query=query,
-                    mechanism=mechanism,
-                    intent=intent,
-                    required_roles=required_roles,
-                )
-                gain = self._calculate_marginal_gain(
-                    c,
-                    chosen,
-                    target,
-                    intent=intent,
-                    mechanism=mechanism,
-                    query=query,
-                    required_roles=required_roles,
-                    candidate_roles=candidate_roles,
-                )
-                fills_role = any(
-                    role in required_roles and role not in fulfilled_roles
-                    for role in candidate_roles
-                )
-                if gain < min_gain and not fills_role:
-                    _record_pruned(
-                        c,
-                        "deferred_doc_low_marginal_gain",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    continue
-                if gain < low_gain_floor and not fills_role:
-                    _record_pruned(
-                        c,
-                        "deferred_doc_low_gain_floor",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    continue
-                _try_select(c, gain, candidate_roles)
-
-        # Final docs rescue: if docs_or_concept remains unfilled, try to seat
-        # one compact doc candidate before computing missing roles.
-        if "docs_or_concept" in required_roles and "docs_or_concept" not in fulfilled_roles:
-            chosen_uids = {c.uid for c in chosen}
-            rescue_docs = [
-                c for c in [*pool, *deferred_docs] if c.kind == "doc" and c.uid not in chosen_uids
-            ]
-            rescue_docs.sort(key=lambda cand: self._blended(cand), reverse=True)
-            for c in rescue_docs:
-                candidate_roles = self._selection_roles(
-                    c,
-                    target,
-                    query=query,
-                    mechanism=mechanism,
-                    intent=intent,
-                    required_roles=required_roles,
-                )
-                if "docs_or_concept" not in candidate_roles:
-                    continue
-                gain = self._calculate_marginal_gain(
-                    c,
-                    chosen,
-                    target,
-                    intent=intent,
-                    mechanism=mechanism,
-                    query=query,
-                    required_roles=required_roles,
-                    candidate_roles=candidate_roles,
-                )
-                if _try_select(c, gain, candidate_roles) is None:
-                    break
-
-        # If we ran out of useful candidates before hitting the floor, adjust the
-        # stopped reason. For sparse targets like `Depends` (marker classes), the floor
-        # may be genuinely unachievable from the graph.
-        if stopped_reason == "pool_exhausted" and spent < min_floor:
-            if not (set(required_roles) - fulfilled_roles):
-                stopped_reason = "context_complete_below_floor"
-            elif useful_candidates_seen < 3:
-                stopped_reason = "floor_unfilled_sparse_target"
-            else:
-                stopped_reason = "floor_unfilled_no_useful_candidates"
-
-        missing_roles_list = [r for r in required_roles if r not in fulfilled_roles]
-
-        budget_info = {
-            "limit": base_budget,
-            "effective_cap": effective_cap,
-            "budget_balance": budget_balance,
-            "spent": spent,
-            "floor": min_floor,
-            "reserved": self.PREAMBLE_TOKENS,
-            "pool_size": len(pool),
-            "pruned": len(pruned_details),
-        }
-        return chosen, budget_info, stopped_reason, pruned_details, missing_roles_list
+        # 10. Optimal context selection (marginal gain + doc deferral)
+        return self.budget_pruner.select_under_budget(
+            pool,
+            target,
+            query,
+            intent,
+            mechanism,
+            required_roles,
+            budget,
+        )
 
     def candidates_to_subgraph(
         self,
@@ -2193,311 +1404,17 @@ class UnifiedRanker:
             candidates.append(candidate)
         return candidates
 
+    # --- Delegates to ranker submodules ---
     def _generic_role_recovery_candidates(
         self,
         target: SubgraphNode,
         roles: list[str],
         *,
         excluded_uids: set[str],
-    ) -> list[Candidate]:
-        scoped_roles = set(normalize_roles(roles))
-        if not scoped_roles:
-            return []
-
-        rows: list[tuple[str, dict]] = []
-        rows.extend(
-            ("same_file", row)
-            for row in self._same_file_symbol_rows(target.file_path, excluded_uids=excluded_uids)
+    ):
+        return self.structural_recovery.generic_role_recovery_candidates(
+            target, roles, excluded_uids=excluded_uids
         )
-        rows.extend(
-            ("imported_file", row)
-            for row in self._imported_symbol_rows(target.file_path, excluded_uids=excluded_uids)
-        )
-        if not rows:
-            return []
-
-        candidates: list[Candidate] = []
-        for origin, row in rows:
-            candidate = self._recovery_candidate_from_row(
-                row,
-                origin=origin,
-                scoped_roles=scoped_roles,
-                target=target,
-            )
-            if candidate is not None:
-                candidates.append(candidate)
-
-        deduped: dict[str, Candidate] = {}
-        for candidate in candidates:
-            existing = deduped.get(candidate.uid)
-            if existing is None or existing.graph_score < candidate.graph_score:
-                deduped[candidate.uid] = candidate
-        return list(deduped.values())
-
-    def _first_reasoning_role(self, required_roles: list[str]) -> str:
-        for role in normalize_roles(required_roles):
-            if role != "docs_or_concept":
-                return role
-        return "supporting_surface"
-
-    def _rank_rows_for_trace_import_anchors(
-        self,
-        rows: list[dict],
-        *,
-        max_per_file: int = 4,
-        max_total: int = 36,
-    ) -> list[dict]:
-        """Prefer structural hubs per imported file, cap total work."""
-        by_file: dict[str, list[dict]] = {}
-        for row in rows:
-            fp = row.get("file_path") or ""
-            by_file.setdefault(fp, []).append(row)
-        picked: list[dict] = []
-        for fp in sorted(by_file.keys()):
-            rows_for_fp = sorted(
-                by_file[fp],
-                key=lambda r: (
-                    float(r.get("inbound_edges", 0) or 0) + float(r.get("outbound_edges", 0) or 0),
-                    str(r.get("name") or ""),
-                ),
-                reverse=True,
-            )[:max_per_file]
-            picked.extend(rows_for_fp)
-        return picked[:max_total]
-
-    def _minimal_trace_import_anchor_candidate(
-        self,
-        row: dict,
-        *,
-        required_roles: list[str],
-    ) -> Candidate:
-        """Seat imported-module symbols when catalog roles miss strict recovery overlap."""
-        raw_tc = int(row.get("token_estimate") or 0) or self._estimate_tokens_range(
-            row.get("range") or [0, 0]
-        )
-        token_cost = min(raw_tc, 140)
-        edge_bonus = 0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.10 * math.log1p(
-            float(row.get("outbound_edges", 0) or 0)
-        )
-        role = self._first_reasoning_role(required_roles)
-        candidate = Candidate(
-            kind="symbol",
-            uid=str(row["uid"]),
-            token_cost=token_cost,
-            graph_score=1.18 + edge_bonus,
-            semantic_score=0.52,
-            name=row.get("name") or "",
-            file_path=row.get("file_path") or "",
-            range=row.get("range") or [0, 0],
-            render_mode="signature_only",
-            relation="ROLE_BACKFILL",
-            direction="backfill",
-            depth=2,
-            file_hash=row.get("file_hash") or "",
-            evidence_role=role,
-            supporting_roles=[],
-            provenance=["recovery:import-module-trace"],
-        )
-        candidate.symbol_kind = row.get("symbol_kind", "")
-        candidate.qualified_name = row.get("qualified_name", "")
-        return candidate
-
-    def _package_root_prefix(self, file_path: str) -> str | None:
-        """Directory name that owns the module file → ``…/fastapi/x.py`` → ``fastapi/``.
-
-        Using only the first path segment would turn ``/repo/fastapi/x.py`` into
-        ``repo/`` and miss ``fastapi/dependencies/*.py``.
-        """
-        norm = (file_path or "").replace("\\", "/").strip("/")
-        if "/" not in norm:
-            return None
-        parent = norm.rsplit("/", 1)[0]
-        pkg = parent.split("/")[-1].strip()
-        if not pkg or pkg.startswith("."):
-            return None
-        return f"{pkg}/"
-
-    def _trace_dependency_runtime_symbol_rows(
-        self,
-        target: SubgraphNode,
-        *,
-        excluded_uids: set[str],
-    ) -> list[dict]:
-        """Workspace symbols for DI runtime resolution when IMPORTS skip ``dependencies/*``.
-
-        Scoped by the target file's top-level directory so monorepos don't pull
-        unrelated matches; names are generic FastAPI entrypoints only when the
-        primary symbol is ``Depends``.
-        """
-        target_name = target.name or ""
-        if target_name == "Depends":
-            names = list(_TRACE_DEPENDS_RUNTIME_NAMES)
-        elif target_name in _TRACE_HOOK_RUNTIME_TRIGGER_NAMES:
-            names = list(_TRACE_HOOK_RUNTIME_NAMES)
-        else:
-            return []
-        pkg_prefix = self._package_root_prefix(target.file_path or "") or ""
-        query = """
-        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-        WHERE s.name IN $names
-          AND NOT s.uid IN $excluded_uids
-          AND (
-            $pkg_prefix = ''
-            OR f.path STARTS WITH $pkg_prefix
-            OR f.path CONTAINS '/' + $pkg_prefix
-          )
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        RETURN s.uid AS uid,
-               s.name AS name,
-               coalesce(s.kind, '') AS symbol_kind,
-               coalesce(s.token_estimate, 0) AS token_estimate,
-               coalesce(s.qualified_name, '') AS qualified_name,
-               coalesce(f.path, '<unknown>') AS file_path,
-               coalesce(f.hash, '') AS file_hash,
-               coalesce(c.range, s.range, [0, 0]) AS range,
-               inbound_edges,
-               count(DISTINCT or) AS outbound_edges
-        LIMIT 32
-        """
-        try:
-            with self.db.driver.session() as session:
-                return list(
-                    session.run(
-                        query,
-                        workspace_id=self.workspace_id,
-                        names=names,
-                        excluded_uids=list(excluded_uids),
-                        pkg_prefix=pkg_prefix,
-                    )
-                )
-        except Exception:
-            return []
-
-    def _trace_dependency_sibling_dir_symbol_rows(
-        self,
-        seed_rows: list[dict],
-        *,
-        excluded_uids: set[str],
-        max_rows: int = 48,
-    ) -> list[dict]:
-        """Expand trace seeds to sibling modules in the same directory/directories.
-
-        Universal fallback: when a DI marker resolves to one runtime function in
-        ``x/dependencies/utils.py``, useful intermediate models often live in
-        neighboring files under ``x/dependencies/*.py``.
-        """
-        dir_prefixes: set[str] = set()
-        for row in seed_rows:
-            fp = (row.get("file_path") or "").replace("\\", "/")
-            if "/" not in fp:
-                continue
-            parent = fp.rsplit("/", 1)[0].rstrip("/")
-            if not parent:
-                continue
-            dir_prefixes.add(f"{parent}/")
-        if not dir_prefixes:
-            return []
-
-        query = """
-        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-        WHERE NOT s.uid IN $excluded_uids
-          AND any(prefix IN $dir_prefixes WHERE f.path STARTS WITH prefix)
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        RETURN s.uid AS uid,
-               s.name AS name,
-               coalesce(s.kind, '') AS symbol_kind,
-               coalesce(s.token_estimate, 0) AS token_estimate,
-               coalesce(s.qualified_name, '') AS qualified_name,
-               coalesce(f.path, '<unknown>') AS file_path,
-               coalesce(f.hash, '') AS file_hash,
-               coalesce(c.range, s.range, [0, 0]) AS range,
-               inbound_edges,
-               count(DISTINCT or) AS outbound_edges
-        LIMIT $limit
-        """
-        try:
-            with self.db.driver.session() as session:
-                return list(
-                    session.run(
-                        query,
-                        workspace_id=self.workspace_id,
-                        excluded_uids=list(excluded_uids),
-                        dir_prefixes=sorted(dir_prefixes),
-                        limit=max_rows,
-                    )
-                )
-        except Exception:
-            return []
-
-    def _trace_dependency_parent_dir_symbol_rows(
-        self,
-        seed_rows: list[dict],
-        *,
-        excluded_uids: set[str],
-        max_rows: int = 36,
-    ) -> list[dict]:
-        """Expand trace seeds one directory upward for wrapper->runtime bridges.
-
-        Helps when lifecycle APIs live in nested modules (for example ``x/sansio/*``)
-        while request orchestration occurs in the parent package module.
-        """
-        parent_prefixes: set[str] = set()
-        for row in seed_rows:
-            fp = (row.get("file_path") or "").replace("\\", "/")
-            if "/" not in fp:
-                continue
-            parent = fp.rsplit("/", 1)[0].rstrip("/")
-            if "/" not in parent:
-                continue
-            grandparent = parent.rsplit("/", 1)[0].rstrip("/")
-            if not grandparent:
-                continue
-            parent_prefixes.add(f"{grandparent}/")
-        if not parent_prefixes:
-            return []
-
-        query = """
-        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-        WHERE NOT s.uid IN $excluded_uids
-          AND any(prefix IN $parent_prefixes WHERE f.path STARTS WITH prefix)
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        RETURN s.uid AS uid,
-               s.name AS name,
-               coalesce(s.kind, '') AS symbol_kind,
-               coalesce(s.token_estimate, 0) AS token_estimate,
-               coalesce(s.qualified_name, '') AS qualified_name,
-               coalesce(f.path, '<unknown>') AS file_path,
-               coalesce(f.hash, '') AS file_hash,
-               coalesce(c.range, s.range, [0, 0]) AS range,
-               inbound_edges,
-               count(DISTINCT or) AS outbound_edges
-        LIMIT $limit
-        """
-        try:
-            with self.db.driver.session() as session:
-                return list(
-                    session.run(
-                        query,
-                        workspace_id=self.workspace_id,
-                        excluded_uids=list(excluded_uids),
-                        parent_prefixes=sorted(parent_prefixes),
-                        limit=max_rows,
-                    )
-                )
-        except Exception:
-            return []
 
     def _trace_dependency_import_anchor_candidates(
         self,
@@ -2508,702 +1425,27 @@ class UnifiedRanker:
         required_roles: list[str],
         excluded_uids: set[str],
         pool: list[Candidate],
-    ) -> list[Candidate]:
-        """Boost symbols from modules the target file imports (graph + FS), for DI/trace queries.
-
-        Uses the same discovery path as generic recovery (``_imported_symbol_rows``) so
-        no framework names are hard-coded; adds minimal-role anchors when strict Pass-1
-        role overlap would otherwise drop high-value imported symbols.
-        """
-        if not self._trace_dependency_gain_mode(mechanism, query):
-            return []
-
-        scoped = set(normalize_roles(required_roles))
-        existing_uids = {c.uid for c in pool if getattr(c, "uid", "")}
-        hook_flow_context = self._is_hook_flow_context(
-            target=target, mechanism=mechanism, query=query
-        )
-        runtime_rows = self._trace_dependency_runtime_symbol_rows(
+    ):
+        return self.structural_recovery.trace_dependency_import_anchor_candidates(
             target,
+            query=query,
+            mechanism=mechanism,
+            required_roles=required_roles,
             excluded_uids=excluded_uids,
+            pool=pool,
         )
-        sibling_rows = self._trace_dependency_sibling_dir_symbol_rows(
-            runtime_rows,
-            excluded_uids=excluded_uids,
-        )
-        parent_rows = (
-            self._trace_dependency_parent_dir_symbol_rows(
-                runtime_rows,
-                excluded_uids=excluded_uids,
-            )
-            if hook_flow_context
-            else []
-        )
-        imported_rows = self._imported_symbol_rows(target.file_path, excluded_uids=excluded_uids)
-        merged: list[dict] = []
-        seen_merge: set[str] = set()
-        for row in (*runtime_rows, *sibling_rows, *parent_rows, *imported_rows):
-            uid = str(row.get("uid") or "")
-            if uid and uid not in seen_merge:
-                seen_merge.add(uid)
-                merged.append(row)
-        rows = self._rank_rows_for_trace_import_anchors(merged)
-
-        out: list[Candidate] = []
-        seen = set(existing_uids)
-        for row in rows:
-            uid = str(row.get("uid") or "")
-            if not uid or uid in seen:
-                continue
-            candidate = self._recovery_candidate_from_row(
-                row,
-                origin="import_module_trace",
-                scoped_roles=scoped,
-                target=target,
-            )
-            if candidate is None:
-                candidate = self._minimal_trace_import_anchor_candidate(
-                    row,
-                    required_roles=required_roles,
-                )
-            seen.add(uid)
-            out.append(candidate)
-        return out
-
-    def _same_file_symbol_rows(
-        self,
-        file_path: str,
-        *,
-        excluded_uids: set[str],
-    ) -> list[dict]:
-        query = """
-        MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[c:CONTAINS]->(s:Symbol)
-        WHERE NOT s.uid IN $excluded_uids
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        RETURN s.uid AS uid,
-               s.name AS name,
-               coalesce(s.kind, '') AS symbol_kind,
-               coalesce(s.token_estimate, 0) AS token_estimate,
-               coalesce(s.qualified_name, '') AS qualified_name,
-               coalesce(f.path, '<unknown>') AS file_path,
-               coalesce(f.hash, '') AS file_hash,
-               coalesce(c.range, s.range, [0, 0]) AS range,
-               inbound_edges,
-               count(DISTINCT or) AS outbound_edges
-        """
-        try:
-            with self.db.driver.session() as session:
-                return list(
-                    session.run(
-                        query,
-                        workspace_id=self.workspace_id,
-                        file_path=file_path,
-                        excluded_uids=list(excluded_uids),
-                    )
-                )
-        except Exception:
-            return []
-
-    def _imported_symbol_rows(
-        self,
-        file_path: str,
-        *,
-        excluded_uids: set[str],
-    ) -> list[dict]:
-        query = """
-        MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[:IMPORTS]->(dep:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-        WHERE NOT s.uid IN $excluded_uids
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, dep, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        RETURN s.uid AS uid,
-               s.name AS name,
-               coalesce(s.kind, '') AS symbol_kind,
-               coalesce(s.token_estimate, 0) AS token_estimate,
-               coalesce(s.qualified_name, '') AS qualified_name,
-               coalesce(dep.path, '<unknown>') AS file_path,
-               coalesce(dep.hash, '') AS file_hash,
-               coalesce(c.range, s.range, [0, 0]) AS range,
-               inbound_edges,
-               count(DISTINCT or) AS outbound_edges
-        """
-        try:
-            with self.db.driver.session() as session:
-                rows = list(
-                    session.run(
-                        query,
-                        workspace_id=self.workspace_id,
-                        file_path=file_path,
-                        excluded_uids=list(excluded_uids),
-                    )
-                )
-        except Exception:
-            rows = []
-
-        seen_paths = {row.get("file_path") for row in rows}
-        fallback_paths: list[str] = []
-        for path in self._resolve_filesystem_import_paths(file_path):
-            if path and path not in seen_paths:
-                fallback_paths.append(path)
-                seen_paths.add(path)
-        for path in self._resolve_intra_repo_package_import_paths(file_path):
-            if path and path not in seen_paths:
-                fallback_paths.append(path)
-                seen_paths.add(path)
-        if fallback_paths:
-            rows.extend(
-                self._symbol_rows_for_file_paths(
-                    fallback_paths,
-                    excluded_uids=excluded_uids,
-                )
-            )
-        return rows
-
-    def _symbol_rows_for_file_paths(
-        self,
-        file_paths: list[str],
-        *,
-        excluded_uids: set[str],
-    ) -> list[dict]:
-        if not file_paths:
-            return []
-
-        query = """
-        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-        WHERE f.path IN $file_paths
-          AND NOT s.uid IN $excluded_uids
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        RETURN s.uid AS uid,
-               s.name AS name,
-               coalesce(s.kind, '') AS symbol_kind,
-               coalesce(s.token_estimate, 0) AS token_estimate,
-               coalesce(s.qualified_name, '') AS qualified_name,
-               coalesce(f.path, '<unknown>') AS file_path,
-               coalesce(f.hash, '') AS file_hash,
-               coalesce(c.range, s.range, [0, 0]) AS range,
-               inbound_edges,
-               count(DISTINCT or) AS outbound_edges
-        """
-        try:
-            with self.db.driver.session() as session:
-                return list(
-                    session.run(
-                        query,
-                        workspace_id=self.workspace_id,
-                        file_paths=file_paths,
-                        excluded_uids=list(excluded_uids),
-                    )
-                )
-        except Exception:
-            return []
-
-    def _resolve_filesystem_import_paths(self, file_path: str) -> list[str]:
-        path = Path(file_path)
-        if not path.exists():
-            return []
-
-        adapter = self._adapter_for_path(path)
-        if adapter is None:
-            return []
-
-        try:
-            source = path.read_text(encoding="utf-8")
-        except Exception:
-            return []
-
-        resolved: set[str] = set()
-        for edge in adapter.extract_imports(source, str(path)):
-            if edge.import_type != "relative":
-                continue
-            resolved.update(self._resolve_relative_import_targets(path, edge.target_module_name))
-        return sorted(resolved)
-
-    def _resolve_intra_repo_package_import_paths(self, file_path: str) -> list[str]:
-        """Resolve dotted imports (``from x.y import z``) to files inside the checkout.
-
-        Relative imports are handled by :meth:`_resolve_filesystem_import_paths`.
-        Absolute package imports (parser marks them ``from_package`` / ``direct``) are
-        skipped there but are often the only link from a thin wrapper (e.g. DI markers)
-        to sibling packages such as ``.../pkg/dependencies/*.py`` when Neo4j has no
-        ``IMPORTS`` edge yet.
-        """
-        path = Path(file_path)
-        if not path.exists():
-            return []
-        adapter = self._adapter_for_path(path)
-        if adapter is None:
-            return []
-
-        try:
-            source = path.read_text(encoding="utf-8")
-        except Exception:
-            return []
-
-        resolved: set[str] = set()
-        for edge in adapter.extract_imports(source, str(path)):
-            if edge.import_type == "relative":
-                continue
-            mod = (edge.target_module_name or "").strip()
-            if not mod or mod.startswith("."):
-                continue
-            parts = [p for p in mod.split(".") if p]
-            if len(parts) < 2:
-                continue
-            resolved.update(self._resolve_dotted_module_under_ancestors(path, parts))
-        return sorted(resolved)
-
-    @staticmethod
-    def _resolve_dotted_module_under_ancestors(source_file: Path, parts: list[str]) -> list[str]:
-        """Try ``ancestor / part0 / part1 / ...``.py walking upward from ``source_file``."""
-        out: list[str] = []
-        cur = source_file.resolve().parent
-        for _ in range(48):
-            candidate = (cur / Path(*parts)).with_suffix(".py")
-            if candidate.is_file():
-                out.append(str(candidate.resolve()))
-            pkg_init = (cur / Path(*parts)) / "__init__.py"
-            if pkg_init.is_file():
-                out.append(str(pkg_init.resolve()))
-            parent = cur.parent
-            if parent == cur:
-                break
-            cur = parent
-        return out
-
-    def _adapter_for_path(self, path: Path):
-        suffix = path.suffix.lower()
-        if suffix in {".ts", ".tsx"}:
-            from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
-
-            return TypeScriptAdapter()
-        if suffix in {".py", ".pyi"}:
-            from sidecar.parser.adapters.python_adapter import PythonAdapter
-
-            return PythonAdapter()
-        return None
-
-    def _resolve_relative_import_targets(
-        self,
-        source_path: Path,
-        import_source: str,
-    ) -> list[str]:
-        source = (import_source or "").strip()
-        if not source.startswith("."):
-            return []
-
-        candidates: list[Path] = []
-        if "/" in source or source.startswith("./") or source.startswith("../"):
-            base = (source_path.parent / source).resolve()
-            candidates.extend(self._path_resolution_candidates(base))
-        else:
-            leading = len(source) - len(source.lstrip("."))
-            remainder = source.lstrip(".").replace(".", "/")
-            base_dir = source_path.parent
-            for _ in range(max(leading - 1, 0)):
-                base_dir = base_dir.parent
-            base = (base_dir / remainder).resolve() if remainder else base_dir.resolve()
-            candidates.extend(self._path_resolution_candidates(base))
-
-        return [str(candidate) for candidate in candidates if candidate.exists()]
-
-    @staticmethod
-    def _path_resolution_candidates(base: Path) -> list[Path]:
-        if base.suffix:
-            return [base]
-        return [
-            base.with_suffix(".ts"),
-            base.with_suffix(".tsx"),
-            base / "index.ts",
-            base / "index.tsx",
-            base.with_suffix(".py"),
-            base.with_suffix(".pyi"),
-            base / "__init__.py",
-        ]
-
-    def _recovery_candidate_from_row(
-        self,
-        row: dict,
-        *,
-        origin: str,
-        scoped_roles: set[str],
-        target: SubgraphNode,
-    ) -> Candidate | None:
-        raw_token_cost = int(row["token_estimate"]) or self._estimate_tokens_range(
-            row.get("range") or [0, 0]
-        )
-        name_lower = (row["name"] or "").lower()
-        file_stem = Path(row["file_path"]).stem.lower()
-        is_stem_match = file_stem == name_lower
-        is_builder_surface = name_lower.startswith(
-            ("build", "create", "configure", "combine", "compose")
-        )
-        token_cost = min(
-            raw_token_cost,
-            80 if is_stem_match else 120 if is_builder_surface else 180,
-        )
-        probe = Candidate(
-            kind="symbol",
-            uid=row["uid"],
-            token_cost=token_cost,
-            name=row["name"],
-            file_path=row["file_path"],
-            range=row.get("range") or [0, 0],
-            file_hash=row.get("file_hash") or "",
-        )
-        probe.symbol_kind = row.get("symbol_kind", "")
-        probe.qualified_name = row.get("qualified_name", "")
-
-        primary_role = self._role_of(probe)
-        supporting_roles = self._supporting_roles_of(probe)
-        candidate_roles = normalize_roles([primary_role, *supporting_roles])
-        registration_flow_context = self._is_registration_flow_context(
-            target=target,
-            scoped_roles=scoped_roles,
-        )
-        factory_signal = self._factory_surface_recovery_signal(
-            row,
-            target=target,
-            registration_flow_context=registration_flow_context,
-        )
-        api_signal = self._api_surface_recovery_signal(
-            row,
-            target=target,
-            registration_flow_context=registration_flow_context,
-        )
-        representation_signal = self._representation_surface_recovery_signal(
-            row,
-            target=target,
-            registration_flow_context=registration_flow_context,
-        )
-        runtime_signal = self._runtime_surface_recovery_signal(
-            row,
-            target=target,
-            registration_flow_context=registration_flow_context,
-        )
-        if "api_surface" in scoped_roles and api_signal:
-            candidate_roles = normalize_roles([*candidate_roles, "api_surface"])
-        if "factory_surface" in scoped_roles and factory_signal:
-            candidate_roles = normalize_roles([*candidate_roles, "factory_surface"])
-        if "representation_surface" in scoped_roles and representation_signal:
-            candidate_roles = normalize_roles([*candidate_roles, "representation_surface"])
-        if "runtime_surface" in scoped_roles and runtime_signal:
-            candidate_roles = normalize_roles([*candidate_roles, "runtime_surface"])
-        matched_roles = [role for role in candidate_roles if role in scoped_roles]
-        if not matched_roles:
-            return None
-        matched_roles.sort(key=lambda role: (role == primary_role, role == "docs_or_concept"))
-
-        origin_bonus = 0.45 if origin == "same_file" else 0.35
-        stem_bonus = 0.35 if is_stem_match else 0.12 if is_builder_surface else 0.0
-        api_bonus = 0.18 if ("api_surface" in matched_roles and api_signal) else 0.0
-        factory_bonus = 0.22 if ("factory_surface" in matched_roles and factory_signal) else 0.0
-        representation_bonus = (
-            0.18 if ("representation_surface" in matched_roles and representation_signal) else 0.0
-        )
-        runtime_bonus = 0.20 if ("runtime_surface" in matched_roles and runtime_signal) else 0.0
-        if registration_flow_context and "runtime_surface" in matched_roles and runtime_signal:
-            runtime_bonus += 0.06
-        role_bonus = 0.18 * len(matched_roles)
-        edge_bonus = 0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.10 * math.log1p(
-            float(row.get("outbound_edges", 0) or 0)
-        )
-        candidate = Candidate(
-            kind="symbol",
-            uid=row["uid"],
-            token_cost=token_cost,
-            graph_score=(
-                1.0
-                + origin_bonus
-                + stem_bonus
-                + api_bonus
-                + factory_bonus
-                + representation_bonus
-                + runtime_bonus
-                + role_bonus
-                + edge_bonus
-            ),
-            name=row["name"],
-            file_path=row["file_path"],
-            range=row.get("range") or [0, 0],
-            render_mode="signature_only",
-            relation="ROLE_BACKFILL",
-            direction="backfill",
-            depth=1 if origin == "same_file" else 2,
-            file_hash=row.get("file_hash") or "",
-            evidence_role=matched_roles[0],
-            supporting_roles=[role for role in candidate_roles if role != matched_roles[0]],
-            provenance=[f"{origin}-backfill:{matched_roles[0]}"],
-        )
-        candidate.symbol_kind = row.get("symbol_kind", "")
-        candidate.qualified_name = row.get("qualified_name", "")
-        return candidate
-
-    def _factory_surface_recovery_signal(
-        self,
-        row: dict,
-        *,
-        target: SubgraphNode,
-        registration_flow_context: bool = False,
-    ) -> bool:
-        """Heuristic factory-surface signal from target-local recovery rows."""
-        kind = (row.get("symbol_kind") or "").lower()
-        if kind and kind not in {"function", "method", "class"}:
-            return False
-
-        name = (row.get("name") or "").lower()
-        qualified = (row.get("qualified_name") or "").lower()
-        file_path = (row.get("file_path") or "").lower()
-        target_name = (target.name or "").lower()
-        target_path = (target.file_path or "").lower()
-        haystack = " ".join([name, qualified, file_path])
-
-        prefix_hit = name.startswith(_FACTORY_SIGNAL_PREFIXES)
-        token_hit = any(token in haystack for token in _FACTORY_SIGNAL_TOKENS)
-        path_hit = any(token in file_path for token in _FACTORY_SIGNAL_PATH_TOKENS)
-        target_hit = any(
-            token in f"{target_name} {target_path}"
-            for token in ("api", "route", "router", "openapi")
-        )
-        edge_hint = (
-            float(row.get("outbound_edges", 0) or 0) + float(row.get("inbound_edges", 0) or 0)
-        ) >= 1.0
-        reg_hint = (
-            registration_flow_context
-            and self._registration_flow_recovery_hint(row, target=target)
-            and any(token in haystack for token in _REGISTRATION_FACTORY_TOKENS)
-        )
-
-        score = (
-            int(prefix_hit)
-            + int(token_hit)
-            + int(path_hit)
-            + int(target_hit)
-            + int(edge_hint)
-            + int(reg_hint)
-        )
-        return score >= 2
-
-    def _api_surface_recovery_signal(
-        self,
-        row: dict,
-        *,
-        target: SubgraphNode,
-        registration_flow_context: bool = False,
-    ) -> bool:
-        kind = (row.get("symbol_kind") or "").lower()
-        if kind and kind not in {"function", "method", "class"}:
-            return False
-        name = (row.get("name") or "").lower()
-        qualified = (row.get("qualified_name") or "").lower()
-        file_path = (row.get("file_path") or "").lower()
-        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        haystack = " ".join([name, qualified, file_path, target_ctx])
-        token_hit = any(token in haystack for token in _API_SIGNAL_TOKENS)
-        edge_hint = float(row.get("outbound_edges", 0) or 0) >= 1.0
-        reg_hint = (
-            registration_flow_context
-            and self._registration_flow_recovery_hint(row, target=target)
-            and any(token in haystack for token in ("request", "app", "blueprint", "handler"))
-        )
-        score = int(token_hit) + int(edge_hint) + int(reg_hint)
-        return score >= 2
-
-    def _representation_surface_recovery_signal(
-        self,
-        row: dict,
-        *,
-        target: SubgraphNode,
-        registration_flow_context: bool = False,
-    ) -> bool:
-        kind = (row.get("symbol_kind") or "").lower()
-        if kind and kind not in {"function", "method", "class"}:
-            return False
-        name = (row.get("name") or "").lower()
-        qualified = (row.get("qualified_name") or "").lower()
-        file_path = (row.get("file_path") or "").lower()
-        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        haystack = " ".join([name, qualified, file_path, target_ctx])
-        token_hit = any(token in haystack for token in _REPRESENTATION_SIGNAL_TOKENS)
-        path_hit = any(token in file_path for token in _REPRESENTATION_SIGNAL_PATH_TOKENS)
-        target_dep_like = any(token in target_ctx for token in ("depend", "dependency", "param"))
-        class_bonus = kind == "class" and any(
-            t in haystack for t in ("schema", "model", "field", "response")
-        )
-        edge_hint = float(row.get("inbound_edges", 0) or 0) >= 1.0
-        reg_hint = (
-            registration_flow_context
-            and self._registration_flow_recovery_hint(row, target=target)
-            and any(token in haystack for token in _REGISTRATION_REPRESENTATION_TOKENS)
-        )
-        score = (
-            int(token_hit)
-            + int(path_hit)
-            + int(target_dep_like and (token_hit or path_hit))
-            + int(class_bonus)
-            + int(edge_hint)
-            + int(reg_hint)
-        )
-        return score >= 2
-
-    def _runtime_surface_recovery_signal(
-        self,
-        row: dict,
-        *,
-        target: SubgraphNode,
-        registration_flow_context: bool = False,
-    ) -> bool:
-        kind = (row.get("symbol_kind") or "").lower()
-        if kind and kind not in {"function", "method", "class"}:
-            return False
-        name = (row.get("name") or "").lower()
-        qualified = (row.get("qualified_name") or "").lower()
-        file_path = (row.get("file_path") or "").lower()
-        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        haystack = " ".join([name, qualified, file_path, target_ctx])
-        token_hit = any(token in haystack for token in _RUNTIME_SIGNAL_TOKENS)
-        edge_hint = (
-            float(row.get("outbound_edges", 0) or 0) >= 1.0
-            or float(row.get("inbound_edges", 0) or 0) >= 2.0
-        )
-        reg_hint = (
-            registration_flow_context
-            and self._registration_flow_recovery_hint(row, target=target)
-            and any(token in haystack for token in _REGISTRATION_RUNTIME_TOKENS)
-        )
-        hook_hint = self._hook_flow_recovery_hint(row, target=target) and any(
-            token in haystack for token in _HOOK_RUNTIME_TOKENS
-        )
-        score = int(token_hit) + int(edge_hint) + int(reg_hint) + int(hook_hint)
-        return score >= 2
-
-    def _is_registration_flow_context(
-        self,
-        *,
-        target: SubgraphNode,
-        scoped_roles: set[str],
-    ) -> bool:
-        if "deferred_registration" in scoped_roles:
-            return True
-        path = (target.file_path or "").lower()
-        name = (target.name or "").lower()
-        role_hint = {"api_surface", "factory_surface", "runtime_surface"}.intersection(scoped_roles)
-        if not role_hint:
-            return False
-        haystack = f"{name} {path}"
-        return any(token in haystack for token in _REGISTRATION_FLOW_TARGET_TOKENS)
-
-    def _registration_flow_recovery_hint(self, row: dict, *, target: SubgraphNode) -> bool:
-        """Shared cue pack for framework registration/request handler flows.
-
-        Keeps Flask/Django-like registration traces from looking framework-specific
-        while still requiring structural/name/path evidence.
-        """
-        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        row_ctx = " ".join(
-            [
-                str(row.get("name") or "").lower(),
-                str(row.get("qualified_name") or "").lower(),
-                str(row.get("file_path") or "").lower(),
-            ]
-        )
-        target_hit = any(token in target_ctx for token in _REGISTRATION_FLOW_TARGET_TOKENS)
-        row_hit = any(token in row_ctx for token in _REGISTRATION_FLOW_TARGET_TOKENS)
-        path_hit = any(token in row_ctx for token in _REGISTRATION_FLOW_PATH_TOKENS)
-        return (target_hit and row_hit) or path_hit
-
-    def _hook_flow_recovery_hint(self, row: dict, *, target: SubgraphNode) -> bool:
-        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        row_ctx = " ".join(
-            [
-                str(row.get("name") or "").lower(),
-                str(row.get("qualified_name") or "").lower(),
-                str(row.get("file_path") or "").lower(),
-            ]
-        )
-        target_hit = any(token in target_ctx for token in _HOOK_FLOW_TARGET_TOKENS)
-        row_hit = any(token in row_ctx for token in _HOOK_FLOW_TARGET_TOKENS)
-        path_hit = any(token in row_ctx for token in _HOOK_FLOW_PATH_TOKENS)
-        return (target_hit and row_hit) or (target_hit and path_hit)
-
-    def _is_hook_flow_context(self, *, target: SubgraphNode, mechanism: str, query: str) -> bool:
-        m = (mechanism or "").lower()
-        q = (query or "").lower()
-        if "hook" in m or "lifecycle" in m:
-            return True
-        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        if any(token in target_ctx for token in _HOOK_FLOW_TARGET_TOKENS):
-            return True
-        return "before_request" in q or "after_request" in q
 
     def _needs_structural_recovery(self, target: SubgraphNode) -> bool:
-        """Identify thin wrapper targets that benefit from file/import recovery.
-
-        These symbols often act as public API facades over heavier builder
-        functions. Static call edges can be sparse or parser-recovery can miss
-        the inner implementation entirely, so we proactively widen the pool to
-        nearby same-file/imported helpers.
-        """
-        if (target.kind or "") == "variable":
-            return True
-        if target.token_estimate and target.token_estimate <= 40:
-            return True
-        start, end = (target.range or [0, 0])[:2]
-        return bool(start and end and start == end)
-
-    # ------------------------------------------------------------------
-    # Scoring helpers
-    # ------------------------------------------------------------------
+        return self.structural_recovery.needs_structural_recovery(target)
 
     def _blended(self, c: Candidate) -> float:
-        w = self.weights
-        overlap_bonus = w.delta if c.overlap else 0.0
-        # Noise factor multiplies the *positive* contributions only — the
-        # token cost penalty stays full so noisy big symbols are even
-        # harder to justify. Equivalent to "noisy candidate has to be
-        # ~3× more relevant to break tie with a clean one."
-        positive = (
-            w.alpha * c.graph_score
-            + w.beta * c.semantic_score
-            + w.gamma * c.intent_weight
-            + overlap_bonus
-        )
-        return positive * c.noise_factor - w.epsilon * c.token_cost / 100
+        return self.scoring.blended(c)
 
     def _normalize(self, pool: list[Candidate]) -> None:
-        """Min-max normalize graph_score and semantic_score independently."""
-        g_vals = [c.graph_score for c in pool if c.graph_score > 0]
-        s_vals = [c.semantic_score for c in pool if c.semantic_score > 0]
-
-        g_min, g_max = (min(g_vals), max(g_vals)) if g_vals else (0.0, 1.0)
-        s_min, s_max = (min(s_vals), max(s_vals)) if s_vals else (0.0, 1.0)
-        g_range = (g_max - g_min) or 1.0
-        s_range = (s_max - s_min) or 1.0
-
-        for c in pool:
-            if c.graph_score > 0:
-                c.graph_score = (c.graph_score - g_min) / g_range
-            if c.semantic_score > 0:
-                c.semantic_score = (c.semantic_score - s_min) / s_range
+        self.scoring.normalize(pool)
 
     def _intent_priors(self, intent: Intent) -> dict[str, float]:
-        if intent in (Intent.DEBUGGING, Intent.NAVIGATION):
-            return {"symbol": 0.6, "doc": 0.2}
-        elif intent in (Intent.NEW_FEATURE, Intent.DESIGN_QUESTION):
-            return {"symbol": 0.2, "doc": 0.6}
-        elif intent == Intent.IMPACT_ANALYSIS:
-            return {"symbol": 0.3, "doc": 0.5}  # tests/examples are load-bearing
-        else:  # EXPLORATION, REFACTORING
-            return {"symbol": 0.4, "doc": 0.4}
+        return self.scoring.intent_priors(intent)
 
     def _topic_focus_factor(
         self,
@@ -3215,55 +1457,14 @@ class UnifiedRanker:
         intent: Intent,
         required_roles: list[str],
     ) -> float:
-        """Downrank candidates from unrelated subsystems without hard-coding repos.
-
-        The graph can legally connect far-away framework subsystems through
-        generic helpers like `dispatch`, `middleware`, or `batch`. Those links
-        are useful for workspace-wide questions, but they drown focused API
-        questions in unrelated RTK Query/listener/entity internals. Keep role
-        fillers and explicitly-mentioned topics; penalize everything else.
-        """
-        if intent == Intent.IMPACT_ANALYSIS or mechanism == "workspace_structure":
-            return 1.0
-
-        path = (candidate.file_path or "").lower()
-        target_path = (target.file_path or "").lower()
-        query_terms = set(self._focus_query_terms(query))
-        has_explicit_role_backfill = self._has_role_backfill(candidate)
-
-        subsystem_rules = (
-            ("/query/", {"query", "rtk", "api", "endpoint", "endpoints", "subscription"}),
-            ("/listenermiddleware/", {"listener", "listeners", "side", "effect", "effects"}),
-            ("/entities/", {"entity", "entities", "adapter", "sort", "sorted"}),
-            ("/scripts/", {"script", "scripts", "tooling", "triage", "release"}),
+        return self.scoring.topic_focus_factor(
+            candidate,
+            target,
+            query=query,
+            mechanism=mechanism,
+            intent=intent,
+            required_roles=required_roles,
         )
-        for marker, topic_terms in subsystem_rules:
-            if marker not in path or marker in target_path:
-                continue
-            if query_terms & topic_terms:
-                return 1.0
-            if not has_explicit_role_backfill:
-                return 0.15 if candidate.kind != "doc" else 0.45
-
-        required = set(normalize_roles(required_roles)) - {"docs_or_concept"}
-        primary_role = self._role_of(candidate)
-        if candidate.kind != "doc" and (primary_role in required or has_explicit_role_backfill):
-            return 1.0
-
-        if self._candidate_matches_query_topic(candidate, target, query=query):
-            return 1.0
-
-        if candidate.kind != "doc" and candidate.depth >= 5:
-            return 0.25 if candidate.depth >= 7 else 0.45
-
-        if candidate.kind == "doc":
-            low_anchor = candidate.anchor_type in ("", "reference") and (
-                not candidate.anchor_confidence or candidate.anchor_confidence < 0.4
-            )
-            if low_anchor:
-                return 0.65
-
-        return 1.0
 
     def _candidate_matches_query_topic(
         self,
@@ -3272,28 +1473,11 @@ class UnifiedRanker:
         *,
         query: str,
     ) -> bool:
-        terms = set(self._focus_query_terms(query))
-        terms.update(self._focus_query_terms(target.name or ""))
-        if not terms:
-            return False
-        haystack = " ".join(
-            part.lower()
-            for part in (
-                getattr(candidate, "name", "") or "",
-                getattr(candidate, "file_path", "") or "",
-                getattr(candidate, "qualified_name", "") or "",
-            )
-            if part
-        )
-        return any(term in haystack for term in terms)
+        return self.scoring.candidate_matches_query_topic(candidate, target, query=query)
 
     @staticmethod
     def _focus_query_terms(text: str) -> list[str]:
-        return [
-            term
-            for term in re.findall(r"[a-z][a-z0-9_]{3,}", (text or "").lower())
-            if term not in _FOCUS_QUERY_STOPWORDS
-        ]
+        return RankerScoring.focus_query_terms(text)
 
     def _raw_graph_score(
         self,
@@ -3302,98 +1486,91 @@ class UnifiedRanker:
         *,
         chain_pursuit: bool = False,
     ) -> float:
-        rel_type = neighbor["rel_type"]
-        outgoing = neighbor["outgoing"]
-        caller_count = neighbor["caller_count"]
-        token_estimate = neighbor.get("token_estimate", 0)
-
-        if rel_type in (
-            "CALLS_DIRECT",
-            "CALLS_SCOPED",
-            "CALLS_IMPORTED",
-            "CALLS_DYNAMIC",
-            "CALLS_INFERRED",
-            "CALLS_GUESS",
-            "CALLS",
-        ):
-            base = rel_type if rel_type != "CALLS" else "CALLS_DIRECT"
-            relation = f"{base}_out" if outgoing else f"{base}_in"
-        elif rel_type in ("IMPLEMENTS", "OVERRIDES", "REFERENCES"):
-            relation = rel_type
-        elif rel_type == "DEPENDS_ON":
-            relation = "DEPENDS_ON"
-        elif rel_type == "IMPORTS":
-            relation = "IMPORTS"
-        elif rel_type == "SEMANTIC_HINT":
-            relation = "SEMANTIC_HINT_out" if outgoing else "SEMANTIC_HINT_in"
-        else:
-            relation = "DEPENDS_ON"
-
-        r = self._RELATION_PRIOR.get(relation, 0.5)
-
-        # Chain pursuit: drop the distance penalty for outgoing CALLS_* so a
-        # depth-5 chain can still beat a noisy depth-1 sibling. Other edge
-        # types keep the original 0.4 penalty so we don't accidentally pull
-        # in distant unrelated symbols.
-        # We now include SEMANTIC_HINT in chain pursuit to favor dependency injection links.
-        if (
-            chain_pursuit and self._is_outgoing_call(rel_type, outgoing)
-        ) or rel_type == "SEMANTIC_HINT":
-            distance_penalty = 0.15 * distance
-        else:
-            distance_penalty = 0.4 * distance
-
-        return float(
-            r
-            + 0.3 * math.log1p(caller_count)
-            # DEBT: The previous -0.5 penalty was too aggressive for "God Object"
-            # functions (like solve_dependencies). We reduce it here so structural
-            # importance can outweigh raw token size during pool collection.
-            - 0.1 * token_estimate / 100
-            - distance_penalty
-        )
+        return self.scoring.raw_graph_score(neighbor, distance, chain_pursuit=chain_pursuit)
 
     def _direction(self, rel_type: str, outgoing: bool) -> str:
-        if rel_type in (
-            "CALLS",
-            "CALLS_DIRECT",
-            "CALLS_SCOPED",
-            "CALLS_IMPORTED",
-            "CALLS_DYNAMIC",
-            "CALLS_INFERRED",
-            "CALLS_GUESS",
-        ):
-            return "callee" if outgoing else "caller"
-        elif rel_type == "DEPENDS_ON":
-            return "type"
-        elif rel_type == "IMPORTS":
-            return "import"
-        elif rel_type in ("IMPLEMENTS", "OVERRIDES", "REFERENCES"):
-            return rel_type.lower()
-        return "sibling"
+        return self.scoring.direction(rel_type, outgoing)
 
     @staticmethod
     def _trace_dependency_gain_mode(mechanism: str, query: str) -> bool:
-        """True when marginal-gain should reward multi-file dependency tracing.
+        return RankerScoring.trace_dependency_gain_mode(mechanism, query)
 
-        Benchmark packs may declare ``intent: trace_dependency``, but the ranker's
-        ``Intent`` enum does not carry that label — and ``_determine_mechanism``
-        often resolves to ``generic``. Use query cues so DI questions still get
-        file-breadth incentives (e.g. FastAPI ``Depends`` → ``dependencies/*``).
-        """
-        m = (mechanism or "").lower()
-        q = (query or "").lower()
-        if "depend" in m or "trace_dependency" in m:
-            return True
-        if "hook" in m or "lifecycle" in m:
-            return True
-        if "dependency injection" in q:
-            return True
-        if "inject" in q and "depend" in q:
-            return True
-        if "before_request" in q or "after_request" in q:
-            return True
-        return False
+    def _infer_role(self, c: Candidate | SubgraphNode) -> str:
+        return self.role_fulfilment.infer_role(c)
+
+    def _role_of(self, c: Candidate | SubgraphNode) -> str:
+        return self.role_fulfilment.role_of(c)
+
+    def _supporting_roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
+        return self.role_fulfilment.supporting_roles_of(c)
+
+    def _roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
+        return self.role_fulfilment.roles_of(c)
+
+    def _selection_roles(
+        self,
+        c: Candidate,
+        target: SubgraphNode,
+        *,
+        query: str,
+        mechanism: str,
+        intent: Intent,
+        required_roles: list[str],
+    ) -> list[str]:
+        return self.role_fulfilment.selection_roles(
+            c,
+            target,
+            query=query,
+            mechanism=mechanism,
+            intent=intent,
+            required_roles=required_roles,
+        )
+
+    def _candidate_matches_any_role(
+        self,
+        c: Candidate | SubgraphNode,
+        required_roles: list[str],
+    ) -> bool:
+        return self.role_fulfilment.candidate_matches_any_role(c, required_roles)
+
+    def _determine_mechanism_structural(self, target: SubgraphNode) -> str:
+        return self.role_fulfilment.determine_mechanism_structural(target)
+
+    def _determine_mechanism(self, target: SubgraphNode, query: str = "") -> str:
+        return self.role_fulfilment.determine_mechanism(target, query=query)
+
+    def _get_required_roles(self, mechanism: str, *, target=None) -> list[str]:
+        return self.role_fulfilment.get_required_roles(mechanism, target=target)
+
+    def _strategy_role_plan(self) -> list[str]:
+        return self.role_fulfilment.strategy_role_plan()
+
+    def _role_supply_counts(self):
+        return self.role_fulfilment.role_supply_counts()
+
+    def _filter_roles_by_workspace_supply(self, roles: list[str]) -> list[str]:
+        return self.role_fulfilment.filter_roles_by_workspace_supply(roles)
+
+    def _target_role_supply_counts(self, target):
+        return self.role_fulfilment.target_role_supply_counts(target)
+
+    def _filter_roles_by_target_supply(self, roles: list[str], target) -> list[str]:
+        return self.role_fulfilment.filter_roles_by_target_supply(roles, target)
+
+    def _adaptive_role_plan(self, *, target=None) -> list[str]:
+        return self.role_fulfilment.adaptive_role_plan(target=target)
+
+    def _roles_for_auto_mechanism(self, archetype: str) -> list[str]:
+        return self.role_fulfilment.roles_for_auto_mechanism(archetype)
+
+    def _auto_mechanism_from_strategy(self, target: SubgraphNode, query: str = "") -> str:
+        return self.role_fulfilment.auto_mechanism_from_strategy(target, query=query)
+
+    def _canonical_role_for_symbol_uid(self, uid: str) -> str:
+        return self.role_fulfilment.canonical_role_for_symbol_uid(uid)
+
+    def _one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
+        return self.role_fulfilment.one_hop_connected_symbol_uids(target_uid, limit=limit)
 
     def _calculate_marginal_gain(
         self,
@@ -3431,19 +1608,19 @@ class UnifiedRanker:
         candidate_roles: list[str] | None = None,
     ) -> float:
         """marginal_gain = base_score + role_bonus + coverage_bonus + bridge_bonus - redundancy_penalty"""
-        base_score = self._blended(c)
+        base_score = self.scoring.blended(c)
 
         # 1. Role Bonus: Does this symbol fulfill a missing requirement for the mechanism?
         role_bonus = 0.0
         roles_for_gain = [
             role
-            for role in (candidate_roles if candidate_roles is not None else self._roles_of(c))
+            for role in (candidate_roles if candidate_roles is not None else self.role_fulfilment.roles_of(c))
             if role in required_roles
         ]
         if roles_for_gain:
-            chosen_roles = set(self._roles_of(target))
+            chosen_roles = set(self.role_fulfilment.roles_of(target))
             for chosen_candidate in chosen:
-                chosen_roles.update(self._roles_of(chosen_candidate))
+                chosen_roles.update(self.role_fulfilment.roles_of(chosen_candidate))
             if any(role not in chosen_roles for role in roles_for_gain):
                 role_bonus = 0.5  # High-priority evidence signal
 
@@ -3465,7 +1642,7 @@ class UnifiedRanker:
         # 3b. For dependency tracing, reward breadth across files so we
         # improve file-level recall instead of overfitting one module.
         file_coverage_bonus = 0.0
-        trace_dependency_mode = self._trace_dependency_gain_mode(mechanism, query)
+        trace_dependency_mode = RankerScoring.trace_dependency_gain_mode(mechanism, query)
         if trace_dependency_mode and c.kind != "doc":
             path_lc = (c.file_path or "").lower().replace("\\", "/")
             if "/dependencies/" in path_lc:
@@ -3483,7 +1660,7 @@ class UnifiedRanker:
             if c.relation in ("DEPENDS_ON", "CALLS_DIRECT", "CALLS_SCOPED", "CALLS_IMPORTED"):
                 file_coverage_bonus += 0.06
             if "registration_flow" in (mechanism or "").lower() and "runtime_surface" in (
-                candidate_roles or self._roles_of(c)
+                candidate_roles or self.role_fulfilment.roles_of(c)
             ):
                 file_coverage_bonus += 0.08
 
@@ -3500,324 +1677,7 @@ class UnifiedRanker:
             - redundancy_penalty
         )
 
-    def _role_of(self, c: Candidate | SubgraphNode) -> str:
-        explicit = getattr(c, "evidence_role", "")
-        if explicit:
-            return normalize_role(explicit)
-        return normalize_role(self._infer_role(c))
 
-    def _supporting_roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
-        explicit = normalize_roles(getattr(c, "supporting_roles", []) or [])
-        inferred = infer_supporting_roles(
-            file_path=getattr(c, "file_path", "") or "",
-            primary_role=self._role_of(c),
-        )
-        return normalize_roles([*explicit, *inferred])
-
-    def _roles_of(self, c: Candidate | SubgraphNode) -> list[str]:
-        return normalize_roles([self._role_of(c), *self._supporting_roles_of(c)])
-
-    def _selection_roles(
-        self,
-        c: Candidate,
-        target: SubgraphNode,
-        *,
-        query: str,
-        mechanism: str,
-        intent: Intent,
-        required_roles: list[str],
-    ) -> list[str]:
-        roles = self._roles_of(c)
-        if (
-            c.kind == "doc"
-            or c.noise_factor >= 1.0
-            or intent == Intent.IMPACT_ANALYSIS
-            or mechanism == "workspace_structure"
-            or self._has_role_backfill(c)
-            or self._candidate_matches_query_topic(c, target, query=query)
-        ):
-            return roles
-
-        required = set(normalize_roles(required_roles))
-        return [role for role in roles if role not in required]
-
-    def _candidate_matches_any_role(
-        self,
-        c: Candidate | SubgraphNode,
-        required_roles: list[str],
-    ) -> bool:
-        required = set(normalize_roles(required_roles))
-        return any(role in required for role in self._roles_of(c))
-
-    def _infer_role(self, c: Candidate | SubgraphNode) -> str:
-        """Map a symbol to a canonical reasoning role.
-
-        Reads ``derived_role_id`` from the index-time role catalog
-        (Pass 1, `spec_indexer.md` Phase 7) and resolves the cluster to
-        its strongest canonical role via ``_cluster_to_role``. Universal,
-        structural — no name patterns. When no catalog is available the
-        method returns the neutral ``supporting_surface``.
-        """
-        if getattr(c, "kind", "") == "doc":
-            return "docs_or_concept"
-
-        if self._cluster_to_role:
-            uid = getattr(c, "uid", "") or ""
-            cluster_id = self._derived_role_by_uid.get(uid)
-            if cluster_id is not None:
-                role = self._cluster_to_role.get(cluster_id)
-                if role:
-                    return role
-        # Legacy fallback disabled: Phase 9.5 requires semantic role detection at index time
-        return "supporting_surface"  # Neutral default instead of hardcoded patterns
-
-    def _canonical_role_for_symbol_uid(self, uid: str) -> str:
-        cid = self._derived_role_by_uid.get(uid)
-        if cid is None:
-            return ""
-        return self._cluster_to_role.get(cid) or ""
-
-    def _one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
-        query = """
-        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(n:Symbol)
-        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
-        RETURN DISTINCT n.uid AS uid
-        LIMIT $limit
-        """
-        try:
-            with self.db.driver.session() as session:
-                rows = session.run(
-                    query,
-                    uid=target_uid,
-                    workspace_id=self.workspace_id,
-                    limit=limit,
-                )
-                return [str(r["uid"]) for r in rows if r.get("uid")]
-        except Exception:
-            return []
-
-    def _determine_mechanism_structural(self, target: SubgraphNode) -> str:
-        """Infer mechanism from Pass 1 roles in the target + 1-hop symbol neighborhood."""
-        if not self._cluster_to_role or not self._derived_role_by_uid:
-            return ""
-        uid = getattr(target, "uid", "") or ""
-        if not uid:
-            return ""
-        neighbors = self._one_hop_connected_symbol_uids(uid, limit=48)
-        roles_observed: list[str] = []
-        for sym_uid in [uid, *neighbors]:
-            role = self._canonical_role_for_symbol_uid(sym_uid)
-            if role:
-                roles_observed.append(role)
-        target_role = self._canonical_role_for_symbol_uid(uid)
-        return pick_mechanism_by_role_overlap(
-            roles_observed,
-            target_role=target_role,
-            role_catalog=self.role_catalog or None,
-        )
-
-    def _determine_mechanism(self, target: SubgraphNode, query: str = "") -> str:
-        """Map target symbol to a known framework mechanism."""
-        preloaded = determine_preloaded_mechanism(target, query=query)
-        if preloaded:
-            return preloaded
-        structural = self._determine_mechanism_structural(target)
-        if structural:
-            return structural
-        auto_mechanism = self._auto_mechanism_from_strategy(target, query=query)
-        if auto_mechanism:
-            return auto_mechanism
-        return "generic"
-
-    def _get_required_roles(
-        self, mechanism: str, *, target: SubgraphNode | None = None
-    ) -> list[str]:
-        """Return the set of evidence roles required for a minimally sufficient context."""
-        roles = []
-        if mechanism.startswith("auto:"):
-            roles = self._roles_for_auto_mechanism(mechanism.removeprefix("auto:"))
-            local = self._filter_roles_by_target_supply(roles, target)
-            if local:
-                roles = local
-        else:
-            roles = required_roles_for_mechanism(
-                mechanism,
-                role_catalog=self.role_catalog or None,
-            )
-            if roles:
-                # Prefer target-local supply first (target + 1-hop neighborhood),
-                # then fall back to workspace-level availability.
-                local = self._filter_roles_by_target_supply(roles, target)
-                roles = local or self._filter_roles_by_workspace_supply(roles)
-            if not roles:
-                roles = self._adaptive_role_plan(target=target)
-
-        # Docs are universally useful for grounding concepts
-        roles.append("docs_or_concept")
-        return normalize_roles(roles)
-
-    def _load_repository_profile(self) -> dict:
-        get_profile = getattr(self.db, "get_repository_profile", None)
-        if not callable(get_profile):
-            return {}
-        try:
-            profile = get_profile(workspace_id=self.workspace_id)
-        except Exception:
-            return {}
-        return profile if isinstance(profile, dict) else {}
-
-    def _load_role_catalog(self) -> dict:
-        """Load the index-time role catalog produced by Pass 1."""
-        from sidecar.indexer.role_clustering import get_role_catalog
-
-        try:
-            catalog = get_role_catalog(self.db, self.workspace_id)
-        except Exception:
-            return {}
-        return catalog if isinstance(catalog, dict) else {}
-
-    def _load_derived_role_map(self) -> dict[str, int]:
-        """Read every Symbol's `derived_role_id` for this workspace."""
-        if not self.role_catalog:
-            return {}
-        try:
-            with self.db.driver.session() as session:
-                rows = session.run(
-                    """
-                    MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
-                    WHERE s.derived_role_id IS NOT NULL
-                    RETURN s.uid AS uid, s.derived_role_id AS cid
-                    """,
-                    workspace_id=self.workspace_id,
-                )
-                return {r["uid"]: int(r["cid"]) for r in rows if r["uid"] is not None}
-        except Exception:
-            return {}
-
-    def _build_cluster_to_role_map(self) -> dict[int, str]:
-        """Pick a single primary canonical role per cluster.
-
-        For every canonical role in the catalog, take its top resolved
-        cluster (`resolve_role_clusters` already preserves archetype
-        preference order). When multiple roles claim the same cluster as
-        their top match, the role with the highest confidence wins;
-        sort is stable so ties break on catalog iteration order.
-        """
-        if not self.role_catalog:
-            return {}
-        from sidecar.indexer.role_clustering import resolve_role_clusters
-
-        cluster_claims: dict[int, list[tuple[str, float]]] = {}
-        for role in self.role_catalog.get("role_to_archetypes") or []:
-            matches = resolve_role_clusters(self.role_catalog, role)
-            if not matches:
-                continue
-            top = matches[0]
-            cluster_claims.setdefault(int(top["cluster_id"]), []).append(
-                (role, float(top["confidence"]))
-            )
-        result: dict[int, str] = {}
-        for cid, claims in cluster_claims.items():
-            claims.sort(key=lambda item: item[1], reverse=True)
-            result[cid] = claims[0][0]
-        return result
-
-    def _strategy_role_plan(self) -> list[str]:
-        return normalize_roles((self.strategy_profile or {}).get("role_plan") or [])
-
-    def _role_supply_counts(self) -> Counter[str]:
-        counts: Counter[str] = Counter()
-        if not self._cluster_to_role or not self._derived_role_by_uid:
-            return counts
-        for cluster_id in self._derived_role_by_uid.values():
-            role = self._cluster_to_role.get(cluster_id)
-            if role:
-                counts[role] += 1
-        return counts
-
-    def _filter_roles_by_workspace_supply(self, roles: list[str]) -> list[str]:
-        """Keep requested roles that are actually observed in indexed symbols."""
-        role_supply = self._role_supply_counts()
-        if not role_supply:
-            return normalize_roles(roles)
-        return normalize_roles([role for role in roles if role_supply.get(role, 0) > 0])
-
-    def _target_role_supply_counts(self, target: SubgraphNode | None) -> Counter[str]:
-        counts: Counter[str] = Counter()
-        if target is None or not target.uid:
-            return counts
-        roles_observed: list[str] = []
-        neighbors = self._one_hop_connected_symbol_uids(target.uid, limit=48)
-        for sym_uid in [target.uid, *neighbors]:
-            role = self._canonical_role_for_symbol_uid(sym_uid)
-            if role:
-                roles_observed.append(role)
-        counts.update(roles_observed)
-        return counts
-
-    def _filter_roles_by_target_supply(
-        self,
-        roles: list[str],
-        target: SubgraphNode | None,
-    ) -> list[str]:
-        role_supply = self._target_role_supply_counts(target)
-        if not role_supply:
-            return []
-        return normalize_roles([role for role in roles if role_supply.get(role, 0) > 0])
-
-    def _adaptive_role_plan(self, *, target: SubgraphNode | None = None) -> list[str]:
-        """Derive fallback role plan from repository strategy and observed cluster supply."""
-        selected: list[str] = []
-
-        target_supply = self._target_role_supply_counts(target)
-        if target_supply:
-            selected.extend(role for role, _ in target_supply.most_common(6))
-
-        strategy_roles = self._strategy_role_plan()
-        if strategy_roles:
-            if target_supply:
-                selected.extend([r for r in strategy_roles if target_supply.get(r, 0) > 0])
-            else:
-                selected.extend(strategy_roles)
-
-        role_supply = self._role_supply_counts()
-        if role_supply:
-            selected.extend(role for role, _ in role_supply.most_common(6))
-
-        if not selected and self.role_catalog:
-            selected.extend(list((self.role_catalog.get("role_to_archetypes") or {}).keys())[:6])
-
-        selected = normalize_roles(selected)
-        if selected:
-            return selected[:5]
-        return ["supporting_surface"]
-
-    def _roles_for_auto_mechanism(self, archetype: str) -> list[str]:
-        for item in (self.strategy_profile or {}).get("mechanism_archetypes") or []:
-            if item.get("type") == archetype:
-                return normalize_roles(item.get("role_plan") or [])
-        return self._strategy_role_plan()
-
-    def _auto_mechanism_from_strategy(self, target: SubgraphNode, query: str = "") -> str:
-        archetypes = (self.strategy_profile or {}).get("mechanism_archetypes") or []
-        if not archetypes:
-            return ""
-        haystack = " ".join(
-            part.lower()
-            for part in (target.name or "", target.file_path or "", query or "")
-            if part
-        )
-        for item in archetypes:
-            archetype = item.get("type", "")
-            evidence = " ".join(str(piece).lower() for piece in item.get("evidence") or [])
-            terms = set(self._focus_query_terms(archetype.replace("_", " ")))
-            terms.update(self._focus_query_terms(evidence))
-            if terms and any(term in haystack for term in terms):
-                return f"auto:{archetype}"
-        top = archetypes[0].get("type", "")
-        return f"auto:{top}" if top else ""
-
-    # ------------------------------------------------------------------
     # Neo4j helpers
     # ------------------------------------------------------------------
 
