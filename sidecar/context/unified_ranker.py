@@ -25,6 +25,7 @@ from pathlib import Path
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.mechanism_registry import (
     determine_preloaded_mechanism,
+    pick_mechanism_by_role_overlap,
     required_roles_for_mechanism,
     role_backfill_specs_for_mechanism,
 )
@@ -1700,7 +1701,10 @@ class UnifiedRanker:
         *,
         excluded_uids: set[str],
     ) -> list[Candidate]:
-        specs_by_role = role_backfill_specs_for_mechanism(mechanism)
+        specs_by_role = role_backfill_specs_for_mechanism(
+            mechanism,
+            role_catalog=self.role_catalog or None,
+        )
         if not specs_by_role:
             return []
 
@@ -2436,12 +2440,59 @@ class UnifiedRanker:
         # Legacy fallback disabled: Phase 9.5 requires semantic role detection at index time
         return "supporting_surface"  # Neutral default instead of hardcoded patterns
 
+    def _canonical_role_for_symbol_uid(self, uid: str) -> str:
+        cid = self._derived_role_by_uid.get(uid)
+        if cid is None:
+            return ""
+        return self._cluster_to_role.get(cid) or ""
+
+    def _one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
+        query = """
+        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(n:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        RETURN DISTINCT n.uid AS uid
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = session.run(
+                    query,
+                    uid=target_uid,
+                    workspace_id=self.workspace_id,
+                    limit=limit,
+                )
+                return [str(r["uid"]) for r in rows if r.get("uid")]
+        except Exception:
+            return []
+
+    def _determine_mechanism_structural(self, target: SubgraphNode) -> str:
+        """Infer mechanism from Pass 1 roles in the target + 1-hop symbol neighborhood."""
+        if not self._cluster_to_role or not self._derived_role_by_uid:
+            return ""
+        uid = getattr(target, "uid", "") or ""
+        if not uid:
+            return ""
+        neighbors = self._one_hop_connected_symbol_uids(uid, limit=48)
+        roles_observed: list[str] = []
+        for sym_uid in [uid, *neighbors]:
+            role = self._canonical_role_for_symbol_uid(sym_uid)
+            if role:
+                roles_observed.append(role)
+        target_role = self._canonical_role_for_symbol_uid(uid)
+        return pick_mechanism_by_role_overlap(
+            roles_observed,
+            target_role=target_role,
+            role_catalog=self.role_catalog or None,
+        )
 
     def _determine_mechanism(self, target: SubgraphNode, query: str = "") -> str:
         """Map target symbol to a known framework mechanism."""
         preloaded = determine_preloaded_mechanism(target, query=query)
         if preloaded:
             return preloaded
+        structural = self._determine_mechanism_structural(target)
+        if structural:
+            return structural
         auto_mechanism = self._auto_mechanism_from_strategy(target, query=query)
         if auto_mechanism:
             return auto_mechanism
@@ -2453,7 +2504,10 @@ class UnifiedRanker:
         if mechanism.startswith("auto:"):
             roles = self._roles_for_auto_mechanism(mechanism.removeprefix("auto:"))
         else:
-            roles = required_roles_for_mechanism(mechanism)
+            roles = required_roles_for_mechanism(
+                mechanism,
+                role_catalog=self.role_catalog or None,
+            )
             if not roles:
                 roles = self._strategy_role_plan() or ["api_surface", "executor", "runtime_surface"]
 

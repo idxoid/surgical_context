@@ -30,8 +30,10 @@ from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from sidecar.context.mechanism_registry import merge_preloaded_mechanisms_into_role_catalog
+
 ROLE_TAXONOMY_SCHEMA_VERSION = 1
-ROLE_CATALOG_SCHEMA_VERSION = 1
+ROLE_CATALOG_SCHEMA_VERSION = 2  # v2: mechanism_required_roles + mechanism_role_backfill in JSON
 
 
 _FEATURE_NAMES: tuple[str, ...] = (
@@ -829,7 +831,9 @@ def persist_role_taxonomy(
 ) -> None:
     """Save the taxonomy on the Workspace and cluster ids on each Symbol."""
     payload = json.dumps(taxonomy.to_dict(), sort_keys=True)
-    catalog_payload = json.dumps(build_role_catalog(taxonomy).to_dict(), sort_keys=True)
+    catalog_dict = build_role_catalog(taxonomy).to_dict()
+    catalog_dict = merge_preloaded_mechanisms_into_role_catalog(catalog_dict)
+    catalog_payload = json.dumps(catalog_dict, sort_keys=True)
     with db.driver.session() as session:
         session.run(
             """

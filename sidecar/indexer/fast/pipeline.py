@@ -614,6 +614,10 @@ def run_fast_indexing(
         # Universal replacement for the framework-specific naming heuristics
         # baked into mechanism_registry / repository_profile / unified_ranker.
         t_stage = time.perf_counter()
+        from sidecar.context.mechanism_registry import (
+            ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY,
+            preloaded_mechanism_catalog_extensions,
+        )
         from sidecar.indexer.role_clustering import (
             build_role_catalog,
             derive_and_persist_role_taxonomy,
@@ -630,9 +634,11 @@ def run_fast_indexing(
             "silhouette": round(taxonomy.silhouette, 4),
             "sample_size": taxonomy.sample_size,
         }
+        _preloaded_mech = preloaded_mechanism_catalog_extensions()
         stats["role_catalog"] = {
             "archetypes": len(role_catalog.archetypes),
             "roles": len(role_catalog.role_to_archetypes),
+            "preloaded_mechanisms": len(_preloaded_mech[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY]),
         }
 
         _use_repository_profile(
