@@ -1,6 +1,7 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from sidecar.context.intent_classifier import Intent
+from sidecar.context.mechanism_registry import determine_preloaded_mechanism
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
     _NOISE_FACTOR,
@@ -236,7 +237,7 @@ def test_duplicate_target_selection_prefers_main_pydantic_entrypoint_for_model_d
     assert metadata["selected_uid"] == "base-model-dump"
 
 
-def test_pydantic_basemodel_mechanism_uses_query_to_split_boundary_vs_validation():
+def test_pydantic_basemodel_uses_generic_mechanism_when_dispatch_stubbed():
     ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
     target = SubgraphNode(
         uid="basemodel",
@@ -256,14 +257,14 @@ def test_pydantic_basemodel_mechanism_uses_query_to_split_boundary_vs_validation
             target,
             query="How does BaseModel validation flow work in v2 from model construction to validated output?",
         )
-        == "pydantic_validation_core_bridge"
+        == "generic"
     )
     assert (
         ranker._determine_mechanism(
             target,
             query="Which parts of Pydantic are pure Python wrappers and which parts rely on pydantic-core?",
         )
-        == "pydantic_python_core_boundary"
+        == "generic"
     )
 
 
@@ -323,7 +324,9 @@ def test_capability_roles_add_generic_impact_runtime_and_test_surfaces():
     assert "impact_test_surface" in ranker._roles_of(test_symbol)
 
 
-def test_pydantic_backfill_preserves_explicit_role_overrides():
+def test_role_backfill_reads_specs_from_catalog_overlay():
+    from sidecar.context.mechanism_registry import ROLE_CATALOG_MECHANISM_BACKFILL_KEY
+
     db = _make_backfill_db(
         [
             {
@@ -365,6 +368,21 @@ def test_pydantic_backfill_preserves_explicit_role_overrides():
         ]
     )
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+    ranker.role_catalog = {
+        ROLE_CATALOG_MECHANISM_BACKFILL_KEY: {
+            "pydantic_python_core_boundary": {
+                "validator_handle": [
+                    {"name": "__pydantic_validator__", "path_hint": "/repo/pydantic/main.py", "priority": 1.0},
+                ],
+                "core_runtime": [
+                    {"name": "SchemaValidator", "path_hint": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
+                ],
+                "serializer_handle": [
+                    {"name": "SchemaSerializer", "path_hint": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
+                ],
+            },
+        },
+    }
 
     backfill = ranker._role_backfill_candidates(
         "pydantic_python_core_boundary",
@@ -378,7 +396,7 @@ def test_pydantic_backfill_preserves_explicit_role_overrides():
     assert by_uid["schema-serializer"].evidence_role == "serializer_handle"
 
 
-def test_generic_ts_js_mechanisms_cover_redux_style_queries():
+def test_redux_style_symbols_use_generic_mechanism_when_dispatch_stubbed():
     ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
 
     create_slice = SubgraphNode(
@@ -447,42 +465,42 @@ def test_generic_ts_js_mechanisms_cover_redux_style_queries():
             create_slice,
             query="How does createSlice turn reducer definitions into action creators and the final reducer?",
         )
-        == "state_factory_pipeline"
+        == "generic"
     )
     assert (
         ranker._determine_mechanism(
             configure_store,
             query="How does configureStore assemble middleware, enhancers, and DevTools behavior?",
         )
-        == "runtime_configuration_pipeline"
+        == "generic"
     )
     assert (
         ranker._determine_mechanism(
             create_async_thunk,
             query="How does createAsyncThunk generate pending / fulfilled / rejected action flow?",
         )
-        == "async_lifecycle_pipeline"
+        == "generic"
     )
     assert (
         ranker._determine_mechanism(
             create_api,
             query="How does RTK Query define an API slice and connect generated endpoints into the store?",
         )
-        == "api_store_integration_pipeline"
+        == "generic"
     )
     assert (
         ranker._determine_mechanism(
             create_listener_middleware,
             query="How does listener middleware intercept actions and trigger side effects?",
         )
-        == "listener_orchestration_pipeline"
+        == "generic"
     )
     assert (
         ranker._determine_mechanism(
             configure_store,
             query="In this monorepo, which packages are core runtime behavior and which are docs/examples/supporting surfaces?",
         )
-        == "workspace_structure"
+        == "generic"
     )
 
 
@@ -839,10 +857,39 @@ def test_docs_deferred_until_code_breadth_met():
     )
 
 
-def test_openapi_generation_mechanism_dispatch():
-    """`get_openapi` and friends should resolve to fastapi_openapi_generation
-    with the right required roles, instead of falling through to the generic
-    fallback (which asks for executor + runtime_surface — wrong for this flow)."""
+def test_structural_mechanism_dispatch_when_preloaded_rules_miss():
+    """Pass 1 roles + catalog templates infer mechanism without name heuristics."""
+    from sidecar.context.mechanism_registry import ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY
+
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker.role_catalog = {
+        "schema_version": 2,
+        ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY: {
+            "fastapi_endpoint_execution": ["executor", "runtime_surface"],
+        },
+    }
+    ranker._cluster_to_role = {0: "executor", 1: "runtime_surface"}
+    ranker._derived_role_by_uid = {"target-u": 0, "n1": 1}
+    target = SubgraphNode(
+        uid="target-u",
+        name="Router",
+        file_path="/opaque/project/routing.py",
+        range=[1, 10],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    assert determine_preloaded_mechanism(target, "how does this work") == ""
+    with patch.object(ranker, "_one_hop_connected_symbol_uids", return_value=["n1"]):
+        assert ranker._determine_mechanism(target, "opaque query") == "fastapi_endpoint_execution"
+
+
+def test_openapi_symbols_use_generic_mechanism_without_bundled_dispatch():
+    """Bundled FastAPI mechanism rules are stubbed; symbols use generic routing."""
     db = _make_db()
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
 
@@ -864,18 +911,15 @@ def test_openapi_generation_mechanism_dispatch():
             relevance_score=1.0,
             kind="function",
         )
-        assert ranker._determine_mechanism(target, "How does FastAPI generate OpenAPI?") == "fastapi_openapi_generation"
+        assert ranker._determine_mechanism(target, "How does FastAPI generate OpenAPI?") == "generic"
 
-    required = ranker._get_required_roles("fastapi_openapi_generation")
+    required = ranker._get_required_roles("generic")
     assert "api_surface" in required
-    assert "schema_builder" in required
-    assert "factory_surface" in required
-    # Must NOT include the generic fallback's irrelevant roles.
-    assert "executor" not in required
-    assert "runtime_surface" not in required
+    assert "executor" in required
+    assert "runtime_surface" in required
 
 
-def test_fastapi_serialization_impact_dispatches_to_impact_roles():
+def test_fastapi_serialization_symbol_uses_generic_mechanism_when_dispatch_stubbed():
     ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
     target = SubgraphNode(
         uid="serialize-response",
@@ -895,12 +939,12 @@ def test_fastapi_serialization_impact_dispatches_to_impact_roles():
             target,
             "If I change response model serialization behavior, what parts of the framework and tests break?",
         )
-        == "fastapi_serialization_impact"
+        == "generic"
     )
 
-    required = ranker._get_required_roles("fastapi_serialization_impact")
-    assert set(required) >= {"impact_runtime", "impact_public_api", "impact_test_surface"}
-    assert "executor" not in required
+    required = ranker._get_required_roles("generic")
+    assert "api_surface" in required
+    assert "executor" in required
 
 
 def test_role_filler_outranks_unrelated_high_score_docs():

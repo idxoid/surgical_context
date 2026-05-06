@@ -6,6 +6,8 @@ separate them using only structural features — no name patterns, no
 file paths.
 """
 
+import json
+
 from sidecar.indexer.role_clustering import (
     RoleCluster,
     RoleTaxonomy,
@@ -495,3 +497,22 @@ def test_role_catalog_resolves_canonical_roles_to_cluster_preferences():
     assert api_matches
     assert mapping["u:data_0"] in {match["cluster_id"] for match in core_matches}
     assert any(match["archetype"] in {"passive_api_surface", "active_entrypoint"} for match in api_matches)
+
+
+def test_role_catalog_payload_includes_preloaded_mechanism_profiles():
+    from sidecar.context.mechanism_registry import (
+        ROLE_CATALOG_MECHANISM_BACKFILL_KEY,
+        ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY,
+        merge_preloaded_mechanisms_into_role_catalog,
+    )
+
+    taxonomy, _ = cluster_symbols([], seed=0)
+    catalog = build_role_catalog(taxonomy)
+    merged = merge_preloaded_mechanisms_into_role_catalog(catalog.to_dict())
+
+    assert merged["schema_version"] == catalog.schema_version
+    assert ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY in merged
+    assert ROLE_CATALOG_MECHANISM_BACKFILL_KEY in merged
+    assert merged[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY] == {}
+
+    json.dumps(merged, sort_keys=True)

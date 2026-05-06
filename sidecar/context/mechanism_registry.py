@@ -1,497 +1,197 @@
-"""Preloaded mechanism profiles for known framework families.
+"""Mechanism profiles — structural / workspace-driven path only.
 
-The ranker should not learn FastAPI/Pydantic/RTK behavior from benchmark
-questions. This registry keeps known mechanism profiles in one replaceable
-place, while repository-derived strategy profiles remain the generic fallback
-for unknown codebases.
+Framework-specific dispatch tables for FastAPI, Pydantic, and Redux Toolkit were
+removed (stubbed). Named mechanisms and role plans now come from persisted
+``role_catalog_json`` (``mechanism_required_roles`` / ``mechanism_role_backfill``)
+or future mining — not from bundled hardcoded rules.
 
-Design artifact, not dead code: keep this module until query-time ranking
-consumes the indexer-produced role catalog (see ``docs/spec_indexer.md``).
-Do not delete as cleanup-only churn.
+``determine_preloaded_mechanism`` is intentionally inert (always ``""``).
+``pick_mechanism_by_role_overlap`` scores only mechanisms listed in the catalog
+(or any future built-ins added back without framework literals).
+
+See ``docs/spec_indexer.md`` Pass 1 / catalog merge.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping
+from typing import Any
 
 from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.context.types import SubgraphNode
 
+ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY = "mechanism_required_roles"
+ROLE_CATALOG_MECHANISM_BACKFILL_KEY = "mechanism_role_backfill"
 
-@dataclass(frozen=True)
-class MechanismContext:
-    target: SubgraphNode
-    name: str
-    query: str
-    file_path: str
+_REQUIRED_ROLES: dict[str, tuple[str, ...]] = {}
 
-
-@dataclass(frozen=True)
-class MechanismRule:
-    mechanism: str
-    match: Callable[[MechanismContext], bool]
+_ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {}
 
 
-_REQUIRED_ROLES: dict[str, tuple[str, ...]] = {
-    "fastapi_route_registration": (
-        "api_surface",
-        "factory_surface",
-        "representation_surface",
-        "runtime_surface",
-    ),
-    "fastapi_dependency_injection": (
-        "api_surface",
-        "config_surface",
-        "representation_surface",
-        "orchestrator",
-        "runtime_surface",
-    ),
-    "fastapi_request_body_dependency_resolution": (
-        "runtime_surface",
-        "schema_builder",
-        "orchestrator",
-        "binding_surface",
-    ),
-    "fastapi_endpoint_execution": ("executor", "runtime_surface"),
-    "fastapi_serialization_impact": (
-        "impact_runtime",
-        "impact_public_api",
-        "impact_test_surface",
-    ),
-    "fastapi_openapi_generation": (
-        "api_surface",
-        "schema_builder",
-        "factory_surface",
-    ),
-    "pydantic_validation_core_bridge": (
-        "api_surface",
-        "construction_surface",
-        "runtime_surface",
-        "validator_handle",
-        "core_runtime",
-        "orchestrator",
-        "executor",
-    ),
-    "pydantic_python_core_boundary": (
-        "api_surface",
-        "validator_handle",
-        "serializer_handle",
-        "core_runtime",
-    ),
-    "pydantic_serialization_bridge": (
-        "api_surface",
-        "serializer_handle",
-        "core_runtime",
-    ),
-    "pydantic_json_schema_generation": (
-        "api_surface",
-        "schema_builder",
-        "representation_surface",
-    ),
-    "pydantic_v1_compat_surface": (
-        "api_surface",
-        "compat_bridge",
-        "docs_or_concept",
-    ),
-    "pydantic_alias_impact": (
-        "impact_runtime",
-        "impact_public_api",
-        "impact_test_surface",
-    ),
-    "pydantic_validation_error_assembly": (
-        "api_surface",
-        "core_runtime",
-        "error_surface",
-    ),
-    "state_factory_pipeline": (
-        "api_surface",
-        "factory_surface",
-        "composition_surface",
-    ),
-    "listener_orchestration_pipeline": (
-        "api_surface",
-        "orchestrator",
-        "executor",
-    ),
-    "runtime_configuration_pipeline": (
-        "api_surface",
-        "composition_surface",
-        "config_surface",
-    ),
-    "async_lifecycle_pipeline": (
-        "api_surface",
-        "factory_surface",
-        "executor",
-        "error_surface",
-    ),
-    "api_store_integration_pipeline": (
-        "api_surface",
-        "representation_surface",
-        "integration_surface",
-    ),
-    "workspace_structure": (
-        "api_surface",
-        "core_runtime",
-        "docs_or_concept",
-        "supporting_surface",
-    ),
-}
+def _roles_from_role_catalog_override(
+    mechanism: str,
+    role_catalog: Mapping[str, Any] | None,
+) -> list[str] | None:
+    """Return normalized roles if ``role_catalog`` overrides this mechanism."""
+    if not role_catalog:
+        return None
+    raw = role_catalog.get(ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY)
+    if not isinstance(raw, dict):
+        return None
+    entry = raw.get(mechanism)
+    if entry is None:
+        return None
+    if not isinstance(entry, (list, tuple)):
+        return None
+    return normalize_roles([str(x) for x in entry])
 
 
-_ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
-    "fastapi_route_registration": {
-        "factory_surface": [
-            {"name": "add_api_route", "path_hint": "/fastapi/applications.py", "priority": 1.0},
-            {"name": "api_route", "path_hint": "/fastapi/applications.py", "priority": 0.9},
-            {"name": "add_api_route", "path_hint": "/fastapi/routing.py", "priority": 0.8},
-        ],
-        "representation_surface": [
-            {"name": "APIRoute", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-        "runtime_surface": [
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-    },
-    "fastapi_dependency_injection": {
-        "config_surface": [
-            {"name": "Depends", "path_hint": "/fastapi/params.py", "priority": 1.0},
-            {"name": "Security", "path_hint": "/fastapi/params.py", "priority": 0.7},
-        ],
-        "representation_surface": [
-            {"name": "Dependant", "path_hint": "/fastapi/dependencies/models.py", "priority": 1.0},
-            {"name": "get_dependant", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.95},
-            {"name": "get_flat_dependant", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.8},
-        ],
-        "orchestrator": [
-            {"name": "solve_dependencies", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
-        ],
-        "runtime_surface": [
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-    },
-    "fastapi_request_body_dependency_resolution": {
-        "schema_builder": [
-            {"name": "get_body_field", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
-        ],
-        "orchestrator": [
-            {"name": "solve_dependencies", "path_hint": "/fastapi/dependencies/utils.py", "priority": 0.95},
-        ],
-        "runtime_surface": [
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-        "binding_surface": [
-            {"name": "request_body_to_args", "path_hint": "/fastapi/dependencies/utils.py", "priority": 1.0},
-        ],
-    },
-    "fastapi_endpoint_execution": {
-        "executor": [
-            {"name": "run_endpoint_function", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-        ],
-        "runtime_surface": [
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 0.95},
-        ],
-    },
-    "fastapi_serialization_impact": {
-        "impact_runtime": [
-            {"name": "serialize_response", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-            {"name": "get_request_handler", "path_hint": "/fastapi/routing.py", "priority": 0.85},
-        ],
-        "impact_public_api": [
-            {"name": "APIRoute", "path_hint": "/fastapi/routing.py", "priority": 1.0},
-            {"name": "FastAPI", "path_hint": "/fastapi/applications.py", "priority": 0.8},
-        ],
-        "impact_test_surface": [
-            {"name": "test_valid_exclude_unset", "path_hint": "/tests/test_serialize_response_model.py", "priority": 1.0},
-            {"name": "test_no_response_model_object", "path_hint": "/tests/test_serialize_response_dataclass.py", "priority": 0.9},
-            {"name": "test_response_validation_error_includes_endpoint_context", "path_hint": "/tests/test_validation_error_context.py", "priority": 0.85},
-        ],
-    },
-    "fastapi_openapi_generation": {
-        "api_surface": [
-            {"name": "openapi", "path_hint": "/fastapi/applications.py", "priority": 1.0},
-        ],
-        "schema_builder": [
-            {"name": "get_openapi", "path_hint": "/fastapi/openapi/utils.py", "priority": 1.0},
-            {"name": "get_openapi_path", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.85},
-            {"name": "get_fields_from_routes", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.8},
-        ],
-        "factory_surface": [
-            {"name": "get_openapi_operation_metadata", "path_hint": "/fastapi/openapi/utils.py", "priority": 0.9},
-        ],
-    },
-    "pydantic_validation_core_bridge": {
-        "construction_surface": [
-            {"name": "__init__", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "runtime_surface": [
-            {"name": "model_validate", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "orchestrator": [
-            {"name": "complete_model_class", "path_hint": "/pydantic/_internal/_model_construction.py", "priority": 1.0},
-        ],
-        "validator_handle": [
-            {"name": "__pydantic_validator__", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "core_runtime": [
-            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-        "executor": [
-            {"name": "validate_python", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
-            {"name": "validate_json", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-            {"name": "validate_strings", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-    },
-    "pydantic_python_core_boundary": {
-        "validator_handle": [
-            {"name": "__pydantic_validator__", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "serializer_handle": [
-            {"name": "SchemaSerializer", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
-        ],
-        "core_runtime": [
-            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-    },
-    "pydantic_serialization_bridge": {
-        "serializer_handle": [
-            {"name": "__pydantic_serializer__", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "core_runtime": [
-            {"name": "SchemaSerializer", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-    },
-    "pydantic_json_schema_generation": {
-        "schema_builder": [
-            {"name": "GenerateJsonSchema", "path_hint": "/pydantic/json_schema.py", "priority": 1.0},
-        ],
-        "representation_surface": [
-            {"name": "json_schema", "path_hint": "/pydantic/json_schema.py", "priority": 0.95},
-        ],
-    },
-    "pydantic_v1_compat_surface": {
-        "compat_bridge": [
-            {"name": "v1", "path_hint": "/pydantic/__init__.py", "priority": 1.0},
-        ],
-        "api_surface": [
-            {"name": "BaseModel", "path_hint": "/pydantic/v1/main.py", "priority": 0.9},
-        ],
-    },
-    "pydantic_validation_error_assembly": {
-        "api_surface": [
-            {"name": "model_validate", "path_hint": "/pydantic/main.py", "priority": 1.0},
-        ],
-        "core_runtime": [
-            {"name": "SchemaValidator", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
-        ],
-        "error_surface": [
-            {"name": "ValidationError", "path_hint": "/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
-        ],
-    },
-    "state_factory_pipeline": {
-        "factory_surface": [
-            {"name": "createAction", "path_hint": "/packages/toolkit/src/createAction.ts", "priority": 1.0},
-            {"name": "createReducer", "path_hint": "/packages/toolkit/src/createReducer.ts", "priority": 0.95},
-            {"name": "buildCreateSlice", "path_hint": "/packages/toolkit/src/createSlice.ts", "priority": 0.8},
-        ],
-        "composition_surface": [
-            {"name": "createReducer", "path_hint": "/packages/toolkit/src/createReducer.ts", "priority": 0.9},
-        ],
-    },
-    "runtime_configuration_pipeline": {
-        "composition_surface": [
-            {"name": "getDefaultMiddleware", "path_hint": "/packages/toolkit/src/getDefaultMiddleware.ts", "priority": 1.0},
-            {"name": "getDefaultEnhancers", "path_hint": "/packages/toolkit/src/getDefaultEnhancers.ts", "priority": 0.95},
-        ],
-        "config_surface": [
-            {"name": "composeWithDevTools", "path_hint": "/packages/toolkit/src/devtoolsExtension.ts", "priority": 0.95},
-            {"name": "devToolsEnhancer", "path_hint": "/packages/toolkit/src/devtoolsExtension.ts", "priority": 0.9},
-        ],
-    },
-    "async_lifecycle_pipeline": {
-        "factory_surface": [
-            {"name": "createAction", "path_hint": "/packages/toolkit/src/createAction.ts", "priority": 0.9},
-        ],
-        "executor": [
-            {"name": "createAsyncThunk", "path_hint": "/packages/toolkit/src/createAsyncThunk.ts", "priority": 1.0},
-        ],
-    },
-    "api_store_integration_pipeline": {
-        "representation_surface": [
-            {"name": "coreModule", "path_hint": "/packages/toolkit/src/query/core/module.ts", "priority": 1.0},
-            {"name": "injectEndpoint", "path_hint": "/packages/toolkit/src/query/core/module.ts", "priority": 0.9},
-        ],
-        "integration_surface": [
-            {"name": "buildCreateApi", "path_hint": "/packages/toolkit/src/query/createApi.ts", "priority": 1.0},
-            {"name": "setupListeners", "path_hint": "/packages/toolkit/src/query/core/setupListeners.ts", "priority": 0.75},
-        ],
-    },
-    "listener_orchestration_pipeline": {
-        "orchestrator": [
-            {"name": "addListener", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 1.0},
-            {"name": "createListenerEntry", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 0.9},
-        ],
-        "executor": [
-            {"name": "runTask", "path_hint": "/packages/toolkit/src/listenerMiddleware/task.ts", "priority": 1.0},
-            {"name": "notifyListener", "path_hint": "/packages/toolkit/src/listenerMiddleware/index.ts", "priority": 0.85},
-        ],
-    },
-}
+def _coerce_backfill_spec(spec: Mapping[str, Any]) -> dict[str, str | float] | None:
+    name = spec.get("name")
+    if name is None or str(name).strip() == "":
+        return None
+    row: dict[str, str | float] = {"name": str(name)}
+    if spec.get("path_hint") is not None:
+        row["path_hint"] = str(spec["path_hint"])
+    if spec.get("priority") is not None:
+        try:
+            row["priority"] = float(spec["priority"])
+        except (TypeError, ValueError):
+            row["priority"] = 1.0
+    return row
 
 
-def required_roles_for_mechanism(mechanism: str) -> list[str]:
-    """Return registry roles for a known mechanism, or an empty list."""
+def _backfill_from_role_catalog_override(
+    mechanism: str,
+    role_catalog: Mapping[str, Any] | None,
+) -> dict[str, list[dict[str, str | float]]] | None:
+    """Return parsed backfill specs when ``role_catalog`` defines this mechanism."""
+    if not role_catalog:
+        return None
+    raw = role_catalog.get(ROLE_CATALOG_MECHANISM_BACKFILL_KEY)
+    if not isinstance(raw, dict):
+        return None
+    entry = raw.get(mechanism)
+    if entry is None:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    result: dict[str, list[dict[str, str | float]]] = {}
+    for role, specs in entry.items():
+        role_key = str(role)
+        if not isinstance(specs, list):
+            continue
+        parsed: list[dict[str, str | float]] = []
+        for item in specs:
+            if isinstance(item, Mapping):
+                coerced = _coerce_backfill_spec(item)
+                if coerced is not None:
+                    parsed.append(coerced)
+        if parsed:
+            result[role_key] = parsed
+    return result if result else None
+
+
+def required_roles_for_mechanism(
+    mechanism: str,
+    *,
+    role_catalog: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Return roles for a mechanism: workspace overlay first, then built-in table."""
+    overridden = _roles_from_role_catalog_override(mechanism, role_catalog)
+    if overridden is not None:
+        return overridden
     return normalize_roles(_REQUIRED_ROLES.get(mechanism, ()))
 
 
 def determine_preloaded_mechanism(target: SubgraphNode, query: str = "") -> str:
-    """Return the best preloaded mechanism for a target, if one matches."""
-    context = MechanismContext(
-        target=target,
-        name=(target.name or "").lower(),
-        query=(query or "").lower(),
-        file_path=(target.file_path or "").lower(),
-    )
-    for rule in _RULES:
-        if rule.match(context):
-            return rule.mechanism
+    """Return the best preloaded mechanism for a target, if one matches.
+
+    Stubbed: no bundled name/query rules; always ``""``.
+    """
+    _ = (target, query)
     return ""
 
 
-def role_backfill_specs_for_mechanism(mechanism: str) -> dict[str, list[dict[str, str | float]]]:
-    """Return registry role backfill specs for a known mechanism, or an empty dict."""
+def role_backfill_specs_for_mechanism(
+    mechanism: str,
+    *,
+    role_catalog: Mapping[str, Any] | None = None,
+) -> dict[str, list[dict[str, str | float]]]:
+    """Return role→spec lists: workspace overlay first, then built-in table."""
+    overridden = _backfill_from_role_catalog_override(mechanism, role_catalog)
+    if overridden is not None:
+        return overridden
     return _ROLE_BACKFILL_SPECS.get(mechanism, {})
 
 
-def known_mechanisms() -> tuple[str, ...]:
-    return tuple(_REQUIRED_ROLES)
+def known_mechanisms(*, role_catalog: Mapping[str, Any] | None = None) -> tuple[str, ...]:
+    """Mechanism ids from built-in table plus optional catalog overlays."""
+    keys: set[str] = set(_REQUIRED_ROLES.keys())
+    if role_catalog:
+        raw = role_catalog.get(ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY)
+        if isinstance(raw, dict):
+            keys.update(str(k) for k in raw if isinstance(k, str) and k)
+        raw_bf = role_catalog.get(ROLE_CATALOG_MECHANISM_BACKFILL_KEY)
+        if isinstance(raw_bf, dict):
+            keys.update(str(k) for k in raw_bf if isinstance(k, str) and k)
+    return tuple(sorted(keys))
 
 
-def _name_in(*names: str) -> Callable[[MechanismContext], bool]:
-    return lambda c: c.name in names
+def preloaded_mechanism_catalog_extensions() -> dict[str, Any]:
+    """JSON-friendly mechanism profiles for ``role_catalog_json`` (empty by default)."""
+    return {
+        ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY: {},
+        ROLE_CATALOG_MECHANISM_BACKFILL_KEY: {},
+    }
 
 
-def _query_has(c: MechanismContext, *phrases: str) -> bool:
-    return any(phrase in c.query for phrase in phrases)
+def merge_preloaded_mechanisms_into_role_catalog(catalog_dict: dict[str, Any]) -> dict[str, Any]:
+    """Return ``catalog_dict`` plus preloaded mechanism keys (shallow copy)."""
+    merged = dict(catalog_dict)
+    merged.update(preloaded_mechanism_catalog_extensions())
+    return merged
 
 
-def _query_has_all(c: MechanismContext, *phrases: str) -> bool:
-    return all(phrase in c.query for phrase in phrases)
+def pick_mechanism_by_role_overlap(
+    observed_roles: Collection[str],
+    *,
+    target_role: str = "",
+    role_catalog: Mapping[str, Any] | None = None,
+    min_score: float = 0.42,
+    target_bonus: float = 0.1,
+) -> str:
+    """Pick a named mechanism by overlap between observed Pass 1 roles and templates."""
+    obs = {r for r in observed_roles if r}
+    if len(obs) < 2:
+        return ""
 
+    best_mech = ""
+    best_score = 0.0
+    second_best = 0.0
 
-def _pydantic_core_boundary_query(c: MechanismContext) -> bool:
-    return _query_has(
-        c,
-        "pure python",
-        "wrapper",
-        "wrappers",
-        "pydantic-core",
-        "rely on pydantic-core",
-    )
+    for mech in known_mechanisms(role_catalog=role_catalog):
+        req = [
+            r
+            for r in required_roles_for_mechanism(mech, role_catalog=role_catalog)
+            if r != "docs_or_concept"
+        ]
+        if not req:
+            continue
+        req_set = set(req)
+        overlap_ratio = len(obs & req_set) / len(req_set)
+        score = overlap_ratio
+        if target_role and target_role in req_set:
+            score = min(1.0, score + target_bonus)
+        if score > best_score:
+            second_best = best_score
+            best_score = score
+            best_mech = mech
+        elif score > second_best:
+            second_best = score
 
-
-def _fastapi_serialization_impact(c: MechanismContext) -> bool:
-    return c.name == "serialize_response" and _query_has(
-        c,
-        "affect",
-        "break",
-        "change",
-        "impact",
-        "test",
-    )
-
-
-def _workspace_structure(c: MechanismContext) -> bool:
-    return "monorepo" in c.query or (
-        "core runtime" in c.query and ("docs" in c.query or "examples" in c.query)
-    )
-
-
-def _rtk_runtime_configuration(c: MechanismContext) -> bool:
-    return c.name == "configurestore" or (
-        (
-            "/packages/toolkit/" in c.file_path
-            or "redux" in c.file_path
-            or "configurestore" in c.query
-        )
-        and _query_has(c, "middleware", "enhancers", "devtools")
-    )
-
-
-_RULES: tuple[MechanismRule, ...] = (
-    MechanismRule(
-        "fastapi_route_registration",
-        _name_in("fastapi", "apirouter", "add_api_route", "api_route"),
-    ),
-    MechanismRule(
-        "fastapi_dependency_injection",
-        _name_in("depends", "get_dependant", "dependant"),
-    ),
-    MechanismRule(
-        "fastapi_request_body_dependency_resolution",
-        _name_in("request_body_to_args", "get_body_field"),
-    ),
-    MechanismRule("fastapi_serialization_impact", _fastapi_serialization_impact),
-    MechanismRule(
-        "fastapi_endpoint_execution",
-        _name_in("run_endpoint_function", "serialize_response", "solve_dependencies"),
-    ),
-    MechanismRule(
-        "fastapi_openapi_generation",
-        _name_in("get_openapi", "openapi", "get_openapi_path", "get_fields_from_routes"),
-    ),
-    MechanismRule(
-        "pydantic_python_core_boundary",
-        lambda c: c.name == "basemodel" and _pydantic_core_boundary_query(c),
-    ),
-    MechanismRule("pydantic_validation_core_bridge", _name_in("basemodel")),
-    MechanismRule(
-        "pydantic_python_core_boundary",
-        lambda c: c.name in ("model_validate", "__pydantic_validator__", "schemavalidator")
-        and _pydantic_core_boundary_query(c),
-    ),
-    MechanismRule(
-        "pydantic_validation_core_bridge",
-        _name_in("model_validate", "__pydantic_validator__", "schemavalidator"),
-    ),
-    MechanismRule(
-        "pydantic_python_core_boundary",
-        lambda c: c.name in ("model_dump", "__pydantic_serializer__", "schemaserializer")
-        and _pydantic_core_boundary_query(c),
-    ),
-    MechanismRule(
-        "pydantic_serialization_bridge",
-        _name_in("model_dump", "__pydantic_serializer__", "schemaserializer"),
-    ),
-    MechanismRule(
-        "pydantic_json_schema_generation",
-        _name_in("model_json_schema", "generatejsonschema", "json_schema"),
-    ),
-    MechanismRule("pydantic_validation_error_assembly", _name_in("validationerror")),
-    MechanismRule("pydantic_alias_impact", _name_in("field", "aliaschoices", "aliaspath")),
-    MechanismRule(
-        "pydantic_v1_compat_surface",
-        lambda c: c.name == "v1" or "/pydantic/v1/" in c.file_path,
-    ),
-    MechanismRule("workspace_structure", _workspace_structure),
-    MechanismRule(
-        "state_factory_pipeline",
-        lambda c: c.name == "createslice" or _query_has_all(c, "action creator", "reducer"),
-    ),
-    MechanismRule(
-        "listener_orchestration_pipeline",
-        lambda c: c.name == "createlistenermiddleware"
-        or (_query_has_all(c, "listener middleware") and _query_has(c, "intercept", "side effect")),
-    ),
-    MechanismRule("runtime_configuration_pipeline", _rtk_runtime_configuration),
-    MechanismRule(
-        "async_lifecycle_pipeline",
-        lambda c: c.name == "createasyncthunk"
-        or _query_has(c, "pending", "fulfilled", "rejected", "async thunk"),
-    ),
-    MechanismRule(
-        "api_store_integration_pipeline",
-        lambda c: c.name == "createapi"
-        or ("api slice" in c.query and ("endpoint" in c.query or "store" in c.query)),
-    ),
-)
+    if best_score < min_score:
+        return ""
+    if second_best > 0 and best_score - second_best < 0.035:
+        return ""
+    return best_mech

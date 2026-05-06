@@ -203,6 +203,8 @@ Features are log-transformed and standardized (zero mean, unit variance) before 
 
 Canonical roles resolve through archetype preferences instead of direct cluster equality. For example, `runtime_surface` resolves to `active_entrypoint`, `runtime_handle`, and `executor`; `api_surface` resolves to `passive_api_surface` and `active_entrypoint`. Passive/config surfaces use typed doc-anchor weight, not raw doc count, so definition/reference anchors can lift public API clusters while example-heavy or weak anchors contribute less. Consumers should treat the result as a scoring preference, not a hard filter.
 
+**Mechanism profiles in the catalog.** On each persist, the indexer merges `mechanism_required_roles` and `mechanism_role_backfill` keys into `role_catalog_json` from `mechanism_registry.preloaded_mechanism_catalog_extensions()` (currently **empty objects** — no bundled FastAPI/Pydantic/Redux tables). Populate those maps via workspace-specific pipelines or future mining; `UnifiedRanker` still reads them when present. Extra keys are ignored by `resolve_role_clusters`, which only reads `schema_version`, `archetypes`, and `role_to_archetypes`.
+
 **Persistence.** Pass 1 writes the taxonomy and role catalog onto the Neo4j `Workspace`, then writes the cluster id onto every `Symbol`:
 
 ```cypher
@@ -220,7 +222,7 @@ Canonical roles resolve through archetype preferences instead of direct cluster 
 
 `stats["role_taxonomy"]` exposes `chosen_k`, `silhouette`, and `sample_size` for benchmark and progress logs. `stats["role_catalog"]` exposes the number of archetypes and canonical role mappings. Timing is recorded under `stats["timings_sec"]["role_clustering"]`.
 
-**Consumers.** Pass 1 is intentionally side-effect-only for ranking: it persists `derived_role_id`, `role_taxonomy_json`, and `role_catalog_json`, but no query-time code path uses those fields for selection yet. Cutting `mechanism_registry`, `repository_profile`, and `unified_ranker._infer_role` over to the role catalog is a follow-up step. Until that happens, the framework-specific heuristics still drive ranking; Pass 1 just produces the universal substitute next to them so it can be validated on real graphs first.
+**Consumers.** Pass 1 persists `derived_role_id`, structural archetypes in `role_catalog_json`, and — from schema v2 onward — the mechanism overlay keys (often `{}` until filled externally). `UnifiedRanker` reads cluster-derived roles via `derived_role_id` plus `_cluster_to_role`, optional catalog mechanism templates, structural overlap scoring, then repository `strategy_profile` / `generic`. Bundled name-based mechanism dispatch for FastAPI/Pydantic/Redux is intentionally stubbed.
 
 **Trade-offs.**
 - Cluster boundaries may not align with human intuition. The derived "role 3" can group `APIRoute` and `Dependant` together (both data-class-like, leaf-ish) while separating `add_api_route` from `api_route` if their fan-in differs. That is fine for ranking but means the benchmark cannot match by mechanism string equality across repos.

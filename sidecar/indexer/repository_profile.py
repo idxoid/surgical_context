@@ -42,12 +42,6 @@ _SKIP_DIRS = {
 
 _MECHANISM_PATTERNS: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = (
     (
-        "fastapi",
-        "web_framework",
-        ("fastapi", "FastAPI(", "APIRouter", "Depends("),
-        ("route_registration", "dependency_injection", "request_response_lifecycle"),
-    ),
-    (
         "django",
         "web_framework",
         ("django", "models.Model", "urlpatterns", "MigrationExecutor"),
@@ -60,22 +54,10 @@ _MECHANISM_PATTERNS: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ..
         ("route_registration", "request_context", "middleware_hooks"),
     ),
     (
-        "pydantic",
-        "data_validation",
-        ("pydantic", "BaseModel", "model_validate", "SchemaValidator"),
-        ("validation_pipeline", "serialization_pipeline", "schema_generation"),
-    ),
-    (
         "sqlalchemy",
         "orm",
         ("sqlalchemy", "declarative_base", "DeclarativeBase", "relationship(", "Session"),
         ("declarative_mapping", "query_builder", "session_identity_map"),
-    ),
-    (
-        "redux_toolkit",
-        "state_management",
-        ("createSlice", "configureStore", "createAsyncThunk", "createApi"),
-        ("factory_api_generation", "middleware_pipeline", "action_reducer_binding"),
     ),
     (
         "express",
@@ -108,7 +90,7 @@ _DYNAMIC_SURFACE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("registries", ("registry", "urlpatterns", "providers:", "controllers:", "app.use")),
     ("metaprogramming", ("metaclass", "__getattr__", "__init_subclass__", "DeclarativeMeta")),
     ("templates", ("<template", ".vue", "render(", "compileTemplate")),
-    ("generated_api", ("codegen", "generated", "createApi", "builder.query", "builder.mutation")),
+    ("generated_api", ("codegen", "generated")),
     ("macros_or_c", ("#define", "typedef", "struct ", "PG_FUNCTION_ARGS")),
 )
 
