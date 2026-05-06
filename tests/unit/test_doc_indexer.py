@@ -41,10 +41,12 @@ def test_index_docs_returns_file_and_chunk_counts(tmp_path, monkeypatch):
         "total",
     }
     assert result["link_stats"] == {}
-    assert batch_upserts == [[
-        (str(docs_dir / "a.md"), 1),
-        (str(docs_dir / "b.md"), 1),
-    ]]
+    assert batch_upserts == [
+        [
+            (str(docs_dir / "a.md"), 1),
+            (str(docs_dir / "b.md"), 1),
+        ]
+    ]
     assert linked == ["acme/repo@main"]
     assert closed == ["neo4j"]
 

@@ -127,9 +127,6 @@ def ensure_fast_indexes(neo4j_client) -> list[str]:
                 log.warning("schema stmt failed (%s): %s", name, e)
                 continue
             counters = summary.counters
-            if (
-                counters.indexes_added
-                or counters.constraints_added
-            ):
+            if counters.indexes_added or counters.constraints_added:
                 created.append(name)
     return created

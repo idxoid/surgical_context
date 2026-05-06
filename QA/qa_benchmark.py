@@ -143,7 +143,9 @@ class _LineProgressReporter:
             return
         percent = min(100, int((self._done / self._total) * 100))
         if percent == 100 or percent // 10 > self._last_percent // 10:
-            print(f"{self._prefix}[{stage}] {min(self._done, self._total)}/{self._total} ({percent}%)")
+            print(
+                f"{self._prefix}[{stage}] {min(self._done, self._total)}/{self._total} ({percent}%)"
+            )
             self._last_percent = percent
 
     def stage_end(self, stage: str) -> None:
@@ -262,7 +264,9 @@ def build_snapshot_manifest_row(
         "timestamp": metrics.get("timestamp"),
         "report_path": str(Path(report_path).resolve()),
         "git_commit": git_commit if git_commit is not None else _git_output("rev-parse", "HEAD"),
-        "git_branch": git_branch if git_branch is not None else _git_output("branch", "--show-current"),
+        "git_branch": git_branch
+        if git_branch is not None
+        else _git_output("branch", "--show-current"),
         "repo": question_pack.get("repo_filter") or "",
         "core12_only": bool(question_pack.get("core12_only")),
         "workspace_id": question_pack.get("workspace_id") or "",
@@ -314,8 +318,7 @@ def _path_matches_prefix(path: str | None, prefixes: list[str]) -> bool:
         return False
     resolved = str(Path(path).resolve())
     return any(
-        resolved == prefix or resolved.startswith(f"{prefix}{os.sep}")
-        for prefix in prefixes
+        resolved == prefix or resolved.startswith(f"{prefix}{os.sep}") for prefix in prefixes
     )
 
 
@@ -642,8 +645,15 @@ def compute_carpet_bomb_tokens(
         return 0
 
     _SKIP_DIRS = {
-        ".git", "__pycache__", ".venv", "venv", "node_modules",
-        "dist", "build", ".pytest_cache", ".mypy_cache",
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        "build",
+        ".pytest_cache",
+        ".mypy_cache",
     }
     _CODE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".md", ".rst", ".yaml", ".yml", ".json"}
 
@@ -769,9 +779,9 @@ def run_benchmark(
             f"{questions_path} ({filter_summary})"
         )
 
-    print("="*70)
+    print("=" * 70)
     print("EVALUATION HARNESS — Phase 2.5")
-    print("="*70)
+    print("=" * 70)
 
     active_workspace_id = workspace_id or ""
     active_project_path = project_path
@@ -791,9 +801,7 @@ def run_benchmark(
     if is_real_repo_pack:
         baseline_root = active_project_path
     else:
-        baseline_root = str(
-            Path(__file__).parent.parent / "tests" / "fixtures" / "sample_project"
-        )
+        baseline_root = str(Path(__file__).parent.parent / "tests" / "fixtures" / "sample_project")
 
     if not no_index and not is_real_repo_pack:
         active_workspace_id, indexing_summary = setup_fixture_db(
@@ -834,9 +842,9 @@ def run_benchmark(
     )
     results = []
 
-    print(f"\n{'-'*70}")
+    print(f"\n{'-' * 70}")
     print(f"Running {len(questions)} questions...")
-    print(f"{'-'*70}\n")
+    print(f"{'-' * 70}\n")
 
     for q in questions:
         symbol = q.get("symbol")
@@ -857,39 +865,41 @@ def run_benchmark(
         # via question_pack ``token_budget`` field stay supported.
         question_budget = int(q.get("token_budget", 4000))
         start_ms = time.time()
-        ctx = arb.get_context_for_symbol(symbol, question=question_text, token_budget=question_budget)
+        ctx = arb.get_context_for_symbol(
+            symbol, question=question_text, token_budget=question_budget
+        )
         end_ms = time.time()
 
         assembly_ms = (end_ms - start_ms) * 1000
 
         # Handle error case
         if isinstance(ctx, str):
-            is_correct_rejection = (expected_mode == "workspace" and "not found" in ctx)
+            is_correct_rejection = expected_mode == "workspace" and "not found" in ctx
             status = "pass" if is_correct_rejection else "error"
             gate = "workspace_correct_rejection" if is_correct_rejection else "error"
             emoji = "✅" if status == "pass" else "❌"
             line_suffix = (
-                "workspace mode: absent symbol handled as expected"
-                if is_correct_rejection
-                else ctx
+                "workspace mode: absent symbol handled as expected" if is_correct_rejection else ctx
             )
             print(f"  {emoji} {q['id']}: {symbol} [{intent}] — {line_suffix}")
-            results.append({
-                "id": q["id"],
-                "repo": q.get("repo", ""),
-                "symbol": symbol,
-                "question": question_text,
-                "status": status,
-                "gate": gate,
-                "error": ctx,
-                "assembly_ms": assembly_ms,
-                "mechanism": mechanism,
-                "expected_roles": normalize_roles(required_roles),
-                "missing_expected_roles": normalize_roles(required_roles),
-                "role_recall": 1.0 if is_correct_rejection else 0.0,
-                "precision": 0.0,
-                "ready_context": None,
-            })
+            results.append(
+                {
+                    "id": q["id"],
+                    "repo": q.get("repo", ""),
+                    "symbol": symbol,
+                    "question": question_text,
+                    "status": status,
+                    "gate": gate,
+                    "error": ctx,
+                    "assembly_ms": assembly_ms,
+                    "mechanism": mechanism,
+                    "expected_roles": normalize_roles(required_roles),
+                    "missing_expected_roles": normalize_roles(required_roles),
+                    "role_recall": 1.0 if is_correct_rejection else 0.0,
+                    "precision": 0.0,
+                    "ready_context": None,
+                }
+            )
             continue
 
         # Extract retrieved symbols
@@ -933,9 +943,7 @@ def run_benchmark(
 
         # Calculate reduction ratio only when baseline is real.
         reduction_ratio = (
-            1 - (tokens_surgical / tokens_carpet_bomb)
-            if tokens_carpet_bomb > 0
-            else 0.0
+            1 - (tokens_surgical / tokens_carpet_bomb) if tokens_carpet_bomb > 0 else 0.0
         )
 
         # Pass/warn gate.
@@ -971,50 +979,52 @@ def run_benchmark(
             f"{reasoning_info}"
         )
 
-        results.append({
-            "id": q["id"],
-            "repo": q.get("repo", ""),
-            "symbol": symbol,
-            "question": question_text,
-            "difficulty": difficulty,
-            "intent": intent,
-            "status": status,
-            "gate": gate,
-            "retrieved_symbols": sorted(list(all_retrieved)),
-            "expected_symbols": sorted(list(expected_symbols)),
-            "retrieved_files": sorted(list(retrieved_files)),
-            "expected_files": sorted(list(expected_files)),
-            "recall_at_k": recall_at_k,
-            "precision": precision_at_k,
-            "precision_at_k": precision_at_k,
-            "file_recall": file_recall,
-            "role_recall": role_recall,
-            "stopped_reason": ctx.stopped_reason,
-            "missing_roles": ctx.missing_roles,
-            "missing_roles_canonical": missing_roles_canonical,
-            "missing_expected_roles": missing_expected_roles,
-            "mechanism": mechanism,
-            "expected_roles": required_roles_canonical,
-            "required_roles": required_roles,
-            "required_roles_canonical": required_roles_canonical,
-            "ranker_required_roles": ranker_required_roles,
-            "selected_strategy": strategy_profile.get("selected_strategy", ""),
-            "strategy_role_plan": strategy_profile.get("role_plan", []),
-            "strategy_archetypes": strategy_profile.get("mechanism_archetypes", []),
-            "expected_mode": expected_mode,
-            "tokens_surgical": tokens_surgical,
-            "tokens_carpet_bomb": tokens_carpet_bomb,
-            "reduction_ratio": reduction_ratio,
-            "assembly_ms": assembly_ms,
-            "ready_context": _build_ready_context_payload(ctx, tokens_surgical),
-        })
+        results.append(
+            {
+                "id": q["id"],
+                "repo": q.get("repo", ""),
+                "symbol": symbol,
+                "question": question_text,
+                "difficulty": difficulty,
+                "intent": intent,
+                "status": status,
+                "gate": gate,
+                "retrieved_symbols": sorted(list(all_retrieved)),
+                "expected_symbols": sorted(list(expected_symbols)),
+                "retrieved_files": sorted(list(retrieved_files)),
+                "expected_files": sorted(list(expected_files)),
+                "recall_at_k": recall_at_k,
+                "precision": precision_at_k,
+                "precision_at_k": precision_at_k,
+                "file_recall": file_recall,
+                "role_recall": role_recall,
+                "stopped_reason": ctx.stopped_reason,
+                "missing_roles": ctx.missing_roles,
+                "missing_roles_canonical": missing_roles_canonical,
+                "missing_expected_roles": missing_expected_roles,
+                "mechanism": mechanism,
+                "expected_roles": required_roles_canonical,
+                "required_roles": required_roles,
+                "required_roles_canonical": required_roles_canonical,
+                "ranker_required_roles": ranker_required_roles,
+                "selected_strategy": strategy_profile.get("selected_strategy", ""),
+                "strategy_role_plan": strategy_profile.get("role_plan", []),
+                "strategy_archetypes": strategy_profile.get("mechanism_archetypes", []),
+                "expected_mode": expected_mode,
+                "tokens_surgical": tokens_surgical,
+                "tokens_carpet_bomb": tokens_carpet_bomb,
+                "reduction_ratio": reduction_ratio,
+                "assembly_ms": assembly_ms,
+                "ready_context": _build_ready_context_payload(ctx, tokens_surgical),
+            }
+        )
 
     db.close()
 
     # Aggregate metrics
     passes = sum(1 for r in results if r.get("status") == "pass")
     total = len(results)
-    
+
     # Reasoning stats
     reason_counts = {}
     for r in results:
@@ -1088,9 +1098,9 @@ def run_benchmark(
         "results": results,
     }
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("SUMMARY")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"Pass rate:       {metrics['summary']['pass_rate']:.1%} ({passes}/{total})")
     print(f"Recall@5:        {metrics['summary']['recall_at_5']:.2f}")
     print(f"Precision@5:     {metrics['summary']['precision_at_5']:.2f}")
@@ -1112,10 +1122,7 @@ def run_benchmark(
             f"changed={metrics['indexing']['changed']} "
             f"parsed={metrics['indexing']['parsed']}"
         )
-        print(
-            "Index timings:   "
-            f"{metrics['indexing']['timings_sec']}"
-        )
+        print(f"Index timings:   {metrics['indexing']['timings_sec']}")
         profile = metrics["indexing"].get("repository_profile")
         if profile:
             from sidecar.indexer.repository_profile import summarize_repository_profile
@@ -1124,11 +1131,8 @@ def run_benchmark(
             if metrics["indexing"].get("repository_profile_store"):
                 print(f"Profile store:   {metrics['indexing']['repository_profile_store']}")
         if metrics["indexing"].get("docs_timings_sec"):
-            print(
-                "Docs timings:    "
-                f"{metrics['indexing']['docs_timings_sec']}"
-            )
-    print(f"{'='*70}\n")
+            print(f"Docs timings:    {metrics['indexing']['docs_timings_sec']}")
+    print(f"{'=' * 70}\n")
 
     return metrics
 
@@ -1203,11 +1207,21 @@ def main():
         action="store_true",
         help="Skip re-indexing (use existing DB)",
     )
-    parser.add_argument("--alpha", type=float, default=None, help="UnifiedRanker α (graph score weight)")
-    parser.add_argument("--beta", type=float, default=None, help="UnifiedRanker β (semantic score weight)")
-    parser.add_argument("--gamma", type=float, default=None, help="UnifiedRanker γ (intent prior weight)")
-    parser.add_argument("--delta", type=float, default=None, help="UnifiedRanker δ (overlap bonus weight)")
-    parser.add_argument("--epsilon", type=float, default=None, help="UnifiedRanker ε (token cost penalty)")
+    parser.add_argument(
+        "--alpha", type=float, default=None, help="UnifiedRanker α (graph score weight)"
+    )
+    parser.add_argument(
+        "--beta", type=float, default=None, help="UnifiedRanker β (semantic score weight)"
+    )
+    parser.add_argument(
+        "--gamma", type=float, default=None, help="UnifiedRanker γ (intent prior weight)"
+    )
+    parser.add_argument(
+        "--delta", type=float, default=None, help="UnifiedRanker δ (overlap bonus weight)"
+    )
+    parser.add_argument(
+        "--epsilon", type=float, default=None, help="UnifiedRanker ε (token cost penalty)"
+    )
     args = parser.parse_args()
 
     ranker_weights = None

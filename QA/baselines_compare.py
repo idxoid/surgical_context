@@ -28,14 +28,14 @@ _DEFAULT_BASELINES = Path(__file__).parent / "baselines.jsonl"
 
 
 _METRICS = [
-    ("pass_rate",        "%",  4),
-    ("recall_at_5",      "",   4),
-    ("precision_at_5",   "",   4),
-    ("file_recall",      "",   4),
-    ("reduction_ratio",  "%",  4),
-    ("tokens_surgical",  "t",  0),
-    ("tokens_carpet_bomb","t", 0),
-    ("assembly_ms_avg",  "ms", 1),
+    ("pass_rate", "%", 4),
+    ("recall_at_5", "", 4),
+    ("precision_at_5", "", 4),
+    ("file_recall", "", 4),
+    ("reduction_ratio", "%", 4),
+    ("tokens_surgical", "t", 0),
+    ("tokens_carpet_bomb", "t", 0),
+    ("assembly_ms_avg", "ms", 1),
 ]
 
 

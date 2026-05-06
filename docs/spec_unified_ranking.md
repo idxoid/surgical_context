@@ -128,6 +128,11 @@ Current behavior is slightly richer than the original greedy draft:
   - `factory_surface` via builder/registration/openapi/router cues
   - `representation_surface` via schema/model/serialize cues
   - `runtime_surface` via execute/dispatch/resolve/handler cues
+- for trace-style dependency questions, add bounded recovery anchors when import topology is sparse:
+  - imported-module symbol rows (graph + filesystem/path resolution)
+  - runtime-name seeds in the target package (e.g. DI resolver/model symbols)
+  - sibling-directory expansion from those runtime seeds
+- require namespace-qualified call evidence for hint-driven DI bridges (`require_callee_qualified_prefix`) so `Depends(...)`-style rules do not fire on local name collisions
 - when no docs are retrievable, synthesize a tiny target concept fallback doc candidate so `docs_or_concept` is not structurally impossible
 - sort by blended score with a bonus for role-filling candidates
 - apply marginal-gain gating, intent floors, `context_complete_below_floor`, and signature-only fallback for low-gain distant candidates

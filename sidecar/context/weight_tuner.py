@@ -50,6 +50,7 @@ def _metric_float(metrics: dict, key: str, default: float = 0.0) -> float:
 @dataclass
 class TuneResult:
     """Single trial result."""
+
     weights: RankerWeights
     metric: float
     metrics: dict  # full metrics (pass_rate, recall@5, file_recall, etc.)
@@ -131,8 +132,7 @@ class WeightTuner:
 
         include_tiebreak_cols = self.metric == "pass_rate"
         header = (
-            f"{'Trial':<6} {'α':<7} {'β':<7} {'γ':<7} {'δ':<7} {'ε':<7} "
-            f"{self.metric_label:<12}"
+            f"{'Trial':<6} {'α':<7} {'β':<7} {'γ':<7} {'δ':<7} {'ε':<7} {self.metric_label:<12}"
         )
         if include_tiebreak_cols:
             header += f" {'P@5':<8} {'Tokens':<10}"
@@ -412,14 +412,23 @@ def _save_results(tuner: WeightTuner, output_path: str) -> None:
         for r in tuner.results
     ]
     with open(output_path, "w") as f:
-        json.dump({"best": asdict(tuner.best_result().weights) if tuner.best_result() else None, "results": rows}, f, indent=2)
+        json.dump(
+            {
+                "best": asdict(tuner.best_result().weights) if tuner.best_result() else None,
+                "results": rows,
+            },
+            f,
+            indent=2,
+        )
 
 
 def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Tune UnifiedRanker weights via QA benchmark")
-    parser.add_argument("--strategy", choices=("grid", "random", "coarse_fine"), default="coarse_fine")
+    parser.add_argument(
+        "--strategy", choices=("grid", "random", "coarse_fine"), default="coarse_fine"
+    )
     parser.add_argument("--metric", default="recall@5", choices=sorted(_METRIC_MAP.keys()))
     parser.add_argument("--n-trials", type=int, default=30, help="Trials for random search")
     parser.add_argument("--questions", default=None)

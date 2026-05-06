@@ -115,9 +115,7 @@ class FileDiff:
         return self.changed_uids or self.current_uids
 
 
-def _hash_phase(
-    files: list[str], workers: int, reporter: ProgressReporter
-) -> dict[str, str]:
+def _hash_phase(files: list[str], workers: int, reporter: ProgressReporter) -> dict[str, str]:
     """Parallel sha256 of every collected file."""
     hashes: dict[str, str] = {}
     reporter.stage_start("hash", total=len(files))
@@ -149,9 +147,7 @@ def _parse_one(
     existing = get_idx(file_path, workspace_id=workspace_id) if callable(get_idx) else {}
 
     current_uids = [s.uid for s in extracted.symbols]
-    changed_symbols = [
-        s for s in extracted.symbols if _symbol_needs_upsert(s, existing.get(s.uid))
-    ]
+    changed_symbols = [s for s in extracted.symbols if _symbol_needs_upsert(s, existing.get(s.uid))]
     changed_uids = [s.uid for s in changed_symbols]
     removed_uids = sorted(set(existing) - set(current_uids))
 
@@ -445,9 +441,7 @@ def run_fast_indexing(
     parse_workers = parse_workers or _DEFAULT_PARSE_WORKERS
     reporter = reporter or _NullReporter()
 
-    workspace_id = (
-        workspace_id or WorkspaceResolver().from_project_path(project_path).id
-    )
+    workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     lance = LanceDBClient()
     job_log = IndexJobLog()
@@ -549,10 +543,7 @@ def run_fast_indexing(
                     db,
                     workspace_id,
                 )
-            print(
-                "   readiness="
-                f"{summarize_repository_profile(stats['repository_profile'])}"
-            )
+            print(f"   readiness={summarize_repository_profile(stats['repository_profile'])}")
             print("✅ All files up-to-date, nothing to re-index.")
             return stats
         print(f"🔄 {len(changed_files)}/{len(files)} files changed")
@@ -660,8 +651,10 @@ def run_fast_indexing(
 
     stats["timings_sec"]["total"] = round(time.perf_counter() - t0, 3)
     print(f"✅ Fast indexing complete in {stats['timings_sec']['total']}s")
-    print(f"   parsed={stats['parsed']} encoded={stats['symbols_encoded']} "
-          f"affects={stats['affects_rebuilt']}")
+    print(
+        f"   parsed={stats['parsed']} encoded={stats['symbols_encoded']} "
+        f"affects={stats['affects_rebuilt']}"
+    )
     print(f"   readiness={summarize_repository_profile(stats['repository_profile'])}")
     print(f"   timings={stats['timings_sec']}")
     return stats

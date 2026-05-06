@@ -319,10 +319,7 @@ class SQLiteHistoryProvider:
         messages = self.list_messages(conversation_id, limit=message_limit)
         return {
             "conversation": conversation,
-            "messages": [
-                self.get_message_bundle(message["id"])
-                for message in messages
-            ],
+            "messages": [self.get_message_bundle(message["id"]) for message in messages],
         }
 
     def get_request_bundle(

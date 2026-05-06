@@ -71,9 +71,15 @@ def _make_recovery_db(*, same_file_rows=None, imported_rows=None):
     session = MagicMock()
 
     def run(query, **params):
-        if "MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[c:CONTAINS]->(s:Symbol)" in query:
+        if (
+            "MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[c:CONTAINS]->(s:Symbol)"
+            in query
+        ):
             return same_file_rows or []
-        if "MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[:IMPORTS]->(dep:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)" in query:
+        if (
+            "MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[:IMPORTS]->(dep:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)"
+            in query
+        ):
             return imported_rows or []
         return []
 
@@ -131,8 +137,18 @@ def test_symbol_candidates_filter_to_workspace_uids():
     vector = VectorSearcher(
         _FakeVector(
             symbols=[
-                {"uid": "in-workspace", "name": "solve_dependencies", "file_path": "/repo/a.py", "score": 0.9},
-                {"uid": "other-workspace", "name": "solve_dependencies", "file_path": "/other/a.py", "score": 0.8},
+                {
+                    "uid": "in-workspace",
+                    "name": "solve_dependencies",
+                    "file_path": "/repo/a.py",
+                    "score": 0.9,
+                },
+                {
+                    "uid": "other-workspace",
+                    "name": "solve_dependencies",
+                    "file_path": "/other/a.py",
+                    "score": 0.8,
+                },
             ]
         )
     )
@@ -239,7 +255,9 @@ def test_duplicate_target_selection_prefers_main_pydantic_entrypoint_for_model_d
 
 
 def test_pydantic_basemodel_uses_generic_mechanism_when_dispatch_stubbed():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main"
+    )
     target = SubgraphNode(
         uid="basemodel",
         name="BaseModel",
@@ -304,7 +322,9 @@ def test_module_target_fallback_resolves_package_without_symbol():
 
 
 def test_capability_roles_add_generic_impact_runtime_and_test_surfaces():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main"
+    )
 
     runtime_symbol = Candidate(
         kind="symbol",
@@ -373,13 +393,25 @@ def test_role_backfill_reads_specs_from_catalog_overlay():
         ROLE_CATALOG_MECHANISM_BACKFILL_KEY: {
             "pydantic_python_core_boundary": {
                 "validator_handle": [
-                    {"name": "__pydantic_validator__", "path_hint": "/repo/pydantic/main.py", "priority": 1.0},
+                    {
+                        "name": "__pydantic_validator__",
+                        "path_hint": "/repo/pydantic/main.py",
+                        "priority": 1.0,
+                    },
                 ],
                 "core_runtime": [
-                    {"name": "SchemaValidator", "path_hint": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 0.95},
+                    {
+                        "name": "SchemaValidator",
+                        "path_hint": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+                        "priority": 0.95,
+                    },
                 ],
                 "serializer_handle": [
-                    {"name": "SchemaSerializer", "path_hint": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi", "priority": 1.0},
+                    {
+                        "name": "SchemaSerializer",
+                        "path_hint": "/repo/pydantic-core/python/pydantic_core/_pydantic_core.pyi",
+                        "priority": 1.0,
+                    },
                 ],
             },
         },
@@ -398,7 +430,9 @@ def test_role_backfill_reads_specs_from_catalog_overlay():
 
 
 def test_redux_style_symbols_use_generic_mechanism_when_dispatch_stubbed():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main"
+    )
 
     create_slice = SubgraphNode(
         uid="createSlice",
@@ -516,7 +550,12 @@ def test_auto_strategy_profile_supplies_mechanism_and_roles_for_unknown_repo():
                     "type": "middleware_pipeline",
                     "strategy": "middleware_pipeline_trace",
                     "confidence": 0.78,
-                    "role_plan": ["api_surface", "factory_surface", "composition_surface", "runtime_surface"],
+                    "role_plan": [
+                        "api_surface",
+                        "factory_surface",
+                        "composition_surface",
+                        "runtime_surface",
+                    ],
                     "evidence": ["express", "Router(", "app.use"],
                 }
             ],
@@ -552,7 +591,9 @@ def test_auto_strategy_profile_supplies_mechanism_and_roles_for_unknown_repo():
 
 
 def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main"
+    )
     target = SubgraphNode(
         uid="configureStore",
         name="configureStore",
@@ -594,22 +635,28 @@ def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
 
     query = "How does configureStore assemble middleware, enhancers, and DevTools behavior?"
     required = ["api_surface", "composition_surface", "config_surface", "docs_or_concept"]
-    assert ranker._topic_focus_factor(
-        off_topic_query_candidate,
-        target,
-        query=query,
-        mechanism="runtime_configuration_pipeline",
-        intent=Intent.EXPLORATION,
-        required_roles=required,
-    ) < 1.0
-    assert ranker._topic_focus_factor(
-        off_topic_role_candidate,
-        target,
-        query=query,
-        mechanism="runtime_configuration_pipeline",
-        intent=Intent.EXPLORATION,
-        required_roles=required,
-    ) < 1.0
+    assert (
+        ranker._topic_focus_factor(
+            off_topic_query_candidate,
+            target,
+            query=query,
+            mechanism="runtime_configuration_pipeline",
+            intent=Intent.EXPLORATION,
+            required_roles=required,
+        )
+        < 1.0
+    )
+    assert (
+        ranker._topic_focus_factor(
+            off_topic_role_candidate,
+            target,
+            query=query,
+            mechanism="runtime_configuration_pipeline",
+            intent=Intent.EXPLORATION,
+            required_roles=required,
+        )
+        < 1.0
+    )
     off_topic_role_candidate.noise_factor = 0.15
     assert "composition_surface" not in ranker._selection_roles(
         off_topic_role_candidate,
@@ -619,18 +666,23 @@ def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
         intent=Intent.EXPLORATION,
         required_roles=required,
     )
-    assert ranker._topic_focus_factor(
-        focused_devtools_candidate,
-        target,
-        query=query,
-        mechanism="runtime_configuration_pipeline",
-        intent=Intent.EXPLORATION,
-        required_roles=required,
-    ) == 1.0
+    assert (
+        ranker._topic_focus_factor(
+            focused_devtools_candidate,
+            target,
+            query=query,
+            mechanism="runtime_configuration_pipeline",
+            intent=Intent.EXPLORATION,
+            required_roles=required,
+        )
+        == 1.0
+    )
 
 
 def test_rank_records_pruned_reasons_and_score_breakdown():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main"
+    )
     target = SubgraphNode(
         uid="configureStore",
         name="configureStore",
@@ -692,29 +744,41 @@ def test_rank_records_pruned_reasons_and_score_breakdown():
 
 
 def test_low_signal_virtual_and_fixture_paths_are_noisy():
-    assert compute_noise_factor(
-        "/repo/docs/virtual/matchers/index.ts",
-        "requestThunk1",
-        kind="symbol",
-    ) < 1.0
-    assert compute_noise_factor(
-        "/repo/packages/rtk-codemods/transforms/createSliceBuilder/__testfixtures__/basic.ts",
-        "incrementAsync",
-        kind="symbol",
-    ) < 1.0
+    assert (
+        compute_noise_factor(
+            "/repo/docs/virtual/matchers/index.ts",
+            "requestThunk1",
+            kind="symbol",
+        )
+        < 1.0
+    )
+    assert (
+        compute_noise_factor(
+            "/repo/packages/rtk-codemods/transforms/createSliceBuilder/__testfixtures__/basic.ts",
+            "incrementAsync",
+            kind="symbol",
+        )
+        < 1.0
+    )
 
 
 def test_editorial_docs_get_downranked_relative_to_mechanism_docs():
-    assert compute_noise_factor(
-        "/repo/docs/usage/migrating-rtk-2.md",
-        "migrating",
-        kind="doc",
-    ) < 1.0
-    assert compute_noise_factor(
-        "/repo/docs/rtk-query/overview.md",
-        "overview",
-        kind="doc",
-    ) == 1.0
+    assert (
+        compute_noise_factor(
+            "/repo/docs/usage/migrating-rtk-2.md",
+            "migrating",
+            kind="doc",
+        )
+        < 1.0
+    )
+    assert (
+        compute_noise_factor(
+            "/repo/docs/rtk-query/overview.md",
+            "overview",
+            kind="doc",
+        )
+        == 1.0
+    )
 
 
 def test_tests_get_softer_penalty_for_exploration_intent():
@@ -724,41 +788,54 @@ def test_tests_get_softer_penalty_for_exploration_intent():
     assert compute_noise_factor("/repo/tests/test_foo.py", "test_bar") == _NOISE_FACTOR
 
     # EXPLORATION — softer penalty so tests can supplement explain_behavior context
-    assert compute_noise_factor(
-        "/repo/tests/test_foo.py", "test_bar", intent=Intent.EXPLORATION
-    ) == 0.3
+    assert (
+        compute_noise_factor("/repo/tests/test_foo.py", "test_bar", intent=Intent.EXPLORATION)
+        == 0.3
+    )
 
     # IMPACT_ANALYSIS is handled at call-site (noise_factor=1.0 set directly), not here
     # but compute_noise_factor itself still applies the standard path for non-EXPLORATION
-    assert compute_noise_factor(
-        "/repo/tests/test_foo.py", "test_bar", intent=Intent.NAVIGATION
-    ) == _NOISE_FACTOR
+    assert (
+        compute_noise_factor("/repo/tests/test_foo.py", "test_bar", intent=Intent.NAVIGATION)
+        == _NOISE_FACTOR
+    )
 
     # clean files unaffected regardless of intent
     assert compute_noise_factor("/repo/src/utils.py", "helper", intent=Intent.EXPLORATION) == 1.0
 
 
 def test_impact_noise_keeps_only_topic_related_tests_unpenalized():
-    query = "If alias handling changes, what modules, docs, and tests are most likely to be affected?"
+    query = (
+        "If alias handling changes, what modules, docs, and tests are most likely to be affected?"
+    )
 
-    assert compute_impact_noise_factor(
-        "/repo/tests/test_aliases.py",
-        "test_basic_alias",
-        query=query,
-        target_name="Field",
-    ) == 1.0
-    assert compute_impact_noise_factor(
-        "/repo/tests/test_computed_fields.py",
-        "test_computed_field_alias",
-        query=query,
-        target_name="Field",
-    ) == 1.0
-    assert compute_impact_noise_factor(
-        "/repo/pydantic-core/tests/serializers/test_union.py",
-        "test_union_serializer",
-        query=query,
-        target_name="Field",
-    ) == _NOISE_FACTOR
+    assert (
+        compute_impact_noise_factor(
+            "/repo/tests/test_aliases.py",
+            "test_basic_alias",
+            query=query,
+            target_name="Field",
+        )
+        == 1.0
+    )
+    assert (
+        compute_impact_noise_factor(
+            "/repo/tests/test_computed_fields.py",
+            "test_computed_field_alias",
+            query=query,
+            target_name="Field",
+        )
+        == 1.0
+    )
+    assert (
+        compute_impact_noise_factor(
+            "/repo/pydantic-core/tests/serializers/test_union.py",
+            "test_union_serializer",
+            query=query,
+            target_name="Field",
+        )
+        == _NOISE_FACTOR
+    )
 
 
 def test_docs_deferred_until_code_breadth_met():
@@ -1085,7 +1162,9 @@ def test_openapi_symbols_use_generic_mechanism_without_bundled_dispatch():
             relevance_score=1.0,
             kind="function",
         )
-        assert ranker._determine_mechanism(target, "How does FastAPI generate OpenAPI?") == "generic"
+        assert (
+            ranker._determine_mechanism(target, "How does FastAPI generate OpenAPI?") == "generic"
+        )
 
     required = ranker._get_required_roles("generic")
     assert "supporting_surface" in required
@@ -1093,7 +1172,9 @@ def test_openapi_symbols_use_generic_mechanism_without_bundled_dispatch():
 
 
 def test_fastapi_serialization_symbol_uses_generic_mechanism_when_dispatch_stubbed():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
     target = SubgraphNode(
         uid="serialize-response",
         name="serialize_response",
@@ -1129,7 +1210,8 @@ def test_role_filler_outranks_unrelated_high_score_docs():
     openapi-generation and must seat regardless.
     """
     db = _make_db(
-        allowed_paths=["/repo/src/openapi.py", "/repo/src/main.py"] + [f"/repo/docs/d{i}.md" for i in range(5)],
+        allowed_paths=["/repo/src/openapi.py", "/repo/src/main.py"]
+        + [f"/repo/docs/d{i}.md" for i in range(5)],
         allowed_uids=["primary", "openapi-uid"],
     )
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
@@ -1272,7 +1354,9 @@ def test_filesystem_import_recovery_resolves_relative_typescript_imports(tmp_pat
         encoding="utf-8",
     )
 
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main"
+    )
 
     resolved = ranker._resolve_filesystem_import_paths(str(create_slice))
 
@@ -1280,7 +1364,9 @@ def test_filesystem_import_recovery_resolves_relative_typescript_imports(tmp_pat
 
 
 def test_recovery_candidate_adds_factory_surface_from_target_local_signal():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/fastapi@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/fastapi@main"
+    )
     target = SubgraphNode(
         uid="target-fastapi",
         name="FastAPI",
@@ -1319,7 +1405,9 @@ def test_recovery_candidate_adds_factory_surface_from_target_local_signal():
 
 
 def test_recovery_candidate_adds_representation_and_runtime_from_local_signal():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/fastapi@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/fastapi@main"
+    )
     target = SubgraphNode(
         uid="target-fastapi",
         name="FastAPI",
@@ -1359,7 +1447,9 @@ def test_recovery_candidate_adds_representation_and_runtime_from_local_signal():
 
 
 def test_target_concept_fallback_candidate_is_doc():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
     target = SubgraphNode(
         uid="target-1",
         name="FastAPI",
@@ -1385,7 +1475,9 @@ def test_target_concept_fallback_candidate_is_doc():
 
 
 def test_trace_dependency_marginal_gain_rewards_new_file_coverage():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
     target = SubgraphNode(
         uid="target",
         name="Depends",
@@ -1453,7 +1545,9 @@ def test_trace_dependency_marginal_gain_rewards_new_file_coverage():
 
 
 def test_trace_dependency_gain_mode_from_di_question_even_when_mechanism_generic():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
     target = SubgraphNode(
         uid="target",
         name="Depends",

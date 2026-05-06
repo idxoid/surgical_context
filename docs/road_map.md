@@ -69,11 +69,11 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [x] Treat Phase 9.1 (Unified Ranker) and Phase 9.4 (Prompt Contract Observability) as the current retrieval-quality path, not deferred cleanup.
 - [x] Soft fallback ladder for missing symbols.
 - [x] Finish remaining prompt-contract fields: `pruned[]`, ranker weights, intent distribution/confidence, ambiguous-intent signal.
-- [ ] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally.
+- [~] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally. (Core metadata exists; calibration + UI surfacing remain.)
 - [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
 - [ ] Add latency SLO checks for local asks and index operations.
 - [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
-- [ ] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles, wrapper-body support, topic-aware impact retrieval, and module/package fallback targets.
+- [~] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles, wrapper-body support, topic-aware impact retrieval, and module/package fallback targets. (FastAPI/Pydantic/RTK are green baselines; Flask/Django/Express tails remain.)
 - [ ] Treat impact analysis as shallow until proven otherwise: current `AFFECTS` is bounded reverse reachability, not a full causal blast-radius model across framework registries, generated APIs, templates, runtime dispatch, and tests.
 
 ### P3 - Real-Repo Validation
@@ -82,6 +82,11 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [ ] Compare naive context vs Surgical Context vs heavy stuffing on 2-3 real repositories.
 - [ ] Record token deltas, latency, fallback behavior, and human-reviewed grounding quality.
 - [x] Use benchmark results to tune ranking rather than tuning by intuition.
+
+Current snapshot:
+- FastAPI `core12` retrieval baseline is green, including `Depends` trace path recovery.
+- Pydantic and Redux Toolkit local packs are broadly green with remaining precision tails on broad/doc-heavy questions.
+- Flask and Django mostly pass with role/file-coverage tails; Express still needs target-resolution and JS export-shape improvements before meaningful ranker tuning.
 
 ### P4 - Provider Boundaries, Defaults First
 - [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
@@ -108,12 +113,12 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 ### Immediate Retrieval Focus
 - keep broadening the now-shipped canonical role taxonomy beyond FastAPI, with the current baseline green across FastAPI, Pydantic, and Redux Toolkit
 - keep using real-repo benchmark reports plus `ready_context` payloads to debug misses before changing weights
-- continue precision work on doc-heavy and broad RTK/Pydantic paths, after the first topic-aware impact-noise pass and module/package fallback target support
-- finish doc-anchor confidence/type scoring so docs stop acting like undifferentiated semantic noise
+- continue precision work on doc-heavy and broad RTK/Pydantic paths, and on Flask/Django role/file-coverage tails
+- finish doc-anchor confidence/type calibration and extension surfacing so docs stop acting like undifferentiated semantic noise
 - define index-time repository readiness and mechanism discovery, including an explicit impact-readiness signal so unsupported or shallow impact results are not mistaken for ranker failures
 
 ### Week 1
-- tighten remaining product docs around the current local-first context-engine thesis
+- tighten remaining product docs around the current local-first context-engine thesis (completed; keep as maintenance)
 - finish `Ask / Inspect / Impact` synchronization and route visibility
 - expose the same retrieval metadata already present in the contract more clearly in the extension surfaces
 

@@ -17,9 +17,7 @@ def test_normalize_allowed_prefixes_resolves_and_deduplicates(tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
 
-    prefixes = _normalize_allowed_prefixes(
-        [str(docs_dir), str(docs_dir / ".." / "docs"), None, ""]
-    )
+    prefixes = _normalize_allowed_prefixes([str(docs_dir), str(docs_dir / ".." / "docs"), None, ""])
 
     assert prefixes == [str(docs_dir.resolve())]
 
@@ -172,7 +170,11 @@ def test_link_docs_to_symbols_skips_semantic_search_when_identifier_matches_are_
     lance = FakeLance()
 
     monkeypatch.setattr(anchor, "_extract_identifiers", lambda text: ["FastAPI", "APIRoute"])
-    monkeypatch.setattr(anchor, "_make_progress", lambda total, desc, unit="item": MagicMock(update=lambda n=1: None, close=lambda: None))
+    monkeypatch.setattr(
+        anchor,
+        "_make_progress",
+        lambda total, desc, unit="item": MagicMock(update=lambda n=1: None, close=lambda: None),
+    )
 
     anchor.link_docs_to_symbols(neo4j, lance, workspace_id="acme/repo@main")
 
@@ -332,12 +334,15 @@ def test_link_docs_to_symbols_uses_local_symbol_index_when_available(monkeypatch
 
         @staticmethod
         def iterrows():
-            yield 0, {
-                "uid": "uid-hit",
-                "name": "Hit",
-                "file_path": "/repo/hit.py",
-                "vector": [0.0, 0.0],
-            }
+            yield (
+                0,
+                {
+                    "uid": "uid-hit",
+                    "name": "Hit",
+                    "file_path": "/repo/hit.py",
+                    "vector": [0.0, 0.0],
+                },
+            )
 
     class FakeSymTable:
         @staticmethod

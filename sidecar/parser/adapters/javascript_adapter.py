@@ -150,9 +150,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
     def inheritance_query(self) -> str:
         return ""
 
-    def extract_imports(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[ImportEdge]:
+    def extract_imports(self, source_code: str, file_path: str, *, tree=None) -> list[ImportEdge]:
         """Extract import and require statements from JavaScript source."""
         if tree is None:
             tree = self._parse(source_code)
@@ -333,7 +331,9 @@ class JavaScriptAdapter(TreeSitterAdapter):
         while parent:
             if parent.type in self.parent_types:
                 return parent
-            if parent.type == "variable_declarator" and self._is_top_level_variable_declarator(parent):
+            if parent.type == "variable_declarator" and self._is_top_level_variable_declarator(
+                parent
+            ):
                 return parent
             parent = parent.parent
         return None

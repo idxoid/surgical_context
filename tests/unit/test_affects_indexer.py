@@ -43,6 +43,7 @@ def test_rebuild_affects_batches_delete_compute_and_merge():
     assert "graph_version" in version_bump_query
     assert progress == [2, 1]
 
+
 def test_load_reverse_adjacency_groups_edges_by_dependency():
     session = MagicMock()
     session.run.return_value = [

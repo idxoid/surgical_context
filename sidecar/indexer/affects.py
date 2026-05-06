@@ -144,7 +144,11 @@ class AFFECTSIndexer:
                 seen_level: set[str] = set()
                 for current_uid in frontier:
                     for dependent_uid in reverse_adjacency.get(current_uid, []):
-                        if dependent_uid == source_uid or dependent_uid in visited or dependent_uid in seen_level:
+                        if (
+                            dependent_uid == source_uid
+                            or dependent_uid in visited
+                            or dependent_uid in seen_level
+                        ):
                             continue
                         seen_level.add(dependent_uid)
                         next_frontier.append(dependent_uid)

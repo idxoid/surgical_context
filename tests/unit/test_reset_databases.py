@@ -20,9 +20,7 @@ def test_resolve_reset_target_fixture_uses_sample_project():
 
     project_root = Path(__file__).resolve().parents[2]
     assert workspace_id == DEFAULT_WORKSPACE_ID
-    assert project_path == str(
-        (project_root / "tests" / "fixtures" / "sample_project").resolve()
-    )
+    assert project_path == str((project_root / "tests" / "fixtures" / "sample_project").resolve())
     assert docs_path == str((project_root / "docs").resolve())
 
 

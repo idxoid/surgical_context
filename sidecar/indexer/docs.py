@@ -160,10 +160,7 @@ def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict
         "link": round(link_seconds, 3),
         "total": round(total_seconds, 3),
     }
-    print(
-        "Doc indexing complete. "
-        f"files={len(md_files)} chunks={total_chunks} timings={timings}"
-    )
+    print(f"Doc indexing complete. files={len(md_files)} chunks={total_chunks} timings={timings}")
     return {
         "docs_path": docs_path,
         "files_indexed": len(md_files),

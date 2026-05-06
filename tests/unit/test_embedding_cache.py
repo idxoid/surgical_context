@@ -156,16 +156,18 @@ def test_lancedb_client_set_pending_row_reuses_existing_doc_payload():
     )
 
     assert client._table.deleted == ["id = 'chunk-1'"]
-    assert client._table.added == [[
-        {
-            "id": "chunk-1",
-            "file_path": "/docs/a.md",
-            "chunk": "Hello",
-            "pending": ["New"],
-            "vector": [1.0, 2.0],
-            "embedding_metadata": '{"ok":true}',
-        }
-    ]]
+    assert client._table.added == [
+        [
+            {
+                "id": "chunk-1",
+                "file_path": "/docs/a.md",
+                "chunk": "Hello",
+                "pending": ["New"],
+                "vector": [1.0, 2.0],
+                "embedding_metadata": '{"ok":true}',
+            }
+        ]
+    ]
 
 
 def test_lancedb_client_search_symbols_by_vector_skips_query_embedding():

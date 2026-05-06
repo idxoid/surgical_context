@@ -127,9 +127,11 @@ class ContextArbitrator:
                 continue
 
             # OPTIMAL CONTEXT: Resolve signature-only for low-gain or distant neighbors
-            is_target_massive = (node.uid == subgraph.primary.uid and node.relation == "target_signature_only")
-            is_distant_neighbor = (node.render_mode == "signature_only")
-            
+            is_target_massive = (
+                node.uid == subgraph.primary.uid and node.relation == "target_signature_only"
+            )
+            is_distant_neighbor = node.render_mode == "signature_only"
+
             if is_target_massive or is_distant_neighbor:
                 # Pull only the head (signature + docstring) — approx first 15 lines
                 end_line = min(node.range[1], node.range[0] + 15)

@@ -21,7 +21,6 @@ ROLE_ALIASES: dict[str, str] = {
     "serializer_handle": "serializer_handle",
     "core_runtime": "core_runtime",
     "supporting_surface": "supporting_surface",
-
     # Public / entry / wrapper surfaces
     "public_entrypoint": "api_surface",
     "model_class": "api_surface",
@@ -29,7 +28,6 @@ ROLE_ALIASES: dict[str, str] = {
     "ui_renderer": "api_surface",
     "endpoint_definition": "api_surface",
     "api_surface": "api_surface",
-
     # Builders / factories / registration / composition
     "registration_step": "factory_surface",
     "route_builder": "factory_surface",
@@ -48,7 +46,6 @@ ROLE_ALIASES: dict[str, str] = {
     "hook_registry": "factory_surface",
     "lifecycle_action_creators": "factory_surface",
     "factory_surface": "factory_surface",
-
     "middleware_builder": "composition_surface",
     "middleware_chain": "composition_surface",
     "middleware_pattern": "composition_surface",
@@ -59,7 +56,6 @@ ROLE_ALIASES: dict[str, str] = {
     "control_flow": "composition_surface",
     "builder_pattern": "composition_surface",
     "composition_surface": "composition_surface",
-
     # Representations / structured artifacts
     "route_object": "representation_surface",
     "intermediate_model": "representation_surface",
@@ -71,23 +67,19 @@ ROLE_ALIASES: dict[str, str] = {
     "schema_module": "representation_surface",
     "generated_api_surface": "representation_surface",
     "representation_surface": "representation_surface",
-
     # Configuration / schema / binding
     "marker_or_config": "config_surface",
     "devtools_config": "config_surface",
     "config_surface": "config_surface",
-
     "schema_generator": "schema_builder",
     "body_field_builder": "schema_builder",
     "schema_builder": "schema_builder",
-
     "body_argument_mapper": "binding_surface",
     "model_introspection": "binding_surface",
     "context_accessor": "binding_surface",
     "proxy_mechanism": "binding_surface",
     "fk_resolver": "binding_surface",
     "binding_surface": "binding_surface",
-
     # Runtime flow / execution
     "dependency_solver": "orchestrator",
     "di_container": "orchestrator",
@@ -100,7 +92,6 @@ ROLE_ALIASES: dict[str, str] = {
     "state_tracker": "orchestrator",
     "action_interceptor": "orchestrator",
     "orchestrator": "orchestrator",
-
     "handler_or_lifecycle": "runtime_surface",
     "request_lifecycle": "runtime_surface",
     "lifecycle_handler": "runtime_surface",
@@ -116,7 +107,6 @@ ROLE_ALIASES: dict[str, str] = {
     "store_integration": "integration_surface",
     "integration_surface": "integration_surface",
     "runtime_surface": "runtime_surface",
-
     "runtime_executor": "executor",
     "async_executor": "executor",
     "operation_executor": "executor",
@@ -126,7 +116,6 @@ ROLE_ALIASES: dict[str, str] = {
     "side_effect_executor": "executor",
     "concurrency_decision": "executor",
     "executor": "executor",
-
     # Error / impact roles
     "response_serializer": "serializer_handle",
     "error_model": "error_surface",
@@ -137,14 +126,12 @@ ROLE_ALIASES: dict[str, str] = {
     "validator_bridge": "validator_handle",
     "transformer": "validator_handle",
     "metaprogramming": "core_runtime",
-
     "affected_runtime": "impact_runtime",
     "affected_public_api": "impact_public_api",
     "affected_tests": "impact_test_surface",
     "impact_runtime": "impact_runtime",
     "impact_public_api": "impact_public_api",
     "impact_test_surface": "impact_test_surface",
-
     # Fallback / internal legacy spelling
     "related_implementation": "supporting_surface",
 }
@@ -191,25 +178,30 @@ def infer_supporting_roles(
     if "/tests/" in lowered_path or lowered_path.endswith("_test.py") or "/test_" in lowered_path:
         inferred.append("impact_test_surface")
 
-    if primary in {
-        "api_surface",
-        "factory_surface",
-        "composition_surface",
-        "representation_surface",
-        "config_surface",
-        "schema_builder",
-        "binding_surface",
-        "orchestrator",
-        "runtime_surface",
-        "integration_surface",
-        "executor",
-        "validator_handle",
-        "serializer_handle",
-        "core_runtime",
-        "error_surface",
-        "compat_bridge",
-        "supporting_surface",
-    } and "/docs/" not in lowered_path and "/examples/" not in lowered_path:
+    if (
+        primary
+        in {
+            "api_surface",
+            "factory_surface",
+            "composition_surface",
+            "representation_surface",
+            "config_surface",
+            "schema_builder",
+            "binding_surface",
+            "orchestrator",
+            "runtime_surface",
+            "integration_surface",
+            "executor",
+            "validator_handle",
+            "serializer_handle",
+            "core_runtime",
+            "error_surface",
+            "compat_bridge",
+            "supporting_surface",
+        }
+        and "/docs/" not in lowered_path
+        and "/examples/" not in lowered_path
+    ):
         inferred.append("impact_runtime")
 
     return normalize_roles(inferred)

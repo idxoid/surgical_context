@@ -66,10 +66,14 @@ def resolve_reset_target(
         if candidate.exists():
             resolved_docs_path = str(candidate.resolve())
 
-    resolved_workspace_id = WorkspaceResolver().from_project_path(
-        str(resolved_project_path),
-        value=workspace_id,
-    ).id
+    resolved_workspace_id = (
+        WorkspaceResolver()
+        .from_project_path(
+            str(resolved_project_path),
+            value=workspace_id,
+        )
+        .id
+    )
     return resolved_workspace_id, str(resolved_project_path), resolved_docs_path
 
 

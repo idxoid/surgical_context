@@ -88,9 +88,7 @@ class LanguageAdapter(ABC):
         """
         pass
 
-    def extract_imports(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[ImportEdge]:
+    def extract_imports(self, source_code: str, file_path: str, *, tree=None) -> list[ImportEdge]:
         """
         Parse source code and extract import/require statements.
 

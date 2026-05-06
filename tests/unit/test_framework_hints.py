@@ -7,9 +7,7 @@ class TestCalleeQualifiedGate:
             "trigger_call": "Depends",
             "require_callee_qualified_prefix": "fastapi",
         }
-        assert _matches_callee_qualified_gate(
-            {"callee_qualified_name": "fastapi.Depends"}, rule
-        )
+        assert _matches_callee_qualified_gate({"callee_qualified_name": "fastapi.Depends"}, rule)
         assert _matches_callee_qualified_gate(
             {"callee_qualified_name": "fastapi.dependencies.Depends"}, rule
         )

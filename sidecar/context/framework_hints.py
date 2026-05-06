@@ -67,7 +67,10 @@ class FrameworkHintsIndexer:
             for call in extracted.calls:
                 # Check each rule against this call
                 for rule in self.rules:
-                    if rule["type"] == "call_argument_link" and call.get("callee_name") == rule["trigger_call"]:
+                    if (
+                        rule["type"] == "call_argument_link"
+                        and call.get("callee_name") == rule["trigger_call"]
+                    ):
                         if not _matches_callee_qualified_gate(call, rule):
                             continue
                         self._apply_call_arg_link(call, rule, workspace_id)
@@ -108,7 +111,7 @@ class FrameworkHintsIndexer:
                     target_name=target_name,
                     workspace_id=workspace_id,
                     rule_id=rule["id"],
-                    kind=rule.get("metadata", {}).get("kind", "generic")
+                    kind=rule.get("metadata", {}).get("kind", "generic"),
                 )
         except Exception:
             pass

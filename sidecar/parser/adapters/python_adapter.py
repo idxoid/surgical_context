@@ -105,9 +105,7 @@ class PythonAdapter(TreeSitterAdapter):
         "pathspec",
     }
 
-    def extract_imports(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[ImportEdge]:
+    def extract_imports(self, source_code: str, file_path: str, *, tree=None) -> list[ImportEdge]:
         """Extract only intra-project import statements (skips stdlib and third-party).
 
         Imports are line-based regex; ``tree`` is unused but accepted for
@@ -165,7 +163,9 @@ class PythonAdapter(TreeSitterAdapter):
                             edges.append(InheritanceEdge(subclass_uid, base_name, False))
         return edges
 
-    def _positional_identifier_arguments(self, call_node, source_code: str, *, limit: int = 8) -> list[str]:
+    def _positional_identifier_arguments(
+        self, call_node, source_code: str, *, limit: int = 8
+    ) -> list[str]:
         """Leading positional arguments that are bare identifiers (for DI-style hints)."""
         arg_list = call_node.child_by_field_name("arguments")
         if arg_list is None:

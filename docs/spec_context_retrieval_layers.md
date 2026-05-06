@@ -4,6 +4,31 @@
 
 Draft — design contract. Implementation today is split across the indexer, `framework_hints`, LanceDB, Pass 1 role catalog, and `UnifiedRanker`; this document names the **intended boundaries** so framework-specific or ranker-only fixes do not stand in for missing graph truth.
 
+## Recent implementation notes (2026-05-05)
+
+- **Layer 2 gate tightened:** `call_argument_link` rules can now require a resolved callee namespace prefix (e.g. `fastapi.*.Depends`) before emitting `SEMANTIC_HINT`; this avoids local-name collisions from unrelated `Depends(...)`.
+- **Parser support generalized:** `sidecar/parser/qualified_import_roots.yaml` now controls per-language external import roots that still produce alias→qualified bindings (used by Python today; intended for C/C++/C# adapters too).
+- **Layer 4 trace fallback strengthened:** trace mode now seats recovery anchors from imported modules, runtime-name seeds, and sibling-directory expansion when import topology is sparse, with explicit provenance (e.g. `recovery:import-module-trace`).
+- **Benchmark UX:** workspace-mode negative lookups (expected absent symbols) are printed as correct rejection instead of raw "not found" error text.
+
+## Execution status (implemented vs pending)
+
+### ✅ Implemented in current branch
+
+- Layer-2 qualified-callee safety gate for DI-like hint rules.
+- Per-language qualified import roots config (`sidecar/parser/qualified_import_roots.yaml`) with Python wired in.
+- Layer-4 trace recovery hardening for sparse import topology:
+  - import/module recovery rows
+  - runtime symbol seed rows
+  - sibling-directory symbol expansion
+- Prompt-contract/benchmark wording for expected absent workspace symbols.
+
+### 🚧 Still pending
+
+- Move bundled framework YAML hints to shared typed rule instance storage (workspace-extensible source of truth).
+- Strengthen Layer-1 import completeness directly in indexer (reduce ranker-side recovery dependence).
+- Add explicit pool-vs-pruned telemetry per missed expected file in benchmark output.
+
 ## Problem (systemic)
 
 Some questions require evidence in **other modules** than the primary symbol (e.g. a thin API marker vs. a runtime resolver in a sibling package). If the **durable graph** does not record that relationship, the ranker can only **heal** the gap with heuristics. Heuristics are necessary as a safety net, but they must not be the only definition of “what is connected” — otherwise every stack becomes a new patch in one Python file.
@@ -51,6 +76,8 @@ flowchart TB
 
 **Owns:** Small, **typed** rules (e.g. `call_argument_link` with metadata `kind: dependency_injection`) that create **specialized edges** (e.g. `SEMANTIC_HINT`) the extractor cannot infer. Today some rules live in bundled YAML under `sidecar/context/`; the **target end state** is rules keyed by **shared rule types / subtypes**, not per-framework filenames (see `framework_hints.py` module note).
 
+**Current safety contract:** Rules may require extractor-provided qualification metadata (example: `require_callee_qualified_prefix`) so a hint depends on both **pattern match** and **namespace evidence**.
+
 **Rule:** Hints are **first-class** graph facts for retrieval, not ad hoc ranker constants. They should be versionable and workspace-extensible.
 
 ### Layer 3 — Soft signals (non-proof, high recall)
@@ -62,6 +89,8 @@ flowchart TB
 ### Layer 4 — Retrieval policy (orchestration, not new facts)
 
 **Owns:** `UnifiedRanker` (and friends): pool fusion, role-aware sort tiers, token budget, marginal gain, trace/ DI heuristics (e.g. resolving package imports on disk when graph import edges are missing).
+
+**Current fallback contract:** when Layer 1 import edges are incomplete for trace-style questions, policy may add **bounded** recovery candidates from module imports, runtime symbol seeds, and same-directory neighbors; all such additions must keep explicit recovery provenance.
 
 **Rule:** Policy may **prefer** or **include** nodes that are already in the pool; it may apply **clarified fallbacks** when Layer 1 is incomplete. It should not silently redefine “truth” without marking provenance (e.g. `recovery:import-module-trace`).
 

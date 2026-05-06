@@ -68,9 +68,7 @@ class TestIncrementalIndexing:
             assert json.loads(call_args.kwargs["profile_json"]) == profile
 
         mock_session = MagicMock()
-        mock_session.run.return_value.single.return_value = {
-            "profile_json": json.dumps(profile)
-        }
+        mock_session.run.return_value.single.return_value = {"profile_json": json.dumps(profile)}
         with patch.object(db.driver, "session") as mock_ctx:
             mock_ctx.return_value.__enter__.return_value = mock_session
             assert db.get_repository_profile("local/repo@main") == profile

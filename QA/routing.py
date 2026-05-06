@@ -330,17 +330,13 @@ async def run_endpoint_function(
         return await run_in_threadpool(dependant.call, **values)
 
 
-def _build_response_args(
-    *, status_code: int | None, solved_result: Any
-) -> dict[str, Any]:
+def _build_response_args(*, status_code: int | None, solved_result: Any) -> dict[str, Any]:
     response_args: dict[str, Any] = {
         "background": solved_result.background_tasks,
     }
     # If status_code was set, use it, otherwise use the default from the
     # response class, in the case of redirect it's 307
-    current_status_code = (
-        status_code if status_code else solved_result.response.status_code
-    )
+    current_status_code = status_code if status_code else solved_result.response.status_code
     if current_status_code is not None:
         response_args["status_code"] = current_status_code
     if solved_result.response.status_code:
@@ -388,9 +384,7 @@ def get_request_handler(
 
         # Extract endpoint context for error messages
         endpoint_ctx = (
-            _extract_endpoint_context(dependant.call)
-            if dependant.call
-            else EndpointContext()
+            _extract_endpoint_context(dependant.call) if dependant.call else EndpointContext()
         )
 
         if dependant.path:
@@ -470,9 +464,7 @@ def get_request_handler(
             # serializes to JSON bytes.
             def _serialize_data(data: Any) -> bytes:
                 if stream_item_field:
-                    value, errors_ = stream_item_field.validate(
-                        data, {}, loc=("response",)
-                    )
+                    value, errors_ = stream_item_field.validate(data, {}, loc=("response",))
                     if errors_:
                         ctx = endpoint_ctx or EndpointContext()
                         raise ResponseValidationError(
@@ -522,9 +514,7 @@ def get_request_handler(
                     else:
                         # Plain object: validate + serialize via
                         # stream_item_field (if set) and wrap in data field
-                        return format_sse_event(
-                            data_str=_serialize_data(item).decode("utf-8")
-                        )
+                        return format_sse_event(data_str=_serialize_data(item).decode("utf-8"))
 
                 if dependant.is_async_gen_callable:
                     sse_aiter: AsyncIterator[Any] = gen.__aiter__()
@@ -532,9 +522,7 @@ def get_request_handler(
                     sse_aiter = iterate_in_threadpool(gen)
 
                 @asynccontextmanager
-                async def _sse_producer_cm() -> AsyncIterator[
-                    ObjectReceiveStream[bytes]
-                ]:
+                async def _sse_producer_cm() -> AsyncIterator[ObjectReceiveStream[bytes]]:
                     # Use a memory stream to decouple generator iteration
                     # from the keepalive timer. A producer task pulls items
                     # from the generator independently, so
@@ -549,17 +537,17 @@ def get_request_handler(
                     # streaming response completes — not by async generator
                     # finalization via GeneratorExit.
                     # Ref: https://peps.python.org/pep-0789/
-                    send_stream, receive_stream = anyio.create_memory_object_stream[
-                        bytes
-                    ](max_buffer_size=1)
+                    send_stream, receive_stream = anyio.create_memory_object_stream[bytes](
+                        max_buffer_size=1
+                    )
 
                     async def _producer() -> None:
                         async with send_stream:
                             async for raw_item in sse_aiter:
                                 await send_stream.send(_serialize_sse_item(raw_item))
 
-                    send_keepalive, receive_keepalive = (
-                        anyio.create_memory_object_stream[bytes](max_buffer_size=1)
+                    send_keepalive, receive_keepalive = anyio.create_memory_object_stream[bytes](
+                        max_buffer_size=1
                     )
 
                     async def _keepalive_inserter() -> None:
@@ -587,9 +575,7 @@ def get_request_handler(
                 # exit stack. The stack outlives the streaming response,
                 # so __aexit__ runs via proper structured teardown, not
                 # via GeneratorExit thrown into an async generator.
-                sse_receive_stream = await async_exit_stack.enter_async_context(
-                    _sse_producer_cm()
-                )
+                sse_receive_stream = await async_exit_stack.enter_async_context(_sse_producer_cm())
                 # Ensure the receive stream is closed when the exit stack
                 # unwinds, preventing ResourceWarning from __del__.
                 async_exit_stack.push_async_callback(sse_receive_stream.aclose)
@@ -604,8 +590,8 @@ def get_request_handler(
                         # the consumer and receive() never suspends.
                         await anyio.sleep(0)
 
-                sse_stream_content: AsyncIterator[bytes] | Iterator[bytes] = (
-                    _sse_with_checkpoints(sse_receive_stream)
+                sse_stream_content: AsyncIterator[bytes] | Iterator[bytes] = _sse_with_checkpoints(
+                    sse_receive_stream
                 )
 
                 response = StreamingResponse(
@@ -717,9 +703,7 @@ def get_request_handler(
                         response.body = b""
                     response.headers.raw.extend(solved_result.response.headers.raw)
         if errors:
-            validation_error = RequestValidationError(
-                errors, body=body, endpoint_ctx=endpoint_ctx
-            )
+            validation_error = RequestValidationError(errors, body=body, endpoint_ctx=endpoint_ctx)
             raise validation_error
 
         # Return response
@@ -736,9 +720,7 @@ def get_websocket_app(
 ) -> Callable[[WebSocket], Coroutine[Any, Any, Any]]:
     async def app(websocket: WebSocket) -> None:
         endpoint_ctx = (
-            _extract_endpoint_context(dependant.call)
-            if dependant.call
-            else EndpointContext()
+            _extract_endpoint_context(dependant.call) if dependant.call else EndpointContext()
         )
         if dependant.path:
             # For mounted sub-apps, include the mount path prefix
@@ -781,18 +763,14 @@ class APIWebSocketRoute(routing.WebSocketRoute):
         self.name = get_name(endpoint) if name is None else name
         self.dependencies = list(dependencies or [])
         self.path_regex, self.path_format, self.param_convertors = compile_path(path)
-        self.dependant = get_dependant(
-            path=self.path_format, call=self.endpoint, scope="function"
-        )
+        self.dependant = get_dependant(path=self.path_format, call=self.endpoint, scope="function")
         for depends in self.dependencies[::-1]:
             self.dependant.dependencies.insert(
                 0,
                 get_parameterless_sub_dependant(depends=depends, path=self.path_format),
             )
         self._flat_dependant = get_flat_dependant(self.dependant)
-        self._embed_body_fields = _should_embed_body_fields(
-            self._flat_dependant.body_params
-        )
+        self._embed_body_fields = _should_embed_body_fields(self._flat_dependant.body_params)
         self.app = websocket_session(
             get_websocket_app(
                 dependant=self.dependant,
@@ -837,8 +815,9 @@ class APIRoute(routing.Route):
         dependency_overrides_provider: Any | None = None,
         callbacks: list[BaseRoute] | None = None,
         openapi_extra: dict[str, Any] | None = None,
-        generate_unique_id_function: Callable[["APIRoute"], str]
-        | DefaultPlaceholder = Default(generate_unique_id),
+        generate_unique_id_function: Callable[["APIRoute"], str] | DefaultPlaceholder = Default(
+            generate_unique_id
+        ),
         strict_content_type: bool | DefaultPlaceholder = Default(True),
     ) -> None:
         self.path = path
@@ -946,33 +925,25 @@ class APIRoute(routing.Route):
             self.response_fields = {}
 
         assert callable(endpoint), "An endpoint must be a callable"
-        self.dependant = get_dependant(
-            path=self.path_format, call=self.endpoint, scope="function"
-        )
+        self.dependant = get_dependant(path=self.path_format, call=self.endpoint, scope="function")
         for depends in self.dependencies[::-1]:
             self.dependant.dependencies.insert(
                 0,
                 get_parameterless_sub_dependant(depends=depends, path=self.path_format),
             )
         self._flat_dependant = get_flat_dependant(self.dependant)
-        self._embed_body_fields = _should_embed_body_fields(
-            self._flat_dependant.body_params
-        )
+        self._embed_body_fields = _should_embed_body_fields(self._flat_dependant.body_params)
         self.body_field = get_body_field(
             flat_dependant=self._flat_dependant,
             name=self.unique_id,
             embed_body_fields=self._embed_body_fields,
         )
         # Detect generator endpoints that should stream as JSONL or SSE
-        is_generator = (
-            self.dependant.is_async_gen_callable or self.dependant.is_gen_callable
-        )
+        is_generator = self.dependant.is_async_gen_callable or self.dependant.is_gen_callable
         self.is_sse_stream = is_generator and lenient_issubclass(
             response_class, EventSourceResponse
         )
-        self.is_json_stream = is_generator and isinstance(
-            response_class, DefaultPlaceholder
-        )
+        self.is_json_stream = is_generator and isinstance(response_class, DefaultPlaceholder)
         self.app = request_response(self.get_route_handler())
 
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
@@ -1294,12 +1265,8 @@ class APIRouter(routing.Router):
         # Handle on_startup/on_shutdown locally since Starlette removed support
         # Ref: https://github.com/Kludex/starlette/pull/3117
         # TODO: deprecate this once the lifespan (or alternative) interface is improved
-        self.on_startup: list[Callable[[], Any]] = (
-            [] if on_startup is None else list(on_startup)
-        )
-        self.on_shutdown: list[Callable[[], Any]] = (
-            [] if on_shutdown is None else list(on_shutdown)
-        )
+        self.on_startup: list[Callable[[], Any]] = [] if on_startup is None else list(on_startup)
+        self.on_shutdown: list[Callable[[], Any]] = [] if on_shutdown is None else list(on_shutdown)
 
         self.prefix = prefix
         self.tags: list[str | Enum] = tags or []
@@ -1361,16 +1328,15 @@ class APIRouter(routing.Router):
         route_class_override: type[APIRoute] | None = None,
         callbacks: list[BaseRoute] | None = None,
         openapi_extra: dict[str, Any] | None = None,
-        generate_unique_id_function: Callable[[APIRoute], str]
-        | DefaultPlaceholder = Default(generate_unique_id),
+        generate_unique_id_function: Callable[[APIRoute], str] | DefaultPlaceholder = Default(
+            generate_unique_id
+        ),
         strict_content_type: bool | DefaultPlaceholder = Default(True),
     ) -> None:
         route_class = route_class_override or self.route_class
         responses = responses or {}
         combined_responses = {**self.responses, **responses}
-        current_response_class = get_value_or_default(
-            response_class, self.default_response_class
-        )
+        current_response_class = get_value_or_default(response_class, self.default_response_class)
         current_tags = self.tags.copy()
         if tags:
             current_tags.extend(tags)
@@ -1410,9 +1376,7 @@ class APIRouter(routing.Router):
             callbacks=current_callbacks,
             openapi_extra=openapi_extra,
             generate_unique_id_function=current_generate_unique_id,
-            strict_content_type=get_value_or_default(
-                strict_content_type, self.strict_content_type
-            ),
+            strict_content_type=get_value_or_default(strict_content_type, self.strict_content_type),
         )
         self.routes.append(route)
 
@@ -1442,9 +1406,7 @@ class APIRouter(routing.Router):
         name: str | None = None,
         callbacks: list[BaseRoute] | None = None,
         openapi_extra: dict[str, Any] | None = None,
-        generate_unique_id_function: Callable[[APIRoute], str] = Default(
-            generate_unique_id
-        ),
+        generate_unique_id_function: Callable[[APIRoute], str] = Default(generate_unique_id),
     ) -> Callable[[DecoratedCallable], DecoratedCallable]:
         def decorator(func: DecoratedCallable) -> DecoratedCallable:
             self.add_api_route(
@@ -1559,9 +1521,7 @@ class APIRouter(routing.Router):
         """
 
         def decorator(func: DecoratedCallable) -> DecoratedCallable:
-            self.add_api_websocket_route(
-                path, func, name=name, dependencies=dependencies
-            )
+            self.add_api_websocket_route(path, func, name=name, dependencies=dependencies)
             return func
 
         return decorator
@@ -1816,9 +1776,7 @@ class APIRouter(routing.Router):
                     name=route.name,
                 )
             elif isinstance(route, routing.WebSocketRoute):
-                self.add_websocket_route(
-                    prefix + route.path, route.endpoint, name=route.name
-                )
+                self.add_websocket_route(prefix + route.path, route.endpoint, name=route.name)
         for handler in router.on_startup:
             self.add_event_handler("startup", handler)
         for handler in router.on_shutdown:

@@ -50,9 +50,7 @@ _INDEXED_EXTENSIONS = frozenset(
     ext for adapter in REGISTRY.supported_adapters() for ext in adapter.file_extensions
 )
 
-ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 def is_indexable_file(file_path: str) -> bool:
@@ -85,9 +83,7 @@ def collect_files(project_path: str) -> list[str]:
         # Apply gitignore to surviving dirs so project-specific rules still win.
         if spec:
             rel_root = os.path.relpath(root, ROOT)
-            dirs[:] = [
-                d for d in dirs if not spec.match_file(os.path.join(rel_root, d) + "/")
-            ]
+            dirs[:] = [d for d in dirs if not spec.match_file(os.path.join(rel_root, d) + "/")]
 
         for name in filenames:
             if name.startswith(".") or not is_indexable_file(name):

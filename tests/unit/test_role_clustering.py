@@ -194,7 +194,7 @@ def test_assemble_symbol_rows_separates_cross_package_edges():
         ("u:core_b", "function", "/repo/core/b.py"),
     ]
     edges = [
-        ("u:api", "u:core_a"),     # cross-package out for api, cross-package in for core_a
+        ("u:api", "u:core_a"),  # cross-package out for api, cross-package in for core_a
         ("u:core_a", "u:core_b"),  # in-package edge inside core
     ]
 
@@ -254,9 +254,7 @@ def test_assemble_symbol_rows_attaches_weighted_doc_anchor_signals():
             symbols,
             [],
             {"u:a": 3},
-            doc_signal_by_uid={
-                "u:a": {"definition": 1.4, "reference": 0.6, "example": 0.2}
-            },
+            doc_signal_by_uid={"u:a": {"definition": 1.4, "reference": 0.6, "example": 0.2}},
         )
     }
 
@@ -292,9 +290,7 @@ def test_assemble_symbol_rows_threads_import_in_per_uid():
 
     rows = {
         row.uid: row
-        for row in assemble_symbol_rows(
-            symbols, [], {}, import_in_per_uid={"u:popular": 12}
-        )
+        for row in assemble_symbol_rows(symbols, [], {}, import_in_per_uid={"u:popular": 12})
     }
 
     assert rows["u:popular"].import_in == 12
@@ -496,7 +492,9 @@ def test_role_catalog_resolves_canonical_roles_to_cluster_preferences():
     assert core_matches
     assert api_matches
     assert mapping["u:data_0"] in {match["cluster_id"] for match in core_matches}
-    assert any(match["archetype"] in {"passive_api_surface", "active_entrypoint"} for match in api_matches)
+    assert any(
+        match["archetype"] in {"passive_api_surface", "active_entrypoint"} for match in api_matches
+    )
 
 
 def test_role_catalog_payload_includes_preloaded_mechanism_profiles():

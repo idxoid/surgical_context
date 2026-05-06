@@ -235,9 +235,7 @@ class IntentClassifier:
                 matched_keywords=matched_keywords,
             )
 
-        primary = next(
-            intent for intent in cls.ORDER if raw_scores.get(intent, 0.0) > 0
-        )
+        primary = next(intent for intent in cls.ORDER if raw_scores.get(intent, 0.0) > 0)
         total_score = sum(score for score in raw_scores.values() if score > 0)
         distribution = {
             intent.value: raw_scores[intent] / total_score
@@ -295,8 +293,7 @@ class IntentClassifier:
         contract = profile.get("reasoning_contract") or {}
         required = cls._required_capabilities(signal.primary)
         available = {
-            capability: cls._capability_status(capability, capabilities)
-            for capability in required
+            capability: cls._capability_status(capability, capabilities) for capability in required
         }
         effective_mode, degraded, risks = cls._effective_mode(
             signal.primary,
@@ -383,7 +380,11 @@ class IntentClassifier:
             )
 
         if intent == Intent.NAVIGATION:
-            mode = "exact_symbol_navigation" if cls._is_usable(available["code_navigation"]) else "low_confidence_navigation"
+            mode = (
+                "exact_symbol_navigation"
+                if cls._is_usable(available["code_navigation"])
+                else "low_confidence_navigation"
+            )
             return mode, mode != "exact_symbol_navigation", risks
 
         if intent == Intent.DEBUGGING:
@@ -406,7 +407,10 @@ class IntentClassifier:
             )
 
         if intent == Intent.EXPLORATION:
-            dynamic = (capabilities.get("decorator_semantics"), capabilities.get("runtime_registry_semantics"))
+            dynamic = (
+                capabilities.get("decorator_semantics"),
+                capabilities.get("runtime_registry_semantics"),
+            )
             if any(value == "medium" for value in dynamic):
                 return (
                     "mechanism_explanation_with_caveats",

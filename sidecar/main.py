@@ -434,7 +434,9 @@ def _history_conversation_for_scope(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Unknown history conversation")
     if conversation["workspace_id"] != workspace_id:
-        raise HTTPException(status_code=403, detail="History conversation belongs to another workspace")
+        raise HTTPException(
+            status_code=403, detail="History conversation belongs to another workspace"
+        )
     if conversation["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="History conversation belongs to another user")
     return conversation
@@ -704,10 +706,7 @@ def _mark_ask_fallback(
             {
                 "code": budget["fallback_reason"],
                 "severity": "warning",
-                "message": (
-                    f"Symbol '{req.symbol}' was not found; "
-                    f"using {display_level} context."
-                ),
+                "message": (f"Symbol '{req.symbol}' was not found; using {display_level} context."),
             },
         )
 
@@ -721,7 +720,9 @@ def _fallback_reason(symbol_error: str) -> str:
 
 
 def _append_context_warning(current: Any, warning: dict[str, str]) -> list[dict[str, str]]:
-    warnings = [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+    warnings = (
+        [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+    )
     if not any(item.get("code") == warning["code"] for item in warnings):
         warnings.append(warning)
     return warnings
@@ -1497,7 +1498,9 @@ def record_history_ask(
                 user_id=user_id,
             )
         else:
-            title = req.prompt_summary or (f"Ask about {req.symbol}" if req.symbol else "Workspace ask")
+            title = req.prompt_summary or (
+                f"Ask about {req.symbol}" if req.symbol else "Workspace ask"
+            )
             conversation_id = history_provider.create_conversation(
                 workspace_id=workspace_id,
                 user_id=user_id,

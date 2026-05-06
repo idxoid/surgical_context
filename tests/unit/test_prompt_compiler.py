@@ -118,7 +118,9 @@ class TestPromptCompilerBasic:
         assert save_payment is not None
         assert save_payment.is_dirty is True
 
-    def test_compile_deduplicates_exact_duplicate_symbol_code(self, sample_subgraph, sample_code_map):
+    def test_compile_deduplicates_exact_duplicate_symbol_code(
+        self, sample_subgraph, sample_code_map
+    ):
         duplicate = SubgraphNode(
             uid="other.py:validate_amount_copy",
             name="validate_amount",
@@ -201,10 +203,15 @@ class TestPromptCompilerBasic:
         assert payload["metadata"]["assembly"]["trace_id"] == "trace-123"
         assert payload["metadata"]["assembly"]["resolver_version"] == "context-arbitrator-v2"
         assert payload["metadata"]["pruning_reasons"] == ["budget skipped distant import"]
-        assert payload["intent_details"]["distribution"] == {"navigation": 0.75, "exploration": 0.25}
+        assert payload["intent_details"]["distribution"] == {
+            "navigation": 0.75,
+            "exploration": 0.25,
+        }
         assert payload["intent_details"]["ambiguous"] is True
         assert payload["metadata"]["ranker"]["weights"]["epsilon"] == 0.3
-        assert payload["metadata"]["ranker"]["target_selection"]["strategy"] == "duplicate_resolution"
+        assert (
+            payload["metadata"]["ranker"]["target_selection"]["strategy"] == "duplicate_resolution"
+        )
         assert payload["primary_source"]["provenance"] == ["graph", "code_resolver"]
         assert payload["primary_source"]["scores"]["blended_score"] == 1.0
         assert payload["documentation"][0]["score"] == 0.73

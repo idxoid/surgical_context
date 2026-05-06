@@ -88,7 +88,11 @@ def _classify_anchor_type(chunk_text: str, file_path: str = "") -> str:
         return "example"
     if (
         "/reference/" in path
-        or re.search(r"^#{1,4}\s+.*\b(api|reference|parameters?|returns?|class|function|method)\b", text, re.M)
+        or re.search(
+            r"^#{1,4}\s+.*\b(api|reference|parameters?|returns?|class|function|method)\b",
+            text,
+            re.M,
+        )
         or re.search(r"\b(arguments?|parameters?|returns?|raises|signature)\b", text)
     ):
         return "definition"
@@ -173,7 +177,9 @@ def _cover_link(
 
 def _merge_cover_link(links_by_uid: dict[str, dict], link: dict) -> None:
     existing = links_by_uid.get(link["uid"])
-    if existing is None or float(link.get("confidence", 0.0)) > float(existing.get("confidence", 0.0)):
+    if existing is None or float(link.get("confidence", 0.0)) > float(
+        existing.get("confidence", 0.0)
+    ):
         links_by_uid[link["uid"]] = link
 
 
@@ -188,7 +194,9 @@ def _normalize_cover_links(
         uid = link.get("uid")
         if not uid:
             continue
-        anchor_type = link.get("anchor_type") if link.get("anchor_type") in ANCHOR_TYPES else "reference"
+        anchor_type = (
+            link.get("anchor_type") if link.get("anchor_type") in ANCHOR_TYPES else "reference"
+        )
         normalized.append(
             {
                 "uid": uid,
@@ -534,10 +542,7 @@ def _matches_allowed_prefix(file_path: str | None, prefixes: list[str]) -> bool:
     if not file_path:
         return False
     resolved = str(Path(file_path).resolve())
-    return any(
-        resolved == prefix or resolved.startswith(f"{prefix}/")
-        for prefix in prefixes
-    )
+    return any(resolved == prefix or resolved.startswith(f"{prefix}/") for prefix in prefixes)
 
 
 def _load_name_to_uid(
@@ -680,8 +685,7 @@ def _prepare_doc_link_batches(
                         {
                             "chunk_id": chunk_id,
                             "refs": [
-                                {"ref": ref, "ref_type": _classify_doc_type(ref)}
-                                for ref in refs
+                                {"ref": ref, "ref_type": _classify_doc_type(ref)} for ref in refs
                             ],
                         }
                     )
@@ -771,8 +775,7 @@ def _prepare_doc_link_batches(
                         {
                             "chunk_id": chunk_id,
                             "refs": [
-                                {"ref": ref, "ref_type": _classify_doc_type(ref)}
-                                for ref in refs
+                                {"ref": ref, "ref_type": _classify_doc_type(ref)} for ref in refs
                             ],
                         }
                     )

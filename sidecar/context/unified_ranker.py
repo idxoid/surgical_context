@@ -200,6 +200,7 @@ _FOCUS_QUERY_STOPWORDS = _IMPACT_TOPIC_STOPWORDS | {
     "work",
 }
 
+
 def _path_is_noisy(file_path: str) -> bool:
     if not file_path:
         return False
@@ -236,7 +237,9 @@ def compute_noise_factor(
         if intent == Intent.EXPLORATION:
             return _EXPLORATION_NOISE_FACTOR
         return _NOISE_FACTOR
-    if kind == "doc" and any(pat in (file_path or "").lower() for pat in _LOW_SIGNAL_DOC_PATH_PATTERNS):
+    if kind == "doc" and any(
+        pat in (file_path or "").lower() for pat in _LOW_SIGNAL_DOC_PATH_PATTERNS
+    ):
         return 0.35
     return 1.0
 
@@ -275,10 +278,10 @@ def compute_impact_noise_factor(
 
 @dataclass
 class RankerWeights:
-    alpha: float = 1.0    # graph structural score
-    beta: float = 0.8     # semantic similarity score
-    gamma: float = 0.4    # intent tier prior
-    delta: float = 0.5    # overlap bonus (both signals fired)
+    alpha: float = 1.0  # graph structural score
+    beta: float = 0.8  # semantic similarity score
+    gamma: float = 0.4  # intent tier prior
+    delta: float = 0.5  # overlap bonus (both signals fired)
     epsilon: float = 0.3  # token cost penalty per 100 tokens
 
 
@@ -287,13 +290,13 @@ DEFAULT_WEIGHTS = RankerWeights()
 
 @dataclass
 class Candidate:
-    kind: str                              # "symbol" | "doc"
-    uid: str                               # symbol UID or doc chunk_id
+    kind: str  # "symbol" | "doc"
+    uid: str  # symbol UID or doc chunk_id
     token_cost: int
     graph_score: float = 0.0
     semantic_score: float = 0.0
     intent_weight: float = 0.0
-    noise_factor: float = 1.0              # multiplicative downrank for tests/tutorials
+    noise_factor: float = 1.0  # multiplicative downrank for tests/tutorials
     provenance: list[str] = field(default_factory=list)
     # symbol metadata
     name: str = ""
@@ -369,15 +372,25 @@ class UnifiedRanker:
 
     # Copied from GraphExpander to keep UnifiedRanker self-contained.
     _RELATION_PRIOR: dict[str, float] = {
-        "CALLS_DIRECT_out": 1.0,  "CALLS_DIRECT_in": 1.2,
-        "CALLS_DYNAMIC_out": 0.7, "CALLS_DYNAMIC_in": 0.9,
-        "CALLS_INFERRED_out": 0.4,"CALLS_INFERRED_in": 0.5,
-        "CALLS_SCOPED_out": 0.9,  "CALLS_SCOPED_in": 1.1,
-        "CALLS_IMPORTED_out": 0.85,"CALLS_IMPORTED_in": 1.0,
-        "CALLS_GUESS_out": 0.4,   "CALLS_GUESS_in": 0.5,
-        "IMPLEMENTS": 1.1, "OVERRIDES": 1.1,
-        "REFERENCES": 0.3, "DEPENDS_ON": 0.8, "IMPORTS": 0.6,
-        "CALLS_out": 1.0,  "CALLS_in": 1.2,
+        "CALLS_DIRECT_out": 1.0,
+        "CALLS_DIRECT_in": 1.2,
+        "CALLS_DYNAMIC_out": 0.7,
+        "CALLS_DYNAMIC_in": 0.9,
+        "CALLS_INFERRED_out": 0.4,
+        "CALLS_INFERRED_in": 0.5,
+        "CALLS_SCOPED_out": 0.9,
+        "CALLS_SCOPED_in": 1.1,
+        "CALLS_IMPORTED_out": 0.85,
+        "CALLS_IMPORTED_in": 1.0,
+        "CALLS_GUESS_out": 0.4,
+        "CALLS_GUESS_in": 0.5,
+        "IMPLEMENTS": 1.1,
+        "OVERRIDES": 1.1,
+        "REFERENCES": 0.3,
+        "DEPENDS_ON": 0.8,
+        "IMPORTS": 0.6,
+        "CALLS_out": 1.0,
+        "CALLS_in": 1.2,
         "SEMANTIC_HINT_out": 1.3,
         "SEMANTIC_HINT_in": 1.3,
     }
@@ -548,11 +561,7 @@ class UnifiedRanker:
         """
         try:
             with self.db.driver.session() as session:
-                result = list(
-                    session.run(
-                        query, name=symbol_name, workspace_id=self.workspace_id
-                    )
-                )
+                result = list(session.run(query, name=symbol_name, workspace_id=self.workspace_id))
         except Exception:
             return []
         return result
@@ -781,7 +790,11 @@ class UnifiedRanker:
         if "high-level api" in query_lower or "high level api" in query_lower:
             if "/main.py" in file_path.lower() or "basemodel" in qualified_name.lower():
                 bonus += 0.45
-        if "rootmodel" in qualified_name.lower() and "rootmodel" not in query_lower and "root model" not in query_lower:
+        if (
+            "rootmodel" in qualified_name.lower()
+            and "rootmodel" not in query_lower
+            and "root model" not in query_lower
+        ):
             bonus -= 0.35
 
         query_terms = self._query_terms(query)
@@ -816,9 +829,7 @@ class UnifiedRanker:
         in the returned list — the caller holds it separately.
         """
         # 1. Collect graph BFS candidates (pool-size-limited, not budget-limited)
-        graph_pool = self._graph_candidates(
-            target.uid, pool_size=graph_pool_size, intent=intent
-        )
+        graph_pool = self._graph_candidates(target.uid, pool_size=graph_pool_size, intent=intent)
 
         # 2. Collect vector candidates for docs and symbols
         doc_pool = self._doc_candidates(query, limit=vector_limit)
@@ -829,9 +840,7 @@ class UnifiedRanker:
         # runtime consumer) are co-mentioned in the same DocAnchor, the
         # bridge surfaces the consumer even when no Symbol→Symbol edge
         # connects them. Seeds are the target plus any strong graph hits.
-        bridge_seeds = {target.uid} | {
-            c.uid for c in graph_pool if c.graph_score > 0.5
-        }
+        bridge_seeds = {target.uid} | {c.uid for c in graph_pool if c.graph_score > 0.5}
         excluded = {target.uid} | {c.uid for c in graph_pool}
         bridge_pool_h1 = self._doc_bridge_candidates(
             bridge_seeds, excluded, limit=30, hop_decay=1.0
@@ -841,9 +850,7 @@ class UnifiedRanker:
         bridge_pool = bridge_pool_h1
 
         # 4. Fuse into unified pool, boosting docs linked via COVERS
-        pool = self._fuse(
-            graph_pool, doc_pool, sym_vec_pool, target.uid, bridge_pool=bridge_pool
-        )
+        pool = self._fuse(graph_pool, doc_pool, sym_vec_pool, target.uid, bridge_pool=bridge_pool)
 
         # 5. Fill missing token costs for vector-only symbols before we
         # decide whether a role is genuinely selection-ready.
@@ -878,9 +885,7 @@ class UnifiedRanker:
                     required_roles,
                 )
         recovery_roles = (
-            required_roles
-            if self._needs_structural_recovery(target)
-            else roles_for_backfill
+            required_roles if self._needs_structural_recovery(target) else roles_for_backfill
         )
         if recovery_roles:
             recovery = self._generic_role_recovery_candidates(
@@ -922,7 +927,9 @@ class UnifiedRanker:
                     content=c.content,
                 )
             else:
-                c.noise_factor = compute_noise_factor(c.file_path, c.name, kind=c.kind, intent=intent)
+                c.noise_factor = compute_noise_factor(
+                    c.file_path, c.name, kind=c.kind, intent=intent
+                )
                 c.noise_factor *= self._topic_focus_factor(
                     c,
                     target,
@@ -1091,13 +1098,10 @@ class UnifiedRanker:
                     potential_cost = compressed
 
             closes_missing_role = any(
-                role in required_roles and role not in fulfilled_roles
-                for role in candidate_roles
+                role in required_roles and role not in fulfilled_roles for role in candidate_roles
             )
             if trace_mode and c.kind != "doc" and (c.file_path or ""):
-                already = {x.file_path for x in chosen if x.file_path} | {
-                    target.file_path or ""
-                }
+                already = {x.file_path for x in chosen if x.file_path} | {target.file_path or ""}
                 if c.file_path not in already:
                     closes_missing_role = True
             if spent + potential_cost > base_budget:
@@ -1161,7 +1165,9 @@ class UnifiedRanker:
                 required_roles=required_roles,
                 candidate_roles=candidate_roles,
             )
-            fills_role = any(role in required_roles and role not in fulfilled_roles for role in candidate_roles)
+            fills_role = any(
+                role in required_roles and role not in fulfilled_roles for role in candidate_roles
+            )
             adds_new_trace_file = (
                 trace_mode
                 and c.kind != "doc"
@@ -1169,8 +1175,18 @@ class UnifiedRanker:
                 and c.file_path not in chosen_files
             )
             fills_role_or_trace = fills_role or adds_new_trace_file
-            is_bridge = c.relation in ("DOC_BRIDGE", "SEMANTIC_HINT", "ROLE_BACKFILL") or self._has_role_backfill(c)
-            is_strong_relation = c.relation in ("CALLS_DIRECT", "CALLS_SCOPED", "DEPENDS_ON", "IMPLEMENTS", "OVERRIDES")
+            is_bridge = c.relation in (
+                "DOC_BRIDGE",
+                "SEMANTIC_HINT",
+                "ROLE_BACKFILL",
+            ) or self._has_role_backfill(c)
+            is_strong_relation = c.relation in (
+                "CALLS_DIRECT",
+                "CALLS_SCOPED",
+                "DEPENDS_ON",
+                "IMPLEMENTS",
+                "OVERRIDES",
+            )
 
             # Determine if this candidate provides any unique reasoning signal
             is_useful = (
@@ -1200,7 +1216,11 @@ class UnifiedRanker:
             else:
                 no_progress_streak += 1
 
-            if spent > base_budget and no_progress_streak >= expansion_stall_limit and not fills_role_or_trace:
+            if (
+                spent > base_budget
+                and no_progress_streak >= expansion_stall_limit
+                and not fills_role_or_trace
+            ):
                 stopped_reason = "expansion_no_progress"
                 _record_pruned(
                     c,
@@ -1246,13 +1266,8 @@ class UnifiedRanker:
             if gain < min_gain:
                 # Only break if floor is met AND no required roles are missing
                 if spent >= min_floor and not missing_roles:
-                    distinct_code_files = len(
-                        {x.file_path for x in chosen if _is_code_file(x)}
-                    )
-                    if (
-                        trace_mode
-                        and distinct_code_files < min_trace_code_file_breadth
-                    ):
+                    distinct_code_files = len({x.file_path for x in chosen if _is_code_file(x)})
+                    if trace_mode and distinct_code_files < min_trace_code_file_breadth:
                         _record_pruned(
                             c,
                             "marginal_gain_deferred_trace_breadth",
@@ -1303,7 +1318,7 @@ class UnifiedRanker:
             _try_select(c, gain, candidate_roles)
 
         if stop_index is not None:
-            for c in pool[stop_index + 1:]:
+            for c in pool[stop_index + 1 :]:
                 _record_pruned(c, "not_considered_after_threshold")
             for c in deferred_docs:
                 _record_pruned(c, "deferred_doc_not_replayed_after_threshold")
@@ -1361,8 +1376,7 @@ class UnifiedRanker:
         if "docs_or_concept" in required_roles and "docs_or_concept" not in fulfilled_roles:
             chosen_uids = {c.uid for c in chosen}
             rescue_docs = [
-                c for c in [*pool, *deferred_docs]
-                if c.kind == "doc" and c.uid not in chosen_uids
+                c for c in [*pool, *deferred_docs] if c.kind == "doc" and c.uid not in chosen_uids
             ]
             rescue_docs.sort(key=lambda cand: self._blended(cand), reverse=True)
             for c in rescue_docs:
@@ -1415,8 +1429,12 @@ class UnifiedRanker:
         return chosen, budget_info, stopped_reason, pruned_details, missing_roles
 
     def candidates_to_subgraph(
-        self, target: SubgraphNode, candidates: list[Candidate], budget_info: dict, 
-        stopped_reason: str = "", pruned_details: list = None
+        self,
+        target: SubgraphNode,
+        candidates: list[Candidate],
+        budget_info: dict,
+        stopped_reason: str = "",
+        pruned_details: list = None,
     ) -> tuple[Subgraph, list[DocChunk]]:
         """Split ranked candidates back into Subgraph + DocChunks for PromptCompiler."""
         nodes = []
@@ -1463,11 +1481,11 @@ class UnifiedRanker:
                     )
                 )
         return Subgraph(
-            primary=target, 
-            nodes=nodes, 
-            budget=budget_info, 
-            stopped_reason=stopped_reason, 
-            pruned_details=pruned_details or []
+            primary=target,
+            nodes=nodes,
+            budget=budget_info,
+            stopped_reason=stopped_reason,
+            pruned_details=pruned_details or [],
         ), docs
 
     # ------------------------------------------------------------------
@@ -1540,9 +1558,7 @@ class UnifiedRanker:
             candidates.append(c)
 
             for nn in self._get_neighbors(uid, visited, distance=distance + 1):
-                ns = self._raw_graph_score(
-                    nn, distance=distance + 1, chain_pursuit=chain_pursuit
-                )
+                ns = self._raw_graph_score(nn, distance=distance + 1, chain_pursuit=chain_pursuit)
                 heappush(
                     frontier,
                     (-ns, push_seq, nn["uid"], nn, nn["rel_type"], nn["outgoing"], distance + 1),
@@ -1564,9 +1580,7 @@ class UnifiedRanker:
         )
 
     def _doc_candidates(self, query: str, limit: int) -> list[Candidate]:
-        raw = self._filter_doc_hits_to_workspace(
-            self.vector.search_docs(query, limit=limit)
-        )
+        raw = self._filter_doc_hits_to_workspace(self.vector.search_docs(query, limit=limit))
         return [
             Candidate(
                 kind="doc",
@@ -1607,9 +1621,7 @@ class UnifiedRanker:
         )
 
     def _sym_vec_candidates(self, query: str, limit: int) -> list[Candidate]:
-        raw = self._filter_symbol_hits_to_workspace(
-            self.vector.search_symbols(query, limit=limit)
-        )
+        raw = self._filter_symbol_hits_to_workspace(self.vector.search_symbols(query, limit=limit))
         return [
             Candidate(
                 kind="symbol",
@@ -1710,9 +1722,8 @@ class UnifiedRanker:
             # hop_decay shrinks the contribution for transitive (2-hop) bridges.
             quality = max(0.0, min(1.0, float(r.get("anchor_quality") or 0.0)))
             score = math.log1p(strength) * (0.7 + (0.5 * quality)) * hop_decay
-            token_cost = (
-                int(r["token_estimate"])
-                or self._estimate_tokens_range(r.get("range") or [0, 0])
+            token_cost = int(r["token_estimate"]) or self._estimate_tokens_range(
+                r.get("range") or [0, 0]
             )
             hop_label = "h1" if hop_decay >= 1.0 else "h2"
             depth = 2 if hop_decay >= 1.0 else 4  # 2 hops vs 4 (seed→anchor→sym→anchor→sym)
@@ -1750,9 +1761,7 @@ class UnifiedRanker:
             with self.db.driver.session() as session:
                 allowed = {
                     record["path"]
-                    for record in session.run(
-                        query, workspace_id=self.workspace_id, paths=paths
-                    )
+                    for record in session.run(query, workspace_id=self.workspace_id, paths=paths)
                 }
         except Exception:
             return hits
@@ -1772,9 +1781,7 @@ class UnifiedRanker:
             with self.db.driver.session() as session:
                 allowed = {
                     record["uid"]
-                    for record in session.run(
-                        query, workspace_id=self.workspace_id, uids=uids
-                    )
+                    for record in session.run(query, workspace_id=self.workspace_id, uids=uids)
                 }
         except Exception:
             return hits
@@ -1815,7 +1822,7 @@ class UnifiedRanker:
         for c in bridge_pool or []:
             if c.relation == "DOC_BRIDGE":
                 c.graph_score = min(1.0, c.graph_score + 0.15)
-                
+
             if c.uid == target_uid:
                 continue
             if c.uid in pool:
@@ -1883,9 +1890,7 @@ class UnifiedRanker:
         try:
             details: dict[str, dict] = {}
             with self.db.driver.session() as session:
-                result = session.run(
-                    query, uids=missing_uids, workspace_id=self.workspace_id
-                )
+                result = session.run(query, uids=missing_uids, workspace_id=self.workspace_id)
                 for r in result:
                     details[r["uid"]] = {
                         "token_estimate": r["token_estimate"],
@@ -1932,7 +1937,8 @@ class UnifiedRanker:
                 existing.evidence_role = candidate.evidence_role
             if candidate.supporting_roles:
                 existing.supporting_roles = normalize_roles(
-                    list(getattr(existing, "supporting_roles", [])) + list(candidate.supporting_roles)
+                    list(getattr(existing, "supporting_roles", []))
+                    + list(candidate.supporting_roles)
                 )
         return list(merged.values())
 
@@ -1982,8 +1988,7 @@ class UnifiedRanker:
     @staticmethod
     def _has_role_backfill(candidate: Candidate) -> bool:
         return candidate.relation == "ROLE_BACKFILL" or any(
-            str(step).startswith("role-backfill:")
-            for step in candidate.provenance
+            str(step).startswith("role-backfill:") for step in candidate.provenance
         )
 
     def _role_backfill_candidates(
@@ -2168,11 +2173,12 @@ class UnifiedRanker:
         required_roles: list[str],
     ) -> Candidate:
         """Seat imported-module symbols when catalog roles miss strict recovery overlap."""
-        raw_tc = int(row.get("token_estimate") or 0) or self._estimate_tokens_range(row.get("range") or [0, 0])
+        raw_tc = int(row.get("token_estimate") or 0) or self._estimate_tokens_range(
+            row.get("range") or [0, 0]
+        )
         token_cost = min(raw_tc, 140)
-        edge_bonus = (
-            0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0))
-            + 0.10 * math.log1p(float(row.get("outbound_edges", 0) or 0))
+        edge_bonus = 0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.10 * math.log1p(
+            float(row.get("outbound_edges", 0) or 0)
         )
         role = self._first_reasoning_role(required_roles)
         candidate = Candidate(
@@ -2709,9 +2715,8 @@ class UnifiedRanker:
         )
         runtime_bonus = 0.20 if ("runtime_surface" in matched_roles and runtime_signal) else 0.0
         role_bonus = 0.18 * len(matched_roles)
-        edge_bonus = (
-            0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0))
-            + 0.10 * math.log1p(float(row.get("outbound_edges", 0) or 0))
+        edge_bonus = 0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.10 * math.log1p(
+            float(row.get("outbound_edges", 0) or 0)
         )
         candidate = Candidate(
             kind="symbol",
@@ -2765,8 +2770,13 @@ class UnifiedRanker:
         prefix_hit = name.startswith(_FACTORY_SIGNAL_PREFIXES)
         token_hit = any(token in haystack for token in _FACTORY_SIGNAL_TOKENS)
         path_hit = any(token in file_path for token in _FACTORY_SIGNAL_PATH_TOKENS)
-        target_hit = any(token in f"{target_name} {target_path}" for token in ("api", "route", "router", "openapi"))
-        edge_hint = (float(row.get("outbound_edges", 0) or 0) + float(row.get("inbound_edges", 0) or 0)) >= 1.0
+        target_hit = any(
+            token in f"{target_name} {target_path}"
+            for token in ("api", "route", "router", "openapi")
+        )
+        edge_hint = (
+            float(row.get("outbound_edges", 0) or 0) + float(row.get("inbound_edges", 0) or 0)
+        ) >= 1.0
 
         score = int(prefix_hit) + int(token_hit) + int(path_hit) + int(target_hit) + int(edge_hint)
         return score >= 2
@@ -2807,7 +2817,9 @@ class UnifiedRanker:
         token_hit = any(token in haystack for token in _REPRESENTATION_SIGNAL_TOKENS)
         path_hit = any(token in file_path for token in _REPRESENTATION_SIGNAL_PATH_TOKENS)
         target_dep_like = any(token in target_ctx for token in ("depend", "dependency", "param"))
-        class_bonus = kind == "class" and any(t in haystack for t in ("schema", "model", "field", "response"))
+        class_bonus = kind == "class" and any(
+            t in haystack for t in ("schema", "model", "field", "response")
+        )
         edge_hint = float(row.get("inbound_edges", 0) or 0) >= 1.0
         score = (
             int(token_hit)
@@ -3003,8 +3015,13 @@ class UnifiedRanker:
         token_estimate = neighbor.get("token_estimate", 0)
 
         if rel_type in (
-            "CALLS_DIRECT", "CALLS_SCOPED", "CALLS_IMPORTED",
-            "CALLS_DYNAMIC", "CALLS_INFERRED", "CALLS_GUESS", "CALLS",
+            "CALLS_DIRECT",
+            "CALLS_SCOPED",
+            "CALLS_IMPORTED",
+            "CALLS_DYNAMIC",
+            "CALLS_INFERRED",
+            "CALLS_GUESS",
+            "CALLS",
         ):
             base = rel_type if rel_type != "CALLS" else "CALLS_DIRECT"
             relation = f"{base}_out" if outgoing else f"{base}_in"
@@ -3026,7 +3043,9 @@ class UnifiedRanker:
         # types keep the original 0.4 penalty so we don't accidentally pull
         # in distant unrelated symbols.
         # We now include SEMANTIC_HINT in chain pursuit to favor dependency injection links.
-        if (chain_pursuit and self._is_outgoing_call(rel_type, outgoing)) or rel_type == "SEMANTIC_HINT":
+        if (
+            chain_pursuit and self._is_outgoing_call(rel_type, outgoing)
+        ) or rel_type == "SEMANTIC_HINT":
             distance_penalty = 0.15 * distance
         else:
             distance_penalty = 0.4 * distance
@@ -3043,8 +3062,13 @@ class UnifiedRanker:
 
     def _direction(self, rel_type: str, outgoing: bool) -> str:
         if rel_type in (
-            "CALLS", "CALLS_DIRECT", "CALLS_SCOPED", "CALLS_IMPORTED",
-            "CALLS_DYNAMIC", "CALLS_INFERRED", "CALLS_GUESS",
+            "CALLS",
+            "CALLS_DIRECT",
+            "CALLS_SCOPED",
+            "CALLS_IMPORTED",
+            "CALLS_DYNAMIC",
+            "CALLS_INFERRED",
+            "CALLS_GUESS",
         ):
             return "callee" if outgoing else "caller"
         elif rel_type == "DEPENDS_ON":
@@ -3088,11 +3112,12 @@ class UnifiedRanker:
     ) -> float:
         """marginal_gain = base_score + role_bonus + coverage_bonus + bridge_bonus - redundancy_penalty"""
         base_score = self._blended(c)
-        
+
         # 1. Role Bonus: Does this symbol fulfill a missing requirement for the mechanism?
         role_bonus = 0.0
         roles_for_gain = [
-            role for role in (candidate_roles if candidate_roles is not None else self._roles_of(c))
+            role
+            for role in (candidate_roles if candidate_roles is not None else self._roles_of(c))
             if role in required_roles
         ]
         if roles_for_gain:
@@ -3103,7 +3128,7 @@ class UnifiedRanker:
                 role_bonus = 0.5  # High-priority evidence signal
 
         # 2. Coverage Bonus: Does this symbol complete a structural chain?
-        # Boost symbols that are semantically hinted (FastAPI Depends) 
+        # Boost symbols that are semantically hinted (FastAPI Depends)
         # or are direct implementations of the target's interfaces.
         coverage_bonus = 0.0
         if "SEMANTIC_HINT" in (c.relation or ""):
@@ -3112,7 +3137,7 @@ class UnifiedRanker:
             coverage_bonus += 0.25
         if c.relation in ("IMPLEMENTS", "OVERRIDES"):
             coverage_bonus += 0.15
-            
+
         # 3. Bridge Bonus: Boost symbols discovered via DocBridge co-occurrence
         # as they often represent runtime connections static analysis misses.
         bridge_bonus = 0.1 if "doc-bridge" in "".join(c.provenance) else 0.0
@@ -3274,7 +3299,9 @@ class UnifiedRanker:
             return auto_mechanism
         return "generic"
 
-    def _get_required_roles(self, mechanism: str, *, target: SubgraphNode | None = None) -> list[str]:
+    def _get_required_roles(
+        self, mechanism: str, *, target: SubgraphNode | None = None
+    ) -> list[str]:
         """Return the set of evidence roles required for a minimally sufficient context."""
         roles = []
         if mechanism.startswith("auto:"):
@@ -3508,9 +3535,7 @@ class UnifiedRanker:
         except Exception:
             return []
 
-    def _get_covers_links(
-        self, chunk_ids: list[str], symbol_uids: set[str]
-    ) -> list[dict]:
+    def _get_covers_links(self, chunk_ids: list[str], symbol_uids: set[str]) -> list[dict]:
         if not chunk_ids or not symbol_uids:
             return []
         query = """

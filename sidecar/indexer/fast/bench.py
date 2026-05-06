@@ -55,12 +55,12 @@ class TqdmReporter:
 
     # Short, fixed-width stage labels so bars align across stages.
     _LABELS = {
-        "hash":    "hash    ",
-        "parse":   "parse   ",
-        "graph":   "graph   ",
-        "embed":   "embed   ",
+        "hash": "hash    ",
+        "parse": "parse   ",
+        "graph": "graph   ",
+        "embed": "embed   ",
         "affects": "affects ",
-        "docs":    "docs    ",
+        "docs": "docs    ",
     }
 
     def __init__(self, prefix: str = ""):
@@ -114,9 +114,7 @@ def _run_baseline(project_path: str, workspace_id: str) -> dict:
     from sidecar.parser.extractor import SymbolExtractor
     from sidecar.workspace import WorkspaceResolver
 
-    workspace_id = (
-        workspace_id or WorkspaceResolver().from_project_path(project_path).id
-    )
+    workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
 
     db = Neo4jClient(
         os.getenv("NEO4J_URI", "bolt://localhost:7687"),
@@ -155,9 +153,7 @@ def _run_baseline(project_path: str, workspace_id: str) -> dict:
         for path in tqdm(files, desc="base hash    ", unit="file", dynamic_ncols=True):
             current_hashes[path] = hash_file(path)
         stored_hashes = db.get_file_hashes(files, workspace_id=workspace_id)
-        changed_files = [
-            p for p in files if current_hashes[p] != stored_hashes.get(p)
-        ]
+        changed_files = [p for p in files if current_hashes[p] != stored_hashes.get(p)]
         stats["changed"] = len(changed_files)
         stats["timings_sec"]["hash"] = round(time.perf_counter() - t_stage, 3)
 
@@ -168,9 +164,7 @@ def _run_baseline(project_path: str, workspace_id: str) -> dict:
         # Stage 3: per-file index_file (baseline does everything here —
         # parse, graph writes, embeddings, and AFFECTS rebuild per file).
         t_stage = time.perf_counter()
-        for path in tqdm(
-            changed_files, desc="base index   ", unit="file", dynamic_ncols=True
-        ):
+        for path in tqdm(changed_files, desc="base index   ", unit="file", dynamic_ncols=True):
             with job_log.track_file_job(path, file_hash=current_hashes[path]):
                 index_file(path, db, lance, extractor, workspace_id=workspace_id)
         stats["timings_sec"]["index"] = round(time.perf_counter() - t_stage, 3)
@@ -263,10 +257,14 @@ def _print_comparison(baseline: dict | None, fast: dict | None):
     #   baseline.hash     <-> fast.hash
     #   baseline.index    <-> fast.parse + graph + embed + affects  (summed below)
     #   baseline.docs     <-> fast.docs
-    print(f"{'collect':<12} {_fmt_sec(baseline, 'collect')} {_fmt_sec(fast, 'collect')}"
-          f"{_speedup('collect', 'collect')}")
-    print(f"{'hash':<12} {_fmt_sec(baseline, 'hash')} {_fmt_sec(fast, 'hash')}"
-          f"{_speedup('hash', 'hash')}")
+    print(
+        f"{'collect':<12} {_fmt_sec(baseline, 'collect')} {_fmt_sec(fast, 'collect')}"
+        f"{_speedup('collect', 'collect')}"
+    )
+    print(
+        f"{'hash':<12} {_fmt_sec(baseline, 'hash')} {_fmt_sec(fast, 'hash')}"
+        f"{_speedup('hash', 'hash')}"
+    )
 
     # Sum fast's core stages for comparison with baseline's monolithic "index".
     fast_core = None
@@ -288,11 +286,15 @@ def _print_comparison(baseline: dict | None, fast: dict | None):
         print(f"  ├─ embed   {'':>10} {_fmt_sec(fast, 'embed')}")
         print(f"  └─ affects {'':>10} {_fmt_sec(fast, 'affects')}")
 
-    print(f"{'docs':<12} {_fmt_sec(baseline, 'docs')} {_fmt_sec(fast, 'docs')}"
-          f"{_speedup('docs', 'docs')}")
+    print(
+        f"{'docs':<12} {_fmt_sec(baseline, 'docs')} {_fmt_sec(fast, 'docs')}"
+        f"{_speedup('docs', 'docs')}"
+    )
     print("-" * 64)
-    print(f"{'total':<12} {_fmt_sec(baseline, 'total')} {_fmt_sec(fast, 'total')}"
-          f"{_speedup('total', 'total')}")
+    print(
+        f"{'total':<12} {_fmt_sec(baseline, 'total')} {_fmt_sec(fast, 'total')}"
+        f"{_speedup('total', 'total')}"
+    )
     print("-" * 64)
     print(f"{'collected':<12} {_fmt_int(baseline, 'collected')} {_fmt_int(fast, 'collected')}")
     print(f"{'changed':<12} {_fmt_int(baseline, 'changed')} {_fmt_int(fast, 'changed')}")
@@ -329,12 +331,8 @@ def main():
         default=None,
         help="Shared workspace id (overrides baseline/fast workspace flags)",
     )
-    parser.add_argument(
-        "--baseline-workspace", default=None, help="Workspace id for baseline run"
-    )
-    parser.add_argument(
-        "--fast-workspace", default=None, help="Workspace id for fast run"
-    )
+    parser.add_argument("--baseline-workspace", default=None, help="Workspace id for baseline run")
+    parser.add_argument("--fast-workspace", default=None, help="Workspace id for fast run")
     parser.add_argument(
         "--hash-workers", type=int, default=None, help="Fast indexer hash pool size"
     )
@@ -347,13 +345,9 @@ def main():
 
     run_id = time.strftime("%Y%m%d_%H%M%S")
     baseline_ws = (
-        args.workspace
-        or args.baseline_workspace
-        or _default_workspace("baseline", run_id)
+        args.workspace or args.baseline_workspace or _default_workspace("baseline", run_id)
     )
-    fast_ws = (
-        args.workspace or args.fast_workspace or _default_workspace("fast", run_id)
-    )
+    fast_ws = args.workspace or args.fast_workspace or _default_workspace("fast", run_id)
 
     baseline_stats: dict | None = None
     fast_stats: dict | None = None

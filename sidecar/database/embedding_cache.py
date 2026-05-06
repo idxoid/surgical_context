@@ -105,7 +105,10 @@ class EmbeddingCache:
                   AND model_version = ?
                   AND content_hash = ?
                 """,
-                [(now, model_name, model_version, content_hash) for model_name, model_version, content_hash in touched],
+                [
+                    (now, model_name, model_version, content_hash)
+                    for model_name, model_version, content_hash in touched
+                ],
             )
             return hits
 

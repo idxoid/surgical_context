@@ -294,9 +294,7 @@ def cluster_symbols(
         chosen_k=best_k,
         sample_size=len(rows),
     )
-    uid_to_cluster = {
-        row.uid: cid for row, cid in zip(rows, best_assignments, strict=True)
-    }
+    uid_to_cluster = {row.uid: cid for row, cid in zip(rows, best_assignments, strict=True)}
     return taxonomy, uid_to_cluster
 
 
@@ -465,8 +463,7 @@ def _standardize(vectors: list[tuple[float, ...]]) -> list[list[float]]:
         for col, mean in zip(cols, means, strict=True)
     ]
     return [
-        [(v - mean) / std for v, mean, std in zip(vec, means, stds, strict=True)]
-        for vec in vectors
+        [(v - mean) / std for v, mean, std in zip(vec, means, stds, strict=True)] for vec in vectors
     ]
 
 
@@ -611,10 +608,7 @@ def _signature_for(
         )
     ]
     z_scores.sort(key=lambda item: abs(item[1]), reverse=True)
-    return tuple(
-        f"{name}:{'+' if z >= 0 else '-'}"
-        for name, z in z_scores[:3]
-    )
+    return tuple(f"{name}:{'+' if z >= 0 else '-'}" for name, z in z_scores[:3])
 
 
 def assemble_symbol_rows(
@@ -670,9 +664,7 @@ def assemble_symbol_rows(
     # callers AND no callees) are left out — they're not real entry points,
     # and treating them as public would collapse genuinely unreachable
     # symbols into depth 0 alongside the actual entries.
-    public_uids = {
-        uid for uid, callers in in_edges.items() if not callers and out_edges[uid]
-    }
+    public_uids = {uid for uid, callers in in_edges.items() if not callers and out_edges[uid]}
 
     depths = _bfs_depths(out_edges, public_uids)
     if depths:

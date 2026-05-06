@@ -382,9 +382,9 @@ def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(
     assert request_bundle["message"]["id"] == body["assistant_message_id"]
     assert request_bundle["ask_snapshot"]["feedback_token"] == "fbk_history"
     assert request_bundle["inspector_snapshot"]["snapshot"]["redacted_keys"] == ["content"]
-    assert request_bundle["impact_snapshot"]["snapshot"]["affected_symbols"][0]["redacted_keys"] == [
-        "code"
-    ]
+    assert request_bundle["impact_snapshot"]["snapshot"]["affected_symbols"][0][
+        "redacted_keys"
+    ] == ["code"]
 
     with pytest.raises(HTTPException) as exc_info:
         main.history_conversation(body["conversation_id"], x_user_id="Bob")

@@ -86,7 +86,10 @@ _MECHANISM_PATTERNS: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ..
 )
 
 _DYNAMIC_SURFACE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("decorators", ("@", "decorator", "@Controller", "@Injectable", "@Module", "@app.", "@router.")),
+    (
+        "decorators",
+        ("@", "decorator", "@Controller", "@Injectable", "@Module", "@app.", "@router."),
+    ),
     ("registries", ("registry", "urlpatterns", "providers:", "controllers:", "app.use")),
     ("metaprogramming", ("metaclass", "__getattr__", "__init_subclass__", "DeclarativeMeta")),
     ("templates", ("<template", ".vue", "render(", "compileTemplate")),
@@ -144,26 +147,81 @@ _NEUTRAL_NON_CODE_EXTENSIONS = {
 }
 
 _ARCHETYPE_ROLE_PLANS: Mapping[str, tuple[str, ...]] = {
-    "route_registration": ("api_surface", "factory_surface", "representation_surface", "runtime_surface"),
-    "request_response_lifecycle": ("api_surface", "composition_surface", "runtime_surface", "executor"),
+    "route_registration": (
+        "api_surface",
+        "factory_surface",
+        "representation_surface",
+        "runtime_surface",
+    ),
+    "request_response_lifecycle": (
+        "api_surface",
+        "composition_surface",
+        "runtime_surface",
+        "executor",
+    ),
     "dependency_injection": ("api_surface", "config_surface", "orchestrator", "runtime_surface"),
-    "middleware_pipeline": ("api_surface", "factory_surface", "composition_surface", "runtime_surface"),
+    "middleware_pipeline": (
+        "api_surface",
+        "factory_surface",
+        "composition_surface",
+        "runtime_surface",
+    ),
     "middleware_hooks": ("api_surface", "factory_surface", "orchestrator", "runtime_surface"),
-    "decorator_declares_handler": ("api_surface", "factory_surface", "orchestrator", "runtime_surface"),
-    "module_composition": ("api_surface", "composition_surface", "integration_surface", "runtime_surface"),
-    "factory_api_generation": ("api_surface", "factory_surface", "representation_surface", "integration_surface"),
-    "action_reducer_binding": ("api_surface", "factory_surface", "composition_surface", "runtime_surface"),
+    "decorator_declares_handler": (
+        "api_surface",
+        "factory_surface",
+        "orchestrator",
+        "runtime_surface",
+    ),
+    "module_composition": (
+        "api_surface",
+        "composition_surface",
+        "integration_surface",
+        "runtime_surface",
+    ),
+    "factory_api_generation": (
+        "api_surface",
+        "factory_surface",
+        "representation_surface",
+        "integration_surface",
+    ),
+    "action_reducer_binding": (
+        "api_surface",
+        "factory_surface",
+        "composition_surface",
+        "runtime_surface",
+    ),
     "validation_pipeline": ("api_surface", "validator_handle", "core_runtime", "runtime_surface"),
-    "serialization_pipeline": ("api_surface", "serializer_handle", "core_runtime", "runtime_surface"),
+    "serialization_pipeline": (
+        "api_surface",
+        "serializer_handle",
+        "core_runtime",
+        "runtime_surface",
+    ),
     "schema_generation": ("api_surface", "schema_builder", "representation_surface"),
     "orm_mapping": ("api_surface", "factory_surface", "representation_surface", "core_runtime"),
-    "declarative_mapping": ("api_surface", "factory_surface", "representation_surface", "core_runtime"),
+    "declarative_mapping": (
+        "api_surface",
+        "factory_surface",
+        "representation_surface",
+        "core_runtime",
+    ),
     "query_builder": ("api_surface", "composition_surface", "executor", "runtime_surface"),
-    "session_identity_map": ("api_surface", "representation_surface", "runtime_surface", "executor"),
+    "session_identity_map": (
+        "api_surface",
+        "representation_surface",
+        "runtime_surface",
+        "executor",
+    ),
     "migration_system": ("api_surface", "factory_surface", "executor", "runtime_surface"),
     "request_context": ("api_surface", "binding_surface", "runtime_surface"),
     "component_lifecycle": ("api_surface", "factory_surface", "runtime_surface"),
-    "reactivity_graph": ("api_surface", "representation_surface", "orchestrator", "runtime_surface"),
+    "reactivity_graph": (
+        "api_surface",
+        "representation_surface",
+        "orchestrator",
+        "runtime_surface",
+    ),
     "template_compilation": ("api_surface", "orchestrator", "representation_surface", "executor"),
     "c_runtime_dispatch": ("api_surface", "executor", "runtime_surface"),
     "query_planner": ("api_surface", "orchestrator", "representation_surface", "executor"),
@@ -226,11 +284,7 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
     indexed_extensions = Counter(_extension(path) for path in inputs.collected_files)
     supported_languages = _supported_language_counts(indexed_extensions)
     neutral_extensions = Counter(
-        {
-            ext: count
-            for ext, count in all_extensions.items()
-            if ext in _NEUTRAL_NON_CODE_EXTENSIONS
-        }
+        {ext: count for ext, count in all_extensions.items() if ext in _NEUTRAL_NON_CODE_EXTENSIONS}
     )
     unsupported_extensions = Counter(
         {
@@ -244,21 +298,13 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
     indexed_file_total = sum(indexed_extensions.values())
     all_file_total = sum(all_extensions.values())
     code_file_total = indexed_file_total + sum(unsupported_extensions.values())
-    supported_ratio = (
-        indexed_file_total / code_file_total if code_file_total else 0.0
-    )
-    parse_coverage = (
-        inputs.parsed_files / indexed_file_total if indexed_file_total else 0.0
-    )
+    supported_ratio = indexed_file_total / code_file_total if code_file_total else 0.0
+    parse_coverage = inputs.parsed_files / indexed_file_total if indexed_file_total else 0.0
     symbol_density = (
-        inputs.symbols_indexed / max(1, inputs.parsed_files)
-        if inputs.parsed_files
-        else 0.0
+        inputs.symbols_indexed / max(1, inputs.parsed_files) if inputs.parsed_files else 0.0
     )
     call_density = (
-        inputs.calls_indexed / max(1, inputs.symbols_indexed)
-        if inputs.symbols_indexed
-        else 0.0
+        inputs.calls_indexed / max(1, inputs.symbols_indexed) if inputs.symbols_indexed else 0.0
     )
 
     sample = "\n".join(inputs.sample_texts or [])
@@ -399,9 +445,9 @@ def summarize_repository_profile(profile: Mapping) -> str:
     """Compact single-line summary for benchmark/index logs."""
     languages = profile.get("languages", {})
     supported = languages.get("supported", {})
-    top_langs = ", ".join(
-        f"{name}:{count}" for name, count in list(supported.items())[:3]
-    ) or "none"
+    top_langs = (
+        ", ".join(f"{name}:{count}" for name, count in list(supported.items())[:3]) or "none"
+    )
     mechanisms = profile.get("mechanism_profile", {}).get("framework_signals", [])
     top_mechanisms = ", ".join(item.get("name", "") for item in mechanisms[:3]) or "none"
     capabilities = profile.get("capabilities", {})
@@ -431,11 +477,7 @@ def _extension(path: str) -> str:
 
 
 def _supported_extensions() -> set[str]:
-    return {
-        ext
-        for adapter in REGISTRY.supported_adapters()
-        for ext in adapter.file_extensions
-    }
+    return {ext for adapter in REGISTRY.supported_adapters() for ext in adapter.file_extensions}
 
 
 def _supported_language_counts(indexed_extensions: Counter) -> Counter:
@@ -547,13 +589,14 @@ def _build_strategy_profile(
     for archetype in archetypes[:4]:
         role_plan.extend(archetype["role_plan"])
     role_plan = normalize_roles([*role_plan, "docs_or_concept"])
-    selected_strategy = (
-        archetypes[0]["strategy"] if archetypes else "generic_symbol_context"
-    )
+    selected_strategy = archetypes[0]["strategy"] if archetypes else "generic_symbol_context"
     fallbacks = ["direct_symbol", "semantic_docs"]
     if any(item["type"] in {"route_registration", "factory_api_generation"} for item in archetypes):
         fallbacks.append("concept_to_symbol")
-    if any(item["type"] in {"c_runtime_dispatch", "query_planner", "storage_engine"} for item in archetypes):
+    if any(
+        item["type"] in {"c_runtime_dispatch", "query_planner", "storage_engine"}
+        for item in archetypes
+    ):
         fallbacks.append("docs_files_fallback")
 
     return {
@@ -616,7 +659,9 @@ def _capability_flags(
         impact = "disabled"
     elif affects_rebuilt <= 0:
         impact = "none"
-    elif static_calls in {"high", "medium"} and not _has_major_unsupported_language(unsupported_languages):
+    elif static_calls in {"high", "medium"} and not _has_major_unsupported_language(
+        unsupported_languages
+    ):
         impact = "shallow"
     else:
         impact = "shallow_partial"
@@ -715,8 +760,7 @@ def _reasoning_contract(
 
     if dynamic_surfaces:
         risky.append(
-            "framework/runtime surfaces need mechanism validation: "
-            + ", ".join(dynamic_surfaces)
+            "framework/runtime surfaces need mechanism validation: " + ", ".join(dynamic_surfaces)
         )
 
     if readiness.get("retrieval_readiness") == "unsupported_symbol_surface":

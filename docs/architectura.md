@@ -1,6 +1,6 @@
 # Surgical Context — Architecture
 
-> **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, intent-aware prompt assembly, unified graph+semantic ranking, canonical role normalization, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. The main open gaps are extension product polish, setup/smoke-test hardening, doc-anchor confidence/type scoring, broader real-repo benchmark coverage beyond the current FastAPI, Redux Toolkit, and Pydantic baselines, impact-analysis precision/doc-noise control, and provider boundaries around the local defaults. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+> **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, intent-aware prompt assembly, unified graph+semantic ranking, canonical role normalization, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. Recent retrieval hardening includes trace-dependency recovery for sparse import topology (runtime symbol seeding, sibling-directory expansion, explicit recovery provenance) and qualified-callee gating for DI hint edges. The main open gaps are extension product polish, setup/smoke-test hardening, broader real-repo benchmark coverage (Flask/Django/Express tails), impact-analysis precision/doc-noise control, and provider boundaries around the local defaults. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 >
 > **Future layer:** tenant-level API contract graph. Each project indexes and publishes its own safe service/API facts; the tenant graph links those facts across projects and systems without scanning neighboring repositories. This is Team/Enterprise horizon work, not a dependency for the local single-tenant release. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
@@ -87,11 +87,11 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 
 ---
 
-### 2.4. Observability (Phase 9 In Progress)
+### 2.4. Observability (current)
 
 The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency using mechanism-aware classification. Runtime metrics, trace IDs, and prompt-contract retrieval metadata exist; the main remaining work is extension surfacing of ranking details, doc confidence/type scoring in the UI, and local release SLO checks.
 
-**Phase 9.1 — Unified Ranker ✅ COMPLETE**
+**Unified ranking + retrieval policy ✅ implemented**
 - **Blended score formula**: `score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost` (normalized per track)
 - **Graph signal**: BFS with typed edges (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, DEPENDS_ON, IMPLEMENTS, OVERRIDES)
 - **Semantic signal**: vector search + similarity threshold tuning (0.4 → 1.5)
@@ -101,20 +101,18 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - **Mechanism-aware routing**: query intent + symbol type → role backfill strategy (e.g., impact_analysis on serialization routes through test-coverage roles)
 - **Target disambiguation**: when workspace has multiple same-name symbols, route by usage context and qualified name
 
-**Phase 9.3 — DocAnchor Confidence & Type ✅ COMPLETE**
-- **Anchor type classification**: definition / example / reference / warning / deprecated
-- **Per-edge confidence**: `(resolver + name_mention + heading_proximity + code_style_mention)` normalized to [0, 1]
-- **Primary bias**: 1.0 for focal symbols, reduced for secondary mentions (prevents over-weighting)
-- **Consumed by ranker**: doc anchors with high confidence and focal primary_bias score higher
+**DocAnchor confidence/type scoring ✅ partially implemented**
+- **Anchor type classification** and **per-edge confidence** are available in the retrieval pipeline.
+- **Primary bias** is available and consumed by ranking.
+- Remaining work is calibration, benchmark coverage expansion, and UI surfacing polish.
 
-**Phase 9.4 — Prompt Contract Observability 🚧 IN PROGRESS**
+**Prompt-contract observability ✅ implemented baseline**
 - ✅ **Basic scores**: `{graph_relevance, semantic_score}` per candidate
-- ✅ **Provenance**: why each symbol was selected (source: "graph BFS", "semantic search", "fallback")
+- ✅ **Provenance**: why each symbol was selected
 - ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
-- ✅ **Assembly phases**: latency per stage (extract, rank, deduplicate, resolve, compile)
-- 🚧 **Pruned array**: candidates that missed budget, with reason (deferred to later in Week 1)
-- 🚧 **Ranker weights snapshot**: α, β, γ, δ, ε values per response (deferred to later in Week 1)
-- 🚧 **Intent distribution**: multi-label confidence across 6 intents (Phase 9.2 deferred)
+- ✅ **Pruned details**: skipped candidates with reason codes
+- ✅ **Ranker metadata** in benchmark `ready_context` snapshots
+- 🚧 Remaining work: richer UI surfacing and consistency checks across extension surfaces
 
 **Supporting Infrastructure:**
 - **Structured logs**: per pipeline stage with `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`

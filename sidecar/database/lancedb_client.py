@@ -56,6 +56,7 @@ def _l2_to_score(distance: float) -> float:
     cos = 1.0 - (distance * distance) / 2.0
     return max(0.0, min(1.0, (1.0 + cos) / 2.0))
 
+
 DOCS_SCHEMA = pa.schema(
     [
         pa.field("id", pa.string()),
@@ -127,9 +128,7 @@ class LanceDBClient:
             except Exception:
                 for file_path in batch:
                     try:
-                        self._table.delete(
-                            f"file_path = '{self._quote_delete_value(file_path)}'"
-                        )
+                        self._table.delete(f"file_path = '{self._quote_delete_value(file_path)}'")
                     except Exception:
                         pass
             if progress_callback:
@@ -147,9 +146,7 @@ class LanceDBClient:
         total = len(uids)
         for start in range(0, total, batch_size):
             batch = uids[start : start + batch_size]
-            predicate = " OR ".join(
-                f"uid = '{self._quote_delete_value(uid)}'" for uid in batch
-            )
+            predicate = " OR ".join(f"uid = '{self._quote_delete_value(uid)}'" for uid in batch)
             try:
                 self._sym_table.delete(predicate)
             except Exception:
@@ -262,7 +259,9 @@ class LanceDBClient:
         if progress_callback:
             progress_callback(f"prepare: files={len(file_paths)} chunks={len(entries)}")
         t0 = time.perf_counter()
-        vectors = self._embed([chunk for _, _, chunk in entries], progress_callback=progress_callback)
+        vectors = self._embed(
+            [chunk for _, _, chunk in entries], progress_callback=progress_callback
+        )
         if progress_callback:
             progress_callback(f"embed done in {time.perf_counter() - t0:.2f}s")
 
@@ -321,9 +320,7 @@ class LanceDBClient:
     def _scan_pending(self, *, columns: list[str] | None) -> list[dict]:
         """Lance-native filtered scan for chunks with pending identifiers."""
         try:
-            query = self._table.search().where(
-                "array_length(pending) > 0", prefilter=True
-            ).limit(0)
+            query = self._table.search().where("array_length(pending) > 0", prefilter=True).limit(0)
             if columns:
                 query = query.select(columns)
             return query.to_list()
@@ -332,9 +329,7 @@ class LanceDBClient:
             # filter-only search. Pay the to_pandas cost only on the slow
             # path; the production path stays fast.
             df = self._table.to_pandas()
-            return [
-                row.to_dict() for _, row in df.iterrows() if len(row["pending"]) > 0
-            ]
+            return [row.to_dict() for _, row in df.iterrows() if len(row["pending"]) > 0]
 
     def _set_pending_row(self, row: dict, pending: list[str]):
         chunk_id = row["id"]

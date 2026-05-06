@@ -140,6 +140,7 @@ def test_preloaded_mechanism_catalog_extensions_are_json_serializable():
     loaded = json.loads(raw)
     merged = merge_preloaded_mechanisms_into_role_catalog({"schema_version": 2})
     assert merged["schema_version"] == 2
-    assert merged[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY] == loaded[
-        ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY
-    ]
+    assert (
+        merged[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY]
+        == loaded[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY]
+    )

@@ -8,9 +8,9 @@ This folder contains the current product and technical documentation for the `co
 
 ### **For Understanding the System**
 - **[architectura.md](architectura.md)** — how all pieces fit together (start here)
-- **[concept.md](concept.md)** — what is Surgical Context and why it exists
-- **[idea_summary.md](idea_summary.md)** — elevator pitch
-- **[product_direction_memo.md](product_direction_memo.md)** — current product thesis, moat, cuts, and validation plan
+- **[product_direction_memo.md](product_direction_memo.md)** — canonical product thesis, scope boundaries, and validation plan
+- **[concept.md](concept.md)** — compact product identity (pointer document)
+- **[idea_summary.md](idea_summary.md)** — one-screen pitch summary (pointer document)
 - **[project_gap_analysis.md](project_gap_analysis.md)** — short index to the merged project analysis
 
 ### **For Implementation**
@@ -51,7 +51,7 @@ This folder contains the current product and technical documentation for the `co
 - **[product_direction_memo.md](product_direction_memo.md)** — narrow product direction before the next fork
 - **[project_gap_analysis.md](project_gap_analysis.md)** — index for current gaps and supporting specs
 - **[review_findings_2026-04-17.md](review_findings_2026-04-17.md)** — external review recommendations
-- **[architectural_review.md](architectural_review.md)** — technical decisions and trade-offs
+- **[architectural_review.md](architectural_review.md)** — archived historical review (canonical architecture now in `architectura.md`)
 
 ---
 
@@ -66,7 +66,7 @@ The product is now described more narrowly than before:
 
 The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/context modules, a workspace-scoped unified ranker, canonical role taxonomy normalization, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
 
-Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, and package/module fallback targets for workspace-level questions such as `pydantic.v1`.
+Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, package/module fallback targets for workspace-level questions such as `pydantic.v1`, and trace-dependency recovery hardening for sparse import topology (runtime symbol seeding + sibling-directory expansion with explicit recovery provenance).
 
 The local setup and smoke-test path live in **[local_development.md](local_development.md)** and `scripts/local_dev.py`. The most important open gaps are broader real-repo benchmark coverage beyond the current FastAPI, Redux Toolkit, and Pydantic baselines, continued precision work on broad/doc-heavy retrieval paths, doc-anchor confidence/type scoring, consistent workspace/branch metadata in the prompt contract, and extension synchronization/accessibility polish. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](road_map.md)** for the canonical backlog in this branch.
 
@@ -88,12 +88,14 @@ Quick rules:
 
 ## Document Status Legend
 
-- ✅ **Implemented** — shipped, tested, in production
+- ✅ **Implemented** — merged in this branch and covered by tests/benchmark
 - 🚧 **In Progress** — active development
 - 📋 **Planned** — on roadmap, not started
 - ⚠️  **Known Issue** — works but with caveats
 - ❌ **Not Implemented** — deferred
-- 🔄 **Refactoring** — redesign underway
+- 🔄 **Refactoring** — redesign underway (new path may coexist temporarily)
+
+Use these markers directly inside specs for major sections and algorithm blocks.
 
 ---
 

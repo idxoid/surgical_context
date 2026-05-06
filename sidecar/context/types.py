@@ -217,9 +217,7 @@ class PromptContext:
         if "candidates_considered" not in ranker_state and "pool_size" in self.budget:
             ranker_state["candidates_considered"] = self.budget["pool_size"]
         if "candidates_selected" not in ranker_state:
-            ranker_state["candidates_selected"] = (
-                len(self.graph_context) + len(self.documentation)
-            )
+            ranker_state["candidates_selected"] = len(self.graph_context) + len(self.documentation)
         if "pruned_total_count" not in ranker_state:
             ranker_state["pruned_total_count"] = len(self.pruned_details)
         return ranker_state

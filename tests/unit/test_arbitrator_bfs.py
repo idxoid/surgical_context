@@ -160,9 +160,17 @@ class TestContextArbitratorBFS:
             def rank(self, target, query, intent, budget):
                 docs = self.vector_searcher.search_docs(query, limit=3)
                 self._docs = docs
-                return [], {"limit": budget, "spent": 108, "reserved": 100, "pool_size": 0}, "pool_exhausted", [], []
+                return (
+                    [],
+                    {"limit": budget, "spent": 108, "reserved": 100, "pool_size": 0},
+                    "pool_exhausted",
+                    [],
+                    [],
+                )
 
-            def candidates_to_subgraph(self, target, candidates, budget_info, stopped_reason, pruned_details):
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
                 docs = [
                     DocChunk(
                         source_file=item["file_path"],
@@ -332,7 +340,9 @@ class TestContextArbitratorBFS:
                     ["dependency_solver"],
                 )
 
-            def candidates_to_subgraph(self, target, candidates, budget_info, stopped_reason, pruned_details):
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
                 return (
                     Subgraph(
                         primary=target,
@@ -373,9 +383,12 @@ class TestContextArbitratorBFS:
             ranker_weights=RankerWeights(alpha=0.9, beta=0.7, gamma=0.4, delta=0.6, epsilon=0.2),
         )
 
-        with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker), patch(
-            "sidecar.context.arbitrator.CodeResolver.resolve",
-            return_value=("def Depends(...):\n    pass", False),
+        with (
+            patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker),
+            patch(
+                "sidecar.context.arbitrator.CodeResolver.resolve",
+                return_value=("def Depends(...):\n    pass", False),
+            ),
         ):
             ctx = arbitrator.get_context_for_symbol(
                 "Depends",
@@ -386,7 +399,9 @@ class TestContextArbitratorBFS:
         assert isinstance(ctx, PromptContext)
         payload = ctx.to_dict()
         assert payload["metadata"]["ranker"]["weights"]["alpha"] == 0.9
-        assert payload["metadata"]["ranker"]["target_selection"]["strategy"] == "duplicate_resolution"
+        assert (
+            payload["metadata"]["ranker"]["target_selection"]["strategy"] == "duplicate_resolution"
+        )
         assert payload["metadata"]["ranker"]["pruned_total_count"] == 1
         assert payload["intent_details"]["primary"] == "exploration"
         assert payload["pruned"][0]["name"] == "Audit.log"

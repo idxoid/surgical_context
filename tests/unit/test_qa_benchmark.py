@@ -116,7 +116,9 @@ def test_path_matches_prefix_accepts_nested_paths_only():
 
     assert _path_matches_prefix(docs_prefix, [docs_prefix]) is True
     assert _path_matches_prefix(str(Path(docs_prefix) / "road_map.md"), [docs_prefix]) is True
-    assert _path_matches_prefix(str(project_root / "docs-v2" / "road_map.md"), [docs_prefix]) is False
+    assert (
+        _path_matches_prefix(str(project_root / "docs-v2" / "road_map.md"), [docs_prefix]) is False
+    )
 
 
 def test_default_repo_checkout_path_uses_qa_repos_when_root_missing():
@@ -387,7 +389,10 @@ def test_run_benchmark_report_includes_precision_and_ready_context():
             pass
 
     with (
-        patch("QA.qa_benchmark.load_question_pack", return_value={"kind": "real_repo", "repositories": [], "questions": [question]}),
+        patch(
+            "QA.qa_benchmark.load_question_pack",
+            return_value={"kind": "real_repo", "repositories": [], "questions": [question]},
+        ),
         patch("QA.qa_benchmark.load_questions", return_value=[question]),
         patch("QA.qa_benchmark.compute_carpet_bomb_tokens", return_value=1000),
         patch("sidecar.database.neo4j_client.Neo4jClient", _FakeNeo4jClient),
