@@ -72,6 +72,7 @@ class PromptContext:
     pruning_reasons: list[str] = field(default_factory=list)
     feedback_token: str = ""
     ranker_state: dict[str, Any] = field(default_factory=dict)
+    retrieval_trace: dict[str, Any] = field(default_factory=dict)
 
     def to_system_prompt(self) -> str:
         """Render to the flat text format the LLM receives."""
@@ -134,6 +135,7 @@ class PromptContext:
                 "tokens_docs": docs_tokens,
                 "pruning_reasons": pruning_reasons,
                 "ranker": ranker_state,
+                "retrieval_trace": self.retrieval_trace,
                 "assembly": {
                     "trace_id": self.trace_id,
                     "workspace_id": self.workspace_id,

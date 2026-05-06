@@ -112,6 +112,7 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
 - ✅ **Pruned details**: skipped candidates with reason codes
 - ✅ **Ranker metadata** in benchmark `ready_context` snapshots
+- ✅ **Retrieval trace (v1)**: `metadata.retrieval_trace` on `PromptContext.to_dict()` — unified vs graph-only strategy, mechanism, roles, budget summary, `schema_version` (`sidecar.retrieval.trace`); target architecture in [retrieval_kernel.md](retrieval_kernel.md)
 - 🚧 Remaining work: richer UI surfacing and consistency checks across extension surfaces
 
 **Supporting Infrastructure:**

@@ -16,6 +16,7 @@ from sidecar.context.unified_ranker import (
     UnifiedRanker,
     VectorSearcher,
 )
+from sidecar.retrieval.trace import graph_only_trace, unified_trace
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
@@ -193,6 +194,19 @@ class ContextArbitrator:
             "target_selection": target_selection,
             "strategy_profile": getattr(ranker, "strategy_profile", {}),
         }
+        ctx.retrieval_trace = unified_trace(
+            workspace_id=self.workspace_id,
+            intent=intent.value,
+            mechanism=mechanism,
+            required_roles=required_roles,
+            stopped_reason=subgraph.stopped_reason or "",
+            target_selection=target_selection or {},
+            budget_info=budget_info,
+            ranker_state=ctx.ranker_state,
+            cache_hits=sorted(set(cache_hits)),
+            missing_roles=missing_roles,
+            pruned_count=len(pruned_details),
+        )
         return ctx
 
     @staticmethod
@@ -324,6 +338,14 @@ class ContextArbitrator:
             "candidates_selected": len(subgraph.nodes),
             "pruned_total_count": len(subgraph.pruned_details),
         }
+        ctx.retrieval_trace = graph_only_trace(
+            workspace_id=self.workspace_id,
+            intent=intent.value,
+            stopped_reason=subgraph.stopped_reason or "",
+            cache_hits=sorted(set(cache_hits)),
+            ranker_state=ctx.ranker_state,
+            pruned_count=len(subgraph.pruned_details),
+        )
         return ctx
 
     def _repository_profile(self) -> dict | None:
