@@ -108,6 +108,16 @@ def _compute_file_recall(expected_files: set[str], retrieved_files: set[str]) ->
     return matched / len(expected_files)
 
 
+def _format_roles_for_column(roles: list[str], *, max_len: int = 72) -> str:
+    """Compact role list for console columns."""
+    if not roles:
+        return "-"
+    text = ",".join(roles)
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
 class _LineProgressReporter:
     """Simple console reporter for fast indexing when tqdm is unavailable."""
 
@@ -858,7 +868,12 @@ def run_benchmark(
             status = "pass" if is_correct_rejection else "error"
             gate = "workspace_correct_rejection" if is_correct_rejection else "error"
             emoji = "✅" if status == "pass" else "❌"
-            print(f"  {emoji} {q['id']}: {symbol} [{intent}] — {ctx}")
+            line_suffix = (
+                "workspace mode: absent symbol handled as expected"
+                if is_correct_rejection
+                else ctx
+            )
+            print(f"  {emoji} {q['id']}: {symbol} [{intent}] — {line_suffix}")
             results.append({
                 "id": q["id"],
                 "repo": q.get("repo", ""),
@@ -869,6 +884,8 @@ def run_benchmark(
                 "error": ctx,
                 "assembly_ms": assembly_ms,
                 "mechanism": mechanism,
+                "expected_roles": normalize_roles(required_roles),
+                "missing_expected_roles": normalize_roles(required_roles),
                 "role_recall": 1.0 if is_correct_rejection else 0.0,
                 "precision": 0.0,
                 "ready_context": None,
@@ -891,6 +908,9 @@ def run_benchmark(
 
         required_roles_canonical = normalize_roles(required_roles)
         missing_roles_canonical = normalize_roles(ctx.missing_roles)
+        missing_expected_roles = [
+            role for role in required_roles_canonical if role in set(missing_roles_canonical)
+        ]
         ranker_required_roles = normalize_roles(
             getattr(ctx, "ranker_state", {}).get("required_roles", [])
         )
@@ -946,6 +966,8 @@ def run_benchmark(
             f"  {status_emoji} {q['id']}: {symbol:20} [{intent}]"
             f" | precision={precision_at_k:.2f} | role={role_recall:.2f}"
             f" | file={file_recall:.2f} | {tokens_surgical}t"
+            f" | expected_roles={_format_roles_for_column(required_roles_canonical)}"
+            f" | missing_roles={_format_roles_for_column(missing_expected_roles)}"
             f"{reasoning_info}"
         )
 
@@ -970,7 +992,9 @@ def run_benchmark(
             "stopped_reason": ctx.stopped_reason,
             "missing_roles": ctx.missing_roles,
             "missing_roles_canonical": missing_roles_canonical,
+            "missing_expected_roles": missing_expected_roles,
             "mechanism": mechanism,
+            "expected_roles": required_roles_canonical,
             "required_roles": required_roles,
             "required_roles_canonical": required_roles_canonical,
             "ranker_required_roles": ranker_required_roles,

@@ -53,7 +53,7 @@ Current candidates are symbols and docs. A future phase adds tenant API contract
 
 The ranker reads `repository_profile.strategy_profile` from the Neo4j `Workspace`. Bundled name/query dispatch for FastAPI, Pydantic, and Redux in `sidecar/context/mechanism_registry.py` is **stubbed** (no preloaded rules); optional `mechanism_required_roles` / `mechanism_role_backfill` on `role_catalog_json` supply templates when present. With Pass 1 roles loaded, `_determine_mechanism_structural` can match a mechanism by overlap between neighborhood roles and those templates.
 
-When no structural match applies, the ranker uses auto-detected mechanism archetypes from the strategy profile (`middleware_pipeline`, `decorator_declares_handler`, etc.) or falls back to `generic` with the default role trio plus `docs_or_concept`.
+When no structural match applies, the ranker uses auto-detected mechanism archetypes from the strategy profile (`middleware_pipeline`, `decorator_declares_handler`, etc.) or falls back to `generic` with an adaptive role plan derived from target-local/workspace role supply plus `docs_or_concept`.
 
 Structural roles come from Pass 1 (`derived_role_id`, `role_catalog_json` cluster mapping). Framework-specific rows were removed from `repository_profile` mechanism detection for FastAPI, Pydantic, and Redux Toolkit so those repos are classified like other unknown stacks unless patterns are reintroduced from mined data.
 
@@ -114,12 +114,21 @@ Current behavior is slightly richer than the original greedy draft:
 - resolve package/module-level targets when no symbol exists; e.g. `pydantic.v1` can use `pydantic/v1/__init__.py` as a synthetic primary module target instead of returning a false "symbol not found" success
 - resolve known framework mechanisms through the preloaded mechanism registry, then fall back to index-time repository strategy profiles for unfamiliar repositories
 - compute required roles on a canonical cross-framework taxonomy
+- adapt required roles to availability:
+  - prefer target-local supply (`target + 1-hop`)
+  - fall back to workspace-level supply
+  - for generic/mechanism misses, derive an adaptive role plan instead of static literals
 - treat some roles as capability slots as well as identity slots; e.g. a runtime symbol like `SchemaValidator` can fulfill `validator_handle` if the dedicated wrapper/member symbol is absent
 - let some primary APIs carry supporting roles directly when their implementation body already contains the relevant orchestration path
 - let generic runtime/test signals fulfill impact-analysis roles so benchmark coverage is not tied to one framework's exact naming scheme, while applying topic-sensitive noise control so unrelated tests do not satisfy impact roles by accident
 - apply topic-focused subsystem penalties for non-impact questions, preserving explicit role-fillers while downranking unrelated distant candidates from sibling subsystems such as query, listener, entity, and tooling internals
 - apply sibling-subsystem penalties before fuzzy role bypass, so a candidate from an unrelated subsystem cannot survive merely because its name looks like a generic role such as `middleware` or `enhancer`; explicit `ROLE_BACKFILL` candidates still bypass the penalty
 - use mechanism-aware role backfill before final selection
+- use target-local recovery heuristics for thin-wrapper APIs:
+  - `factory_surface` via builder/registration/openapi/router cues
+  - `representation_surface` via schema/model/serialize cues
+  - `runtime_surface` via execute/dispatch/resolve/handler cues
+- when no docs are retrievable, synthesize a tiny target concept fallback doc candidate so `docs_or_concept` is not structurally impossible
 - sort by blended score with a bonus for role-filling candidates
 - apply marginal-gain gating, intent floors, `context_complete_below_floor`, and signature-only fallback for low-gain distant candidates
 

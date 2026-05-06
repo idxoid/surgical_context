@@ -7,6 +7,7 @@ from tree_sitter import Query
 
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
+from sidecar.parser.qualified_import_roots import get_qualified_import_roots
 from sidecar.parser.uid import (
     compute_uid,
     module_name_from_path,
@@ -164,6 +165,23 @@ class PythonAdapter(TreeSitterAdapter):
                             edges.append(InheritanceEdge(subclass_uid, base_name, False))
         return edges
 
+    def _positional_identifier_arguments(self, call_node, source_code: str, *, limit: int = 8) -> list[str]:
+        """Leading positional arguments that are bare identifiers (for DI-style hints)."""
+        arg_list = call_node.child_by_field_name("arguments")
+        if arg_list is None:
+            return []
+        out: list[str] = []
+        for child in arg_list.named_children:
+            if child.type == "keyword_argument":
+                break
+            if child.type == "identifier":
+                out.append(source_code[child.start_byte : child.end_byte])
+                if len(out) >= limit:
+                    break
+                continue
+            break
+        return out
+
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -247,6 +265,9 @@ class PythonAdapter(TreeSitterAdapter):
                     rel_type = "CALLS_DYNAMIC"
                     tier = "dynamic"
                     confidence = 0.7
+                    if receiver_text in import_bindings:
+                        base = import_bindings[receiver_text]
+                        callee_qualified_name = f"{base}.{call_name}"
             else:
                 continue
 
@@ -266,6 +287,9 @@ class PythonAdapter(TreeSitterAdapter):
                 call["callee_uid"] = callee_uid
             if callee_qualified_name:
                 call["callee_qualified_name"] = callee_qualified_name
+            pos_args = self._positional_identifier_arguments(node, source_code)
+            if pos_args:
+                call["arguments"] = pos_args
             calls.append(call)
 
         return calls
@@ -330,12 +354,16 @@ class PythonAdapter(TreeSitterAdapter):
         module = module_name_from_path(file_path)
         package = module.rsplit(".", 1)[0] if "." in module else ""
         bindings: dict[str, str] = {}
+        qualify_roots = get_qualified_import_roots(self.language_name)
         for line in source_code.splitlines():
             stripped = line.strip()
             from_match = re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", stripped)
             if from_match:
                 import_module, names = from_match.groups()
-                if self._is_external(import_module.lstrip("."), file_path=file_path):
+                top = import_module.lstrip(".").split(".")[0]
+                if self._is_external(import_module.lstrip("."), file_path=file_path) and (
+                    top not in qualify_roots
+                ):
                     continue
                 target_module = self._resolve_import_module(import_module, package)
                 for item in names.split(","):
@@ -353,7 +381,11 @@ class PythonAdapter(TreeSitterAdapter):
                     item = item.strip()
                     original, _, alias = item.partition(" as ")
                     target_module = original.strip()
-                    if not target_module or self._is_external(target_module, file_path=file_path):
+                    top = target_module.split(".")[0] if target_module else ""
+                    if not target_module or (
+                        self._is_external(target_module, file_path=file_path)
+                        and top not in qualify_roots
+                    ):
                         continue
                     local_name = alias.strip() or target_module.split(".")[0]
                     bindings[local_name] = target_module

@@ -1,8 +1,15 @@
+# TEMP: FastAPI-specific bundle. Planned: express as instance(s) of shared hint
+# types/subtypes (e.g. call_argument_link + dependency_injection), not framework yaml.
+#
+# require_callee_qualified_prefix: only emit hints when the Python extractor bound the
+# call to fastapi.*.Depends. ``fastapi`` is listed under ``python:`` in
+# sidecar/parser/qualified_import_roots.yaml (shared with other languages).
 framework: fastapi
 rules:
   - id: fastapi_depends
     type: call_argument_link
     trigger_call: Depends
+    require_callee_qualified_prefix: fastapi
     argument_index: 0
     rel_type: SEMANTIC_HINT
     metadata:

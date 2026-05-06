@@ -48,6 +48,50 @@ def bar():
         assert len(calls) > 0
         assert any(call.get("callee_name") == "bar" for call in calls)
 
+    def test_fastapi_depends_import_sets_qualified_name_and_args(self, adapter):
+        source = """
+from fastapi import Depends
+
+def get_db():
+    pass
+
+def route(dep=Depends(get_db)):
+    Depends(get_db)
+"""
+        calls = adapter.extract_calls_from_source(source, "routes.py")
+        dep_calls = [c for c in calls if c.get("callee_name") == "Depends"]
+        assert len(dep_calls) >= 1
+        for c in dep_calls:
+            assert c.get("callee_qualified_name") == "fastapi.Depends"
+            assert c.get("arguments") == ["get_db"]
+
+    def test_fastapi_module_attribute_depends(self, adapter):
+        source = """
+import fastapi
+
+def get_db():
+    pass
+
+def route():
+    fastapi.Depends(get_db)
+"""
+        calls = adapter.extract_calls_from_source(source, "routes.py")
+        dep = next(c for c in calls if c.get("callee_name") == "Depends")
+        assert dep.get("callee_qualified_name") == "fastapi.Depends"
+        assert dep.get("arguments") == ["get_db"]
+
+    def test_local_depends_has_no_fastapi_qualified_name(self, adapter):
+        source = """
+def Depends():
+    pass
+
+def foo():
+    Depends()
+"""
+        calls = adapter.extract_calls_from_source(source, "local.py")
+        dep = next(c for c in calls if c.get("callee_name") == "Depends")
+        assert "callee_qualified_name" not in dep
+
     def test_language_name(self, adapter):
         assert adapter.language_name == "python"
 

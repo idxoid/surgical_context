@@ -527,6 +527,8 @@ def _silhouette_score(
     k: int,
     *,
     max_samples: int | None = None,
+    max_intra_cluster_samples: int = 64,
+    max_inter_cluster_samples: int = 64,
     seed: int = 0,
 ) -> float:
     if k <= 1 or len(vectors) <= k:
@@ -539,6 +541,7 @@ def _silhouette_score(
     if max_samples and len(candidate_indices) > max_samples:
         candidate_indices = sorted(random.Random(seed).sample(candidate_indices, max_samples))
 
+    rng = random.Random(seed + 7919)
     total = 0.0
     counted = 0
     for i in candidate_indices:
@@ -547,12 +550,17 @@ def _silhouette_score(
         own_members = [j for j in by_cluster[own] if j != i]
         if not own_members:
             continue
+        if max_intra_cluster_samples > 0 and len(own_members) > max_intra_cluster_samples:
+            own_members = rng.sample(own_members, max_intra_cluster_samples)
         a = sum(_dist(vec, vectors[j]) for j in own_members) / len(own_members)
         b = math.inf
         for cid, members in by_cluster.items():
             if cid == own or not members:
                 continue
-            mean_dist = sum(_dist(vec, vectors[j]) for j in members) / len(members)
+            compare_members = members
+            if max_inter_cluster_samples > 0 and len(compare_members) > max_inter_cluster_samples:
+                compare_members = rng.sample(compare_members, max_inter_cluster_samples)
+            mean_dist = sum(_dist(vec, vectors[j]) for j in compare_members) / len(compare_members)
             if mean_dist < b:
                 b = mean_dist
         if b == math.inf:

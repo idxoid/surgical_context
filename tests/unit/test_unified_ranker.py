@@ -5,6 +5,7 @@ from sidecar.context.mechanism_registry import determine_preloaded_mechanism
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
     _NOISE_FACTOR,
+    _TRACE_DEPENDS_RUNTIME_NAMES,
     Candidate,
     UnifiedRanker,
     VectorSearcher,
@@ -857,6 +858,80 @@ def test_docs_deferred_until_code_breadth_met():
     )
 
 
+def test_trace_depends_runtime_symbol_rows_use_package_prefix():
+    """Depends lives beside params without IMPORTS to dependencies/utils — seed by name."""
+    solve_row = {
+        "uid": "solve-u",
+        "name": "solve_dependencies",
+        "symbol_kind": "function",
+        "token_estimate": 80,
+        "qualified_name": "fastapi.dependencies.utils.solve_dependencies",
+        "file_path": "fastapi/dependencies/utils.py",
+        "file_hash": "",
+        "range": [10, 20],
+        "inbound_edges": 5,
+        "outbound_edges": 2,
+    }
+
+    session = MagicMock()
+
+    def run(query, **_kwargs):
+        if "LIMIT 32" in query and "$pkg_prefix" in query:
+            assert _kwargs.get("pkg_prefix") == "fastapi/"
+            assert set(_kwargs["names"]) == set(_TRACE_DEPENDS_RUNTIME_NAMES)
+            return [solve_row]
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="dep-u",
+        name="Depends",
+        file_path="/repo/fastapi/param_functions.py",
+        range=[1, 5],
+        token_estimate=40,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    rows = ranker._trace_dependency_runtime_symbol_rows(target, excluded_uids=set())
+    assert len(rows) == 1 and rows[0]["uid"] == "solve-u"
+
+
+def test_trace_depends_runtime_symbol_rows_skipped_without_depends_name():
+    session = MagicMock()
+    session.run.side_effect = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("unexpected Neo4j query")
+    )
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="other-u",
+        name="FastAPI",
+        file_path="/repo/fastapi/applications.py",
+        range=[1, 5],
+        token_estimate=40,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    assert ranker._trace_dependency_runtime_symbol_rows(target, excluded_uids=set()) == []
+
+
 def test_structural_mechanism_dispatch_when_preloaded_rules_miss():
     """Pass 1 roles + catalog templates infer mechanism without name heuristics."""
     from sidecar.context.mechanism_registry import ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY
@@ -888,6 +963,105 @@ def test_structural_mechanism_dispatch_when_preloaded_rules_miss():
         assert ranker._determine_mechanism(target, "opaque query") == "fastapi_endpoint_execution"
 
 
+def test_required_roles_drop_unavailable_role_catalog_entries():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker.role_catalog = {
+        "schema_version": 2,
+        "mechanism_required_roles": {
+            "fastapi_endpoint_execution": [
+                "api_surface",
+                "factory_surface",
+                "representation_surface",
+                "runtime_surface",
+            ]
+        },
+    }
+    ranker._cluster_to_role = {0: "api_surface", 1: "runtime_surface"}
+    ranker._derived_role_by_uid = {"u1": 0, "u2": 1, "u3": 0}
+
+    required = ranker._get_required_roles("fastapi_endpoint_execution")
+
+    assert "api_surface" in required
+    assert "runtime_surface" in required
+    assert "factory_surface" not in required
+    assert "representation_surface" not in required
+    assert "docs_or_concept" in required
+
+
+def test_required_roles_use_target_local_supply_when_available():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker.role_catalog = {
+        "schema_version": 2,
+        "mechanism_required_roles": {
+            "fastapi_endpoint_execution": [
+                "api_surface",
+                "factory_surface",
+                "representation_surface",
+                "runtime_surface",
+            ]
+        },
+    }
+    ranker._cluster_to_role = {
+        0: "api_surface",
+        1: "runtime_surface",
+        2: "factory_surface",
+    }
+    ranker._derived_role_by_uid = {
+        "target-u": 0,
+        "n1": 1,
+        "remote-factory": 2,  # Exists globally but not in target neighborhood.
+    }
+    target = SubgraphNode(
+        uid="target-u",
+        name="FastAPI",
+        file_path="/repo/fastapi/applications.py",
+        range=[1, 10],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+
+    with patch.object(ranker, "_one_hop_connected_symbol_uids", return_value=["n1"]):
+        required = ranker._get_required_roles("fastapi_endpoint_execution", target=target)
+
+    assert "api_surface" in required
+    assert "runtime_surface" in required
+    assert "factory_surface" not in required
+    assert "representation_surface" not in required
+    assert "docs_or_concept" in required
+
+
+def test_adaptive_generic_roles_follow_workspace_role_supply():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._cluster_to_role = {
+        0: "api_surface",
+        1: "runtime_surface",
+        2: "runtime_surface",
+        3: "composition_surface",
+    }
+    ranker._derived_role_by_uid = {
+        "a": 0,
+        "b": 1,
+        "c": 2,
+        "d": 3,
+        "e": 3,
+    }
+
+    required = ranker._get_required_roles("generic")
+
+    # Top supplied role first; returned plan is data-driven, not hardcoded.
+    assert required[0] == "runtime_surface"
+    assert "composition_surface" in required
+    assert "api_surface" in required
+    assert "docs_or_concept" in required
+
+
 def test_openapi_symbols_use_generic_mechanism_without_bundled_dispatch():
     """Bundled FastAPI mechanism rules are stubbed; symbols use generic routing."""
     db = _make_db()
@@ -914,9 +1088,8 @@ def test_openapi_symbols_use_generic_mechanism_without_bundled_dispatch():
         assert ranker._determine_mechanism(target, "How does FastAPI generate OpenAPI?") == "generic"
 
     required = ranker._get_required_roles("generic")
-    assert "api_surface" in required
-    assert "executor" in required
-    assert "runtime_surface" in required
+    assert "supporting_surface" in required
+    assert "docs_or_concept" in required
 
 
 def test_fastapi_serialization_symbol_uses_generic_mechanism_when_dispatch_stubbed():
@@ -943,8 +1116,8 @@ def test_fastapi_serialization_symbol_uses_generic_mechanism_when_dispatch_stubb
     )
 
     required = ranker._get_required_roles("generic")
-    assert "api_surface" in required
-    assert "executor" in required
+    assert "supporting_surface" in required
+    assert "docs_or_concept" in required
 
 
 def test_role_filler_outranks_unrelated_high_score_docs():
@@ -960,6 +1133,10 @@ def test_role_filler_outranks_unrelated_high_score_docs():
         allowed_uids=["primary", "openapi-uid"],
     )
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker.strategy_profile = {
+        "role_plan": ["api_surface", "runtime_surface"],
+        "mechanism_archetypes": [],
+    }
     target = SubgraphNode(
         uid="primary",
         name="get_openapi",
@@ -1100,3 +1277,295 @@ def test_filesystem_import_recovery_resolves_relative_typescript_imports(tmp_pat
     resolved = ranker._resolve_filesystem_import_paths(str(create_slice))
 
     assert str(create_reducer.resolve()) in resolved
+
+
+def test_recovery_candidate_adds_factory_surface_from_target_local_signal():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/fastapi@main")
+    target = SubgraphNode(
+        uid="target-fastapi",
+        name="FastAPI",
+        file_path="/repo/fastapi/applications.py",
+        range=[1, 20],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    row = {
+        "uid": "add-api-route",
+        "name": "add_api_route",
+        "symbol_kind": "function",
+        "token_estimate": 120,
+        "qualified_name": "fastapi.applications.FastAPI.add_api_route",
+        "file_path": "/repo/fastapi/applications.py",
+        "file_hash": "h1",
+        "range": [100, 180],
+        "inbound_edges": 3,
+        "outbound_edges": 6,
+    }
+
+    candidate = ranker._recovery_candidate_from_row(
+        row,
+        origin="same_file",
+        scoped_roles={"factory_surface"},
+        target=target,
+    )
+
+    assert candidate is not None
+    assert candidate.evidence_role == "factory_surface"
+    assert candidate.relation == "ROLE_BACKFILL"
+
+
+def test_recovery_candidate_adds_representation_and_runtime_from_local_signal():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/fastapi@main")
+    target = SubgraphNode(
+        uid="target-fastapi",
+        name="FastAPI",
+        file_path="/repo/fastapi/routing.py",
+        range=[1, 20],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    row = {
+        "uid": "serialize-response",
+        "name": "serialize_response",
+        "symbol_kind": "function",
+        "token_estimate": 140,
+        "qualified_name": "fastapi.routing.serialize_response",
+        "file_path": "/repo/fastapi/routing.py",
+        "file_hash": "h2",
+        "range": [300, 410],
+        "inbound_edges": 4,
+        "outbound_edges": 3,
+    }
+
+    candidate = ranker._recovery_candidate_from_row(
+        row,
+        origin="same_file",
+        scoped_roles={"representation_surface", "runtime_surface"},
+        target=target,
+    )
+
+    assert candidate is not None
+    roles = set([candidate.evidence_role, *candidate.supporting_roles])
+    assert "representation_surface" in roles
+    assert "runtime_surface" in roles or "impact_runtime" in roles
+
+
+def test_target_concept_fallback_candidate_is_doc():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="target-1",
+        name="FastAPI",
+        file_path="/repo/fastapi/applications.py",
+        range=[1, 10],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+
+    candidate = ranker._target_concept_fallback_candidate(
+        target,
+        query="How does app startup wiring work?",
+    )
+
+    assert candidate is not None
+    assert candidate.kind == "doc"
+    assert candidate.token_cost <= 120
+    assert "fallback:target-concept-note" in candidate.provenance
+
+
+def test_trace_dependency_marginal_gain_rewards_new_file_coverage():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="target",
+        name="Depends",
+        file_path="/repo/fastapi/params.py",
+        range=[1, 20],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    chosen = [
+        Candidate(
+            kind="symbol",
+            uid="c0",
+            name="helper0",
+            file_path="/repo/fastapi/params.py",
+            token_cost=80,
+            graph_score=0.6,
+            semantic_score=0.4,
+            relation="CALLS_DIRECT",
+            depth=1,
+        )
+    ]
+    same_file = Candidate(
+        kind="symbol",
+        uid="same",
+        name="dep_same",
+        file_path="/repo/fastapi/params.py",
+        token_cost=80,
+        graph_score=0.6,
+        semantic_score=0.4,
+        relation="CALLS_DIRECT",
+        depth=1,
+    )
+    new_file = Candidate(
+        kind="symbol",
+        uid="new",
+        name="dep_new",
+        file_path="/repo/fastapi/dependencies/utils.py",
+        token_cost=80,
+        graph_score=0.6,
+        semantic_score=0.4,
+        relation="DEPENDS_ON",
+        depth=1,
+    )
+
+    gain_same = ranker._calculate_marginal_gain(
+        same_file,
+        chosen,
+        target,
+        mechanism="trace_dependency",
+        required_roles=["api_surface"],
+    )
+    gain_new = ranker._calculate_marginal_gain(
+        new_file,
+        chosen,
+        target,
+        mechanism="trace_dependency",
+        required_roles=["api_surface"],
+    )
+
+    assert gain_new > gain_same
+
+
+def test_trace_dependency_gain_mode_from_di_question_even_when_mechanism_generic():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="target",
+        name="Depends",
+        file_path="/repo/fastapi/param_functions.py",
+        range=[1, 20],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    chosen: list = []
+    di_candidate = Candidate(
+        kind="symbol",
+        uid="solve_dependencies",
+        name="solve_dependencies",
+        file_path="/repo/fastapi/dependencies/utils.py",
+        token_cost=80,
+        graph_score=0.55,
+        semantic_score=0.35,
+        relation="CALLS_DIRECT",
+        depth=2,
+    )
+    q_di = "How does dependency injection get resolved before the endpoint function is called?"
+    gain_di_query = ranker._calculate_marginal_gain(
+        di_candidate,
+        chosen,
+        target,
+        mechanism="generic",
+        query=q_di,
+        required_roles=["orchestrator"],
+    )
+    gain_plain = ranker._calculate_marginal_gain(
+        di_candidate,
+        chosen,
+        target,
+        mechanism="generic",
+        query="Where is the middleware registered?",
+        required_roles=["orchestrator"],
+    )
+    assert gain_di_query > gain_plain
+
+
+def test_resolve_intra_repo_package_import_paths(tmp_path):
+    """Absolute ``from pkg.sub.mod import …`` maps to sibling package files on disk."""
+    inner = tmp_path / "fastapi" / "fastapi"
+    deps = inner / "dependencies"
+    deps.mkdir(parents=True)
+    utils_py = deps / "utils.py"
+    utils_py.write_text("def solve_dependencies():\n    pass\n", encoding="utf-8")
+    param = inner / "param_functions.py"
+    param.write_text(
+        "from fastapi.dependencies.utils import solve_dependencies\n",
+        encoding="utf-8",
+    )
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/x@main")
+    paths = ranker._resolve_intra_repo_package_import_paths(str(param))
+    assert str(utils_py.resolve()) in paths
+
+
+def test_trace_dependency_import_anchor_candidates():
+    """Universal import-module anchors: same rows as ``_imported_symbol_rows``, no FastAPI names in ranker."""
+    utils_row = {
+        "uid": "uid-solve",
+        "name": "solve_dependencies",
+        "symbol_kind": "function",
+        "token_estimate": 400,
+        "qualified_name": "solve_dependencies",
+        "file_path": "/repos/fastapi/fastapi/dependencies/utils.py",
+        "file_hash": "h1",
+        "range": [1, 80],
+        "inbound_edges": 3,
+        "outbound_edges": 6,
+    }
+    models_row = {
+        "uid": "uid-get-dep",
+        "name": "get_dependant",
+        "symbol_kind": "function",
+        "token_estimate": 300,
+        "qualified_name": "get_dependant",
+        "file_path": "/repos/fastapi/fastapi/dependencies/models.py",
+        "file_hash": "h2",
+        "range": [1, 60],
+        "inbound_edges": 8,
+        "outbound_edges": 4,
+    }
+
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main")
+    target = SubgraphNode(
+        uid="depends-target",
+        name="Depends",
+        file_path="/repos/fastapi/fastapi/param_functions.py",
+        range=[1, 40],
+        token_estimate=50,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    with patch.object(ranker, "_imported_symbol_rows", return_value=[utils_row, models_row]):
+        anchors = ranker._trace_dependency_import_anchor_candidates(
+            target,
+            query="How does dependency injection get resolved?",
+            mechanism="generic",
+            required_roles=["dependency_solver"],
+            excluded_uids=set(),
+            pool=[],
+        )
+    paths = {a.file_path for a in anchors}
+    assert any(p.endswith("dependencies/utils.py") for p in paths)
+    assert any(p.endswith("dependencies/models.py") for p in paths)
+    assert {a.name for a in anchors} >= {"solve_dependencies", "get_dependant"}
+    assert any("recovery:import-module-trace" in (a.provenance or []) for a in anchors)

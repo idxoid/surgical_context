@@ -112,6 +112,8 @@ pass before ranker tuning.
 - `ready_context.token_count`
 - `ready_context.contract` (serialized prompt contract)
 - `ready_context.system_prompt`
+- `expected_roles` (canonical normalized required roles from the question pack)
+- `missing_expected_roles` (only the expected roles that remained unfilled)
 
 Current local retrieval snapshot after the UnifiedRanker hardening pass:
 
@@ -120,6 +122,17 @@ Current local retrieval snapshot after the UnifiedRanker hardening pass:
 | FastAPI | `QA/qa_benchmark.py --repo fastapi --no-index` | 8/8 pass, `fastapi_q03` and `fastapi_q06` stop with `context_complete_below_floor` instead of floor failure |
 | Pydantic | `QA/qa_benchmark.py --repo pydantic --no-index` | 8/8 pass; `pydantic_q05` resolves `v1` through module fallback instead of "Symbol not found" |
 | Redux Toolkit | `QA/qa_benchmark.py --repo redux_toolkit --no-index` | 8/8 pass; broad RTK precision remains a tuning target |
+
+### 4.4 Console diagnostics for mechanism-aware runs
+
+The per-question console line now prints role diagnostics explicitly:
+
+- `expected_roles=...` — canonical expected role set for that question
+- `missing_roles=...` — unfilled subset of `expected_roles`
+- trailing `missing: ...` — raw ranker-internal `ctx.missing_roles` (debug-only, may contain non-pack roles)
+
+Use `missing_roles` as the pass-gate indicator. Treat raw trailing `missing:` as
+internal telemetry for tuning recovery and role-planning behavior.
 
 **Note:** Quality metric (answer correctness) is **intentionally deferred** — it requires an LLM judge, which introduces noise and cost. Recall@k and role_recall are proxies: if the right symbols and roles are in the context, quality is the model's problem, not ours.
 
