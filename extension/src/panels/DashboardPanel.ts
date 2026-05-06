@@ -14,6 +14,7 @@ import {
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
+import { resolveWorkspaceId } from '../workspaceIdentity';
 
 type DashboardCallResult<T> = {
   value: T | null;
@@ -117,6 +118,7 @@ export class DashboardPanel {
       metricsText,
       indexQueue,
     });
+    const workspaceId = await resolveWorkspaceId();
 
     this.postMessage({
       type: 'dashboard.metricsLoaded',
@@ -129,11 +131,10 @@ export class DashboardPanel {
         cloudStatus: cloudStatus.value,
         metricsText: metricsText.value,
         indexQueue: indexQueue.value,
+        workspaceId,
       }),
       notices,
-      workspaceId: vscode.workspace
-        .getConfiguration('surgicalContext')
-        .get<string>('workspaceId', 'local/default@main'),
+      workspaceId: workspaceId || 'sidecar default',
       warnings,
     });
   }
@@ -375,10 +376,10 @@ export class DashboardPanel {
     cloudStatus: CloudStatusResponse | null;
     metricsText: string | null;
     indexQueue: IndexQueueResponse | null;
+    workspaceId: string | undefined;
   }): HealthCheckItem[] {
     const config = vscode.workspace.getConfiguration('surgicalContext');
     const backendUrl = config.get<string>('backendUrl', 'http://localhost:8000');
-    const workspaceId = config.get<string>('workspaceId', 'local/default@main');
     const modelPreference = config.get<string>('modelPreference', 'auto');
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
     const queue = input.indexQueue?.queue;
@@ -441,8 +442,8 @@ export class DashboardPanel {
       {
         id: 'workspace',
         label: 'Workspace',
-        status: workspaceFolders.length > 0 && workspaceId ? 'ok' : 'warning',
-        value: workspaceId || 'unset',
+        status: workspaceFolders.length > 0 && input.workspaceId ? 'ok' : 'warning',
+        value: input.workspaceId || 'sidecar default',
         detail: workspaceFolders.length > 0
           ? workspaceFolders.map(folder => folder.name).join(', ')
           : 'No VS Code workspace folder is open.',

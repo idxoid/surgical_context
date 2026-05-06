@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import { SettingsData } from './webview/shared/protocol';
+import { workspaceIdDisplayValue } from './workspaceIdentity';
 
 export const DEFAULT_SETTINGS: SettingsData = {
   backendUrl: 'http://localhost:8000',
-  workspaceId: 'local/default@main',
+  workspaceId: '',
   modelPreference: 'auto',
   authToken: '',
   tokenBudget: 4000,
@@ -17,7 +18,7 @@ export function readSettings(): SettingsData {
   const config = vscode.workspace.getConfiguration('surgicalContext');
   return {
     backendUrl: config.get('backendUrl') ?? DEFAULT_SETTINGS.backendUrl,
-    workspaceId: config.get('workspaceId') ?? DEFAULT_SETTINGS.workspaceId,
+    workspaceId: workspaceIdDisplayValue(),
     modelPreference: config.get('modelPreference') ?? DEFAULT_SETTINGS.modelPreference,
     authToken: config.get('authToken') ?? DEFAULT_SETTINGS.authToken,
     tokenBudget: config.get('tokenBudget') ?? DEFAULT_SETTINGS.tokenBudget,

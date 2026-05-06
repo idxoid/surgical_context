@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import yaml
 
@@ -27,7 +27,9 @@ DEFAULT_MODELS = ("all-MiniLM-L6-v2", "microsoft/unixcoder-base")
 
 
 class Embedder(Protocol):
-    def encode(self, texts: list[str], show_progress_bar: bool = False):
+    def encode(
+        self, texts: list[str], show_progress_bar: bool = False
+    ) -> Iterable[Iterable[float]]:
         """Return one vector per input text."""
 
 
@@ -63,7 +65,7 @@ class RankedSymbol:
 def default_encoder_factory(model_name: str) -> Embedder:
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer(model_name)
+    return cast(Embedder, SentenceTransformer(model_name))
 
 
 def load_questions(questions_path: str | Path) -> list[QuestionRecord]:
@@ -132,7 +134,7 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
         return 0.0
 
     dot = sum(a * b for a, b in zip(left, right, strict=False))
-    return dot / (left_norm * right_norm)
+    return float(dot / (left_norm * right_norm))
 
 
 def encode_texts(encoder: Embedder, texts: Iterable[str]) -> list[list[float]]:

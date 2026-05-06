@@ -294,11 +294,11 @@ class JavaScriptAdapter(TreeSitterAdapter):
         imports = []
         for node, tag in captures:
             if tag == "import.source":
-                source = node.text.decode("utf-8").strip("\"'")
+                source = (node.text or b"").decode("utf-8").strip("\"'")
                 import_type = "relative" if source.startswith(".") else "from_package"
                 imports.append(ImportEdge(file_path, source, import_type))
             elif tag == "require.call":
-                call_text = node.text.decode("utf-8")
+                call_text = (node.text or b"").decode("utf-8")
                 if "require(" in call_text:
                     match = re.search(r"require\(['\"]([^'\"]+)['\"]\)", call_text)
                     if match:

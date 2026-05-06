@@ -1,7 +1,7 @@
 """ContextArbitrator — thin orchestrator facade composing pure components."""
 
 import hashlib
-from typing import Any
+from typing import Any, cast
 
 from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
@@ -9,7 +9,7 @@ from sidecar.context.deduplicator import ContextDeduplicator
 from sidecar.context.graph_expander import GraphExpander
 from sidecar.context.intent_classifier import IntentClassifier, IntentResolution, IntentSignal
 from sidecar.context.prompt_compiler import PromptCompiler
-from sidecar.context.types import PromptContext
+from sidecar.context.types import PromptContext, SubgraphNode
 from sidecar.context.unified_ranker import (
     DEFAULT_WEIGHTS,
     RankerWeights,
@@ -50,7 +50,7 @@ class ContextArbitrator:
             intent_signal,
             self._repository_profile(),
         )
-        cache_hits = []
+        cache_hits: list[str] = []
 
         if self.vector_db:
             return self._get_context_unified(
@@ -81,11 +81,14 @@ class ContextArbitrator:
             weights=self.ranker_weights,
         )
 
-        target, target_selection = ranker.get_target(
-            symbol_name,
-            query=question,
-            intent=intent,
-            with_metadata=True,
+        target, target_selection = cast(
+            tuple[SubgraphNode | None, dict[str, Any]],
+            ranker.get_target(
+                symbol_name,
+                query=question,
+                intent=intent,
+                with_metadata=True,
+            ),
         )
         if target is None:
             fallback_target, fallback_selection = self._resolve_concept_anchor_target(
@@ -212,19 +215,21 @@ class ContextArbitrator:
         symbol_name: str,
         question: str,
         intent,
-    ) -> tuple[object | None, dict]:
+    ) -> tuple[SubgraphNode | None, dict[str, Any]]:
         if not self._should_try_concept_anchor_fallback(question):
             return None, {}
         anchors = self._concept_anchor_candidates(symbol_name)
         if not anchors:
             return None, {}
-            return None, {}
         for anchor in anchors:
-            candidate, metadata = ranker.get_target(
-                anchor,
-                query=question,
-                intent=intent,
-                with_metadata=True,
+            candidate, metadata = cast(
+                tuple[SubgraphNode | None, dict[str, Any]],
+                ranker.get_target(
+                    anchor,
+                    query=question,
+                    intent=intent,
+                    with_metadata=True,
+                ),
             )
             if candidate is not None:
                 metadata = {

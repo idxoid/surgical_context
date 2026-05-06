@@ -64,7 +64,7 @@ def hash_file(file_path: str) -> str:
 def _symbol_needs_upsert(sym, existing: dict | None) -> bool:
     if existing is None:
         return True
-    return (
+    return bool(
         existing.get("hash") != sym.content_hash
         or int(existing.get("start_line") or 0) != sym.start_line
         or int(existing.get("end_line") or 0) != sym.end_line

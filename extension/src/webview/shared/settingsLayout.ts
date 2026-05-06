@@ -72,11 +72,11 @@ export function renderSettingsForm(data: SettingsFormData): string {
             id="workspaceId"
             class="setting-input"
             value="${escapeHtml(data.workspaceId)}"
-            placeholder="local/default@main"
+            placeholder="derived from workspace and Git branch"
             aria-label="Workspace scope identifier"
             aria-describedby="workspaceId-hint"
           />
-          <p class="field-hint" id="workspaceId-hint">Scope identifier for multi-workspace support</p>
+          <p class="field-hint" id="workspaceId-hint">Optional override. Leave blank to derive from the open workspace and Git branch.</p>
         </div>
 
         <div class="setting-field">

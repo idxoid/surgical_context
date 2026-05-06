@@ -213,7 +213,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         imports = []
         for node, tag in captures:
             if tag == "import.source":
-                source = node.text.decode("utf-8").strip("\"'")
+                source = (node.text or b"").decode("utf-8").strip("\"'")
                 import_type = "relative" if source.startswith(".") else "from_package"
                 imports.append(ImportEdge(file_path, source, import_type))
 

@@ -93,7 +93,7 @@ def _symbol_needs_upsert(sym, existing: dict | None) -> bool:
     """Replicates the baseline decision rule verbatim."""
     if existing is None:
         return True
-    return (
+    return bool(
         existing.get("hash") != sym.content_hash
         or int(existing.get("start_line") or 0) != sym.start_line
         or int(existing.get("end_line") or 0) != sym.end_line

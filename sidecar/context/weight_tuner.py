@@ -32,9 +32,9 @@ def _canonical_metric_name(metric: str) -> str:
 def _metric_value(metrics: dict, metric: str) -> float:
     canonical = _canonical_metric_name(metric)
     if canonical in metrics:
-        return metrics.get(canonical, 0.0)
+        return float(metrics.get(canonical, 0.0))
     if metric in metrics:
-        return metrics.get(metric, 0.0)
+        return float(metrics.get(metric, 0.0))
     return 0.0
 
 
@@ -370,7 +370,7 @@ def _make_benchmark_eval(
 
     def eval_func(weights: RankerWeights) -> dict:
         metrics = run_benchmark(
-            questions_path=questions_path,
+            questions_path=questions_path or "",
             no_index=state["indexed"],
             repo=repo,
             core12_only=core12_only,
@@ -400,6 +400,7 @@ def _make_benchmark_eval(
 
 
 def _save_results(tuner: WeightTuner, output_path: str) -> None:
+    best = tuner.best_result()
     rows = [
         {
             **asdict(r.weights),
@@ -413,7 +414,7 @@ def _save_results(tuner: WeightTuner, output_path: str) -> None:
     with open(output_path, "w") as f:
         json.dump(
             {
-                "best": asdict(tuner.best_result().weights) if tuner.best_result() else None,
+                "best": asdict(best.weights) if best else None,
                 "results": rows,
             },
             f,
@@ -460,15 +461,18 @@ def main() -> int:
         metric_key=metric_key,
     )
 
+    tuner: WeightTuner
     if args.strategy == "grid":
         tuner = GridSearchTuner(eval_func, metric=metric_key)
         tuner.tune()
     elif args.strategy == "random":
-        tuner = RandomSearchTuner(eval_func, metric=metric_key)
-        tuner.tune(n_trials=args.n_trials)
+        random_tuner = RandomSearchTuner(eval_func, metric=metric_key)
+        random_tuner.tune(n_trials=args.n_trials)
+        tuner = random_tuner
     else:
-        tuner = CoarseFineTuner(eval_func, metric=metric_key)
-        tuner.tune()
+        coarse_fine_tuner = CoarseFineTuner(eval_func, metric=metric_key)
+        coarse_fine_tuner.tune()
+        tuner = coarse_fine_tuner
 
     print(tuner.format_results(top_k=args.top_k))
     if args.output:

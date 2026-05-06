@@ -645,9 +645,12 @@ def _vector_search_symbols(query: str, limit: int, *, workspace_id: str) -> list
     if not callable(search_symbols):
         return []
     try:
-        return search_symbols(query, limit, threshold=1.0, workspace_id=workspace_id)
+        return cast(
+            list[dict[str, Any]],
+            search_symbols(query, limit, threshold=1.0, workspace_id=workspace_id),
+        )
     except TypeError:
-        return search_symbols(query, limit, threshold=1.0)
+        return cast(list[dict[str, Any]], search_symbols(query, limit, threshold=1.0))
 
 
 def _doc_tier_tokens(docs: list[DocChunk]) -> dict[str, int]:
@@ -1160,24 +1163,25 @@ def unified_search(
                         token_budget=req.token_budget,
                     )
             if not isinstance(ctx, str):
-                for symbol, provenance in [
+                graph_symbols: list[tuple[SymbolContext, str]] = [
                     (ctx.primary_source, "graph:primary"),
                     *[(dep, "graph:neighbor") for dep in ctx.graph_context],
-                ]:
+                ]
+                for graph_symbol, provenance in graph_symbols:
                     results.append(
                         {
                             "type": "symbol",
-                            "title": symbol.symbol,
-                            "file_path": symbol.file_path,
-                            "content": symbol.code,
-                            "score": symbol.relevance_score,
-                            "scores": {"relevance": symbol.relevance_score},
+                            "title": graph_symbol.symbol,
+                            "file_path": graph_symbol.file_path,
+                            "content": graph_symbol.code,
+                            "score": graph_symbol.relevance_score,
+                            "scores": {"relevance": graph_symbol.relevance_score},
                             "provenance": [provenance],
                             "metadata": {
-                                "relation": symbol.relation,
-                                "direction": symbol.direction,
-                                "depth": symbol.depth,
-                                "is_dirty": symbol.is_dirty,
+                                "relation": graph_symbol.relation,
+                                "direction": graph_symbol.direction,
+                                "depth": graph_symbol.depth,
+                                "is_dirty": graph_symbol.is_dirty,
                             },
                         }
                     )

@@ -3,6 +3,7 @@ import os
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from typing import cast
 
 import lancedb
 import pyarrow as pa
@@ -377,7 +378,7 @@ class LanceDBClient:
             )
             if columns:
                 query = query.select(columns)
-            return query.to_list()
+            return cast(list[dict], query.to_list())
         except Exception:
             # Fallback for older Lance / test fakes that don't support
             # filter-only search. Pay the to_pandas cost only on the slow

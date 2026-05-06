@@ -3,6 +3,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
@@ -85,7 +86,7 @@ def _chunk_text(text: str) -> list[str]:
     return chunks
 
 
-def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict[str, int | str]:
+def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict[str, Any]:
     lance = LanceDBClient()
     neo4j = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
 

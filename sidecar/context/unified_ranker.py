@@ -22,6 +22,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from pathlib import Path
+from typing import Any, cast
 
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.mechanism_registry import (
@@ -386,6 +387,8 @@ class Candidate:
     provenance: list[str] = field(default_factory=list)
     # symbol metadata
     name: str = ""
+    symbol_kind: str = ""
+    qualified_name: str = ""
     file_path: str = ""
     range: list[int] = field(default_factory=lambda: [0, 0])
     render_mode: str = "full"
@@ -433,15 +436,18 @@ class VectorSearcher:
             raw = self.db.search(query, limit, workspace_id=workspace_id)
         except TypeError:
             raw = self.db.search(query, limit)
-        return [
-            {
-                "chunk_id": r.get("id", f"{r['file_path']}::chunk"),
-                "file_path": r["file_path"],
-                "content": r["chunk"],
-                "score": float(r.get("score") or 0.0),
-            }
-            for r in raw
-        ]
+        return cast(
+            list[dict[str, Any]],
+            [
+                {
+                    "chunk_id": r.get("id", f"{r['file_path']}::chunk"),
+                    "file_path": r["file_path"],
+                    "content": r["chunk"],
+                    "score": float(r.get("score") or 0.0),
+                }
+                for r in raw
+            ],
+        )
 
     def search_symbols(
         self,
@@ -452,11 +458,17 @@ class VectorSearcher:
     ) -> list[dict]:
         # threshold=1.0 means accept all distances (we normalize later)
         try:
-            return self.db.search_symbols(
-                query, limit=limit, threshold=1.0, workspace_id=workspace_id
+            return cast(
+                list[dict[str, Any]],
+                self.db.search_symbols(
+                    query, limit=limit, threshold=1.0, workspace_id=workspace_id
+                ),
             )
         except TypeError:
-            return self.db.search_symbols(query, limit=limit, threshold=1.0)
+            return cast(
+                list[dict[str, Any]],
+                self.db.search_symbols(query, limit=limit, threshold=1.0),
+            )
 
 
 class UnifiedRanker:
@@ -1443,7 +1455,7 @@ class UnifiedRanker:
             else:
                 stopped_reason = "floor_unfilled_no_useful_candidates"
 
-        missing_roles = [r for r in required_roles if r not in fulfilled_roles]
+        missing_roles_list = [r for r in required_roles if r not in fulfilled_roles]
 
         budget_info = {
             "limit": base_budget,
@@ -1455,7 +1467,7 @@ class UnifiedRanker:
             "pool_size": len(pool),
             "pruned": len(pruned_details),
         }
-        return chosen, budget_info, stopped_reason, pruned_details, missing_roles
+        return chosen, budget_info, stopped_reason, pruned_details, missing_roles_list
 
     def candidates_to_subgraph(
         self,
@@ -1463,10 +1475,13 @@ class UnifiedRanker:
         candidates: list[Candidate],
         budget_info: dict,
         stopped_reason: str = "",
-        pruned_details: list = None,
+        pruned_details: list | None = None,
     ) -> tuple[Subgraph, list[DocChunk]]:
-        return self.subgraph_assembler.candidates_to_subgraph(
-            (target, candidates, budget_info, stopped_reason, pruned_details)
+        return cast(
+            tuple[Subgraph, list[DocChunk]],
+            self.subgraph_assembler.candidates_to_subgraph(
+                (target, candidates, budget_info, stopped_reason, pruned_details)
+            ),
         )
 
     def _candidates_to_subgraph_impl(
@@ -1542,7 +1557,10 @@ class UnifiedRanker:
         pool_size: int,
         intent: Intent | None = None,
     ) -> list[Candidate]:
-        return self.graph_candidate_source.graph_candidates(target_uid, pool_size, intent=intent)
+        return cast(
+            list[Candidate],
+            self.graph_candidate_source.graph_candidates(target_uid, pool_size, intent=intent),
+        )
 
     def _graph_candidates_impl(
         self,
@@ -1626,7 +1644,7 @@ class UnifiedRanker:
         )
 
     def _doc_candidates(self, query: str, limit: int) -> list[Candidate]:
-        return self.vector_candidate_source.doc_candidates(query, limit)
+        return cast(list[Candidate], self.vector_candidate_source.doc_candidates(query, limit))
 
     def _doc_candidates_impl(self, query: str, limit: int) -> list[Candidate]:
         raw = self._filter_doc_hits_to_workspace(
@@ -1672,7 +1690,7 @@ class UnifiedRanker:
         )
 
     def _sym_vec_candidates(self, query: str, limit: int) -> list[Candidate]:
-        return self.vector_candidate_source.sym_vec_candidates(query, limit)
+        return cast(list[Candidate], self.vector_candidate_source.sym_vec_candidates(query, limit))
 
     def _sym_vec_candidates_impl(self, query: str, limit: int) -> list[Candidate]:
         raw = self._filter_symbol_hits_to_workspace(
@@ -1805,7 +1823,7 @@ class UnifiedRanker:
 
     def _filter_doc_hits_to_workspace(self, hits: list[dict]) -> list[dict]:
         """Keep only doc hits whose file belongs to the active workspace."""
-        paths = sorted({hit.get("file_path") for hit in hits if hit.get("file_path")})
+        paths = sorted({path for hit in hits if isinstance((path := hit.get("file_path")), str)})
         if not paths:
             return hits
         query = """
@@ -1825,7 +1843,7 @@ class UnifiedRanker:
 
     def _filter_symbol_hits_to_workspace(self, hits: list[dict]) -> list[dict]:
         """Keep only symbol vector hits that are present in the active workspace."""
-        uids = sorted({hit.get("uid") for hit in hits if hit.get("uid")})
+        uids = sorted({uid for hit in hits if isinstance((uid := hit.get("uid")), str)})
         if not uids:
             return hits
         query = """
@@ -1972,7 +1990,7 @@ class UnifiedRanker:
     def _merge_role_backfill(
         self, pool: list[Candidate], backfill: list[Candidate]
     ) -> list[Candidate]:
-        return self.role_backfill.merge_role_backfill(pool, backfill)
+        return cast(list[Candidate], self.role_backfill.merge_role_backfill(pool, backfill))
 
     def _merge_role_backfill_impl(
         self, pool: list[Candidate], backfill: list[Candidate]
@@ -3325,7 +3343,7 @@ class UnifiedRanker:
         else:
             distance_penalty = 0.4 * distance
 
-        return (
+        return float(
             r
             + 0.3 * math.log1p(caller_count)
             # DEBT: The previous -0.5 penalty was too aggressive for "God Object"

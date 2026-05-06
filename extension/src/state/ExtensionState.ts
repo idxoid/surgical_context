@@ -28,7 +28,7 @@ export const defaultState: ExtensionState = {
   lastRequest: undefined,
   sidecarHealth: 'degraded',
   cloudStatus: 'offline',
-  workspaceId: 'local/default@main',
+  workspaceId: '',
   authState: 'ready',
 };
 

@@ -34,7 +34,7 @@ def _matches_callee_qualified_gate(call: dict, rule: dict) -> bool:
     q = call.get("callee_qualified_name")
     if not q or not trig:
         return False
-    return q.startswith(f"{prefix}.") and q.endswith(f".{trig}")
+    return bool(q.startswith(f"{prefix}.") and q.endswith(f".{trig}"))
 
 
 class FrameworkHintsIndexer:

@@ -9,6 +9,7 @@ import {
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
+import { resolveWorkspaceId } from '../workspaceIdentity';
 
 export class DashboardViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'surgicalContext.dashboard';
@@ -75,6 +76,7 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
       status: action.status === 'error' ? 'failed' : 'success',
       details: action.details,
     }));
+    const workspaceId = await resolveWorkspaceId();
 
     this.postMessage({
       type: 'dashboard.metricsLoaded',
@@ -88,11 +90,9 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
             : 'offline',
       auditActions,
       metrics: this.emptyDashboardMetrics(),
-      healthChecks: this.buildHealthChecks(healthOk, cloudStatus),
+      healthChecks: this.buildHealthChecks(healthOk, cloudStatus, workspaceId),
       notices: this.buildDashboardNotices(healthOk),
-      workspaceId: vscode.workspace
-        .getConfiguration('surgicalContext')
-        .get<string>('workspaceId', 'local/default@main'),
+      workspaceId: workspaceId || 'sidecar default',
       warnings: [],
     });
   }
@@ -121,11 +121,11 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
 
   private buildHealthChecks(
     healthOk: boolean,
-    cloudStatus: Awaited<ReturnType<typeof SidecarClient.cloudStatus>> | null
+    cloudStatus: Awaited<ReturnType<typeof SidecarClient.cloudStatus>> | null,
+    workspaceId: string | undefined
   ): HealthCheckItem[] {
     const config = vscode.workspace.getConfiguration('surgicalContext');
     const backendUrl = config.get<string>('backendUrl', 'http://localhost:8000');
-    const workspaceId = config.get<string>('workspaceId', 'local/default@main');
     const modelPreference = config.get<string>('modelPreference', 'auto');
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
 

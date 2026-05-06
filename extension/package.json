@@ -235,8 +235,8 @@
         },
         "surgicalContext.workspaceId": {
           "type": "string",
-          "default": "local/default@main",
-          "description": "Workspace scope identifier for multi-workspace support"
+          "default": "",
+          "description": "Optional workspace scope identifier. Leave blank to derive it from the open VS Code workspace and Git branch."
         },
         "surgicalContext.modelPreference": {
           "type": "string",

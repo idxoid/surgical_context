@@ -19,13 +19,15 @@ class BudgetSelector:
         required_roles: list[str],
         candidate_roles=None,
     ) -> float:
-        return self.host._calculate_marginal_gain_impl(
-            c=c,
-            chosen=chosen,
-            target=target,
-            intent=intent,
-            mechanism=mechanism,
-            query=query,
-            required_roles=required_roles,
-            candidate_roles=candidate_roles,
+        return float(
+            self.host._calculate_marginal_gain_impl(
+                c=c,
+                chosen=chosen,
+                target=target,
+                intent=intent,
+                mechanism=mechanism,
+                query=query,
+                required_roles=required_roles,
+                candidate_roles=candidate_roles,
+            )
         )

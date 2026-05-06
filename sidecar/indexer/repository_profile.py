@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import cast
 
 from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.parser.registry import REGISTRY
@@ -586,10 +587,12 @@ def _build_strategy_profile(
         reverse=True,
     )
     role_plan: list[str] = []
-    for archetype in archetypes[:4]:
-        role_plan.extend(archetype["role_plan"])
+    for archetype_info in archetypes[:4]:
+        role_plan.extend(cast(list[str], archetype_info["role_plan"]))
     role_plan = normalize_roles([*role_plan, "docs_or_concept"])
-    selected_strategy = archetypes[0]["strategy"] if archetypes else "generic_symbol_context"
+    selected_strategy = (
+        cast(str, archetypes[0]["strategy"]) if archetypes else "generic_symbol_context"
+    )
     fallbacks = ["direct_symbol", "semantic_docs"]
     if any(item["type"] in {"route_registration", "factory_api_generation"} for item in archetypes):
         fallbacks.append("concept_to_symbol")

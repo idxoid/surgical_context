@@ -12,7 +12,8 @@ def test_index_docs_returns_file_and_chunk_counts(tmp_path, monkeypatch):
     closed: list[str] = []
 
     class FakeLance:
-        def upsert_chunk_batches(self, file_chunks, progress_callback=None):
+        def upsert_chunk_batches(self, file_chunks, *, workspace_id="", progress_callback=None):
+            assert workspace_id == "acme/repo@main"
             batch_upserts.append([(file_path, len(chunks)) for file_path, chunks in file_chunks])
 
     class FakeNeo4j:
@@ -59,7 +60,8 @@ def test_index_docs_falls_back_to_per_file_upsert_when_bulk_missing(tmp_path, mo
     upserts: list[tuple[str, int]] = []
 
     class FakeLance:
-        def upsert_chunks(self, file_path: str, chunks: list[str]):
+        def upsert_chunks(self, file_path: str, chunks: list[str], *, workspace_id: str = ""):
+            assert workspace_id == "acme/repo@main"
             upserts.append((file_path, len(chunks)))
 
     class FakeNeo4j:

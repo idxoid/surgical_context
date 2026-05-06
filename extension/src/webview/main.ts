@@ -814,7 +814,7 @@ class MainSurface {
   private resetSettings(): void {
     const defaults: SettingsData = {
       backendUrl: 'http://localhost:8000',
-      workspaceId: 'local/default@main',
+      workspaceId: '',
       modelPreference: 'auto',
       authToken: '',
       tokenBudget: 4000,

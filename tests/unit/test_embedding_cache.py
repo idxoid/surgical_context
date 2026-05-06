@@ -8,6 +8,7 @@ from sidecar.database.embedding_registry import (
     compute_embedding_hash,
 )
 from sidecar.database.lancedb_client import LanceDBClient
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
 def test_embedding_cache_roundtrip(tmp_path):
@@ -122,9 +123,11 @@ def test_lancedb_client_delete_symbol_embeddings_batches_predicates(monkeypatch)
     client.delete_symbol_embeddings(["a", "b", "c", "d", "e"])
 
     assert client._sym_table.predicates == [
-        "uid = 'a' OR uid = 'b'",
-        "uid = 'c' OR uid = 'd'",
-        "uid = 'e'",
+        f"(workspace_id = '{DEFAULT_WORKSPACE_ID}' AND uid = 'a') OR "
+        f"(workspace_id = '{DEFAULT_WORKSPACE_ID}' AND uid = 'b')",
+        f"(workspace_id = '{DEFAULT_WORKSPACE_ID}' AND uid = 'c') OR "
+        f"(workspace_id = '{DEFAULT_WORKSPACE_ID}' AND uid = 'd')",
+        f"(workspace_id = '{DEFAULT_WORKSPACE_ID}' AND uid = 'e')",
     ]
 
 
@@ -155,11 +158,14 @@ def test_lancedb_client_set_pending_row_reuses_existing_doc_payload():
         ["New"],
     )
 
-    assert client._table.deleted == ["id = 'chunk-1'"]
+    assert client._table.deleted == [
+        f"(workspace_id = '{DEFAULT_WORKSPACE_ID}' AND id = 'chunk-1')"
+    ]
     assert client._table.added == [
         [
             {
                 "id": "chunk-1",
+                "workspace_id": DEFAULT_WORKSPACE_ID,
                 "file_path": "/docs/a.md",
                 "chunk": "Hello",
                 "pending": ["New"],
@@ -177,6 +183,11 @@ def test_lancedb_client_search_symbols_by_vector_skips_query_embedding():
 
         def search(self, vector):
             self.search_calls.append(vector)
+            return self
+
+        def where(self, predicate: str, prefilter: bool = False):
+            assert predicate == f"workspace_id = '{DEFAULT_WORKSPACE_ID}'"
+            assert prefilter is True
             return self
 
         def limit(self, n: int):

@@ -43,10 +43,12 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = [
   "ollama",
-  "tree_sitter_languages",
   "sentence_transformers",
   "lancedb",
-  "claude_api",
   "pyarrow",
+  "yaml",
+  "tqdm",
+  "opentelemetry",
+  "opentelemetry.*",
 ]
 ignore_missing_imports = true

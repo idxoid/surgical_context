@@ -15,6 +15,10 @@ from sidecar.parser.uid import (
 )
 
 
+def _node_text(node) -> str:
+    return (node.text or b"").decode("utf-8")
+
+
 class TreeSitterAdapter(LanguageAdapter):
     """Base class for language adapters using tree-sitter."""
 
@@ -84,8 +88,8 @@ class TreeSitterAdapter(LanguageAdapter):
         # Collect var.name nodes keyed by their parent var.def node id
         var_names: dict[int, str] = {}
         for node, tag in captures:
-            if tag == "var.name":
-                var_names[node.parent.id] = node.text.decode("utf-8")
+            if tag == "var.name" and node.parent is not None:
+                var_names[node.parent.id] = _node_text(node)
 
         symbols = []
         for node, tag in captures:
@@ -93,8 +97,8 @@ class TreeSitterAdapter(LanguageAdapter):
                 name_node = node.child_by_field_name("name")
                 if not name_node:
                     continue
-                name = name_node.text.decode("utf-8")
-                content = node.text.decode("utf-8")
+                name = _node_text(name_node)
+                content = _node_text(node)
                 qualified_name = qualified_name_for(node, source_code, file_path)
                 raw_signature, signature_status = signature_from_node(
                     node, source_code, self.language_name
@@ -117,22 +121,22 @@ class TreeSitterAdapter(LanguageAdapter):
                     )
                 )
             elif tag.startswith("var."):
-                name = var_names.get(node.id)
-                if not name or not self.should_include_variable_symbol(
+                var_name = var_names.get(node.id)
+                if not var_name or not self.should_include_variable_symbol(
                     node,
                     tag,
-                    name,
+                    var_name,
                     source_code=source_code,
                     file_path=file_path,
                 ):
                     continue
-                content = node.text.decode("utf-8")
-                qualified_name = ".".join([self._module_name(file_path), name])
-                signature = f"{name}()->_"
+                content = _node_text(node)
+                qualified_name = ".".join([self._module_name(file_path), var_name])
+                signature = f"{var_name}()->_"
                 symbols.append(
                     SymbolMetadata(
                         uid=compute_uid(qualified_name, signature, self.language_name),
-                        name=name,
+                        name=var_name,
                         kind="variable",
                         start_line=node.start_point[0] + 1,
                         end_line=node.end_point[0] + 1,
