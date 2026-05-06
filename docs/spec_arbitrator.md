@@ -91,14 +91,12 @@ The graph supplies symbol file paths and line ranges. Only the source of text ch
 
 ## Current Limitations
 
-- `workspace_id` exists in the contract schema but is not yet populated consistently by the arbitrator.
 - The graph-only fallback does not surface the same ranker metadata richness as the unified path.
 - Doc-anchor type/confidence is injected into `documentation[]` when a selected doc overlaps ranked graph symbols through `COVERS`; vector-only docs still carry empty/zero defaults.
 - Mechanism inference is now strong for FastAPI and partially generalized for Pydantic, but framework coverage is still uneven.
 
 ## Planned Extensions
 
-- Consistent workspace/branch metadata in `metadata.assembly`
 - richer UI presentation of doc confidence/type metadata
 - clearer model-route and fallback-level surfacing in the extension
 - future tenant API expansion between workspace retrieval and direct LLM fallback

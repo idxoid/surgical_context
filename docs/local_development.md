@@ -68,6 +68,22 @@ Stop the sidecar with `Ctrl+C`.
 
 The graph provider stores topology and metadata only. Source code stays on the filesystem. History persistence should remain metadata-first until the storage policy explicitly allows raw prompt text, response text, or source snippets.
 
+## Workspace Scope
+
+The sidecar uses `DEFAULT_WORKSPACE_ID=local/surgical_context@main` when a request
+does not include `X-Workspace`. The VS Code extension leaves
+`surgicalContext.workspaceId` blank by default; in normal local development it
+derives the header from the first open workspace folder and active Git branch:
+
+```text
+local/<workspace-folder-name>@<git-branch-or-short-sha>
+```
+
+Set `surgicalContext.workspaceId` only when you need to force a specific scope
+such as `acme/surgical_context@review-branch`. Leaving it blank avoids the old
+`local/default@main` mismatch and keeps extension requests aligned with the
+sidecar's workspace model.
+
 History controls are environment-driven for the local sidecar:
 
 ```dotenv

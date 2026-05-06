@@ -25,6 +25,29 @@ All via environment variables with defaults:
 | `SIDECAR_REQUEST_LATENCY_SLO_MS` | `200` | Request latency SLO target used by metrics and structured logs |
 | `SIDECAR_OTEL_ENABLED` | `false` | When true and OpenTelemetry is installed/configured, request stages emit spans |
 
+### Workspace Identity
+
+The sidecar resolves workspace scope from the optional `X-Workspace` header. The
+canonical format is:
+
+```text
+{tenant}/{repo}@{ref}
+```
+
+Example:
+
+```text
+X-Workspace: local/surgical_context@main
+```
+
+If the header is absent, the sidecar uses `DEFAULT_WORKSPACE_ID`. The VS Code
+extension leaves `surgicalContext.workspaceId` blank by default and derives a
+workspace id from the first open VS Code workspace folder plus the active Git
+branch, e.g. `local/surgical_context@context-engine-refocus`. If a user enters an
+explicit `surgicalContext.workspaceId`, the extension sends that value instead.
+The legacy extension default `local/default@main` is treated as unset and is not
+sent as a header.
+
 ---
 
 ## Endpoints
@@ -130,7 +153,7 @@ Assemble surgical context for a symbol and query the LLM.
 
 **Behavior:**
 1. Resolve the user from `Authorization: Bearer <token>` or `X-User-Id`. When `AUTH_REQUIRED=true`, missing or invalid bearer tokens return `401`.
-2. Resolve workspace from `X-Workspace` (`tenant/repo@ref`) or the development fallback `DEFAULT_WORKSPACE_ID`.
+2. Resolve workspace from `X-Workspace` (`tenant/repo@ref`) or `DEFAULT_WORKSPACE_ID` when the header is absent.
 3. `ContextArbitrator.get_context_for_symbol(symbol, question, token_budget)` runs intent classification, workspace-scoped graph expansion, deduplication, code resolution, and doc retrieval.
 4. `AIEngine.chat()` routes to the configured local/cloud model based on model preference, context size, and intent.
 5. Audit logging records successful and failed query actions.

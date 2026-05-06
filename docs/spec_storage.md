@@ -85,6 +85,7 @@ Opens (or creates) LanceDB at path from `LANCEDB_PATH` env var (default `./data/
 | Column | Type | Description |
 |---|---|---|
 | `id` | string | `"{file_path}::{chunk_index}"` |
+| `workspace_id` | string | Workspace scope for branch/tenant isolation |
 | `file_path` | string | Source markdown file |
 | `chunk` | string | Raw chunk text |
 | `pending` | list[string] | Identifier names not yet linked to a symbol |
@@ -94,6 +95,7 @@ Opens (or creates) LanceDB at path from `LANCEDB_PATH` env var (default `./data/
 | Column | Type | Description |
 |---|---|---|
 | `uid` | string | Symbol UID (matches Neo4j) |
+| `workspace_id` | string | Workspace scope for branch/tenant isolation |
 | `name` | string | Symbol name |
 | `file_path` | string | Source code file |
 | `code` | string | Symbol source lines |
@@ -101,23 +103,28 @@ Opens (or creates) LanceDB at path from `LANCEDB_PATH` env var (default `./data/
 
 ### Methods
 
-#### upsert_chunks(file_path, chunks)
-Delete all rows where `file_path = X`, then insert new rows with `pending=[]`.
+#### upsert_chunks(file_path, chunks, workspace_id=DEFAULT_WORKSPACE_ID)
+Delete all rows where `(workspace_id, file_path)` match, then insert new rows with `pending=[]`.
 
-#### upsert_symbol_embeddings(symbols)
-`symbols`: list of `{uid, name, file_path, code, workspace_id?}`. Embeds `code` field. Delete-then-insert per uid.
+#### upsert_chunk_batches(file_chunks, workspace_id=DEFAULT_WORKSPACE_ID)
+Bulk variant used by doc indexing. Embeds every chunk, deletes existing rows for
+the workspace/file set, and inserts rows carrying the same `workspace_id`.
 
-#### search(query, limit=5) → list[dict]
-ANN search over `docs` table. Returns `[{file_path, chunk}]`.
+#### upsert_symbol_embeddings(symbols, workspace_id=DEFAULT_WORKSPACE_ID)
+`symbols`: list of `{uid, name, file_path, code, workspace_id?}`. Embeds `code`
+field. Delete-then-insert per `(workspace_id, uid)`.
 
-#### search_symbols(query, limit=5, threshold=0.4) → list[dict]
-ANN search over `symbols` table. Filters by `_distance <= threshold`. Returns `[{uid, name, file_path, distance}]`.
+#### search(query, limit=5, workspace_id=DEFAULT_WORKSPACE_ID) → list[dict]
+Workspace-scoped ANN search over `docs` table. Returns `[{file_path, chunk}]`.
 
-#### get_pending() → dict[str, list[str]]
-Returns `{chunk_id: [name, ...]}` for all docs chunks with non-empty `pending` list.
+#### search_symbols(query, limit=5, threshold=0.4, workspace_id=DEFAULT_WORKSPACE_ID) → list[dict]
+Workspace-scoped ANN search over `symbols` table. Filters by `_distance <= threshold`. Returns `[{uid, name, file_path, distance}]`.
 
-#### set_pending(chunk_id, pending)
-Delete-then-insert for the target row. LanceDB `update()` cannot handle empty list fields, so this is the safe write pattern.
+#### get_pending(workspace_id=DEFAULT_WORKSPACE_ID) → dict[str, list[str]]
+Returns `{chunk_id: [name, ...]}` for workspace-local doc chunks with non-empty `pending` list.
+
+#### set_pending(chunk_id, pending, workspace_id=DEFAULT_WORKSPACE_ID)
+Delete-then-insert for the target `(workspace_id, chunk_id)` row. LanceDB `update()` cannot handle empty list fields, so this is the safe write pattern.
 
 ### Embedding Model
 

@@ -239,7 +239,6 @@ if assembly["latency_ms"] > 200:
 
 - Scores are meaningful only within the active ranker configuration; compare across runs together with `metadata.ranker.weights`.
 - `pruned` capped at 20 entries can hide the long tail; `pruned_total_count` now mitigates this, but the long tail is still not serialized.
-- `workspace_id` is present in the schema but not yet populated consistently by the arbitrator.
 - Doc-anchor `anchor_type` / `anchor_confidence` are populated only when a selected doc has a `COVERS` overlap with ranked graph symbols; vector-only docs keep empty/zero defaults.
 
 ## 6. Planned Extensions
