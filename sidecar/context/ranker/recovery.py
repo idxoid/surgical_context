@@ -362,7 +362,7 @@ class StructuralRecovery:
     ) -> list[dict]:
         """Source-local symbols whose names/paths match the trace question recipe."""
         terms = self.trace_query_terms(query, target)
-        scope_prefixes = self.source_scope_prefixes(target.file_path or "")
+        scope_prefixes = self.trace_topic_scope_prefixes(target.file_path or "", terms)
         if not terms or not scope_prefixes:
             return []
 
@@ -416,6 +416,35 @@ class StructuralRecovery:
                 )
         except Exception:
             return []
+
+    def trace_topic_scope_prefixes(self, file_path: str, terms: list[str]) -> list[str]:
+        """Scopes for topic search, widened for monorepo compile/build pipelines."""
+        prefixes = self.source_scope_prefixes(file_path)
+        lowered_terms = {term.lower() for term in terms}
+        if lowered_terms.intersection(
+            {
+                "build",
+                "compile",
+                "compiler",
+                "hydrate",
+                "render",
+                "template",
+                "transform",
+            }
+        ):
+            norm = (file_path or "").replace("\\", "/")
+            marker = "/packages/"
+            if marker in norm:
+                packages_root = norm.split(marker, 1)[0] + marker
+                prefixes.append(packages_root)
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for prefix in prefixes:
+            if prefix and prefix not in seen:
+                seen.add(prefix)
+                out.append(prefix)
+        return out
 
     def row_in_source_scope(self, row: dict, scope_prefixes: list[str]) -> bool:
         file_path = (row.get("file_path") or "").replace("\\", "/")
@@ -613,6 +642,10 @@ class StructuralRecovery:
             target.file_path, excluded_uids=excluded_uids
         )
         source_scope = self.source_scope_prefixes(target.file_path or "")
+        topic_scope = self.trace_topic_scope_prefixes(
+            target.file_path or "",
+            self.trace_query_terms(query, target),
+        )
         merged: list[dict] = []
         seen_merge: set[str] = set()
         for row in (*runtime_rows, *sibling_rows, *parent_rows, *imported_rows):
@@ -623,7 +656,7 @@ class StructuralRecovery:
                 seen_merge.add(uid)
                 merged.append(row)
         for row in topic_rows:
-            if self.row_is_trace_noise(row) or not self.row_in_source_scope(row, source_scope):
+            if self.row_is_trace_noise(row) or not self.row_in_source_scope(row, topic_scope):
                 continue
             uid = str(row.get("uid") or "")
             if uid and uid not in seen_merge:
@@ -701,7 +734,17 @@ class StructuralRecovery:
         excluded_uids: set[str],
     ) -> list[dict]:
         query = """
-        MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[:IMPORTS]->(dep:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[:IMPORTS]->(direct_dep:File {workspace_id: $workspace_id})
+        WITH collect(DISTINCT direct_dep) AS direct_deps
+        UNWIND direct_deps AS direct_dep
+        OPTIONAL MATCH (direct_dep)-[:IMPORTS]->(barrel_dep:File {workspace_id: $workspace_id})
+        WHERE direct_dep.path =~ '.*/index\\.(js|jsx|ts|tsx)$'
+        WITH direct_deps, collect(DISTINCT barrel_dep) AS barrel_deps
+        WITH direct_deps + barrel_deps AS deps
+        UNWIND deps AS dep
+        WITH DISTINCT dep
+        WHERE dep IS NOT NULL
+        MATCH (dep)-[c:CONTAINS]->(s:Symbol)
         WHERE NOT s.uid IN $excluded_uids
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
         WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id

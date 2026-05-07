@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.mechanism_registry import determine_preloaded_mechanism
+from sidecar.context.ranker.scoring import RankerScoring
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
     _NOISE_FACTOR,
@@ -204,6 +205,51 @@ def test_duplicate_target_selection_prefers_behavioral_entrypoint():
     assert metadata["strategy"] == "duplicate_resolution"
     assert metadata["ambiguous"] is True
     assert metadata["selected_uid"] == "depends-fn"
+
+
+def test_duplicate_target_selection_prefers_source_over_test_symbol():
+    db = _make_target_db(
+        [
+            {
+                "uid": "render-test",
+                "name": "render",
+                "kind": "function",
+                "qualified_name": "pkg.__tests__.component.spec.render",
+                "token_estimate": 80,
+                "file_path": "/repo/pkg/__tests__/component.spec.ts",
+                "file_hash": "a",
+                "range": [10, 20],
+                "outgoing_edges": 6,
+                "incoming_edges": 6,
+                "total_edges": 12,
+            },
+            {
+                "uid": "render-source",
+                "name": "render",
+                "kind": "variable",
+                "qualified_name": "pkg.runtime.src.index.render",
+                "token_estimate": 32,
+                "file_path": "/repo/pkg/runtime/src/index.ts",
+                "file_hash": "b",
+                "range": [100, 104],
+                "outgoing_edges": 1,
+                "incoming_edges": 1,
+                "total_edges": 2,
+            },
+        ]
+    )
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/pkg@main")
+
+    target, metadata = ranker.get_target(
+        "render",
+        query="How does render compile templates and update runtime output?",
+        intent=Intent.EXPLORATION,
+        with_metadata=True,
+    )
+
+    assert target is not None
+    assert target.uid == "render-source"
+    assert metadata["strategy"] == "duplicate_resolution"
 
 
 def test_concept_anchor_candidates_prefer_production_name_overlap():
@@ -888,6 +934,14 @@ def test_tests_get_softer_penalty_for_exploration_intent():
         compute_noise_factor("/repo/tests/test_foo.py", "test_bar", intent=Intent.NAVIGATION)
         == _NOISE_FACTOR
     )
+    assert (
+        compute_noise_factor(
+            "/repo/packages-private/dts-test/defineComponent.test-d.tsx",
+            "render",
+            intent=Intent.NAVIGATION,
+        )
+        == _NOISE_FACTOR
+    )
 
     # clean files unaffected regardless of intent
     assert compute_noise_factor("/repo/src/utils.py", "helper", intent=Intent.EXPLORATION) == 1.0
@@ -899,9 +953,10 @@ def test_target_path_bonus_penalizes_js_ts_test_and_benchmark_paths():
     )
 
     assert ranker._target_path_bonus("/repo/src/runtime/renderer.ts") == 0.35
-    assert ranker._target_path_bonus("/repo/test/unit/component.spec.ts") == -2.0
-    assert ranker._target_path_bonus("/repo/types/test/options-test.ts") == -2.0
-    assert ranker._target_path_bonus("/repo/benchmarks/ssr/renderToStream.js") == -2.0
+    assert ranker._target_path_bonus("/repo/test/unit/component.spec.ts") == -5.0
+    assert ranker._target_path_bonus("/repo/types/test/options-test.ts") == -5.0
+    assert ranker._target_path_bonus("/repo/packages-private/dts-test/foo.tsx") == -5.0
+    assert ranker._target_path_bonus("/repo/benchmarks/ssr/renderToStream.js") == -5.0
 
 
 def test_impact_noise_keeps_only_topic_related_tests_unpenalized():
@@ -1758,6 +1813,13 @@ def test_trace_dependency_gain_mode_from_di_question_even_when_mechanism_generic
         required_roles=["orchestrator"],
     )
     assert gain_di_query > gain_plain
+
+
+def test_trace_dependency_gain_mode_from_compile_render_question():
+    assert RankerScoring.trace_dependency_gain_mode(
+        "generic",
+        "How does the render system compile templates and update the DOM?",
+    )
 
 
 def test_resolve_intra_repo_package_import_paths(tmp_path):

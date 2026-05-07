@@ -4,6 +4,7 @@ NOISE_PATH_PATTERNS = (
     "/tests/",
     "/test/",
     "/test_",
+    "-test/",
     "/__tests__/",
     ".spec.",
     ".test.",

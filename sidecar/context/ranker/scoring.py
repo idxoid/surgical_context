@@ -240,4 +240,8 @@ class RankerScoring:
             term in q for term in ("execute", "sql")
         ):
             return True
+        if any(term in q for term in ("compile", "compiler", "template")) and any(
+            term in q for term in ("render", "runtime", "update")
+        ):
+            return True
         return False

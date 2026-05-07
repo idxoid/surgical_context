@@ -543,7 +543,7 @@ class UnifiedRanker:
         if not file_path:
             return 0.0
         if _path_is_noisy(file_path):
-            return -2.0
+            return -5.0
         if "/docs/" in file_path or "/examples/" in file_path:
             return -0.4
         if "/__init__." in file_path:
