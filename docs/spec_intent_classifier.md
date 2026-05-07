@@ -102,6 +102,13 @@ cross-refs → code → specs → architecture → concept → idea
 - Priors: `symbol_prior = 0.3`, `doc_prior = 0.5` (emphasize dependencies + tests)
 - Pass gate: **OR** semantics — either `role_recall ≥ 0.60` OR `file_recall ≥ 0.50` is sufficient (tests may not be indexed as symbols)
 
+**Known gaps / current review findings:**
+- `impact_analysis` classification is fragile because the current implementation scores matches but still selects the primary intent by fixed precedence. Impact questions containing "break" can route as `debugging` even when the impact score is higher. Primary selection should use max score, with precedence only as a tie-breaker.
+- Benchmark-style impact questions should be regression tests, especially `fastapi_q06`, `pydantic_q06`, `rtk_q05`, `django_q05`, and `flask_q05` from `tests/fixtures/real_repo_question_pack.yaml`.
+- `/impact` and `impact_analysis` retrieval are currently separate surfaces. `/impact` reads materialized `AFFECTS` reachability, while `impact_analysis` ranker mode uses intent priors, topic-sensitive test noise, and impact roles. They should converge through the same retrieval contract.
+- `AFFECTS` is reachability evidence, not causal breakage proof. It should eventually contribute candidates to ranker with provenance such as `affects`, plus depth/path/relation/confidence metadata.
+- User-facing wording should stay conservative: "likely affected", "reachability-based candidates", or "blast-radius candidates"; avoid "will break" unless tests/runtime evidence prove it.
+
 ---
 
 ## Content Tiers (Definition)
@@ -271,8 +278,25 @@ Add deeper retrieval modes aligned with benchmark-style questions:
 
 - **`explain_behavior`** — prioritize mechanism roles + ordered call slices over raw neighborhood breadth.
 - **`trace_dependency`** — bias toward forward/backward graph passes and import bridges; optional semantic rescue for missing edges.
-- **`impact`** — already partially covered by impact-analysis ranker branch; unify vocabulary with `task` so profile readiness and ranker floors stay in sync.
-- **`locate`** — narrow symbol/doc retrieval before expanding graph radius.
+- **`impact_analysis` / `impact`** — unify vocabulary so profile readiness, `/impact`, ranker floors, `AFFECTS`, tests, and public API surfaces all describe the same task.
+- **`find_usage` / `locate`** — narrow symbol/doc retrieval before expanding graph radius.
+- **`compare_design`** — bias toward architecture/spec docs plus representative implementations.
+- **`implement_change`** — combine reference implementations, contracts, and narrow blast-radius candidates.
+
+`trace_dependency` already exists implicitly as ranker mechanism/recovery logic, but it is not a first-class intent. That makes the system less perceptive: "how does Depends work" and "how does Button work" both look like `exploration`, while the first needs runtime/DI tracing and the second may only need ordinary behavior explanation.
+
+Intent planning should use more than text. The planner should consider:
+
+- `query`
+- selected `target`
+- `repository_profile`
+- `role_catalog`
+- inferred `mechanism`
+- available graph capabilities, including `AFFECTS` / impact readiness
+
+Do not solve this by adding more keywords. A larger keyword table will become brittle quickly. Keywords should remain a cheap first pass, but the output should become a retrieval plan rather than only an enum.
+
+First implementation step: add an `IntentPlanner` layer that accepts the current `IntentSignal`, target, repository profile, and mechanism, then returns an `IntentPlan`. Migrate the ranker gradually from `Intent` to `IntentPlan`, starting with `intent_weight`, budget floors, graph direction preferences, role requirements, and impact/AFFECTS candidate injection.
 
 This section is **design-only** until `IntentPlan` (or equivalent) is threaded through `ContextArbitrator` → ranker weights / recovery hooks without breaking the existing prompt contract.
 
@@ -362,6 +386,9 @@ If the top N tiers in the priority order produce zero matches:
 
 **Still deferred:**
 - Multi-label budget routing from `intent.distribution`.
+- `IntentPlanner` / `IntentPlan` retrieval contracts.
+- First-class deep retrieval modes such as `trace_dependency`, `impact`, `find_usage`, `compare_design`, and `implement_change`.
+- Shared impact retrieval contract between `/impact`, `AFFECTS`, and `impact_analysis` ranker mode.
 - LLM fallback for ambiguous intent.
 - Feedback-trained classifier.
 - User-facing UI affordance when intent is ambiguous.
