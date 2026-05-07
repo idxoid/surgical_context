@@ -803,15 +803,21 @@ class UnifiedRanker:
         # roles in this set deserve a sort-order bump, otherwise every doc
         # claims the bonus and the priority lift is meaningless.
         non_trivial_required = set(required_roles) - {"docs_or_concept"}
+        trace_mode_for_sort = RankerScoring.trace_dependency_gain_mode(mechanism, query)
 
         def _sort_key(c: Candidate) -> tuple:
             base = self._blended(c)
             roles = set(self._roles_of(c))
+            is_trace_topic_anchor = trace_mode_for_sort and any(
+                step == "trace-topic-anchor" for step in c.provenance
+            )
             # Tier 0 (best): candidates that fill a missing required role the
             # target itself doesn't cover. These must beat raw doc-relevance
             # so a large/weak role-filler still seats before unrelated docs.
             if roles & unfilled_required:
                 return (2, base)
+            if is_trace_topic_anchor:
+                return (2.5, base)
             if roles & non_trivial_required:
                 return (1, base)
             return (0, base)

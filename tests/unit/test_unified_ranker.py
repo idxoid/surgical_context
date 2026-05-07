@@ -1035,7 +1035,7 @@ def test_docs_deferred_until_code_breadth_met():
     )
 
 
-def test_trace_dependency_runtime_symbol_rows_use_package_prefix_and_generic_terms():
+def test_trace_dependency_runtime_symbol_rows_use_source_scope_and_generic_terms():
     """Marker APIs can seed sibling runtime symbols without framework-name fixtures."""
     solve_row = {
         "uid": "solve-u",
@@ -1053,10 +1053,11 @@ def test_trace_dependency_runtime_symbol_rows_use_package_prefix_and_generic_ter
     session = MagicMock()
 
     def run(query, **_kwargs):
-        if "LIMIT 32" in query and "$pkg_prefix" in query:
-            assert _kwargs.get("pkg_prefix") == "app/"
+        if "LIMIT 64" in query and "$scope_prefixes" in query:
+            assert _kwargs.get("scope_prefixes") == ["/repo/app/"]
             assert _kwargs["names"] == []
             assert {"dependant", "dependencies", "resolve", "solve"} <= set(_kwargs["name_terms"])
+            assert "/tests/" in set(_kwargs["noise_patterns"])
             return [solve_row]
         return []
 

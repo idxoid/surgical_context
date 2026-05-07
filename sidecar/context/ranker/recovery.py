@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 
 from sidecar.context.role_taxonomy import normalize_roles
@@ -26,6 +27,7 @@ from .signal_constants import (
     REPRESENTATION_SIGNAL_PATH_TOKENS,
     REPRESENTATION_SIGNAL_TOKENS,
     RUNTIME_SIGNAL_TOKENS,
+    NOISE_PATH_PATTERNS,
     TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS,
     TRACE_DEPENDENCY_TARGET_TOKENS,
     TRACE_HOOK_RUNTIME_NAMES,
@@ -103,10 +105,20 @@ class StructuralRecovery:
             fp = row.get("file_path") or ""
             by_file.setdefault(fp, []).append(row)
         picked: list[dict] = []
-        for fp in sorted(by_file.keys()):
+        def _file_rank(item: tuple[str, list[dict]]) -> tuple[float, float, str]:
+            fp, rows_for_file = item
+            anchor = max(float(row.get("trace_anchor_score", 0) or 0) for row in rows_for_file)
+            edges = max(
+                float(row.get("inbound_edges", 0) or 0) + float(row.get("outbound_edges", 0) or 0)
+                for row in rows_for_file
+            )
+            return (anchor, edges, fp)
+
+        for fp, rows_for_file_all in sorted(by_file.items(), key=_file_rank, reverse=True):
             rows_for_fp = sorted(
-                by_file[fp],
+                rows_for_file_all,
                 key=lambda r: (
+                    float(r.get("trace_anchor_score", 0) or 0),
                     float(r.get("inbound_edges", 0) or 0) + float(r.get("outbound_edges", 0) or 0),
                     str(r.get("name") or ""),
                 ),
@@ -167,6 +179,101 @@ class StructuralRecovery:
             return None
         return f"{pkg}/"
 
+    def source_scope_prefixes(self, file_path: str) -> list[str]:
+        """Source-root prefixes for trace recovery.
+
+        Absolute benchmark paths make substring package checks too broad:
+        ``.../fastapi/tests`` and ``.../fastapi/fastapi`` both contain
+        ``/fastapi/``. Prefer the nearest production root instead.
+        """
+        norm = (file_path or "").replace("\\", "/").strip()
+        if "/" not in norm:
+            return []
+
+        parts = norm.split("/")
+        prefixes: list[str] = []
+
+        for marker in ("src", "lib"):
+            if marker not in parts:
+                continue
+            idx = parts.index(marker)
+            if idx + 1 >= len(parts):
+                continue
+            next_part = parts[idx + 1]
+            # ``lib/express.js`` means the root is ``lib/``; ``lib/sqlalchemy/``
+            # means package-scoped source.
+            end_idx = idx + 1 if "." in next_part else idx + 2
+            prefixes.append("/".join(parts[:end_idx]) + "/")
+
+        parent = norm.rsplit("/", 1)[0]
+        if "/" in parent:
+            grandparent = parent.rsplit("/", 1)[0]
+            if parent.rsplit("/", 1)[-1] == grandparent.rsplit("/", 1)[-1]:
+                prefixes.append(parent + "/")
+
+        if not prefixes:
+            prefixes.append(parent + "/")
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for prefix in prefixes:
+            if prefix and prefix not in seen:
+                seen.add(prefix)
+                out.append(prefix)
+        return out
+
+    @staticmethod
+    def trace_query_terms(query: str, target: SubgraphNode) -> list[str]:
+        text = f"{target.name or ''} {target.file_path or ''} {query or ''}".lower()
+        stop = {
+            "before",
+            "called",
+            "does",
+            "during",
+            "from",
+            "function",
+            "gets",
+            "handle",
+            "called",
+            "with",
+        }
+        terms = {
+            term
+            for term in re.findall(r"[a-z_][a-z0-9_]{3,}", text)
+            if term not in stop
+        }
+        if any(term in text for term in ("depend", "inject")):
+            terms.update({"depend", "dependant", "dependency", "solve", "resolver"})
+        if any(term in text for term in ("route", "routing", "dispatch", "middleware", "handler")):
+            terms.update({"route", "router", "dispatch", "middleware", "handle"})
+        if any(term in text for term in ("before_request", "after_request", "hook", "lifecycle")):
+            terms.update(
+                {
+                    "before_request",
+                    "after_request",
+                    "preprocess_request",
+                    "process_response",
+                    "do_teardown_request",
+                    "dispatch_request",
+                }
+            )
+        if any(term in text for term in ("relationship", "foreign", "lazy", "loading", "collection")):
+            terms.update(
+                {
+                    "relationship",
+                    "relationships",
+                    "foreign",
+                    "collection",
+                    "lazy",
+                    "loader",
+                    "strategy",
+                    "strategies",
+                }
+            )
+        if "sql" in text and any(term in text for term in ("query", "statement", "execute")):
+            terms.update({"select", "clause", "compile", "compiler", "statement", "sql"})
+        return sorted(term for term in terms if len(term) >= 4)
+
     def trace_dependency_runtime_symbol_rows(
         self,
         target: SubgraphNode,
@@ -186,7 +293,7 @@ class StructuralRecovery:
         excluded = set(excluded_uids)
         if target.uid:
             excluded.add(target.uid)
-        pkg_prefix = self.package_root_prefix(target.file_path or "") or ""
+        scope_prefixes = self.source_scope_prefixes(target.file_path or "")
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
         WHERE (
@@ -196,16 +303,22 @@ class StructuralRecovery:
                    OR toLower(coalesce(s.qualified_name, '')) CONTAINS term)
           )
           AND NOT s.uid IN $excluded_uids
-          AND (
-            $pkg_prefix = ''
-            OR f.path STARTS WITH $pkg_prefix
-            OR f.path CONTAINS '/' + $pkg_prefix
-          )
+          AND (size($scope_prefixes) = 0 OR any(prefix IN $scope_prefixes WHERE f.path STARTS WITH prefix))
+          AND NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
         WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
         WITH s, f, c, count(DISTINCT cr) AS inbound_edges
         OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
         WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+             CASE
+               WHEN any(term IN $name_terms WHERE toLower(f.path) CONTAINS term) THEN 2
+               ELSE 0
+             END
+             + CASE
+               WHEN any(term IN $name_terms WHERE toLower(s.name) CONTAINS term) THEN 2
+               ELSE 0
+             END AS anchor_score
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS symbol_kind,
@@ -215,8 +328,13 @@ class StructuralRecovery:
                coalesce(f.hash, '') AS file_hash,
                coalesce(c.range, s.range, [0, 0]) AS range,
                inbound_edges,
-               count(DISTINCT or) AS outbound_edges
-        LIMIT 32
+               outbound_edges,
+               anchor_score AS trace_anchor_score,
+               false AS trace_topic_anchor
+        ORDER BY anchor_score DESC,
+          inbound_edges + outbound_edges DESC,
+          size(coalesce(f.path, '<unknown>')) ASC
+        LIMIT 64
         """
         try:
             with self.db.driver.session() as session:
@@ -227,11 +345,90 @@ class StructuralRecovery:
                         names=names,
                         name_terms=name_terms,
                         excluded_uids=list(excluded),
-                        pkg_prefix=pkg_prefix,
+                        scope_prefixes=scope_prefixes,
+                        noise_patterns=list(NOISE_PATH_PATTERNS),
                     )
                 )
         except Exception:
             return []
+
+    def trace_dependency_topic_symbol_rows(
+        self,
+        target: SubgraphNode,
+        *,
+        query: str,
+        excluded_uids: set[str],
+        max_rows: int = 64,
+    ) -> list[dict]:
+        """Source-local symbols whose names/paths match the trace question recipe."""
+        terms = self.trace_query_terms(query, target)
+        scope_prefixes = self.source_scope_prefixes(target.file_path or "")
+        if not terms or not scope_prefixes:
+            return []
+
+        query_cypher = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+          AND any(prefix IN $scope_prefixes WHERE f.path STARTS WITH prefix)
+          AND NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
+          AND any(term IN $terms
+            WHERE toLower(f.path) CONTAINS term
+               OR toLower(s.name) CONTAINS term
+               OR toLower(coalesce(s.qualified_name, '')) CONTAINS term)
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+             size([term IN $terms WHERE toLower(s.name) CONTAINS term]) AS name_hits,
+             size([term IN $terms WHERE toLower(coalesce(s.qualified_name, '')) CONTAINS term]) AS qname_hits,
+             size([term IN $terms WHERE toLower(f.path) CONTAINS term]) AS path_hits
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               outbound_edges,
+               (name_hits * 2 + qname_hits + path_hits) AS trace_anchor_score,
+               true AS trace_topic_anchor
+        ORDER BY (name_hits * 2 + qname_hits + path_hits) DESC,
+                 inbound_edges + outbound_edges DESC,
+                 size(file_path) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query_cypher,
+                        workspace_id=self.workspace_id,
+                        terms=terms,
+                        scope_prefixes=scope_prefixes,
+                        excluded_uids=list(excluded_uids),
+                        noise_patterns=list(NOISE_PATH_PATTERNS),
+                        limit=max_rows,
+                    )
+                )
+        except Exception:
+            return []
+
+    def row_in_source_scope(self, row: dict, scope_prefixes: list[str]) -> bool:
+        file_path = (row.get("file_path") or "").replace("\\", "/")
+        if not file_path:
+            return False
+        return any(file_path.startswith(prefix) for prefix in scope_prefixes)
+
+    @staticmethod
+    def row_is_trace_noise(row: dict) -> bool:
+        file_path = (row.get("file_path") or "").replace("\\", "/")
+        if any(pattern in file_path for pattern in NOISE_PATH_PATTERNS):
+            return True
+        return "/docs/" in file_path or file_path.endswith("/docs/conf.py")
 
     def is_dependency_marker_target(self, target: SubgraphNode) -> bool:
         haystack = " ".join(
@@ -395,6 +592,11 @@ class StructuralRecovery:
             target,
             excluded_uids=excluded_uids,
         )
+        topic_rows = self.trace_dependency_topic_symbol_rows(
+            target,
+            query=query,
+            excluded_uids=excluded_uids,
+        )
         sibling_rows = self.trace_dependency_sibling_dir_symbol_rows(
             runtime_rows,
             excluded_uids=excluded_uids,
@@ -410,9 +612,19 @@ class StructuralRecovery:
         imported_rows = self.host._imported_symbol_rows(
             target.file_path, excluded_uids=excluded_uids
         )
+        source_scope = self.source_scope_prefixes(target.file_path or "")
         merged: list[dict] = []
         seen_merge: set[str] = set()
         for row in (*runtime_rows, *sibling_rows, *parent_rows, *imported_rows):
+            if self.row_is_trace_noise(row) or not self.row_in_source_scope(row, source_scope):
+                continue
+            uid = str(row.get("uid") or "")
+            if uid and uid not in seen_merge:
+                seen_merge.add(uid)
+                merged.append(row)
+        for row in topic_rows:
+            if self.row_is_trace_noise(row) or not self.row_in_source_scope(row, source_scope):
+                continue
             uid = str(row.get("uid") or "")
             if uid and uid not in seen_merge:
                 seen_merge.add(uid)
@@ -436,6 +648,10 @@ class StructuralRecovery:
                     row,
                     required_roles=required_roles,
                 )
+            trace_anchor_score = float(row.get("trace_anchor_score", 0) or 0)
+            if row.get("trace_topic_anchor") and trace_anchor_score > 0:
+                candidate.graph_score += min(1.4, trace_anchor_score * 0.08)
+                candidate.provenance.append("trace-topic-anchor")
             seen.add(uid)
             out.append(candidate)
         return out
@@ -885,11 +1101,23 @@ class StructuralRecovery:
         kind = (row.get("symbol_kind") or "").lower()
         if kind and kind not in {"function", "method", "class"}:
             return False
-        if not self.dependency_flow_recovery_hint(row, target=target):
-            return False
         name = str(row.get("name") or "").lower()
         qualified = str(row.get("qualified_name") or "").lower()
         haystack = f"{name} {qualified} {str(row.get('file_path') or '').lower()}"
+        if self.hook_flow_recovery_hint(row, target=target):
+            return any(
+                token in haystack
+                for token in (
+                    "preprocess_request",
+                    "process_response",
+                    "do_teardown_request",
+                    "full_dispatch_request",
+                    "dispatch_request",
+                    "wsgi_app",
+                )
+            )
+        if not self.dependency_flow_recovery_hint(row, target=target):
+            return False
         action_hit = any(
             token in haystack
             for token in ("solve", "resolve", "get", "build", "create", "call", "execute")

@@ -178,6 +178,8 @@ def infer_supporting_roles(
     lowered_kind = (kind or "").lower()
     haystack = f"{lowered_name} {lowered_path}"
     inferred: list[str] = []
+    file_name = lowered_path.rsplit("/", 1)[-1]
+    file_stem = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
 
     if "/tests/" in lowered_path or lowered_path.endswith("_test.py") or "/test_" in lowered_path:
         inferred.append("impact_test_surface")
@@ -209,6 +211,15 @@ def infer_supporting_roles(
         inferred.append("impact_runtime")
 
     if lowered_kind in {"function", "method", "class", ""}:
+        if (
+            lowered_name
+            and not lowered_name.startswith("_")
+            and lowered_name == file_stem
+            and "/docs/" not in lowered_path
+            and "/examples/" not in lowered_path
+        ):
+            inferred.append("api_surface")
+
         composition_tokens = (
             "builder",
             "chain",
