@@ -3,8 +3,10 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from sidecar.database.neo4j_client import Neo4jClient
+from sidecar.database.neo4j_client import Neo4jClient, _import_row
 from sidecar.indexer.code import index_file
+from sidecar.indexer.fast.extractor import ExtractedFile
+from sidecar.indexer.fast.pipeline import FileDiff, _apply_graph, _NullReporter
 from sidecar.parser.protocol import ImportEdge, SymbolMetadata
 
 
@@ -123,8 +125,85 @@ class TestIncrementalIndexing:
         query = tx.run.call_args.args[0]
         params = tx.run.call_args.kwargs
         assert "UNWIND $imports AS imp" in query
+        assert "path_suffix IN imp.path_suffixes" in query
         assert params["workspace_id"] == "acme/repo@main"
         assert len(params["imports"]) == 2
+
+    def test_import_rows_include_cross_language_module_suffixes(self):
+        row = _import_row(ImportEdge("/repo/lib/express.js", "./response", "relative"))
+
+        assert row["source_file"] == "/repo/lib/express.js"
+        assert row["import_type"] == "relative"
+        assert "/repo/lib/response.py" in row["path_suffixes"]
+        assert "/repo/lib/response.js" in row["path_suffixes"]
+        assert "/repo/lib/response.ts" in row["path_suffixes"]
+        assert "/repo/lib/response/index.tsx" in row["path_suffixes"]
+
+    def test_package_import_rows_remain_module_suffix_based(self):
+        row = _import_row(ImportEdge("/repo/pkg/a.py", "pkg.module", "direct"))
+
+        assert "/pkg/module.py" in row["path_suffixes"]
+        assert "/pkg/module.js" in row["path_suffixes"]
+
+    def test_fast_graph_phase_upserts_all_nodes_before_linking_edges(self):
+        calls = []
+
+        class FakeDb:
+            def upsert_file_structure(self, file_path, file_hash, symbols, workspace_id):
+                calls.append(("upsert", file_path))
+
+            def prune_symbols_for_file(self, file_path, keep_uids, workspace_id):
+                calls.append(("prune", file_path))
+
+            def clear_outgoing_symbol_edges(self, symbol_uids, workspace_id):
+                calls.append(("clear", tuple(symbol_uids)))
+
+            def link_calls(self, linked_calls, workspace_id):
+                calls.append(("calls", linked_calls[0]["callee_name"]))
+
+            def delete_imports_for_file(self, file_path, workspace_id):
+                calls.append(("delete_imports", file_path))
+
+            def link_imports(self, imports, workspace_id):
+                calls.append(("imports", imports[0].target_module_name))
+
+            def link_inheritance(self, inheritance_edges, workspace_id):
+                calls.append(("inheritance", len(inheritance_edges)))
+
+        first = FileDiff(
+            extracted=ExtractedFile(
+                "/repo/a.js",
+                "",
+                "hash-a",
+                [_symbol("a", "ha")],
+                [{"caller_uid": "a", "callee_name": "b"}],
+                [ImportEdge("/repo/a.js", "./b", "relative")],
+                [],
+            ),
+            current_uids=["a"],
+            changed_uids=["a"],
+            changed_symbols=[_symbol("a", "ha")],
+        )
+        second = FileDiff(
+            extracted=ExtractedFile(
+                "/repo/b.js",
+                "",
+                "hash-b",
+                [_symbol("b", "hb")],
+                [],
+                [],
+                [],
+            ),
+            current_uids=["b"],
+            changed_uids=["b"],
+            changed_symbols=[_symbol("b", "hb")],
+        )
+
+        _apply_graph([first, second], FakeDb(), "acme/repo@main", _NullReporter())
+
+        edge_start = min(i for i, call in enumerate(calls) if call[0] == "clear")
+        upsert_end = max(i for i, call in enumerate(calls) if call[0] == "upsert")
+        assert upsert_end < edge_start
 
     def test_hash_skip_gate_with_unchanged_file(self):
         """Test that unchanged files are correctly identified."""

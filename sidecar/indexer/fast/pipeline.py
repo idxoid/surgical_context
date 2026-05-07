@@ -204,7 +204,7 @@ def _apply_graph(
     clear_edges = getattr(db, "clear_outgoing_symbol_edges", None)
     delete_imports = getattr(db, "delete_imports_for_file", None)
 
-    reporter.stage_start("graph", total=len(diffs))
+    reporter.stage_start("graph", total=len(diffs) * 2)
     for diff in diffs:
         ex = diff.extracted
         db.upsert_file_structure(
@@ -213,6 +213,14 @@ def _apply_graph(
 
         if callable(prune_symbols):
             prune_symbols(ex.path, keep_uids=diff.current_uids, workspace_id=workspace_id)
+
+        reporter.step("graph")
+
+    # Edges are linked only after every changed file has refreshed its
+    # File/Symbol nodes. Otherwise imports/calls to files processed later in
+    # this same batch are silently missed after a workspace reset or full reindex.
+    for diff in diffs:
+        ex = diff.extracted
 
         if callable(clear_edges):
             clear_edges(diff.edge_refresh_uids, workspace_id=workspace_id)

@@ -111,6 +111,19 @@ class ContextArbitrator:
                 target_selection = fallback_selection
             else:
                 return f"Error: Symbol '{symbol_name}' not found in graph."
+        elif self._target_selection_is_low_quality(target_selection):
+            fallback_target, fallback_selection = self._resolve_concept_anchor_target(
+                ranker,
+                symbol_name=symbol_name,
+                question=question,
+                intent=intent,
+            )
+            if fallback_target is not None:
+                target = fallback_target
+                target_selection = {
+                    **fallback_selection,
+                    "replaced_target_selection": target_selection,
+                }
 
         reserved = UnifiedRanker.PREAMBLE_TOKENS + target.token_estimate
         if reserved > token_budget:
@@ -226,9 +239,21 @@ class ContextArbitrator:
     def _concept_anchor_candidates(symbol_name: str) -> list[str]:
         concept = (symbol_name or "").strip().lower()
         concept_map = {
+            "app": ["createApplication", "application", "createApp", "use", "handle"],
             "middleware": ["use", "handle", "router", "route"],
         }
         return concept_map.get(concept, [])
+
+    @staticmethod
+    def _target_selection_is_low_quality(target_selection: dict[str, Any] | None) -> bool:
+        if not target_selection:
+            return False
+        score = target_selection.get("selected_score")
+        try:
+            numeric_score = float(score)
+        except (TypeError, ValueError):
+            return False
+        return numeric_score < 0.0
 
     def _resolve_concept_anchor_target(
         self,

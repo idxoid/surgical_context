@@ -781,6 +781,9 @@ def test_tests_get_softer_penalty_for_exploration_intent():
 
     # default (no intent) — hard penalty
     assert compute_noise_factor("/repo/tests/test_foo.py", "test_bar") == _NOISE_FACTOR
+    assert compute_noise_factor("/repo/test/unit/foo.spec.ts", "render") == _NOISE_FACTOR
+    assert compute_noise_factor("/repo/types/test/options-test.ts", "render") == _NOISE_FACTOR
+    assert compute_noise_factor("/repo/benchmarks/ssr/renderToStream.js", "stream") == _NOISE_FACTOR
 
     # EXPLORATION — softer penalty so tests can supplement explain_behavior context
     assert (
@@ -797,6 +800,17 @@ def test_tests_get_softer_penalty_for_exploration_intent():
 
     # clean files unaffected regardless of intent
     assert compute_noise_factor("/repo/src/utils.py", "helper", intent=Intent.EXPLORATION) == 1.0
+
+
+def test_target_path_bonus_penalizes_js_ts_test_and_benchmark_paths():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+
+    assert ranker._target_path_bonus("/repo/src/runtime/renderer.ts") == 0.35
+    assert ranker._target_path_bonus("/repo/test/unit/component.spec.ts") == -1.0
+    assert ranker._target_path_bonus("/repo/types/test/options-test.ts") == -1.0
+    assert ranker._target_path_bonus("/repo/benchmarks/ssr/renderToStream.js") == -1.0
 
 
 def test_impact_noise_keeps_only_topic_related_tests_unpenalized():

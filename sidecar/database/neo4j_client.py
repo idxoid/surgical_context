@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from neo4j import GraphDatabase
 
@@ -486,7 +487,7 @@ class Neo4jClient:
             UNWIND $imports AS imp
             MATCH (source:File {path: imp.source_file, workspace_id: $workspace_id})
             MATCH (target:File {workspace_id: $workspace_id})
-            WHERE target.path ENDS WITH imp.path_suffix
+            WHERE any(path_suffix IN imp.path_suffixes WHERE target.path ENDS WITH path_suffix)
               AND source <> target
             MERGE (source)-[:IMPORTS {type: imp.import_type, workspace_id: $workspace_id}]->(target)
             """,
@@ -620,10 +621,30 @@ def _grouped_call_rows(calls: list[dict]) -> list[tuple[str, str, list[dict[str,
     return [(rel_type, mode, rows) for (rel_type, mode), rows in groups.items()]
 
 
-def _import_row(imp: ImportEdge) -> dict[str, str]:
+def _import_row(imp: ImportEdge) -> dict[str, object]:
+    if imp.import_type == "relative" and imp.target_module_name.startswith("."):
+        base = (Path(imp.source_file).parent / imp.target_module_name).resolve()
+        module_path = str(base)
+    else:
+        module_path = "/" + imp.target_module_name.lstrip("./").replace(".", "/")
+    path_suffixes = [
+        f"{module_path}{suffix}"
+        for suffix in (
+            ".py",
+            "/__init__.py",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            "/index.js",
+            "/index.jsx",
+            "/index.ts",
+            "/index.tsx",
+        )
+    ]
     return {
         "source_file": imp.source_file,
-        "path_suffix": imp.target_module_name.lstrip(".").replace(".", "/") + ".py",
+        "path_suffixes": path_suffixes,
         "import_type": imp.import_type,
     }
 

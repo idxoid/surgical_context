@@ -38,6 +38,19 @@ function bootstrap() {
         assert call["tier"] == "imported"
         assert call["callee_qualified_name"] == "vue.createApp"
 
+    def test_extract_imports_includes_commonjs_require_sources(self, adapter):
+        source = """
+var proto = require('./application');
+const { Buffer } = require("node:buffer");
+const again = require('./application');
+"""
+        imports = adapter.extract_imports(source, "lib/express.js")
+        by_target = {(edge.target_module_name, edge.import_type) for edge in imports}
+
+        assert ("./application", "relative") in by_target
+        assert ("node:buffer", "from_package") in by_target
+        assert sum(1 for edge in imports if edge.target_module_name == "./application") == 1
+
     def test_extract_symbols_includes_top_level_app_instance_binding(self, adapter):
         source = """
 const express = require("express");

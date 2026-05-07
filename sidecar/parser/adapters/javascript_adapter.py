@@ -292,19 +292,29 @@ class JavaScriptAdapter(TreeSitterAdapter):
                     captures.append((node, tag))
 
         imports = []
+        seen: set[tuple[str, str, str]] = set()
+
+        def add_import(source: str) -> None:
+            import_type = "relative" if source.startswith(".") else "from_package"
+            key = (file_path, source, import_type)
+            if key in seen:
+                return
+            seen.add(key)
+            imports.append(ImportEdge(file_path, source, import_type))
+
         for node, tag in captures:
             if tag == "import.source":
                 source = (node.text or b"").decode("utf-8").strip("\"'")
-                import_type = "relative" if source.startswith(".") else "from_package"
-                imports.append(ImportEdge(file_path, source, import_type))
+                add_import(source)
             elif tag == "require.call":
                 call_text = (node.text or b"").decode("utf-8")
                 if "require(" in call_text:
                     match = re.search(r"require\(['\"]([^'\"]+)['\"]\)", call_text)
                     if match:
-                        source = match.group(1)
-                        import_type = "relative" if source.startswith(".") else "from_package"
-                        imports.append(ImportEdge(file_path, source, import_type))
+                        add_import(match.group(1))
+
+        for match in re.finditer(r"require\(\s*['\"]([^'\"]+)['\"]\s*\)", source_code):
+            add_import(match.group(1))
 
         return imports
 

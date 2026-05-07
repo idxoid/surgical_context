@@ -477,3 +477,91 @@ class TestContextArbitratorBFS:
         assert target_meta.get("strategy") == "concept_anchor_fallback"
         assert target_meta.get("missing_symbol") == "middleware"
         assert target_meta.get("anchor_symbol") == "use"
+
+    def test_low_quality_concept_target_uses_anchor_fallback(self, mock_db):
+        """Noisy duplicate targets can be replaced by a production concept anchor."""
+        arbitrator = ContextArbitrator(mock_db, vector_db=Mock())
+        noisy_target = SubgraphNode(
+            uid="test-app",
+            name="app",
+            file_path="test/app.js",
+            range=[1, 1],
+            token_estimate=8,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+        )
+        anchor_target = SubgraphNode(
+            uid="create-application",
+            name="createApplication",
+            file_path="lib/express.js",
+            range=[20, 50],
+            token_estimate=80,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+        )
+
+        class FakeRanker:
+            PREAMBLE_TOKENS = 100
+
+            def __init__(self, db, vector_searcher, workspace_id=None, weights=None):
+                pass
+
+            def get_target(self, symbol_name, query="", intent=None, with_metadata=False):
+                if symbol_name == "app":
+                    meta = {
+                        "strategy": "duplicate_resolution",
+                        "selected_uid": "test-app",
+                        "selected_score": -0.2,
+                    }
+                    return (noisy_target, meta) if with_metadata else noisy_target
+                if symbol_name == "createApplication":
+                    meta = {"strategy": "unique_match", "selected_uid": "create-application"}
+                    return (anchor_target, meta) if with_metadata else anchor_target
+                return (None, {"strategy": "not_found"}) if with_metadata else None
+
+            def rank(self, target, query, intent, budget):
+                return (
+                    [],
+                    {"limit": budget, "spent": 180, "reserved": 100, "pool_size": 0},
+                    "",
+                    [],
+                    [],
+                )
+
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
+                return (
+                    Subgraph(
+                        primary=target,
+                        nodes=[],
+                        budget=budget_info,
+                        stopped_reason=stopped_reason,
+                        pruned_details=pruned_details,
+                    ),
+                    [],
+                )
+
+            def _determine_mechanism(self, target, query=""):
+                return "generic"
+
+            def _get_required_roles(self, mechanism):
+                return []
+
+        with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker):
+            ctx = arbitrator.get_context_for_symbol(
+                "app",
+                question="How does an app register middleware?",
+                token_budget=2000,
+            )
+
+        assert isinstance(ctx, PromptContext)
+        assert ctx.primary_source.symbol == "createApplication"
+        target_meta = ctx.ranker_state.get("target_selection", {})
+        assert target_meta.get("strategy") == "concept_anchor_fallback"
+        assert target_meta.get("anchor_symbol") == "createApplication"
+        assert target_meta.get("replaced_target_selection", {}).get("selected_uid") == "test-app"
