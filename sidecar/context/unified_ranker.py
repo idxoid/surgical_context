@@ -19,8 +19,7 @@ from __future__ import annotations
 import math
 import re
 from heapq import heappop, heappush
-from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.mechanism_registry import role_backfill_specs_for_mechanism
@@ -33,8 +32,8 @@ from sidecar.context.ranker import (
     VectorCandidateSource,
 )
 from sidecar.context.ranker.candidate_pool import (
-    Candidate,
     DEFAULT_WEIGHTS,
+    Candidate,
     RankerWeights,
     VectorSearcher,
     anchor_edge_quality,
@@ -44,16 +43,31 @@ from sidecar.context.ranker.recovery import StructuralRecovery
 from sidecar.context.ranker.role_fulfilment import RoleFulfilment
 from sidecar.context.ranker.scoring import RankerScoring
 from sidecar.context.ranker.signal_constants import (
-    HOOK_FLOW_PATH_TOKENS as _HOOK_FLOW_PATH_TOKENS,
-    IMPACT_TOPIC_STOPWORDS as _IMPACT_TOPIC_STOPWORDS,
-    LOW_SIGNAL_DOC_PATH_PATTERNS as _LOW_SIGNAL_DOC_PATH_PATTERNS,
-    NOISE_FACTOR as _NOISE_FACTOR,
-    NOISE_NAME_PREFIXES as _NOISE_NAME_PREFIXES,
-    NOISE_NAME_SUBSTRINGS as _NOISE_NAME_SUBSTRINGS,
-    NOISE_PATH_PATTERNS as _NOISE_PATH_PATTERNS,
     EXPLORATION_NOISE_FACTOR as _EXPLORATION_NOISE_FACTOR,
+)
+from sidecar.context.ranker.signal_constants import (
+    HOOK_FLOW_PATH_TOKENS as _HOOK_FLOW_PATH_TOKENS,
+)
+from sidecar.context.ranker.signal_constants import (
+    IMPACT_TOPIC_STOPWORDS as _IMPACT_TOPIC_STOPWORDS,
+)
+from sidecar.context.ranker.signal_constants import (
+    LOW_SIGNAL_DOC_PATH_PATTERNS as _LOW_SIGNAL_DOC_PATH_PATTERNS,
+)
+from sidecar.context.ranker.signal_constants import (
+    NOISE_FACTOR as _NOISE_FACTOR,
+)
+from sidecar.context.ranker.signal_constants import (
+    NOISE_NAME_PREFIXES as _NOISE_NAME_PREFIXES,
+)
+from sidecar.context.ranker.signal_constants import (
+    NOISE_NAME_SUBSTRINGS as _NOISE_NAME_SUBSTRINGS,
+)
+from sidecar.context.ranker.signal_constants import (
+    NOISE_PATH_PATTERNS as _NOISE_PATH_PATTERNS,
+)
+from sidecar.context.ranker.signal_constants import (
     REGISTRATION_FLOW_PATH_TOKENS as _REGISTRATION_FLOW_PATH_TOKENS,
-    TRACE_DEPENDS_RUNTIME_NAMES as _TRACE_DEPENDS_RUNTIME_NAMES,
 )
 from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.context.types import DocChunk, Subgraph, SubgraphNode
@@ -1574,7 +1588,9 @@ class UnifiedRanker:
 
     # StructuralRecovery entrypoints (tests may patch these on UnifiedRanker)
     def _same_file_symbol_rows(self, file_path: str, *, excluded_uids: set[str]):
-        return self.structural_recovery.same_file_symbol_rows(file_path, excluded_uids=excluded_uids)
+        return self.structural_recovery.same_file_symbol_rows(
+            file_path, excluded_uids=excluded_uids
+        )
 
     def _imported_symbol_rows(self, file_path: str, *, excluded_uids: set[str]):
         return self.structural_recovery.imported_symbol_rows(file_path, excluded_uids=excluded_uids)
@@ -1653,7 +1669,9 @@ class UnifiedRanker:
         role_bonus = 0.0
         roles_for_gain = [
             role
-            for role in (candidate_roles if candidate_roles is not None else self.role_fulfilment.roles_of(c))
+            for role in (
+                candidate_roles if candidate_roles is not None else self.role_fulfilment.roles_of(c)
+            )
             if role in required_roles
         ]
         if roles_for_gain:

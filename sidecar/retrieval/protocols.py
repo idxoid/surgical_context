@@ -23,8 +23,7 @@ class VectorSearchProvider(Protocol):
         limit: int = 30,
         *,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     def search_symbols(
         self,
@@ -32,19 +31,16 @@ class VectorSearchProvider(Protocol):
         limit: int = 30,
         *,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable
 class WorkspaceMetaProvider(Protocol):
     """Repository profile + graph generation metadata per workspace."""
 
-    def repository_profile(self, workspace_id: str) -> dict[str, Any]:
-        ...
+    def repository_profile(self, workspace_id: str) -> dict[str, Any]: ...
 
-    def graph_version(self, workspace_id: str) -> int:
-        ...
+    def graph_version(self, workspace_id: str) -> int: ...
 
 
 @runtime_checkable
@@ -52,5 +48,4 @@ class GraphDriverProvider(Protocol):
     """Neo4j driver holder (`driver.session()` for Cypher)."""
 
     @property
-    def driver(self) -> Any:
-        ...
+    def driver(self) -> Any: ...

@@ -1141,7 +1141,8 @@ def index_manifest_endpoint(
         manifest = get_m(workspace_id=workspace_id) if callable(get_m) else None
     if not manifest:
         raise HTTPException(
-            status_code=404, detail="Index manifest not found for this workspace (run indexing first)"
+            status_code=404,
+            detail="Index manifest not found for this workspace (run indexing first)",
         )
     return manifest
 

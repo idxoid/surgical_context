@@ -68,9 +68,7 @@ def test_persist_index_manifest_disk_and_db(tmp_path):
         "docs_files_indexed": 0,
         "docs_chunks_indexed": 0,
         "timings_sec": {},
-        "repository_profile": build_empty_repository_profile(
-            str(project), "ws-x", reason="test"
-        ),
+        "repository_profile": build_empty_repository_profile(str(project), "ws-x", reason="test"),
         "repository_profile_store": "",
     }
     m = persist_index_manifest(

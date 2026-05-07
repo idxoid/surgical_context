@@ -73,7 +73,9 @@ def build_index_manifest(
     outcome: str,
 ) -> dict[str, Any]:
     """Assemble the canonical manifest dict (JSON-serializable)."""
-    profile = stats.get("repository_profile") if isinstance(stats.get("repository_profile"), dict) else {}
+    profile = (
+        stats.get("repository_profile") if isinstance(stats.get("repository_profile"), dict) else {}
+    )
     rp_store = stats.get("repository_profile_store") or ""
     emb = get_model_metadata(_EMBED_MODEL)
     taxonomy = stats.get("role_taxonomy") if isinstance(stats.get("role_taxonomy"), dict) else {}
@@ -116,7 +118,9 @@ def build_index_manifest(
         "docs_chunks_indexed": stats.get("docs_chunks_indexed"),
         "role_taxonomy": taxonomy or None,
         "role_catalog_counts": role_catalog or None,
-        "timings_sec": stats.get("timings_sec") if isinstance(stats.get("timings_sec"), dict) else {},
+        "timings_sec": stats.get("timings_sec")
+        if isinstance(stats.get("timings_sec"), dict)
+        else {},
     }
     return manifest
 
