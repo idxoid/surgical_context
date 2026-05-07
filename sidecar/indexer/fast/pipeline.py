@@ -238,7 +238,7 @@ def _framework_hints_phase(
     workspace_id: str,
     reporter: ProgressReporter,
 ) -> int:
-    """Apply framework-specific rules to create SEMANTIC_HINT edges."""
+    """Apply semantic hint rules to create SEMANTIC_HINT edges."""
     reporter.stage_start("framework_hints", total=len(diffs))
     indexer = FrameworkHintsIndexer(db)
     indexer.apply_rules(diffs, workspace_id)

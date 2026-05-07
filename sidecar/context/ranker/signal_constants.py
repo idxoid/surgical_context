@@ -70,14 +70,16 @@ REPRESENTATION_SIGNAL_PATH_TOKENS = (
     "/fields",
 )
 TRACE_DEPENDENCY_TARGET_TOKENS = (
-    "depend",
+    "depends",
     "dependency",
+    "dependencies",
     "inject",
     "provider",
     "container",
 )
 TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS = (
-    "depend",
+    "dependency",
+    "dependencies",
     "inject",
     "provider",
     "container",

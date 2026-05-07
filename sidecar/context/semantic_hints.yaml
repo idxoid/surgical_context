@@ -1,0 +1,16 @@
+# Bundled semantic hint rules use shared pattern types rather than framework
+# fixtures. External packs may still add exact triggers or qualified gates.
+rules:
+  - id: dependency_call_argument_link
+    type: call_argument_link
+    subtype: dependency_injection
+    trigger_call_tokens:
+      - depend
+      - dependency
+      - inject
+      - provider
+      - container
+    argument_index: 0
+    rel_type: SEMANTIC_HINT
+    metadata:
+      kind: dependency_injection

@@ -1,19 +1,14 @@
-"""FrameworkHintsIndexer — applies YAML-based semantic rules to create specialized edges.
+"""Semantic hint indexer — applies YAML rule types to create specialized edges.
 
-**Current state:** only ``fastapi.yaml`` lives under ``sidecar/context/``; there are
-no ``pydantic.yaml`` / ``redux*.yaml`` (or similar) here yet. Pydantic and Redux Toolkit
-biases that exist today are elsewhere (e.g. ranker topic / path heuristics, question
-packs) — not this indexer-time YAML hook. If we add Pydantic or RTK rules later, they
-should not copy the per-framework file pattern long-term.
-
-REFACTOR (planned): bundled per-framework YAML in this package (e.g. ``fastapi.yaml``)
-should give way to hints generated from **shared rule types / subtypes** (a small
-taxonomy of semantic patterns: call-argument links, decorator bridges, etc.) so new
-stacks add subtype instances instead of new framework-named trigger literals scattered
-in repo YAML. Until then, ``*.yaml`` here remains an indexer-time escape hatch.
+Rules should describe reusable graph patterns (for example
+``call_argument_link`` for dependency-like APIs), not framework-specific
+fixtures. Exact trigger names and qualified-prefix gates are still supported
+for external/custom packs, but bundled rules should prefer shared subtypes and
+token predicates over repo- or framework-named literals.
 """
 
 import os
+import re
 from typing import Any
 
 import yaml
@@ -23,9 +18,6 @@ from sidecar.database.neo4j_client import Neo4jClient
 
 def _matches_callee_qualified_gate(call: dict, rule: dict) -> bool:
     """If ``require_callee_qualified_prefix`` is set, require resolved callee name.
-
-    Example: prefix ``fastapi`` + trigger ``Depends`` accepts ``fastapi.Depends`` and
-    ``fastapi.dependencies.Depends``; rejects bare ``Depends`` with no import binding.
     """
     prefix = rule.get("require_callee_qualified_prefix")
     if not prefix:
@@ -37,16 +29,45 @@ def _matches_callee_qualified_gate(call: dict, rule: dict) -> bool:
     return bool(q.startswith(f"{prefix}.") and q.endswith(f".{trig}"))
 
 
+def _identifier_terms(*parts: str) -> list[str]:
+    terms: list[str] = []
+    for part in parts:
+        spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(part or ""))
+        terms.extend(t.lower() for t in re.split(r"[^A-Za-z0-9]+", spaced) if t)
+    return terms
+
+
+def _matches_trigger(call: dict, rule: dict) -> bool:
+    trigger = rule.get("trigger_call")
+    if trigger and call.get("callee_name") == trigger:
+        return _matches_callee_qualified_gate(call, rule)
+
+    tokens = [str(t).lower() for t in rule.get("trigger_call_tokens") or [] if str(t).strip()]
+    if not tokens:
+        return False
+
+    terms = _identifier_terms(
+        call.get("callee_name") or "",
+        call.get("callee_qualified_name") or "",
+    )
+    return any(term == token or term.startswith(token) for term in terms for token in tokens)
+
+
+def _matches_call_argument_rule(call: dict, rule: dict) -> bool:
+    if rule.get("type") != "call_argument_link":
+        return False
+    return _matches_trigger(call, rule)
+
+
 class FrameworkHintsIndexer:
-    """Indexer that applies framework-specific rules to the graph."""
+    """Indexer that applies semantic hint rules to the graph."""
 
     def __init__(self, db: Neo4jClient):
         self.db = db
         self.rules = self._load_rules()
 
     def _load_rules(self) -> list[dict[str, Any]]:
-        # TODO: merge rules from workspace/profile keyed by shared types/subtypes instead
-        # of scanning framework-named files only (see module docstring).
+        # TODO: merge rules from workspace/profile keyed by shared types/subtypes.
         rules_dir = os.path.dirname(__file__)
         all_rules = []
         if not os.path.exists(rules_dir):
@@ -67,21 +88,15 @@ class FrameworkHintsIndexer:
         for diff in diffs:
             extracted = diff.extracted
             for call in extracted.calls:
-                # Check each rule against this call
                 for rule in self.rules:
-                    if (
-                        rule["type"] == "call_argument_link"
-                        and call.get("callee_name") == rule["trigger_call"]
-                    ):
-                        if not _matches_callee_qualified_gate(call, rule):
-                            continue
+                    if _matches_call_argument_rule(call, rule):
                         self._apply_call_arg_link(call, rule, workspace_id)
 
     def _apply_call_arg_link(self, call: dict, rule: dict, workspace_id: str):
         """
         Rule type: call_argument_link.
         Links the caller symbol to the symbol named in a specific call argument.
-        Example: Depends(get_db) -> links caller to get_db.
+        Example: dependency_marker(get_db) -> links caller to get_db.
         """
         args = call.get("arguments", [])
         idx = rule.get("argument_index", 0)

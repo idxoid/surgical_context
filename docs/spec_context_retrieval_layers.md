@@ -6,7 +6,7 @@ Draft — design contract. Implementation today is split across the indexer, `fr
 
 ## Recent implementation notes (2026-05-05)
 
-- **Layer 2 gate tightened:** `call_argument_link` rules can now require a resolved callee namespace prefix (e.g. `fastapi.*.Depends`) before emitting `SEMANTIC_HINT`; this avoids local-name collisions from unrelated `Depends(...)`.
+- **Layer 2 hints generalized:** bundled `call_argument_link` rules now describe shared semantic subtypes (for example dependency-like marker APIs) instead of a framework-named YAML fixture. Custom exact triggers may still require a resolved callee namespace prefix before emitting `SEMANTIC_HINT`.
 - **Parser support generalized:** Python now keeps alias→qualified bindings for import call-sites generically, while `extract_imports()` still filters stdlib/third-party file import edges from the graph.
 - **Layer 4 trace fallback strengthened:** trace mode now seats recovery anchors from imported modules, runtime-name seeds, and sibling-directory expansion when import topology is sparse, with explicit provenance (e.g. `recovery:import-module-trace`).
 - **Benchmark UX:** workspace-mode negative lookups (expected absent symbols) are printed as correct rejection instead of raw "not found" error text.
@@ -25,7 +25,7 @@ Draft — design contract. Implementation today is split across the indexer, `fr
 
 ### 🚧 Still pending
 
-- Move bundled framework YAML hints to shared typed rule instance storage (workspace-extensible source of truth).
+- Move bundled semantic hint rules to workspace-extensible typed rule instance storage.
 - Strengthen Layer-1 import completeness directly in indexer (reduce ranker-side recovery dependence).
 - Add explicit pool-vs-pruned telemetry per missed expected file in benchmark output.
 
@@ -70,11 +70,11 @@ flowchart TB
 
 **Rule:** If the product claims “X is part of the dependency story for Y”, that claim should **eventually** be representable as Layer 1 data (edge or file-level import), or be explicitly tagged as lower confidence (see Layer 2).
 
-**Not sufficient alone:** static graphs often miss framework-specific wiring; that is why Layer 2 exists.
+**Not sufficient alone:** static graphs often miss non-local semantic wiring; that is why Layer 2 exists.
 
 ### Layer 2 — Declarative hint overlay (authoritative for “we know the pattern”)
 
-**Owns:** Small, **typed** rules (e.g. `call_argument_link` with metadata `kind: dependency_injection`) that create **specialized edges** (e.g. `SEMANTIC_HINT`) the extractor cannot infer. Today some rules live in bundled YAML under `sidecar/context/`; the **target end state** is rules keyed by **shared rule types / subtypes**, not per-framework filenames (see `framework_hints.py` module note).
+**Owns:** Small, **typed** rules (e.g. `call_argument_link` with metadata `kind: dependency_injection`) that create **specialized edges** (e.g. `SEMANTIC_HINT`) the extractor cannot infer. Today bundled rules live in `sidecar/context/semantic_hints.yaml`; the **target end state** is workspace-extensible rules keyed by **shared rule types / subtypes**, not per-framework filenames.
 
 **Current safety contract:** Rules may require extractor-provided qualification metadata (example: `require_callee_qualified_prefix`) so a hint depends on both **pattern match** and **namespace evidence**.
 

@@ -955,7 +955,7 @@ def test_trace_dependency_runtime_symbol_rows_use_package_prefix_and_generic_ter
         if "LIMIT 32" in query and "$pkg_prefix" in query:
             assert _kwargs.get("pkg_prefix") == "app/"
             assert _kwargs["names"] == []
-            assert {"depend", "resolve", "solve"} <= set(_kwargs["name_terms"])
+            assert {"dependencies", "resolve", "solve"} <= set(_kwargs["name_terms"])
             return [solve_row]
         return []
 
