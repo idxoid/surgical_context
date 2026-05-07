@@ -62,9 +62,10 @@ def test_repository_profile_detects_generic_archetypes_and_shallow_impact(tmp_pa
     assert profile["indexability"] == "high"
     assert profile["languages"]["supported"]["python"] == 1
     assert profile["mechanism_profile"]["framework_signals"] == []
-    assert {
-        signal["name"] for signal in profile["mechanism_profile"]["archetype_signals"]
-    } >= {"registry_usage", "declarative_modeling"}
+    assert {signal["name"] for signal in profile["mechanism_profile"]["archetype_signals"]} >= {
+        "registry_usage",
+        "declarative_modeling",
+    }
     assert profile["strategy_profile"]["selected_strategy"] == "registration_flow"
     assert "factory_surface" in profile["strategy_profile"]["role_plan"]
     assert profile["mechanism_profile"]["archetypes"][0]["type"] == "route_registration"

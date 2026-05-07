@@ -151,9 +151,7 @@ def test_persist_records_warning_when_disk_unwritable(tmp_path):
         "docs_files_indexed": 0,
         "docs_chunks_indexed": 0,
         "timings_sec": {},
-        "repository_profile": build_empty_repository_profile(
-            str(project), "ws-x", reason="test"
-        ),
+        "repository_profile": build_empty_repository_profile(str(project), "ws-x", reason="test"),
         "repository_profile_store": "",
     }
     with patch(

@@ -17,8 +17,7 @@ from sidecar.database.neo4j_client import Neo4jClient
 
 
 def _matches_callee_qualified_gate(call: dict, rule: dict) -> bool:
-    """If ``require_callee_qualified_prefix`` is set, require resolved callee name.
-    """
+    """If ``require_callee_qualified_prefix`` is set, require resolved callee name."""
     prefix = rule.get("require_callee_qualified_prefix")
     if not prefix:
         return True

@@ -429,9 +429,7 @@ def test_role_backfill_reads_specs_from_catalog_overlay():
 
 
 def test_redux_style_symbols_use_generic_mechanism_when_dispatch_stubbed():
-    ranker = UnifiedRanker(
-        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main"
-    )
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main")
 
     create_slice = SubgraphNode(
         uid="createSlice",
@@ -590,9 +588,7 @@ def test_auto_strategy_profile_supplies_mechanism_and_roles_for_unknown_repo():
 
 
 def test_topic_focus_downranks_unrelated_query_subsystem_candidates():
-    ranker = UnifiedRanker(
-        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main"
-    )
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main")
     target = SubgraphNode(
         uid="configureStore",
         name="configureStore",
