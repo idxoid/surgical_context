@@ -58,6 +58,8 @@ REPRESENTATION_SIGNAL_TOKENS = (
     "param",
     "params",
     "depend",
+    "dependent",
+    "dependant",
     "dependency",
     "annotation",
     "typing",
@@ -71,6 +73,8 @@ REPRESENTATION_SIGNAL_PATH_TOKENS = (
 )
 TRACE_DEPENDENCY_TARGET_TOKENS = (
     "depends",
+    "dependent",
+    "dependant",
     "dependency",
     "dependencies",
     "inject",
@@ -78,6 +82,8 @@ TRACE_DEPENDENCY_TARGET_TOKENS = (
     "container",
 )
 TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS = (
+    "dependent",
+    "dependant",
     "dependency",
     "dependencies",
     "inject",
@@ -111,6 +117,8 @@ RUNTIME_SIGNAL_TOKENS = (
     "resolve",
     "handle",
     "route",
+    "dependent",
+    "dependant",
     "dependency",
     "middleware",
     "endpoint",

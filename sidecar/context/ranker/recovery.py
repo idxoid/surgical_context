@@ -760,10 +760,16 @@ class StructuralRecovery:
             target=target,
             registration_flow_context=registration_flow_context,
         )
+        config_signal = self.config_surface_recovery_signal(row, target=target)
+        orchestrator_signal = self.orchestrator_recovery_signal(row, target=target)
         if "api_surface" in scoped_roles and api_signal:
             candidate_roles = normalize_roles([*candidate_roles, "api_surface"])
         if "factory_surface" in scoped_roles and factory_signal:
             candidate_roles = normalize_roles([*candidate_roles, "factory_surface"])
+        if "config_surface" in scoped_roles and config_signal:
+            candidate_roles = normalize_roles([*candidate_roles, "config_surface"])
+        if "orchestrator" in scoped_roles and orchestrator_signal:
+            candidate_roles = normalize_roles([*candidate_roles, "orchestrator"])
         if "representation_surface" in scoped_roles and representation_signal:
             candidate_roles = normalize_roles([*candidate_roles, "representation_surface"])
         if "runtime_surface" in scoped_roles and runtime_signal:
@@ -781,6 +787,10 @@ class StructuralRecovery:
             0.18 if ("representation_surface" in matched_roles and representation_signal) else 0.0
         )
         runtime_bonus = 0.20 if ("runtime_surface" in matched_roles and runtime_signal) else 0.0
+        config_bonus = 0.18 if ("config_surface" in matched_roles and config_signal) else 0.0
+        orchestrator_bonus = (
+            0.22 if ("orchestrator" in matched_roles and orchestrator_signal) else 0.0
+        )
         if registration_flow_context and "runtime_surface" in matched_roles and runtime_signal:
             runtime_bonus += 0.06
         role_bonus = 0.18 * len(matched_roles)
@@ -799,6 +809,8 @@ class StructuralRecovery:
                 + factory_bonus
                 + representation_bonus
                 + runtime_bonus
+                + config_bonus
+                + orchestrator_bonus
                 + role_bonus
                 + edge_bonus
             ),
@@ -817,6 +829,76 @@ class StructuralRecovery:
         candidate.symbol_kind = row.get("symbol_kind", "")
         candidate.qualified_name = row.get("qualified_name", "")
         return candidate
+
+    def dependency_flow_recovery_hint(self, row: dict, *, target: SubgraphNode) -> bool:
+        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
+        row_ctx = " ".join(
+            [
+                str(row.get("name") or "").lower(),
+                str(row.get("qualified_name") or "").lower(),
+                str(row.get("file_path") or "").lower(),
+            ]
+        )
+        dependency_terms = (
+            "depend",
+            "dependent",
+            "dependant",
+            "dependency",
+            "dependencies",
+            "inject",
+            "provider",
+            "container",
+        )
+        target_hit = any(token in target_ctx for token in dependency_terms)
+        row_hit = any(token in row_ctx for token in dependency_terms)
+        path_hit = "/dependencies/" in row_ctx
+        return row_hit and (target_hit or path_hit)
+
+    def config_surface_recovery_signal(self, row: dict, *, target: SubgraphNode) -> bool:
+        kind = (row.get("symbol_kind") or "").lower()
+        if kind and kind not in {"function", "method", "class"}:
+            return False
+        if not self.dependency_flow_recovery_hint(row, target=target):
+            return False
+        haystack = " ".join(
+            [
+                str(row.get("name") or "").lower(),
+                str(row.get("qualified_name") or "").lower(),
+                str(row.get("file_path") or "").lower(),
+            ]
+        )
+        return any(
+            token in haystack
+            for token in (
+                "config",
+                "param",
+                "annotation",
+                "field",
+                "dependent",
+                "dependant",
+                "dependency",
+            )
+        )
+
+    def orchestrator_recovery_signal(self, row: dict, *, target: SubgraphNode) -> bool:
+        kind = (row.get("symbol_kind") or "").lower()
+        if kind and kind not in {"function", "method", "class"}:
+            return False
+        if not self.dependency_flow_recovery_hint(row, target=target):
+            return False
+        name = str(row.get("name") or "").lower()
+        qualified = str(row.get("qualified_name") or "").lower()
+        haystack = f"{name} {qualified} {str(row.get('file_path') or '').lower()}"
+        action_hit = any(
+            token in haystack
+            for token in ("solve", "resolve", "get", "build", "create", "call", "execute")
+        )
+        dependency_hit = any(
+            token in haystack
+            for token in ("depend", "dependent", "dependant", "dependency", "inject")
+        )
+        edge_hint = float(row.get("outbound_edges", 0) or 0) >= 1.0
+        return dependency_hit and (action_hit or edge_hint)
 
     def factory_surface_recovery_signal(
         self,

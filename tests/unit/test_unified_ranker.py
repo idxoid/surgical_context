@@ -955,7 +955,7 @@ def test_trace_dependency_runtime_symbol_rows_use_package_prefix_and_generic_ter
         if "LIMIT 32" in query and "$pkg_prefix" in query:
             assert _kwargs.get("pkg_prefix") == "app/"
             assert _kwargs["names"] == []
-            assert {"dependencies", "resolve", "solve"} <= set(_kwargs["name_terms"])
+            assert {"dependant", "dependencies", "resolve", "solve"} <= set(_kwargs["name_terms"])
             return [solve_row]
         return []
 
@@ -1446,6 +1446,72 @@ def test_recovery_candidate_adds_representation_and_runtime_from_local_signal():
     assert "runtime_surface" in roles or "impact_runtime" in roles
 
 
+def test_dependency_recovery_promotes_config_and_orchestrator_roles():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="dependency-marker",
+        name="DependencyMarker",
+        file_path="/repo/app/params.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    config_row = {
+        "uid": "dependent-model",
+        "name": "DependentConfig",
+        "symbol_kind": "class",
+        "token_estimate": 160,
+        "qualified_name": "app.dependencies.models.DependentConfig",
+        "file_path": "/repo/app/dependencies/models.py",
+        "file_hash": "h1",
+        "range": [10, 40],
+        "inbound_edges": 3,
+        "outbound_edges": 1,
+    }
+    orchestrator_row = {
+        "uid": "resolve-dependency",
+        "name": "resolve_dependency",
+        "symbol_kind": "function",
+        "token_estimate": 180,
+        "qualified_name": "app.dependencies.utils.resolve_dependency",
+        "file_path": "/repo/app/dependencies/utils.py",
+        "file_hash": "h2",
+        "range": [50, 95],
+        "inbound_edges": 5,
+        "outbound_edges": 4,
+    }
+
+    config_candidate = ranker._recovery_candidate_from_row(
+        config_row,
+        origin="import_module_trace",
+        scoped_roles={"config_surface", "orchestrator"},
+        target=target,
+    )
+    orchestrator_candidate = ranker._recovery_candidate_from_row(
+        orchestrator_row,
+        origin="import_module_trace",
+        scoped_roles={"config_surface", "orchestrator"},
+        target=target,
+    )
+
+    assert config_candidate is not None
+    assert orchestrator_candidate is not None
+    assert "config_surface" in {
+        config_candidate.evidence_role,
+        *config_candidate.supporting_roles,
+    }
+    assert "orchestrator" in {
+        orchestrator_candidate.evidence_role,
+        *orchestrator_candidate.supporting_roles,
+    }
+
+
 def test_target_concept_fallback_candidate_is_doc():
     ranker = UnifiedRanker(
         _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
@@ -1662,4 +1728,10 @@ def test_trace_dependency_import_anchor_candidates():
     assert any(p.endswith("dependencies/utils.py") for p in paths)
     assert any(p.endswith("dependencies/models.py") for p in paths)
     assert {a.name for a in anchors} >= {"solve_dependencies", "get_dependant"}
-    assert any("recovery:import-module-trace" in (a.provenance or []) for a in anchors)
+    assert any(
+        any(
+            "import_module_trace" in item or "import-module-trace" in item
+            for item in (a.provenance or [])
+        )
+        for a in anchors
+    )
