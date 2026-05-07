@@ -521,7 +521,7 @@ Computed after canonical-role normalization as: `(required_roles not in ctx.miss
 
 - Returns 1.0 if no required_roles (fallback)
 - Diagnostic signal for code relationship gaps — higher role_recall means the ranker found code from more of the required roles
-- The normalization layer removes most framework-specific naming drift, which makes Pydantic and RTK mechanism coverage much more trustworthy than the earlier benchmark versions
+- The normalization layer removes most framework-specific naming drift, so mechanism coverage is evaluated on canonical roles rather than on benchmark/repo-specific role names
 
 ### 4.4. Intent-Stratified Pass Gates
 Different query intents have different acceptable metrics:

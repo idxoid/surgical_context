@@ -4,11 +4,11 @@
 
 Draft — design contract. Implementation today is split across the indexer, `framework_hints`, LanceDB, Pass 1 role catalog, and `UnifiedRanker`; this document names the **intended boundaries** so framework-specific or ranker-only fixes do not stand in for missing graph truth.
 
-## Recent implementation notes (2026-05-05)
+## Recent implementation notes (2026-05-06)
 
-- **Layer 2 hints generalized:** bundled `call_argument_link` rules now describe shared semantic subtypes (for example dependency-like marker APIs) instead of a framework-named YAML fixture. Custom exact triggers may still require a resolved callee namespace prefix before emitting `SEMANTIC_HINT`.
-- **Parser support generalized:** Python now keeps alias→qualified bindings for import call-sites generically, while `extract_imports()` still filters stdlib/third-party file import edges from the graph.
-- **Layer 4 trace fallback strengthened:** trace mode now seats recovery anchors from imported modules, runtime-name seeds, and sibling-directory expansion when import topology is sparse, with explicit provenance (e.g. `recovery:import-module-trace`).
+- **Layer 2 hints generalized:** bundled `call_argument_link` rules now describe shared semantic subtypes (for example dependency-like marker APIs) instead of framework-named YAML defaults. Custom exact triggers may still require a resolved callee namespace prefix before emitting `SEMANTIC_HINT`.
+- **Parser support generalized:** Python now keeps alias→qualified bindings for import call-sites generically, and `extract_imports()` infers stdlib / installed-package imports instead of relying on a hand-maintained framework/root allow-list. Workspace packages still win over installed-package names.
+- **Layer 4 trace fallback strengthened:** trace mode now seats recovery anchors from imported modules, runtime-name seeds, and sibling-directory expansion when import topology is sparse, with explicit provenance (e.g. `recovery:import-module-trace`). Dependency-flow recovery can fulfill `config_surface` and `orchestrator` through generic dependency/provider/container signals instead of framework-symbol pairs.
 - **Benchmark UX:** workspace-mode negative lookups (expected absent symbols) are printed as correct rejection instead of raw "not found" error text.
 
 ## Execution status (implemented vs pending)
@@ -16,11 +16,12 @@ Draft — design contract. Implementation today is split across the indexer, `fr
 ### ✅ Implemented in current branch
 
 - Layer-2 qualified-callee safety gate for DI-like hint rules.
-- Generic Python import call-site qualification, independent of a framework/root whitelist.
+- Generic Python import call-site qualification and external import detection, independent of a framework/root allow-list.
 - Layer-4 trace recovery hardening for sparse import topology:
   - import/module recovery rows
   - runtime symbol seed rows
   - sibling-directory symbol expansion
+  - generic dependency-flow role recovery for config and orchestration surfaces
 - Prompt-contract/benchmark wording for expected absent workspace symbols.
 
 ### 🚧 Still pending
@@ -111,8 +112,8 @@ flowchart TB
 
 ## Migration direction (no single ticket)
 
-1. **Strengthen Layer 1** for patterns that repeat (file-level import graph completeness; optional package-root resolution in indexer, not only ranker).
-2. **Move framework literals** from scattered YAML to **typed hint instances** (Layer 2) with stable IDs and metadata.
+1. **Strengthen Layer 1** for patterns that repeat (file-level import graph completeness; package-root resolution should live in the indexer wherever possible, with ranker recovery as a marked fallback).
+2. **Move shared semantic hints** from bundled defaults to **typed workspace-extensible hint instances** (Layer 2) with stable IDs and metadata.
 3. **Keep Layer 4** as a small set of **named policies** (trace breadth, doc deferral) configurable per intent, not an unbounded list of special cases.
 4. **Add observability**: for each pruned or skipped high-value file, record whether the node was **absent from the pool** vs. **pruned in selection**.
 

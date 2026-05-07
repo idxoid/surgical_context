@@ -36,13 +36,13 @@ Required topologies:
 ### 3.2 Question set — `tests/fixtures/real_repo_question_pack.yaml`
 
 ```yaml
-- id: fastapi_q06
-  repo: fastapi
+- id: repo_q06
+  repo: example_repo
   symbol: serialize_response
-  question: "If I change response model serialization behavior, what parts of the framework and tests are most likely to break?"
+  question: "If I change response model serialization behavior, what runtime paths and tests are most likely to be affected?"
   expected_mode: symbol
-  mechanism: fastapi_serialization_impact
-  required_roles: [affected_runtime, affected_public_api, affected_tests]
+  mechanism: serialization_impact
+  required_roles: [impact_runtime, impact_public_api, impact_test_surface]
   expected_symbols: [...]
   expected_files: [...]
   difficulty: medium
@@ -52,11 +52,11 @@ Required topologies:
 Each entry: `id`, `repo`, `symbol`, `question`, `expected_mode` (`symbol` or `workspace`), **`mechanism`** (code relationship type), **`required_roles`** (list of roles ranker must fulfill), `expected_symbols`, `expected_files`, `difficulty`, `intent`.
 
 **Current additions beyond the original Phase 2.5 design:**
-- **`mechanism`**: Classifies which code relationship is being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`, `rtk_slice_generation`). Enables diagnosing architectural gaps vs. ranking noise.
+- **`mechanism`**: Classifies which code relationship is being tested (for example registration flow, validation bridge, query-surface generation, dependency trace, or impact cascade). Enables diagnosing architectural gaps vs. ranking noise without relying on framework-named dispatch tables.
 - **`required_roles`**: List of code roles the ranker must find. The YAML may use legacy names, but benchmark scoring normalizes them into the canonical role taxonomy before computing `role_recall`.
 - **`expected_mode`**: Either `symbol` (should find by name) or `workspace` (correct answer is "not found" — used for negative test cases like nonexistent symbols).
 
-Target: 30 entries for Phase 2.5 (fixture), 20+ for Phase 4 (real-repo pack, FastAPI/Pydantic/Redux Toolkit).
+Target: 30 entries for Phase 2.5 (sample fixture), 20+ for Phase 4 (real-repo pack across multiple frameworks/libraries). Repository names in the pack identify evaluation datasets, not retrieval shortcuts or bundled ranker behavior.
 
 ## 4. Metrics
 
@@ -119,9 +119,11 @@ Current local retrieval snapshot after the UnifiedRanker hardening pass:
 
 | Repo | Command shape | Result |
 |---|---|---|
-| FastAPI | `QA/qa_benchmark.py --repo fastapi --no-index` | 8/8 pass, `fastapi_q03` and `fastapi_q06` stop with `context_complete_below_floor` instead of floor failure |
-| Pydantic | `QA/qa_benchmark.py --repo pydantic --no-index` | 8/8 pass; `pydantic_q05` resolves `v1` through module fallback instead of "Symbol not found" |
-| Redux Toolkit | `QA/qa_benchmark.py --repo redux_toolkit --no-index` | 8/8 pass; broad RTK precision remains a tuning target |
+| FastAPI | `QA/qa_benchmark.py --repo fastapi --no-index` when the index is current | Mostly green locally; remaining warning-class cases are file/precision tails, not missing role coverage |
+| Pydantic | `QA/qa_benchmark.py --repo pydantic --no-index` when the index is current | Broadly green locally; module/package fallback handles package-surface targets |
+| Redux Toolkit | `QA/qa_benchmark.py --repo redux_toolkit --no-index` when the index is current | Broadly green locally; broad query-surface precision remains a tuning target |
+
+Use `--no-index` only when parser/indexer behavior has not changed. Re-index after changes to import extraction, semantic hints, role clustering, repository profile generation, or graph persistence.
 
 ### 4.4 Console diagnostics for mechanism-aware runs
 

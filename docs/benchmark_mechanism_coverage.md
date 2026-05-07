@@ -1,14 +1,18 @@
 # Benchmark Findings: Mechanism Coverage vs. Question Pass Rate
 
-> **Status:** Historical analysis of an early FastAPI benchmark debugging pass. Keep it for the framing, not for the exact outcomes.
+> **Status:** Historical analysis of an early benchmark debugging pass, updated to reflect the current generic retrieval architecture. Keep it for the framing, not for the exact outcomes.
 
 ## Current Snapshot
 
 What changed since this note was written:
 
 - the benchmark now normalizes legacy `required_roles` into a canonical cross-framework role taxonomy before computing `role_recall`
-- FastAPI `core12` is no longer the main blocker; the local benchmark path there is strong enough to use for tuning
-- Pydantic is now the more interesting gap, and the remaining misses are narrower: validator/serializer handle recovery rather than generic “ranker can’t understand the framework”
+- the original framework-shaped fixes have been replaced by generic layers:
+  - repository profiles emit archetype signals, not repo/framework identities
+  - Python import extraction infers stdlib/installed-package imports and preserves workspace packages without a hand-maintained framework list
+  - semantic hints use shared typed rules (`semantic_hints.yaml`) rather than per-framework hint files
+  - trace recovery uses dependency/provider/container/resolve signals and explicit recovery provenance instead of framework-symbol pairs
+- current real-repo warnings are mostly precision/file-coverage tails, not missing role coverage
 
 So the document's main lesson still stands:
 
@@ -16,11 +20,10 @@ So the document's main lesson still stands:
 
 ### Validity Note: Role Recall Saturation
 
-In the current real-repo benchmark snapshots, `role_recall` has become saturated:
-for the positive questions we track across FastAPI, Pydantic, and Redux Toolkit,
-the ranker now reports `role_recall = 1.00` question by question, not merely on
-average. That is useful, but it should not be presented as proof without a
-methodology caveat.
+In the current real-repo benchmark snapshots, `role_recall` can become saturated:
+for many positive questions the ranker reports `role_recall = 1.00` question by
+question, not merely on average. That is useful, but it should not be presented
+as proof without a methodology caveat.
 
 There are two honest interpretations:
 
@@ -64,75 +67,66 @@ Instead of "pass rate", measure: **What kinds of code relationships can the rank
 
 ### Mechanism Classes
 
-**A. Public API → Internal Method Chain**
-- FastAPI → add_api_route → APIRoute.__init__
-- Mechanism: fastapi_route_registration
-- Recovery: Direct CALLS edges, same-file context
-- Status: ✅ Works (Q1 passes)
+**A. Public API → Internal Builder Chain**
+- Shape: public entrypoint → builder/factory function → representation/runtime object
+- Recovery: direct CALLS edges, same-file context, factory/representation/runtime role signals
+- Current status: works when the graph exposes the chain; precision depends on token budget and broad-doc noise.
 
 **B. Runtime Execution Path**
-- get_request_handler → run_endpoint_function → is_coroutine_callable
-- Mechanism: fastapi_endpoint_execution
-- Recovery: CALLS_DIRECT, local control flow
-- Status: ✅ Works (Q3 passes)
+- Shape: request/operation handler → executor → runtime helper
+- Recovery: CALLS_DIRECT / CALLS_SCOPED, local control flow, runtime-surface role recovery
+- Current status: works well when call edges are present.
 
-**C. Config / Marker → Consumer (Framework Lifecycle)**
-- Depends → solve_dependencies
-- Mechanism: fastapi_dependency_injection
-- Recovery: Doc-bridge (co-mention in same chunk)
-- Status: ❌ Fails — Depends and solve_dependencies are never co-mentioned
-- **This is not a ranker tuning problem. This is a documentation structure gap.**
+**C. Config / Marker → Runtime Consumer**
+- Shape: thin marker/config API → dependency/provider/container resolver → runtime model/helper
+- Recovery: typed `call_argument_link` hints when argument links exist; otherwise bounded trace recovery from imports, dependency/provider/runtime-name seeds, sibling directories, and generic config/orchestrator role signals
+- Current status: no longer depends on co-mentioned docs or hardcoded symbol pairs. Remaining failures should be diagnosed as graph import gaps, recovery ranking, or expected-file precision, not as missing framework defaults.
 
-**D. Request-side Flow**
-- request_body_to_args → solve_dependencies → get_body_field
-- Mechanism: fastapi_request_body_dependency_resolution
-- Recovery: CALLS, same-file, parameter-specific context
-- Status: ⚠️ Partial (finds some symbols, misses file coverage)
+**D. Request-side Binding Flow**
+- Shape: request/body/parameter mapper → schema/model builder → dependency/runtime consumer
+- Recovery: CALLS where available, import-module recovery, binding/schema/runtime role signals
+- Current status: generally role-complete; file-recall tails remain useful ranking telemetry.
 
 ## Key Insight: Not Every Gap is Tunable
 
-### Q2 (Depends) Cannot Be Fixed by Tuning
+### Marker→Consumer Gaps Are Not Fixed by Score Tuning
 
-Investigated why `Depends → solve_dependencies` connection fails:
-- Query Neo4j for symbols co-mentioned with Depends in DocAnchors
-- Found: 14 co-mentions total
-- `solve_dependencies`: 0 co-mentions
+The early investigation showed that static call graph + doc co-mention alone
+cannot reliably connect thin marker/config APIs to runtime consumers when they
+live in different modules and lifecycle phases.
 
-**Conclusion:** The static call graph + doc-bridge approach cannot create this link because:
-1. Depends is in params.py, solve_dependencies is in dependencies/utils.py
-2. They are called in different phases of framework execution
-3. No documentation discusses them as a pair
+**Current resolution:** the system no longer relies on doc co-mentions or a
+hardcoded marker→consumer pair. It combines:
 
-**Possible fixes (not tuning):**
-- Improve doc structure (mention them together)
-- Add semantic edges in the graph (Depends → RESOLVES_VIA → solve_dependencies)
-- Use code comment extraction to infer intent
-- Train a better embedding model
+- generic import call-site qualification
+- workspace-preserving Python import extraction
+- typed semantic hint rules for dependency-like call-argument links
+- bounded trace recovery from imported modules, runtime-name seeds, and sibling directories
+- generic dependency-flow role recovery for config and orchestration surfaces
 
-### Q4 (request_body_to_args) is Sparse
+The remaining tuning question is therefore not "which framework name should we
+special-case?" but "which layer failed to expose or select the expected file?"
 
-request_body_to_args has few neighbors in the graph. Even with:
-- Doubled pool sizes (100 → 200, 50 → 100)
-- Loosened gating (score threshold 0.25 → 0.15)
-- Reduced floor floor (0.05 → 0.02)
+### Sparse Binding Flows
 
-It still only finds 3 candidates. This isn't tuning-fixable; it's architectural:
-- If the code doesn't call solve_dependencies, no CALLS edge exists
-- If docs don't mention request_body_to_args + solve_dependencies together, no bridge
-- Possible fix: add explicit semantic edges for framework lifecycle patterns
+Some binding/mapping functions have few direct graph neighbors. Bigger pools and
+looser score floors can hide the symptom but do not create missing topology.
+Current recovery handles these cases through import-module anchors and
+schema/binding/orchestrator role signals; remaining misses should be inspected
+through `ready_context.contract.pruned[]` and file-level telemetry.
 
 ## Correct Benchmark Structure
 
 ```yaml
-- id: fastapi_q02
-  mechanism: fastapi_dependency_injection
-  required_roles: [public_entrypoint, marker_or_config, dependency_solver, handler_or_lifecycle]
-  
-  # Not: "does ranker pass this question"
-  # But: "can ranker recover marker→consumer pattern in FastAPI"
-  # Answer: No, because doc structure doesn't co-mention them
-  
-  coverage: doc_bridge_semantic_gap
+- id: repo_q02
+  mechanism: dependency_resolution_trace
+  required_roles: [api_surface, config_surface, representation_surface, orchestrator, runtime_surface]
+
+  # Not: "does ranker pass this exact repository question"
+  # But: "can retrieval recover marker/config → runtime consumer evidence
+  # using graph truth, typed hints, and marked recovery fallbacks?"
+
+  coverage: sparse_import_trace
 ```
 
 ## Recommendations
@@ -147,10 +141,10 @@ It still only finds 3 candidates. This isn't tuning-fixable; it's architectural:
    - Architectural (graph structure) vs. tuning-fixable (ranking)
    - Current: 2/4 architectural, 1/4 sparse, 1/4 ranking-fixable
 
-3. **Add framework hints to Neo4j:**
-   - SEMANTIC_HINT edges for well-known patterns (Depends → solve_dependencies)
-   - Mark framework lifecycle phases
-   - Document "co-concepts" (things discussed together in framework logic)
+3. **Represent repeated semantic patterns as typed graph facts:**
+   - `SEMANTIC_HINT` edges from shared rule types such as `call_argument_link`
+   - optional workspace-extensible rule instances for project-specific mechanisms
+   - explicit provenance for ranker-side recovery when the graph is still incomplete
 
 4. **Use expected_symbols as validation, not tuning target:**
    - If symbol isn't in code (e.g., "registration_step"), question is mislabeled
