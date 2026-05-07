@@ -55,7 +55,7 @@ The ranker reads `repository_profile.strategy_profile` from the Neo4j `Workspace
 
 When no structural match applies, the ranker uses auto-detected mechanism archetypes from the strategy profile (`middleware_pipeline`, `decorator_declares_handler`, etc.) or falls back to `generic` with an adaptive role plan derived from target-local/workspace role supply plus `docs_or_concept`.
 
-Structural roles come from Pass 1 (`derived_role_id`, `role_catalog_json` cluster mapping). Framework-specific rows were removed from `repository_profile` mechanism detection for FastAPI, Pydantic, and Redux Toolkit so those repos are classified like other unknown stacks unless patterns are reintroduced from mined data.
+Structural roles come from Pass 1 (`derived_role_id`, `role_catalog_json` cluster mapping). `repository_profile` no longer detects framework families by repo/package names or benchmark fixtures; it emits only generic archetype signals such as registries, decorators, declarative modeling, middleware, templates, and generated APIs.
 
 ```python
 @dataclass

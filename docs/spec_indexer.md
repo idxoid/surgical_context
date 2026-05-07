@@ -56,7 +56,7 @@ The profile includes:
 - supported and unsupported language/file surfaces
 - parse coverage and symbol density
 - call/import/inheritance density
-- framework and mechanism signals
+- generic archetype signals inferred from indexed paths/source snippets
 - dynamic surfaces such as decorators, registries, templates, generated APIs, metaprogramming, and C/macros
 - mechanism archetypes and a repository-specific retrieval strategy profile
 - capability flags for code navigation, static call reasoning, decorator/runtime registry semantics, doc-code bridge, and impact analysis
@@ -161,8 +161,8 @@ The fast project indexer builds a repository profile after graph/doc-anchor phas
 - parsed file count
 - observed symbols/calls/imports/inheritance
 - AFFECTS rebuild status
-- lightweight path/source signals from changed files
-- mechanism archetypes inferred from framework and dynamic-surface signals
+- lightweight relative-path/source signals from changed files
+- mechanism archetypes inferred from generic archetype and dynamic-surface signals
 
 The result is included under `stats["repository_profile"]`, persisted to the Neo4j `Workspace`, and printed as a compact readiness line. `stats["repository_profile_store"]` is `neo4j_workspace` when persistence succeeds. If a project pass finds no changed files, the fast indexer loads the existing profile from the workspace when available.
 
@@ -170,7 +170,7 @@ The single-file hot path does not currently rebuild the full repository profile.
 
 ### Phase 7 — Repository role taxonomy (Pass 1)
 
-Implemented in `sidecar/indexer/role_clustering.py`. A per-repository role taxonomy derived from call-graph topology, intended to replace the hand-curated role naming heuristics that currently live in `mechanism_registry`, `repository_profile._MECHANISM_PATTERNS` / `_ARCHETYPE_ROLE_PLANS`, and `unified_ranker._infer_role`. No name patterns, no path heuristics, no preloaded framework knowledge — a symbol's role comes from its position in the graph.
+Implemented in `sidecar/indexer/role_clustering.py`. A per-repository role taxonomy derived from call-graph topology, intended to replace the remaining hand-curated role naming heuristics in `mechanism_registry` and `unified_ranker._infer_role`. `repository_profile` now emits only generic archetype signals; it does not identify framework families by repo name, workspace id, package name, or benchmark fixtures. No name patterns, no path heuristics, no preloaded framework knowledge — a symbol's role comes from its position in the graph.
 
 **Pipeline order.** The fast pipeline runs Pass 1 between Phase 4 (DocAnchor resolution) and Phase 6 (repository readiness profile), so the taxonomy sees both CALLS-style edges and COVERS edges. The single-file hot path does not run Pass 1.
 
@@ -251,10 +251,10 @@ This reduces indexing time for large repos with few changes. Full re-index still
 ## Limitations (current)
 
 - The repository profile is a conservative first-pass contract, not a deep framework model.
-- Framework and dynamic-surface detection uses lightweight path/source signals; it should guide routing and diagnosis, not replace mechanism-specific evidence.
+- Archetype and dynamic-surface detection uses lightweight relative-path/source signals; it should guide routing and diagnosis, not replace mechanism-specific evidence.
 - The single-file hot path does not currently refresh the full repository profile or rerun Pass 1.
 - Current impact capability is still shallow: AFFECTS reachability does not prove behavioral breakage.
-- Pass 1 produces the role taxonomy but no consumer reads it yet — `mechanism_registry`, `repository_profile._MECHANISM_PATTERNS`, and `unified_ranker._infer_role` are still the active sources of role decisions.
+- Pass 1 produces the role taxonomy and the ranker can read it, but some fallback role decisions still live in `mechanism_registry`, generic `repository_profile` archetype signals, and `unified_ranker._infer_role`.
 
 ---
 

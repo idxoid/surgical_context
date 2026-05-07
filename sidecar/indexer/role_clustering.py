@@ -2,10 +2,10 @@
 
 This module is the universal replacement for the hand-curated role naming
 that currently lives in three places: ``mechanism_registry``,
-``repository_profile`` (``_MECHANISM_PATTERNS`` / ``_ARCHETYPE_ROLE_PLANS``),
-and ``unified_ranker._infer_role``. A symbol's role comes from its position
-in the call graph — fan-in/out, depth from public exports, cross-package
-edges, doc-anchor density, kind — never from name patterns or path strings.
+``repository_profile`` generic archetype plans, and ``unified_ranker._infer_role``.
+A symbol's role comes from its position in the call graph — fan-in/out, depth
+from public exports, cross-package edges, doc-anchor density, kind — never from
+framework names or benchmark fixture strings.
 
 Output:
 - per-symbol cluster id
@@ -15,9 +15,8 @@ Output:
   structural archetypes such as active entrypoint and runtime handle
 
 Consumers (mechanism mining, ranker, repository_profile) can read the catalog
-without ever needing to name FastAPI / Pydantic / RTK. The current pass
-persists taxonomy/catalog metadata but does not yet cut query-time ranking
-over to these derived roles.
+without hard-coding framework families. The current pass persists taxonomy/catalog
+metadata but does not yet cut every query-time fallback over to these derived roles.
 """
 
 from __future__ import annotations

@@ -629,8 +629,8 @@ def run_fast_indexing(
 
         # Stage 7.5: Pass 1 — derive a per-repo role taxonomy from
         # call-graph topology and persist it on Workspace + Symbol nodes.
-        # Universal replacement for the framework-specific naming heuristics
-        # baked into mechanism_registry / repository_profile / unified_ranker.
+        # Universal replacement for the hand-curated role heuristics that
+        # still exist as fallbacks in mechanism_registry / unified_ranker.
         t_stage = time.perf_counter()
         from sidecar.context.mechanism_registry import (
             ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY,

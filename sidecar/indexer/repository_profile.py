@@ -41,61 +41,52 @@ _SKIP_DIRS = {
     ".gradle",
 }
 
-_MECHANISM_PATTERNS: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = (
+_ARCHETYPE_SIGNAL_PATTERNS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("decorator_usage", ("@", "decorator"), ("decorator_declares_handler",)),
     (
-        "django",
-        "web_framework",
-        ("django", "models.Model", "urlpatterns", "MigrationExecutor"),
-        ("route_registration", "orm_mapping", "migration_system"),
+        "registry_usage",
+        ("registry", "register", "router", "route", "routes"),
+        ("route_registration",),
     ),
     (
-        "flask",
-        "web_framework",
-        ("from flask", "import flask", "Flask(", "Blueprint(", "before_request"),
-        ("route_registration", "request_context", "middleware_hooks"),
+        "middleware_usage",
+        ("middleware", "pipeline", "handler chain", "next("),
+        ("middleware_pipeline", "request_response_lifecycle"),
     ),
     (
-        "sqlalchemy",
-        "orm",
-        ("sqlalchemy", "declarative_base", "DeclarativeBase", "relationship(", "Session"),
-        ("declarative_mapping", "query_builder", "session_identity_map"),
+        "dependency_resolution_usage",
+        ("dependency", "dependencies", "inject", "provider", "container"),
+        ("dependency_injection",),
     ),
     (
-        "express",
-        "web_framework",
-        ("express", "Router(", "app.use", "req,", "res,"),
-        ("middleware_pipeline", "route_registration", "request_response_lifecycle"),
+        "declarative_modeling",
+        ("declarative", "model", "field", "schema", "relationship", "mapper", "table"),
+        ("declarative_mapping", "orm_mapping", "schema_generation"),
     ),
     (
-        "nestjs",
-        "web_framework",
-        ("@Controller", "@Injectable", "@Module", "@Pipe", "NestFactory"),
-        ("decorator_declares_handler", "dependency_injection", "module_composition"),
+        "validation_or_serialization",
+        ("validate", "validation", "validator", "serialize", "serializer"),
+        ("validation_pipeline", "serialization_pipeline"),
     ),
     (
-        "vue",
-        "frontend_framework",
-        ("createApp", "defineComponent", "ref(", "watch(", "<template"),
-        ("component_lifecycle", "reactivity_graph", "template_compilation"),
+        "query_builder_usage",
+        ("query", "select", "where", "compile", "session"),
+        ("query_builder",),
     ),
     (
-        "postgres",
-        "database_engine",
-        ("ExecProcNode", "PlannerInfo", "ParseState", "PostgreSQL", "postgres"),
-        ("c_runtime_dispatch", "query_planner", "storage_engine"),
+        "factory_generation_usage",
+        ("factory", "builder", "generated", "codegen"),
+        ("factory_api_generation",),
     ),
 )
 
 _DYNAMIC_SURFACE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "decorators",
-        ("@", "decorator", "@Controller", "@Injectable", "@Module", "@app.", "@router."),
-    ),
-    ("registries", ("registry", "urlpatterns", "providers:", "controllers:", "app.use")),
+    ("decorators", ("@", "decorator")),
+    ("registries", ("registry", "register", "router", "route", "routes")),
     ("metaprogramming", ("metaclass", "__getattr__", "__init_subclass__", "DeclarativeMeta")),
-    ("templates", ("<template", ".vue", "render(", "compileTemplate")),
+    ("templates", ("<template", "template", "render(")),
     ("generated_api", ("codegen", "generated")),
-    ("macros_or_c", ("#define", "typedef", "struct ", "PG_FUNCTION_ARGS")),
+    ("macros_or_c", ("#define", "typedef", "struct ")),
 )
 
 _EXTENSION_LANGUAGE_HINTS: Mapping[str, str] = {
@@ -310,10 +301,10 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
 
     sample = "\n".join(inputs.sample_texts or [])
     path_blob = "\n".join(_relative_paths(inputs.project_path, inputs.collected_files[:500]))
-    signal_blob = f"{inputs.project_path}\n{path_blob}\n{sample}"
-    framework_signals = _detect_framework_signals(signal_blob)
+    signal_blob = f"{path_blob}\n{sample}"
+    archetype_signals = _detect_archetype_signals(signal_blob)
     dynamic_surfaces = _detect_dynamic_surfaces(signal_blob, unsupported_extensions)
-    strategy_profile = _build_strategy_profile(framework_signals, dynamic_surfaces)
+    strategy_profile = _build_strategy_profile(archetype_signals, dynamic_surfaces)
 
     capability_flags = _capability_flags(
         supported_ratio=supported_ratio,
@@ -331,7 +322,7 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
         supported_ratio=supported_ratio,
         parse_coverage=parse_coverage,
         symbols_indexed=inputs.symbols_indexed,
-        framework_signals=framework_signals,
+        archetype_signals=archetype_signals,
         unsupported_languages=unsupported_languages,
     )
     reasoning_contract = _reasoning_contract(capability_flags, readiness, dynamic_surfaces)
@@ -368,7 +359,8 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
             "calls_per_symbol": round(call_density, 3),
         },
         "mechanism_profile": {
-            "framework_signals": framework_signals,
+            "framework_signals": [],
+            "archetype_signals": archetype_signals,
             "dynamic_surfaces": dynamic_surfaces,
             "archetypes": strategy_profile["mechanism_archetypes"],
         },
@@ -418,6 +410,7 @@ def build_empty_repository_profile(
         },
         "mechanism_profile": {
             "framework_signals": [],
+            "archetype_signals": [],
             "dynamic_surfaces": [],
             "archetypes": [],
         },
@@ -449,14 +442,17 @@ def summarize_repository_profile(profile: Mapping) -> str:
     top_langs = (
         ", ".join(f"{name}:{count}" for name, count in list(supported.items())[:3]) or "none"
     )
-    mechanisms = profile.get("mechanism_profile", {}).get("framework_signals", [])
-    top_mechanisms = ", ".join(item.get("name", "") for item in mechanisms[:3]) or "none"
+    mechanism_profile = profile.get("mechanism_profile", {})
+    signals = mechanism_profile.get("archetype_signals") or mechanism_profile.get(
+        "framework_signals", []
+    )
+    top_mechanisms = ", ".join(item.get("name", "") for item in signals[:3]) or "none"
     capabilities = profile.get("capabilities", {})
     strategy = (profile.get("strategy_profile") or {}).get("selected_strategy", "unknown")
     return (
         f"{profile.get('retrieval_readiness', 'unknown')} "
         f"(indexability={profile.get('indexability', 'unknown')}, "
-        f"langs={top_langs}, mechanisms={top_mechanisms}, "
+        f"langs={top_langs}, archetype_signals={top_mechanisms}, "
         f"strategy={strategy}, impact={capabilities.get('impact_analysis', 'unknown')})"
     )
 
@@ -514,10 +510,10 @@ def _top_counts(counts: Counter, limit: int = 12) -> dict[str, int]:
     return dict(counts.most_common(limit))
 
 
-def _detect_framework_signals(blob: str) -> list[dict]:
+def _detect_archetype_signals(blob: str) -> list[dict]:
     lowered = blob.lower()
     signals = []
-    for name, family, markers, mechanisms in _MECHANISM_PATTERNS:
+    for name, markers, mechanisms in _ARCHETYPE_SIGNAL_PATTERNS:
         hits = [marker for marker in markers if marker.lower() in lowered]
         if not hits:
             continue
@@ -525,7 +521,7 @@ def _detect_framework_signals(blob: str) -> list[dict]:
         signals.append(
             {
                 "name": name,
-                "family": family,
+                "family": "generic_archetype",
                 "confidence": round(confidence, 3),
                 "evidence": hits[:5],
                 "mechanisms": list(mechanisms),
@@ -549,17 +545,17 @@ def _detect_dynamic_surfaces(blob: str, unsupported_extensions: Counter) -> list
 
 
 def _build_strategy_profile(
-    framework_signals: list[dict],
+    archetype_signals: list[dict],
     dynamic_surfaces: list[str],
 ) -> dict:
     archetype_scores: dict[str, dict] = {}
-    for signal in framework_signals:
-        framework_confidence = float(signal.get("confidence") or 0.0)
+    for signal in archetype_signals:
+        signal_confidence = float(signal.get("confidence") or 0.0)
         for mechanism in signal.get("mechanisms") or []:
             _merge_archetype(
                 archetype_scores,
                 mechanism,
-                confidence=framework_confidence,
+                confidence=signal_confidence,
                 evidence=[signal.get("name", ""), *(signal.get("evidence") or [])],
             )
 
@@ -693,7 +689,7 @@ def _retrieval_readiness(
     supported_ratio: float,
     parse_coverage: float,
     symbols_indexed: int,
-    framework_signals: list[dict],
+    archetype_signals: list[dict],
     unsupported_languages: Counter,
 ) -> dict:
     warnings: list[str] = []
@@ -709,8 +705,8 @@ def _retrieval_readiness(
         warnings.append("large_unsupported_language_surface")
     if parse_coverage < 0.5:
         warnings.append("low_parse_coverage")
-    if framework_signals:
-        warnings.append("framework_mechanisms_need_validation")
+    if archetype_signals:
+        warnings.append("archetype_mechanisms_need_validation")
 
     if supported_ratio >= 0.75 and parse_coverage >= 0.75:
         indexability = "high"
@@ -719,7 +715,7 @@ def _retrieval_readiness(
     else:
         indexability = "low"
 
-    if indexability == "high" and framework_signals:
+    if indexability == "high" and archetype_signals:
         retrieval = "modeled_or_modelable"
     elif indexability in {"high", "medium"}:
         retrieval = "partial"
