@@ -733,6 +733,38 @@ def test_pipeline_named_symbols_add_composition_and_executor_supporting_roles():
     assert "runtime_surface" in roles
 
 
+def test_validation_and_serialization_symbols_add_handle_supporting_roles():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main")
+    validate_candidate = Candidate(
+        kind="symbol",
+        uid="run-validators",
+        name="run_validators",
+        file_path="/repo/forms/fields.py",
+        token_cost=80,
+    )
+    validate_candidate.symbol_kind = "method"
+    dump_candidate = Candidate(
+        kind="symbol",
+        uid="model-dump",
+        name="model_dump",
+        file_path="/repo/models/main.py",
+        token_cost=80,
+    )
+    dump_candidate.symbol_kind = "method"
+    core_candidate = Candidate(
+        kind="symbol",
+        uid="schema-validator",
+        name="SchemaValidator",
+        file_path="/repo/core/schema_validator.py",
+        token_cost=80,
+    )
+    core_candidate.symbol_kind = "class"
+
+    assert "validator_handle" in ranker._roles_of(validate_candidate)
+    assert "serializer_handle" in ranker._roles_of(dump_candidate)
+    assert "core_runtime" in ranker._roles_of(core_candidate)
+
+
 def test_rank_records_pruned_reasons_and_score_breakdown():
     ranker = UnifiedRanker(
         _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main"

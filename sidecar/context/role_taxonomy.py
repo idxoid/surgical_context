@@ -248,11 +248,34 @@ def infer_supporting_roles(
             "handler",
             "runtime",
         )
+        validator_tokens = (
+            "clean",
+            "schema_validator",
+            "validate",
+            "validation",
+            "validator",
+            "validators",
+        )
+        serializer_tokens = (
+            "dump",
+            "schema_serializer",
+            "serialize",
+            "serializer",
+            "serializers",
+            "to_json",
+            "to_python",
+        )
 
         if any(token in haystack for token in composition_tokens):
             inferred.append("composition_surface")
         if any(token in haystack for token in ("controller", "export", "import", "provider")):
             inferred.append("integration_surface")
+        if any(token in haystack for token in validator_tokens):
+            inferred.append("validator_handle")
+        if any(token in haystack for token in serializer_tokens):
+            inferred.append("serializer_handle")
+        if any(token in haystack for token in ("core_schema", "schema_validator", "schema_serializer")):
+            inferred.append("core_runtime")
         if lowered_name.startswith(executor_prefixes) or any(
             token in haystack for token in executor_tokens
         ):
