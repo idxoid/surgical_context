@@ -1,17 +1,26 @@
 """ContextArbitrator — thin orchestrator facade composing pure components."""
 
 import hashlib
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.deduplicator import ContextDeduplicator
-from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.intent_classifier import IntentClassifier
+from sidecar.context.intent_classifier import IntentClassifier, IntentResolution, IntentSignal
 from sidecar.context.prompt_compiler import PromptCompiler
-from sidecar.context.types import PromptContext
+from sidecar.context.types import PromptContext, SubgraphNode
+from sidecar.context.unified_ranker import (
+    DEFAULT_WEIGHTS,
+    RankerWeights,
+    UnifiedRanker,
+    VectorSearcher,
+)
+from sidecar.retrieval.trace import graph_only_trace, unified_trace
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
+
+if TYPE_CHECKING:
+    from sidecar.retrieval.protocols import VectorSearchProvider, WorkspaceMetaProvider
 
 
 class ContextArbitrator:
@@ -24,12 +33,19 @@ class ContextArbitrator:
         vector_db=None,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
         cache: LayeredCache | None = None,
+        ranker_weights: RankerWeights | None = None,
+        *,
+        vector_search: "VectorSearchProvider | None" = None,
+        workspace_meta: "WorkspaceMetaProvider | None" = None,
     ):
         self.db = neo4j_client
         self.overlay = overlay
         self.vector_db = vector_db
         self.workspace_id = workspace_id
         self.cache = cache or default_cache
+        self.ranker_weights = ranker_weights or DEFAULT_WEIGHTS
+        self._vector_search = vector_search
+        self._workspace_meta = workspace_meta
 
     def get_context_for_symbol(
         self,
@@ -38,14 +54,233 @@ class ContextArbitrator:
         token_budget: int = 4000,
     ) -> PromptContext | str:
         """Orchestrate the pipeline: expand → deduplicate → resolve → compile (with intent-aware tier selection)."""
-        # 0. Classify intent from question (determines tier priority in compilation)
-        intent = IntentClassifier.classify_intent(question)
+        intent_signal = IntentClassifier.classify_with_metadata(question)
+        intent_resolution = IntentClassifier.resolve_signal_with_profile(
+            intent_signal,
+            self._repository_profile(),
+        )
+        cache_hits: list[str] = []
+
+        if self.vector_db or self._vector_search:
+            return self._get_context_unified(
+                symbol_name, question, token_budget, intent_signal, intent_resolution, cache_hits
+            )
+        return self._get_context_graph_only(
+            symbol_name, token_budget, intent_signal, intent_resolution, cache_hits
+        )
+
+    # ------------------------------------------------------------------
+    # Unified path (graph BFS + vector search blended)
+    # ------------------------------------------------------------------
+
+    def _get_context_unified(
+        self,
+        symbol_name,
+        question,
+        token_budget,
+        intent_signal: IntentSignal,
+        intent_resolution: IntentResolution,
+        cache_hits,
+    ) -> PromptContext | str:
+        intent = intent_signal.primary
+        ranker = UnifiedRanker(
+            self.db,
+            self._vector_search_for_ranker(),
+            workspace_id=self.workspace_id,
+            weights=self.ranker_weights,
+        )
+
+        target, target_selection = cast(
+            tuple[SubgraphNode | None, dict[str, Any]],
+            ranker.get_target(
+                symbol_name,
+                query=question,
+                intent=intent,
+                with_metadata=True,
+            ),
+        )
+        if target is None:
+            fallback_target, fallback_selection = self._resolve_concept_anchor_target(
+                ranker,
+                symbol_name=symbol_name,
+                question=question,
+                intent=intent,
+            )
+            if fallback_target is not None:
+                target = fallback_target
+                target_selection = fallback_selection
+            else:
+                return f"Error: Symbol '{symbol_name}' not found in graph."
+
+        reserved = UnifiedRanker.PREAMBLE_TOKENS + target.token_estimate
+        if reserved > token_budget:
+            # Fallback: if target is massive, use a signature-only estimate (~10% of size or capped)
+            # and flag it for the resolver to only pull the head.
+            target.token_estimate = min(500, int(target.token_estimate * 0.1))
+            target.relation = "target_signature_only"
+            reserved = UnifiedRanker.PREAMBLE_TOKENS + target.token_estimate
+            if reserved > token_budget:
+                return f"Error: Token budget {token_budget} too small even for signature."
+
+        query_str = f"{symbol_name} {question}".strip()
+        candidates, budget_info, stopped_reason, pruned_details, missing_roles = ranker.rank(
+            target, query_str, intent, token_budget
+        )
+
+        subgraph, docs = ranker.candidates_to_subgraph(
+            target, candidates, budget_info, stopped_reason, pruned_details
+        )
+
+        # Resolve code for all nodes
+        resolver = CodeResolver(self.overlay, workspace_id=self.workspace_id)
+        code_map = {}
+        for node in [subgraph.primary] + subgraph.nodes:
+            line_range = (node.range[0], node.range[1])
+            overlay_dirty = bool(
+                self.overlay and self.overlay.has(node.file_path, workspace_id=self.workspace_id)
+            )
+            cached = None
+            if node.file_hash and not overlay_dirty:
+                cached = self.cache.get_body(node.file_path, line_range, node.file_hash)
+            if cached is not None:
+                cache_hits.append("l1_body")
+                code_map[node.uid] = (cached.code, cached.is_dirty)
+                continue
+
+            # OPTIMAL CONTEXT: Resolve signature-only for low-gain or distant neighbors
+            is_target_massive = (
+                node.uid == subgraph.primary.uid and node.relation == "target_signature_only"
+            )
+            is_distant_neighbor = node.render_mode == "signature_only"
+
+            if is_target_massive or is_distant_neighbor:
+                # Pull only the head (signature + docstring) — approx first 15 lines
+                end_line = min(node.range[1], node.range[0] + 15)
+                code, is_dirty = resolver.resolve(node.file_path, node.range[0], end_line)
+            else:
+                code, is_dirty = resolver.resolve(node.file_path, *line_range)
+
+            code_map[node.uid] = (code, is_dirty)
+            if node.file_hash and not is_dirty:
+                self.cache.put_body(
+                    node.file_path,
+                    line_range,
+                    node.file_hash,
+                    CachedBody(code=code, token_count=node.token_estimate, is_dirty=False),
+                )
+
+        mechanism = ranker._determine_mechanism(target, query=question)
+        required_roles = ranker._get_required_roles(mechanism)
+
+        ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
+        ctx.stopped_reason = subgraph.stopped_reason
+        ctx.mechanism = mechanism
+        ctx.pruned_details = subgraph.pruned_details
+        ctx.missing_roles = missing_roles
+        ctx.intent_distribution = intent_signal.distribution
+        ctx.intent_confidence = intent_signal.confidence
+        ctx.intent_ambiguous = intent_signal.ambiguous
+        ctx.intent_effective_mode = intent_resolution.effective_mode
+        ctx.intent_resolution = intent_resolution.to_dict()
+        ctx.budget["cache_hits"] = sorted(set(cache_hits))
+        ctx.budget["ranker"] = "unified"
+        w = self.ranker_weights
+        ctx.budget["ranker_weights"] = {
+            "alpha": w.alpha,
+            "beta": w.beta,
+            "gamma": w.gamma,
+            "delta": w.delta,
+            "epsilon": w.epsilon,
+        }
+        ctx.ranker_state = {
+            "strategy": "unified",
+            "weights": dict(ctx.budget["ranker_weights"]),
+            "candidates_considered": budget_info.get("pool_size", 0),
+            "candidates_selected": len(candidates),
+            "pruned_total_count": len(pruned_details),
+            "required_roles": required_roles,
+            "target_selection": target_selection,
+            "strategy_profile": getattr(ranker, "strategy_profile", {}),
+        }
+        ctx.retrieval_trace = unified_trace(
+            workspace_id=self.workspace_id,
+            intent=intent.value,
+            mechanism=mechanism,
+            required_roles=required_roles,
+            stopped_reason=subgraph.stopped_reason or "",
+            target_selection=target_selection or {},
+            budget_info=budget_info,
+            ranker_state=ctx.ranker_state,
+            cache_hits=sorted(set(cache_hits)),
+            missing_roles=missing_roles,
+            pruned_count=len(pruned_details),
+        )
+        return ctx
+
+    @staticmethod
+    def _should_try_concept_anchor_fallback(question: str) -> bool:
+        q = (question or "").lower()
+        return any(token in q for token in ("how ", "how does", "how do", "behavior", "works"))
+
+    @staticmethod
+    def _concept_anchor_candidates(symbol_name: str) -> list[str]:
+        concept = (symbol_name or "").strip().lower()
+        concept_map = {
+            "middleware": ["use", "handle", "router", "route"],
+        }
+        return concept_map.get(concept, [])
+
+    def _resolve_concept_anchor_target(
+        self,
+        ranker: UnifiedRanker,
+        *,
+        symbol_name: str,
+        question: str,
+        intent,
+    ) -> tuple[SubgraphNode | None, dict[str, Any]]:
+        if not self._should_try_concept_anchor_fallback(question):
+            return None, {}
+        anchors = self._concept_anchor_candidates(symbol_name)
+        if not anchors:
+            return None, {}
+        for anchor in anchors:
+            candidate, metadata = cast(
+                tuple[SubgraphNode | None, dict[str, Any]],
+                ranker.get_target(
+                    anchor,
+                    query=question,
+                    intent=intent,
+                    with_metadata=True,
+                ),
+            )
+            if candidate is not None:
+                metadata = {
+                    **(metadata or {}),
+                    "strategy": "concept_anchor_fallback",
+                    "missing_symbol": symbol_name,
+                    "anchor_symbol": anchor,
+                    "anchors_considered": anchors,
+                }
+                return candidate, metadata
+        return None, {}
+
+    # ------------------------------------------------------------------
+    # Graph-only path (no vector_db — original behaviour)
+    # ------------------------------------------------------------------
+
+    def _get_context_graph_only(
+        self,
+        symbol_name,
+        token_budget,
+        intent_signal: IntentSignal,
+        intent_resolution: IntentResolution,
+        cache_hits,
+    ) -> PromptContext | str:
+        intent = intent_signal.primary
         intent_hash = hashlib.sha256(intent.value.encode("utf-8")).hexdigest()
         graph_version = self._graph_version()
 
-        # 1. Expand graph
         subgraph = None
-        cache_hits = []
         primary_uid = self._primary_uid(symbol_name)
         if primary_uid:
             subgraph = self.cache.get_subgraph(
@@ -71,18 +306,16 @@ class ContextArbitrator:
         if isinstance(subgraph, str):
             return subgraph
 
-        # 2. Deduplicate (remove redundant symbols and docs)
         subgraph = ContextDeduplicator().deduplicate(subgraph)
 
-        # 3. Resolve code
         resolver = CodeResolver(self.overlay, workspace_id=self.workspace_id)
         code_map = {}
         for node in [subgraph.primary] + subgraph.nodes:
             line_range = (node.range[0], node.range[1])
-            cached = None
             overlay_dirty = bool(
                 self.overlay and self.overlay.has(node.file_path, workspace_id=self.workspace_id)
             )
+            cached = None
             if node.file_hash and not overlay_dirty:
                 cached = self.cache.get_body(node.file_path, line_range, node.file_hash)
             if cached is not None:
@@ -99,15 +332,47 @@ class ContextArbitrator:
                     CachedBody(code=code, token_count=node.token_estimate, is_dirty=False),
                 )
 
-        # 4. Resolve docs before compilation so intent-aware tier selection can include them.
-        docs = []
-        if self.vector_db:
-            docs = DocResolver(self.vector_db).search(f"{symbol_name} {question}", limit=3)
-
-        # 5. Compile prompt with intent-aware tier selection
-        ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
+        ctx = PromptCompiler().compile_with_intent(subgraph, code_map, [], intent)
+        ctx.intent_distribution = intent_signal.distribution
+        ctx.intent_confidence = intent_signal.confidence
+        ctx.intent_ambiguous = intent_signal.ambiguous
+        ctx.intent_effective_mode = intent_resolution.effective_mode
+        ctx.intent_resolution = intent_resolution.to_dict()
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
+        ctx.budget["ranker"] = "graph_only"
+        ctx.ranker_state = {
+            "strategy": "graph_only",
+            "candidates_considered": len(subgraph.nodes),
+            "candidates_selected": len(subgraph.nodes),
+            "pruned_total_count": len(subgraph.pruned_details),
+        }
+        ctx.retrieval_trace = graph_only_trace(
+            workspace_id=self.workspace_id,
+            intent=intent.value,
+            stopped_reason=subgraph.stopped_reason or "",
+            cache_hits=sorted(set(cache_hits)),
+            ranker_state=ctx.ranker_state,
+            pruned_count=len(subgraph.pruned_details),
+        )
         return ctx
+
+    def _vector_search_for_ranker(self):
+        if self._vector_search is not None:
+            return self._vector_search
+        return VectorSearcher(self.vector_db)
+
+    def _repository_profile(self) -> dict | None:
+        if self._workspace_meta is not None:
+            profile = self._workspace_meta.repository_profile(self.workspace_id)
+            return profile if profile else None
+        get_profile = getattr(self.db, "get_repository_profile", None)
+        if not callable(get_profile):
+            return None
+        try:
+            profile = get_profile(workspace_id=self.workspace_id)
+        except Exception:
+            return None
+        return profile if isinstance(profile, dict) else None
 
     def _primary_uid(self, symbol_name: str) -> str | Any | None:
         query = """
@@ -130,6 +395,8 @@ class ContextArbitrator:
             return None
 
     def _graph_version(self) -> int:
+        if self._workspace_meta is not None:
+            return int(self._workspace_meta.graph_version(self.workspace_id))
         query = """
         MATCH (w:Workspace {id: $workspace_id})
         RETURN coalesce(w.graph_version, 0) AS graph_version

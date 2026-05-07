@@ -88,6 +88,69 @@ class TestIntentClassifier:
         assert IntentClassifier.classify_intent("WHERE IS THIS?") == Intent.NAVIGATION
         assert IntentClassifier.classify_intent("Why DOES this fail?") == Intent.DEBUGGING
 
+    def test_classify_with_metadata_returns_distribution(self):
+        """Keyword scoring exposes a normalized distribution and confidence."""
+        signal = IntentClassifier.classify_with_metadata(
+            "How does dependency injection work before the endpoint function is called?"
+        )
+
+        assert signal.primary == Intent.EXPLORATION
+        assert abs(sum(signal.distribution.values()) - 1.0) < 1e-9
+        assert signal.confidence > 0
+        assert signal.matched_keywords["exploration"]
+
+    def test_classify_with_metadata_marks_ambiguous_queries(self):
+        """Mixed-intent prompts should surface ambiguity instead of hiding it."""
+        signal = IntentClassifier.classify_with_metadata("Why should I add this feature?")
+
+        assert signal.primary == Intent.DEBUGGING
+        assert signal.ambiguous is True
+        assert "debugging" in signal.distribution
+        assert "new_feature" in signal.distribution
+
+    def test_empty_query_metadata_defaults_to_exploration(self):
+        """Empty queries keep the old default and expose a simple distribution."""
+        signal = IntentClassifier.classify_with_metadata("")
+
+        assert signal.primary == Intent.EXPLORATION
+        assert signal.distribution == {"exploration": 1.0}
+        assert signal.confidence == 0.0
+        assert signal.ambiguous is False
+
+    def test_intent_resolution_degrades_impact_against_shallow_profile(self):
+        """Impact intent becomes a reachability mode when repo impact is shallow."""
+        resolution = IntentClassifier.resolve_with_profile(
+            "What breaks if I change relationship()?",
+            {
+                "indexability": "medium",
+                "retrieval_readiness": "partial",
+                "capabilities": {
+                    "impact_analysis": "shallow_partial",
+                    "static_call_reasoning": "medium",
+                    "runtime_registry_semantics": "low",
+                },
+                "reasoning_contract": {
+                    "allowed": ["limited reachability-based impact candidates"],
+                    "risky": ["impact is shallow"],
+                },
+            },
+        )
+
+        assert resolution.desired_intent == "impact_analysis"
+        assert resolution.effective_mode == "shallow_reachability_impact"
+        assert resolution.degraded is True
+        assert resolution.available_capabilities["impact_analysis"] == "shallow_partial"
+        assert "impact is shallow" in resolution.risks
+
+    def test_intent_resolution_marks_missing_profile(self):
+        """Without a repository profile, intent is only a text-routing hint."""
+        resolution = IntentClassifier.resolve_with_profile("How does this work?", None)
+
+        assert resolution.desired_intent == "exploration"
+        assert resolution.effective_mode == "unprofiled_intent_routing"
+        assert resolution.degraded is True
+        assert resolution.repository_readiness == ""
+
 
 class TestIntentConfig:
     """Test intent priority configuration."""

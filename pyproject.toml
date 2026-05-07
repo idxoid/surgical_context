@@ -19,6 +19,12 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B", "F811"]
+"QA/routing.py" = ["B008"]
+"sidecar/main.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["QA/repos", "data", "graphify-out"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -38,10 +44,12 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = [
   "ollama",
-  "tree_sitter_languages",
   "sentence_transformers",
   "lancedb",
-  "claude_api",
   "pyarrow",
+  "yaml",
+  "tqdm",
+  "opentelemetry",
+  "opentelemetry.*",
 ]
 ignore_missing_imports = true

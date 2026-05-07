@@ -1,3 +1,9 @@
+"""FastAPI sidecar — install stderr filtering before LanceDB / SentenceTransformer import."""
+
+from sidecar.silence import install as _install_stderr_filter
+
+_install_stderr_filter()
+
 import hashlib
 import logging
 import os
@@ -16,6 +22,7 @@ from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.intent_classifier import IntentClassifier
 from sidecar.context.overlay import InMemoryOverlay
+from sidecar.context.ranker.candidate_pool import VectorSearcher
 from sidecar.context.types import RESOLVER_VERSION, DocChunk, PromptContext, SymbolContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
@@ -30,6 +37,7 @@ from sidecar.observability import (
     estimate_text_tokens,
     new_trace_id,
 )
+from sidecar.retrieval import neo4j_workspace_meta
 from sidecar.search import UnifiedSearchResult, dedupe_and_rank
 from sidecar.workspace import WorkspaceResolver
 
@@ -55,6 +63,18 @@ history_provider = build_history_provider(
     db_path=os.getenv("HISTORY_DB_PATH", "./data/history/surgical_context.sqlite3"),
     retention_days=parse_retention_days(os.getenv("HISTORY_RETENTION_DAYS", "")),
 )
+
+
+def _context_arbitrator(db: Any, workspace_id: str) -> ContextArbitrator:
+    """Workspace-scoped graph + vector retrieval with explicit provider wiring."""
+    return ContextArbitrator(
+        db,
+        overlay,
+        vector_db,
+        workspace_id=workspace_id,
+        workspace_meta=neo4j_workspace_meta(db),
+        vector_search=VectorSearcher(vector_db),
+    )
 
 
 class IndexRequest(BaseModel):
@@ -154,6 +174,9 @@ class UnifiedSearchResponse(BaseModel):
     workspace_id: str
     results: list[dict[str, Any]]
     total: int
+    index_manifest_id: str | None = None
+    index_manifest_schema_version: int | None = None
+    retrieval_trace: dict[str, Any] | None = None
 
 
 class AskResponse(BaseModel):
@@ -169,6 +192,8 @@ class AskResponse(BaseModel):
     feedback_token: str
     model_route: dict[str, Any]
     metrics: dict[str, Any]
+    index_manifest_id: str | None = None
+    index_manifest_schema_version: int | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -331,6 +356,37 @@ def _attach_trace_metadata(ctx: PromptContext, trace: RequestTrace) -> None:
     ctx.resolver_version = RESOLVER_VERSION
 
 
+def _index_manifest_fields(db: Any, workspace_id: str) -> tuple[str | None, int | None]:
+    """Read manifest id + schema version from Neo4j Workspace (if indexed)."""
+    get_m = getattr(db, "get_index_manifest", None)
+    if not callable(get_m):
+        return None, None
+    try:
+        raw = get_m(workspace_id=workspace_id)
+    except TypeError:
+        raw = get_m(workspace_id)
+    if not isinstance(raw, dict):
+        return None, None
+    mid = raw.get("manifest_id")
+    manifest_id = str(mid) if mid else None
+    schema_v: int | None = None
+    sv = raw.get("manifest_schema_version")
+    if sv is not None:
+        try:
+            schema_v = int(sv)
+        except (TypeError, ValueError):
+            pass
+    return manifest_id, schema_v
+
+
+def _attach_index_manifest(ctx: PromptContext, db: Any, workspace_id: str) -> None:
+    mid, sv = _index_manifest_fields(db, workspace_id)
+    if mid:
+        ctx.index_manifest_id = mid
+    if sv is not None:
+        ctx.index_manifest_schema_version = sv
+
+
 def _request_metrics(trace: RequestTrace) -> dict[str, Any]:
     return {
         "stage_timings_ms": dict(trace.stage_timings_ms),
@@ -376,6 +432,9 @@ def _doc_record(doc: Any) -> dict[str, Any]:
         "source_file": getattr(doc, "source_file", ""),
         "score": getattr(doc, "score", None),
         "provenance": getattr(doc, "provenance", []),
+        "anchor_type": getattr(doc, "anchor_type", ""),
+        "anchor_confidence": getattr(doc, "anchor_confidence", 0.0),
+        "primary_bias": getattr(doc, "primary_bias", 0.0),
     }
 
 
@@ -431,7 +490,9 @@ def _history_conversation_for_scope(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Unknown history conversation")
     if conversation["workspace_id"] != workspace_id:
-        raise HTTPException(status_code=403, detail="History conversation belongs to another workspace")
+        raise HTTPException(
+            status_code=403, detail="History conversation belongs to another workspace"
+        )
     if conversation["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="History conversation belongs to another user")
     return conversation
@@ -545,7 +606,7 @@ def _context_from_file(
             provenance=["file"],
         ),
         graph_context=[],
-        documentation=_search_docs(f"{file_path} {question}", limit=3),
+        documentation=_search_docs(f"{file_path} {question}", limit=3, workspace_id=workspace_id),
         mode="file",
         intent=intent.value,
         tier_tokens={"code": estimate_text_tokens(code)},
@@ -554,9 +615,11 @@ def _context_from_file(
     return ctx
 
 
-def _context_from_workspace(question: str, token_budget: int) -> PromptContext | None:
-    docs = _search_docs(question, limit=5)
-    symbols = _search_symbols(question, limit=5)
+def _context_from_workspace(
+    question: str, token_budget: int, *, workspace_id: str
+) -> PromptContext | None:
+    docs = _search_docs(question, limit=5, workspace_id=workspace_id)
+    symbols = _search_symbols(question, limit=5, workspace_id=workspace_id)
     if not docs and not symbols:
         return None
 
@@ -599,19 +662,19 @@ def _context_from_direct(question: str, token_budget: int) -> PromptContext:
     )
 
 
-def _search_docs(query: str, limit: int) -> list[DocChunk]:
+def _search_docs(query: str, limit: int, *, workspace_id: str) -> list[DocChunk]:
     try:
-        return DocResolver(vector_db).search(query, limit=limit)
+        return DocResolver(vector_db).search(query, limit=limit, workspace_id=workspace_id)
     except Exception:
         return []
 
 
-def _search_symbols(query: str, limit: int) -> list[SymbolContext]:
+def _search_symbols(query: str, limit: int, *, workspace_id: str) -> list[SymbolContext]:
     search_symbols = getattr(vector_db, "search_symbols", None)
     if not callable(search_symbols):
         return []
     try:
-        raw_symbols = search_symbols(query, limit=limit, threshold=1.0)
+        raw_symbols = search_symbols(query, limit=limit, threshold=1.0, workspace_id=workspace_id)
     except Exception:
         return []
     return [
@@ -624,6 +687,26 @@ def _search_symbols(query: str, limit: int) -> list[SymbolContext]:
         )
         for symbol in raw_symbols
     ]
+
+
+def _vector_search_docs(query: str, limit: int, *, workspace_id: str) -> list[dict[str, Any]]:
+    try:
+        return vector_db.search(query, limit, workspace_id=workspace_id)
+    except TypeError:
+        return vector_db.search(query, limit)
+
+
+def _vector_search_symbols(query: str, limit: int, *, workspace_id: str) -> list[dict[str, Any]]:
+    search_symbols = getattr(vector_db, "search_symbols", None)
+    if not callable(search_symbols):
+        return []
+    try:
+        return cast(
+            list[dict[str, Any]],
+            search_symbols(query, limit, threshold=1.0, workspace_id=workspace_id),
+        )
+    except TypeError:
+        return cast(list[dict[str, Any]], search_symbols(query, limit, threshold=1.0))
 
 
 def _doc_tier_tokens(docs: list[DocChunk]) -> dict[str, int]:
@@ -641,7 +724,7 @@ def _resolve_ask_context(
 ) -> PromptContext:
     symbol_error = ""
     if req.symbol:
-        arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
+        arb = _context_arbitrator(db, workspace_id)
         ctx = arb.get_context_for_symbol(
             req.symbol,
             question=req.question,
@@ -664,7 +747,9 @@ def _resolve_ask_context(
             _mark_ask_fallback(file_ctx, req, "file", symbol_error)
             return file_ctx
 
-    workspace_ctx = _context_from_workspace(req.question, req.token_budget)
+    workspace_ctx = _context_from_workspace(
+        req.question, req.token_budget, workspace_id=workspace_id
+    )
     if workspace_ctx:
         _mark_ask_fallback(workspace_ctx, req, "workspace", symbol_error)
         return workspace_ctx
@@ -701,10 +786,7 @@ def _mark_ask_fallback(
             {
                 "code": budget["fallback_reason"],
                 "severity": "warning",
-                "message": (
-                    f"Symbol '{req.symbol}' was not found; "
-                    f"using {display_level} context."
-                ),
+                "message": (f"Symbol '{req.symbol}' was not found; using {display_level} context."),
             },
         )
 
@@ -718,7 +800,9 @@ def _fallback_reason(symbol_error: str) -> str:
 
 
 def _append_context_warning(current: Any, warning: dict[str, str]) -> list[dict[str, str]]:
-    warnings = [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+    warnings = (
+        [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+    )
     if not any(item.get("code") == warning["code"] for item in warnings):
         warnings.append(warning)
     return warnings
@@ -752,11 +836,14 @@ def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
     file_hash = hash_file(file_path)
     with job_log.track_file_job(file_path, file_hash=file_hash) as tracked_job_id:
         with db_session(user_id=user_id) as db:
+            extractor = SymbolExtractor()
+            if hasattr(extractor, "project_root"):
+                extractor.project_root = os.path.dirname(file_path)
             index_file(
                 file_path,
                 db,
                 vector_db,
-                SymbolExtractor(),
+                extractor,
                 workspace_id=workspace_id,
             )
             resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
@@ -831,6 +918,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
             )
         if not indexable_paths:
             continue
+        extractor.project_root = os.path.commonpath(indexable_paths) if indexable_paths else None
 
         current_hashes = {path: hash_file(path) for path in indexable_paths}
         completed = 0
@@ -1039,6 +1127,26 @@ def index_queue_status(
     return {"status": "ok", "queue": index_queue.snapshot()}
 
 
+@app.get("/index/manifest")
+def index_manifest_endpoint(
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Return the latest index manifest stored on the Workspace node (Neo4j)."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    with db_session(user_id=user_id) as db:
+        get_m = getattr(db, "get_index_manifest", None)
+        manifest = get_m(workspace_id=workspace_id) if callable(get_m) else None
+    if not manifest:
+        raise HTTPException(
+            status_code=404,
+            detail="Index manifest not found for this workspace (run indexing first)",
+        )
+    return manifest
+
+
 @app.post("/index/docs", response_model=StatusPathResponse)
 def index_docs_endpoint(
     req: IndexDocsRequest,
@@ -1065,8 +1173,8 @@ def search(
     x_workspace: str = Header(None),
 ):
     _resolve_request_user(x_user_id, authorization)
-    _resolve_workspace(x_workspace)
-    return {"results": vector_db.search(req.query, req.limit)}
+    workspace_id = _resolve_workspace(x_workspace)
+    return {"results": _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)}
 
 
 @app.post("/search/unified", response_model=UnifiedSearchResponse)
@@ -1083,9 +1191,10 @@ def unified_search(
     trace = _start_trace("/search/unified", x_trace_id, workspace_id)
     status = "ok"
     results: list[UnifiedSearchResult] = []
+    retrieval_trace_payload: dict[str, Any] | None = None
     try:
         with trace.stage("vector_docs"):
-            docs = vector_db.search(req.query, req.limit)
+            docs = _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)
         for rank, doc in enumerate(docs):
             score = doc.get("score")
             results.append(
@@ -1101,10 +1210,9 @@ def unified_search(
                 }
             )
 
-        search_symbols = getattr(vector_db, "search_symbols", None)
-        if callable(search_symbols):
-            with trace.stage("vector_symbols"):
-                symbols = search_symbols(req.query, req.limit, threshold=1.0)
+        with trace.stage("vector_symbols"):
+            symbols = _vector_search_symbols(req.query, req.limit, workspace_id=workspace_id)
+        if symbols:
             for rank, symbol in enumerate(symbols):
                 score = symbol.get("score")
                 if score is None and symbol.get("distance") is not None:
@@ -1125,42 +1233,49 @@ def unified_search(
         if req.include_graph and req.symbol:
             with trace.stage("graph_neighbors"):
                 with db_session(user_id=user_id) as db:
-                    arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
+                    arb = _context_arbitrator(db, workspace_id)
                     ctx = arb.get_context_for_symbol(
                         req.symbol,
                         question=req.query,
                         token_budget=req.token_budget,
                     )
             if not isinstance(ctx, str):
-                for symbol, provenance in [
+                retrieval_trace_payload = ctx.retrieval_trace
+                graph_symbols: list[tuple[SymbolContext, str]] = [
                     (ctx.primary_source, "graph:primary"),
                     *[(dep, "graph:neighbor") for dep in ctx.graph_context],
-                ]:
+                ]
+                for graph_symbol, provenance in graph_symbols:
                     results.append(
                         {
                             "type": "symbol",
-                            "title": symbol.symbol,
-                            "file_path": symbol.file_path,
-                            "content": symbol.code,
-                            "score": symbol.relevance_score,
-                            "scores": {"relevance": symbol.relevance_score},
+                            "title": graph_symbol.symbol,
+                            "file_path": graph_symbol.file_path,
+                            "content": graph_symbol.code,
+                            "score": graph_symbol.relevance_score,
+                            "scores": {"relevance": graph_symbol.relevance_score},
                             "provenance": [provenance],
                             "metadata": {
-                                "relation": symbol.relation,
-                                "direction": symbol.direction,
-                                "depth": symbol.depth,
-                                "is_dirty": symbol.is_dirty,
+                                "relation": graph_symbol.relation,
+                                "direction": graph_symbol.direction,
+                                "depth": graph_symbol.depth,
+                                "is_dirty": graph_symbol.is_dirty,
                             },
                         }
                     )
 
         ranked = dedupe_and_rank(results, req.limit)
         trace.token_counts["query"] = estimate_text_tokens(req.query)
+        with db_session(user_id=user_id) as db:
+            mid, sv = _index_manifest_fields(db, workspace_id)
         return {
             "trace_id": trace.trace_id,
             "workspace_id": workspace_id,
             "results": ranked,
             "total": len(ranked),
+            "index_manifest_id": mid,
+            "index_manifest_schema_version": sv,
+            "retrieval_trace": retrieval_trace_payload,
         }
     except Exception:
         status = "error"
@@ -1286,6 +1401,7 @@ def ask(
                 audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
 
             _attach_trace_metadata(ctx, trace)
+            _attach_index_manifest(ctx, db, workspace_id)
             feedback_token = feedback_store.issue_token()
             ctx.feedback_token = feedback_token
             with trace.stage("feedback_snapshot"):
@@ -1310,6 +1426,8 @@ def ask(
                 "feedback_token": feedback_token,
                 "model_route": trace.model_route,
                 "metrics": _request_metrics(trace),
+                "index_manifest_id": ctx.index_manifest_id or None,
+                "index_manifest_schema_version": ctx.index_manifest_schema_version,
             }
     except HTTPException:
         raise
@@ -1381,6 +1499,7 @@ def ask_stream(
                     audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
 
                 _attach_trace_metadata(ctx, trace)
+                _attach_index_manifest(ctx, db, workspace_id)
                 feedback_token = feedback_store.issue_token()
                 ctx.feedback_token = feedback_token
                 with trace.stage("feedback_snapshot"):
@@ -1401,6 +1520,8 @@ def ask_stream(
                         "feedback_token": feedback_token,
                         "context": ctx.to_dict(),
                         "metrics": _request_metrics(trace),
+                        "index_manifest_id": ctx.index_manifest_id or None,
+                        "index_manifest_schema_version": ctx.index_manifest_schema_version,
                     },
                 )
                 yield format_sse("done", {"type": "done", "trace_id": trace.trace_id})
@@ -1494,7 +1615,9 @@ def record_history_ask(
                 user_id=user_id,
             )
         else:
-            title = req.prompt_summary or (f"Ask about {req.symbol}" if req.symbol else "Workspace ask")
+            title = req.prompt_summary or (
+                f"Ask about {req.symbol}" if req.symbol else "Workspace ask"
+            )
             conversation_id = history_provider.create_conversation(
                 workspace_id=workspace_id,
                 user_id=user_id,

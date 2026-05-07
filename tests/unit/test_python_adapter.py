@@ -48,6 +48,48 @@ def bar():
         assert len(calls) > 0
         assert any(call.get("callee_name") == "bar" for call in calls)
 
+    def test_external_from_import_sets_qualified_name_and_args(self, adapter):
+        source = """
+from pathlib import Path
+
+def get_root():
+    pass
+
+def route(root):
+    Path(root)
+"""
+        calls = adapter.extract_calls_from_source(source, "routes.py")
+        path_call = next(c for c in calls if c.get("callee_name") == "Path")
+        assert path_call.get("callee_qualified_name") == "pathlib.Path"
+        assert path_call.get("arguments") == ["root"]
+
+    def test_external_module_attribute_sets_qualified_name_and_args(self, adapter):
+        source = """
+import pathlib
+
+def get_root():
+    pass
+
+def route(root):
+    pathlib.Path(root)
+"""
+        calls = adapter.extract_calls_from_source(source, "routes.py")
+        path_call = next(c for c in calls if c.get("callee_name") == "Path")
+        assert path_call.get("callee_qualified_name") == "pathlib.Path"
+        assert path_call.get("arguments") == ["root"]
+
+    def test_local_symbol_has_no_import_qualified_name(self, adapter):
+        source = """
+def Path():
+    pass
+
+def foo():
+    Path()
+"""
+        calls = adapter.extract_calls_from_source(source, "local.py")
+        path_call = next(c for c in calls if c.get("callee_name") == "Path")
+        assert "callee_qualified_name" not in path_call
+
     def test_language_name(self, adapter):
         assert adapter.language_name == "python"
 

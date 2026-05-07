@@ -42,7 +42,7 @@ class DashboardPanel {
     metrics: emptyDashboardMetrics(),
     healthChecks: [],
     notices: [],
-    workspaceId: 'local/default@main',
+    workspaceId: '',
     warnings: [],
     isLoading: false,
     error: null,

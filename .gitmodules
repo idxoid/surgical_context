@@ -1,0 +1,6 @@
+[submodule "context-deduplicator"]
+	path = context-deduplicator
+	url = git@github.com:idxoid/context-deduplicator.git
+[submodule "marginal-utility-selector"]
+	path = marginal-utility-selector
+	url = https://github.com/idxoid/-marginal-utility-selector.git

@@ -1,11 +1,15 @@
 """PromptCompiler — deterministic PromptContext assembly."""
 
+from collections import defaultdict
+
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.types import DocChunk, PromptContext, Subgraph, SymbolContext
 
 
 class PromptCompiler:
     """Stateless compiler: maps expanded graph + resolved code + docs → PromptContext."""
+
+    MAX_DOCS_PER_SOURCE = 2
 
     def compile(
         self,
@@ -21,16 +25,24 @@ class PromptCompiler:
                 symbol=node.name,
                 file_path=node.file_path,
                 relation=node.relation,
+                uid=node.uid,
+                range=node.range,
+                kind=getattr(node, "kind", ""),
                 direction=node.direction,
                 depth=node.depth,
                 relevance_score=node.relevance_score,
+                graph_score=getattr(node, "graph_score", 0.0),
+                semantic_score=getattr(node, "semantic_score", 0.0),
+                blended_score=getattr(node, "blended_score", node.relevance_score),
+                intent_weight=getattr(node, "intent_weight", 0.0),
                 is_dirty=is_dirty,
                 code=code,
-                provenance=["graph", "code_resolver"],
+                provenance=getattr(node, "provenance", None) or ["graph", "code_resolver"],
             )
 
         primary = to_symbol_context(subgraph.primary)
-        graph = [to_symbol_context(n) for n in subgraph.nodes]
+        graph = self._dedupe_graph_context([to_symbol_context(n) for n in subgraph.nodes])
+        docs = self._dedupe_docs(docs)
 
         return PromptContext(
             primary_source=primary,
@@ -54,12 +66,19 @@ class PromptCompiler:
                 symbol=node.name,
                 file_path=node.file_path,
                 relation=node.relation,
+                uid=node.uid,
+                range=node.range,
+                kind=getattr(node, "kind", ""),
                 direction=node.direction,
                 depth=node.depth,
                 relevance_score=node.relevance_score,
+                graph_score=getattr(node, "graph_score", 0.0),
+                semantic_score=getattr(node, "semantic_score", 0.0),
+                blended_score=getattr(node, "blended_score", node.relevance_score),
+                intent_weight=getattr(node, "intent_weight", 0.0),
                 is_dirty=is_dirty,
                 code=code,
-                provenance=["graph", "code_resolver"],
+                provenance=getattr(node, "provenance", None) or ["graph", "code_resolver"],
             )
 
         def estimate_tokens(text: str) -> int:
@@ -80,7 +99,10 @@ class PromptCompiler:
             return "idea"  # default to idea tier
 
         primary = to_symbol_context(subgraph.primary)
-        graph = [to_symbol_context(n) for n in subgraph.nodes]
+        graph = self._dedupe_graph_context(
+            [to_symbol_context(n) for n in subgraph.nodes],
+            intent=intent,
+        )
 
         # Calculate tokens per tier (for observability)
         tier_tokens = {
@@ -95,7 +117,7 @@ class PromptCompiler:
             "concept": [],
             "idea": [],
         }
-        for doc in docs:
+        for doc in self._dedupe_docs(docs, intent=intent):
             tier = infer_doc_type(doc.source_file)
             if tier in docs_by_tier:
                 docs_by_tier[tier].append(doc)
@@ -144,3 +166,78 @@ class PromptCompiler:
             intent=intent.value,
             tier_tokens=tier_tokens,
         )
+
+    def _dedupe_graph_context(
+        self,
+        graph: list[SymbolContext],
+        *,
+        intent: Intent | None = None,
+    ) -> list[SymbolContext]:
+        """Collapse exact duplicate code snippets that add no new evidence.
+
+        This is intentionally post-resolution: some duplicate noise only becomes
+        obvious after multiple symbols resolve to the same implementation text.
+        We keep impact-analysis contexts untouched because parallel call sites in
+        different files can matter there.
+        """
+        if intent == Intent.IMPACT_ANALYSIS:
+            return graph
+
+        deduped: list[SymbolContext] = []
+        seen_exact_code: dict[tuple[str, str], int] = {}
+        for symbol in graph:
+            code_key = self._normalized_code_key(symbol.code)
+            dedupe_key = (symbol.symbol, code_key) if code_key else None
+            if dedupe_key and dedupe_key in seen_exact_code:
+                existing_index = seen_exact_code[dedupe_key]
+                existing = deduped[existing_index]
+                preferred = self._preferred_symbol_context(existing, symbol)
+                preferred.provenance = sorted(
+                    set(existing.provenance or []).union(symbol.provenance or [])
+                )
+                deduped[existing_index] = preferred
+                continue
+            if dedupe_key:
+                seen_exact_code[dedupe_key] = len(deduped)
+            deduped.append(symbol)
+        return deduped
+
+    def _dedupe_docs(
+        self,
+        docs: list[DocChunk],
+        *,
+        intent: Intent | None = None,
+    ) -> list[DocChunk]:
+        """Remove repeated doc chunks and cap same-file repetition."""
+        max_per_source = None if intent == Intent.IMPACT_ANALYSIS else self.MAX_DOCS_PER_SOURCE
+        per_source_counts: dict[str, int] = defaultdict(int)
+        seen_chunk_ids: set[str] = set()
+        seen_exact_content: set[tuple[str, str]] = set()
+        deduped: list[DocChunk] = []
+        for doc in docs:
+            if doc.chunk_id in seen_chunk_ids:
+                continue
+            content_key = self._normalized_code_key(doc.content)
+            exact_key = (doc.source_file, content_key)
+            if content_key and exact_key in seen_exact_content:
+                continue
+            if max_per_source is not None and per_source_counts[doc.source_file] >= max_per_source:
+                continue
+            deduped.append(doc)
+            seen_chunk_ids.add(doc.chunk_id)
+            if content_key:
+                seen_exact_content.add(exact_key)
+            per_source_counts[doc.source_file] += 1
+        return deduped
+
+    @staticmethod
+    def _normalized_code_key(text: str) -> str:
+        if not text:
+            return ""
+        return " ".join(text.split())
+
+    @staticmethod
+    def _preferred_symbol_context(a: SymbolContext, b: SymbolContext) -> SymbolContext:
+        a_key = (a.blended_score or a.relevance_score, a.relevance_score, -a.depth)
+        b_key = (b.blended_score or b.relevance_score, b.relevance_score, -b.depth)
+        return a if a_key >= b_key else b

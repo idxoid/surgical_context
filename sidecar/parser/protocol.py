@@ -88,11 +88,13 @@ class LanguageAdapter(ABC):
         """
         pass
 
-    def extract_imports(self, source_code: str, file_path: str) -> list[ImportEdge]:
+    def extract_imports(self, source_code: str, file_path: str, *, tree=None) -> list[ImportEdge]:
         """
         Parse source code and extract import/require statements.
 
         Optional — adapters override only if language has imports.
+        ``tree`` is an optional pre-parsed tree-sitter tree the caller may
+        pass to avoid re-parsing; adapters not based on tree-sitter ignore it.
 
         Returns:
             List of ImportEdge(source_file, target_module_name, import_type) tuples.
@@ -100,14 +102,40 @@ class LanguageAdapter(ABC):
         """
         return []
 
-    def extract_inheritance(self, source_code: str, file_path: str) -> list[InheritanceEdge]:
+    def extract_inheritance(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[InheritanceEdge]:
         """
         Parse source code and extract class inheritance / interface implementation.
 
         Optional — adapters override only if language has inheritance.
+        ``tree`` is an optional pre-parsed tree-sitter tree the caller may
+        pass to avoid re-parsing; adapters not based on tree-sitter ignore it.
 
         Returns:
             List of InheritanceEdge(subclass_uid, superclass_name, is_interface) tuples.
             superclass_name is unresolved — matched by name during indexing.
         """
         return []
+
+    def extract_all(
+        self, source_code: str, file_path: str
+    ) -> tuple[
+        list[SymbolMetadata],
+        list[dict],
+        list[ImportEdge],
+        list[InheritanceEdge],
+    ]:
+        """One-shot extraction of every per-file artifact.
+
+        Default implementation calls the four legacy methods, which means
+        tree-sitter parses the source four times. ``TreeSitterAdapter``
+        overrides this to parse once and reuse the AST. Adapters that
+        don't extend ``TreeSitterAdapter`` get the default fallback for
+        free.
+        """
+        symbols = self.extract_symbols(source_code, file_path)
+        calls = self.extract_calls_from_source(source_code, file_path)
+        imports = self.extract_imports(source_code, file_path)
+        inheritance = self.extract_inheritance(source_code, file_path)
+        return symbols, calls, imports, inheritance

@@ -19,8 +19,11 @@ data/
 import/
 logs/
 plugins/
-QA/
 .surgical_context/
+QA/__pycache__/
+QA/baselines.jsonl
+QA/benchmark_runs.jsonl
+QA/repos/*
 
 # Env
 .env
@@ -42,3 +45,18 @@ dist_bin/
 my_test_project/
 .codex
 .gitignore
+
+QA/baselines.jsonl
+
+CLAUDE.md
+
+# Graphify (graph stored in vault, not in project)
+graphify-out/
+
+# Extension node_modules (exclude from graphify)
+extension/node_modules/
+extension/dist/README*
+AI_RULES.md
+CODEX.md
+AGENTS.md
+.cursor/rules/graphify.mdc

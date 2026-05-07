@@ -17,6 +17,9 @@ from sidecar.indexer.job_log import IndexJobLog
 class FakeCtx:
     intent = "exploration"
     mode = "surgical_full"
+    index_manifest_id = ""
+    index_manifest_schema_version = None
+    retrieval_trace: dict = {}
     primary_source = SymbolContext(
         symbol="process_payment",
         file_path="/repo/payment.py",
@@ -69,6 +72,9 @@ class FakeDb:
     def is_cloud(self):
         return False
 
+    def get_index_manifest(self, workspace_id=None):
+        return None
+
     def delete_symbols_for_file(self, file_path, workspace_id="local/surgical_context@main"):
         return None
 
@@ -78,7 +84,12 @@ class FakeDb:
 
 class FakeContextArbitrator:
     def __init__(
-        self, db, overlay=None, vector_db=None, workspace_id="local/surgical_context@main"
+        self,
+        db,
+        overlay=None,
+        vector_db=None,
+        workspace_id="local/surgical_context@main",
+        **kwargs,
     ):
         self.db = db
         self.overlay = overlay
@@ -382,9 +393,9 @@ def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(
     assert request_bundle["message"]["id"] == body["assistant_message_id"]
     assert request_bundle["ask_snapshot"]["feedback_token"] == "fbk_history"
     assert request_bundle["inspector_snapshot"]["snapshot"]["redacted_keys"] == ["content"]
-    assert request_bundle["impact_snapshot"]["snapshot"]["affected_symbols"][0]["redacted_keys"] == [
-        "code"
-    ]
+    assert request_bundle["impact_snapshot"]["snapshot"]["affected_symbols"][0][
+        "redacted_keys"
+    ] == ["code"]
 
     with pytest.raises(HTTPException) as exc_info:
         main.history_conversation(body["conversation_id"], x_user_id="Bob")

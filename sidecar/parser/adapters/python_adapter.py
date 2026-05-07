@@ -1,11 +1,18 @@
 """Python language adapter using tree-sitter."""
 
+import importlib.metadata
 import re
+import sys
+from functools import lru_cache
+from pathlib import Path
+
+from tree_sitter import Query
 
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
 from sidecar.parser.uid import (
     compute_uid,
+    current_project_root,
     module_name_from_path,
     qualified_name_for,
     signature_from_node,
@@ -50,59 +57,12 @@ class PythonAdapter(TreeSitterAdapter):
             (import_statement name: (identifier) @import.name)
         """
 
-    # Known stdlib and third-party top-level packages to skip
-    _EXTERNAL_PREFIXES = {
-        "os",
-        "sys",
-        "re",
-        "io",
-        "abc",
-        "ast",
-        "math",
-        "time",
-        "json",
-        "uuid",
-        "enum",
-        "copy",
-        "typing",
-        "hashlib",
-        "pathlib",
-        "logging",
-        "dataclasses",
-        "collections",
-        "functools",
-        "itertools",
-        "contextlib",
-        "threading",
-        "multiprocessing",
-        "subprocess",
-        "shutil",
-        "tempfile",
-        "unittest",
-        "argparse",
-        "heapq",
-        "struct",
-        "string",
-        "textwrap",
-        # third-party
-        "neo4j",
-        "lancedb",
-        "fastapi",
-        "pydantic",
-        "uvicorn",
-        "ollama",
-        "yaml",
-        "tiktoken",
-        "numpy",
-        "pandas",
-        "sentence_transformers",
-        "tree_sitter",
-        "tree_sitter_languages",
-        "pathspec",
-    }
+    def extract_imports(self, source_code: str, file_path: str, *, tree=None) -> list[ImportEdge]:
+        """Extract only intra-project import statements (skips stdlib and third-party).
 
-    def extract_imports(self, source_code: str, file_path: str) -> list[ImportEdge]:
-        """Extract only intra-project import statements (skips stdlib and third-party)."""
+        Imports are line-based regex; ``tree`` is unused but accepted for
+        ``extract_all`` parity.
+        """
         imports = []
         for line in source_code.split("\n"):
             line = line.strip()
@@ -110,22 +70,69 @@ class PythonAdapter(TreeSitterAdapter):
                 parts = line[7:].split(",")
                 for part in parts:
                     module = part.strip().split(" as ")[0].strip()
-                    if module and not self._is_external(module):
+                    if module and not self._is_external(module, file_path=file_path):
                         imports.append(ImportEdge(file_path, module, "direct"))
             elif line.startswith("from "):
                 match = line.split(" import ")
                 if len(match) == 2:
                     module = match[0][5:].strip()
-                    if module and module != "." and not self._is_external(module.lstrip(".")):
+                    if (
+                        module
+                        and module != "."
+                        and not self._is_external(module.lstrip("."), file_path=file_path)
+                    ):
                         imports.append(ImportEdge(file_path, module, "from_package"))
         return imports
 
-    def _is_external(self, module: str) -> bool:
+    def _is_external(self, module: str, *, file_path: str | None = None) -> bool:
         top = module.split(".")[0]
-        return top in self._EXTERNAL_PREFIXES
+        if not top:
+            return False
+        if self._is_local_module_root(top, file_path=file_path):
+            return False
+        if top in sys.stdlib_module_names:
+            return True
+        return top in self._installed_top_level_packages()
 
-    def extract_inheritance(self, source_code: str, file_path: str) -> list[InheritanceEdge]:
-        """Extract class inheritance from Python source."""
+    def _is_local_module_root(self, top: str, *, file_path: str | None = None) -> bool:
+        if file_path:
+            parent_dirs = {parent.name for parent in Path(file_path).parents if parent.name}
+            if top in parent_dirs:
+                return True
+
+        roots: list[Path] = []
+        project_root = current_project_root()
+        if project_root:
+            roots.append(Path(project_root))
+        roots.append(Path.cwd())
+
+        for root in roots:
+            try:
+                resolved = root.resolve()
+            except OSError:
+                continue
+            if (resolved / top / "__init__.py").exists() or (resolved / f"{top}.py").exists():
+                return True
+            src_root = resolved / "src"
+            if (src_root / top / "__init__.py").exists() or (src_root / f"{top}.py").exists():
+                return True
+        return False
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _installed_top_level_packages() -> frozenset[str]:
+        try:
+            return frozenset(importlib.metadata.packages_distributions().keys())
+        except Exception:
+            return frozenset()
+
+    def extract_inheritance(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[InheritanceEdge]:
+        """Extract class inheritance from Python source.
+
+        Line-based scan; ``tree`` is accepted for ``extract_all`` parity.
+        """
         edges = []
         lines = source_code.split("\n")
         for line in lines:
@@ -142,13 +149,41 @@ class PythonAdapter(TreeSitterAdapter):
                             edges.append(InheritanceEdge(subclass_uid, base_name, False))
         return edges
 
-    def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
-        """Extract function calls and attach resolver metadata when statically resolvable."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
-        query = self.language.query(self.call_query)
-        captures = query.captures(tree.root_node)
+    def _positional_identifier_arguments(
+        self, call_node, source_code: str, *, limit: int = 8
+    ) -> list[str]:
+        """Leading positional arguments that are bare identifiers (for DI-style hints)."""
+        arg_list = call_node.child_by_field_name("arguments")
+        if arg_list is None:
+            return []
+        out: list[str] = []
+        for child in arg_list.named_children:
+            if child.type == "keyword_argument":
+                break
+            if child.type == "identifier":
+                out.append(source_code[child.start_byte : child.end_byte])
+                if len(out) >= limit:
+                    break
+                continue
+            break
+        return out
 
-        symbols = self.extract_symbols(source_code, file_path)
+    def extract_calls_from_source(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """Extract function calls and attach resolver metadata when statically resolvable."""
+        if tree is None:
+            tree = self._parse(source_code)
+        query = Query(self.language, self.call_query)
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for _match_id, captures_dict in query.matches(tree.root_node):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
+
+        symbols = self.extract_symbols(source_code, file_path, tree=tree)
         by_name: dict[str, list] = {}
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
@@ -216,6 +251,9 @@ class PythonAdapter(TreeSitterAdapter):
                     rel_type = "CALLS_DYNAMIC"
                     tier = "dynamic"
                     confidence = 0.7
+                    if receiver_text in import_bindings:
+                        base = import_bindings[receiver_text]
+                        callee_qualified_name = f"{base}.{call_name}"
             else:
                 continue
 
@@ -235,6 +273,9 @@ class PythonAdapter(TreeSitterAdapter):
                 call["callee_uid"] = callee_uid
             if callee_qualified_name:
                 call["callee_qualified_name"] = callee_qualified_name
+            pos_args = self._positional_identifier_arguments(node, source_code)
+            if pos_args:
+                call["arguments"] = pos_args
             calls.append(call)
 
         return calls
@@ -304,8 +345,6 @@ class PythonAdapter(TreeSitterAdapter):
             from_match = re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", stripped)
             if from_match:
                 import_module, names = from_match.groups()
-                if self._is_external(import_module.lstrip(".")):
-                    continue
                 target_module = self._resolve_import_module(import_module, package)
                 for item in names.split(","):
                     item = item.strip()
@@ -322,7 +361,7 @@ class PythonAdapter(TreeSitterAdapter):
                     item = item.strip()
                     original, _, alias = item.partition(" as ")
                     target_module = original.strip()
-                    if not target_module or self._is_external(target_module):
+                    if not target_module:
                         continue
                     local_name = alias.strip() or target_module.split(".")[0]
                     bindings[local_name] = target_module

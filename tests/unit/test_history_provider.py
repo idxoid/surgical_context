@@ -96,7 +96,9 @@ def test_sqlite_history_provider_persists_conversations_messages_and_snapshots(t
     assert bundle["ask_snapshot"]["snapshot"]["model_route"]["provider"] == "ollama"
     assert bundle["ask_snapshot"]["snapshot"]["redacted_keys"] == ["answer", "question"]
     assert bundle["ask_snapshot"]["snapshot"]["primary_source"]["redacted_keys"] == ["code"]
-    assert bundle["inspector_snapshot"]["snapshot"]["documentation"][0]["redacted_keys"] == ["content"]
+    assert bundle["inspector_snapshot"]["snapshot"]["documentation"][0]["redacted_keys"] == [
+        "content"
+    ]
     assert bundle["impact_snapshot"]["snapshot"]["affected_symbols"][0]["redacted_keys"] == ["code"]
 
     provider.set_selected_request(conversation_id, "req-1")
@@ -111,7 +113,9 @@ def test_sqlite_history_provider_persists_conversations_messages_and_snapshots(t
     assert request_bundle["ask_snapshot"]["trace_id"] == "trace-1"
 
     with sqlite3.connect(provider.db_path) as conn:
-        stored = "\n".join(row[0] for row in conn.execute("SELECT snapshot_json FROM ask_snapshots"))
+        stored = "\n".join(
+            row[0] for row in conn.execute("SELECT snapshot_json FROM ask_snapshots")
+        )
     assert raw_question not in stored
     assert raw_answer not in stored
     assert "def process_payment" not in stored
@@ -177,13 +181,9 @@ def test_sqlite_history_provider_does_not_truncate_text_columns(tmp_path):
     assert snapshot["snapshot"]["safe_long_metadata"] == long_metadata
 
     with sqlite3.connect(provider.db_path) as conn:
-        message_types = {
-            row[1]: row[2]
-            for row in conn.execute("PRAGMA table_info(messages)")
-        }
+        message_types = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(messages)")}
         snapshot_types = {
-            row[1]: row[2]
-            for row in conn.execute("PRAGMA table_info(ask_snapshots)")
+            row[1]: row[2] for row in conn.execute("PRAGMA table_info(ask_snapshots)")
         }
 
     assert message_types["content_summary"] == "TEXT"
@@ -204,9 +204,9 @@ def test_sqlite_history_provider_prunes_retained_conversations(tmp_path):
         )
 
     assert provider.prune_retention() == 1
-    assert [item["id"] for item in provider.list_conversations(workspace_id="ws", user_id="alice")] == [
-        kept_conversation_id
-    ]
+    assert [
+        item["id"] for item in provider.list_conversations(workspace_id="ws", user_id="alice")
+    ] == [kept_conversation_id]
 
 
 def test_history_provider_modes_and_retention_parsing(tmp_path):

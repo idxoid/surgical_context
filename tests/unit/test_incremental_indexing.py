@@ -1,10 +1,11 @@
 """Unit tests for incremental indexing with hash-based skip logic."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.indexer.code import index_file
-from sidecar.parser.protocol import SymbolMetadata
+from sidecar.parser.protocol import ImportEdge, SymbolMetadata
 
 
 def _symbol(uid: str, content_hash: str, start_line: int = 1, end_line: int = 2):
@@ -50,6 +51,28 @@ class TestIncrementalIndexing:
             result = db.get_file_hashes(["/file1.py", "/file2.py"])
             assert result == {"/file1.py": "hash1", "/file2.py": "hash2"}
 
+    def test_repository_profile_round_trips_through_workspace_metadata(self):
+        db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
+        mock_session = MagicMock()
+        profile = {
+            "schema_version": 1,
+            "workspace_id": "local/repo@main",
+            "indexability": "medium",
+        }
+
+        with patch.object(db.driver, "session") as mock_ctx:
+            mock_ctx.return_value.__enter__.return_value = mock_session
+            db.save_repository_profile(profile, workspace_id="local/repo@main")
+            call_args = mock_session.run.call_args
+            assert "repository_profile_json" in call_args.args[0]
+            assert json.loads(call_args.kwargs["profile_json"]) == profile
+
+        mock_session = MagicMock()
+        mock_session.run.return_value.single.return_value = {"profile_json": json.dumps(profile)}
+        with patch.object(db.driver, "session") as mock_ctx:
+            mock_ctx.return_value.__enter__.return_value = mock_session
+            assert db.get_repository_profile("local/repo@main") == profile
+
     def test_delete_symbols_for_file_with_mock_session(self):
         """Test that delete_symbols_for_file sends correct Cypher."""
         db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
@@ -65,6 +88,43 @@ class TestIncrementalIndexing:
                 "path": "/test.py",
                 "workspace_id": "local/surgical_context@main",
             }
+
+    def test_upsert_nodes_batches_symbols_with_unwind(self):
+        tx = MagicMock()
+
+        Neo4jClient._upsert_nodes(
+            tx,
+            "/test.py",
+            "file-hash",
+            [_symbol("one", "hash-1"), _symbol("two", "hash-2")],
+            "acme/repo@main",
+        )
+
+        assert tx.run.call_count == 2
+        query = tx.run.call_args.args[0]
+        params = tx.run.call_args.kwargs
+        assert "UNWIND $symbols AS symbol" in query
+        assert params["workspace_id"] == "acme/repo@main"
+        assert len(params["symbols"]) == 2
+
+    def test_create_import_relations_batches_rows_with_unwind(self):
+        tx = MagicMock()
+
+        Neo4jClient._create_import_relations(
+            tx,
+            [
+                ImportEdge("/repo/a.py", "pkg.module_a", "direct"),
+                ImportEdge("/repo/a.py", "pkg.module_b", "direct"),
+            ],
+            "acme/repo@main",
+        )
+
+        tx.run.assert_called_once()
+        query = tx.run.call_args.args[0]
+        params = tx.run.call_args.kwargs
+        assert "UNWIND $imports AS imp" in query
+        assert params["workspace_id"] == "acme/repo@main"
+        assert len(params["imports"]) == 2
 
     def test_hash_skip_gate_with_unchanged_file(self):
         """Test that unchanged files are correctly identified."""

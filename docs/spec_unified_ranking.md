@@ -1,10 +1,10 @@
 # Spec — Unified Ranking (Phase 9)
 
-> **Status:** Proposed. Merges graph traversal and semantic search into a single ranked candidate pool. Supersedes the current "graph then append top-3 docs" pattern.
+> **Status:** Implemented for local workspace retrieval. The current `UnifiedRanker` is the default path when a vector DB is available. Tenant API candidates remain future work.
 
 ## 1. Problem
 
-Today retrieval runs in two disconnected tracks:
+Historically retrieval ran in two disconnected tracks:
 
 - **Graph track** (`GraphExpander`): BFS from the target symbol, returns up to N neighbors scored by `relation_prior + fan_in - cost - distance` ([spec_token_budget_bfs.md](spec_token_budget_bfs.md)).
 - **Semantic track** (`/ask` doc append): LanceDB top-k over doc chunks by query embedding similarity; appended after graph.
@@ -49,12 +49,18 @@ Both tracks emit candidates into a single pool before budget-constrained selecti
 
 ### 2.2 Candidate Types
 
-Current Phase 9 candidates are symbols and docs. Phase 11 adds tenant API contract candidates from published manifests, using the same scoring/budget rules.
+Current candidates are symbols and docs. A future phase adds tenant API contract candidates from published manifests, using the same scoring and budget rules. The current local ranker also lets a candidate satisfy certain canonical roles through inferred capability support, so role fulfillment is not tied to one framework's exact symbol layout. That includes thin wrapper APIs whose own body is enough to prove orchestration or execution behavior even when nested helpers are not indexed as separate top-level symbols.
+
+The ranker reads `repository_profile.strategy_profile` from the Neo4j `Workspace`. Bundled name/query dispatch for FastAPI, Pydantic, and Redux in `sidecar/context/mechanism_registry.py` is **stubbed** (no preloaded rules); optional `mechanism_required_roles` / `mechanism_role_backfill` on `role_catalog_json` supply templates when present. With Pass 1 roles loaded, `_determine_mechanism_structural` can match a mechanism by overlap between neighborhood roles and those templates.
+
+When no structural match applies, the ranker uses auto-detected mechanism archetypes from the strategy profile (`middleware_pipeline`, `decorator_declares_handler`, etc.) or falls back to `generic` with an adaptive role plan derived from target-local/workspace role supply plus `docs_or_concept`.
+
+Structural roles come from Pass 1 (`derived_role_id`, `role_catalog_json` cluster mapping). `repository_profile` no longer detects framework families by repo/package names or benchmark fixtures; it emits only generic archetype signals such as registries, decorators, declarative modeling, middleware, templates, and generated APIs.
 
 ```python
 @dataclass
 class Candidate:
-    kind: str               # "symbol" | "doc" | "tenant_api"
+    kind: str               # "symbol" | "doc" | "tenant_api" (future)
     uid: str                # symbol UID, doc chunk_id, or contract candidate ID
     token_cost: int
     graph_score: float      # 0 if not reached via graph
@@ -100,7 +106,38 @@ Scores are normalized to `[0, 1]` per track before blending — otherwise raw BF
 
 ### 2.5 Budget Fill
 
-Same "skip but keep trying" loop as the current BFS, now over the unified pool sorted by blended score:
+Current behavior is slightly richer than the original greedy draft:
+
+- fill token costs for vector-only symbols before judging readiness
+- infer a mechanism from the target plus query
+- route lookalike APIs to the right mechanism path instead of relying on one keyword bucket; e.g. Redux Toolkit listener middleware no longer falls into generic store-configuration handling just because the word `middleware` appears in the query
+- resolve package/module-level targets when no symbol exists; e.g. `pydantic.v1` can use `pydantic/v1/__init__.py` as a synthetic primary module target instead of returning a false "symbol not found" success
+- resolve known framework mechanisms through the preloaded mechanism registry, then fall back to index-time repository strategy profiles for unfamiliar repositories
+- compute required roles on a canonical cross-framework taxonomy
+- adapt required roles to availability:
+  - prefer target-local supply (`target + 1-hop`)
+  - fall back to workspace-level supply
+  - for generic/mechanism misses, derive an adaptive role plan instead of static literals
+- treat some roles as capability slots as well as identity slots; e.g. a runtime symbol like `SchemaValidator` can fulfill `validator_handle` if the dedicated wrapper/member symbol is absent
+- let some primary APIs carry supporting roles directly when their implementation body already contains the relevant orchestration path
+- let generic runtime/test signals fulfill impact-analysis roles so benchmark coverage is not tied to one framework's exact naming scheme, while applying topic-sensitive noise control so unrelated tests do not satisfy impact roles by accident
+- apply topic-focused subsystem penalties for non-impact questions, preserving explicit role-fillers while downranking unrelated distant candidates from sibling subsystems such as query, listener, entity, and tooling internals
+- apply sibling-subsystem penalties before fuzzy role bypass, so a candidate from an unrelated subsystem cannot survive merely because its name looks like a generic role such as `middleware` or `enhancer`; explicit `ROLE_BACKFILL` candidates still bypass the penalty
+- use mechanism-aware role backfill before final selection
+- use target-local recovery heuristics for thin-wrapper APIs:
+  - `factory_surface` via builder/registration/openapi/router cues
+  - `representation_surface` via schema/model/serialize cues
+  - `runtime_surface` via execute/dispatch/resolve/handler cues
+- for trace-style dependency questions, add bounded recovery anchors when import topology is sparse:
+  - imported-module symbol rows (graph + filesystem/path resolution)
+  - runtime-name seeds in the target package (e.g. DI resolver/model symbols)
+  - sibling-directory expansion from those runtime seeds
+- require namespace-qualified call evidence for hint-driven DI bridges (`require_callee_qualified_prefix`) so `Depends(...)`-style rules do not fire on local name collisions
+- when no docs are retrievable, synthesize a tiny target concept fallback doc candidate so `docs_or_concept` is not structurally impossible
+- sort by blended score with a bonus for role-filling candidates
+- apply marginal-gain gating, intent floors, `context_complete_below_floor`, and signature-only fallback for low-gain distant candidates
+
+The original greedy fill still describes the backbone, but the implementation now protects coverage quality rather than only raw score order.
 
 ```python
 pool.sort(key=blended_score, reverse=True)
@@ -138,28 +175,32 @@ Tenant API scoring extends the blended score with `direction_weight`, `scope_wei
 ## 3. API / Interface
 
 ```python
-# sidecar/context/unified_ranker.py (new file)
+# sidecar/context/unified_ranker.py
 
 class UnifiedRanker:
-    def __init__(self, graph: GraphExpander, vector: VectorSearcher,
+    def __init__(self, neo4j_client, vector: VectorSearcher,
+                 workspace_id: str = DEFAULT_WORKSPACE_ID,
                  weights: RankerWeights = DEFAULT_WEIGHTS):
         ...
 
+    def get_target(...):
+        """Workspace-scoped target resolution with duplicate disambiguation and module/package fallback."""
+
     def rank(
         self,
-        target_uid: str,
+        target: SubgraphNode,
         query: str,
-        intent_dist: dict[str, float],
+        intent: Intent,
         budget: int,
-    ) -> list[Candidate]:
-        """Return budget-fitting candidates ordered by blended score."""
+    ) -> tuple[list[Candidate], dict, str, list[dict], list[str]]:
+        """Return selected candidates, budget info, stop reason, pruned details, and missing roles."""
 ```
 
 `ContextArbitrator.get_context_for_symbol()` calls `UnifiedRanker.rank(...)` in place of the current expand-then-append-docs sequence.
 
 ## 4. Prompt Contract Impact
 
-Each `graph_context` and `documentation` entry gains:
+Each `graph_context` and `documentation` entry now carries ranking metadata. The contract also exposes `metadata.ranker`, `pruned[]`, and target-selection metadata.
 
 ```json
 {
@@ -167,8 +208,8 @@ Each `graph_context` and `documentation` entry gains:
   "graph_score": 0.87,
   "semantic_score": 0.42,
   "blended_score": 1.15,
-  "provenance": ["graph:CALLS_DIRECT,depth=1", "vector:sim=0.42"]
-}
+        "provenance": ["graph:CALLS_DIRECT,depth=1", "vector:sim=0.42"]
+    }
 ```
 
 See [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) for the full contract.
@@ -197,9 +238,10 @@ See [spec_prompt_contract_observability.md](spec_prompt_contract_observability.m
 
 ## 6. Limitations (current)
 
-- Doc chunks linked via `COVERS` to multiple symbols currently pick the max symbol score; better fusion (softmax, sum-with-penalty) is a tuning open question.
-- Vector search runs at query time — adds ~10ms p50. Cache at the query-embedding layer to mitigate (see [spec_retrieval_cache.md](spec_retrieval_cache.md)).
-- Overlap bonus can double-count when the same content appears in both a symbol body and a doc chunk that quotes it. Mitigation: the existing `ContextDeduplicator` runs *after* ranking and before assembly.
+- Tenant API candidates are not implemented yet; the ranker is still workspace-local.
+- Canonical role normalization is in place, and handle-style capability inference now reduces dependence on framework-specific dunder/member indexing. The current generic fingerprint set is still narrow and should expand carefully before we rely on it for broader framework families.
+- Doc chunks linked via `COVERS` to multiple symbols currently pick the max symbol score; better fusion (softmax, sum-with-penalty) is still open.
+- Vector search runs at query time; cache at the query-embedding layer remains a future optimization (see [spec_retrieval_cache.md](spec_retrieval_cache.md)).
 
 ## 7. Planned Extensions
 
@@ -216,3 +258,73 @@ See [spec_prompt_contract_observability.md](spec_prompt_contract_observability.m
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — surfacing scores in the contract.
 - [spec_eval_harness.md](spec_eval_harness.md) — tuning substrate for α/β/γ/δ/ε.
 - [spec_tenant_api_graph.md](spec_tenant_api_graph.md) — planned tenant API contract candidates and direction/depth policy.
+
+
+PS: 
+Meanings:
+## PS: Marginal Utility Context Selection
+
+Current model:
+
+```text
+pool → sort by blended_score → greedy fill
+
+Proposed change:
+
+pool → sort by blended_score → incremental selection with stop condition
+Utility Function
+utility(c) =
+    blended_score(c)
+  - redundancy(c, chosen)
+  - λ * token_cost(c)
+Redundancy
+
+Start with cheap deterministic checks:
+
+same symbol UID
+overlapping line ranges
+doc chunk covers an already selected symbol
+
+Optional later enhancement:
+
+embedding similarity against already selected candidates
+
+This should be added carefully because it increases runtime complexity.
+
+Token Cost Penalty
+λ ≈ 0.003 – 0.01
+
+Tune through eval harness.
+
+Stop Condition
+for c in pool:
+    u = utility(c)
+
+    if u < min_utility:
+        break
+
+    if spent + c.token_cost > hard_cap:
+        continue
+
+    chosen.append(c)
+    spent += c.token_cost
+Expected Behavior
+
+Simple questions should stop after a few high-utility candidates:
+
+~800–1500 tokens
+
+Complex questions should continue longer because useful candidates keep passing the utility threshold:
+
+larger context, possibly above the base budget
+
+However, expansion should still be bounded by an adaptive cap:
+
+effective_cap = base_budget + trust_credit
+
+or:
+
+effective_cap = base_budget + cumulative_debit_allowance
+
+The goal is not to fill the budget.
+The goal is to stop when additional context no longer pays for its token cost.

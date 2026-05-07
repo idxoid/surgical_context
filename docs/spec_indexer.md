@@ -2,7 +2,7 @@
 
 ## Overview
 
-`sidecar/indexer/code.py` — full project code indexing pipeline. Walks a directory, extracts symbols and typed function calls, embeds symbol bodies, resolves pending DocAnchors, and rebuilds the AFFECTS reverse-dependency index.
+`sidecar/indexer/code.py` — full project code indexing pipeline. Walks a directory, extracts symbols and typed function calls, embeds symbol bodies, resolves pending DocAnchors, rebuilds the AFFECTS reverse-dependency index, and emits a repository readiness profile.
 
 Entry points:
 - CLI: `python sidecar/indexer/code.py [path]` (defaults to repo root)
@@ -29,6 +29,72 @@ _INDEXED_EXTENSIONS = {ext for adapter in REGISTRY.supported_adapters() for ext 
 Currently: `.py`, `.pyi` (Python), `.ts`, `.tsx` (TypeScript).
 
 New languages can be added by creating an adapter in `sidecar/parser/adapters/` — no core changes needed.
+
+---
+
+## Repository Readiness Profile
+
+Indexing now produces a `repository_profile` in its returned stats. This is the index-time capability contract for the repo: it records not only what was indexed, but what kinds of reasoning are safe to attempt.
+
+Implemented in `sidecar/indexer/repository_profile.py`.
+
+Profiles are persisted on the Neo4j `Workspace` node as index metadata:
+
+```cypher
+(:Workspace {
+  id,
+  repository_profile_json,
+  repository_profile_schema_version,
+  repository_profile_updated_at
+})
+```
+
+This keeps sidecar metadata out of the user's checkout. An up-to-date index pass can reuse the last profile from the graph instead of returning an empty "nothing changed" state.
+
+The profile includes:
+
+- supported and unsupported language/file surfaces
+- parse coverage and symbol density
+- call/import/inheritance density
+- generic archetype signals inferred from indexed paths/source snippets
+- dynamic surfaces such as decorators, registries, templates, generated APIs, metaprogramming, and C/macros
+- mechanism archetypes and a repository-specific retrieval strategy profile
+- capability flags for code navigation, static call reasoning, decorator/runtime registry semantics, doc-code bridge, and impact analysis
+- a `reasoning_contract` with allowed and risky reasoning modes
+
+Example:
+
+```json
+{
+  "indexability": "medium",
+  "retrieval_readiness": "partial",
+  "capabilities": {
+    "code_navigation": "medium",
+    "static_call_reasoning": "low",
+    "impact_analysis": "shallow_partial"
+  },
+  "strategy_profile": {
+    "selected_strategy": "middleware_pipeline_trace",
+    "role_plan": ["api_surface", "factory_surface", "composition_surface", "runtime_surface"],
+    "mechanism_archetypes": [
+      {
+        "type": "middleware_pipeline",
+        "confidence": 0.78,
+        "role_plan": ["api_surface", "factory_surface", "composition_surface", "runtime_surface"]
+      }
+    ],
+    "fallbacks": ["direct_symbol", "semantic_docs", "concept_to_symbol"]
+  },
+  "reasoning_contract": {
+    "allowed": ["symbol/file navigation over indexed languages"],
+    "risky": ["impact is shallow and may miss dynamic/framework edges"]
+  }
+}
+```
+
+This profile should be treated as part of indexing, not as benchmark logic. Benchmark and UI surfaces may read it, but they should not be the first layer to discover that a repo has an unsupported language surface, missing symbol surface, or shallow impact model.
+
+The current implementation is deliberately conservative. It does not claim full framework understanding; it only declares the boundaries that the current graph/parser/doc bridge can support.
 
 ---
 
@@ -87,6 +153,83 @@ After all symbols for a file are upserted, delete stale `AFFECTS` edges and reco
 
 Called synchronously at end of `index_file()` — blocks until AFFECTS edges are rebuilt. Future: batch across files.
 
+### Phase 6 — Repository readiness profile (project pass)
+
+The fast project indexer builds a repository profile after graph/doc-anchor phases using:
+
+- collected files and extension distribution
+- parsed file count
+- observed symbols/calls/imports/inheritance
+- AFFECTS rebuild status
+- lightweight relative-path/source signals from changed files
+- mechanism archetypes inferred from generic archetype and dynamic-surface signals
+
+The result is included under `stats["repository_profile"]`, persisted to the Neo4j `Workspace`, and printed as a compact readiness line. `stats["repository_profile_store"]` is `neo4j_workspace` when persistence succeeds. If a project pass finds no changed files, the fast indexer loads the existing profile from the workspace when available.
+
+The single-file hot path does not currently rebuild the full repository profile.
+
+### Phase 7 — Repository role taxonomy (Pass 1)
+
+Implemented in `sidecar/indexer/role_clustering.py`. A per-repository role taxonomy derived from call-graph topology, intended to replace the remaining hand-curated role naming heuristics in `mechanism_registry` and `unified_ranker._infer_role`. `repository_profile` now emits only generic archetype signals; it does not identify framework families by repo name, workspace id, package name, or benchmark fixtures. No name patterns, no path heuristics, no preloaded framework knowledge — a symbol's role comes from its position in the graph.
+
+**Pipeline order.** The fast pipeline runs Pass 1 between Phase 4 (DocAnchor resolution) and Phase 6 (repository readiness profile), so the taxonomy sees both CALLS-style edges and COVERS edges. The single-file hot path does not run Pass 1.
+
+**Per-symbol structural features.** For every Symbol the pass extracts:
+- `fan_in`, `fan_out` — counts of incoming/outgoing CALLS-family edges
+- `cross_package_in`, `cross_package_out` — same counts restricted to edges whose endpoints sit in different file directories
+- `depth_from_public` — BFS distance from any "public" symbol following outgoing CALLS edges; public = a graph source (no callers) that has at least one callee
+- `doc_anchor_count` — incoming `:COVERS` edges from `:DocAnchor` chunks
+- weighted doc-anchor signals — `definition`, `reference`, and `example` weights derived from `COVERS.anchor_type`, `COVERS.confidence`, and `COVERS.primary_bias`
+- `kind` flags (class-like vs function-like)
+
+Features are log-transformed and standardized (zero mean, unit variance) before clustering.
+
+**Clustering.** k-means in `K ∈ [5, 8]`; the pass picks the K with the highest silhouette score on the standardized features. For large repositories, silhouette scoring is computed on a deterministic sample of symbols so Pass 1 does not dominate indexing time. Output:
+- `RoleTaxonomy` — `feature_names`, `clusters`, `chosen_k`, `silhouette`, `sample_size`. Each cluster has a `centroid`, `member_count`, and a `signature` listing the top-3 features that distinguish it from the global mean (e.g. `["log_fan_in:+", "depth_from_public:-", "is_function:+"]`).
+- `uid → cluster_id` map for every indexed symbol.
+
+**Role catalog autoresolve.** Cluster ids are local to a re-index, so Pass 1 also builds a `RoleCatalog` from each cluster's centroid shape. The catalog maps portable structural archetypes to confidence-ranked clusters:
+
+```json
+{
+  "active_entrypoint": [
+    {"cluster_id": 5, "confidence": 0.82, "evidence": ["log_fan_out:+", "leaf_score:-", "depth_from_public:-"]}
+  ],
+  "runtime_handle": [
+    {"cluster_id": 4, "confidence": 0.88, "evidence": ["log_fan_in:+", "cross_package_in_ratio:+"]}
+  ]
+}
+```
+
+Canonical roles resolve through archetype preferences instead of direct cluster equality. For example, `runtime_surface` resolves to `active_entrypoint`, `runtime_handle`, and `executor`; `api_surface` resolves to `passive_api_surface` and `active_entrypoint`. Passive/config surfaces use typed doc-anchor weight, not raw doc count, so definition/reference anchors can lift public API clusters while example-heavy or weak anchors contribute less. Consumers should treat the result as a scoring preference, not a hard filter.
+
+**Mechanism profiles in the catalog.** On each persist, the indexer merges `mechanism_required_roles` and `mechanism_role_backfill` keys into `role_catalog_json` from `mechanism_registry.preloaded_mechanism_catalog_extensions()` (currently **empty objects** — no bundled FastAPI/Pydantic/Redux tables). Populate those maps via workspace-specific pipelines or future mining; `UnifiedRanker` still reads them when present. Extra keys are ignored by `resolve_role_clusters`, which only reads `schema_version`, `archetypes`, and `role_to_archetypes`.
+
+**Persistence.** Pass 1 writes the taxonomy and role catalog onto the Neo4j `Workspace`, then writes the cluster id onto every `Symbol`:
+
+```cypher
+(:Workspace {
+  id,
+  role_taxonomy_json,
+  role_taxonomy_schema_version,
+  role_catalog_json,
+  role_catalog_schema_version,
+  role_taxonomy_updated_at
+})
+
+(:Symbol { uid, ..., derived_role_id })
+```
+
+`stats["role_taxonomy"]` exposes `chosen_k`, `silhouette`, and `sample_size` for benchmark and progress logs. `stats["role_catalog"]` exposes the number of archetypes and canonical role mappings. Timing is recorded under `stats["timings_sec"]["role_clustering"]`.
+
+**Consumers.** Pass 1 persists `derived_role_id`, structural archetypes in `role_catalog_json`, and — from schema v2 onward — the mechanism overlay keys (often `{}` until filled externally). `UnifiedRanker` reads cluster-derived roles via `derived_role_id` plus `_cluster_to_role`, optional catalog mechanism templates, structural overlap scoring, then repository `strategy_profile` / `generic`. Bundled name-based mechanism dispatch for FastAPI/Pydantic/Redux is intentionally stubbed.
+
+**Trade-offs.**
+- Cluster boundaries may not align with human intuition. The derived "role 3" can group `APIRoute` and `Dependant` together (both data-class-like, leaf-ish) while separating `add_api_route` from `api_route` if their fan-in differs. That is fine for ranking but means the benchmark cannot match by mechanism string equality across repos.
+- Cluster ids are not stable across re-indexes if the graph changes meaningfully. The `signature` is the durable identity of a cluster; consumers should match on signature shape, not on raw `cluster_id`.
+- Full silhouette scoring is `O(n²)` per K, so the implementation uses deterministic sampling for larger repositories. The score is a model-selection heuristic, not a benchmark metric.
+- Pass 1 runs on every full project pass, even when changes are small. The "no changed files" branch reuses the existing taxonomy from the Workspace.
+
 ---
 
 ## File Hash & Incremental Indexing
@@ -107,9 +250,11 @@ This reduces indexing time for large repos with few changes. Full re-index still
 
 ## Limitations (current)
 
-- AFFECTS rebuild is synchronous per file — scales linearly. Future: batch across files or use background workers.
-- No parallel file processing — single-threaded walk. Future: `concurrent.futures.ThreadPoolExecutor`.
-- Phase 1 and 2 each open every file individually (2× reads). Could merge into single tree-sitter parse.
+- The repository profile is a conservative first-pass contract, not a deep framework model.
+- Archetype and dynamic-surface detection uses lightweight relative-path/source signals; it should guide routing and diagnosis, not replace mechanism-specific evidence.
+- The single-file hot path does not currently refresh the full repository profile or rerun Pass 1.
+- Current impact capability is still shallow: AFFECTS reachability does not prove behavioral breakage.
+- Pass 1 produces the role taxonomy and the ranker can read it, but some fallback role decisions still live in `mechanism_registry`, generic `repository_profile` archetype signals, and `unified_ranker._infer_role`.
 
 ---
 

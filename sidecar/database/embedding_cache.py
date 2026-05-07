@@ -62,6 +62,56 @@ class EmbeddingCache:
             vector = json.loads(row["vector"])
             return [float(value) for value in vector]
 
+    def get_many(self, keys: list[EmbeddingCacheKey]) -> dict[EmbeddingCacheKey, list[float]]:
+        """Fetch many vectors with one connection and one timestamp update."""
+        if not keys:
+            return {}
+
+        unique_keys = list(dict.fromkeys(keys))
+        now = int(time.time())
+        placeholders = ", ".join(["(?, ?, ?)"] * len(unique_keys))
+        params: list[str] = []
+        for key in unique_keys:
+            params.extend([key.model_name, key.model_version, key.content_hash])
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT model_name, model_version, content_hash, vector
+                FROM embedding_cache
+                WHERE (model_name, model_version, content_hash) IN ({placeholders})
+                """,
+                params,
+            ).fetchall()
+            if not rows:
+                return {}
+
+            hits: dict[EmbeddingCacheKey, list[float]] = {}
+            touched: list[tuple[str, str, str]] = []
+            for row in rows:
+                key = EmbeddingCacheKey(
+                    model_name=row["model_name"],
+                    model_version=row["model_version"],
+                    content_hash=row["content_hash"],
+                )
+                hits[key] = [float(value) for value in json.loads(row["vector"])]
+                touched.append((key.model_name, key.model_version, key.content_hash))
+
+            conn.executemany(
+                """
+                UPDATE embedding_cache
+                SET last_used_at = ?
+                WHERE model_name = ?
+                  AND model_version = ?
+                  AND content_hash = ?
+                """,
+                [
+                    (now, model_name, model_version, content_hash)
+                    for model_name, model_version, content_hash in touched
+                ],
+            )
+            return hits
+
     def set(
         self,
         key: EmbeddingCacheKey,

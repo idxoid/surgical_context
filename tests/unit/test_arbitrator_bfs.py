@@ -6,7 +6,8 @@ import pytest
 
 from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.types import PromptContext, Subgraph, SubgraphNode
+from sidecar.context.types import DocChunk, PromptContext, Subgraph, SubgraphNode
+from sidecar.context.unified_ranker import RankerWeights
 
 
 class TestContextArbitratorBFS:
@@ -147,7 +148,59 @@ class TestContextArbitratorBFS:
         vector_db = FakeVectorDb()
         arbitrator = ContextArbitrator(mock_db, vector_db=vector_db)
 
-        with patch("sidecar.context.arbitrator.GraphExpander.expand", return_value=subgraph):
+        class FakeRanker:
+            PREAMBLE_TOKENS = 100
+
+            def __init__(self, db, vector_searcher, workspace_id=None, weights=None):
+                self.vector_searcher = vector_searcher
+
+            def get_target(self, *args, **kwargs):
+                return subgraph.primary, {"strategy": "unique_match", "ambiguous": False}
+
+            def rank(self, target, query, intent, budget):
+                docs = self.vector_searcher.search_docs(query, limit=3)
+                self._docs = docs
+                return (
+                    [],
+                    {"limit": budget, "spent": 108, "reserved": 100, "pool_size": 0},
+                    "pool_exhausted",
+                    [],
+                    [],
+                )
+
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
+                docs = [
+                    DocChunk(
+                        source_file=item["file_path"],
+                        chunk_id=item["chunk_id"],
+                        content=item["content"],
+                        score=item["score"],
+                        semantic_score=item["score"],
+                        blended_score=item["score"],
+                        provenance=["vector:docs"],
+                    )
+                    for item in self._docs
+                ]
+                return (
+                    Subgraph(
+                        primary=target,
+                        nodes=[],
+                        budget=budget_info,
+                        stopped_reason=stopped_reason,
+                        pruned_details=pruned_details,
+                    ),
+                    docs,
+                )
+
+            def _determine_mechanism(self, target, query=""):
+                return "generic"
+
+            def _get_required_roles(self, mechanism):
+                return ["api_surface", "executor", "runtime_surface", "docs_or_concept"]
+
+        with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker):
             ctx = arbitrator.get_context_for_symbol(
                 "process_payment",
                 question="How should this payment flow work?",
@@ -238,3 +291,189 @@ class TestContextArbitratorBFS:
         node = {}
         estimate = expander._estimate_tokens(node)
         assert estimate == 0
+
+    def test_unified_path_surfaces_ranker_metadata(self, mock_db):
+        """Unified path should expose weights and target-selection metadata in the contract."""
+
+        class FakeRanker:
+            PREAMBLE_TOKENS = 100
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_target(self, *args, **kwargs):
+                return (
+                    SubgraphNode(
+                        uid="depends-fn",
+                        name="Depends",
+                        file_path="/repo/fastapi/param_functions.py",
+                        range=[2283, 2340],
+                        token_estimate=120,
+                        relation="target",
+                        direction="primary",
+                        depth=0,
+                        relevance_score=1.0,
+                        provenance=["primary:target"],
+                    ),
+                    {
+                        "strategy": "duplicate_resolution",
+                        "ambiguous": True,
+                        "selected_uid": "depends-fn",
+                    },
+                )
+
+            def rank(self, target, query, intent, budget):
+                return (
+                    [],
+                    {"limit": budget, "spent": 220, "reserved": 100, "pool_size": 7},
+                    "pool_exhausted",
+                    [
+                        {
+                            "kind": "symbol",
+                            "uid": "audit-log",
+                            "name": "Audit.log",
+                            "reason": "over_budget",
+                            "blended_score": 0.51,
+                            "token_cost": 620,
+                        }
+                    ],
+                    ["dependency_solver"],
+                )
+
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
+                return (
+                    Subgraph(
+                        primary=target,
+                        nodes=[],
+                        budget=budget_info,
+                        stopped_reason=stopped_reason,
+                        pruned_details=pruned_details,
+                    ),
+                    [
+                        DocChunk(
+                            source_file="docs/reference/dependencies.md",
+                            chunk_id="doc-1",
+                            content="Depends wires request-time dependency resolution.",
+                            score=0.8,
+                            semantic_score=0.8,
+                            blended_score=0.9,
+                            provenance=["vector:docs"],
+                        )
+                    ],
+                )
+
+            def _determine_mechanism(self, target, query=""):
+                return "fastapi_dependency_injection"
+
+            def _get_required_roles(self, mechanism):
+                return [
+                    "api_surface",
+                    "config_surface",
+                    "representation_surface",
+                    "orchestrator",
+                    "runtime_surface",
+                    "docs_or_concept",
+                ]
+
+        arbitrator = ContextArbitrator(
+            mock_db,
+            vector_db=Mock(),
+            ranker_weights=RankerWeights(alpha=0.9, beta=0.7, gamma=0.4, delta=0.6, epsilon=0.2),
+        )
+
+        with (
+            patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker),
+            patch(
+                "sidecar.context.arbitrator.CodeResolver.resolve",
+                return_value=("def Depends(...):\n    pass", False),
+            ),
+        ):
+            ctx = arbitrator.get_context_for_symbol(
+                "Depends",
+                question="How does dependency injection get resolved before the endpoint function is called?",
+                token_budget=4000,
+            )
+
+        assert isinstance(ctx, PromptContext)
+        payload = ctx.to_dict()
+        assert payload["metadata"]["ranker"]["weights"]["alpha"] == 0.9
+        assert (
+            payload["metadata"]["ranker"]["target_selection"]["strategy"] == "duplicate_resolution"
+        )
+        assert payload["metadata"]["ranker"]["pruned_total_count"] == 1
+        assert payload["intent_details"]["primary"] == "exploration"
+        assert payload["pruned"][0]["name"] == "Audit.log"
+
+    def test_explain_behavior_missing_symbol_uses_concept_anchor_fallback(self, mock_db):
+        """Missing conceptual symbols can resolve to anchor symbols for explain-style prompts."""
+        arbitrator = ContextArbitrator(mock_db, vector_db=Mock())
+        target = SubgraphNode(
+            uid="anchor-use",
+            name="use",
+            file_path="lib/application.js",
+            range=[1, 10],
+            token_estimate=40,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+        )
+
+        class FakeRanker:
+            PREAMBLE_TOKENS = 100
+
+            def __init__(self, db, vector_searcher, workspace_id=None, weights=None):
+                pass
+
+            def get_target(self, symbol_name, query="", intent=None, with_metadata=False):
+                if symbol_name == "middleware":
+                    return (None, {"strategy": "not_found"}) if with_metadata else None
+                if symbol_name == "use":
+                    meta = {"strategy": "unique_match", "selected_uid": "anchor-use"}
+                    return (target, meta) if with_metadata else target
+                return (None, {"strategy": "not_found"}) if with_metadata else None
+
+            def rank(self, target, query, intent, budget):
+                return (
+                    [],
+                    {"limit": budget, "spent": 140, "reserved": 100, "pool_size": 0},
+                    "",
+                    [],
+                    [],
+                )
+
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
+                return (
+                    Subgraph(
+                        primary=target,
+                        nodes=[],
+                        budget=budget_info,
+                        stopped_reason=stopped_reason,
+                        pruned_details=pruned_details,
+                    ),
+                    [],
+                )
+
+            def _determine_mechanism(self, target, query=""):
+                return "generic"
+
+            def _get_required_roles(self, mechanism):
+                return []
+
+        with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker):
+            ctx = arbitrator.get_context_for_symbol(
+                "middleware",
+                question="How does middleware sequencing work?",
+                token_budget=2000,
+            )
+
+        assert isinstance(ctx, PromptContext)
+        assert ctx.primary_source.symbol == "use"
+        target_meta = ctx.ranker_state.get("target_selection", {})
+        assert target_meta.get("strategy") == "concept_anchor_fallback"
+        assert target_meta.get("missing_symbol") == "middleware"
+        assert target_meta.get("anchor_symbol") == "use"

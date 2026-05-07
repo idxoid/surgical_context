@@ -1,6 +1,6 @@
 # Surgical Context — Architecture
 
-> **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, intent-aware prompt assembly, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. The main open gaps are local history, extension product polish, setup/smoke-test hardening, remaining prompt-contract observability, and provider boundaries around the local defaults. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+> **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, intent-aware prompt assembly, unified graph+semantic ranking, canonical role normalization, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. Recent retrieval hardening includes trace-dependency recovery for sparse import topology (runtime symbol seeding, sibling-directory expansion, explicit recovery provenance) and qualified-callee gating for DI hint edges. The main open gaps are extension product polish, setup/smoke-test hardening, broader real-repo benchmark coverage (Flask/Django/Express tails), impact-analysis precision/doc-noise control, and provider boundaries around the local defaults. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 >
 > **Future layer:** tenant-level API contract graph. Each project indexes and publishes its own safe service/API facts; the tenant graph links those facts across projects and systems without scanning neighboring repositories. This is Team/Enterprise horizon work, not a dependency for the local single-tenant release. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
@@ -45,7 +45,7 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 | Component | Stack | Role |
 |---|---|---|
 | **Extension Host** | TypeScript / VS Code API | Manages sidecar lifecycle, proxies webview messages to sidecar, manages file watchers and overlays. |
-| **Webviews** | TypeScript / React (proposed) | Render Chat Panel, Context Inspector, Impact Explorer, Dashboard. No business logic — dispatch to extension host. |
+| **Webviews** | TypeScript / React | Render Chat Panel, Context Inspector, Impact Explorer, Dashboard. No business logic — dispatch to extension host. |
 | **Sidecar Binary** | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
 | **Storage Provider Layer** | GraphProvider + VectorProvider + HistoryProvider + FS | Provider boundaries around storage. Local defaults: Neo4j, LanceDB, SQLite. Alternate providers are future. |
 | **Tenant API Contract Graph** | GraphProvider metadata layer (future Team layer) | Links project-published service/API manifests across a tenant without cross-project source scanning. |
@@ -56,7 +56,7 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 |---|---|---|
 | `GraphProvider` | Neo4j local Docker / customer Neo4j | NebulaGraph, Memgraph, dedicated managed graph service |
 | `VectorProvider` | LanceDB local | Qdrant, Weaviate, pgvector, customer-managed vector services |
-| `HistoryProvider` | SQLite local (planned) | encrypted SQLite, Postgres, enterprise audit store, memory-only, disabled |
+| `HistoryProvider` | SQLite local | encrypted SQLite, Postgres, enterprise audit store, memory-only, disabled |
 
 ### 2.2. Inter-Process Communication
 VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsive even if a heavy Cypher query blocks the sidecar. Enables future replacement of Python binary with Rust without frontend changes.
@@ -87,14 +87,45 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 
 ---
 
-### 2.4. Observability (Partially Implemented)
+### 2.4. Observability (current)
 
-The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency. Runtime metrics and trace IDs exist; the remaining work is richer prompt-contract explanation and local release SLO checks.
+The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency using mechanism-aware classification. Runtime metrics, trace IDs, and prompt-contract retrieval metadata exist; the main remaining work is extension surfacing of ranking details, doc confidence/type scoring in the UI, and local release SLO checks.
 
-- **Structured logs** per pipeline stage with fields: `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`.
-- **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts, cache hit rates.
-- **Token baselines**: every `/ask` logs both the surgical token count and an estimate of the "carpet-bomb" equivalent (all open files). The delta is the core KPI.
-- **Retrieval recall@k** measured against a golden fixture set on every CI run.
+**Unified ranking + retrieval policy ✅ implemented**
+- **Blended score formula**: `score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost` (normalized per track)
+- **Graph signal**: BFS with typed edges (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, DEPENDS_ON, IMPLEMENTS, OVERRIDES)
+- **Semantic signal**: vector search + similarity threshold tuning (0.4 → 1.5)
+- **Intent signal**: query intent → tier priority → budget allocation
+- **Overlap bonus**: when both graph and semantic fire on the same candidate
+- **Cost term**: token budget vs. symbol body size
+- **Mechanism-aware routing**: query intent + symbol type → role backfill strategy (e.g., impact_analysis on serialization routes through test-coverage roles)
+- **Target disambiguation**: when workspace has multiple same-name symbols, route by usage context and qualified name
+
+**DocAnchor confidence/type scoring ✅ partially implemented**
+- **Anchor type classification** and **per-edge confidence** are available in the retrieval pipeline.
+- **Primary bias** is available and consumed by ranking.
+- Remaining work is calibration, benchmark coverage expansion, and UI surfacing polish.
+
+**Prompt-contract observability ✅ implemented baseline**
+- ✅ **Basic scores**: `{graph_relevance, semantic_score}` per candidate
+- ✅ **Provenance**: why each symbol was selected
+- ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
+- ✅ **Pruned details**: skipped candidates with reason codes
+- ✅ **Ranker metadata** in benchmark `ready_context` snapshots
+- ✅ **Retrieval trace (v1)**: `metadata.retrieval_trace` on `PromptContext.to_dict()` — unified vs graph-only strategy, mechanism, roles, budget summary, `schema_version` (`sidecar.retrieval.trace`); target architecture in [retrieval_kernel.md](retrieval_kernel.md)
+- ✅ **Provider protocols (v1)**: `VectorSearchProvider`, `WorkspaceMetaProvider`, `GraphDriverProvider` in `sidecar.retrieval.protocols` + fakes for tests; production `VectorSearcher` satisfies `VectorSearchProvider` (`tests/unit/test_retrieval_protocols.py`)
+- 🚧 Remaining work: richer UI surfacing and consistency checks across extension surfaces
+
+**Supporting Infrastructure:**
+- **Structured logs**: per pipeline stage with `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`
+- **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts, cache hit rates
+- **Token accounting**: both surgical count + "carpet-bomb" estimate; delta is the core KPI
+- **Mechanism-aware retrieval metrics**: questions classified by code relationship type + evaluated on **role_recall** (required roles fulfilled) + intent-stratified pass gates
+- **Intent-stratified evaluation**:
+  - `explain_behavior`: role ≥ 0.70 AND file ≥ 0.50
+  - `trace_dependency`: role ≥ 0.80 AND file ≥ 0.70
+  - `impact_analysis`: role ≥ 0.60 OR file ≥ 0.50 (either signal sufficient)
+- **Benchmark artifacts**: each report includes explicit precision + full `ready_context` payload (token count, serialized contract, rendered system prompt)
 
 Without complete prompt-contract observability, production claims in §1.3 remain hard to debug outside benchmark runs.
 
@@ -159,7 +190,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
   - `[:FROM {type: "doc"}]` — source doc file
   - `[:FROM {type: "code"}]` — code files containing covered symbols
   - `[:FROM {type: "spec"|"architecture"|"concept"|"idea"}]` — referenced project docs
-  - `[:COVERS]` — code symbols mentioned in chunk
+  - `[:COVERS {anchor_type, confidence, primary_bias, resolver}]` — code symbols mentioned in chunk, with link quality metadata for ranking
   - Lazy `pending` resolution for forward references (symbols indexed after docs)
 
 **API Contracts (Planned):**
@@ -196,17 +227,18 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
-3. **Intent classification**: detect query intent (navigation, debugging, refactor, exploration, new feature, design question) → choose tier priority order.
-4. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
-5. **Graph expansion** (`GraphExpander`): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) constrained by token budget + depth limit. Returns priority-scored subgraph.
-6. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
-7. **Deduplication** (`ContextDeduplicator`): remove redundant symbols and overlapping doc chunks.
-8. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol.
-9. **Doc retrieval** (`DocResolver`): semantic search in LanceDB `docs` table → top-k chunks. Matched chunks have `[:COVERS]` edges to code symbols.
-10. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas → tenant API context), fill budget in order.
-11. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
-12. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract.
-13. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
+3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking (Phase 6 + Phase 4 enhancements).
+4. **Mechanism determination** (Phase 4): if intent = `impact_analysis`, classify the code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`) → informs role backfill strategy and impact-analysis precision controls.
+5. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
+6. **Unified graph + semantic ranking** (`UnifiedRanker` — Phase 9.1): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Mechanism-aware role backfill, query-sensitive mechanism routing, duplicate-target disambiguation, package/module fallback targets, and canonical role normalization run inside this layer. Thin wrapper APIs can also satisfy capability roles from their own implementation body when nested helpers are not indexed as standalone symbols. Selection is constrained by token budget + intent-aware noise filtering and returns candidates with graph, semantic, blended scores, and anchor confidence (Phase 9.3).
+7. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
+8. **Subgraph/doc split** (`UnifiedRanker.candidates_to_subgraph(...)`): convert the chosen ranked candidates back into `SubgraphNode` plus `DocChunk` objects for prompt compilation.
+9. **Deduplication** (`ContextDeduplicator` on the graph-only path): remove redundant symbols and overlapping doc chunks when the unified ranker is not active.
+10. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol. Signature-only resolution for distant neighbors and massive targets.
+11. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas → tenant API context), fill budget in order.
+12. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
+13. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract with `intent_details`, `scores`, `provenance`, `pruned[]` (Phase 9.4), `metadata.ranker` (Phase 9.4), and assembly metadata. Benchmark reports additionally persist this same contract as `ready_context`.
+14. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
 
 ### 4.2. Cold Start
 1. FS scan for `.py`/`.ts`/`.tsx` files (gitignore-aware, dirs pruned).
@@ -267,7 +299,7 @@ Scenario: user edits `process_payment`, hasn't saved.
 | IMPORTS | (File)→(File) | Internal project import |
 | AFFECTS | (Symbol)→(Symbol) | Reverse dependency materialization |
 | FROM | (DocAnchor)→(File) | Doc chunk origin — `type` property: `"doc"` (source doc file), `"code"` (code file containing covered symbols), `"spec"` / `"architecture"` / `"concept"` / `"idea"` (referenced project docs) |
-| COVERS | (DocAnchor)→(Symbol) | Doc chunk describes this code symbol |
+| COVERS | (DocAnchor)→(Symbol) | Doc chunk describes this code symbol; properties: `anchor_type`, `confidence`, `primary_bias`, `resolver` |
 | MODIFIED_IN | (Symbol)→(Commit) | Symbol change history (planned) |
 
 **Planned tenant API relationships:**
@@ -290,7 +322,7 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
 
 ### 5.3. JSON Prompt Contract
 
-✅ Implemented — `PromptContext.to_dict()` in `sidecar/context/arbitrator.py`. Returned under `"context"` key in `/ask` response.
+✅ Implemented — `PromptContext.to_dict()` in `sidecar/context/types.py`. Returned under `"context"` key in `/ask` response and re-used by the benchmark as `ready_context.contract`.
 
 ```json
 {
@@ -304,16 +336,23 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
     { "symbol": "string", "file_path": "string", "relation": "CALLS", "is_dirty": false, "code": "string" }
   ],
   "documentation": [
-    { "chunk_id": "string", "source_file": "string", "content": "string" }
+    {
+      "chunk_id": "string",
+      "source_file": "string",
+      "content": "string",
+      "anchor_type": "definition",
+      "anchor_confidence": 0.92,
+      "primary_bias": 1.0
+    }
   ]
 }
 ```
 
-**Implemented metadata:** `mode`, `intent`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, `budget.ask_level`, dependency `depth`, `direction`, and `relevance_score`.
+**Implemented metadata:** `mode`, `intent`, `intent_details` (`primary`, `distribution`, `ambiguous`, `confidence`), `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth` / `direction`, per-candidate `scores`, `provenance`, doc-anchor `anchor_type` / `anchor_confidence` / `primary_bias`, `pruned[]`, `stopped_reason`, `missing_roles`, `metadata.ranker.strategy`, `metadata.ranker.weights`, `metadata.ranker.candidates_*`, `metadata.ranker.pruned_total_count`, and `metadata.assembly` fields such as `trace_id`, `workspace_id` slot, `resolver_version`, `cache_hits`, `model_route`, and `feedback_token`.
 
 **Planned metadata:** `tenant_api_context`, `api_direction`, `tenant_link_depth`, service/contract provenance, and tenant API candidate scores. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
-**Known gap:** project/workspace/branch metadata and document relevance scores are still planned.
+**Known gap:** project/workspace/branch metadata is not yet populated consistently from the arbitrator. Doc-anchor type/confidence is implemented for graph-overlap docs; vector-only docs still carry empty/zero anchor defaults.
 
 ### 5.4. BFS Retrieval Cypher
 
@@ -452,3 +491,71 @@ Graph, vector, and user-history storage live behind provider connector interface
 **Trade-off:** Provider abstraction slows early implementation and requires conformance tests. Accepted, because it prevents Neo4j/LanceDB/SQLite from becoming accidental lock-in and keeps enterprise deployment options credible.
 
 **Staging:** local v0.1 only needs provider boundaries around Neo4j, LanceDB, and SQLite. Real alternate backends move to the Team/Enterprise horizon after those contracts are stable.
+
+---
+
+## Phase 4: Mechanism-Aware Retrieval Evaluation ✅ COMPLETE
+
+**Goal:** Shift from "question pass rate optimization" to "mechanism coverage diagnosis." Classify questions by mechanism (what kind of code relationship they test: route registration, dependency injection, validation bridge, etc.) and evaluate using role-based recall + intent-stratified pass gates. This enables identifying whether failures are architectural gaps (unfixable by tuning) vs. ranking improvements (tunable).
+
+### 4.1. Mechanism Classification
+Every question in the real-repo pack is annotated with:
+- **mechanism**: The code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`, `rtk_slice_generation`)
+- **required_roles**: List of code roles the ranker must fulfill for a correct answer. The YAML may still use legacy names, but benchmark scoring normalizes them into canonical roles such as `api_surface`, `factory_surface`, `runtime_surface`, `schema_builder`, `orchestrator`, and `core_runtime`.
+- **expected_mode**: Either `symbol` (should find by name) or `workspace` (correct answer is "not found")
+
+This enables the benchmark to report *which mechanisms the ranker handles well* and *which gaps are actual code relationship discovery failures* vs. ranking noise.
+
+### 4.2. Intent-Aware Ranker
+Added `IMPACT_ANALYSIS` intent classification and intent-aware ranking noise suppression:
+
+- **IMPACT_ANALYSIS** (keyword: "most likely to break", "what parts", "what breaks"): tests/examples are load-bearing, but only topic-related noisy candidates keep `noise_factor=1.0`; unrelated tests/examples retain the standard noisy-candidate penalty
+- **Other intents** (debugging, refactoring, navigation, etc.): get standard noise_factor computed from file type (tests penalized at 0.15)
+- **Intent floors**: IMPACT_ANALYSIS gets 3000-token minimum floor + special priors (symbol=0.3, doc=0.5) to surface test files and documentation
+- **Compact completion**: when all required roles are fulfilled below an intent floor and no useful candidates remain, the ranker reports `context_complete_below_floor` instead of treating the result as a floor failure
+
+This prevents impact analysis questions from being downranked just because they hit relevant test files, while avoiding unrelated benchmark/test noise.
+
+### 4.3. Role Recall Metric
+Computed after canonical-role normalization as: `(required_roles not in ctx.missing_roles) / len(required_roles)`
+
+- Returns 1.0 if no required_roles (fallback)
+- Diagnostic signal for code relationship gaps — higher role_recall means the ranker found code from more of the required roles
+- The normalization layer removes most framework-specific naming drift, which makes Pydantic and RTK mechanism coverage much more trustworthy than the earlier benchmark versions
+
+### 4.4. Intent-Stratified Pass Gates
+Different query intents have different acceptable metrics:
+
+| Intent | role_recall floor | file_recall floor | Gate semantics |
+|---|---|---|---|
+| explain_behavior | 0.70 | 0.50 | **AND** — must pass both |
+| trace_dependency | 0.80 | 0.70 | **AND** — must pass both |
+| impact_analysis | 0.60 | 0.50 | **OR** — either signal is enough (tests may not be symbols) |
+
+This recognizes that:
+- Navigation/dependency tracing needs both deep code understanding AND file coverage
+- Explanation can work with moderate coverage if roles are well-chosen
+- Impact analysis can work with just test file coverage OR symbol coverage (either proves cascade exposure)
+
+### 4.5. Benchmark Output
+The benchmark now displays per-question:
+```
+✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=1.00 | 839t | context_complete_below_floor
+```
+
+Current local snapshot after the UnifiedRanker hardening pass:
+
+```text
+✅ fastapi_q03: run_endpoint_function [explain_behavior] | role=1.00 | file=1.00 | 2123t | context_complete_below_floor
+✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=1.00 | 839t | context_complete_below_floor
+✅ pydantic_q05: v1 [explain_behavior] | role=1.00 | file=1.00 | 1319t | module_fallback target
+```
+
+And summary:
+```
+Pass rate:       62.5% (5/8)
+...
+Role recall:     0.74
+```
+
+This makes it clear which mechanism-intent combinations are working well vs. needing tuning.

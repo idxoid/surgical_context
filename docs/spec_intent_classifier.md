@@ -2,7 +2,9 @@
 
 ## Overview
 
-**Purpose:** Detect the user's query intent and rank retrieval tiers (code, specs, architecture, concepts, ideas) accordingly. Enables adaptive payload assembly — different intents prioritize different content types.
+**Purpose:** Detect the user's query intent, resolve it against the index-time repository capability contract, and rank retrieval tiers (code, specs, architecture, concepts, ideas) accordingly. Enables adaptive payload assembly while making unsupported or shallow reasoning explicit.
+
+**Current status:** Implemented as a deterministic keyword classifier plus an Intent Resolution Contract in `sidecar/context/intent_classifier.py`. The classifier returns a primary desired intent plus observability metadata (`distribution`, `confidence`, `ambiguous`, `matched_keywords`). The resolver then intersects that desired intent with the `repository_profile` emitted by indexing and records an `effective_mode`, available capabilities, and risks. Full multi-label routing remains deferred: the current ranker still routes by one primary intent, while preserving the distribution and resolution metadata in the prompt contract for debugging.
 
 ---
 
@@ -80,6 +82,35 @@ concept → idea → architecture → specs → code → cross-refs
 
 ---
 
+### 7. Impact Analysis (Phase 4)
+**Question pattern:** "If I change X, what breaks? What are the most likely affected parts? What tests depend on this?"
+
+**Priority order:**
+```
+cross-refs → code → specs → architecture → concept → idea
+```
+
+**Special handling:** Test files and examples are load-bearing evidence for impact questions, but they are no longer globally unpenalized. Impact analysis uses topic-sensitive noise control: tests/examples keep full weight only when their path, name, or content overlaps the changed surface from the target/query. Unrelated benchmark or tutorial tests keep the standard noisy-candidate penalty. Impact analysis also keeps intent-specific priors: `symbol = 0.3` (downrank primary symbol), `doc = 0.5` (uprank test files and documentation).
+
+**Rationale:** Change impact is about finding what *depends* on you, not what you depend on. Callers (cross-refs) matter most. Code under test is high-signal — if it is tied to the changed surface. Topic-sensitive noise keeps affected tests visible while preventing unrelated benchmark suites from satisfying impact roles by accident. A minimum token floor (3000) remains a grounding target, but compact contexts that fulfill all required roles may stop below floor with `context_complete_below_floor`.
+
+**Keywords matched:** "most likely to break", "most likely to be affected", "likely to break", "what would break", "what parts", "what breaks", "are most likely"
+
+**Ranker behavior:**
+- Floor: 3000 minimum token budget
+- Noise suppression: topic-related tests/examples keep `noise_factor = 1.0`; unrelated noisy candidates keep the standard penalty
+- Priors: `symbol_prior = 0.3`, `doc_prior = 0.5` (emphasize dependencies + tests)
+- Pass gate: **OR** semantics — either `role_recall ≥ 0.60` OR `file_recall ≥ 0.50` is sufficient (tests may not be indexed as symbols)
+
+**Known gaps / current review findings:**
+- `impact_analysis` classification is fragile because the current implementation scores matches but still selects the primary intent by fixed precedence. Impact questions containing "break" can route as `debugging` even when the impact score is higher. Primary selection should use max score, with precedence only as a tie-breaker.
+- Benchmark-style impact questions should be regression tests, especially `fastapi_q06`, `pydantic_q06`, `rtk_q05`, `django_q05`, and `flask_q05` from `tests/fixtures/real_repo_question_pack.yaml`.
+- `/impact` and `impact_analysis` retrieval are currently separate surfaces. `/impact` reads materialized `AFFECTS` reachability, while `impact_analysis` ranker mode uses intent priors, topic-sensitive test noise, and impact roles. They should converge through the same retrieval contract.
+- `AFFECTS` is reachability evidence, not causal breakage proof. It should eventually contribute candidates to ranker with provenance such as `affects`, plus depth/path/relation/confidence metadata.
+- User-facing wording should stay conservative: "likely affected", "reachability-based candidates", or "blast-radius candidates"; avoid "will break" unless tests/runtime evidence prove it.
+
+---
+
 ## Content Tiers (Definition)
 
 | Tier | Content | Source |
@@ -90,6 +121,56 @@ concept → idea → architecture → specs → code → cross-refs
 | **architecture** | `architectura.md` | DocResolver (FROM {type: "architecture"}) |
 | **concept** | `concept.md` | DocResolver (FROM {type: "concept"}) |
 | **idea** | `idea_*.md` documents | DocResolver (FROM {type: "idea"}) |
+
+---
+
+## Intent Resolution Contract
+
+Intent has two layers:
+
+1. **Desired intent** — what the user appears to ask for.
+2. **Effective mode** — what the current repository index can responsibly support.
+
+This prevents shallow text classification from pretending that every repo can satisfy every question type. For example, an impact query on a repo whose profile says `impact_analysis = shallow_partial` becomes `shallow_reachability_impact`, not definitive blast-radius analysis.
+
+Serialized shape:
+
+```json
+{
+  "desired_intent": "impact_analysis",
+  "effective_mode": "shallow_reachability_impact",
+  "degraded": true,
+  "required_capabilities": [
+    "impact_analysis",
+    "static_call_reasoning",
+    "runtime_registry_semantics"
+  ],
+  "available_capabilities": {
+    "impact_analysis": "shallow_partial",
+    "static_call_reasoning": "medium",
+    "runtime_registry_semantics": "low"
+  },
+  "repository_readiness": "partial",
+  "risks": [
+    "impact may miss dynamic/framework/test-surface edges"
+  ]
+}
+```
+
+Current effective modes include:
+
+| Desired intent | Effective modes |
+|---|---|
+| navigation | `exact_symbol_navigation`, `low_confidence_navigation` |
+| debugging | `code_grounded_debugging`, `limited_debugging_context` |
+| refactor | `reverse_dependency_refactor_candidates`, `limited_refactor_search` |
+| exploration | `code_grounded_explanation`, `docs_grounded_explanation`, `mechanism_explanation_with_caveats` |
+| new_feature | `design_context_planning` |
+| design_question | `design_reasoning` |
+| impact_analysis | `reachability_impact_candidates`, `shallow_reachability_impact`, `unsupported_impact_request` |
+| any | `unprofiled_intent_routing` when no repository profile is available |
+
+The resolution is emitted in the prompt contract under `intent_details.resolution` and mirrored as `metadata.effective_intent_mode`.
 
 ---
 
@@ -105,12 +186,13 @@ For more sophisticated payloads, allocate budget across tier groups rather than 
 | exploration | 40 | 40 | 20 |
 | new feature | 30 | 40 | 30 |
 | design question | 35 | 35 | 30 |
+| **impact analysis** | **60** | **25** | **15** |
 
 **Primary** = top 2 tiers in priority order  
 **Secondary** = middle 2 tiers  
 **Tail** = bottom 2 tiers
 
-This prevents a single over-eager tier from starving others. Example: in debugging, code gets ~50% of the budget, cross-refs get ~30%, and specs/architecture/concepts/ideas share ~20%.
+This prevents a single over-eager tier from starving others. Example: in debugging, code gets ~50% of the budget, cross-refs get ~30%, and specs/architecture/concepts/ideas share ~20%. For impact analysis, cross-refs (callers) dominate at 60%, with code and docs splitting the remainder to capture test coverage.
 
 ---
 
@@ -118,12 +200,105 @@ This prevents a single over-eager tier from starving others. Example: in debuggi
 
 **Input:** User query (text)
 
-**Process:** TBD — options include:
-- Regex pattern matching on keywords ("where", "why", "change", "add", etc.)
-- Lightweight LLM classification (small model or prompt-cached Claude)
-- Hybrid (regex + LLM fallback)
+**Current process:** deterministic keyword matching.
+
+- Lowercase the query.
+- Match standalone keywords with word boundaries and phrase keywords by substring.
+- Score each matching intent by keyword specificity: multi-word phrases score higher than short generic words.
+- Choose the primary intent by fixed precedence among intents that matched at least one keyword.
+- Compute a normalized distribution across all matched intents.
+- Mark `ambiguous=true` when the second-best score is close to the strongest score.
+- Default to `exploration` with confidence `0.0` when no keyword matches.
+
+**Primary intent precedence:**
+
+```
+debugging → impact_analysis → refactor → new_feature → design_question → navigation → exploration
+```
+
+This precedence is intentional but imperfect. For example, a query that includes both "why" and "where" routes as debugging; a query that includes "add" and "best way" routes as new_feature before design_question. The distribution/ambiguous metadata exists so these mixed cases are visible even before full multi-label routing.
+
+**Deferred alternatives:**
+- Lightweight LLM classification for ambiguous queries.
+- Hybrid regex + LLM fallback.
+- Learned classifier from feedback traces.
 
 **Output:** Intent label + metadata (confidence, matched keywords)
+
+Current serialized metadata:
+
+```json
+{
+  "primary": "impact_analysis",
+  "distribution": {
+    "impact_analysis": 0.68,
+    "debugging": 0.32
+  },
+  "confidence": 0.68,
+  "ambiguous": true,
+  "matched_keywords": {
+    "impact_analysis": ["what breaks"],
+    "debugging": ["break"]
+  }
+}
+```
+
+---
+
+## Toward Intent as Retrieval Contract
+
+Current limitation: `sidecar/context/intent_classifier.py` is still a keyword router. It finds matching words, chooses one primary intent by precedence, and stores a distribution for observability. Downstream, however, `ContextArbitrator` still routes almost the whole retrieval pipeline through `intent_signal.primary`, and `RankerScoring.intent_priors()` reduces intent to a coarse `symbol` / `doc` prior. The result is visible but shallow intent handling: useful as a first-pass hint, not yet a rich retrieval policy.
+
+The next design step is to treat intent not as a question label, but as a **retrieval contract**: what evidence shapes must appear in the assembled prompt, and how strongly graph vs docs vs tests should be weighted.
+
+Split the single `Intent` enum into multiple axes (orthogonal where possible):
+
+- **`task`**: `locate`, `explain_behavior`, `trace_dependency`, `diagnose_failure`, `change_code`, `impact`
+- **`evidence`**: `definition`, `call_chain`, `reverse_callers`, `runtime_registration`, `docs`, `tests`, `examples`
+- **`answer_contract`**: e.g. find the location, explain the flow, produce blast-radius candidates, propose a change plan
+
+Introduce an **`IntentPlan`** object (sketch):
+
+```python
+IntentPlan(
+    task="trace_dependency",
+    evidence=["call_chain", "runtime_registration", "imports"],
+    graph_direction=["out", "imports", "semantic_hint"],
+    role_targets=["api_surface", "runtime_surface", "representation_surface"],
+    doc_bias=0.2,
+    code_bias=0.8,
+    test_policy="topic_only",
+    confidence=0.74,
+)
+```
+
+Use the existing **`distribution`**, not only the primary intent. This document already lists multi-label routing from `intent.distribution` as deferred, but the current code does not apply it to ranking. **`intent_weight`** should become the weighted sum of plausible intent policies, not the prior for a single primary enum such as `Intent.DEBUGGING`.
+
+Add deeper retrieval modes aligned with benchmark-style questions:
+
+- **`explain_behavior`** — prioritize mechanism roles + ordered call slices over raw neighborhood breadth.
+- **`trace_dependency`** — bias toward forward/backward graph passes and import bridges; optional semantic rescue for missing edges.
+- **`impact_analysis` / `impact`** — unify vocabulary so profile readiness, `/impact`, ranker floors, `AFFECTS`, tests, and public API surfaces all describe the same task.
+- **`find_usage` / `locate`** — narrow symbol/doc retrieval before expanding graph radius.
+- **`compare_design`** — bias toward architecture/spec docs plus representative implementations.
+- **`implement_change`** — combine reference implementations, contracts, and narrow blast-radius candidates.
+
+`trace_dependency` already exists implicitly as ranker mechanism/recovery logic, but it is not a first-class intent. That makes the system less perceptive: "how does Depends work" and "how does Button work" both look like `exploration`, while the first needs runtime/DI tracing and the second may only need ordinary behavior explanation.
+
+Intent planning should use more than text. The planner should consider:
+
+- `query`
+- selected `target`
+- `repository_profile`
+- `role_catalog`
+- inferred `mechanism`
+- available graph capabilities, including `AFFECTS` / impact readiness
+
+Do not solve this by adding more keywords. A larger keyword table will become brittle quickly. Keywords should remain a cheap first pass, but the output should become a retrieval plan rather than only an enum.
+
+First implementation step: add an `IntentPlanner` layer that accepts the current `IntentSignal`, target, repository profile, and mechanism, then returns an `IntentPlan`. Migrate the ranker gradually from `Intent` to `IntentPlan`, starting with `intent_weight`, budget floors, graph direction preferences, role requirements, and impact/AFFECTS candidate injection.
+
+This section is **design-only** until `IntentPlan` (or equivalent) is threaded through `ContextArbitrator` → ranker weights / recovery hooks without breaking the existing prompt contract.
 
 ---
 
@@ -197,10 +372,23 @@ If the top N tiers in the priority order produce zero matches:
 
 ## Status
 
-**Phase:** 6+ (post-Phase 5)  
-**Reason:** Currently precision is low due to fixture scope, not BFS tuning. Fix retrieval quality first.
+**Phase:** Phase 6.1 implemented; Phase 9.2 multi-label routing deferred.  
+**Reason:** The current keyword classifier is good enough for local v0.1 routing and observability, but mixed queries still collapse to one primary strategy. Retrieval precision is now a higher priority than replacing the classifier.
 
-**When to implement:**
-- After Phase 5 (AFFECTS index, typed edges) is stable
-- Once doc-code semantic linking improves
-- When retrieval precision reaches >60% on golden set
+**Implemented:**
+- Seven intent labels: navigation, debugging, refactor, exploration, new_feature, design_question, impact_analysis.
+- Keyword-based primary classification.
+- Intent distribution, confidence, ambiguous flag, and matched keyword metadata.
+- Intent Resolution Contract against the index-time `repository_profile`.
+- Prompt contract serialization of `effective_mode`, available capabilities, and risks.
+- Prompt contract serialization under `intent_details`.
+- Impact-analysis special handling in the ranker: higher floor, topic-sensitive test/example noise, and OR pass gate.
+
+**Still deferred:**
+- Multi-label budget routing from `intent.distribution`.
+- `IntentPlanner` / `IntentPlan` retrieval contracts.
+- First-class deep retrieval modes such as `trace_dependency`, `impact`, `find_usage`, `compare_design`, and `implement_change`.
+- Shared impact retrieval contract between `/impact`, `AFFECTS`, and `impact_analysis` ranker mode.
+- LLM fallback for ambiguous intent.
+- Feedback-trained classifier.
+- User-facing UI affordance when intent is ambiguous.

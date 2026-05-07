@@ -85,8 +85,9 @@ class GraphExpander:
         visited = {target_uid}
         chosen = []
         spent = reserved
-        frontier: list[tuple[float, str, dict, str, bool, int]] = []
+        frontier: list = []
         pruned = 0
+        _counter = 0
 
         neighbors = self._get_neighbors(target_uid, visited, distance=1)
         for n in neighbors:
@@ -97,10 +98,11 @@ class GraphExpander:
                 n["token_estimate"],
                 distance=1,
             )
-            heappush(frontier, (-score, n["uid"], n, n["rel_type"], n["outgoing"], 1))
+            heappush(frontier, (-score, _counter, n["uid"], n, n["rel_type"], n["outgoing"], 1))
+            _counter += 1
 
         while frontier and spent < token_budget:
-            neg_score, uid, neighbor, rel_type, outgoing, distance = heappop(frontier)
+            neg_score, _, uid, neighbor, rel_type, outgoing, distance = heappop(frontier)
             score = -neg_score
 
             if uid in visited:
@@ -142,6 +144,7 @@ class GraphExpander:
                     frontier,
                     (
                         -next_score,
+                        _counter,
                         next_n["uid"],
                         next_n,
                         next_n["rel_type"],
@@ -149,6 +152,7 @@ class GraphExpander:
                         distance + 1,
                     ),
                 )
+                _counter += 1
 
         budget_info = {
             "limit": token_budget,

@@ -189,6 +189,7 @@ calls = extract_calls(file)
 | CALLS_DIRECT | Symbol → Symbol | none | Static call (confidence: 1.0) |
 | CALLS_DYNAMIC | Symbol → Symbol | none | Dispatch call (confidence: 0.7) |
 | FROM | DocAnchor → File | `type: "doc" \| "code" \| "spec" \| ...` | Doc origin or reference |
+| COVERS | DocAnchor → Symbol | `anchor_type`, `confidence`, `primary_bias`, `resolver` | Doc-to-symbol link quality |
 ```
 
 **For field comparisons:**

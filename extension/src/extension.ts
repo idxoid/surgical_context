@@ -73,7 +73,11 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument(e => overlayManager.onDocumentChanged(e)),
     vscode.workspace.onDidSaveTextDocument(doc => overlayManager.onDocumentSaved(doc)),
-    vscode.workspace.onDidCloseTextDocument(doc => overlayManager.onDocumentClosed(doc))
+    vscode.workspace.onDidCloseTextDocument(doc => overlayManager.onDocumentClosed(doc)),
+    // Clear stale lastRequest when user switches files
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      stateManager.clearLastRequestIfStale();
+    })
   );
 
   // Register the single sidebar surface used by the mocks for chat and impact.

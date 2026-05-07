@@ -118,6 +118,36 @@ class TestPromptCompilerBasic:
         assert save_payment is not None
         assert save_payment.is_dirty is True
 
+    def test_compile_deduplicates_exact_duplicate_symbol_code(
+        self, sample_subgraph, sample_code_map
+    ):
+        duplicate = SubgraphNode(
+            uid="other.py:validate_amount_copy",
+            name="validate_amount",
+            file_path="src/other.py",
+            range=[5, 6],
+            token_estimate=100,
+            relation="DOC_BRIDGE",
+            direction="bridge",
+            depth=2,
+            relevance_score=0.7,
+        )
+        subgraph = Subgraph(
+            primary=sample_subgraph.primary,
+            nodes=[sample_subgraph.nodes[0], duplicate],
+            budget=sample_subgraph.budget,
+        )
+        code_map = {
+            "file.py:process_payment": ("def process_payment():\n    pass", False),
+            "file.py:validate_amount": ("def validate_amount():\n    pass", False),
+            "other.py:validate_amount_copy": ("def validate_amount():\n    pass", False),
+        }
+
+        compiler = PromptCompiler()
+        ctx = compiler.compile_with_intent(subgraph, code_map, [], Intent.EXPLORATION)
+
+        assert [item.symbol for item in ctx.graph_context] == ["validate_amount"]
+
     def test_to_dict_includes_observability_contract(self, sample_subgraph, sample_code_map):
         """PromptContext JSON exposes provenance, scores, pruning, and assembly metadata."""
         compiler = PromptCompiler()
@@ -127,6 +157,11 @@ class TestPromptCompilerBasic:
                 chunk_id="spec_1",
                 content="Payment processing specification",
                 score=0.73,
+                graph_score=0.18,
+                semantic_score=0.73,
+                blended_score=0.81,
+                intent_weight=0.2,
+                matched_symbols=["process_payment"],
                 provenance=["vector:docs"],
             )
         ]
@@ -142,15 +177,47 @@ class TestPromptCompilerBasic:
         ctx.token_counts = {"context": 42}
         ctx.model_route = {"provider": "ollama", "model": "llama3"}
         ctx.pruning_reasons = ["budget skipped distant import"]
+        ctx.intent_distribution = {"navigation": 0.75, "exploration": 0.25}
+        ctx.intent_confidence = 0.75
+        ctx.intent_ambiguous = True
+        ctx.pruned_details = [
+            {
+                "kind": "symbol",
+                "uid": "audit-log",
+                "name": "Audit.log",
+                "reason": "over_budget",
+                "blended_score": 0.51,
+                "token_cost": 620,
+            }
+        ]
+        ctx.ranker_state = {
+            "strategy": "unified",
+            "weights": {"alpha": 1.0, "beta": 0.8, "gamma": 0.4, "delta": 0.5, "epsilon": 0.3},
+            "candidates_considered": 12,
+            "candidates_selected": 3,
+            "target_selection": {"strategy": "duplicate_resolution", "ambiguous": True},
+        }
 
         payload = ctx.to_dict()
 
         assert payload["metadata"]["assembly"]["trace_id"] == "trace-123"
         assert payload["metadata"]["assembly"]["resolver_version"] == "context-arbitrator-v2"
         assert payload["metadata"]["pruning_reasons"] == ["budget skipped distant import"]
+        assert payload["intent_details"]["distribution"] == {
+            "navigation": 0.75,
+            "exploration": 0.25,
+        }
+        assert payload["intent_details"]["ambiguous"] is True
+        assert payload["metadata"]["ranker"]["weights"]["epsilon"] == 0.3
+        assert (
+            payload["metadata"]["ranker"]["target_selection"]["strategy"] == "duplicate_resolution"
+        )
         assert payload["primary_source"]["provenance"] == ["graph", "code_resolver"]
-        assert payload["primary_source"]["scores"]["relevance"] == 1.0
+        assert payload["primary_source"]["scores"]["blended_score"] == 1.0
         assert payload["documentation"][0]["score"] == 0.73
+        assert payload["documentation"][0]["scores"]["graph_score"] == 0.18
+        assert payload["documentation"][0]["matched_symbols"] == ["process_payment"]
+        assert payload["pruned"][0]["name"] == "Audit.log"
 
 
 class TestPromptCompilerWithIntent:
@@ -205,6 +272,57 @@ class TestPromptCompilerWithIntent:
         # So idea docs should be included first
         doc_sources = [doc.source_file for doc in ctx.documentation]
         assert len(doc_sources) > 0
+
+    def test_compile_with_intent_caps_repeated_docs_from_same_source(
+        self, sample_subgraph, sample_code_map
+    ):
+        compiler = PromptCompiler()
+        docs = [
+            DocChunk(
+                source_file="docs/rtk-query/overview.md",
+                chunk_id=f"overview_{i}",
+                content=f"overview chunk {i}",
+                score=1.0 - i * 0.1,
+            )
+            for i in range(4)
+        ]
+
+        ctx = compiler.compile_with_intent(
+            sample_subgraph,
+            sample_code_map,
+            docs,
+            Intent.EXPLORATION,
+        )
+
+        assert len(ctx.documentation) == 2
+        assert all(doc.source_file == "docs/rtk-query/overview.md" for doc in ctx.documentation)
+
+    def test_prompt_contract_includes_doc_anchor_metadata(self, sample_subgraph, sample_code_map):
+        compiler = PromptCompiler()
+        docs = [
+            DocChunk(
+                source_file="docs/reference/models.md",
+                chunk_id="doc-1",
+                content="BaseModel reference",
+                score=0.8,
+                anchor_type="definition",
+                anchor_confidence=0.92,
+                primary_bias=1.0,
+            )
+        ]
+
+        ctx = compiler.compile(sample_subgraph, sample_code_map, docs)
+        payload = ctx.to_dict()
+
+        doc = payload["documentation"][0]
+        assert doc["anchor_type"] == "definition"
+        assert doc["anchor_confidence"] == 0.92
+        assert doc["primary_bias"] == 1.0
+        assert doc["anchor"] == {
+            "type": "definition",
+            "confidence": 0.92,
+            "primary_bias": 1.0,
+        }
 
     def test_compile_with_intent_respects_tier_priority(
         self, sample_subgraph, sample_code_map, sample_docs

@@ -173,7 +173,7 @@ Do not overload common VS Code defaults. Prefer opt-in bindings.
 | Setting | Type | Default | Purpose |
 |---|---|---|---|
 | `surgicalContext.backendUrl` | `string` | `http://localhost:8000` | Sidecar base URL |
-| `surgicalContext.workspaceId` | `string` | `local/default@main` | Explicit workspace scope override |
+| `surgicalContext.workspaceId` | `string` | empty | Optional workspace scope override; blank derives from VS Code workspace + Git branch |
 | `surgicalContext.overlaySync` | `boolean` | `true` | Enable dirty-state sync |
 | `surgicalContext.chat.autoOpenInspector` | `boolean` | `false` | Open inspector after completed ask |
 | `surgicalContext.dashboard.autoRefreshSeconds` | `number` | `30` | Dashboard polling interval |

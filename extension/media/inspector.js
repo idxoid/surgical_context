@@ -153,6 +153,83 @@
     </div>
   `;
   }
+  function renderApiPayloadTab(context) {
+    const primary = context.primary_source;
+    const graphItems = context.graph_context || [];
+    const docs = context.documentation || [];
+    const systemPrompt = buildSystemPrompt(context);
+    const apiRequest = {
+      model: "claude-opus-4-7",
+      max_tokens: 8096,
+      system: systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: "(User query would appear here)"
+        }
+      ]
+    };
+    const metadata = {
+      mode: context.mode,
+      intent: context.intent,
+      assembly_metadata: context.metadata?.assembly,
+      tier_tokens: context.metadata?.tier_tokens,
+      budget_info: context.budget
+    };
+    const jsonStr = JSON.stringify(
+      {
+        api_request: apiRequest,
+        context_metadata: metadata,
+        assembly_summary: {
+          primary_symbol: primary?.symbol,
+          graph_context_count: graphItems.length,
+          documentation_count: docs.length,
+          total_tokens: (context.metadata?.tokens_primary || 0) + (context.metadata?.tokens_graph || 0) + (context.metadata?.tokens_docs || 0)
+        }
+      },
+      null,
+      2
+    );
+    return `
+    <div class="json-viewer">
+      <div class="json-info">
+        <p>This is the final JSON sent to the Claude API (system prompt + context).</p>
+        <p>The <code>system</code> field contains the assembled surgical context.</p>
+      </div>
+      <button class="copy-button" data-action="copy-api-json">Copy JSON</button>
+      <pre><code>${escapeHtml(jsonStr)}</code></pre>
+    </div>
+  `;
+  }
+  function buildSystemPrompt(context) {
+    const primary = context.primary_source;
+    const graphItems = context.graph_context || [];
+    const docs = context.documentation || [];
+    const blocks = [
+      `--- TARGET SYMBOL: ${primary?.symbol || "unknown"} ---`
+    ];
+    if (primary?.code) {
+      blocks.push(primary.code);
+    }
+    if (graphItems.length > 0) {
+      blocks.push("\n--- DEPENDENCIES ---");
+      for (const dep of graphItems) {
+        blocks.push(`
+# From ${dep.symbol} [${dep.relation}]:`);
+        if (dep.code) {
+          blocks.push(dep.code);
+        }
+      }
+    }
+    if (docs.length > 0) {
+      blocks.push("\n--- DOCUMENTATION ---");
+      for (const doc of docs) {
+        blocks.push(`[${doc.source_file}]
+${doc.content}`);
+      }
+    }
+    return blocks.join("\n");
+  }
 
   // src/webview/inspector.ts
   var vscode = acquireVsCodeApi();
@@ -160,16 +237,28 @@
     constructor() {
       this.context = null;
       this.tabState = { activeTab: "primary" };
+      console.log("InspectorPanel constructor called");
       this.initializeMessageListener();
       this.restoreTabState();
     }
     initializeMessageListener() {
       window.addEventListener("message", (event) => {
         const message = event.data;
+        console.log("InspectorPanel received message:", message.type);
         switch (message.type) {
           case "inspector.loaded":
+            console.log("inspector.loaded message received, context:", message.context);
             this.context = message.context || null;
+            this.symbol = message.symbol;
+            this.question = message.question;
             this.render();
+            break;
+          case "inspector.notAvailable":
+            console.log("inspector.notAvailable message received:", message.message);
+            this.context = null;
+            this.symbol = void 0;
+            this.question = void 0;
+            this.renderNotAvailable(message.message);
             break;
         }
       });
@@ -177,6 +266,7 @@
     render() {
       const root = document.getElementById("root");
       if (!root) return;
+      console.log("InspectorPanel.render() called, context:", this.context, "tabState:", this.tabState);
       if (!this.context) {
         root.innerHTML = `
         <div class="inspector-empty">
@@ -199,11 +289,15 @@
         <button class="tab-button ${this.tabState.activeTab === "json" ? "active" : ""}" data-tab="json">
           Prompt JSON
         </button>
+        <button class="tab-button ${this.tabState.activeTab === "api" ? "active" : ""}" data-tab="api">
+          API Payload
+        </button>
         <button class="tab-button ${this.tabState.activeTab === "tokens" ? "active" : ""}" data-tab="tokens">
           Token Breakdown
         </button>
       </div>
     `;
+      console.log("tabButtons HTML generated, about to render tabContent for:", this.tabState.activeTab);
       let tabContent = "";
       switch (this.tabState.activeTab) {
         case "primary":
@@ -218,13 +312,19 @@
         case "json":
           tabContent = renderPromptJsonTab(this.context);
           break;
+        case "api":
+          tabContent = renderApiPayloadTab(this.context);
+          break;
         case "tokens":
           tabContent = renderTokenBreakdownTab(this.context);
           break;
       }
+      const headerTitle = this.symbol ? `Context Inspector \u2014 ${this.symbol}` : "Context Inspector";
+      const questionHtml = this.question ? `<p class="inspector-question"><em>Question: ${escapeHtml(this.question)}</em></p>` : "";
       root.innerHTML = `
       <div class="inspector-header">
-        <h2>Context Inspector</h2>
+        <h2>${escapeHtml(headerTitle)}</h2>
+        ${questionHtml}
       </div>
       ${tabButtons}
       <div class="inspector-content">
@@ -232,6 +332,20 @@
       </div>
     `;
       this.attachTabListeners();
+    }
+    renderNotAvailable(message) {
+      const root = document.getElementById("root");
+      if (!root) return;
+      root.innerHTML = `
+      <div class="inspector-empty">
+        <div style="padding: 20px; text-align: center;">
+          <p style="margin: 0; color: var(--vscode-foreground);">${escapeHtml(message)}</p>
+          <p style="margin: 10px 0 0 0; font-size: 12px; color: var(--vscode-descriptionForeground);">
+            Click <strong>Ask</strong> about a symbol to get started.
+          </p>
+        </div>
+      </div>
+    `;
     }
     attachTabListeners() {
       document.querySelectorAll(".tab-button").forEach((btn) => {
@@ -271,13 +385,81 @@
           });
         });
       }
+      const copyApiBtn = document.querySelector('[data-action="copy-api-json"]');
+      if (copyApiBtn) {
+        copyApiBtn.addEventListener("click", () => {
+          const primary = this.context?.primary_source;
+          const graphItems = this.context?.graph_context || [];
+          const docs = this.context?.documentation || [];
+          const systemPrompt = this._buildSystemPromptForCopy();
+          const apiPayload = {
+            api_request: {
+              model: "claude-opus-4-7",
+              max_tokens: 8096,
+              system: systemPrompt,
+              messages: [
+                {
+                  role: "user",
+                  content: "(User query would appear here)"
+                }
+              ]
+            },
+            context_metadata: {
+              mode: this.context?.mode,
+              intent: this.context?.intent,
+              assembly_metadata: this.context?.metadata?.assembly,
+              tier_tokens: this.context?.metadata?.tier_tokens,
+              budget_info: this.context?.budget
+            }
+          };
+          const jsonContent = JSON.stringify(apiPayload, null, 2);
+          navigator.clipboard.writeText(jsonContent).then(() => {
+            const btn = copyApiBtn;
+            const original = btn.textContent;
+            btn.textContent = "Copied!";
+            setTimeout(() => {
+              btn.textContent = original;
+            }, 2e3);
+          });
+        });
+      }
+    }
+    _buildSystemPromptForCopy() {
+      const primary = this.context?.primary_source;
+      const graphItems = this.context?.graph_context || [];
+      const docs = this.context?.documentation || [];
+      const blocks = [
+        `--- TARGET SYMBOL: ${primary?.symbol || "unknown"} ---`
+      ];
+      if (primary?.code) {
+        blocks.push(primary.code);
+      }
+      if (graphItems.length > 0) {
+        blocks.push("\n--- DEPENDENCIES ---");
+        for (const dep of graphItems) {
+          blocks.push(`
+# From ${dep.symbol} [${dep.relation}]:`);
+          if (dep.code) {
+            blocks.push(dep.code);
+          }
+        }
+      }
+      if (docs.length > 0) {
+        blocks.push("\n--- DOCUMENTATION ---");
+        for (const doc of docs) {
+          blocks.push(`[${doc.source_file}]
+${doc.content}`);
+        }
+      }
+      return blocks.join("\n");
     }
     persistTabState() {
       vscode.setState(this.tabState);
     }
     restoreTabState() {
       const saved = vscode.getState();
-      if (saved?.activeTab) {
+      const validTabs = ["primary", "graph", "docs", "json", "api", "tokens"];
+      if (saved?.activeTab && validTabs.includes(saved.activeTab)) {
         this.tabState.activeTab = saved.activeTab;
       }
     }

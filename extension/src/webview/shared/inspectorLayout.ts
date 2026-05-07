@@ -177,3 +177,96 @@ export function renderTokenBreakdownTab(context: PromptContextPayload): string {
     </div>
   `;
 }
+
+export function renderApiPayloadTab(context: PromptContextPayload): string {
+  const primary = context.primary_source;
+  const graphItems = context.graph_context || [];
+  const docs = context.documentation || [];
+
+  // Reconstruct the system prompt (as built by PromptCompiler)
+  const systemPrompt = buildSystemPrompt(context);
+
+  // Build the API request object
+  const apiRequest = {
+    model: 'claude-opus-4-7',
+    max_tokens: 8096,
+    system: systemPrompt,
+    messages: [
+      {
+        role: 'user',
+        content: '(User query would appear here)',
+      },
+    ],
+  };
+
+  // Also include metadata about the context assembly
+  const metadata = {
+    mode: context.mode,
+    intent: context.intent,
+    assembly_metadata: context.metadata?.assembly,
+    tier_tokens: context.metadata?.tier_tokens,
+    budget_info: context.budget,
+  };
+
+  const jsonStr = JSON.stringify(
+    {
+      api_request: apiRequest,
+      context_metadata: metadata,
+      assembly_summary: {
+        primary_symbol: primary?.symbol,
+        graph_context_count: graphItems.length,
+        documentation_count: docs.length,
+        total_tokens:
+          (context.metadata?.tokens_primary || 0) +
+          (context.metadata?.tokens_graph || 0) +
+          (context.metadata?.tokens_docs || 0),
+      },
+    },
+    null,
+    2
+  );
+
+  return `
+    <div class="json-viewer">
+      <div class="json-info">
+        <p>This is the final JSON sent to the Claude API (system prompt + context).</p>
+        <p>The <code>system</code> field contains the assembled surgical context.</p>
+      </div>
+      <button class="copy-button" data-action="copy-api-json">Copy JSON</button>
+      <pre><code>${escapeHtml(jsonStr)}</code></pre>
+    </div>
+  `;
+}
+
+function buildSystemPrompt(context: PromptContextPayload): string {
+  const primary = context.primary_source;
+  const graphItems = context.graph_context || [];
+  const docs = context.documentation || [];
+
+  const blocks: string[] = [
+    `--- TARGET SYMBOL: ${primary?.symbol || 'unknown'} ---`,
+  ];
+
+  if (primary?.code) {
+    blocks.push(primary.code);
+  }
+
+  if (graphItems.length > 0) {
+    blocks.push('\n--- DEPENDENCIES ---');
+    for (const dep of graphItems) {
+      blocks.push(`\n# From ${dep.symbol} [${dep.relation}]:`);
+      if (dep.code) {
+        blocks.push(dep.code);
+      }
+    }
+  }
+
+  if (docs.length > 0) {
+    blocks.push('\n--- DOCUMENTATION ---');
+    for (const doc of docs) {
+      blocks.push(`[${doc.source_file}]\n${doc.content}`);
+    }
+  }
+
+  return blocks.join('\n');
+}

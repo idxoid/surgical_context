@@ -3,7 +3,7 @@
 from abc import abstractmethod
 from hashlib import sha256
 
-from tree_sitter import Language, Parser
+from tree_sitter import Language, Parser, Query
 
 from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata
 from sidecar.parser.uid import (
@@ -13,6 +13,10 @@ from sidecar.parser.uid import (
     signature_from_node,
     signature_hash,
 )
+
+
+def _node_text(node) -> str:
+    return (node.text or b"").decode("utf-8")
 
 
 class TreeSitterAdapter(LanguageAdapter):
@@ -48,28 +52,44 @@ class TreeSitterAdapter(LanguageAdapter):
         if lang_name == "python":
             from tree_sitter_python import language as lang_ptr
 
-            self.language = Language(lang_ptr(), lang_name)
+            self.language = Language(lang_ptr())
         elif lang_name == "typescript":
             from tree_sitter_typescript import language_typescript as lang_ptr
 
-            self.language = Language(lang_ptr(), lang_name)
+            self.language = Language(lang_ptr())
         else:
             raise ValueError(f"Unsupported language: {lang_name}")
 
-        self.parser = Parser()
-        self.parser.set_language(self.language)
+        self.parser = Parser(self.language)
 
-    def extract_symbols(self, source_code: str, file_path: str) -> list[SymbolMetadata]:
-        """Extract functions, classes, and module-level constants from source code."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
-        query = self.language.query(self.symbol_query)
-        captures = query.captures(tree.root_node)
+    def _parse(self, source_code: str):
+        """Parse source code into a tree-sitter tree."""
+        return self.parser.parse(bytes(source_code, "utf8"))
+
+    def extract_symbols(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[SymbolMetadata]:
+        """Extract functions, classes, and module-level constants from source code.
+
+        ``tree`` may be passed by callers (e.g. ``extract_all``) that already
+        have a parsed tree-sitter tree, to avoid re-parsing.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        query = Query(self.language, self.symbol_query)
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for _match_id, captures_dict in query.matches(tree.root_node):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
 
         # Collect var.name nodes keyed by their parent var.def node id
         var_names: dict[int, str] = {}
         for node, tag in captures:
-            if tag == "var.name":
-                var_names[node.parent.id] = node.text.decode("utf-8")
+            if tag == "var.name" and node.parent is not None:
+                var_names[node.parent.id] = _node_text(node)
 
         symbols = []
         for node, tag in captures:
@@ -77,8 +97,8 @@ class TreeSitterAdapter(LanguageAdapter):
                 name_node = node.child_by_field_name("name")
                 if not name_node:
                     continue
-                name = name_node.text.decode("utf-8")
-                content = node.text.decode("utf-8")
+                name = _node_text(name_node)
+                content = _node_text(node)
                 qualified_name = qualified_name_for(node, source_code, file_path)
                 raw_signature, signature_status = signature_from_node(
                     node, source_code, self.language_name
@@ -100,17 +120,23 @@ class TreeSitterAdapter(LanguageAdapter):
                         language=self.language_name,
                     )
                 )
-            elif tag == "var.def":
-                name = var_names.get(node.id)
-                if not name or not name.isupper():
+            elif tag.startswith("var."):
+                var_name = var_names.get(node.id)
+                if not var_name or not self.should_include_variable_symbol(
+                    node,
+                    tag,
+                    var_name,
+                    source_code=source_code,
+                    file_path=file_path,
+                ):
                     continue
-                content = node.text.decode("utf-8")
-                qualified_name = ".".join([self._module_name(file_path), name])
-                signature = f"{name}()->_"
+                content = _node_text(node)
+                qualified_name = ".".join([self._module_name(file_path), var_name])
+                signature = f"{var_name}()->_"
                 symbols.append(
                     SymbolMetadata(
                         uid=compute_uid(qualified_name, signature, self.language_name),
-                        name=name,
+                        name=var_name,
                         kind="variable",
                         start_line=node.start_point[0] + 1,
                         end_line=node.end_point[0] + 1,
@@ -125,11 +151,37 @@ class TreeSitterAdapter(LanguageAdapter):
                 )
         return symbols
 
-    def extract_calls_from_source(self, source_code: str, file_path: str) -> list[dict]:
+    def should_include_variable_symbol(
+        self,
+        node,
+        tag: str,
+        name: str,
+        *,
+        source_code: str,
+        file_path: str,
+    ) -> bool:
+        """Decide whether a captured module-level variable should be indexed.
+
+        The default remains conservative: only UPPER_CASE constants are treated
+        as symbols. Language adapters can override this for ecosystems where
+        exported lexical declarations are part of the public API surface.
+        """
+        return name.isupper()
+
+    def extract_calls_from_source(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
         """Extract function call edges from source code with call type classification."""
-        tree = self.parser.parse(bytes(source_code, "utf8"))
-        query = self.language.query(self.call_query)
-        captures = query.captures(tree.root_node)
+        if tree is None:
+            tree = self._parse(source_code)
+        query = Query(self.language, self.call_query)
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for _match_id, captures_dict in query.matches(tree.root_node):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
 
         calls = []
         for node, tag in captures:
@@ -174,3 +226,18 @@ class TreeSitterAdapter(LanguageAdapter):
         qualified_name = qualified_name_for(node, source_code, file_path)
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
+
+    def extract_all(self, source_code: str, file_path: str):
+        """Parse once, then run all four extractions over the same AST.
+
+        Tree-sitter trees are immutable and cheap to share across queries
+        within a single thread. ``FastExtractor`` already gives each worker
+        its own adapter instance via ``_ThreadLocalAdapters``, so the tree
+        we hold here never crosses threads.
+        """
+        tree = self._parse(source_code)
+        symbols = self.extract_symbols(source_code, file_path, tree=tree)
+        calls = self.extract_calls_from_source(source_code, file_path, tree=tree)
+        imports = self.extract_imports(source_code, file_path, tree=tree)
+        inheritance = self.extract_inheritance(source_code, file_path, tree=tree)
+        return symbols, calls, imports, inheritance

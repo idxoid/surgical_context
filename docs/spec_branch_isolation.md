@@ -63,7 +63,7 @@ X-User-ID: alice
 X-Workspace: acme/surgical_context@feature/new-pricing
 ```
 
-For development compatibility, requests without `X-Workspace` fall back to `local/surgical_context@main`. Production clients should send `X-Workspace` explicitly.
+For development compatibility, requests without `X-Workspace` fall back to `DEFAULT_WORKSPACE_ID` (`local/surgical_context@main` by default). The VS Code extension no longer ships a competing static default: when `surgicalContext.workspaceId` is blank, it derives `local/{workspace-folder-name}@{git-branch-or-short-sha}` and sends that; if no workspace folder is open, it omits the header and lets the sidecar fallback apply. Explicit user configuration always wins.
 
 Cypher reads get a `WHERE` clause injected at the arbitrator layer:
 
@@ -158,7 +158,7 @@ curl -X POST http://localhost:8000/ask \
 
 Existing Phase 7 Aura graphs have no workspace metadata. Migration:
 
-1. Create a single `Workspace {id: "legacy/default@main", ...}` node.
+1. Create a single `Workspace {id: "local/surgical_context@main", ...}` node, or another operator-supplied `DEFAULT_WORKSPACE_ID`.
 2. Link every existing File / Symbol / DocAnchor to it.
 3. Require new writes to specify a workspace.
 4. Emit deprecation warnings on reads without `X-Workspace`; after 30 days, require the header.

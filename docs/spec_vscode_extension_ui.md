@@ -188,7 +188,7 @@ The extension UI should use four state domains.
 |---|---|---|
 | `sidecarHealth` | `'up' \| 'down' \| 'degraded'` | Health indicator |
 | `cloudStatus` | `'connected' \| 'fallback-local' \| 'offline'` | Provider/backend mode |
-| `workspaceId` | `string` | Current workspace scope |
+| `workspaceId` | `string` | Current workspace scope. Blank setting means derive from VS Code workspace folder + Git branch; explicit setting overrides derivation. |
 | `authState` | `'ready' \| 'missing-token' \| 'expired'` | Auth-related UX |
 
 ### Request state
@@ -353,7 +353,7 @@ function layoutChatPanel(root: HTMLElement) {
 ```json
 {
   "environment": {
-    "workspace": "local/surgical_context@main",
+    "workspace": "local/surgical_context@context-engine-refocus",
     "cloud": "connected",
     "mode": "surgical",
     "symbol": "GraphExpander.expand()"

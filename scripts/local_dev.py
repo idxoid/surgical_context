@@ -462,7 +462,9 @@ def smoke(args: argparse.Namespace) -> int:
     docs_path = Path(args.docs_path or default_docs_path).resolve()
 
     if args.dry_run:
-        print("Smoke would check extension assets, local dirs, sidecar health, indexes, ask, impact, and metrics.")
+        print(
+            "Smoke would check extension assets, local dirs, sidecar health, indexes, ask, impact, and metrics."
+        )
         if not args.skip_storage:
             compose = _compose_cmd() or ["docker", "compose"]
             print(f"$ {_display_cmd([*compose, 'up', '-d', 'neo4j'])}")

@@ -1,76 +1,93 @@
 # Surgical Context - Road Map
 
-> **Status:** Active release target is the **Local Developer Product**: a local-first, single-tenant VS Code experience with the sidecar, local graph/vector/history, and ask/inspect/impact workflows. This is the open-source candidate.
+> **Status:** This branch (`context-engine-refocus`) treats Surgical Context as a **local-first, model-agnostic context engine for code understanding and change impact**.
 >
-> **Already shipped foundation:** typed graph edges, AFFECTS, stable UID v2, scoped call resolution, workspace-scoped graph reads/writes, doc enrichment, intent-aware prompt assembly, graceful degradation, model routing, streaming sidecar endpoint, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a working VS Code extension surface.
+> **Release target:** a Local Developer Product in VS Code with the Python sidecar, local graph/vector/history defaults, and a trustworthy `Ask / Inspect / Impact` loop.
 >
-> **Principle:** finish the local daily-driver loop before expanding into team, enterprise, SaaS, marketplace, or microservice-platform scope.
+> **Principle:** measure retrieval quality and token efficiency on real repositories before expanding platform scope.
 >
-> **See also:** [review_findings_2026-04-17.md](review_findings_2026-04-17.md), [DOCS_STYLE_GUIDE.md](DOCS_STYLE_GUIDE.md), [docs/README.md](README.md)
+> **See also:** [concept.md](concept.md), [product_direction_memo.md](product_direction_memo.md), [review_findings_2026-04-17.md](review_findings_2026-04-17.md), [docs/README.md](README.md)
 
 ---
 
-## Release Target: Local Developer Product
+## Product Direction
 
-The local product is the canonical next milestone.
+The local product is still the canonical next milestone, but the product is now described more narrowly.
 
-**In scope for v0.1:**
-- VS Code UI with Chat, Inspector, Impact, Settings, and Dashboard.
-- Python sidecar running locally.
-- Local graph provider default: Neo4j in Docker.
-- Local vector provider default: LanceDB.
-- Local history provider default: SQLite.
-- Ask/inspect/impact flows that work without a required symbol: `symbol -> file -> workspace -> direct_llm`.
-- Prompt-contract transparency: selected context, scores/provenance where available, pruning reasons, model route, trace ID, token budget.
-- Local docs indexing from the repository.
-- Local-first privacy: no raw code in the graph, no raw prompt/code history unless policy explicitly allows it.
-- One-machine development and open-source contribution path.
+### v0.1 Goal
 
-**Out of scope for v0.1:**
-- Required managed SaaS.
-- Cross-organization or cross-tenant graph.
-- Full alternate database backend support beyond provider boundaries around the defaults.
-- LLM proxy gateway as a required dependency.
-- Microservice split of the sidecar.
-- Rust/Go/C parser rewrites before profiling proves they are necessary.
+Deliver a local VS Code tool that can answer:
 
-**Single-tenant default:** keep `workspace_id` and `tenant_id` in schemas and contracts, but default `tenant_id` to `local`. Multiple local workspaces are allowed; cross-project tenant graph traversal is not required for the local release.
+- what does this code do?
+- what supports this answer?
+- what might this change break?
+
+without wasting tokens or hiding retrieval behavior.
+
+### In Scope
+
+- VS Code surfaces: Chat, Inspector, Impact, Settings, Dashboard
+- Python sidecar running locally
+- local defaults: Neo4j, LanceDB, SQLite
+- retrieval ladder: `symbol -> file -> workspace -> direct_llm`
+- prompt-contract transparency and route visibility
+- local docs indexing from the repository
+- request history and snapshots
+- benchmark validation on real repositories
+
+### Out of Scope
+
+- managed SaaS as a requirement
+- cross-tenant or cross-organization graph traversal
+- broad enterprise RBAC and policy surface
+- mandatory LLM proxy gateway
+- microservice split of the sidecar
+- parser/indexer rewrites before profiling proves a bottleneck
+- "general autonomous coding agent" competition as a release goal
+
+### Single-Tenant Default
+
+Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `local`. Multiple local workspaces are allowed; cross-project tenant graph traversal is not required for the local release.
 
 ---
 
 ## Canonical Backlog
 
-### P0 - Local Release Hardening
-- [x] Add a clean local setup path: install extension dependencies, start Neo4j Docker, initialize LanceDB paths, run sidecar, launch extension dev host.
-- [x] Add a local smoke test: clean clone -> install -> start storage -> index repo -> ask -> inspect -> impact -> dashboard.
-- [x] Add an extension health checklist for sidecar, graph provider, vector provider, index state, LLM provider, and current workspace.
-- [x] Make dashboard failures graceful when the sidecar is down, metrics are missing, or no index exists yet.
-- [x] Finalize local settings UX for sidecar URL, workspace ID, model preference, auth token, storage paths, and token budget.
-- [x] Document open-source local usage with Docker Neo4j, LanceDB, SQLite, Ollama, and optional cloud model keys.
+### P0 - Refocus and Truth
+- [x] Rewrite product-facing docs around the context-engine thesis (`concept.md`, `idea_summary.md`, `road_map.md`, `README.md`).
+- [ ] Keep the local release boundary explicit: no platform or enterprise scope expansion without a measured reason.
+- [x] Align the benchmark story around real repositories and real developer questions.
 
-### P1 - Local History and Prompt Snapshots
-- [x] Implement SQLite `HistoryProvider` for conversations, messages, ask snapshots, inspector snapshots, and impact snapshots.
-- [x] Persist selected prompt/request IDs so previous user asks are clickable and drive Inspector/Impact state.
-- [x] Store feedback tokens against retrieval snapshots with workspace/user/trace/model metadata.
-- [x] Add retention controls and disabled/ephemeral modes for history.
-- [x] Default policy: store metadata and response summaries; do not store raw code bodies or raw prompt bodies unless explicitly enabled.
-- [x] Add tests for prompt-history privacy gates and snapshot retrieval.
+### P1 - Local Daily-Driver Loop
+- [x] Clean local bootstrap and smoke path.
+- [x] Local history and request snapshots.
+- [ ] Finish streaming and selected-request synchronization so `Ask / Inspect / Impact` always point to the same request.
+- [ ] Keep dashboard, settings, and health states useful when providers are missing, local-only, or degraded.
+- [ ] Add small but solid accessibility/keyboard polish for the extension surfaces.
 
 ### P2 - Retrieval Quality and Observability
-- [x] Finish the soft fallback ladder: missing symbol is a warning, not a failed chat; continue through file, workspace, then direct LLM.
-- [ ] Finish remaining Prompt Contract fields: `pruned[]`, ranker weights, intent distribution/confidence, and ambiguous-intent signal.
-- [ ] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally.
-- [ ] Tune unified ranking over graph + semantic candidates using the QA harness.
-- [ ] Add latency SLO checks for local asks and index operations.
+- [x] Treat Phase 9.1 (Unified Ranker) and Phase 9.4 (Prompt Contract Observability) as the current retrieval-quality path, not deferred cleanup.
+- [x] Soft fallback ladder for missing symbols.
+- [x] Finish remaining prompt-contract fields: `pruned[]`, ranker weights, intent distribution/confidence, ambiguous-intent signal.
+- [~] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally. (Core metadata exists; calibration + UI surfacing remain.)
 - [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
+- [ ] Add latency SLO checks for local asks and index operations.
+- [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
+- [~] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles, wrapper-body support, topic-aware impact retrieval, and module/package fallback targets. (FastAPI/Pydantic/RTK are green baselines; Flask/Django/Express tails remain.)
+- [ ] Treat impact analysis as shallow until proven otherwise: current `AFFECTS` is bounded reverse reachability, not a full causal blast-radius model across framework registries, generated APIs, templates, runtime dispatch, and tests.
 
-### P3 - Extension Productization
-- [ ] Wire chat streaming to `/ask/stream` end to end in the webview.
-- [ ] Keep Chat, Inspector, and Impact synchronized around the currently selected ask.
-- [ ] Add keyboard/focus/accessibility polish for all webview surfaces.
-- [ ] Make command palette entries, activity placement, dashboard open behavior, and sidebar behavior predictable in development and packaged installs.
-- [ ] Add extension-side tests or smoke scripts for command registration and webview message contracts.
-- [ ] Package local dev assets cleanly and exclude generated/noisy files where appropriate.
+### P3 - Real-Repo Validation
+- [x] Adapt the QA harness to use the real-repo question pack in [tests/fixtures/real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml).
+- [x] Start with the `core12` subset, then expand to the full 24-question pack.
+- [ ] Compare naive context vs Surgical Context vs heavy stuffing on 2-3 real repositories.
+- [ ] Record token deltas, latency, fallback behavior, and human-reviewed grounding quality.
+- [x] Use benchmark results to tune ranking rather than tuning by intuition.
+
+Current snapshot:
+- FastAPI `core12` retrieval baseline is green, including `Depends` trace path recovery.
+- Pydantic and Redux Toolkit local packs are broadly green with remaining precision tails on broad/doc-heavy questions.
+- Flask and Django mostly pass with role/file-coverage tails; Express still needs target-resolution and JS export-shape improvements before meaningful ranker tuning.
+- `UnifiedRanker` decomposition (big-bang first cut) is implemented: new `sidecar/context/ranker/*` components (`TargetSelector`, `GraphCandidateSource`, `VectorCandidateSource`, `RoleBackfill`, `BudgetSelector`, `SubgraphAssembler`) are wired, with `UnifiedRanker` kept as compatibility facade.
 
 ### P4 - Provider Boundaries, Defaults First
 - [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
@@ -89,6 +106,46 @@ The local product is the canonical next milestone.
 - [ ] Add optional LLM Proxy Gateway transport for organizations that need provider-account policy, auditing, masking, quotas, or fallback outside the sidecar.
 - [ ] Split the sidecar into services only when scale requires it.
 - [ ] Consider Rust/Go/C parser or indexer hot paths only after a performance review proves Python orchestration is the bottleneck.
+
+---
+
+## Immediate 3-Week Plan
+
+### Next execution lanes (agreed)
+
+1. **Baseline lock (green lanes)**  
+   Keep `fastapi`, `pydantic`, `redux_toolkit`, and `sqlalchemy` as control baselines; avoid broad ranker changes that regress these packs.
+
+2. **Python tail closure (non-impact)**  
+   Prioritize residual role/file tails in `django` and `flask` (trace/explain questions) without widening the impact-analysis scope.
+
+3. **JS framework target-resolution lane**  
+   Treat `express` / `vue` / `nestjs` failures primarily as symbol/exports/target-resolution work before ranker-weight tuning.
+
+4. **Impact-analysis lane (deferred)**  
+   Continue to treat impact as a separate iteration after the non-impact retrieval lanes stabilize.
+
+### Immediate Retrieval Focus
+- keep broadening the now-shipped canonical role taxonomy beyond FastAPI, with the current baseline green across FastAPI, Pydantic, and Redux Toolkit
+- keep using real-repo benchmark reports plus `ready_context` payloads to debug misses before changing weights
+- continue precision work on doc-heavy and broad RTK/Pydantic paths, and on Flask/Django role/file-coverage tails
+- finish doc-anchor confidence/type calibration and extension surfacing so docs stop acting like undifferentiated semantic noise
+- define index-time repository readiness and mechanism discovery, including an explicit impact-readiness signal so unsupported or shallow impact results are not mistaken for ranker failures
+
+### Week 1
+- tighten remaining product docs around the current local-first context-engine thesis (completed; keep as maintenance)
+- finish `Ask / Inspect / Impact` synchronization and route visibility
+- expose the same retrieval metadata already present in the contract more clearly in the extension surfaces
+
+### Week 2
+- run the `core12` questions on FastAPI, Pydantic, and Redux Toolkit after each retrieval change, then spot-check the full RTK pack when mechanism routing changes touch JS/TS behavior
+- review which answers were grounded, weak, or overstuffed, then patch ranker and doc-link blind spots immediately
+- keep benchmark snapshots by repo in `QA/benchmark_runs.jsonl` and inspect them with `QA/benchmark_runs.py` so regressions and pruned-candidate patterns are easy to spot in review
+- run an independent/pre-registered role-label pass for the real-repo pack before claiming that saturated `role_recall=1.00` proves complete mechanism coverage
+
+### Week 3
+- tune ranking and fallback behavior from measured results, with canonical roles and mechanism coverage as the main lane
+- decide whether the next phase is still local product hardening or extraction of a reusable context/routing backend
 
 ---
 
@@ -221,7 +278,7 @@ Goal: Connect the semantic layer via documentation.
 - [x] Markdown processing pipeline: section-aware chunking + embedding generation (`sidecar/indexer/docs.py`)
 
 ### Semantic Connections
-- [x] DocAnchor in Neo4j: `chunk_id`-only node, `[:FROM]` to File, `[:COVERS]` to Symbols, lazy `pending` resolution via LanceDB (`sidecar/indexer/anchor.py`)
+- [x] DocAnchor in Neo4j: `chunk_id`-only node, `[:FROM]` to File, typed/confident `[:COVERS]` to Symbols, lazy `pending` resolution via LanceDB (`sidecar/indexer/anchor.py`)
 
 ### RAG Optimization
 - [x] Hybrid Search: Vector Search (semantics) → Graph Expansion (code) (`/ask` appends top-3 doc chunks to context)
@@ -476,39 +533,52 @@ Goal: Fix the load-bearing identity, resolution, and isolation gaps before retri
 
 ---
 
-## Phase 9: Unified Retrieval & Observability 🚧 PROPOSED
+## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1 & 9.3 COMPLETE)
 Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
 
 > **Specs:** [spec_unified_ranking.md](spec_unified_ranking.md), [spec_multi_label_intent.md](spec_multi_label_intent.md), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
+>
+> **Current status:** 9.1 (unified ranker) and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is ~70% complete. 9.2 (multi-label intent) is deferred to Phase 10. Real-repo benchmark misses like `fastapi_q02` show that ranker behavior and contract observability are on the critical path for Week 2 validation.
 
-### 9.1 Unified Ranker
-- [ ] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
-- [ ] Blended score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost (per-track normalized)
-- [ ] Overlap bonus when both signals fire on the same candidate
-- [ ] Budget-fill loop competes symbols and doc chunks on identical terms
-- [ ] Weight tuning via eval harness sweep
+### 9.1 Unified Ranker ✅ COMPLETE
+- [x] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
+- [x] Blended score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost (per-track normalized)
+- [x] Overlap bonus when both signals fire on the same candidate
+- [x] Budget-fill loop competes symbols and doc chunks on identical terms
+- [x] Weight tuning via eval harness sweep
+- [x] Decompose `UnifiedRanker` internals into focused components under `sidecar/context/ranker/`, while preserving `get_target(...)`, `rank(...)`, `candidates_to_subgraph(...)` contracts used by Arbitrator/QA
+- [x] Target disambiguation for duplicate symbol names within one workspace (`Depends`-style collisions)
+- [x] Module/package fallback targets for workspace-level questions such as `pydantic.v1`
+- [x] Topic-aware subsystem noise control for focused API questions, so distant graph links through broad helpers do not crowd out relevant runtime/doc candidates
+- [x] Better mechanism routing/backfill for FastAPI serialization impact (`serialize_response` now routes to impact roles and targeted tests)
+- [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract (deferred)
+- [ ] Better doc-to-runtime bridge coverage for framework mechanisms where graph edges are structurally sparse (deferred to Week 2 post-benchmark)
 
-### 9.2 Multi-Label Intent
+### 9.2 Multi-Label Intent ❌ DEFERRED
 - [ ] `IntentDistribution` (sum-to-1 weights across 6 labels)
 - [ ] Classifier returns partial scores per label → normalized distribution
 - [ ] Tier priority = weighted sum across intent distribution
 - [ ] Budget split across tiers in proportion to blended tier score (floor per tier)
 - [ ] `is_ambiguous()` signal in contract for client UX / routing decisions
+> **Decision:** Phase 9.2 punted to Phase 10 pending real-repo validation of 9.1 performance. Phase 9.1 single-label routing is sufficient for local v0.1 launch.
 
-### 9.3 DocAnchor Confidence & Type
-- [ ] Anchor type classification: definition / example / reference / warning / deprecated
-- [ ] Per-edge confidence score (similarity + name mention + heading + code-block signals)
-- [ ] Multi-symbol weighting: `primary_bias` = 1.0 for focal symbol, 0.6 for others
-- [ ] Edge properties: `anchor_type`, `confidence`, `primary_bias`, `resolver`
+### 9.3 DocAnchor Confidence & Type ✅ COMPLETE
+- [x] Anchor type classification: definition / example / reference / warning / deprecated
+- [x] Per-edge confidence score (resolver + name mention + heading + code-style mention signals)
+- [x] Multi-symbol weighting: `primary_bias` = 1.0 for single/focal symbol, reduced for secondary symbols
+- [x] Edge properties: `anchor_type`, `confidence`, `primary_bias`, `resolver`
+- [x] UnifiedRanker consumes anchor quality for doc graph boost and DocAnchor bridge provenance
+- [x] Prompt contract surfaces `documentation[].anchor_type`, `anchor_confidence`, `primary_bias`, and nested `anchor`
 
-### 9.4 Prompt Contract Observability
+### 9.4 Prompt Contract Observability 🚧 IN PROGRESS (~85% COMPLETE)
 - [x] Per-candidate basic `scores` block (graph relevance / semantic score)
 - [x] `provenance` list on every symbol and doc chunk
 - [x] Budget-level `metadata.pruning_reasons`
-- [ ] `pruned[]` array — candidates that missed the budget, with reason
 - [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
-- [ ] `metadata.ranker.weights` — tuning state snapshotted with every response
-- [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence`
+- [x] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
+- [x] `pruned[]` array — candidates that missed the budget, with reason, scores, cost, roles, noise factor, and provenance
+- [x] `metadata.ranker.weights` — tuning state snapshotted with every response
+- [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence` (Phase 9.2, deferred)
 
 ---
 
@@ -654,9 +724,9 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | **UID instability** | **Critical** | Old `sha256(file_path:name)` broke on rename/move and collided on overloads + nested funcs. | Stable UID v2 implemented; migration CLI remains cleanup | 🟡 Mitigated |
 | **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Python scoped/imported/dynamic resolver implemented; TS deep resolver remains cleanup | 🟡 Mitigated |
 | **No workspace isolation on managed graph provider** | **Critical** | Multi-user/team graph storage can collapse branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped graph reads/writes implemented | 🟡 Mitigated |
-| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1: unified ranker with blended score ([spec_unified_ranking.md](spec_unified_ranking.md)) | ❌ Open |
+| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is disambiguation + bridge quality on real repos ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 In Progress |
 | Single-label intent | High | Mixed queries (e.g. debugging+refactor) collapse to one tier strategy — loses half the answer. | Phase 9.2: `IntentDistribution` multi-label ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
-| Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3: per-edge `anchor_type` + `confidence` ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ❌ Open |
-| No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4: scores / provenance / pruned[] in contract ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | ❌ Open |
+| Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3 implemented: per-edge `anchor_type`, `confidence`, `primary_bias`, and resolver-aware ranker consumption ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ✅ Resolved |
+| No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4 now surfaces selected scores/provenance, ranker weights, and `pruned[]`; remaining gap is full multi-label intent diagnostics ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 In Progress |
 | No caching strategy | Medium | Repeated queries re-read bodies, re-run BFS, re-call LLM; the graph provider saturates before the model does. | Phase 10.1: three-layer cache ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ❌ Open |
 | Static retriever | Medium | No feedback signal — silent drift, silent miss. System cannot improve from usage. | Phase 10.2: feedback loop + `CO_RELEVANT` learned edges ([spec_learning_loop.md](spec_learning_loop.md)) | ❌ Open |

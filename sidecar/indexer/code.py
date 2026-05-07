@@ -6,11 +6,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.indexer.job_log import IndexJobLog
 from sidecar.parser.extractor import SymbolExtractor
 from sidecar.parser.registry import REGISTRY
 from sidecar.silence import install as _silence
-from sidecar.workspace import DEFAULT_WORKSPACE_ID, WorkspaceResolver
+from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 _silence()
 
@@ -65,7 +64,7 @@ def hash_file(file_path: str) -> str:
 def _symbol_needs_upsert(sym, existing: dict | None) -> bool:
     if existing is None:
         return True
-    return (
+    return bool(
         existing.get("hash") != sym.content_hash
         or int(existing.get("start_line") or 0) != sym.start_line
         or int(existing.get("end_line") or 0) != sym.end_line
@@ -126,10 +125,16 @@ def index_file(
         for s in symbols
         if s.uid in changed_uid_set
     ]
-    lance.upsert_symbol_embeddings(symbol_docs)
+    try:
+        lance.upsert_symbol_embeddings(symbol_docs, workspace_id=workspace_id)
+    except TypeError:
+        lance.upsert_symbol_embeddings(symbol_docs)
     delete_symbol_embeddings = getattr(lance, "delete_symbol_embeddings", None)
     if callable(delete_symbol_embeddings):
-        delete_symbol_embeddings(removed_uids)
+        try:
+            delete_symbol_embeddings(removed_uids, workspace_id=workspace_id)
+        except TypeError:
+            delete_symbol_embeddings(removed_uids)
 
     imports = extractor.extract_imports(file_path)
     delete_imports = getattr(db, "delete_imports_for_file", None)
@@ -151,51 +156,20 @@ def index_file(
 
 
 def run_indexing(project_path: str, workspace_id: str | None = None):
-    db = Neo4jClient("bolt://localhost:7687", "neo4j", "password")
-    lance = LanceDBClient()
-    extractor = SymbolExtractor()
-    job_log = IndexJobLog()
-    workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
+    """Whole-project index pass.
 
-    print(f"🚀 Indexing project: {project_path} ({workspace_id})")
+    Delegates to ``sidecar.indexer.fast.run_fast_indexing``: parallel hash +
+    parse, global embedding batch, single AFFECTS rebuild. The return value
+    (stats dict) is ignored by all current callers, which matches the old
+    ``None``-returning contract.
 
-    files_to_index = _collect_files(project_path)
-    if not files_to_index:
-        print(f"❌ No files found at {project_path}")
-        db.close()
-        return
+    The single-file hot path (``index_file`` below, used by ``/overlay``
+    and ``/index/file``) is intentionally left on the per-file flow so the
+    IDE save path keeps synchronous AFFECTS semantics.
+    """
+    from sidecar.indexer.fast import run_fast_indexing
 
-    # Compute current file hashes
-    current_hashes = {}
-    for file_path in files_to_index:
-        current_hashes[file_path] = hash_file(file_path)
-
-    # Query stored hashes from Neo4j
-    stored_hashes = db.get_file_hashes(files_to_index, workspace_id=workspace_id)
-
-    # Filter to changed files only
-    changed_files = [p for p in files_to_index if current_hashes[p] != stored_hashes.get(p)]
-
-    if not changed_files:
-        print("✅ All files up-to-date, nothing to re-index.")
-        db.close()
-        return
-
-    print(f"🔄 {len(changed_files)}/{len(files_to_index)} files changed, re-indexing...")
-
-    # Re-index only changed files
-    for file_path in changed_files:
-        print(f"📄 Indexing: {file_path}")
-        with job_log.track_file_job(file_path, file_hash=current_hashes[file_path]):
-            index_file(file_path, db, lance, extractor, workspace_id=workspace_id)
-
-    # Resolve pending DocAnchors (runs over entire DB)
-    from sidecar.indexer.anchor import resolve_pending_anchors
-
-    resolve_pending_anchors(db, lance, workspace_id=workspace_id)
-
-    db.close()
-    print("✅ Indexing complete.")
+    return run_fast_indexing(project_path, workspace_id=workspace_id)
 
 
 if __name__ == "__main__":

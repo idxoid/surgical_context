@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { createHash } from 'crypto';
 import { SSECallbacks, parseSSEStream } from './utils';
+import { resolveWorkspaceId } from './workspaceIdentity';
 
 function getBaseUrl(): string {
   const config = vscode.workspace.getConfiguration('surgicalContext');
@@ -26,10 +27,9 @@ function getTokenBudget(defaultValue = 4000): number {
   return Number.isFinite(configured) ? Math.max(1000, Math.min(32000, configured)) : defaultValue;
 }
 
-function getHeaders(authToken = getAuthToken()): Record<string, string> {
+async function getHeaders(authToken = getAuthToken()): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const config = vscode.workspace.getConfiguration('surgicalContext');
-  const workspaceId = config.get<string>('workspaceId', 'local/default@main');
+  const workspaceId = await resolveWorkspaceId();
   if (workspaceId) {
     headers['X-Workspace'] = workspaceId;
   }
@@ -42,7 +42,7 @@ function getHeaders(authToken = getAuthToken()): Record<string, string> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${getBaseUrl()}${path}`, {
     method: 'POST',
-    headers: getHeaders(),
+    headers: await getHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Sidecar ${path} → ${res.status}`);
@@ -52,7 +52,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${getBaseUrl()}${path}`, {
     method: 'GET',
-    headers: getHeaders(),
+    headers: await getHeaders(),
   });
   if (!res.ok) throw new Error(`Sidecar ${path} → ${res.status}`);
   return res.json() as Promise<T>;
@@ -61,7 +61,7 @@ async function get<T>(path: string): Promise<T> {
 async function getText(path: string): Promise<string> {
   const res = await fetch(`${getBaseUrl()}${path}`, {
     method: 'GET',
-    headers: getHeaders(),
+    headers: await getHeaders(),
   });
   if (!res.ok) throw new Error(`Sidecar ${path} → ${res.status}`);
   return res.text();
@@ -288,7 +288,7 @@ export const SidecarClient = {
   async health(baseUrl = getBaseUrl(), authToken = getAuthToken()): Promise<boolean> {
     try {
       const res = await fetch(`${normalizeBaseUrl(baseUrl)}/health`, {
-        headers: getHeaders(authToken),
+        headers: await getHeaders(authToken),
       });
       return res.ok;
     } catch {
@@ -304,7 +304,7 @@ export const SidecarClient = {
     try {
       await fetch(`${getBaseUrl()}/overlay?file_path=${encodeURIComponent(file_path)}`, {
         method: 'DELETE',
-        headers: getHeaders(),
+        headers: await getHeaders(),
       });
     } catch {
       // silently ignore
@@ -337,7 +337,7 @@ export const SidecarClient = {
     try {
       const res = await fetch(`${getBaseUrl()}/ask/stream`, {
         method: 'POST',
-        headers: getHeaders(),
+        headers: await getHeaders(),
         body: JSON.stringify({
           symbol: symbol || null,
           question,
