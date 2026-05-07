@@ -1,6 +1,7 @@
 import pytest
 
 from sidecar.parser.adapters.python_adapter import PythonAdapter
+from sidecar.parser.uid import project_root_scope
 
 
 class TestPythonImports:
@@ -36,6 +37,18 @@ class TestPythonImports:
         names = {imp.target_module_name for imp in imports}
         assert "pandas.io" in names
         assert "pandas.errors" in names
+
+    def test_keeps_workspace_package_that_is_also_installed_dependency(self, adapter, tmp_path):
+        package_dir = tmp_path / "src" / "fastapi"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        file_path = str(package_dir / "params.py")
+        source = "from fastapi.dependencies.utils import solve_dependencies"
+
+        with project_root_scope(str(tmp_path)):
+            imports = adapter.extract_imports(source, file_path)
+
+        assert [imp.target_module_name for imp in imports] == ["fastapi.dependencies.utils"]
 
     def test_extract_inheritance_single(self, adapter):
         source = "class Child(Parent):\n    pass"

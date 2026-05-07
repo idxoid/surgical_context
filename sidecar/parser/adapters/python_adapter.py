@@ -1,6 +1,9 @@
 """Python language adapter using tree-sitter."""
 
+import importlib.metadata
 import re
+import sys
+from functools import lru_cache
 from pathlib import Path
 
 from tree_sitter import Query
@@ -9,6 +12,7 @@ from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
 from sidecar.parser.uid import (
     compute_uid,
+    current_project_root,
     module_name_from_path,
     qualified_name_for,
     signature_from_node,
@@ -53,57 +57,6 @@ class PythonAdapter(TreeSitterAdapter):
             (import_statement name: (identifier) @import.name)
         """
 
-    # Known stdlib and third-party top-level packages to skip
-    _EXTERNAL_PREFIXES = {
-        "os",
-        "sys",
-        "re",
-        "io",
-        "abc",
-        "ast",
-        "math",
-        "time",
-        "json",
-        "uuid",
-        "enum",
-        "copy",
-        "typing",
-        "hashlib",
-        "pathlib",
-        "logging",
-        "dataclasses",
-        "collections",
-        "functools",
-        "itertools",
-        "contextlib",
-        "threading",
-        "multiprocessing",
-        "subprocess",
-        "shutil",
-        "tempfile",
-        "unittest",
-        "argparse",
-        "heapq",
-        "struct",
-        "string",
-        "textwrap",
-        # third-party
-        "neo4j",
-        "lancedb",
-        "fastapi",
-        "pydantic",
-        "uvicorn",
-        "ollama",
-        "yaml",
-        "tiktoken",
-        "numpy",
-        "pandas",
-        "sentence_transformers",
-        "tree_sitter",
-        "tree_sitter_languages",
-        "pathspec",
-    }
-
     def extract_imports(self, source_code: str, file_path: str, *, tree=None) -> list[ImportEdge]:
         """Extract only intra-project import statements (skips stdlib and third-party).
 
@@ -133,11 +86,45 @@ class PythonAdapter(TreeSitterAdapter):
 
     def _is_external(self, module: str, *, file_path: str | None = None) -> bool:
         top = module.split(".")[0]
-        if file_path and top:
+        if not top:
+            return False
+        if self._is_local_module_root(top, file_path=file_path):
+            return False
+        if top in sys.stdlib_module_names:
+            return True
+        return top in self._installed_top_level_packages()
+
+    def _is_local_module_root(self, top: str, *, file_path: str | None = None) -> bool:
+        if file_path:
             parent_dirs = {parent.name for parent in Path(file_path).parents if parent.name}
             if top in parent_dirs:
-                return False
-        return top in self._EXTERNAL_PREFIXES
+                return True
+
+        roots: list[Path] = []
+        project_root = current_project_root()
+        if project_root:
+            roots.append(Path(project_root))
+        roots.append(Path.cwd())
+
+        for root in roots:
+            try:
+                resolved = root.resolve()
+            except OSError:
+                continue
+            if (resolved / top / "__init__.py").exists() or (resolved / f"{top}.py").exists():
+                return True
+            src_root = resolved / "src"
+            if (src_root / top / "__init__.py").exists() or (src_root / f"{top}.py").exists():
+                return True
+        return False
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _installed_top_level_packages() -> frozenset[str]:
+        try:
+            return frozenset(importlib.metadata.packages_distributions().keys())
+        except Exception:
+            return frozenset()
 
     def extract_inheritance(
         self, source_code: str, file_path: str, *, tree=None

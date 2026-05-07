@@ -42,6 +42,10 @@ def project_root_scope(project_root: str | None):
         _DEFAULT_PROJECT_ROOT.reset(token)
 
 
+def current_project_root() -> str | None:
+    return _DEFAULT_PROJECT_ROOT.get()
+
+
 def module_name_from_path(file_path: str, project_root: str | None = None) -> str:
     """Return a dotted module-ish name without absolute machine-specific roots."""
     project_root = project_root or _DEFAULT_PROJECT_ROOT.get()
