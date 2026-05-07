@@ -265,7 +265,11 @@ class ContextArbitrator:
     ) -> tuple[SubgraphNode | None, dict[str, Any]]:
         if not self._should_try_concept_anchor_fallback(question):
             return None, {}
-        anchors = self._concept_anchor_candidates(symbol_name)
+        anchors = list(self._concept_anchor_candidates(symbol_name))
+        dynamic_anchor_loader = getattr(ranker, "concept_anchor_candidates", None)
+        if callable(dynamic_anchor_loader):
+            anchors.extend(dynamic_anchor_loader(symbol_name, query=question))
+        anchors = list(dict.fromkeys(anchors))
         if not anchors:
             return None, {}
         for anchor in anchors:

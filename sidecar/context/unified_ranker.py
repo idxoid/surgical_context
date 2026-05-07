@@ -257,6 +257,18 @@ class UnifiedRanker:
             WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT any_r) AS total_edges
         }
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges
+        ORDER BY
+          CASE
+            WHEN f.path CONTAINS '/test/' OR f.path CONTAINS '/tests/'
+              OR f.path CONTAINS '/integration/' OR f.path CONTAINS '/sample/'
+              OR f.path CONTAINS '/samples/' THEN 1
+            ELSE 0
+          END ASC,
+          total_edges DESC,
+          outgoing_edges DESC,
+          size(f.path) ASC
+        LIMIT $limit
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS kind,
@@ -271,7 +283,14 @@ class UnifiedRanker:
         """
         try:
             with self.db.driver.session() as session:
-                result = list(session.run(query, name=symbol_name, workspace_id=self.workspace_id))
+                result = list(
+                    session.run(
+                        query,
+                        name=symbol_name,
+                        workspace_id=self.workspace_id,
+                        limit=64,
+                    )
+                )
         except Exception:
             return []
         return result
@@ -330,6 +349,111 @@ class UnifiedRanker:
             "incoming_edges": 0,
             "total_edges": 0,
         }
+
+    def concept_anchor_candidates(
+        self,
+        symbol_name: str,
+        *,
+        query: str = "",
+        limit: int = 8,
+    ) -> list[str]:
+        return self.target_selector.concept_anchor_candidates(
+            symbol_name,
+            query=query,
+            limit=limit,
+        )
+
+    def _load_concept_anchor_candidates(
+        self,
+        symbol_name: str,
+        *,
+        query: str = "",
+        limit: int = 24,
+    ) -> list[dict]:
+        concept = (symbol_name or "").strip().lower()
+        if not concept:
+            return []
+        terms = {concept}
+        if concept.endswith("s") and len(concept) > 4:
+            terms.add(concept[:-1])
+        for term in self._query_terms(query):
+            terms.add(term)
+            if term.endswith("s") and len(term) > 4:
+                terms.add(term[:-1])
+        query_l = (query or "").lower()
+        target_l = f"{concept} {query_l}"
+        if "decorator" in target_l:
+            terms.update({"metadata", "reflect"})
+        if "module" in target_l and any(
+            token in target_l
+            for token in ("compose", "composition", "feature", "import", "provider", "controller")
+        ):
+            terms.update({"container", "metadata", "module", "registry", "scanner"})
+        terms = {term for term in terms if len(term) >= 4}
+        if not terms:
+            return []
+
+        query_limit = max(limit, min(400, limit * 10))
+        query_cypher = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE any(term IN $terms
+            WHERE toLower(s.name) CONTAINS term
+               OR toLower(coalesce(s.qualified_name, '')) CONTAINS term)
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(:Symbol)
+            WHERE coalesce(out_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT out_r) AS outgoing_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+            WHERE coalesce(in_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT in_r) AS incoming_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(:Symbol)
+            WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT any_r) AS total_edges
+        }
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges
+        ORDER BY
+          CASE
+            WHEN f.path CONTAINS '/test/' OR f.path CONTAINS '/tests/'
+              OR f.path CONTAINS '/integration/' OR f.path CONTAINS '/sample/'
+              OR f.path CONTAINS '/samples/' THEN 1
+            ELSE 0
+          END ASC,
+          total_edges DESC,
+          outgoing_edges DESC,
+          size(f.path) ASC
+        LIMIT $limit
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS kind,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               outgoing_edges,
+               incoming_edges,
+               total_edges
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = list(
+                    session.run(
+                        query_cypher,
+                        workspace_id=self.workspace_id,
+                        terms=sorted(terms),
+                        limit=query_limit,
+                    )
+                )
+        except Exception:
+            return []
+        return [row for row in rows if not _path_is_noisy(row.get("file_path", ""))]
 
     @staticmethod
     def _module_target_size(file_path: str) -> tuple[int, int]:

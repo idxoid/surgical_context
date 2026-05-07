@@ -146,6 +146,19 @@ class Worker {
         assert call["tier"] == "dynamic"
         assert "callee_uid" not in call
 
+    def test_typed_function_call_owner_uid_matches_extracted_symbol_uid(self, adapter):
+        source = """
+export function Module(metadata: ModuleMetadata): ClassDecorator {
+  validateModuleKeys(Object.keys(metadata));
+}
+"""
+        symbols = adapter.extract_symbols(source, "module.decorator.ts")
+        calls = adapter.extract_calls_from_source(source, "module.decorator.ts")
+
+        module_symbol = next(symbol for symbol in symbols if symbol.name == "Module")
+        assert calls
+        assert {call["caller_uid"] for call in calls} == {module_symbol.uid}
+
     def test_extract_calls_from_exported_const_wrapper(self, adapter):
         source = """
 export const createApi = buildCreateApi(coreModule())

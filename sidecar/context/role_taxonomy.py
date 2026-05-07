@@ -160,6 +160,8 @@ def infer_supporting_roles(
     *,
     file_path: str = "",
     primary_role: str = "",
+    name: str = "",
+    kind: str = "",
 ) -> list[str]:
     """Infer additional roles a symbol can satisfy based on structural context.
 
@@ -172,6 +174,9 @@ def infer_supporting_roles(
         return []
 
     lowered_path = (file_path or "").lower()
+    lowered_name = (name or "").lower()
+    lowered_kind = (kind or "").lower()
+    haystack = f"{lowered_name} {lowered_path}"
     inferred: list[str] = []
 
     if "/tests/" in lowered_path or lowered_path.endswith("_test.py") or "/test_" in lowered_path:
@@ -202,5 +207,61 @@ def infer_supporting_roles(
         and "/examples/" not in lowered_path
     ):
         inferred.append("impact_runtime")
+
+    if lowered_kind in {"function", "method", "class", ""}:
+        composition_tokens = (
+            "builder",
+            "chain",
+            "compose",
+            "composition",
+            "consumer",
+            "context-creator",
+            "context_creator",
+            "creator",
+            "controllers",
+            "exports",
+            "imports",
+            "middleware",
+            "pipeline",
+            "pipe",
+            "pipes",
+            "providers",
+            "registry",
+            "scanner",
+        )
+        executor_prefixes = (
+            "apply",
+            "consume",
+            "dispatch",
+            "execute",
+            "handle",
+            "process",
+            "resolve",
+            "run",
+            "transform",
+            "validate",
+        )
+        executor_tokens = (
+            "consumer",
+            "execution",
+            "executor",
+            "handler",
+            "runtime",
+        )
+
+        if any(token in haystack for token in composition_tokens):
+            inferred.append("composition_surface")
+        if any(token in haystack for token in ("controller", "export", "import", "provider")):
+            inferred.append("integration_surface")
+        if lowered_name.startswith(executor_prefixes) or any(
+            token in haystack for token in executor_tokens
+        ):
+            inferred.append("executor")
+        if (
+            ("composition_surface" in inferred or "executor" in inferred)
+            and "/docs/" not in lowered_path
+            and "/examples/" not in lowered_path
+        ):
+            inferred.append("runtime_surface")
 
     return normalize_roles(inferred)

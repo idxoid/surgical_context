@@ -420,11 +420,17 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return source.replace("/", ".")
         base = Path(file_path).parent
         resolved = (base / source).resolve()
-        candidates = [
-            resolved.with_suffix(".ts"),
-            resolved.with_suffix(".tsx"),
-            resolved / "index.ts",
-        ]
+        candidates = [resolved]
+        if resolved.suffix in {".ts", ".tsx", ".js", ".jsx"}:
+            candidates.append(resolved)
+        else:
+            # ``Path.with_suffix(".ts")`` turns ``shared.utils`` into
+            # ``shared.ts``. TypeScript projects commonly import dotted
+            # basenames like ``shared.utils`` or ``module-metadata.interface``,
+            # so append language suffixes to the full unresolved path first.
+            candidates.extend(Path(f"{resolved}{suffix}") for suffix in (".ts", ".tsx"))
+            candidates.extend([resolved.with_suffix(".ts"), resolved.with_suffix(".tsx")])
+        candidates.extend([resolved / "index.ts", resolved / "index.tsx"])
         for candidate in candidates:
             if candidate.exists():
                 return module_name_from_path(str(candidate))

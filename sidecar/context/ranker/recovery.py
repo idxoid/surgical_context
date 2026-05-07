@@ -730,7 +730,8 @@ class StructuralRecovery:
             range=row.get("range") or [0, 0],
             file_hash=row.get("file_hash") or "",
         )
-        probe.symbol_kind = row.get("symbol_kind", "")
+        symbol_kind = row.get("symbol_kind", "") or row.get("kind", "")
+        probe.symbol_kind = symbol_kind
         probe.qualified_name = row.get("qualified_name", "")
 
         primary_role = self.host.role_fulfilment.role_of(probe)
@@ -826,7 +827,7 @@ class StructuralRecovery:
             supporting_roles=[role for role in candidate_roles if role != matched_roles[0]],
             provenance=[f"{origin}-backfill:{matched_roles[0]}"],
         )
-        candidate.symbol_kind = row.get("symbol_kind", "")
+        candidate.symbol_kind = symbol_kind
         candidate.qualified_name = row.get("qualified_name", "")
         return candidate
 

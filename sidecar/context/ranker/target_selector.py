@@ -26,6 +26,53 @@ class TargetSelector:
             return target, metadata
         return target
 
+    def concept_anchor_candidates(
+        self,
+        symbol_name: str,
+        *,
+        query: str = "",
+        limit: int = 8,
+    ) -> list[str]:
+        rows = self.host._load_concept_anchor_candidates(symbol_name, query=query, limit=limit * 3)
+        if not rows:
+            return []
+
+        scored_rows = []
+        wanted = (symbol_name or "").strip().lower()
+        for row in rows:
+            score, breakdown = self.host._score_target_candidate(row, query=query)
+            name = str(row.get("name", ""))
+            name_lower = name.lower()
+            qn_lower = str(row.get("qualified_name", "")).lower()
+            if wanted and name_lower != wanted and wanted in name_lower:
+                score += 1.4
+            elif wanted and qn_lower.endswith(f".{wanted}"):
+                score += 0.25
+            elif wanted and wanted not in name_lower and wanted not in qn_lower:
+                score -= 0.45
+            scored_rows.append((score, row, breakdown))
+        scored_rows.sort(
+            key=lambda item: (
+                item[0],
+                item[1].get("outgoing_edges", 0),
+                item[1].get("total_edges", 0),
+                -item[1].get("token_estimate", 0),
+            ),
+            reverse=True,
+        )
+
+        anchors: list[str] = []
+        seen: set[str] = set()
+        for _, row, _ in scored_rows:
+            name = str(row.get("name") or "")
+            if not name or name in seen or name == symbol_name:
+                continue
+            seen.add(name)
+            anchors.append(name)
+            if len(anchors) >= limit:
+                break
+        return anchors
+
     def _select_target_candidate(
         self,
         symbol_name: str,

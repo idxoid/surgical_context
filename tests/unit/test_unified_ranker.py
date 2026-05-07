@@ -206,6 +206,47 @@ def test_duplicate_target_selection_prefers_behavioral_entrypoint():
     assert metadata["selected_uid"] == "depends-fn"
 
 
+def test_concept_anchor_candidates_prefer_production_name_overlap():
+    db = _make_target_db(
+        [
+            {
+                "uid": "test-pipe",
+                "name": "Pipe",
+                "kind": "class",
+                "qualified_name": "tests.pipes.Pipe",
+                "token_estimate": 10,
+                "file_path": "/repo/tests/pipes.spec.ts",
+                "file_hash": "",
+                "range": [1, 1],
+                "outgoing_edges": 0,
+                "incoming_edges": 0,
+                "total_edges": 0,
+            },
+            {
+                "uid": "validation-pipe",
+                "name": "ValidationPipe",
+                "kind": "class",
+                "qualified_name": "common.pipes.ValidationPipe",
+                "token_estimate": 120,
+                "file_path": "/repo/packages/common/pipes/validation.pipe.ts",
+                "file_hash": "",
+                "range": [1, 40],
+                "outgoing_edges": 2,
+                "incoming_edges": 3,
+                "total_edges": 5,
+            },
+        ]
+    )
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+
+    anchors = ranker.concept_anchor_candidates(
+        "Pipe",
+        query="How do pipes handle validation and transformation?",
+    )
+
+    assert anchors == ["ValidationPipe"]
+
+
 def test_duplicate_target_selection_prefers_main_pydantic_entrypoint_for_model_dump():
     db = _make_target_db(
         [
@@ -672,6 +713,24 @@ def test_topic_focus_downranks_unrelated_query_subsystem_candidates():
         )
         == 1.0
     )
+
+
+def test_pipeline_named_symbols_add_composition_and_executor_supporting_roles():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main")
+    candidate = Candidate(
+        kind="symbol",
+        uid="apply-pipes",
+        name="applyPipes",
+        file_path="/repo/packages/core/pipes/pipes-consumer.ts",
+        token_cost=80,
+    )
+    candidate.symbol_kind = "method"
+
+    roles = ranker._roles_of(candidate)
+
+    assert "composition_surface" in roles
+    assert "executor" in roles
+    assert "runtime_surface" in roles
 
 
 def test_rank_records_pruned_reasons_and_score_breakdown():

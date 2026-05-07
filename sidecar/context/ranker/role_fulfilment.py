@@ -14,6 +14,23 @@ from sidecar.context.role_taxonomy import infer_supporting_roles, normalize_role
 
 from .candidate_pool import Candidate
 
+_GENERIC_AUTO_ROLE_PLANS: dict[str, tuple[str, ...]] = {
+    "module_composition": (
+        "api_surface",
+        "composition_surface",
+        "integration_surface",
+        "runtime_surface",
+    ),
+    "validation_pipeline": (
+        "api_surface",
+        "composition_surface",
+        "executor",
+        "validator_handle",
+        "core_runtime",
+        "runtime_surface",
+    ),
+}
+
 
 class RoleFulfilment:
     def __init__(self, host):
@@ -30,6 +47,8 @@ class RoleFulfilment:
         inferred = infer_supporting_roles(
             file_path=getattr(c, "file_path", "") or "",
             primary_role=self.role_of(c),
+            name=getattr(c, "name", "") or "",
+            kind=getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "",
         )
         return normalize_roles([*explicit, *inferred])
 
@@ -228,17 +247,21 @@ class RoleFulfilment:
         for item in (self.host.strategy_profile or {}).get("mechanism_archetypes") or []:
             if item.get("type") == archetype:
                 return normalize_roles(item.get("role_plan") or [])
+        if archetype in _GENERIC_AUTO_ROLE_PLANS:
+            return normalize_roles(_GENERIC_AUTO_ROLE_PLANS[archetype])
         return self.strategy_role_plan()
 
     def auto_mechanism_from_strategy(self, target, query: str = "") -> str:
         archetypes = (self.host.strategy_profile or {}).get("mechanism_archetypes") or []
-        if not archetypes:
+        if not archetypes and not self.strategy_role_plan():
             return ""
         haystack = " ".join(
             part.lower()
             for part in (target.name or "", target.file_path or "", query or "")
             if part
         )
+        if not archetypes:
+            return ""
         for item in archetypes:
             archetype = item.get("type", "")
             evidence = " ".join(str(piece).lower() for piece in item.get("evidence") or [])
