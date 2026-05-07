@@ -238,6 +238,46 @@ Current serialized metadata:
 
 ---
 
+## Toward Intent as Retrieval Contract
+
+Current limitation: `sidecar/context/intent_classifier.py` is still a keyword router. It finds matching words, chooses one primary intent by precedence, and stores a distribution for observability. Downstream, however, `ContextArbitrator` still routes almost the whole retrieval pipeline through `intent_signal.primary`, and `RankerScoring.intent_priors()` reduces intent to a coarse `symbol` / `doc` prior. The result is visible but shallow intent handling: useful as a first-pass hint, not yet a rich retrieval policy.
+
+The next design step is to treat intent not as a question label, but as a **retrieval contract**: what evidence shapes must appear in the assembled prompt, and how strongly graph vs docs vs tests should be weighted.
+
+Split the single `Intent` enum into multiple axes (orthogonal where possible):
+
+- **`task`**: `locate`, `explain_behavior`, `trace_dependency`, `diagnose_failure`, `change_code`, `impact`
+- **`evidence`**: `definition`, `call_chain`, `reverse_callers`, `runtime_registration`, `docs`, `tests`, `examples`
+- **`answer_contract`**: e.g. find the location, explain the flow, produce blast-radius candidates, propose a change plan
+
+Introduce an **`IntentPlan`** object (sketch):
+
+```python
+IntentPlan(
+    task="trace_dependency",
+    evidence=["call_chain", "runtime_registration", "imports"],
+    graph_direction=["out", "imports", "semantic_hint"],
+    role_targets=["api_surface", "runtime_surface", "representation_surface"],
+    doc_bias=0.2,
+    code_bias=0.8,
+    test_policy="topic_only",
+    confidence=0.74,
+)
+```
+
+Use the existing **`distribution`**, not only the primary intent. This document already lists multi-label routing from `intent.distribution` as deferred, but the current code does not apply it to ranking. **`intent_weight`** should become the weighted sum of plausible intent policies, not the prior for a single primary enum such as `Intent.DEBUGGING`.
+
+Add deeper retrieval modes aligned with benchmark-style questions:
+
+- **`explain_behavior`** — prioritize mechanism roles + ordered call slices over raw neighborhood breadth.
+- **`trace_dependency`** — bias toward forward/backward graph passes and import bridges; optional semantic rescue for missing edges.
+- **`impact`** — already partially covered by impact-analysis ranker branch; unify vocabulary with `task` so profile readiness and ranker floors stay in sync.
+- **`locate`** — narrow symbol/doc retrieval before expanding graph radius.
+
+This section is **design-only** until `IntentPlan` (or equivalent) is threaded through `ContextArbitrator` → ranker weights / recovery hooks without breaking the existing prompt contract.
+
+---
+
 ## Fallback to Standard Mode
 
 If the top N tiers in the priority order produce zero matches:
