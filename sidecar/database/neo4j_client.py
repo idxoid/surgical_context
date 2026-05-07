@@ -625,8 +625,11 @@ def _import_row(imp: ImportEdge) -> dict[str, object]:
     if imp.import_type == "relative" and imp.target_module_name.startswith("."):
         base = (Path(imp.source_file).parent / imp.target_module_name).resolve()
         module_path = str(base)
+        package_paths: list[str] = []
     else:
-        module_path = "/" + imp.target_module_name.lstrip("./").replace(".", "/")
+        module_name = imp.target_module_name.lstrip("./")
+        module_path = "/" + module_name.replace(".", "/")
+        package_paths = _monorepo_package_import_paths(module_name)
     path_suffixes = [
         f"{module_path}{suffix}"
         for suffix in (
@@ -642,11 +645,65 @@ def _import_row(imp: ImportEdge) -> dict[str, object]:
             "/index.tsx",
         )
     ]
+    for package_path in package_paths:
+        for suffix in (
+            ".py",
+            "/__init__.py",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            "/index.js",
+            "/index.jsx",
+            "/index.ts",
+            "/index.tsx",
+        ):
+            path_suffixes.append(f"{package_path}{suffix}")
     return {
         "source_file": imp.source_file,
-        "path_suffixes": path_suffixes,
+        "path_suffixes": sorted(set(path_suffixes)),
         "import_type": imp.import_type,
     }
+
+
+def _monorepo_package_import_paths(module_name: str) -> list[str]:
+    """Return suffixes for package-manager workspace imports.
+
+    NPM/Python package imports often point at a workspace package rather than a
+    path that appears literally in the repository. For example
+    ``@vue/runtime-core`` lives under ``packages/runtime-core/src/index.ts``.
+    Keep this as suffix generation rather than framework-specific routing.
+    """
+    clean = module_name.strip().strip("/")
+    if not clean:
+        return []
+
+    parts = [part for part in clean.split("/") if part]
+    if not parts:
+        return []
+    if parts[0].startswith("@") and len(parts) >= 2:
+        package_name = parts[1]
+        subpath = parts[2:]
+    else:
+        package_name = parts[0]
+        subpath = parts[1:]
+
+    if not package_name:
+        return []
+
+    candidates = [
+        f"/packages/{package_name}",
+        f"/packages/{package_name}/src",
+    ]
+    if subpath:
+        suffix = "/".join(subpath)
+        candidates.extend(
+            [
+                f"/packages/{package_name}/{suffix}",
+                f"/packages/{package_name}/src/{suffix}",
+            ]
+        )
+    return candidates
 
 
 def _inheritance_row(edge: InheritanceEdge) -> dict[str, object]:

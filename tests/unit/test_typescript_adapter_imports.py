@@ -24,6 +24,11 @@ class TestTypeScriptImports:
         imports = adapter.extract_imports(source, "test.ts")
         assert any(imp.import_type == "relative" for imp in imports)
 
+    def test_extract_export_from_as_import_edge(self, adapter):
+        source = 'export { createRenderer } from "./renderer"'
+        imports = adapter.extract_imports(source, "test.ts")
+        assert any(imp.target_module_name == "./renderer" for imp in imports)
+
     def test_import_binding_resolves_dotted_relative_basename(self, adapter, tmp_path):
         source_file = tmp_path / "decorators" / "module.decorator.ts"
         target_file = tmp_path / "utils" / "validate-module-keys.util.ts"

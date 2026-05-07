@@ -145,6 +145,25 @@ class TestIncrementalIndexing:
         assert "/pkg/module.py" in row["path_suffixes"]
         assert "/pkg/module.js" in row["path_suffixes"]
 
+    def test_scoped_package_import_rows_include_monorepo_package_src_suffixes(self):
+        row = _import_row(
+            ImportEdge("/repo/packages/runtime-dom/src/index.ts", "@vue/runtime-core", "from_package")
+        )
+
+        assert "/@vue/runtime-core/index.ts" in row["path_suffixes"]
+        assert "/packages/runtime-core/src/index.ts" in row["path_suffixes"]
+
+    def test_scoped_package_subpath_import_rows_include_package_src_suffixes(self):
+        row = _import_row(
+            ImportEdge(
+                "/repo/packages/compiler-dom/src/index.ts",
+                "@vue/compiler-core/runtimeHelpers",
+                "from_package",
+            )
+        )
+
+        assert "/packages/compiler-core/src/runtimeHelpers.ts" in row["path_suffixes"]
+
     def test_fast_graph_phase_upserts_all_nodes_before_linking_edges(self):
         calls = []
 

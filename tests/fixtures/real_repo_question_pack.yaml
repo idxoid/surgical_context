@@ -77,12 +77,12 @@ repositories:
     rationale: "Python ORM/database toolkit with complex declarative patterns, lazy loading, and query builder architecture—tests sophisticated Python metaprogramming and data access patterns."
 
   - id: vue
-    name: Vue
-    clone_url: https://github.com/vuejs/vue.git
-    repo_url: https://github.com/vuejs/vue
+    name: Vue Core
+    clone_url: https://github.com/vuejs/core.git
+    repo_url: https://github.com/vuejs/core
     docs_url: https://vuejs.org/
     language: typescript
-    rationale: "JavaScript/TypeScript frontend framework with reactive systems, component lifecycle, and template compilation—tests UI framework patterns and reactive state management."
+    rationale: "Vue 3 core repository with runtime-core, reactivity, and compiler-core packages—tests UI framework patterns and reactive state management."
 
 questions:
   - id: fastapi_q01

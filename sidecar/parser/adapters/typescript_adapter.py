@@ -67,6 +67,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def import_query(self) -> str:
         return """
             (import_statement source: (string) @import.source) @import.stmt
+            (export_statement source: (string) @import.source) @import.stmt
             (import_specifier (identifier) @import.name) @import.spec
         """
 

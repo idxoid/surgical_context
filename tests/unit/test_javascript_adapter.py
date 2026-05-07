@@ -51,6 +51,12 @@ const again = require('./application');
         assert ("node:buffer", "from_package") in by_target
         assert sum(1 for edge in imports if edge.target_module_name == "./application") == 1
 
+    def test_extract_imports_includes_export_from_sources(self, adapter):
+        imports = adapter.extract_imports('export { Router } from "./router";', "lib/index.js")
+        by_target = {(edge.target_module_name, edge.import_type) for edge in imports}
+
+        assert ("./router", "relative") in by_target
+
     def test_extract_symbols_includes_top_level_app_instance_binding(self, adapter):
         source = """
 const express = require("express");

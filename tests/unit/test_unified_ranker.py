@@ -899,9 +899,9 @@ def test_target_path_bonus_penalizes_js_ts_test_and_benchmark_paths():
     )
 
     assert ranker._target_path_bonus("/repo/src/runtime/renderer.ts") == 0.35
-    assert ranker._target_path_bonus("/repo/test/unit/component.spec.ts") == -1.0
-    assert ranker._target_path_bonus("/repo/types/test/options-test.ts") == -1.0
-    assert ranker._target_path_bonus("/repo/benchmarks/ssr/renderToStream.js") == -1.0
+    assert ranker._target_path_bonus("/repo/test/unit/component.spec.ts") == -2.0
+    assert ranker._target_path_bonus("/repo/types/test/options-test.ts") == -2.0
+    assert ranker._target_path_bonus("/repo/benchmarks/ssr/renderToStream.js") == -2.0
 
 
 def test_impact_noise_keeps_only_topic_related_tests_unpenalized():

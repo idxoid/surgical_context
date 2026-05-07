@@ -592,6 +592,15 @@ def ensure_repo_checkout(
 
     checkout_path = default_repo_checkout_path(repo, repos_root=repos_root).resolve()
     if checkout_path.exists():
+        clone_url = repo_meta.get("clone_url")
+        if clone_url:
+            remote_url = current_checkout_remote(checkout_path)
+            if remote_url and not same_git_remote(remote_url, clone_url):
+                raise RuntimeError(
+                    f"Existing checkout for repo '{repo}' points at {remote_url}, "
+                    f"but the benchmark pack expects {clone_url}. "
+                    f"Use --project-path for the intended checkout or move {checkout_path} aside."
+                )
         return str(checkout_path)
 
     clone_url = repo_meta.get("clone_url")
@@ -606,6 +615,33 @@ def ensure_repo_checkout(
         text=True,
     )
     return str(checkout_path)
+
+
+def current_checkout_remote(checkout_path: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(checkout_path), "config", "--get", "remote.origin.url"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def same_git_remote(left: str, right: str) -> bool:
+    def _normalize(value: str) -> str:
+        value = (value or "").strip().lower()
+        if value.startswith("git@github.com:"):
+            value = "https://github.com/" + value.removeprefix("git@github.com:")
+        if value.endswith(".git"):
+            value = value[:-4]
+        return value.rstrip("/")
+
+    return _normalize(left) == _normalize(right)
 
 
 def count_tokens(text: str) -> int:

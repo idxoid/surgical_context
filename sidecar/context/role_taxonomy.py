@@ -276,11 +276,49 @@ def infer_supporting_roles(
             "to_json",
             "to_python",
         )
+        representation_tokens = (
+            "ast",
+            "node",
+            "proxy",
+            "reactive",
+            "ref",
+            "schema",
+            "state",
+            "tree",
+            "vnode",
+        )
+        orchestration_tokens = (
+            "dep",
+            "dependency",
+            "effect",
+            "notify",
+            "scheduler",
+            "track",
+            "trigger",
+            "watch",
+        )
+        runtime_tokens = (
+            "dispatch",
+            "effect",
+            "execute",
+            "mount",
+            "patch",
+            "render",
+            "runtime",
+            "trigger",
+            "watch",
+        )
 
         if any(token in haystack for token in composition_tokens):
             inferred.append("composition_surface")
         if any(token in haystack for token in ("controller", "export", "import", "provider")):
             inferred.append("integration_surface")
+        if any(token in haystack for token in representation_tokens):
+            inferred.append("representation_surface")
+        if any(token in haystack for token in orchestration_tokens):
+            inferred.append("orchestrator")
+        if any(token in haystack for token in runtime_tokens):
+            inferred.append("runtime_surface")
         if any(token in haystack for token in validator_tokens):
             inferred.append("validator_handle")
         if any(token in haystack for token in serializer_tokens):
