@@ -744,6 +744,17 @@ class UnifiedRanker:
         if trace_import_anchors:
             pool = self._merge_role_backfill(pool, trace_import_anchors)
 
+        module_composition_anchors = self._module_composition_anchor_candidates(
+            target,
+            query=query,
+            mechanism=mechanism,
+            required_roles=required_roles,
+            excluded_uids={target.uid},
+            pool=pool,
+        )
+        if module_composition_anchors:
+            pool = self._merge_role_backfill(pool, module_composition_anchors)
+
         # 7. Assign intent weights and noise factors
 
         intent_priors = self._intent_priors(intent)
@@ -817,6 +828,127 @@ class UnifiedRanker:
             required_roles,
             budget,
         )
+
+    def _module_composition_anchor_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        query: str,
+        mechanism: str,
+        required_roles: list[str],
+        excluded_uids: set[str],
+        pool: list[Candidate],
+        limit: int = 12,
+    ) -> list[Candidate]:
+        haystack = f"{target.name} {target.file_path} {query} {mechanism}".lower()
+        if "module" not in haystack:
+            return []
+        if not any(
+            term in haystack
+            for term in (
+                "compose",
+                "composition",
+                "controller",
+                "decorator",
+                "export",
+                "feature",
+                "import",
+                "provider",
+            )
+        ):
+            return []
+
+        rows = self._module_composition_symbol_rows(
+            excluded_uids={target.uid, *excluded_uids, *(c.uid for c in pool if c.uid)},
+            limit=limit * 4,
+        )
+        if not rows:
+            return []
+
+        scoped = set(normalize_roles([*required_roles, "composition_surface", "integration_surface"]))
+        candidates: list[Candidate] = []
+        for row in rows[:limit]:
+            candidate = self._recovery_candidate_from_row(
+                row,
+                origin="module_composition_anchor",
+                scoped_roles=scoped,
+                target=target,
+            )
+            if candidate is None:
+                continue
+            candidate.graph_score += 0.35
+            candidate.provenance.append("module-composition-anchor")
+            candidates.append(candidate)
+        return candidates
+
+    def _module_composition_symbol_rows(
+        self,
+        *,
+        excluded_uids: set[str],
+        limit: int,
+    ) -> list[dict]:
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+          AND NOT f.path CONTAINS '/test/'
+          AND NOT f.path CONTAINS '/tests/'
+          AND NOT f.path CONTAINS '/integration/'
+          AND NOT f.path CONTAINS '/sample/'
+          AND NOT f.path CONTAINS '/samples/'
+          AND (
+            f.path CONTAINS '/module'
+            OR f.path CONTAINS 'module.'
+            OR f.path CONTAINS 'metadata-scanner'
+            OR f.path CONTAINS '/scanner'
+            OR toLower(s.name) IN ['imports', 'controllers', 'providers', 'exports']
+            OR toLower(s.name) CONTAINS 'metadata'
+            OR toLower(s.name) CONTAINS 'scanner'
+          )
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges
+        WITH s, f, c, inbound_edges, outbound_edges,
+             CASE
+               WHEN f.path CONTAINS 'metadata-scanner' THEN 3.0
+               WHEN f.path CONTAINS '/injector/module' THEN 2.8
+               WHEN f.path CONTAINS '/scanner' THEN 2.3
+               WHEN f.path CONTAINS '/module' OR f.path CONTAINS 'module.' THEN 1.8
+               ELSE 0.0
+             END
+             + CASE
+               WHEN toLower(s.name) IN ['imports', 'controllers', 'providers', 'exports'] THEN 1.2
+               WHEN toLower(s.name) CONTAINS 'metadata' THEN 0.8
+               WHEN toLower(s.name) CONTAINS 'scanner' THEN 0.8
+               ELSE 0.0
+             END AS anchor_score
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               outbound_edges
+        ORDER BY anchor_score DESC, inbound_edges + outbound_edges DESC, size(file_path) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        excluded_uids=list(excluded_uids),
+                        limit=limit,
+                    )
+                )
+        except Exception:
+            return []
 
     def candidates_to_subgraph(
         self,

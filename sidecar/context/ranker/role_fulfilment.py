@@ -260,6 +260,19 @@ class RoleFulfilment:
             for part in (target.name or "", target.file_path or "", query or "")
             if part
         )
+        if "module" in haystack and any(
+            term in haystack
+            for term in (
+                "compose",
+                "composition",
+                "controller",
+                "export",
+                "feature",
+                "import",
+                "provider",
+            )
+        ):
+            return "auto:module_composition"
         if not archetypes:
             return ""
         for item in archetypes:

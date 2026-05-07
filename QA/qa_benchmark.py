@@ -62,10 +62,11 @@ def _expected_file_matches(expected: str, retrieved_files: set[str]) -> bool:
     intersection is always empty.
 
     Matching rule: expected matches a retrieved path iff the retrieved
-    path ends with ``"/" + expected`` (file-form hint) or contains
-    ``"/" + expected + "/"`` (directory-form hint). This guards against
-    partial-name collisions (``fast`` vs ``fastapi``) by only matching on
-    full path components.
+    path ends with ``"/" + expected`` (file-form hint), contains
+    ``"/" + expected + "/"`` (directory-form hint), or the expected hint
+    is an extensionless file stem that matches a real source file. This
+    guards against partial-name collisions (``fast`` vs ``fastapi``) by
+    only matching on full path components.
     """
     e = expected.strip().strip("/").replace("\\", "/")
     if not e:
@@ -80,6 +81,12 @@ def _expected_file_matches(expected: str, retrieved_files: set[str]) -> bool:
             return True
         if mid_form in norm + "/":
             return True
+        if "." not in Path(e).name:
+            expected_parent, _, expected_stem = e.rpartition("/")
+            retrieved = Path(norm)
+            if retrieved.stem == expected_stem:
+                if not expected_parent or ("/" + expected_parent + "/") in norm:
+                    return True
     return False
 
 

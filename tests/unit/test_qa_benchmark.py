@@ -8,6 +8,7 @@ import pytest
 from QA.qa_benchmark import (
     _compute_role_recall,
     _empty_indexing_summary,
+    _expected_file_matches,
     _normalize_cleanup_prefixes,
     _path_matches_prefix,
     append_snapshot_manifest,
@@ -35,6 +36,17 @@ def test_compute_role_recall_normalizes_legacy_roles_to_canonical_taxonomy():
     )
 
     assert recall == pytest.approx(1 / 3)
+
+
+def test_expected_file_matches_extensionless_source_file_hints():
+    retrieved = {
+        "/repo/packages/core/metadata-scanner.ts",
+        "/repo/packages/core/injector/module.ts",
+    }
+
+    assert _expected_file_matches("packages/core/metadata-scanner", retrieved)
+    assert _expected_file_matches("packages/core/module", retrieved)
+    assert not _expected_file_matches("packages/common/module", retrieved)
 
 
 def test_load_question_pack_reads_real_repo_metadata():

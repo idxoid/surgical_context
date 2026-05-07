@@ -1804,3 +1804,68 @@ def test_trace_dependency_import_anchor_candidates():
         )
         for a in anchors
     )
+
+
+def test_module_composition_anchor_candidates_surface_runtime_consumers():
+    """Decorator/module composition queries recover metadata readers and module state."""
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main")
+    target = SubgraphNode(
+        uid="module-decorator",
+        name="Module",
+        file_path="/repo/packages/common/decorators/modules/module.decorator.ts",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    rows = [
+        {
+            "uid": "imports-getter",
+            "name": "imports",
+            "symbol_kind": "function",
+            "token_estimate": 24,
+            "qualified_name": "packages.core.injector.module.Module.imports",
+            "file_path": "/repo/packages/core/injector/module.ts",
+            "file_hash": "h1",
+            "range": [1, 3],
+            "inbound_edges": 0,
+            "outbound_edges": 0,
+        },
+        {
+            "uid": "method-reader",
+            "name": "getAllMethodNames",
+            "symbol_kind": "function",
+            "token_estimate": 344,
+            "qualified_name": "packages.core.metadata-scanner.MetadataScanner.getAllMethodNames",
+            "file_path": "/repo/packages/core/metadata-scanner.ts",
+            "file_hash": "h2",
+            "range": [10, 40],
+            "inbound_edges": 8,
+            "outbound_edges": 0,
+        },
+    ]
+
+    with patch.object(ranker, "_module_composition_symbol_rows", return_value=rows):
+        anchors = ranker._module_composition_anchor_candidates(
+            target,
+            query="How do Module decorators compose imports, controllers, and providers?",
+            mechanism="auto:module_composition",
+            required_roles=["composition_surface", "integration_surface", "runtime_surface"],
+            excluded_uids=set(),
+            pool=[],
+        )
+
+    assert {anchor.name for anchor in anchors} == {"imports", "getAllMethodNames"}
+    assert all(anchor.relation == "ROLE_BACKFILL" for anchor in anchors)
+    assert all("module-composition-anchor" in anchor.provenance for anchor in anchors)
+    assert not ranker._module_composition_anchor_candidates(
+        target,
+        query="How do pipes validate request values?",
+        mechanism="auto:validation_pipeline",
+        required_roles=["validator_handle"],
+        excluded_uids=set(),
+        pool=[],
+    )
