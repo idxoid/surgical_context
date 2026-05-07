@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from sidecar.context.mechanism_packs.loader import (
     ROLE_CATALOG_MECHANISM_BACKFILL_KEY,
     ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY,
