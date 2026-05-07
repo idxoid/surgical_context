@@ -114,8 +114,23 @@ def test_role_catalog_overrides_backfill_specs():
     assert builtin == {}
 
 
-def test_builtin_backfill_specs_include_auto_registration_flow():
-    specs = role_backfill_specs_for_mechanism("auto:registration_flow")
+def test_builtin_backfill_specs_empty_without_optional_pack():
+    assert role_backfill_specs_for_mechanism("auto:registration_flow") == {}
+
+
+def test_flask_registration_pack_provides_auto_registration_flow(monkeypatch):
+    from pathlib import Path
+
+    pack = (
+        Path(__file__).resolve().parents[2]
+        / "sidecar/context/mechanism_packs/bundled/flask_registration.yaml"
+    )
+    monkeypatch.setenv("MECHANISM_PACK_PATH", str(pack))
+    ext = preloaded_mechanism_catalog_extensions()
+    specs = role_backfill_specs_for_mechanism(
+        "auto:registration_flow",
+        role_catalog=ext,
+    )
     assert "factory_surface" in specs
     assert any(row["name"] == "register_blueprint" for row in specs["factory_surface"])
     assert "runtime_surface" in specs

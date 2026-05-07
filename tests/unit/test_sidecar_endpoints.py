@@ -17,6 +17,9 @@ from sidecar.indexer.job_log import IndexJobLog
 class FakeCtx:
     intent = "exploration"
     mode = "surgical_full"
+    index_manifest_id = ""
+    index_manifest_schema_version = None
+    retrieval_trace: dict = {}
     primary_source = SymbolContext(
         symbol="process_payment",
         file_path="/repo/payment.py",
@@ -69,6 +72,9 @@ class FakeDb:
     def is_cloud(self):
         return False
 
+    def get_index_manifest(self, workspace_id=None):
+        return None
+
     def delete_symbols_for_file(self, file_path, workspace_id="local/surgical_context@main"):
         return None
 
@@ -78,7 +84,12 @@ class FakeDb:
 
 class FakeContextArbitrator:
     def __init__(
-        self, db, overlay=None, vector_db=None, workspace_id="local/surgical_context@main"
+        self,
+        db,
+        overlay=None,
+        vector_db=None,
+        workspace_id="local/surgical_context@main",
+        **kwargs,
     ):
         self.db = db
         self.overlay = overlay

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +64,43 @@ def _graph_version(db: Any, workspace_id: str) -> int | None:
     return None
 
 
+def _stats_fingerprint(stats: dict[str, Any]) -> str:
+    """Stable hash of index-run counters so full reindexes get distinct ids when work differs."""
+    payload = {
+        "collected": stats.get("collected"),
+        "changed": stats.get("changed"),
+        "parsed": stats.get("parsed"),
+        "symbols_encoded": stats.get("symbols_encoded"),
+        "symbols_removed": stats.get("symbols_removed"),
+        "affects_rebuilt": stats.get("affects_rebuilt"),
+        "framework_hints_applied": stats.get("framework_hints_applied"),
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def compute_manifest_id(
+    *,
+    workspace_id: str,
+    project_path: str,
+    stats: dict[str, Any],
+    graph_version: int | None,
+    outcome: str,
+    git: dict[str, str | None] | None = None,
+) -> str:
+    """Reproducible id: same workspace, graph generation, git head, embed model, outcome, and (for full_index) work fingerprint."""
+    commit = (git or _git_snapshot(project_path)).get("commit") or ""
+    gv = "" if graph_version is None else str(int(graph_version))
+    if outcome in ("noop_unchanged", "no_indexable_files"):
+        work_fp = ""
+    else:
+        work_fp = _stats_fingerprint(stats)
+    parts = "|".join(
+        [workspace_id, gv, commit, _EMBED_MODEL, outcome, work_fp],
+    )
+    return hashlib.sha256(parts.encode("utf-8")).hexdigest()[:32]
+
+
 def build_index_manifest(
     *,
     workspace_id: str,
@@ -73,16 +110,21 @@ def build_index_manifest(
     outcome: str,
 ) -> dict[str, Any]:
     """Assemble the canonical manifest dict (JSON-serializable)."""
-    profile = (
-        stats.get("repository_profile") if isinstance(stats.get("repository_profile"), dict) else {}
-    )
+    profile = stats.get("repository_profile") if isinstance(stats.get("repository_profile"), dict) else {}
     rp_store = stats.get("repository_profile_store") or ""
     emb = get_model_metadata(_EMBED_MODEL)
     taxonomy = stats.get("role_taxonomy") if isinstance(stats.get("role_taxonomy"), dict) else {}
     role_catalog = stats.get("role_catalog") if isinstance(stats.get("role_catalog"), dict) else {}
     git = _git_snapshot(project_path)
 
-    manifest_id = uuid.uuid4().hex
+    manifest_id = compute_manifest_id(
+        workspace_id=workspace_id,
+        project_path=project_path,
+        stats=stats,
+        graph_version=graph_version,
+        outcome=outcome,
+        git=git,
+    )
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     manifest: dict[str, Any] = {
@@ -118,9 +160,7 @@ def build_index_manifest(
         "docs_chunks_indexed": stats.get("docs_chunks_indexed"),
         "role_taxonomy": taxonomy or None,
         "role_catalog_counts": role_catalog or None,
-        "timings_sec": stats.get("timings_sec")
-        if isinstance(stats.get("timings_sec"), dict)
-        else {},
+        "timings_sec": stats.get("timings_sec") if isinstance(stats.get("timings_sec"), dict) else {},
     }
     return manifest
 
@@ -154,23 +194,49 @@ def persist_index_manifest(
     workspace_id: str,
     project_path: str,
     outcome: str,
-) -> dict[str, Any]:
-    """Build manifest, write JSON next to the repo, mirror on Workspace in Neo4j when supported."""
-    gv = _graph_version(db, workspace_id)
-    manifest = build_index_manifest(
-        workspace_id=workspace_id,
-        project_path=project_path,
-        stats=stats,
-        graph_version=gv,
-        outcome=outcome,
-    )
-    write_manifest_to_disk(project_path, manifest)
+) -> dict[str, Any] | None:
+    """Build manifest, best-effort disk + Neo4j. Failures are recorded in ``stats``; does not raise."""
+    warnings: list[dict[str, str]] = []
+    gv: int | None
+    try:
+        gv = _graph_version(db, workspace_id)
+    except Exception as exc:  # noqa: BLE001
+        stats["index_manifest_error"] = repr(exc)
+        gv = None
+    try:
+        manifest = build_index_manifest(
+            workspace_id=workspace_id,
+            project_path=project_path,
+            stats=stats,
+            graph_version=gv,
+            outcome=outcome,
+        )
+    except Exception as exc:  # noqa: BLE001
+        stats["index_manifest_error"] = repr(exc)
+        return None
+
+    disk_path = str(manifest_file_path(project_path))
+    try:
+        write_manifest_to_disk(project_path, manifest)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append({"stage": "disk", "error": repr(exc)})
+        disk_path = ""
+
     save = getattr(db, "save_index_manifest", None)
     if callable(save):
         try:
             save(manifest, workspace_id=workspace_id)
         except TypeError:
-            save(manifest, workspace_id)
+            try:
+                save(manifest, workspace_id)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append({"stage": "neo4j", "error": repr(exc)})
+        except Exception as exc:  # noqa: BLE001
+            warnings.append({"stage": "neo4j", "error": repr(exc)})
+
+    if warnings:
+        stats["index_manifest_persist_warnings"] = warnings
     stats["index_manifest"] = manifest
-    stats["index_manifest_path"] = str(manifest_file_path(project_path))
+    stats["index_manifest_path"] = disk_path
     return manifest
+

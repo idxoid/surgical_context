@@ -19,10 +19,8 @@ except ImportError:  # pragma: no cover
     yaml = None  # type: ignore
 
 
-_BUNDLED_DEFAULT = Path(__file__).resolve().parent / "bundled" / "default.yaml"
-
-
 def _parse_pack_paths() -> list[Path]:
+    """Only explicit paths from ``MECHANISM_PACK_PATH`` (opt-in; no implicit bundled loads)."""
     raw = os.getenv("MECHANISM_PACK_PATH", "").strip()
     paths: list[Path] = []
     if raw:
@@ -30,8 +28,6 @@ def _parse_pack_paths() -> list[Path]:
             p = Path(part).expanduser()
             if p.is_file():
                 paths.append(p)
-    if _BUNDLED_DEFAULT.is_file():
-        paths.append(_BUNDLED_DEFAULT)
     return paths
 
 

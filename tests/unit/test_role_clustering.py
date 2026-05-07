@@ -497,12 +497,20 @@ def test_role_catalog_resolves_canonical_roles_to_cluster_preferences():
     )
 
 
-def test_role_catalog_payload_includes_preloaded_mechanism_profiles():
+def test_role_catalog_payload_includes_preloaded_mechanism_profiles(monkeypatch):
+    from pathlib import Path
+
     from sidecar.context.mechanism_registry import (
         ROLE_CATALOG_MECHANISM_BACKFILL_KEY,
         ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY,
         merge_preloaded_mechanisms_into_role_catalog,
     )
+
+    pack = (
+        Path(__file__).resolve().parents[2]
+        / "sidecar/context/mechanism_packs/bundled/flask_registration.yaml"
+    )
+    monkeypatch.setenv("MECHANISM_PACK_PATH", str(pack))
 
     taxonomy, _ = cluster_symbols([], seed=0)
     catalog = build_role_catalog(taxonomy)

@@ -46,10 +46,8 @@ mechanism_role_backfill:
     json.dumps(merged)
 
 
-@pytest.mark.parametrize("clear_env", [False, True])
-def test_bundled_default_yaml_loads_without_extra_paths(monkeypatch, clear_env):
-    if clear_env:
-        monkeypatch.delenv("MECHANISM_PACK_PATH", raising=False)
+def test_pack_overlay_empty_without_mechanism_pack_path(monkeypatch):
+    monkeypatch.delenv("MECHANISM_PACK_PATH", raising=False)
     overlay = load_pack_overlay_merged()
     assert ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY in overlay
     assert overlay[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY] == {}
