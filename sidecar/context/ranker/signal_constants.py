@@ -69,8 +69,20 @@ REPRESENTATION_SIGNAL_PATH_TOKENS = (
     "/models",
     "/fields",
 )
-TRACE_DEPENDS_RUNTIME_NAMES: frozenset[str] = frozenset(
-    {"solve_dependencies", "get_dependant", "Dependant"}
+TRACE_DEPENDENCY_TARGET_TOKENS = (
+    "depend",
+    "dependency",
+    "inject",
+    "provider",
+    "container",
+)
+TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS = (
+    "depend",
+    "inject",
+    "provider",
+    "container",
+    "resolve",
+    "solve",
 )
 TRACE_HOOK_RUNTIME_TRIGGER_NAMES: frozenset[str] = frozenset(
     {"before_request", "after_request", "teardown_request", "wsgi_app", "dispatch_request"}

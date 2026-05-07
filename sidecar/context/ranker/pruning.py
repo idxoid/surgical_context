@@ -55,8 +55,7 @@ class BudgetPruner:
         # Doc-tier deferral: when symbols still owe coverage breadth, hold docs
         # back so they don't crowd out role-filling code. A doc may "claim" a
         # role via supporting_roles and starve real graph candidates that would
-        # bring in additional expected files (e.g. fastapi `Dependant`/`get_dependant`
-        # in models.py losing budget to 20+ tutorial chunks).
+        # bring in additional expected files from runtime/supporting modules.
         # IMPACT_ANALYSIS is exempt — its tier prior already favors docs.
         defer_docs = intent != Intent.IMPACT_ANALYSIS
         min_code_files_before_docs = 3
@@ -457,8 +456,8 @@ class BudgetPruner:
                     break
 
         # If we ran out of useful candidates before hitting the floor, adjust the
-        # stopped reason. For sparse targets like `Depends` (marker classes), the floor
-        # may be genuinely unachievable from the graph.
+        # stopped reason. For sparse marker APIs, the floor may be genuinely
+        # unachievable from the graph.
         if stopped_reason == "pool_exhausted" and spent < min_floor:
             if not (set(required_roles) - fulfilled_roles):
                 stopped_reason = "context_complete_below_floor"

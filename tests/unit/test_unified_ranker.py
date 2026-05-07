@@ -5,7 +5,6 @@ from sidecar.context.mechanism_registry import determine_preloaded_mechanism
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
     _NOISE_FACTOR,
-    _TRACE_DEPENDS_RUNTIME_NAMES,
     Candidate,
     UnifiedRanker,
     VectorSearcher,
@@ -842,9 +841,9 @@ def test_docs_deferred_until_code_breadth_met():
     """High-scoring docs should not crowd out low-scoring code candidates while
     coverage breadth (distinct code files) is below the deferral threshold.
 
-    Regression: fastapi_q02 was burning ~2k tokens on tutorial docs while
-    `Dependant`/`get_dependant` lost to the marginal-gain stop. The fix is to
-    hold docs until ≥3 code files are seated, then replay them.
+    Regression shape: trace questions were burning too many tokens on docs
+    while runtime/supporting symbols lost to the marginal-gain stop. The fix
+    is to hold docs until >=3 code files are seated, then replay them.
     """
     code_paths = [f"/repo/src/mod_{i}.py" for i in range(4)]
     code_uids = [f"sym-{i}" for i in range(4)]
@@ -935,15 +934,15 @@ def test_docs_deferred_until_code_breadth_met():
     )
 
 
-def test_trace_depends_runtime_symbol_rows_use_package_prefix():
-    """Depends lives beside params without IMPORTS to dependencies/utils — seed by name."""
+def test_trace_dependency_runtime_symbol_rows_use_package_prefix_and_generic_terms():
+    """Marker APIs can seed sibling runtime symbols without framework-name fixtures."""
     solve_row = {
         "uid": "solve-u",
-        "name": "solve_dependencies",
+        "name": "resolve_dependencies",
         "symbol_kind": "function",
         "token_estimate": 80,
-        "qualified_name": "fastapi.dependencies.utils.solve_dependencies",
-        "file_path": "fastapi/dependencies/utils.py",
+        "qualified_name": "app.dependencies.utils.resolve_dependencies",
+        "file_path": "app/dependencies/utils.py",
         "file_hash": "",
         "range": [10, 20],
         "inbound_edges": 5,
@@ -954,8 +953,9 @@ def test_trace_depends_runtime_symbol_rows_use_package_prefix():
 
     def run(query, **_kwargs):
         if "LIMIT 32" in query and "$pkg_prefix" in query:
-            assert _kwargs.get("pkg_prefix") == "fastapi/"
-            assert set(_kwargs["names"]) == set(_TRACE_DEPENDS_RUNTIME_NAMES)
+            assert _kwargs.get("pkg_prefix") == "app/"
+            assert _kwargs["names"] == []
+            assert {"depend", "resolve", "solve"} <= set(_kwargs["name_terms"])
             return [solve_row]
         return []
 
@@ -969,8 +969,8 @@ def test_trace_depends_runtime_symbol_rows_use_package_prefix():
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="ws")
     target = SubgraphNode(
         uid="dep-u",
-        name="Depends",
-        file_path="/repo/fastapi/param_functions.py",
+        name="DependencyMarker",
+        file_path="/repo/app/params.py",
         range=[1, 5],
         token_estimate=40,
         relation="target",
@@ -983,7 +983,7 @@ def test_trace_depends_runtime_symbol_rows_use_package_prefix():
     assert len(rows) == 1 and rows[0]["uid"] == "solve-u"
 
 
-def test_trace_depends_runtime_symbol_rows_skipped_without_depends_name():
+def test_trace_dependency_runtime_symbol_rows_skipped_without_marker_terms():
     session = MagicMock()
     session.run.side_effect = lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("unexpected Neo4j query")
@@ -996,8 +996,8 @@ def test_trace_depends_runtime_symbol_rows_skipped_without_depends_name():
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="ws")
     target = SubgraphNode(
         uid="other-u",
-        name="FastAPI",
-        file_path="/repo/fastapi/applications.py",
+        name="Application",
+        file_path="/repo/app/application.py",
         range=[1, 5],
         token_estimate=40,
         relation="target",

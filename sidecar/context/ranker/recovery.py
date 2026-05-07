@@ -26,7 +26,8 @@ from .signal_constants import (
     REPRESENTATION_SIGNAL_PATH_TOKENS,
     REPRESENTATION_SIGNAL_TOKENS,
     RUNTIME_SIGNAL_TOKENS,
-    TRACE_DEPENDS_RUNTIME_NAMES,
+    TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS,
+    TRACE_DEPENDENCY_TARGET_TOKENS,
     TRACE_HOOK_RUNTIME_NAMES,
     TRACE_HOOK_RUNTIME_TRIGGER_NAMES,
 )
@@ -172,23 +173,28 @@ class StructuralRecovery:
         *,
         excluded_uids: set[str],
     ) -> list[dict]:
-        """Workspace symbols for DI runtime resolution when IMPORTS skip ``dependencies/*``.
-
-        Scoped by the target file's top-level directory so monorepos don't pull
-        unrelated matches; names are generic FastAPI entrypoints only when the
-        primary symbol is ``Depends``.
-        """
+        """Workspace symbols for trace/runtime resolution when import topology is sparse."""
         target_name = target.name or ""
-        if target_name == "Depends":
-            names = list(TRACE_DEPENDS_RUNTIME_NAMES)
+        name_terms: list[str] = []
+        names: list[str] = []
+        if self.is_dependency_marker_target(target):
+            name_terms = list(TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS)
         elif target_name in TRACE_HOOK_RUNTIME_TRIGGER_NAMES:
             names = list(TRACE_HOOK_RUNTIME_NAMES)
         else:
             return []
+        excluded = set(excluded_uids)
+        if target.uid:
+            excluded.add(target.uid)
         pkg_prefix = self.package_root_prefix(target.file_path or "") or ""
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-        WHERE s.name IN $names
+        WHERE (
+            (size($names) > 0 AND s.name IN $names)
+            OR any(term IN $name_terms
+                WHERE toLower(s.name) CONTAINS term
+                   OR toLower(coalesce(s.qualified_name, '')) CONTAINS term)
+          )
           AND NOT s.uid IN $excluded_uids
           AND (
             $pkg_prefix = ''
@@ -219,12 +225,25 @@ class StructuralRecovery:
                         query,
                         workspace_id=self.workspace_id,
                         names=names,
-                        excluded_uids=list(excluded_uids),
+                        name_terms=name_terms,
+                        excluded_uids=list(excluded),
                         pkg_prefix=pkg_prefix,
                     )
                 )
         except Exception:
             return []
+
+    def is_dependency_marker_target(self, target: SubgraphNode) -> bool:
+        haystack = " ".join(
+            part.lower()
+            for part in (
+                target.name or "",
+                target.file_path or "",
+                getattr(target, "qualified_name", "") or "",
+            )
+            if part
+        )
+        return any(token in haystack for token in TRACE_DEPENDENCY_TARGET_TOKENS)
 
     def trace_dependency_sibling_dir_symbol_rows(
         self,

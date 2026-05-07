@@ -545,11 +545,11 @@ class UnifiedRanker:
         doc_pool = self._doc_candidates(query, limit=vector_limit)
         sym_vec_pool = self._sym_vec_candidates(query, limit=vector_limit)
 
-        # 3. Doc-bridge: framework-semantics edges static graph cannot see.
-        # When ``Depends`` (a marker class) and ``solve_dependencies`` (its
-        # runtime consumer) are co-mentioned in the same DocAnchor, the
-        # bridge surfaces the consumer even when no Symbol→Symbol edge
-        # connects them. Seeds are the target plus any strong graph hits.
+        # 3. Doc-bridge: semantic relationships static graph edges cannot see.
+        # When a marker API and its runtime consumer are co-mentioned in the
+        # same DocAnchor, the bridge surfaces the consumer even when no
+        # Symbol→Symbol edge connects them. Seeds are the target plus any
+        # strong graph hits.
         bridge_seeds = {target.uid} | {c.uid for c in graph_pool if c.graph_score > 0.5}
         excluded = {target.uid} | {c.uid for c in graph_pool}
         bridge_pool_h1 = self._doc_bridge_candidates(
@@ -944,10 +944,10 @@ class UnifiedRanker:
     ) -> list[Candidate]:
         """Symbols co-mentioned with seeds in the same DocAnchor(s).
 
-        Static call/depends edges miss framework-semantics relationships
-        (``Depends`` ↔ ``solve_dependencies`` in FastAPI). Doc anchors
-        already record these by name when ``_extract_identifiers`` saw
-        both names in the same chunk and ``COVERS`` was created for each.
+        Static call/depends edges miss semantic relationships between marker
+        APIs and runtime consumers. Doc anchors already record these by name
+        when ``_extract_identifiers`` saw both names in the same chunk and
+        ``COVERS`` was created for each.
 
         ``min_strength`` filters out single-anchor co-occurrences where the
         co-mention is more likely incidental than a real semantic link.
@@ -1682,8 +1682,8 @@ class UnifiedRanker:
                 role_bonus = 0.5  # High-priority evidence signal
 
         # 2. Coverage Bonus: Does this symbol complete a structural chain?
-        # Boost symbols that are semantically hinted (FastAPI Depends)
-        # or are direct implementations of the target's interfaces.
+        # Boost symbols that are semantically hinted or are direct
+        # implementations of the target's interfaces.
         coverage_bonus = 0.0
         if "SEMANTIC_HINT" in (c.relation or ""):
             coverage_bonus += 0.2
