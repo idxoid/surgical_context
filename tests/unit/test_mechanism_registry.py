@@ -32,29 +32,29 @@ def _target(name: str, file_path: str = "/repo/src/main.py") -> SubgraphNode:
 def test_preloaded_dispatch_stub_returns_empty_for_framework_like_symbols():
     assert (
         determine_preloaded_mechanism(
-            _target("FastAPI", "/repo/fastapi/applications.py"),
-            "How does FastAPI register path operations?",
+            _target("Application", "/repo/app/application.py"),
+            "How does Application register handlers?",
         )
         == ""
     )
     assert (
         determine_preloaded_mechanism(
-            _target("BaseModel", "/repo/pydantic/main.py"),
-            "How does BaseModel validation flow work?",
+            _target("RecordModel", "/repo/modeling/main.py"),
+            "How does RecordModel validation flow work?",
         )
         == ""
     )
     assert (
         determine_preloaded_mechanism(
-            _target("createApi", "/repo/packages/toolkit/src/query/createApi.ts"),
-            "How does RTK Query define an API slice and connect generated endpoints into the store?",
+            _target("createClient", "/repo/packages/client/src/query/createClient.ts"),
+            "How does createClient define a query surface and connect generated endpoints?",
         )
         == ""
     )
 
 
 def test_builtin_required_roles_and_known_mechanisms_are_empty():
-    assert required_roles_for_mechanism("fastapi_openapi_generation") == []
+    assert required_roles_for_mechanism("generated_api_schema") == []
     assert known_mechanisms() == ()
 
 
@@ -74,17 +74,17 @@ def test_preloaded_registry_returns_empty_for_unknown_codebase():
 def test_role_catalog_overrides_required_roles():
     catalog = {
         ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY: {
-            "fastapi_openapi_generation": ["executor", "runtime_surface"],
+            "generated_api_schema": ["executor", "runtime_surface"],
         }
     }
     roles = required_roles_for_mechanism(
-        "fastapi_openapi_generation",
+        "generated_api_schema",
         role_catalog=catalog,
     )
     assert roles == ["executor", "runtime_surface"]
     assert (
         required_roles_for_mechanism(
-            "fastapi_openapi_generation",
+            "generated_api_schema",
             role_catalog={ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY: {}},
         )
         == []
@@ -94,7 +94,7 @@ def test_role_catalog_overrides_required_roles():
 def test_role_catalog_overrides_backfill_specs():
     catalog = {
         ROLE_CATALOG_MECHANISM_BACKFILL_KEY: {
-            "fastapi_endpoint_execution": {
+            "handler_execution": {
                 "executor": [
                     {"name": "custom_runner", "path_hint": "/repo/run.py", "priority": 1.0},
                 ],
@@ -102,13 +102,13 @@ def test_role_catalog_overrides_backfill_specs():
         }
     }
     specs = role_backfill_specs_for_mechanism(
-        "fastapi_endpoint_execution",
+        "handler_execution",
         role_catalog=catalog,
     )
     assert specs["executor"][0]["name"] == "custom_runner"
     assert specs["executor"][0]["path_hint"] == "/repo/run.py"
     builtin = role_backfill_specs_for_mechanism(
-        "fastapi_endpoint_execution",
+        "handler_execution",
         role_catalog={ROLE_CATALOG_MECHANISM_BACKFILL_KEY: {}},
     )
     assert builtin == {}
@@ -145,7 +145,7 @@ def test_pick_mechanism_by_role_overlap_requires_two_distinct_roles():
 def test_pick_mechanism_by_role_overlap_matches_catalog_template():
     catalog = {
         ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY: {
-            "fastapi_endpoint_execution": ["executor", "runtime_surface"],
+            "handler_execution": ["executor", "runtime_surface"],
         }
     }
     mech = pick_mechanism_by_role_overlap(
@@ -154,7 +154,7 @@ def test_pick_mechanism_by_role_overlap_matches_catalog_template():
         role_catalog=catalog,
         min_score=0.41,
     )
-    assert mech == "fastapi_endpoint_execution"
+    assert mech == "handler_execution"
 
 
 def test_preloaded_mechanism_catalog_extensions_are_json_serializable():
