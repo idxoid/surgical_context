@@ -75,14 +75,20 @@ class RankerScoring:
         query_terms = set(self.focus_query_terms(query))
         has_explicit_role_backfill = self.host._has_role_backfill(candidate)
 
+        path_terms = set(self.focus_identifier_terms(path))
+        target_path_terms = set(self.focus_identifier_terms(target_path))
         subsystem_rules = (
-            ("/query/", {"query", "rtk", "api", "endpoint", "endpoints", "subscription"}),
-            ("/listenermiddleware/", {"listener", "listeners", "side", "effect", "effects"}),
-            ("/entities/", {"entity", "entities", "adapter", "sort", "sorted"}),
-            ("/scripts/", {"script", "scripts", "tooling", "triage", "release"}),
+            (
+                {"query"},
+                {"query", "queries", "api", "endpoint", "endpoints", "subscription"},
+            ),
+            ({"listener", "middleware"}, {"listener", "listeners", "side", "effect", "effects"}),
+            ({"entity"}, {"entity", "entities", "adapter", "sort", "sorted"}),
+            ({"entities"}, {"entity", "entities", "adapter", "sort", "sorted"}),
+            ({"scripts"}, {"script", "scripts", "tooling", "triage", "release"}),
         )
-        for marker, topic_terms in subsystem_rules:
-            if marker not in path or marker in target_path:
+        for marker_terms, topic_terms in subsystem_rules:
+            if not marker_terms <= path_terms or marker_terms <= target_path_terms:
                 continue
             if query_terms & topic_terms:
                 return 1.0
@@ -136,6 +142,15 @@ class RankerScoring:
         return [
             term
             for term in re.findall(r"[a-z][a-z0-9_]{3,}", (text or "").lower())
+            if term not in FOCUS_QUERY_STOPWORDS
+        ]
+
+    @staticmethod
+    def focus_identifier_terms(text: str) -> list[str]:
+        spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text or "")
+        return [
+            term
+            for term in re.findall(r"[a-z][a-z0-9]{2,}", spaced.lower())
             if term not in FOCUS_QUERY_STOPWORDS
         ]
 

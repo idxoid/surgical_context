@@ -430,7 +430,7 @@ def test_role_backfill_reads_specs_from_catalog_overlay():
 
 def test_redux_style_symbols_use_generic_mechanism_when_dispatch_stubbed():
     ranker = UnifiedRanker(
-        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main"
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main"
     )
 
     create_slice = SubgraphNode(
@@ -448,7 +448,7 @@ def test_redux_style_symbols_use_generic_mechanism_when_dispatch_stubbed():
     configure_store = SubgraphNode(
         uid="configureStore",
         name="configureStore",
-        file_path="/repo/packages/toolkit/src/configureStore.ts",
+        file_path="/repo/packages/app/src/configureStore.ts",
         range=[121, 180],
         token_estimate=80,
         relation="target",
@@ -589,14 +589,14 @@ def test_auto_strategy_profile_supplies_mechanism_and_roles_for_unknown_repo():
     ]
 
 
-def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
+def test_topic_focus_downranks_unrelated_query_subsystem_candidates():
     ranker = UnifiedRanker(
-        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main"
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main"
     )
     target = SubgraphNode(
         uid="configureStore",
         name="configureStore",
-        file_path="/repo/packages/toolkit/src/configureStore.ts",
+        file_path="/repo/packages/app/src/configureStore.ts",
         range=[121, 180],
         token_estimate=80,
         relation="target",
@@ -610,7 +610,7 @@ def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
         kind="symbol",
         uid="selectQueryEntry",
         name="selectQueryEntry",
-        file_path="/repo/packages/toolkit/src/query/core/buildSelectors.ts",
+        file_path="/repo/packages/app/src/query/core/buildSelectors.ts",
         token_cost=80,
         depth=4,
     )
@@ -618,7 +618,7 @@ def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
         kind="symbol",
         uid="hasPendingRequests",
         name="hasPendingRequests",
-        file_path="/repo/packages/toolkit/src/query/core/buildMiddleware/invalidationByTags.ts",
+        file_path="/repo/packages/app/src/query/core/buildMiddleware/invalidationByTags.ts",
         token_cost=80,
         depth=3,
         evidence_role="composition_surface",
@@ -627,7 +627,7 @@ def test_topic_focus_downranks_unrelated_redux_query_chain_candidates():
         kind="symbol",
         uid="composeWithDevTools",
         name="composeWithDevTools",
-        file_path="/repo/packages/toolkit/src/devtoolsExtension.ts",
+        file_path="/repo/packages/app/src/devtoolsExtension.ts",
         token_cost=80,
         depth=2,
     )
