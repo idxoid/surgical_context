@@ -1,7 +1,7 @@
 """ContextArbitrator — thin orchestrator facade composing pure components."""
 
 import hashlib
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
@@ -19,6 +19,9 @@ from sidecar.context.unified_ranker import (
 from sidecar.retrieval.trace import graph_only_trace, unified_trace
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
+if TYPE_CHECKING:
+    from sidecar.retrieval.protocols import VectorSearchProvider, WorkspaceMetaProvider
+
 
 class ContextArbitrator:
     """Orchestrator: composes GraphExpander, ContextDeduplicator, CodeResolver, DocResolver, PromptCompiler."""
@@ -31,6 +34,9 @@ class ContextArbitrator:
         workspace_id: str = DEFAULT_WORKSPACE_ID,
         cache: LayeredCache | None = None,
         ranker_weights: RankerWeights | None = None,
+        *,
+        vector_search: "VectorSearchProvider | None" = None,
+        workspace_meta: "WorkspaceMetaProvider | None" = None,
     ):
         self.db = neo4j_client
         self.overlay = overlay
@@ -38,6 +44,8 @@ class ContextArbitrator:
         self.workspace_id = workspace_id
         self.cache = cache or default_cache
         self.ranker_weights = ranker_weights or DEFAULT_WEIGHTS
+        self._vector_search = vector_search
+        self._workspace_meta = workspace_meta
 
     def get_context_for_symbol(
         self,
@@ -53,7 +61,7 @@ class ContextArbitrator:
         )
         cache_hits: list[str] = []
 
-        if self.vector_db:
+        if self.vector_db or self._vector_search:
             return self._get_context_unified(
                 symbol_name, question, token_budget, intent_signal, intent_resolution, cache_hits
             )
@@ -77,7 +85,7 @@ class ContextArbitrator:
         intent = intent_signal.primary
         ranker = UnifiedRanker(
             self.db,
-            VectorSearcher(self.vector_db),
+            self._vector_search_for_ranker(),
             workspace_id=self.workspace_id,
             weights=self.ranker_weights,
         )
@@ -348,7 +356,15 @@ class ContextArbitrator:
         )
         return ctx
 
+    def _vector_search_for_ranker(self):
+        if self._vector_search is not None:
+            return self._vector_search
+        return VectorSearcher(self.vector_db)
+
     def _repository_profile(self) -> dict | None:
+        if self._workspace_meta is not None:
+            profile = self._workspace_meta.repository_profile(self.workspace_id)
+            return profile if profile else None
         get_profile = getattr(self.db, "get_repository_profile", None)
         if not callable(get_profile):
             return None
@@ -379,6 +395,8 @@ class ContextArbitrator:
             return None
 
     def _graph_version(self) -> int:
+        if self._workspace_meta is not None:
+            return int(self._workspace_meta.graph_version(self.workspace_id))
         query = """
         MATCH (w:Workspace {id: $workspace_id})
         RETURN coalesce(w.graph_version, 0) AS graph_version

@@ -1,3 +1,9 @@
+"""FastAPI sidecar — install stderr filtering before LanceDB / SentenceTransformer import."""
+
+from sidecar.silence import install as _install_stderr_filter
+
+_install_stderr_filter()
+
 import hashlib
 import logging
 import os
@@ -16,6 +22,7 @@ from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.doc_resolver import DocResolver
 from sidecar.context.intent_classifier import IntentClassifier
 from sidecar.context.overlay import InMemoryOverlay
+from sidecar.context.ranker.candidate_pool import VectorSearcher
 from sidecar.context.types import RESOLVER_VERSION, DocChunk, PromptContext, SymbolContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
@@ -30,6 +37,7 @@ from sidecar.observability import (
     estimate_text_tokens,
     new_trace_id,
 )
+from sidecar.retrieval import neo4j_workspace_meta
 from sidecar.search import UnifiedSearchResult, dedupe_and_rank
 from sidecar.workspace import WorkspaceResolver
 
@@ -55,6 +63,18 @@ history_provider = build_history_provider(
     db_path=os.getenv("HISTORY_DB_PATH", "./data/history/surgical_context.sqlite3"),
     retention_days=parse_retention_days(os.getenv("HISTORY_RETENTION_DAYS", "")),
 )
+
+
+def _context_arbitrator(db: Any, workspace_id: str) -> ContextArbitrator:
+    """Workspace-scoped graph + vector retrieval with explicit provider wiring."""
+    return ContextArbitrator(
+        db,
+        overlay,
+        vector_db,
+        workspace_id=workspace_id,
+        workspace_meta=neo4j_workspace_meta(db),
+        vector_search=VectorSearcher(vector_db),
+    )
 
 
 class IndexRequest(BaseModel):
@@ -154,6 +174,9 @@ class UnifiedSearchResponse(BaseModel):
     workspace_id: str
     results: list[dict[str, Any]]
     total: int
+    index_manifest_id: str | None = None
+    index_manifest_schema_version: int | None = None
+    retrieval_trace: dict[str, Any] | None = None
 
 
 class AskResponse(BaseModel):
@@ -169,6 +192,8 @@ class AskResponse(BaseModel):
     feedback_token: str
     model_route: dict[str, Any]
     metrics: dict[str, Any]
+    index_manifest_id: str | None = None
+    index_manifest_schema_version: int | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -329,6 +354,37 @@ def _attach_trace_metadata(ctx: PromptContext, trace: RequestTrace) -> None:
     ctx.estimated_cost_usd = trace.estimated_cost_usd
     ctx.cost_basis = trace.cost_basis
     ctx.resolver_version = RESOLVER_VERSION
+
+
+def _index_manifest_fields(db: Any, workspace_id: str) -> tuple[str | None, int | None]:
+    """Read manifest id + schema version from Neo4j Workspace (if indexed)."""
+    get_m = getattr(db, "get_index_manifest", None)
+    if not callable(get_m):
+        return None, None
+    try:
+        raw = get_m(workspace_id=workspace_id)
+    except TypeError:
+        raw = get_m(workspace_id)
+    if not isinstance(raw, dict):
+        return None, None
+    mid = raw.get("manifest_id")
+    manifest_id = str(mid) if mid else None
+    schema_v: int | None = None
+    sv = raw.get("manifest_schema_version")
+    if sv is not None:
+        try:
+            schema_v = int(sv)
+        except (TypeError, ValueError):
+            pass
+    return manifest_id, schema_v
+
+
+def _attach_index_manifest(ctx: PromptContext, db: Any, workspace_id: str) -> None:
+    mid, sv = _index_manifest_fields(db, workspace_id)
+    if mid:
+        ctx.index_manifest_id = mid
+    if sv is not None:
+        ctx.index_manifest_schema_version = sv
 
 
 def _request_metrics(trace: RequestTrace) -> dict[str, Any]:
@@ -668,7 +724,7 @@ def _resolve_ask_context(
 ) -> PromptContext:
     symbol_error = ""
     if req.symbol:
-        arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
+        arb = _context_arbitrator(db, workspace_id)
         ctx = arb.get_context_for_symbol(
             req.symbol,
             question=req.question,
@@ -1071,6 +1127,25 @@ def index_queue_status(
     return {"status": "ok", "queue": index_queue.snapshot()}
 
 
+@app.get("/index/manifest")
+def index_manifest_endpoint(
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Return the latest index manifest stored on the Workspace node (Neo4j)."""
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    with db_session(user_id=user_id) as db:
+        get_m = getattr(db, "get_index_manifest", None)
+        manifest = get_m(workspace_id=workspace_id) if callable(get_m) else None
+    if not manifest:
+        raise HTTPException(
+            status_code=404, detail="Index manifest not found for this workspace (run indexing first)"
+        )
+    return manifest
+
+
 @app.post("/index/docs", response_model=StatusPathResponse)
 def index_docs_endpoint(
     req: IndexDocsRequest,
@@ -1115,6 +1190,7 @@ def unified_search(
     trace = _start_trace("/search/unified", x_trace_id, workspace_id)
     status = "ok"
     results: list[UnifiedSearchResult] = []
+    retrieval_trace_payload: dict[str, Any] | None = None
     try:
         with trace.stage("vector_docs"):
             docs = _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)
@@ -1156,13 +1232,14 @@ def unified_search(
         if req.include_graph and req.symbol:
             with trace.stage("graph_neighbors"):
                 with db_session(user_id=user_id) as db:
-                    arb = ContextArbitrator(db, overlay, vector_db, workspace_id=workspace_id)
+                    arb = _context_arbitrator(db, workspace_id)
                     ctx = arb.get_context_for_symbol(
                         req.symbol,
                         question=req.query,
                         token_budget=req.token_budget,
                     )
             if not isinstance(ctx, str):
+                retrieval_trace_payload = ctx.retrieval_trace
                 graph_symbols: list[tuple[SymbolContext, str]] = [
                     (ctx.primary_source, "graph:primary"),
                     *[(dep, "graph:neighbor") for dep in ctx.graph_context],
@@ -1188,11 +1265,16 @@ def unified_search(
 
         ranked = dedupe_and_rank(results, req.limit)
         trace.token_counts["query"] = estimate_text_tokens(req.query)
+        with db_session(user_id=user_id) as db:
+            mid, sv = _index_manifest_fields(db, workspace_id)
         return {
             "trace_id": trace.trace_id,
             "workspace_id": workspace_id,
             "results": ranked,
             "total": len(ranked),
+            "index_manifest_id": mid,
+            "index_manifest_schema_version": sv,
+            "retrieval_trace": retrieval_trace_payload,
         }
     except Exception:
         status = "error"
@@ -1318,6 +1400,7 @@ def ask(
                 audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
 
             _attach_trace_metadata(ctx, trace)
+            _attach_index_manifest(ctx, db, workspace_id)
             feedback_token = feedback_store.issue_token()
             ctx.feedback_token = feedback_token
             with trace.stage("feedback_snapshot"):
@@ -1342,6 +1425,8 @@ def ask(
                 "feedback_token": feedback_token,
                 "model_route": trace.model_route,
                 "metrics": _request_metrics(trace),
+                "index_manifest_id": ctx.index_manifest_id or None,
+                "index_manifest_schema_version": ctx.index_manifest_schema_version,
             }
     except HTTPException:
         raise
@@ -1413,6 +1498,7 @@ def ask_stream(
                     audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
 
                 _attach_trace_metadata(ctx, trace)
+                _attach_index_manifest(ctx, db, workspace_id)
                 feedback_token = feedback_store.issue_token()
                 ctx.feedback_token = feedback_token
                 with trace.stage("feedback_snapshot"):
@@ -1433,6 +1519,8 @@ def ask_stream(
                         "feedback_token": feedback_token,
                         "context": ctx.to_dict(),
                         "metrics": _request_metrics(trace),
+                        "index_manifest_id": ctx.index_manifest_id or None,
+                        "index_manifest_schema_version": ctx.index_manifest_schema_version,
                     },
                 )
                 yield format_sse("done", {"type": "done", "trace_id": trace.trace_id})

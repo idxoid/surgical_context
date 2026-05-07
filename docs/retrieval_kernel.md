@@ -77,12 +77,13 @@ Optional later: **HistoryProvider** (SQLite sessions). Defaults stay Neo4j + Lan
 ## Migration order (agreed)
 
 1. **RetrievalTrace** in prompt contract + schema version (**done**).
-2. Protocols + fake providers + narrow contract tests (**done**): `sidecar/retrieval/protocols.py`, `fakes.py`, `tests/unit/test_retrieval_protocols.py`. Production `VectorSearcher` satisfies `VectorSearchProvider`; Arbitrator still wires concrete clients — adapter injection comes next.
-3. Physical package `sidecar/retrieval/` as imports move from `context/ranker` without behavior change.
-4. Mandatory manifest written by indexer; sidecar reads by `workspace_id`.
-5. Mechanism packs after trace + providers stabilize.
+2. Protocols + fake providers + narrow contract tests (**done**): `sidecar/retrieval/protocols.py`, `fakes.py`, `tests/unit/test_retrieval_protocols.py`. Production `VectorSearcher` satisfies `VectorSearchProvider`. **Optional DI on `ContextArbitrator`** (**done**): keyword-only `vector_search=` (`VectorSearchProvider`) and `workspace_meta=` (`WorkspaceMetaProvider`); defaults unchanged. **`Neo4jWorkspaceMetaAdapter`** in `sidecar/retrieval/adapters.py` implements workspace meta from Neo4j. HTTP sidecar wires both explicitly via `_context_arbitrator()` (`vector_search=VectorSearcher(vector_db)`, `workspace_meta=neo4j_workspace_meta(db)`).
+3. **Stable retrieval package surface** (**done**): `sidecar/retrieval/` exposes trace, protocols, fakes, manifest, adapters, and `neo4j_workspace_meta`; ranker modules remain under `sidecar/context/ranker/` until a deliberate move. Sidecar HTTP (`sidecar/main.py`) installs `sidecar.silence` **before** importing `LanceDBClient` so HF/CUDA stderr noise matches indexer pipelines.
+4. **Mandatory manifest** written by indexer; sidecar reads by `workspace_id` (**done**): `sidecar/retrieval/manifest.py` (`INDEX_MANIFEST_SCHEMA_VERSION`), persisted after `run_fast_indexing` to `{project}/.surgical_context/index_manifest.json` and `Workspace.index_manifest_json` in Neo4j; HTTP `GET /index/manifest` with `X-Workspace`.
+5. **Mechanism packs** — declarative YAML overlays (**foundation done**): `sidecar/context/mechanism_packs/loader.py` loads `MECHANISM_PACK_PATH` (``os.pathsep``-separated) plus `bundled/default.yaml`; merged into `preloaded_mechanism_catalog_extensions()` (with built-in `auto:registration_flow` backfill). Role names are taxonomy strings, not cluster ids.
 
 ## Implementation notes
 
 - **Trace schema**: `sidecar.retrieval.trace.RETRIEVAL_TRACE_SCHEMA_VERSION` — bump when fields change; clients may rely on shape for dashboards and benchmarks.
-- **PromptContext**: `retrieval_trace` dict mirrors trace for JSON export (`to_dict`).
+- **Manifest schema**: `sidecar.retrieval.manifest.INDEX_MANIFEST_SCHEMA_VERSION` — bump when manifest fields change.
+- **PromptContext**: `retrieval_trace` dict mirrors trace for JSON export (`to_dict`). **`metadata.index_manifest_id`** / **`index_manifest_schema_version`** when Neo4j holds an index manifest. HTTP: **`/ask`** and **`/ask/stream`** (SSE `context` event) include the same ids at top level; **`/search/unified`** returns `index_manifest_*` plus optional **`retrieval_trace`** when `include_graph` + `symbol` ran the arbitrator.

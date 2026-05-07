@@ -174,6 +174,67 @@ class Neo4jClient:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def get_workspace_graph_version(
+        self,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> int | None:
+        """Return Workspace.graph_version, or None if the node is missing."""
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                RETURN coalesce(w.graph_version, 0) AS gv
+                """,
+                workspace_id=workspace_id,
+            ).single()
+        if not row:
+            return None
+        return int(row["gv"])
+
+    def save_index_manifest(
+        self,
+        manifest: dict,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> None:
+        """Persist index manifest JSON on the Workspace node (retrieval reproducibility)."""
+        payload = json.dumps(manifest, sort_keys=True)
+        schema_version = int(manifest.get("manifest_schema_version", 1))
+        with self.driver.session() as session:
+            session.run(
+                """
+                MERGE (w:Workspace {id: $workspace_id})
+                SET w.index_manifest_json = $manifest_json,
+                    w.index_manifest_schema_version = $schema_version,
+                    w.index_manifest_updated_at = timestamp(),
+                    w.index_manifest_id = $manifest_id
+                """,
+                workspace_id=workspace_id,
+                manifest_json=payload,
+                schema_version=schema_version,
+                manifest_id=str(manifest.get("manifest_id", "")),
+            )
+
+    def get_index_manifest(
+        self,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> dict | None:
+        """Load index manifest from the Workspace node."""
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                RETURN w.index_manifest_json AS manifest_json
+                """,
+                workspace_id=workspace_id,
+            ).single()
+        if not row or not row["manifest_json"]:
+            return None
+        try:
+            payload = json.loads(row["manifest_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def prune_symbols_for_file(
         self,
         file_path: str,

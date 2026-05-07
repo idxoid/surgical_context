@@ -73,6 +73,8 @@ class PromptContext:
     feedback_token: str = ""
     ranker_state: dict[str, Any] = field(default_factory=dict)
     retrieval_trace: dict[str, Any] = field(default_factory=dict)
+    index_manifest_id: str = ""
+    index_manifest_schema_version: int | None = None
 
     def to_system_prompt(self) -> str:
         """Render to the flat text format the LLM receives."""
@@ -136,6 +138,8 @@ class PromptContext:
                 "pruning_reasons": pruning_reasons,
                 "ranker": ranker_state,
                 "retrieval_trace": self.retrieval_trace,
+                "index_manifest_id": self.index_manifest_id or None,
+                "index_manifest_schema_version": self.index_manifest_schema_version,
                 "assembly": {
                     "trace_id": self.trace_id,
                     "workspace_id": self.workspace_id,

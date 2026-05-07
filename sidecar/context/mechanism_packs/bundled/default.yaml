@@ -1,0 +1,18 @@
+# Bundled mechanism pack (optional). Override via MECHANISM_PACK_PATH (os.pathsep-separated).
+# Use taxonomy role names from Pass 1 (e.g. api_surface), never numeric cluster ids.
+#
+# mechanism_required_roles:
+#   example_mechanism:
+#     - api_surface
+#     - runtime_surface
+#
+# mechanism_role_backfill:
+#   example_mechanism:
+#     api_surface:
+#       - name: ExampleSymbol
+#         path_hint: /src
+#         priority: 0.9
+
+mechanism_required_roles: {}
+
+mechanism_role_backfill: {}

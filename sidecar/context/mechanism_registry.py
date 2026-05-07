@@ -9,14 +9,16 @@ or future mining — not from bundled hardcoded rules.
 ``pick_mechanism_by_role_overlap`` scores only mechanisms listed in the catalog
 (or any future built-ins added back without framework literals).
 
-See ``docs/spec_indexer.md`` Pass 1 / catalog merge.
+See ``docs/spec_indexer.md`` Pass 1 / catalog merge. Optional YAML packs: ``MECHANISM_PACK_PATH``, ``sidecar/context/mechanism_packs/bundled/default.yaml``.
 """
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Collection, Mapping
 from typing import Any
 
+from sidecar.context.mechanism_packs.loader import merge_into_base_extensions
 from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.context.types import SubgraphNode
 
@@ -161,12 +163,20 @@ def known_mechanisms(*, role_catalog: Mapping[str, Any] | None = None) -> tuple[
     return tuple(sorted(keys))
 
 
-def preloaded_mechanism_catalog_extensions() -> dict[str, Any]:
-    """JSON-friendly mechanism profiles for ``role_catalog_json`` (empty by default)."""
+def _builtin_mechanism_catalog_extensions() -> dict[str, Any]:
+    """Built-in mechanism rows merged into persisted ``role_catalog_json``."""
+    req = {k: list(v) for k, v in _REQUIRED_ROLES.items()}
+    bf = copy.deepcopy(_ROLE_BACKFILL_SPECS)
     return {
-        ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY: {},
-        ROLE_CATALOG_MECHANISM_BACKFILL_KEY: {},
+        ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY: req,
+        ROLE_CATALOG_MECHANISM_BACKFILL_KEY: bf,
     }
+
+
+def preloaded_mechanism_catalog_extensions() -> dict[str, Any]:
+    """JSON-friendly mechanism profiles: builtins + optional YAML packs (``MECHANISM_PACK_PATH``)."""
+    base = _builtin_mechanism_catalog_extensions()
+    return merge_into_base_extensions(base)
 
 
 def merge_preloaded_mechanisms_into_role_catalog(catalog_dict: dict[str, Any]) -> dict[str, Any]:

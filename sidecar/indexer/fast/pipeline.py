@@ -49,6 +49,7 @@ from sidecar.indexer.repository_profile import (
     build_repository_profile,
     summarize_repository_profile,
 )
+from sidecar.retrieval.manifest import persist_index_manifest
 from sidecar.silence import install as _silence
 from sidecar.workspace import WorkspaceResolver
 
@@ -513,6 +514,13 @@ def run_fast_indexing(
                 db,
                 workspace_id,
             )
+            persist_index_manifest(
+                stats=stats,
+                db=db,
+                workspace_id=workspace_id,
+                project_path=project_path,
+                outcome="no_indexable_files",
+            )
             print(f"❌ No indexable files under {project_path}")
             return stats
 
@@ -550,6 +558,13 @@ def run_fast_indexing(
                 )
             print(f"   readiness={summarize_repository_profile(stats['repository_profile'])}")
             print("✅ All files up-to-date, nothing to re-index.")
+            persist_index_manifest(
+                stats=stats,
+                db=db,
+                workspace_id=workspace_id,
+                project_path=project_path,
+                outcome="noop_unchanged",
+            )
             return stats
         print(f"🔄 {len(changed_files)}/{len(files)} files changed")
 
@@ -656,6 +671,13 @@ def run_fast_indexing(
             ),
             db,
             workspace_id,
+        )
+        persist_index_manifest(
+            stats=stats,
+            db=db,
+            workspace_id=workspace_id,
+            project_path=project_path,
+            outcome="full_index",
         )
 
     finally:

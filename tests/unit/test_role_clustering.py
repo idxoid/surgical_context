@@ -512,5 +512,6 @@ def test_role_catalog_payload_includes_preloaded_mechanism_profiles():
     assert ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY in merged
     assert ROLE_CATALOG_MECHANISM_BACKFILL_KEY in merged
     assert merged[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY] == {}
+    assert merged[ROLE_CATALOG_MECHANISM_BACKFILL_KEY].get("auto:registration_flow")
 
     json.dumps(merged, sort_keys=True)
