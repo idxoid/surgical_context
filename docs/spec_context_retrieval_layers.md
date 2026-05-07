@@ -7,7 +7,7 @@ Draft — design contract. Implementation today is split across the indexer, `fr
 ## Recent implementation notes (2026-05-05)
 
 - **Layer 2 gate tightened:** `call_argument_link` rules can now require a resolved callee namespace prefix (e.g. `fastapi.*.Depends`) before emitting `SEMANTIC_HINT`; this avoids local-name collisions from unrelated `Depends(...)`.
-- **Parser support generalized:** `sidecar/parser/qualified_import_roots.yaml` now controls per-language external import roots that still produce alias→qualified bindings (used by Python today; intended for C/C++/C# adapters too).
+- **Parser support generalized:** Python now keeps alias→qualified bindings for import call-sites generically, while `extract_imports()` still filters stdlib/third-party file import edges from the graph.
 - **Layer 4 trace fallback strengthened:** trace mode now seats recovery anchors from imported modules, runtime-name seeds, and sibling-directory expansion when import topology is sparse, with explicit provenance (e.g. `recovery:import-module-trace`).
 - **Benchmark UX:** workspace-mode negative lookups (expected absent symbols) are printed as correct rejection instead of raw "not found" error text.
 
@@ -16,7 +16,7 @@ Draft — design contract. Implementation today is split across the indexer, `fr
 ### ✅ Implemented in current branch
 
 - Layer-2 qualified-callee safety gate for DI-like hint rules.
-- Per-language qualified import roots config (`sidecar/parser/qualified_import_roots.yaml`) with Python wired in.
+- Generic Python import call-site qualification, independent of a framework/root whitelist.
 - Layer-4 trace recovery hardening for sparse import topology:
   - import/module recovery rows
   - runtime symbol seed rows

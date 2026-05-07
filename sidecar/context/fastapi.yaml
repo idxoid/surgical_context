@@ -2,8 +2,7 @@
 # types/subtypes (e.g. call_argument_link + dependency_injection), not framework yaml.
 #
 # require_callee_qualified_prefix: only emit hints when the Python extractor bound the
-# call to fastapi.*.Depends. ``fastapi`` is listed under ``python:`` in
-# sidecar/parser/qualified_import_roots.yaml (shared with other languages).
+# call to fastapi.*.Depends through generic import call-site qualification.
 framework: fastapi
 rules:
   - id: fastapi_depends

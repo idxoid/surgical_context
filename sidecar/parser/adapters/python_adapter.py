@@ -7,7 +7,6 @@ from tree_sitter import Query
 
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
-from sidecar.parser.qualified_import_roots import get_qualified_import_roots
 from sidecar.parser.uid import (
     compute_uid,
     module_name_from_path,
@@ -354,17 +353,11 @@ class PythonAdapter(TreeSitterAdapter):
         module = module_name_from_path(file_path)
         package = module.rsplit(".", 1)[0] if "." in module else ""
         bindings: dict[str, str] = {}
-        qualify_roots = get_qualified_import_roots(self.language_name)
         for line in source_code.splitlines():
             stripped = line.strip()
             from_match = re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", stripped)
             if from_match:
                 import_module, names = from_match.groups()
-                top = import_module.lstrip(".").split(".")[0]
-                if self._is_external(import_module.lstrip("."), file_path=file_path) and (
-                    top not in qualify_roots
-                ):
-                    continue
                 target_module = self._resolve_import_module(import_module, package)
                 for item in names.split(","):
                     item = item.strip()
@@ -381,11 +374,7 @@ class PythonAdapter(TreeSitterAdapter):
                     item = item.strip()
                     original, _, alias = item.partition(" as ")
                     target_module = original.strip()
-                    top = target_module.split(".")[0] if target_module else ""
-                    if not target_module or (
-                        self._is_external(target_module, file_path=file_path)
-                        and top not in qualify_roots
-                    ):
+                    if not target_module:
                         continue
                     local_name = alias.strip() or target_module.split(".")[0]
                     bindings[local_name] = target_module
