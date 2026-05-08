@@ -58,7 +58,7 @@ repositories:
     repo_url: https://github.com/expressjs/express
     docs_url: https://expressjs.com/
     language: javascript
-    rationale: "Lightweight Node.js HTTP framework with middleware, routing, and request/response chains—good for testing minimal-core patterns and middleware interactions."
+    rationale: "Lightweight Node.js HTTP framework with app/request/response facades and routing/middleware delegation to the external router package—good for testing minimal-core patterns and package-boundary interactions."
 
   - id: nestjs
     name: NestJS
@@ -531,40 +531,40 @@ questions:
     repo: express
     core12: true
     symbol: app
-    question: "How does Express routing dispatch a request through matched handlers?"
+    question: "How does Express create an app and delegate request handling to its router?"
     difficulty: medium
     intent: trace_dependency
     expected_mode: symbol
     mechanism: express_routing_dispatch
     required_roles: [public_entrypoint, route_matcher, handler_executor, middleware_chain]
-    expected_symbols: [app, use, listen, handle]
-    expected_files: [lib/express.js, lib/router/index.js]
+    expected_symbols: [createApplication, app, handle, router]
+    expected_files: [lib/express.js, lib/application.js]
 
   - id: express_q02
     repo: express
     core12: true
-    symbol: middleware
-    question: "How does Express execute middleware in sequence and pass control with next()?"
+    symbol: use
+    question: "How does Express register middleware with app.use() and delegate sequence execution to the router package?"
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
     mechanism: express_middleware_execution
     required_roles: [public_entrypoint, middleware_registry, handler_executor, control_flow]
-    expected_symbols: [use, next, handle, apply]
-    expected_files: [lib/router/index.js, lib/middleware]
+    expected_symbols: [use, router, handle, next]
+    expected_files: [lib/application.js]
 
   - id: express_q03
     repo: express
     core12: true
     symbol: Router
-    question: "How does Express Router enable modular route definitions and sub-applications?"
+    question: "How does Express expose Router and mount sub-applications through app.use()?"
     difficulty: medium
     intent: explain_behavior
     expected_mode: symbol
     mechanism: express_router_composition
     required_roles: [public_entrypoint, route_builder, composition_pattern, mounting]
     expected_symbols: [Router, use, mount]
-    expected_files: [lib/router/index.js, lib/express.js]
+    expected_files: [lib/express.js, lib/application.js]
 
   - id: express_q04
     repo: express
