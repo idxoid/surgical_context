@@ -18,6 +18,40 @@ So the document's main lesson still stands:
 
 **do not tune by pass rate alone; classify failures into graph-structure gaps, doc-link gaps, and ranking noise.**
 
+### Latest Real-Repo Run
+
+Last local run: 2026-05-08, all repositories from
+`tests/fixtures/real_repo_question_pack.yaml`, using `--no-index` against the
+current local indexes.
+
+| Repo | Questions | Precision@5 | File Recall | Role Recall | Tokens | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| FastAPI | 8/8 | 0.11 | 0.75 | 1.00 | 24,950 | impact `fastapi_q06`: p=0.12, file=1.00, `impact_context_complete` |
+| Pydantic | 8/8 | 0.05 | 0.88 | 1.00 | 26,026 | impact `pydantic_q06`: p=0.12, file=1.00, `impact_context_complete` |
+| Redux Toolkit | 8/8 | 0.08 | 0.81 | 1.00 | 14,544 | impact `rtk_q05`: p=0.11, file=1.00, `context_complete_below_floor` |
+| Django | 5/5 | 0.06 | 0.80 | 1.00 | 14,887 | impact `django_q05`: p=0.05, file=1.00, `pool_exhausted` |
+| Flask | 5/5 | 0.08 | 1.00 | 1.00 | 12,696 | impact `flask_q05`: p=0.05, file=1.00, `expansion_no_progress` |
+| Express | 4/4 | 0.29 | 1.00 | 1.00 | 3,860 | - |
+| NestJS | 4/4 | 0.09 | 0.88 | 1.00 | 10,776 | - |
+| SQLAlchemy | 4/4 | 0.05 | 0.88 | 1.00 | 11,316 | - |
+| Vue | 4/4 | 0.04 | 1.00 | 1.00 | 19,720 | - |
+| **Total** | **50/50** | - | - | - | **138,775** | all repos green with `--no-index` |
+
+Impact-analysis detail from the same run:
+
+| Repo | Question | Precision | File Recall | Tokens | Stop Reason | Missing Expected Symbols |
+|---|---|---:|---:|---:|---|---|
+| FastAPI | `fastapi_q06` / `serialize_response` | 0.12 | 1.00 | 2,250 | `impact_context_complete` | `APIRoute`, `response_model` |
+| Pydantic | `pydantic_q06` / `Field` | 0.12 | 1.00 | 4,299 | `impact_context_complete` | - |
+| Redux Toolkit | `rtk_q05` / `createSlice` | 0.11 | 1.00 | 2,220 | `context_complete_below_floor` | - |
+| Django | `django_q05` / `Model` | 0.05 | 1.00 | 2,563 | `pool_exhausted` | `DeferredAttribute`, `Field` |
+| Flask | `flask_q05` / `Flask` | 0.05 | 1.00 | 2,425 | `expansion_no_progress` | `Map`, `url_map` |
+
+The pass rate is saturated, so the useful signal is now the second table:
+impact questions still expose missing expected symbols and low precision even
+when role and file gates are green. The next precision pass should therefore
+target ordering and stop conditions, not broader role recovery.
+
 ### Validity Note: Role Recall Saturation
 
 In the current real-repo benchmark snapshots, `role_recall` can become saturated:

@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.mechanism_registry import determine_preloaded_mechanism
 from sidecar.context.ranker.scoring import RankerScoring
+from sidecar.context.ranker.recovery import StructuralRecovery
 from sidecar.context.role_taxonomy import infer_supporting_roles
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
@@ -1691,6 +1692,66 @@ def test_impact_reference_terms_extract_topic_matched_target_identifiers(tmp_pat
     assert "AliasPath" in terms
     assert "AliasChoices" in terms
     assert "Field" not in terms
+
+
+def test_impact_reference_terms_include_imports_for_thin_targets(tmp_path):
+    source = tmp_path / "repo" / "packages" / "toolkit" / "src" / "createSlice.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "import type { PayloadAction } from './createAction'\n"
+        "import { createAction } from './createAction'\n\n"
+        "function buildCreateSlice() { return createAction }\n\n"
+        "export const createSlice = buildCreateSlice()\n",
+        encoding="utf-8",
+    )
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="create-slice",
+        name="createSlice",
+        file_path=str(source),
+        range=[6, 6],
+        token_estimate=8,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="variable",
+    )
+
+    terms = ranker.structural_recovery.impact_reference_terms(
+        target,
+        "If I change the generated action type format in createSlice, what breaks?",
+    )
+
+    assert "createAction" in terms
+    assert "PayloadAction" in terms
+    assert "createSlice" not in terms
+
+
+def test_trace_query_terms_expand_frontend_render_pipeline():
+    target = SubgraphNode(
+        uid="render",
+        name="render",
+        file_path="/repo/packages/runtime-dom/src/index.ts",
+        range=[96, 98],
+        token_estimate=24,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="variable",
+    )
+
+    terms = set(
+        StructuralRecovery.trace_query_terms(
+            "How does the render system compile templates and update the DOM?",
+            target,
+        )
+    )
+
+    assert {"compile", "createvnode", "patch", "renderer", "vnode"} <= terms
 
 
 def test_impact_reference_anchor_candidates_build_public_api_backfills(tmp_path):

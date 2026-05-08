@@ -289,6 +289,8 @@ class StructuralRecovery:
                     "strategies",
                 }
             )
+        if "render" in text and any(term in text for term in ("compile", "template", "dom")):
+            terms.update({"compile", "createvnode", "patch", "renderer", "vnode"})
         if "sql" in text and any(term in text for term in ("query", "statement", "execute")):
             terms.update({"select", "clause", "compile", "compiler", "statement", "sql"})
         return sorted(term for term in terms if len(term) >= 4)
@@ -400,6 +402,7 @@ class StructuralRecovery:
         OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
         WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
         WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+             size([term IN $terms WHERE toLower(s.name) = term]) AS exact_name_hits,
              size([term IN $terms WHERE toLower(s.name) CONTAINS term]) AS name_hits,
              size([term IN $terms WHERE toLower(coalesce(s.qualified_name, '')) CONTAINS term]) AS qname_hits,
              size([term IN $terms WHERE toLower(f.path) CONTAINS term]) AS path_hits
@@ -413,9 +416,9 @@ class StructuralRecovery:
                coalesce(c.range, s.range, [0, 0]) AS range,
                inbound_edges,
                outbound_edges,
-               (name_hits * 2 + qname_hits + path_hits) AS trace_anchor_score,
+               (exact_name_hits * 5 + name_hits * 2 + qname_hits + path_hits) AS trace_anchor_score,
                true AS trace_topic_anchor
-        ORDER BY (name_hits * 2 + qname_hits + path_hits) DESC,
+        ORDER BY (exact_name_hits * 5 + name_hits * 2 + qname_hits + path_hits) DESC,
                  inbound_edges + outbound_edges DESC,
                  size(file_path) ASC
         LIMIT $limit
@@ -484,7 +487,12 @@ class StructuralRecovery:
             return []
 
         start, end = (target.range or [0, 0])[:2]
-        if start and end and end >= start:
+        target_span = max(0, end - start + 1) if start and end and end >= start else 0
+        if (target.kind or "").lower() == "variable" or target_span <= 2:
+            header = "\n".join(lines[:160])
+            local = "\n".join(lines[max(0, start - 40) : min(len(lines), end + 40)]) if start else ""
+            source = "\n".join(part for part in (header, local) if part)
+        elif start and end and end >= start:
             # Keep this cheap: the target body/signature is enough to catch
             # imported public APIs without turning impact mode into a file scan.
             source = "\n".join(lines[max(0, start - 1) : min(len(lines), end, start + 260)])
