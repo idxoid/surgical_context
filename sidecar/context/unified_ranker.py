@@ -150,7 +150,7 @@ class UnifiedRanker:
         Intent.NEW_FEATURE: 2500,
         Intent.REFACTORING: 2500,
         Intent.DESIGN_QUESTION: 3500,
-        Intent.IMPACT_ANALYSIS: 3000,
+        Intent.IMPACT_ANALYSIS: 2200,
     }
 
     # Copied from GraphExpander to keep UnifiedRanker self-contained.
@@ -700,6 +700,23 @@ class UnifiedRanker:
         # 6. Mechanism-aware role backfill for sparse framework graphs.
         mechanism = self._determine_mechanism(target, query=query)
         required_roles = self._get_required_roles(mechanism, target=target)
+        if intent == Intent.IMPACT_ANALYSIS:
+            required_roles = normalize_roles(
+                [
+                    "impact_runtime",
+                    "impact_public_api",
+                    "impact_test_surface",
+                    "docs_or_concept",
+                ]
+            )
+            impact_reference_anchors = self.structural_recovery.impact_reference_anchor_candidates(
+                target,
+                query=query,
+                excluded_uids={target.uid},
+                pool=pool,
+            )
+            if impact_reference_anchors:
+                pool = self._merge_role_backfill(pool, impact_reference_anchors)
         roles_for_backfill = self._roles_needing_backfill(
             target,
             pool,
@@ -719,7 +736,9 @@ class UnifiedRanker:
                     required_roles,
                 )
         recovery_roles = (
-            required_roles if self._needs_structural_recovery(target) else roles_for_backfill
+            roles_for_backfill
+            if intent == Intent.IMPACT_ANALYSIS
+            else required_roles if self._needs_structural_recovery(target) else roles_for_backfill
         )
         if recovery_roles:
             recovery = self._generic_role_recovery_candidates(
@@ -754,6 +773,16 @@ class UnifiedRanker:
         )
         if module_composition_anchors:
             pool = self._merge_role_backfill(pool, module_composition_anchors)
+
+        if intent == Intent.IMPACT_ANALYSIS:
+            impact_topic_anchors = self.structural_recovery.impact_topic_anchor_candidates(
+                target,
+                query=query,
+                excluded_uids={target.uid},
+                pool=pool,
+            )
+            if impact_topic_anchors:
+                pool = self._merge_role_backfill(pool, impact_topic_anchors)
 
         # 7. Assign intent weights and noise factors
 
@@ -804,10 +833,39 @@ class UnifiedRanker:
         # claims the bonus and the priority lift is meaningless.
         non_trivial_required = set(required_roles) - {"docs_or_concept"}
         trace_mode_for_sort = RankerScoring.trace_dependency_gain_mode(mechanism, query)
+        trace_focus_text = f"{target.name or ''} {query or ''}".lower()
+        dependency_trace_sort = any(
+            token in trace_focus_text
+            for token in ("depend", "dependency", "dependencies", "inject", "provider", "container")
+        )
 
         def _sort_key(c: Candidate) -> tuple:
             base = self._blended(c)
             roles = set(self._roles_of(c))
+            path_lc = (c.file_path or "").lower().replace("\\", "/")
+            name_lc = f"{c.name or ''} {c.qualified_name or ''}".lower()
+            trace_name_focus = any(
+                token in name_lc
+                for token in (
+                    "depend",
+                    "dependant",
+                    "dependency",
+                    "dependencies",
+                    "inject",
+                    "provider",
+                    "container",
+                    "resolve",
+                    "solve",
+                )
+            )
+            trace_focus_rank = 0
+            if trace_mode_for_sort and dependency_trace_sort:
+                if trace_name_focus and "/dependencies/" in path_lc:
+                    trace_focus_rank = 3
+                elif trace_name_focus:
+                    trace_focus_rank = 2
+                elif "/dependencies/" in path_lc:
+                    trace_focus_rank = 1
             is_trace_topic_anchor = trace_mode_for_sort and any(
                 step == "trace-topic-anchor" for step in c.provenance
             )
@@ -815,12 +873,13 @@ class UnifiedRanker:
             # target itself doesn't cover. These must beat raw doc-relevance
             # so a large/weak role-filler still seats before unrelated docs.
             if roles & unfilled_required:
-                return (2, base)
+                return (2, trace_focus_rank, base)
             if is_trace_topic_anchor:
-                return (2.5, base)
+                trace_topic_tier = 1.5 if dependency_trace_sort else 2.5
+                return (trace_topic_tier, trace_focus_rank, base)
             if roles & non_trivial_required:
-                return (1, base)
-            return (0, base)
+                return (1, trace_focus_rank, base)
+            return (0, trace_focus_rank, base)
 
         pool.sort(key=_sort_key, reverse=True)
 
@@ -1964,6 +2023,7 @@ class UnifiedRanker:
         trace_dependency_mode = RankerScoring.trace_dependency_gain_mode(mechanism, query)
         if trace_dependency_mode and c.kind != "doc":
             path_lc = (c.file_path or "").lower().replace("\\", "/")
+            eligible_trace_breadth = c.noise_factor >= 1.0 or intent == Intent.IMPACT_ANALYSIS
             if "/dependencies/" in path_lc:
                 file_coverage_bonus += 0.14
             if any(token in path_lc for token in _HOOK_FLOW_PATH_TOKENS):
@@ -1974,7 +2034,7 @@ class UnifiedRanker:
                 file_coverage_bonus += 0.12
             if c.file_path and c.file_path != target.file_path:
                 chosen_files = {cc.file_path for cc in chosen}
-                if c.file_path not in chosen_files:
+                if c.file_path not in chosen_files and eligible_trace_breadth:
                     file_coverage_bonus += 0.22
             if c.relation in ("DEPENDS_ON", "CALLS_DIRECT", "CALLS_SCOPED", "CALLS_IMPORTED"):
                 file_coverage_bonus += 0.06

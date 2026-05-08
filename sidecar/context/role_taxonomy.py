@@ -288,7 +288,6 @@ def infer_supporting_roles(
             "vnode",
         )
         orchestration_tokens = (
-            "dep",
             "dependency",
             "effect",
             "notify",
@@ -335,5 +334,7 @@ def infer_supporting_roles(
             and "/examples/" not in lowered_path
         ):
             inferred.append("runtime_surface")
+    if (primary == "api_surface" or "api_surface" in inferred) and "/docs/" not in lowered_path:
+        inferred.append("impact_public_api")
 
     return normalize_roles(inferred)

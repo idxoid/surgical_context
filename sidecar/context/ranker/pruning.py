@@ -64,6 +64,15 @@ class BudgetPruner:
         def _is_code_file(c: Candidate) -> bool:
             return c.kind != "doc"
 
+        def _adds_trace_file_breadth(c: Candidate) -> bool:
+            return (
+                trace_mode
+                and c.kind != "doc"
+                and c.noise_factor >= 1.0
+                and (c.file_path or "")
+                and c.file_path not in chosen_files
+            )
+
         def _record_pruned(
             c: Candidate,
             reason: str,
@@ -152,10 +161,8 @@ class BudgetPruner:
             closes_missing_role = any(
                 role in required_roles and role not in fulfilled_roles for role in candidate_roles
             )
-            if trace_mode and c.kind != "doc" and (c.file_path or ""):
-                already = {x.file_path for x in chosen if x.file_path} | {target.file_path or ""}
-                if c.file_path not in already:
-                    closes_missing_role = True
+            if _adds_trace_file_breadth(c):
+                closes_missing_role = True
             if spent + potential_cost > base_budget:
                 overflow = spent + potential_cost - base_budget
                 projected_balance = budget_balance - overflow
@@ -220,12 +227,7 @@ class BudgetPruner:
             fills_role = any(
                 role in required_roles and role not in fulfilled_roles for role in candidate_roles
             )
-            adds_new_trace_file = (
-                trace_mode
-                and c.kind != "doc"
-                and (c.file_path or "")
-                and c.file_path not in chosen_files
-            )
+            adds_new_trace_file = _adds_trace_file_breadth(c)
             fills_role_or_trace = fills_role or adds_new_trace_file
             is_bridge = c.relation in (
                 "DOC_BRIDGE",
@@ -291,13 +293,14 @@ class BudgetPruner:
             is_noisy_code = c.kind != "doc" and c.noise_factor < 1.0
             if is_noisy_code:
                 if intent == Intent.IMPACT_ANALYSIS:
-                    _record_pruned(
-                        c,
-                        "impact_noise_penalty",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    continue
+                    if not fills_role:
+                        _record_pruned(
+                            c,
+                            "impact_noise_penalty",
+                            gain=gain,
+                            candidate_roles=candidate_roles,
+                        )
+                        continue
                 if not fills_role_or_trace:
                     _record_pruned(
                         c,
@@ -314,6 +317,24 @@ class BudgetPruner:
                 if code_files_chosen < min_code_files_before_docs:
                     deferred_docs.append(c)
                     continue
+
+            impact_context_complete = (
+                intent == Intent.IMPACT_ANALYSIS
+                and spent >= min_floor
+                and not missing_roles
+                and not fills_role
+                and not any(str(step).startswith("impact-") for step in c.provenance)
+            )
+            if impact_context_complete:
+                stopped_reason = "impact_context_complete"
+                _record_pruned(
+                    c,
+                    "impact_context_complete",
+                    gain=gain,
+                    candidate_roles=candidate_roles,
+                )
+                stop_index = idx
+                break
 
             if gain < min_gain:
                 # Only break if floor is met AND no required roles are missing

@@ -7,7 +7,7 @@ from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.deduplicator import ContextDeduplicator
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.intent_classifier import IntentClassifier, IntentResolution, IntentSignal
+from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentResolution, IntentSignal
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext, SubgraphNode
 from sidecar.context.unified_ranker import (
@@ -184,6 +184,13 @@ class ContextArbitrator:
 
         mechanism = ranker._determine_mechanism(target, query=question)
         required_roles = ranker._get_required_roles(mechanism)
+        if intent == Intent.IMPACT_ANALYSIS:
+            required_roles = [
+                "impact_runtime",
+                "impact_public_api",
+                "impact_test_surface",
+                "docs_or_concept",
+            ]
 
         ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
         ctx.stopped_reason = subgraph.stopped_reason

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Export Cursor agent transcripts (Composer) → Obsidian vault chats/cursor/
-# Mirror: sync_codex_obsidian.sh / sync_claude_obsidian.sh
+# Related: sync_codex_obsidian.sh, sync_claude_obsidian.sh (also in this directory)
 
 set -euo pipefail
 

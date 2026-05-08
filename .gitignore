@@ -60,3 +60,8 @@ AI_RULES.md
 CODEX.md
 AGENTS.md
 .cursor/rules/graphify.mdc
+graphify-obsidian-repo/setup.md
+graphify-obsidian-repo/scripts/sync_claude_obsidian.sh
+graphify-obsidian-repo/scripts/sync_codex_obsidian.sh
+graphify-obsidian-repo/scripts/sync_cursor_obsidian.sh
+graphify-obsidian-repo/scripts/sync_cursor_obsidian.sh

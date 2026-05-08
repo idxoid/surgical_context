@@ -141,7 +141,12 @@ class StructuralRecovery:
         edge_bonus = 0.08 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.10 * math.log1p(
             float(row.get("outbound_edges", 0) or 0)
         )
-        role = self.first_reasoning_role(required_roles)
+        trace_anchor_score = float(row.get("trace_anchor_score", 0) or 0)
+        role = (
+            self.first_reasoning_role(required_roles)
+            if trace_anchor_score > 0
+            else "supporting_surface"
+        )
         candidate = Candidate(
             kind="symbol",
             uid=str(row["uid"]),
@@ -224,7 +229,21 @@ class StructuralRecovery:
 
     @staticmethod
     def trace_query_terms(query: str, target: SubgraphNode) -> list[str]:
-        text = f"{target.name or ''} {target.file_path or ''} {query or ''}".lower()
+        path = Path((target.file_path or "").replace("\\", "/"))
+        path_terms: list[str] = []
+        file_stem = path.stem.lower()
+        generic_file_stems = {"__init__", "index", "main", "utils", "types", "models"}
+        if file_stem and file_stem not in generic_file_stems:
+            path_terms.append(file_stem)
+        parts = [part.lower() for part in path.parts if part not in {"/", ""}]
+        if len(parts) >= 2:
+            parent = parts[-2]
+            grandparent = parts[-3] if len(parts) >= 3 else ""
+            generic_dirs = {"src", "lib", "app", "apps", "packages", "pkg"}
+            if parent and parent != grandparent and parent not in generic_dirs:
+                path_terms.append(parent)
+
+        text = f"{target.name or ''} {' '.join(path_terms)} {query or ''}".lower()
         stop = {
             "before",
             "called",
@@ -412,6 +431,327 @@ class StructuralRecovery:
                         excluded_uids=list(excluded_uids),
                         noise_patterns=list(NOISE_PATH_PATTERNS),
                         limit=max_rows,
+                    )
+                )
+        except Exception:
+            return []
+
+    def impact_query_terms(self, query: str) -> list[str]:
+        terms = set(self.host.scoring.focus_query_terms(query or ""))
+        anchors: set[str] = set()
+        if terms.intersection({"route", "routes", "routing", "dispatch", "endpoint", "url"}):
+            anchors.update({"route", "routes", "router", "routing", "url", "rule", "map", "dispatch"})
+        return sorted(term for term in anchors if len(term) >= 3)
+
+    def impact_reference_terms(self, target: SubgraphNode, query: str) -> list[str]:
+        focus_terms = {
+            term.lower()
+            for term in self.host.scoring.focus_query_terms(query or "")
+            if len(term) >= 4
+        }
+        focus_terms -= {
+            "affected",
+            "affect",
+            "change",
+            "changes",
+            "code",
+            "docs",
+            "documentation",
+            "example",
+            "examples",
+            "handling",
+            "likely",
+            "mechanism",
+            "module",
+            "modules",
+            "most",
+            "suite",
+            "suites",
+            "test",
+            "tests",
+            "what",
+            "would",
+        }
+        if not focus_terms:
+            return []
+
+        path = Path(target.file_path or "")
+        if not path.is_file():
+            return []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return []
+
+        start, end = (target.range or [0, 0])[:2]
+        if start and end and end >= start:
+            # Keep this cheap: the target body/signature is enough to catch
+            # imported public APIs without turning impact mode into a file scan.
+            source = "\n".join(lines[max(0, start - 1) : min(len(lines), end, start + 260)])
+        else:
+            source = "\n".join(lines[:180])
+
+        skip = {
+            "Any",
+            "Callable",
+            "ClassVar",
+            "False",
+            "Literal",
+            "None",
+            "Self",
+            "True",
+            "TypedDict",
+            "TypeAlias",
+            "TypeVar",
+            "Unpack",
+            "annotations",
+            "args",
+            "bool",
+            "class",
+            "def",
+            "dict",
+            "float",
+            "for",
+            "if",
+            "import",
+            "int",
+            "list",
+            "none",
+            "return",
+            "self",
+            "str",
+            "tuple",
+        }
+        target_name = (target.name or "").lower()
+        names: list[str] = []
+        seen: set[str] = set()
+        for identifier in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source):
+            ident_lc = identifier.lower()
+            if (
+                identifier in skip
+                or ident_lc in skip
+                or ident_lc == target_name
+                or identifier.startswith("__")
+                or len(identifier) < 3
+            ):
+                continue
+            if not any(term in ident_lc or ident_lc in term for term in focus_terms):
+                continue
+            if identifier not in seen:
+                seen.add(identifier)
+                names.append(identifier)
+        return names[:32]
+
+    def impact_reference_anchor_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        query: str,
+        excluded_uids: set[str],
+        pool: list[Candidate],
+        limit: int = 16,
+    ) -> list[Candidate]:
+        names = self.impact_reference_terms(target, query)
+        if not names:
+            return []
+        rows = self.impact_reference_symbol_rows(
+            target,
+            names=names,
+            excluded_uids={*excluded_uids, *(c.uid for c in pool if c.uid)},
+            limit=limit,
+        )
+        name_order = {name: idx for idx, name in enumerate(names)}
+        out: list[Candidate] = []
+        for row in rows:
+            raw_token_cost = int(row.get("token_estimate") or 0) or self.host._estimate_tokens_range(
+                row.get("range") or [0, 0]
+            )
+            name = row.get("name") or ""
+            edge_bonus = 0.06 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.08 * math.log1p(
+                float(row.get("outbound_edges", 0) or 0)
+            )
+            order_bonus = max(0.0, 0.16 - 0.01 * name_order.get(name, len(name_order)))
+            candidate = Candidate(
+                kind="symbol",
+                uid=str(row["uid"]),
+                token_cost=min(raw_token_cost, 160),
+                graph_score=1.35 + order_bonus + edge_bonus,
+                semantic_score=0.45,
+                name=name,
+                file_path=row.get("file_path") or "",
+                range=row.get("range") or [0, 0],
+                render_mode="signature_only",
+                relation="ROLE_BACKFILL",
+                direction="impact",
+                depth=1,
+                file_hash=row.get("file_hash") or "",
+                evidence_role="impact_public_api",
+                supporting_roles=["impact_runtime"],
+                provenance=["impact-reference-anchor"],
+            )
+            candidate.symbol_kind = row.get("symbol_kind", "")
+            candidate.qualified_name = row.get("qualified_name", "")
+            out.append(candidate)
+        return out
+
+    def impact_reference_symbol_rows(
+        self,
+        target: SubgraphNode,
+        *,
+        names: list[str],
+        excluded_uids: set[str],
+        limit: int,
+    ) -> list[dict]:
+        scope_prefixes = self.source_scope_prefixes(target.file_path or "")
+        if not names or not scope_prefixes:
+            return []
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+          AND any(prefix IN $scope_prefixes WHERE f.path STARTS WITH prefix)
+          AND NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
+          AND s.name IN $names
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               count(DISTINCT or) AS outbound_edges
+        ORDER BY inbound_edges + outbound_edges DESC,
+                 size(file_path) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        names=names,
+                        scope_prefixes=scope_prefixes,
+                        excluded_uids=list(excluded_uids),
+                        noise_patterns=list(NOISE_PATH_PATTERNS),
+                        limit=limit,
+                    )
+                )
+        except Exception:
+            return []
+
+    def impact_topic_anchor_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        query: str,
+        excluded_uids: set[str],
+        pool: list[Candidate],
+        limit: int = 24,
+    ) -> list[Candidate]:
+        terms = self.impact_query_terms(query)
+        if not terms:
+            return []
+        rows = self.impact_topic_symbol_rows(
+            target,
+            terms=terms,
+            excluded_uids={*excluded_uids, *(c.uid for c in pool if c.uid)},
+            limit=limit,
+        )
+        out: list[Candidate] = []
+        for row in rows:
+            raw_token_cost = int(row.get("token_estimate") or 0) or self.host._estimate_tokens_range(
+                row.get("range") or [0, 0]
+            )
+            anchor_score = float(row.get("impact_anchor_score", 0) or 0)
+            edge_bonus = 0.06 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.08 * math.log1p(
+                float(row.get("outbound_edges", 0) or 0)
+            )
+            candidate = Candidate(
+                kind="symbol",
+                uid=str(row["uid"]),
+                token_cost=min(raw_token_cost, 160),
+                graph_score=1.05 + min(0.8, anchor_score * 0.08) + edge_bonus,
+                semantic_score=0.35,
+                name=row.get("name") or "",
+                file_path=row.get("file_path") or "",
+                range=row.get("range") or [0, 0],
+                render_mode="signature_only",
+                relation="ROLE_BACKFILL",
+                direction="impact",
+                depth=2,
+                file_hash=row.get("file_hash") or "",
+                evidence_role="impact_public_api",
+                supporting_roles=["impact_runtime"],
+                provenance=["impact-topic-anchor"],
+            )
+            candidate.symbol_kind = row.get("symbol_kind", "")
+            candidate.qualified_name = row.get("qualified_name", "")
+            out.append(candidate)
+        return out
+
+    def impact_topic_symbol_rows(
+        self,
+        target: SubgraphNode,
+        *,
+        terms: list[str],
+        excluded_uids: set[str],
+        limit: int,
+    ) -> list[dict]:
+        scope_prefixes = self.source_scope_prefixes(target.file_path or "")
+        if not terms or not scope_prefixes:
+            return []
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+          AND any(prefix IN $scope_prefixes WHERE f.path STARTS WITH prefix)
+          AND NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
+          AND any(term IN $terms
+            WHERE toLower(s.name) CONTAINS term
+               OR toLower(coalesce(s.qualified_name, '')) CONTAINS term
+               OR toLower(f.path) CONTAINS term)
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+             size([term IN $terms WHERE toLower(s.name) CONTAINS term]) AS name_hits,
+             size([term IN $terms WHERE toLower(coalesce(s.qualified_name, '')) CONTAINS term]) AS qname_hits,
+             size([term IN $terms WHERE toLower(f.path) CONTAINS term]) AS path_hits
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               outbound_edges,
+               (name_hits * 2 + qname_hits + path_hits) AS impact_anchor_score
+        ORDER BY (name_hits * 2 + qname_hits + path_hits) DESC,
+                 inbound_edges + outbound_edges DESC,
+                 size(file_path) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        terms=terms,
+                        scope_prefixes=scope_prefixes,
+                        excluded_uids=list(excluded_uids),
+                        noise_patterns=list(NOISE_PATH_PATTERNS),
+                        limit=limit,
                     )
                 )
         except Exception:
@@ -1230,9 +1570,11 @@ class StructuralRecovery:
         name = (row.get("name") or "").lower()
         qualified = (row.get("qualified_name") or "").lower()
         file_path = (row.get("file_path") or "").lower()
-        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        haystack = " ".join([name, qualified, file_path, target_ctx])
-        token_hit = any(token in haystack for token in API_SIGNAL_TOKENS)
+        haystack = " ".join([name, qualified, file_path])
+        token_hit = any(
+            token in haystack for token in API_SIGNAL_TOKENS if token != "api"
+        ) or bool(re.search(r"(^|[^a-z])api([^a-z]|$)", haystack))
+        token_hit = token_hit or "openapi" in haystack
         edge_hint = float(row.get("outbound_edges", 0) or 0) >= 1.0
         reg_hint = (
             registration_flow_context
@@ -1256,7 +1598,7 @@ class StructuralRecovery:
         qualified = (row.get("qualified_name") or "").lower()
         file_path = (row.get("file_path") or "").lower()
         target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        haystack = " ".join([name, qualified, file_path, target_ctx])
+        haystack = " ".join([name, qualified, file_path])
         token_hit = any(token in haystack for token in REPRESENTATION_SIGNAL_TOKENS)
         path_hit = any(token in file_path for token in REPRESENTATION_SIGNAL_PATH_TOKENS)
         target_dep_like = any(token in target_ctx for token in ("depend", "dependency", "param"))
@@ -1292,8 +1634,7 @@ class StructuralRecovery:
         name = (row.get("name") or "").lower()
         qualified = (row.get("qualified_name") or "").lower()
         file_path = (row.get("file_path") or "").lower()
-        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
-        haystack = " ".join([name, qualified, file_path, target_ctx])
+        haystack = " ".join([name, qualified, file_path])
         token_hit = any(token in haystack for token in RUNTIME_SIGNAL_TOKENS)
         edge_hint = (
             float(row.get("outbound_edges", 0) or 0) >= 1.0

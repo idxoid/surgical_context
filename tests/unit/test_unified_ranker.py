@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.mechanism_registry import determine_preloaded_mechanism
 from sidecar.context.ranker.scoring import RankerScoring
+from sidecar.context.role_taxonomy import infer_supporting_roles
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
     _NOISE_FACTOR,
@@ -429,6 +430,16 @@ def test_capability_roles_add_generic_impact_runtime_and_test_surfaces():
 
     assert "impact_runtime" in ranker._roles_of(runtime_symbol)
     assert "impact_test_surface" in ranker._roles_of(test_symbol)
+    assert "impact_public_api" in ranker._roles_of(
+        Candidate(
+            kind="symbol",
+            uid="field-api",
+            name="Field",
+            file_path="/repo/pydantic/fields.py",
+            token_cost=80,
+            evidence_role="api_surface",
+        )
+    )
 
 
 def test_role_backfill_reads_specs_from_catalog_overlay():
@@ -894,6 +905,17 @@ def test_low_signal_virtual_and_fixture_paths_are_noisy():
     )
 
 
+def test_short_dep_substring_does_not_infer_orchestrator_role():
+    roles = infer_supporting_roles(
+        file_path="/repo/fastapi/exceptions.py",
+        primary_role="supporting_surface",
+        name="FastAPIDeprecationWarning",
+        kind="class",
+    )
+
+    assert "orchestrator" not in roles
+
+
 def test_editorial_docs_get_downranked_relative_to_mechanism_docs():
     assert (
         compute_noise_factor(
@@ -1164,6 +1186,100 @@ def test_trace_dependency_runtime_symbol_rows_skipped_without_marker_terms():
         kind="class",
     )
     assert ranker._trace_dependency_runtime_symbol_rows(target, excluded_uids=set()) == []
+
+
+def test_trace_query_terms_skip_package_root_names():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="depends",
+        name="Depends",
+        file_path="/repo/fastapi/fastapi/param_functions.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    terms = ranker.structural_recovery.trace_query_terms(
+        "How does dependency injection get resolved before the endpoint function is called?",
+        target,
+    )
+
+    assert "fastapi" not in terms
+    assert "dependency" in terms
+    assert "param_functions" in terms
+
+
+def test_trace_topic_anchor_sorts_below_required_role_filler():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    ranker.strategy_profile = {
+        "role_plan": ["orchestrator"],
+        "mechanism_archetypes": [
+            {
+                "type": "dependency_injection",
+                "strategy": "dependency_resolution_trace",
+                "role_plan": ["orchestrator"],
+                "evidence": ["dependency"],
+            }
+        ],
+    }
+    target = SubgraphNode(
+        uid="depends",
+        name="Depends",
+        file_path="/repo/fastapi/param_functions.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    topic_anchor = Candidate(
+        uid="endpoint-context",
+        name="_format_endpoint_context",
+        kind="symbol",
+        file_path="/repo/fastapi/exceptions.py",
+        token_cost=80,
+        graph_score=0.9,
+        semantic_score=0.8,
+        relation="ROLE_BACKFILL",
+        provenance=["trace-topic-anchor"],
+    )
+    role_filler = Candidate(
+        uid="get-dependant",
+        name="get_dependant",
+        kind="symbol",
+        file_path="/repo/fastapi/dependencies/utils.py",
+        token_cost=80,
+        graph_score=0.4,
+        semantic_score=0.2,
+        relation="ROLE_BACKFILL",
+        evidence_role="orchestrator",
+        provenance=["import_module_trace-backfill:orchestrator"],
+    )
+
+    ranker._graph_candidates = lambda *a, **kw: [topic_anchor, role_filler]
+    ranker._doc_candidates = lambda *a, **kw: []
+    ranker._sym_vec_candidates = lambda *a, **kw: []
+    ranker._doc_bridge_candidates = lambda *a, **kw: []
+    ranker._trace_dependency_import_anchor_candidates = lambda *a, **kw: []
+
+    chosen, _, _, _, _ = ranker.rank(
+        target,
+        "How does dependency injection get resolved?",
+        Intent.EXPLORATION,
+        budget=1000,
+    )
+
+    assert chosen[0].uid == "get-dependant"
 
 
 def test_structural_mechanism_dispatch_when_preloaded_rules_miss():
@@ -1496,6 +1612,140 @@ def test_docs_not_deferred_for_impact_analysis():
     assert chosen_doc_count >= 1, "IMPACT_ANALYSIS should still admit docs without deferral"
 
 
+def test_impact_analysis_seats_test_surface_even_when_topic_noise_is_low():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="flask",
+        name="Flask",
+        file_path="/repo/src/flask/app.py",
+        range=[1, 20],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    test_candidate = Candidate(
+        kind="symbol",
+        uid="test-appctx",
+        name="test_request_context_means_app_context",
+        file_path="/repo/tests/test_appctx.py",
+        token_cost=80,
+        graph_score=0.4,
+        semantic_score=0.7,
+        relation="CALLS_IMPORTED",
+        depth=1,
+    )
+
+    ranker._graph_candidates = lambda *a, **kw: [test_candidate]
+    ranker._doc_candidates = lambda *a, **kw: []
+    ranker._sym_vec_candidates = lambda *a, **kw: []
+    ranker._doc_bridge_candidates = lambda *a, **kw: []
+
+    chosen, _, _, pruned, missing_roles = ranker.rank(
+        target,
+        "If routing dispatch changes, what test suites are affected?",
+        Intent.IMPACT_ANALYSIS,
+        budget=700,
+    )
+
+    assert chosen[0].uid == "test-appctx"
+    assert "impact_test_surface" not in missing_roles
+    assert all(item["uid"] != "test-appctx" for item in pruned)
+
+
+def test_impact_reference_terms_extract_topic_matched_target_identifiers(tmp_path):
+    source = tmp_path / "repo" / "pydantic" / "fields.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from .aliases import AliasChoices, AliasPath\n\n"
+        "def Field(validation_alias: str | AliasPath | AliasChoices | None = None):\n"
+        "    if not isinstance(validation_alias, (str, AliasChoices, AliasPath)):\n"
+        "        raise TypeError('bad alias')\n",
+        encoding="utf-8",
+    )
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="field",
+        name="Field",
+        file_path=str(source),
+        range=[3, 5],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    terms = ranker.structural_recovery.impact_reference_terms(
+        target,
+        "If alias handling changes, what modules, docs, and tests are affected?",
+    )
+
+    assert "AliasPath" in terms
+    assert "AliasChoices" in terms
+    assert "Field" not in terms
+
+
+def test_impact_reference_anchor_candidates_build_public_api_backfills(tmp_path):
+    source = tmp_path / "repo" / "pydantic" / "fields.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "from .aliases import AliasChoices, AliasPath\n\n"
+        "def Field(validation_alias: str | AliasPath | AliasChoices | None = None):\n"
+        "    return validation_alias\n",
+        encoding="utf-8",
+    )
+    rows = [
+        {
+            "uid": "alias-path",
+            "name": "AliasPath",
+            "symbol_kind": "class",
+            "token_estimate": 140,
+            "qualified_name": "pydantic.aliases.AliasPath",
+            "file_path": str(source.parent / "aliases.py"),
+            "file_hash": "h1",
+            "range": [1, 20],
+            "inbound_edges": 4,
+            "outbound_edges": 2,
+        }
+    ]
+    ranker = UnifiedRanker(
+        _make_backfill_db(rows),
+        VectorSearcher(_FakeVector()),
+        workspace_id="local/test@main",
+    )
+    target = SubgraphNode(
+        uid="field",
+        name="Field",
+        file_path=str(source),
+        range=[3, 4],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    candidates = ranker.structural_recovery.impact_reference_anchor_candidates(
+        target,
+        query="If alias handling changes, what modules, docs, and tests are affected?",
+        excluded_uids={target.uid},
+        pool=[],
+    )
+
+    assert [candidate.name for candidate in candidates] == ["AliasPath"]
+    assert candidates[0].evidence_role == "impact_public_api"
+    assert "impact-reference-anchor" in candidates[0].provenance
+
+
 def test_filesystem_import_recovery_resolves_relative_typescript_imports(tmp_path):
     repo = tmp_path / "repo" / "packages" / "toolkit" / "src"
     repo.mkdir(parents=True)
@@ -1669,6 +1919,45 @@ def test_dependency_recovery_promotes_config_and_orchestrator_roles():
     }
 
 
+def test_dependency_recovery_does_not_let_target_terms_promote_unrelated_rows():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="dependency-marker",
+        name="Depends",
+        file_path="/repo/fastapi/param_functions.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    row = {
+        "uid": "unrelated-warning",
+        "name": "FastAPIDeprecationWarning",
+        "symbol_kind": "class",
+        "token_estimate": 120,
+        "qualified_name": "fastapi.exceptions.FastAPIDeprecationWarning",
+        "file_path": "/repo/fastapi/exceptions.py",
+        "file_hash": "h1",
+        "range": [10, 40],
+        "inbound_edges": 5,
+        "outbound_edges": 2,
+    }
+
+    candidate = ranker._recovery_candidate_from_row(
+        row,
+        origin="import_module_trace",
+        scoped_roles={"api_surface", "runtime_surface"},
+        target=target,
+    )
+
+    assert candidate is None
+
+
 def test_target_concept_fallback_candidate_is_doc():
     ranker = UnifiedRanker(
         _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
@@ -1765,6 +2054,63 @@ def test_trace_dependency_marginal_gain_rewards_new_file_coverage():
     )
 
     assert gain_new > gain_same
+
+
+def test_trace_dependency_new_file_breadth_ignores_noisy_code_paths():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="target",
+        name="Depends",
+        file_path="/repo/fastapi/params.py",
+        range=[1, 20],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    noisy_example = Candidate(
+        kind="symbol",
+        uid="docs-src-example",
+        name="read_items",
+        file_path="/repo/docs_src/dependencies/tutorial001.py",
+        token_cost=80,
+        graph_score=0.95,
+        semantic_score=0.8,
+        intent_weight=0.5,
+        noise_factor=_NOISE_FACTOR,
+        relation="CALLS_IMPORTED",
+        depth=1,
+    )
+    production_runtime = Candidate(
+        kind="symbol",
+        uid="solve-dependencies",
+        name="solve_dependencies",
+        file_path="/repo/fastapi/dependencies/utils.py",
+        token_cost=80,
+        graph_score=0.35,
+        semantic_score=0.2,
+        intent_weight=0.5,
+        noise_factor=1.0,
+        relation="CALLS_SCOPED",
+        depth=1,
+    )
+
+    chosen, _, _, pruned, _ = ranker.budget_pruner.select_under_budget(
+        [noisy_example, production_runtime],
+        target,
+        "How does Depends trace dependency injection into endpoint calls?",
+        Intent.EXPLORATION,
+        "trace_dependency",
+        required_roles=["runtime_surface"],
+        budget=900,
+    )
+
+    assert [c.uid for c in chosen] == ["solve-dependencies"]
+    assert {item["uid"]: item["reason"] for item in pruned}["docs-src-example"] == "noise_penalty"
 
 
 def test_trace_dependency_gain_mode_from_di_question_even_when_mechanism_generic():
@@ -1899,6 +2245,31 @@ def test_trace_dependency_import_anchor_candidates():
         )
         for a in anchors
     )
+
+
+def test_minimal_trace_import_anchor_does_not_claim_roles_without_trace_signal():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    row = {
+        "uid": "plain-import",
+        "name": "PlainImportedHelper",
+        "symbol_kind": "class",
+        "token_estimate": 120,
+        "qualified_name": "project.helpers.PlainImportedHelper",
+        "file_path": "/repo/project/helpers.py",
+        "file_hash": "h1",
+        "range": [1, 30],
+        "inbound_edges": 3,
+        "outbound_edges": 1,
+    }
+
+    anchor = ranker.structural_recovery.minimal_trace_import_anchor_candidate(
+        row,
+        required_roles=["api_surface", "runtime_surface"],
+    )
+
+    assert anchor.evidence_role == "supporting_surface"
 
 
 def test_module_composition_anchor_candidates_surface_runtime_consumers():
