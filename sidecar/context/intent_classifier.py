@@ -241,9 +241,7 @@ class IntentClassifier:
                 matched_keywords=matched_keywords,
             )
 
-        primary = next(
-            intent for intent in cls.ORDER if raw_scores.get(intent, 0.0) == max_score
-        )
+        primary = next(intent for intent in cls.ORDER if raw_scores.get(intent, 0.0) == max_score)
         total_score = sum(score for score in raw_scores.values() if score > 0)
         distribution = {
             intent.value: raw_scores[intent] / total_score

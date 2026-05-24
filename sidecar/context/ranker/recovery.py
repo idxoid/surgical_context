@@ -105,6 +105,7 @@ class StructuralRecovery:
             fp = row.get("file_path") or ""
             by_file.setdefault(fp, []).append(row)
         picked: list[dict] = []
+
         def _file_rank(item: tuple[str, list[dict]]) -> tuple[float, float, str]:
             fp, rows_for_file = item
             anchor = max(float(row.get("trace_anchor_score", 0) or 0) for row in rows_for_file)
@@ -256,11 +257,7 @@ class StructuralRecovery:
             "called",
             "with",
         }
-        terms = {
-            term
-            for term in re.findall(r"[a-z_][a-z0-9_]{3,}", text)
-            if term not in stop
-        }
+        terms = {term for term in re.findall(r"[a-z_][a-z0-9_]{3,}", text) if term not in stop}
         if any(term in text for term in ("depend", "inject")):
             terms.update({"depend", "dependant", "dependency", "solve", "resolver"})
         if any(term in text for term in ("route", "routing", "dispatch", "middleware", "handler")):
@@ -276,7 +273,9 @@ class StructuralRecovery:
                     "dispatch_request",
                 }
             )
-        if any(term in text for term in ("relationship", "foreign", "lazy", "loading", "collection")):
+        if any(
+            term in text for term in ("relationship", "foreign", "lazy", "loading", "collection")
+        ):
             terms.update(
                 {
                     "relationship",
@@ -443,7 +442,9 @@ class StructuralRecovery:
         terms = set(self.host.scoring.focus_query_terms(query or ""))
         anchors: set[str] = set()
         if terms.intersection({"route", "routes", "routing", "dispatch", "endpoint", "url"}):
-            anchors.update({"route", "routes", "router", "routing", "url", "rule", "map", "dispatch"})
+            anchors.update(
+                {"route", "routes", "router", "routing", "url", "rule", "map", "dispatch"}
+            )
         return sorted(term for term in anchors if len(term) >= 3)
 
     def impact_reference_terms(self, target: SubgraphNode, query: str) -> list[str]:
@@ -490,7 +491,9 @@ class StructuralRecovery:
         target_span = max(0, end - start + 1) if start and end and end >= start else 0
         if (target.kind or "").lower() == "variable" or target_span <= 2:
             header = "\n".join(lines[:160])
-            local = "\n".join(lines[max(0, start - 40) : min(len(lines), end + 40)]) if start else ""
+            local = (
+                "\n".join(lines[max(0, start - 40) : min(len(lines), end + 40)]) if start else ""
+            )
             source = "\n".join(part for part in (header, local) if part)
         elif start and end and end >= start:
             # Keep this cheap: the target body/signature is enough to catch
@@ -571,13 +574,13 @@ class StructuralRecovery:
         name_order = {name: idx for idx, name in enumerate(names)}
         out: list[Candidate] = []
         for row in rows:
-            raw_token_cost = int(row.get("token_estimate") or 0) or self.host._estimate_tokens_range(
-                row.get("range") or [0, 0]
-            )
+            raw_token_cost = int(
+                row.get("token_estimate") or 0
+            ) or self.host._estimate_tokens_range(row.get("range") or [0, 0])
             name = row.get("name") or ""
-            edge_bonus = 0.06 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.08 * math.log1p(
-                float(row.get("outbound_edges", 0) or 0)
-            )
+            edge_bonus = 0.06 * math.log1p(
+                float(row.get("inbound_edges", 0) or 0)
+            ) + 0.08 * math.log1p(float(row.get("outbound_edges", 0) or 0))
             order_bonus = max(0.0, 0.16 - 0.01 * name_order.get(name, len(name_order)))
             candidate = Candidate(
                 kind="symbol",
@@ -674,13 +677,13 @@ class StructuralRecovery:
         )
         out: list[Candidate] = []
         for row in rows:
-            raw_token_cost = int(row.get("token_estimate") or 0) or self.host._estimate_tokens_range(
-                row.get("range") or [0, 0]
-            )
+            raw_token_cost = int(
+                row.get("token_estimate") or 0
+            ) or self.host._estimate_tokens_range(row.get("range") or [0, 0])
             anchor_score = float(row.get("impact_anchor_score", 0) or 0)
-            edge_bonus = 0.06 * math.log1p(float(row.get("inbound_edges", 0) or 0)) + 0.08 * math.log1p(
-                float(row.get("outbound_edges", 0) or 0)
-            )
+            edge_bonus = 0.06 * math.log1p(
+                float(row.get("inbound_edges", 0) or 0)
+            ) + 0.08 * math.log1p(float(row.get("outbound_edges", 0) or 0))
             candidate = Candidate(
                 kind="symbol",
                 uid=str(row["uid"]),
@@ -1579,9 +1582,9 @@ class StructuralRecovery:
         qualified = (row.get("qualified_name") or "").lower()
         file_path = (row.get("file_path") or "").lower()
         haystack = " ".join([name, qualified, file_path])
-        token_hit = any(
-            token in haystack for token in API_SIGNAL_TOKENS if token != "api"
-        ) or bool(re.search(r"(^|[^a-z])api([^a-z]|$)", haystack))
+        token_hit = any(token in haystack for token in API_SIGNAL_TOKENS if token != "api") or bool(
+            re.search(r"(^|[^a-z])api([^a-z]|$)", haystack)
+        )
         token_hit = token_hit or "openapi" in haystack
         edge_hint = float(row.get("outbound_edges", 0) or 0) >= 1.0
         reg_hint = (

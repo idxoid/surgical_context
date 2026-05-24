@@ -2396,3 +2396,63 @@ def test_module_composition_anchor_candidates_surface_runtime_consumers():
         excluded_uids=set(),
         pool=[],
     )
+
+
+def test_budget_pruner_stops_after_required_roles_without_extra_expansion():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="target",
+        name="Depends",
+        file_path="/repo/fastapi/params.py",
+        range=[1, 120],
+        token_estimate=1200,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    role_filler = Candidate(
+        kind="symbol",
+        uid="solve-dependencies",
+        name="solve_dependencies",
+        file_path="/repo/fastapi/dependencies/utils.py",
+        token_cost=80,
+        graph_score=0.55,
+        semantic_score=0.35,
+        intent_weight=0.5,
+        noise_factor=1.0,
+        relation="CALLS_SCOPED",
+        depth=1,
+        evidence_role="orchestrator",
+    )
+    extra = Candidate(
+        kind="symbol",
+        uid="extra-noise",
+        name="unrelated_helper",
+        file_path="/repo/fastapi/dependencies/utils.py",
+        token_cost=80,
+        graph_score=0.95,
+        semantic_score=0.9,
+        intent_weight=0.5,
+        noise_factor=1.0,
+        relation="CALLS_DIRECT",
+        depth=1,
+    )
+
+    chosen, _, stopped_reason, pruned, missing = ranker.budget_pruner.select_under_budget(
+        [role_filler, extra],
+        target,
+        "Where is the middleware registered?",
+        Intent.EXPLORATION,
+        "generic",
+        required_roles=["orchestrator"],
+        budget=4000,
+    )
+
+    assert missing == []
+    assert [c.uid for c in chosen] == ["solve-dependencies"]
+    assert stopped_reason == "role_complete"
+    assert {item["uid"]: item["reason"] for item in pruned}["extra-noise"] == "role_complete"

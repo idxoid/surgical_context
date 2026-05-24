@@ -336,6 +336,26 @@ class BudgetPruner:
                 stop_index = idx
                 break
 
+            if (
+                intent != Intent.IMPACT_ANALYSIS
+                and not missing_roles
+                and spent >= min_floor
+            ):
+                distinct_code_files = len({x.file_path for x in chosen if _is_code_file(x)})
+                trace_breadth_ok = (
+                    not trace_mode or distinct_code_files >= min_trace_code_file_breadth
+                )
+                if trace_breadth_ok and not fills_role_or_trace:
+                    stopped_reason = "role_complete"
+                    _record_pruned(
+                        c,
+                        "role_complete",
+                        gain=gain,
+                        candidate_roles=candidate_roles,
+                    )
+                    stop_index = idx
+                    break
+
             if gain < min_gain:
                 # Only break if floor is met AND no required roles are missing
                 if spent >= min_floor and not missing_roles:
@@ -399,7 +419,7 @@ class BudgetPruner:
         # Second pass: deferred docs, now that code-file breadth is established
         # (or the main pass exhausted the pool). Re-evaluate gain against the
         # current ``chosen`` set so docs that became redundant are still skipped.
-        if deferred_docs and stopped_reason != "marginal_gain_threshold":
+        if deferred_docs and stopped_reason not in ("marginal_gain_threshold", "role_complete"):
             for c in deferred_docs:
                 if spent >= budget:
                     _record_pruned(c, "over_budget_after_doc_deferral")

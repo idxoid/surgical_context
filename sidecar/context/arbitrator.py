@@ -7,7 +7,12 @@ from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.deduplicator import ContextDeduplicator
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentResolution, IntentSignal
+from sidecar.context.intent_classifier import (
+    Intent,
+    IntentClassifier,
+    IntentResolution,
+    IntentSignal,
+)
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext, SubgraphNode
 from sidecar.context.unified_ranker import (

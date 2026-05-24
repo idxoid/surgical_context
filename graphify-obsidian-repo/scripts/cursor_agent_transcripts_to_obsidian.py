@@ -122,8 +122,11 @@ def _summarize_tool(block: dict[str, Any]) -> str | None:
             desc = desc[:97] + "..."
         return f"`{name}` — {desc}" if desc else f"`{name}`"
     if name in ("Read", "ReadLints", "Delete", "Glob", "Grep"):
-        p = inp.get("path") or inp.get("target_notebook") or inp.get("glob_pattern") or inp.get(
-            "target_directory"
+        p = (
+            inp.get("path")
+            or inp.get("target_notebook")
+            or inp.get("glob_pattern")
+            or inp.get("target_directory")
         )
         if p:
             return f"`{name}` — `{p}`"

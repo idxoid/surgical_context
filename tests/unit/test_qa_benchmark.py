@@ -7,6 +7,7 @@ import pytest
 
 from QA.qa_benchmark import (
     _compute_role_recall,
+    _compute_symbol_metrics,
     _empty_indexing_summary,
     _expected_file_matches,
     _normalize_cleanup_prefixes,
@@ -424,3 +425,18 @@ def test_run_benchmark_report_includes_precision_and_ready_context():
     assert result["ready_context"]["system_prompt"].startswith("--- TARGET SYMBOL: Target ---")
     assert metrics["summary"]["precision"] == pytest.approx(1.0)
     assert metrics["summary"]["precision_at_5"] == pytest.approx(1.0)
+
+
+def test_compute_symbol_metrics_separates_top_k_from_full_context():
+    metrics = _compute_symbol_metrics(
+        "Target",
+        ["Helper", "NoiseA", "NoiseB", "NoiseC", "NoiseD", "NoiseE"],
+        {"Target", "Helper", "ExpectedOnly"},
+    )
+
+    assert metrics["recall_at_k"] == pytest.approx(2 / 3)
+    assert metrics["precision_at_k"] == pytest.approx(2 / 5)
+    assert metrics["context_recall"] == pytest.approx(2 / 3)
+    assert metrics["context_precision"] == pytest.approx(2 / 7)
+    assert metrics["retrieved_count"] == 7
+    assert metrics["hits_top_k"] == 2

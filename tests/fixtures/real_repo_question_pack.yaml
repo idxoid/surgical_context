@@ -84,6 +84,18 @@ repositories:
     language: typescript
     rationale: "Vue 3 core repository with runtime-core, reactivity, and compiler-core packages—tests UI framework patterns and reactive state management."
 
+  - id: surgical_context
+    name: Surgical Context
+    project_path: /home/idxoid/surgical_context
+    language: python
+    rationale: "Dogfood benchmark for context ranker, indexer, VS Code extension, and QA harness on this repo itself."
+
+  - id: dathund
+    name: Dathund
+    project_path: /home/idxoid/dathund/dathund
+    language: python
+    rationale: "Pipeline-native security observability with connectors, lineage backends, and cross-connector ChainEngine."
+
 questions:
   - id: fastapi_q01
     repo: fastapi
@@ -734,3 +746,198 @@ questions:
     required_roles: [public_entrypoint, dependency_tracker, effect_executor, cleanup_handler]
     expected_symbols: [watch, watchEffect, Watcher]
     expected_files: [packages/runtime-core/src/apiWatch.ts]
+
+  - id: surgical_context_q01
+    repo: surgical_context
+    core12: true
+    symbol: ContextArbitrator
+    question: "How does ContextArbitrator assemble symbol context from intent classification through ranking to PromptContext?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: surgical_context_unified_context_assembly
+    required_roles: [public_entrypoint, handler_or_lifecycle, dependency_solver, route_object]
+    expected_symbols: [ContextArbitrator, get_context_for_symbol, UnifiedRanker, PromptCompiler]
+    expected_files: [sidecar/context/arbitrator.py, sidecar/context/unified_ranker.py, sidecar/context/prompt_compiler.py]
+
+  - id: surgical_context_q02
+    repo: surgical_context
+    core12: true
+    symbol: UnifiedRanker
+    question: "How does UnifiedRanker.rank merge graph BFS candidates, vector hits, and doc bridges before budget pruning?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: surgical_context_ranker_fusion
+    required_roles: [public_entrypoint, dependency_solver, registration_step, handler_or_lifecycle]
+    expected_symbols: [UnifiedRanker, rank, _fuse, _graph_candidates, BudgetPruner]
+    expected_files: [sidecar/context/unified_ranker.py, sidecar/context/ranker/pruning.py]
+
+  - id: surgical_context_q03
+    repo: surgical_context
+    core12: true
+    symbol: IntentClassifier
+    question: "How does IntentClassifier map a natural-language question to content tier priority for context assembly?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: surgical_context_intent_tiers
+    required_roles: [public_entrypoint, marker_or_config, handler_or_lifecycle, docs_or_concept]
+    expected_symbols: [IntentClassifier, classify_with_metadata, IntentConfig, IntentResolution]
+    expected_files: [sidecar/context/intent_classifier.py]
+
+  - id: surgical_context_q04
+    repo: surgical_context
+    core12: false
+    symbol: StructuralRecovery
+    question: "When the call graph is sparse, how does trace-dependency recovery find import anchors and runtime symbols to backfill roles?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: surgical_context_trace_dependency_recovery
+    required_roles: [dependency_solver, runtime_executor, handler_or_lifecycle, registration_step]
+    expected_symbols: [StructuralRecovery, trace_dependency_import_anchor_candidates, trace_dependency_runtime_symbol_rows]
+    expected_files: [sidecar/context/ranker/recovery.py, sidecar/context/ranker/scoring.py]
+
+  - id: surgical_context_q05
+    repo: surgical_context
+    core12: false
+    symbol: run_fast_indexing
+    question: "How does the fast indexer go from file hashing through parsing, graph updates, embeddings, and AFFECTS rebuild?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: surgical_context_fast_index_pipeline
+    required_roles: [public_entrypoint, registration_step, operation_executor, core_runtime]
+    expected_symbols: [run_fast_indexing, _hash_phase, _parse_phase, _apply_graph, _embed_phase]
+    expected_files: [sidecar/indexer/fast/pipeline.py, sidecar/indexer/code.py]
+
+  - id: surgical_context_q06
+    repo: surgical_context
+    core12: false
+    symbol: UnifiedRanker
+    question: "If UnifiedRanker blending weights change, which tests and benchmark harness paths are most likely to break?"
+    difficulty: hard
+    intent: impact_analysis
+    expected_mode: symbol
+    mechanism: surgical_context_ranker_weight_impact
+    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    expected_symbols: [UnifiedRanker, RankerWeights, DEFAULT_WEIGHTS, ContextArbitrator]
+    expected_files: [sidecar/context/unified_ranker.py, tests/unit/test_unified_ranker.py, QA/qa_benchmark.py]
+
+  - id: surgical_context_q07
+    repo: surgical_context
+    core12: false
+    symbol: SidecarClient
+    question: "How does the VS Code extension send an ask-about-symbol request from the webview to the sidecar /ask handler?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: surgical_context_extension_ask_flow
+    required_roles: [public_entrypoint, middleware_registry, handler_or_lifecycle, request_processor]
+    expected_symbols: [SidecarClient, ask, SurgicalContextViewProvider, activate]
+    expected_files: [extension/src/sidecarClient.ts, extension/src/providers/SurgicalContextViewProvider.ts, sidecar/main.py]
+
+  - id: dathund_q01
+    repo: dathund
+    core12: true
+    symbol: ChainEngine
+    question: "After CorrelationEngine finds a CHAIN match, what post-match gates can reject it before an alert is emitted?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: dathund_chain_post_match_gates
+    required_roles: [public_entrypoint, dependency_solver, handler_or_lifecycle, runtime_executor]
+    expected_symbols: [ChainEngine, _passes_gates, _lineage_gate, _same_actor_gate, passes_lifecycle_gate]
+    expected_files: [src/dathund_core/engine/chain_engine.py, src/dathund_core/engine/lifecycle_gates.py]
+
+  - id: dathund_q02
+    repo: dathund
+    core12: true
+    symbol: AsyncPoller
+    question: "What is the ordered pipeline inside AsyncPoller.run_once from connector fetch through alert dispatch?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: dathund_poller_poll_cycle
+    required_roles: [public_entrypoint, operation_executor, handler_or_lifecycle, dependency_solver]
+    expected_symbols: [AsyncPoller, run_once, RuleEngine, CorrelationEngine, ChainEngine]
+    expected_files: [src/dathund_core/collector/poller.py]
+
+  - id: dathund_q03
+    repo: dathund
+    core12: true
+    symbol: build_lineage_store
+    question: "How does Settings.lineage_backend choose between memory, pg-closure, Kuzu, and Memgraph lineage implementations?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: dathund_lineage_backend_factory
+    required_roles: [public_entrypoint, marker_or_config, factory_surface, core_runtime]
+    expected_symbols: [build_lineage_store, MemoryClosureLineageStore, PgClosureLineageStore, KuzuLineageStore]
+    expected_files: [src/dathund_core/lineage/factory.py, src/dathund_core/lineage/store.py]
+
+  - id: dathund_q04
+    repo: dathund
+    core12: false
+    symbol: effective_event_time_for_chain
+    question: "When does ChainEngine use ingested_time instead of event_time as the correlation clock, and how does that widen the match window?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: dathund_time_authority_chain_clock
+    required_roles: [dependency_solver, runtime_executor, handler_or_lifecycle, marker_or_config]
+    expected_symbols: [effective_event_time_for_chain, time_authority_for_source, effective_chain_window_seconds]
+    expected_files: [src/dathund_core/engine/time_authority.py, src/dathund_core/engine/chain_engine.py]
+
+  - id: dathund_q05
+    repo: dathund
+    core12: false
+    symbol: CHAIN_001
+    question: "What three event stages does CHAIN_001 require, and how does require_lineage_path connect matched events in the graph?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: dathund_chain_001_exfil_pattern
+    required_roles: [public_entrypoint, marker_or_config, dependency_solver, handler_or_lifecycle]
+    expected_symbols: [CHAIN_001, CorrelationRule, require_lineage_path]
+    expected_files: [src/dathund_core/plugins/chain_rules/catalog.py, src/dathund_core/engine/chain_engine.py]
+
+  - id: dathund_q06
+    repo: dathund
+    core12: false
+    symbol: ActorIndex
+    question: "How does ActorIndex.same_actor decide two connector-local actor strings refer to the same principal?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: dathund_actor_index_resolution
+    required_roles: [dependency_solver, runtime_executor, handler_or_lifecycle, marker_or_config]
+    expected_symbols: [ActorIndex, same_actor, ingest]
+    expected_files: [src/dathund_core/identity/actor_index.py, src/dathund_core/engine/chain_engine.py]
+
+  - id: dathund_q07
+    repo: dathund
+    core12: false
+    symbol: DathundAnalyzer
+    question: "Where in the analyzer base class are raw SQL or query fields scrubbed before events are returned?"
+    difficulty: medium
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: dathund_analyzer_query_privacy
+    required_roles: [public_entrypoint, validator_handle, handler_or_lifecycle, core_runtime]
+    expected_symbols: [DathundAnalyzer, scrub_metadata_queries, QueryScrubber, encrypt_metadata_at_rest]
+    expected_files: [src/dathund_core/analyzers/base.py, src/dathund_core/privacy/query_scrubber.py]
+
+  - id: dathund_q08
+    repo: dathund
+    core12: false
+    symbol: extend_closure
+    question: "How does extend_closure maintain hop-bounded transitive paths when a new LineageObservation edge arrives?"
+    difficulty: hard
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: dathund_lineage_closure_maintenance
+    required_roles: [public_entrypoint, operation_executor, core_runtime, schema_module]
+    expected_symbols: [extend_closure, merge_closure_entry, ClosureEntry]
+    expected_files: [src/dathund_core/lineage/closure_logic.py, src/dathund_core/lineage/pg_store.py]

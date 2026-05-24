@@ -147,7 +147,9 @@ class TestIncrementalIndexing:
 
     def test_scoped_package_import_rows_include_monorepo_package_src_suffixes(self):
         row = _import_row(
-            ImportEdge("/repo/packages/runtime-dom/src/index.ts", "@vue/runtime-core", "from_package")
+            ImportEdge(
+                "/repo/packages/runtime-dom/src/index.ts", "@vue/runtime-core", "from_package"
+            )
         )
 
         assert "/@vue/runtime-core/index.ts" in row["path_suffixes"]

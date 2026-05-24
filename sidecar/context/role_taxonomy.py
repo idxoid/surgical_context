@@ -322,7 +322,9 @@ def infer_supporting_roles(
             inferred.append("validator_handle")
         if any(token in haystack for token in serializer_tokens):
             inferred.append("serializer_handle")
-        if any(token in haystack for token in ("core_schema", "schema_validator", "schema_serializer")):
+        if any(
+            token in haystack for token in ("core_schema", "schema_validator", "schema_serializer")
+        ):
             inferred.append("core_runtime")
         if lowered_name.startswith(executor_prefixes) or any(
             token in haystack for token in executor_tokens

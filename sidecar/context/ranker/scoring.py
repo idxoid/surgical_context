@@ -236,8 +236,10 @@ class RankerScoring:
             return True
         if "relationship" in q and any(term in q for term in ("foreign", "lazy", "collection")):
             return True
-        if "query" in q and ("lazy" in q or "lazily" in q) and any(
-            term in q for term in ("execute", "sql")
+        if (
+            "query" in q
+            and ("lazy" in q or "lazily" in q)
+            and any(term in q for term in ("execute", "sql"))
         ):
             return True
         if any(term in q for term in ("compile", "compiler", "template")) and any(

@@ -115,6 +115,47 @@ def _compute_file_recall(expected_files: set[str], retrieved_files: set[str]) ->
     return matched / len(expected_files)
 
 
+_SYMBOL_METRICS_K = 5
+
+
+def _compute_symbol_metrics(
+    primary_symbol: str,
+    graph_symbols: list[str],
+    expected_symbols: set[str],
+    *,
+    k: int = _SYMBOL_METRICS_K,
+) -> dict[str, float | int]:
+    """Compute top-k and full-context symbol precision/recall.
+
+    Top-k uses ranked selection order: primary target first, then graph deps
+    in assembly order (matches spec "k=5 graph deps" plus the target symbol).
+    """
+    ranked: list[str] = []
+    seen: set[str] = set()
+    for symbol in [primary_symbol, *graph_symbols]:
+        if symbol and symbol not in seen:
+            ranked.append(symbol)
+            seen.add(symbol)
+
+    expected = set(expected_symbols)
+    context_set = set(ranked)
+    top_k_set = set(ranked[:k])
+    hits_context = context_set & expected
+    hits_top_k = top_k_set & expected
+
+    return {
+        "recall_at_k": len(hits_top_k) / len(expected) if expected else 0.0,
+        "precision_at_k": len(hits_top_k) / len(top_k_set) if top_k_set else 0.0,
+        "context_recall": len(hits_context) / len(expected) if expected else 0.0,
+        "context_precision": len(hits_context) / len(context_set) if context_set else 0.0,
+        "retrieved_count": len(context_set),
+        "top_k_count": len(top_k_set),
+        "expected_count": len(expected),
+        "hits_top_k": len(hits_top_k),
+        "hits_context": len(hits_context),
+    }
+
+
 def _format_roles_for_column(roles: list[str], *, max_len: int = 72) -> str:
     """Compact role list for console columns."""
     if not roles:
@@ -590,6 +631,10 @@ def ensure_repo_checkout(
     if repo_meta is None:
         raise ValueError(f"Repository '{repo}' is not defined in {questions_path}")
 
+    meta_path = repo_meta.get("project_path")
+    if meta_path and not project_path:
+        return str(Path(meta_path).resolve())
+
     checkout_path = default_repo_checkout_path(repo, repos_root=repos_root).resolve()
     if checkout_path.exists():
         clone_url = repo_meta.get("clone_url")
@@ -969,10 +1014,15 @@ def run_benchmark(
         )
         strategy_profile = getattr(ctx, "ranker_state", {}).get("strategy_profile", {}) or {}
 
-        # Compute recall@k and precision@k
-        intersection = all_retrieved & expected_symbols
-        recall_at_k = len(intersection) / len(expected_symbols) if expected_symbols else 0.0
-        precision_at_k = len(intersection) / len(all_retrieved) if all_retrieved else 0.0
+        symbol_metrics = _compute_symbol_metrics(
+            ctx.primary_source.symbol,
+            [dep.symbol for dep in ctx.graph_context],
+            expected_symbols,
+        )
+        recall_at_k = float(symbol_metrics["recall_at_k"])
+        precision_at_k = float(symbol_metrics["precision_at_k"])
+        context_recall = float(symbol_metrics["context_recall"])
+        context_precision = float(symbol_metrics["context_precision"])
         file_recall = _compute_file_recall(expected_files, retrieved_files)
         role_recall = _compute_role_recall(required_roles_canonical, missing_roles_canonical)
 
@@ -1015,8 +1065,8 @@ def run_benchmark(
 
         print(
             f"  {status_emoji} {q['id']}: {symbol:20} [{intent}]"
-            f" | precision={precision_at_k:.2f} | role={role_recall:.2f}"
-            f" | file={file_recall:.2f} | {tokens_surgical}t"
+            f" | p@5={precision_at_k:.2f} ctx={context_precision:.2f}"
+            f" | role={role_recall:.2f} | file={file_recall:.2f} | {tokens_surgical}t"
             f" | expected_roles={_format_roles_for_column(required_roles_canonical)}"
             f" | missing_roles={_format_roles_for_column(missing_expected_roles)}"
             f"{reasoning_info}"
@@ -1039,6 +1089,11 @@ def run_benchmark(
                 "recall_at_k": recall_at_k,
                 "precision": precision_at_k,
                 "precision_at_k": precision_at_k,
+                "context_recall": context_recall,
+                "context_precision": context_precision,
+                "retrieved_count": symbol_metrics["retrieved_count"],
+                "hits_top_k": symbol_metrics["hits_top_k"],
+                "hits_context": symbol_metrics["hits_context"],
                 "file_recall": file_recall,
                 "role_recall": role_recall,
                 "stopped_reason": ctx.stopped_reason,
@@ -1076,6 +1131,11 @@ def run_benchmark(
 
     avg_recall = sum(r.get("recall_at_k", 0) for r in results) / total if total > 0 else 0.0
     avg_precision = sum(r.get("precision_at_k", 0) for r in results) / total if total > 0 else 0.0
+    avg_context_precision = (
+        sum(r.get("context_precision", r.get("precision_at_k", 0)) for r in results) / total
+        if total > 0
+        else 0.0
+    )
     avg_file_recall = sum(r.get("file_recall", 0) for r in results) / total if total > 0 else 0.0
     avg_role_recall = sum(r.get("role_recall", 0) for r in results) / total if total > 0 else 0.0
     total_tokens_surgical = sum(r.get("tokens_surgical", 0) for r in results)
@@ -1128,6 +1188,7 @@ def run_benchmark(
             "recall_at_5": avg_recall,
             "precision": avg_precision,
             "precision_at_5": avg_precision,
+            "context_precision": avg_context_precision,
             "file_recall": avg_file_recall,
             "role_recall": avg_role_recall,
             "tokens_surgical": total_tokens_surgical,
@@ -1147,6 +1208,7 @@ def run_benchmark(
     print(f"Pass rate:       {metrics['summary']['pass_rate']:.1%} ({passes}/{total})")
     print(f"Recall@5:        {metrics['summary']['recall_at_5']:.2f}")
     print(f"Precision@5:     {metrics['summary']['precision_at_5']:.2f}")
+    print(f"Context prec:    {metrics['summary']['context_precision']:.2f}")
     print(f"File recall:     {metrics['summary']['file_recall']:.2f}")
     print(f"Role recall:     {metrics['summary']['role_recall']:.2f}")
     print(f"Tokens (surgical): {metrics['summary']['tokens_surgical']:,}")

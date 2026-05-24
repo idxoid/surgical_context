@@ -738,7 +738,9 @@ class UnifiedRanker:
         recovery_roles = (
             roles_for_backfill
             if intent == Intent.IMPACT_ANALYSIS
-            else required_roles if self._needs_structural_recovery(target) else roles_for_backfill
+            else required_roles
+            if self._needs_structural_recovery(target)
+            else roles_for_backfill
         )
         if recovery_roles:
             recovery = self._generic_role_recovery_candidates(
@@ -930,7 +932,9 @@ class UnifiedRanker:
         if not rows:
             return []
 
-        scoped = set(normalize_roles([*required_roles, "composition_surface", "integration_surface"]))
+        scoped = set(
+            normalize_roles([*required_roles, "composition_surface", "integration_surface"])
+        )
         candidates: list[Candidate] = []
         for row in rows[:limit]:
             candidate = self._recovery_candidate_from_row(
