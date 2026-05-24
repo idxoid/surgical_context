@@ -254,6 +254,22 @@ def _framework_hints_phase(
     return len(diffs)
 
 
+def _ts_http_route_hints_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    project_path: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Link TS HTTP client surfaces to Python FastAPI handlers."""
+    from sidecar.indexer.ts_http_route_hints import TsHttpRouteHintsIndexer
+
+    reporter.stage_start("ts_http_route_hints", total=len(diffs))
+    created = TsHttpRouteHintsIndexer(db, project_path).apply(diffs, workspace_id)
+    reporter.stage_end("ts_http_route_hints")
+    return created
+
+
 def _embed_phase(
     diffs: list[FileDiff],
     lance: LanceDBClient,
@@ -600,6 +616,16 @@ def run_fast_indexing(
         t_stage = time.perf_counter()
         stats["framework_hints_applied"] = _framework_hints_phase(diffs, db, workspace_id, reporter)
         stats["timings_sec"]["framework_hints"] = round(time.perf_counter() - t_stage, 3)
+
+        t_stage = time.perf_counter()
+        stats["ts_http_route_hints_applied"] = _ts_http_route_hints_phase(
+            diffs,
+            db,
+            workspace_id,
+            project_path,
+            reporter,
+        )
+        stats["timings_sec"]["ts_http_route_hints"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 5: global embedding batch
         t_stage = time.perf_counter()

@@ -217,3 +217,20 @@ export interface Ref<T = unknown> {
 
     def test_file_extensions(self, adapter):
         assert adapter.file_extensions == {".ts", ".tsx"}
+
+    def test_exported_object_api_indexes_single_surface(self, adapter):
+        source = """
+export const SidecarClient = {
+  ask() {
+    return post('/ask', {});
+  },
+  health() {
+    return fetch(`${getBaseUrl()}/health`);
+  },
+};
+"""
+        symbols = adapter.extract_symbols(source, "extension/src/sidecarClient.ts")
+        assert {symbol.name for symbol in symbols} == {"SidecarClient"}
+        sidecar = symbols[0]
+        assert sidecar.kind == "object_api"
+        assert sidecar.signature_status == "object_api_export"

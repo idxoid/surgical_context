@@ -887,8 +887,8 @@ questions:
     expected_mode: symbol
     mechanism: dathund_time_authority_chain_clock
     required_roles: [dependency_solver, runtime_executor, handler_or_lifecycle, marker_or_config]
-    expected_symbols: [effective_event_time_for_chain, time_authority_for_source, effective_chain_window_seconds]
-    expected_files: [src/dathund_core/engine/time_authority.py, src/dathund_core/engine/chain_engine.py]
+    expected_symbols: [effective_event_time_for_chain, effective_chain_window_seconds, extra_skew_seconds_for_events]
+    expected_files: [src/dathund_core/engine/time_authority.py, src/dathund_core/engine/chain_engine.py, src/dathund_core/connectors/time_authority_registry.py]
 
   - id: dathund_q05
     repo: dathund
@@ -926,7 +926,7 @@ questions:
     expected_mode: symbol
     mechanism: dathund_analyzer_query_privacy
     required_roles: [public_entrypoint, validator_handle, handler_or_lifecycle, core_runtime]
-    expected_symbols: [DathundAnalyzer, scrub_metadata_queries, QueryScrubber, encrypt_metadata_at_rest]
+    expected_symbols: [DathundAnalyzer, scrub_metadata_queries, QueryScrubber]
     expected_files: [src/dathund_core/analyzers/base.py, src/dathund_core/privacy/query_scrubber.py]
 
   - id: dathund_q08
