@@ -8,7 +8,17 @@ from dataclasses import dataclass
 
 from sidecar.database.neo4j_client import Neo4jClient
 
-_SKIP_DIRS = {"node_modules", ".venv", "venv", "dist", "build", "__pycache__", "tests", "test", "QA"}
+_SKIP_DIRS = {
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    "__pycache__",
+    "tests",
+    "test",
+    "QA",
+}
 
 
 def _should_skip_python_route_file(file_path: str) -> bool:
@@ -41,9 +51,7 @@ def _route_file_score(file_path: str) -> int:
     return score
 
 
-_ROUTE_DECORATOR_RE = re.compile(
-    r"""@app\.(?:get|post|put|delete|patch)\(\s*["']([^"']+)["']"""
-)
+_ROUTE_DECORATOR_RE = re.compile(r"""@app\.(?:get|post|put|delete|patch)\(\s*["']([^"']+)["']""")
 _PYTHON_HANDLER_RE = re.compile(r"^(?:async\s+)?def\s+(\w+)\s*\(")
 _TS_OBJECT_API_RE = re.compile(r"(?m)^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*\{")
 _TS_HTTP_PATH_RE = re.compile(
@@ -79,7 +87,7 @@ class TsHttpRouteHintsIndexer:
             object_apis = self._scan_ts_object_apis(source)
             if not object_apis:
                 continue
-            for route_path, handler_name, _ in self._scan_ts_http_paths(source):
+            for route_path, _handler_name, _ in self._scan_ts_http_paths(source):
                 route = route_map.get(route_path)
                 if route is None:
                     continue

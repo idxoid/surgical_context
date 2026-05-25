@@ -19,6 +19,7 @@ from .signal_constants import (
     HOOK_FLOW_PATH_TOKENS,
     HOOK_FLOW_TARGET_TOKENS,
     HOOK_RUNTIME_TOKENS,
+    NOISE_PATH_PATTERNS,
     REGISTRATION_FACTORY_TOKENS,
     REGISTRATION_FLOW_PATH_TOKENS,
     REGISTRATION_FLOW_TARGET_TOKENS,
@@ -27,7 +28,6 @@ from .signal_constants import (
     REPRESENTATION_SIGNAL_PATH_TOKENS,
     REPRESENTATION_SIGNAL_TOKENS,
     RUNTIME_SIGNAL_TOKENS,
-    NOISE_PATH_PATTERNS,
     TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS,
     TRACE_DEPENDENCY_TARGET_TOKENS,
     TRACE_HOOK_RUNTIME_NAMES,
@@ -115,7 +115,7 @@ class StructuralRecovery:
             )
             return (anchor, edges, fp)
 
-        for fp, rows_for_file_all in sorted(by_file.items(), key=_file_rank, reverse=True):
+        for _fp, rows_for_file_all in sorted(by_file.items(), key=_file_rank, reverse=True):
             rows_for_fp = sorted(
                 rows_for_file_all,
                 key=lambda r: (
@@ -254,7 +254,6 @@ class StructuralRecovery:
             "function",
             "gets",
             "handle",
-            "called",
             "with",
         }
         terms = {term for term in re.findall(r"[a-z_][a-z0-9_]{3,}", text) if term not in stop}

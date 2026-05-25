@@ -336,11 +336,7 @@ class BudgetPruner:
                 stop_index = idx
                 break
 
-            if (
-                intent != Intent.IMPACT_ANALYSIS
-                and not missing_roles
-                and spent >= min_floor
-            ):
+            if intent != Intent.IMPACT_ANALYSIS and not missing_roles and spent >= min_floor:
                 distinct_code_files = len({x.file_path for x in chosen if _is_code_file(x)})
                 trace_breadth_ok = (
                     not trace_mode or distinct_code_files >= min_trace_code_file_breadth

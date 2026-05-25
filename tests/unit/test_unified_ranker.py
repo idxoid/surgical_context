@@ -2,8 +2,8 @@ from unittest.mock import MagicMock, patch
 
 from sidecar.context.intent_classifier import Intent
 from sidecar.context.mechanism_registry import determine_preloaded_mechanism
-from sidecar.context.ranker.scoring import RankerScoring
 from sidecar.context.ranker.recovery import StructuralRecovery
+from sidecar.context.ranker.scoring import RankerScoring
 from sidecar.context.role_taxonomy import infer_supporting_roles
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
