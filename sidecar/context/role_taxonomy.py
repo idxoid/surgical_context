@@ -160,6 +160,8 @@ def infer_supporting_roles(
     *,
     file_path: str = "",
     primary_role: str = "",
+    name: str = "",
+    kind: str = "",
 ) -> list[str]:
     """Infer additional roles a symbol can satisfy based on structural context.
 
@@ -172,7 +174,12 @@ def infer_supporting_roles(
         return []
 
     lowered_path = (file_path or "").lower()
+    lowered_name = (name or "").lower()
+    lowered_kind = (kind or "").lower()
+    haystack = f"{lowered_name} {lowered_path}"
     inferred: list[str] = []
+    file_name = lowered_path.rsplit("/", 1)[-1]
+    file_stem = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
 
     if "/tests/" in lowered_path or lowered_path.endswith("_test.py") or "/test_" in lowered_path:
         inferred.append("impact_test_surface")
@@ -202,5 +209,152 @@ def infer_supporting_roles(
         and "/examples/" not in lowered_path
     ):
         inferred.append("impact_runtime")
+
+    if lowered_kind in {"function", "method", "class", "object_api", ""}:
+        if (
+            lowered_name
+            and not lowered_name.startswith("_")
+            and (
+                lowered_name == file_stem
+                or lowered_name.lower() == file_stem.lower()
+                or (
+                    lowered_kind == "object_api"
+                    and (
+                        lowered_name.endswith("Client")
+                        or "client" in lowered_name.lower()
+                        or "api" in lowered_name.lower()
+                    )
+                )
+            )
+            and "/docs/" not in lowered_path
+            and "/examples/" not in lowered_path
+        ):
+            inferred.append("api_surface")
+
+        if (
+            lowered_kind in {"function", "method"}
+            and lowered_name == "activate"
+            and "/extension/" in lowered_path
+        ):
+            inferred.append("factory_surface")
+
+        composition_tokens = (
+            "builder",
+            "chain",
+            "compose",
+            "composition",
+            "consumer",
+            "context-creator",
+            "context_creator",
+            "creator",
+            "controllers",
+            "exports",
+            "imports",
+            "middleware",
+            "pipeline",
+            "pipe",
+            "pipes",
+            "providers",
+            "registry",
+            "scanner",
+        )
+        executor_prefixes = (
+            "apply",
+            "consume",
+            "dispatch",
+            "execute",
+            "handle",
+            "process",
+            "resolve",
+            "run",
+            "transform",
+            "validate",
+        )
+        executor_tokens = (
+            "consumer",
+            "execution",
+            "executor",
+            "handler",
+            "runtime",
+        )
+        validator_tokens = (
+            "clean",
+            "schema_validator",
+            "validate",
+            "validation",
+            "validator",
+            "validators",
+        )
+        serializer_tokens = (
+            "dump",
+            "schema_serializer",
+            "serialize",
+            "serializer",
+            "serializers",
+            "to_json",
+            "to_python",
+        )
+        representation_tokens = (
+            "ast",
+            "node",
+            "proxy",
+            "reactive",
+            "ref",
+            "schema",
+            "state",
+            "tree",
+            "vnode",
+        )
+        orchestration_tokens = (
+            "dependency",
+            "effect",
+            "notify",
+            "scheduler",
+            "track",
+            "trigger",
+            "watch",
+        )
+        runtime_tokens = (
+            "dispatch",
+            "effect",
+            "execute",
+            "mount",
+            "patch",
+            "render",
+            "runtime",
+            "trigger",
+            "watch",
+        )
+
+        if any(token in haystack for token in composition_tokens):
+            inferred.append("composition_surface")
+        if any(token in haystack for token in ("controller", "export", "import", "provider")):
+            inferred.append("integration_surface")
+        if any(token in haystack for token in representation_tokens):
+            inferred.append("representation_surface")
+        if any(token in haystack for token in orchestration_tokens):
+            inferred.append("orchestrator")
+        if any(token in haystack for token in runtime_tokens):
+            inferred.append("runtime_surface")
+        if any(token in haystack for token in validator_tokens):
+            inferred.append("validator_handle")
+        if any(token in haystack for token in serializer_tokens):
+            inferred.append("serializer_handle")
+        if any(
+            token in haystack for token in ("core_schema", "schema_validator", "schema_serializer")
+        ):
+            inferred.append("core_runtime")
+        if lowered_name.startswith(executor_prefixes) or any(
+            token in haystack for token in executor_tokens
+        ):
+            inferred.append("executor")
+        if (
+            ("composition_surface" in inferred or "executor" in inferred)
+            and "/docs/" not in lowered_path
+            and "/examples/" not in lowered_path
+        ):
+            inferred.append("runtime_surface")
+    if (primary == "api_surface" or "api_surface" in inferred) and "/docs/" not in lowered_path:
+        inferred.append("impact_public_api")
 
     return normalize_roles(inferred)

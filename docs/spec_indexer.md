@@ -15,7 +15,7 @@ Entry points:
 
 ### _collect_files(project_path) → list[str]
 
-1. Loads `.gitignore` from `project_path` (falls back to repo root `.gitignore`) using `pathspec` library.
+1. Loads `.gitignore` from `project_path` (falls back to repo root `.gitignore`) using `pathspec` library. Patterns are interpreted relative to the indexed project root, not the monorepo checkout root.
 2. `os.walk` with in-place dir pruning — ignored directories are removed from `dirs[:]` so `os.walk` never descends into them.
 3. Filters files by extension — only extensions registered in the language adapter registry are included.
 4. Skips dot-files (`name.startswith('.')`).
@@ -170,7 +170,7 @@ The single-file hot path does not currently rebuild the full repository profile.
 
 ### Phase 7 — Repository role taxonomy (Pass 1)
 
-Implemented in `sidecar/indexer/role_clustering.py`. A per-repository role taxonomy derived from call-graph topology, intended to replace the remaining hand-curated role naming heuristics in `mechanism_registry` and `unified_ranker._infer_role`. `repository_profile` now emits only generic archetype signals; it does not identify framework families by repo name, workspace id, package name, or benchmark fixtures. No name patterns, no path heuristics, no preloaded framework knowledge — a symbol's role comes from its position in the graph.
+Implemented in `sidecar/indexer/role_clustering.py`. A per-repository role taxonomy derived from call-graph topology, intended to replace hand-curated role naming tables in mechanism routing. `repository_profile` now emits only generic archetype signals; it does not identify framework families by repo name, workspace id, package name, or benchmark dataset. Python import extraction also avoids a hand-maintained third-party/framework allow-list: stdlib and installed packages are inferred, while workspace packages override installed-package names. A symbol's role comes from its position in the graph plus normalized structural archetypes.
 
 **Pipeline order.** The fast pipeline runs Pass 1 between Phase 4 (DocAnchor resolution) and Phase 6 (repository readiness profile), so the taxonomy sees both CALLS-style edges and COVERS edges. The single-file hot path does not run Pass 1.
 
@@ -203,7 +203,7 @@ Features are log-transformed and standardized (zero mean, unit variance) before 
 
 Canonical roles resolve through archetype preferences instead of direct cluster equality. For example, `runtime_surface` resolves to `active_entrypoint`, `runtime_handle`, and `executor`; `api_surface` resolves to `passive_api_surface` and `active_entrypoint`. Passive/config surfaces use typed doc-anchor weight, not raw doc count, so definition/reference anchors can lift public API clusters while example-heavy or weak anchors contribute less. Consumers should treat the result as a scoring preference, not a hard filter.
 
-**Mechanism profiles in the catalog.** On each persist, the indexer merges `mechanism_required_roles` and `mechanism_role_backfill` keys into `role_catalog_json` from `mechanism_registry.preloaded_mechanism_catalog_extensions()` (currently **empty objects** — no bundled FastAPI/Pydantic/Redux tables). Populate those maps via workspace-specific pipelines or future mining; `UnifiedRanker` still reads them when present. Extra keys are ignored by `resolve_role_clusters`, which only reads `schema_version`, `archetypes`, and `role_to_archetypes`.
+**Mechanism profiles in the catalog.** On each persist, the indexer merges `mechanism_required_roles` and `mechanism_role_backfill` keys into `role_catalog_json` from `mechanism_registry.preloaded_mechanism_catalog_extensions()` (currently **empty objects** — no bundled framework tables). Populate those maps via workspace-specific pipelines or future mining; `UnifiedRanker` still reads them when present. Extra keys are ignored by `resolve_role_clusters`, which only reads `schema_version`, `archetypes`, and `role_to_archetypes`.
 
 **Persistence.** Pass 1 writes the taxonomy and role catalog onto the Neo4j `Workspace`, then writes the cluster id onto every `Symbol`:
 
@@ -222,10 +222,19 @@ Canonical roles resolve through archetype preferences instead of direct cluster 
 
 `stats["role_taxonomy"]` exposes `chosen_k`, `silhouette`, and `sample_size` for benchmark and progress logs. `stats["role_catalog"]` exposes the number of archetypes and canonical role mappings. Timing is recorded under `stats["timings_sec"]["role_clustering"]`.
 
-**Consumers.** Pass 1 persists `derived_role_id`, structural archetypes in `role_catalog_json`, and — from schema v2 onward — the mechanism overlay keys (often `{}` until filled externally). `UnifiedRanker` reads cluster-derived roles via `derived_role_id` plus `_cluster_to_role`, optional catalog mechanism templates, structural overlap scoring, then repository `strategy_profile` / `generic`. Bundled name-based mechanism dispatch for FastAPI/Pydantic/Redux is intentionally stubbed.
+**Consumers.** Pass 1 persists `derived_role_id`, structural archetypes in `role_catalog_json`, and — from schema v2 onward — the mechanism overlay keys (often `{}` until filled externally). `UnifiedRanker` reads cluster-derived roles via `derived_role_id` plus `_cluster_to_role`, optional catalog mechanism templates, structural overlap scoring, then repository `strategy_profile` / `generic`. Bundled name-based mechanism dispatch is intentionally stubbed.
+
+### Fast pipeline — semantic hint phases
+
+After per-file symbol/call linking, the fast project indexer (`sidecar/indexer/fast/pipeline.py`) runs two graph-enrichment passes before the embedding batch:
+
+1. **`framework_hints`** — applies shared typed rules from `semantic_hints.yaml` via `FrameworkHintsIndexer`; creates `SEMANTIC_HINT` edges for framework patterns already present in the indexed graph.
+2. **`ts_http_route_hints`** — implemented in `sidecar/indexer/ts_http_route_hints.py`. Scans Python FastAPI route decorators (`@app.post("/ask")`, etc.) and TypeScript HTTP client surfaces (`export const SidecarClient = { ... post('/ask') ... }`). Creates `SEMANTIC_HINT` edges from TS `object_api` symbols to Python handler symbols when paths match. Skips test/QA Python files and prefers `main.py` / `sidecar/` entrypoints when duplicate routes exist.
+
+Stats keys: `framework_hints_applied`, `ts_http_route_hints_applied`. Re-index after changing either pass; `--no-index` benchmark runs assume the graph already contains these edges.
 
 **Trade-offs.**
-- Cluster boundaries may not align with human intuition. The derived "role 3" can group `APIRoute` and `Dependant` together (both data-class-like, leaf-ish) while separating `add_api_route` from `api_route` if their fan-in differs. That is fine for ranking but means the benchmark cannot match by mechanism string equality across repos.
+- Cluster boundaries may not align with human intuition. A derived cluster can group two data-carrier surfaces while separating nearby builder functions if their fan-in/fan-out differs. That is fine for ranking but means the benchmark cannot match by mechanism string equality across repos.
 - Cluster ids are not stable across re-indexes if the graph changes meaningfully. The `signature` is the durable identity of a cluster; consumers should match on signature shape, not on raw `cluster_id`.
 - Full silhouette scoring is `O(n²)` per K, so the implementation uses deterministic sampling for larger repositories. The score is a model-selection heuristic, not a benchmark metric.
 - Pass 1 runs on every full project pass, even when changes are small. The "no changed files" branch reuses the existing taxonomy from the Workspace.

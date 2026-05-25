@@ -29,6 +29,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
     _EXPORTED_TYPE_FALLBACK_RE = re.compile(
         r"(?m)^export\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)\b"
     )
+    _EXPORTED_OBJECT_API_RE = re.compile(
+        r"(?m)^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*\{"
+    )
 
     @property
     def language_name(self) -> str:
@@ -67,6 +70,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def import_query(self) -> str:
         return """
             (import_statement source: (string) @import.source) @import.stmt
+            (export_statement source: (string) @import.source) @import.stmt
             (import_specifier (identifier) @import.name) @import.spec
         """
 
@@ -82,6 +86,19 @@ class TypeScriptAdapter(TreeSitterAdapter):
         surfaced by the AST query.
         """
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
+        object_api_ranges = self._exported_object_api_ranges(source_code)
+        if object_api_ranges:
+            symbols = [
+                symbol
+                for symbol in symbols
+                if not self._is_nested_object_api_member(symbol, object_api_ranges)
+            ]
+            symbols = self._merge_exported_object_api_symbols(
+                symbols,
+                source_code,
+                file_path,
+                object_api_ranges,
+            )
         existing_names = {symbol.name for symbol in symbols}
 
         for match in self._EXPORTED_FUNC_FALLBACK_RE.finditer(source_code):
@@ -116,6 +133,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
             name = match.group(1)
             if name in existing_names:
+                continue
+            tail = source_code[match.end() : match.end() + 24]
+            if re.match(r"\s*=\s*\{", tail):
                 continue
 
             start_line, end_line, content = self._fallback_symbol_span(
@@ -170,6 +190,77 @@ class TypeScriptAdapter(TreeSitterAdapter):
             )
             existing_names.add(name)
         return symbols
+
+    def _exported_object_api_ranges(self, source_code: str) -> dict[str, tuple[int, int]]:
+        ranges: dict[str, tuple[int, int]] = {}
+        for match in self._EXPORTED_OBJECT_API_RE.finditer(source_code):
+            name = match.group(1)
+            brace_index = source_code.find("{", match.end() - 1)
+            if brace_index < 0:
+                continue
+            end_index = self._find_matching_brace(source_code, brace_index)
+            if end_index is None:
+                continue
+            start_line = source_code.count("\n", 0, match.start()) + 1
+            end_line = source_code.count("\n", 0, end_index) + 1
+            ranges[name] = (start_line, end_line)
+        return ranges
+
+    @staticmethod
+    def _find_matching_brace(source_code: str, open_index: int) -> int | None:
+        depth = 0
+        for idx in range(open_index, len(source_code)):
+            char = source_code[idx]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return idx
+        return None
+
+    @staticmethod
+    def _is_nested_object_api_member(
+        symbol: SymbolMetadata,
+        object_api_ranges: dict[str, tuple[int, int]],
+    ) -> bool:
+        for name, (start_line, end_line) in object_api_ranges.items():
+            if symbol.name == name:
+                return False
+            if start_line <= symbol.start_line <= end_line:
+                return True
+        return False
+
+    def _merge_exported_object_api_symbols(
+        self,
+        symbols: list[SymbolMetadata],
+        source_code: str,
+        file_path: str,
+        object_api_ranges: dict[str, tuple[int, int]],
+    ) -> list[SymbolMetadata]:
+        by_name = {symbol.name: symbol for symbol in symbols}
+        lines = source_code.splitlines()
+        for name, (start_line, end_line) in object_api_ranges.items():
+            if end_line < start_line or start_line < 1:
+                continue
+            content = "\n".join(lines[start_line - 1 : end_line])
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            qualified_name = f"{module_name_from_path(file_path)}.{name}"
+            by_name[name] = SymbolMetadata(
+                uid=compute_uid(qualified_name, signature, self.language_name),
+                name=name,
+                kind="object_api",
+                start_line=start_line,
+                end_line=end_line,
+                content_hash=self._hash(content),
+                file_path=file_path,
+                qualified_name=qualified_name,
+                signature=signature,
+                signature_hash=signature_hash(signature, self.language_name),
+                signature_status="object_api_export",
+                language=self.language_name,
+            )
+        return list(by_name.values())
 
     def should_include_variable_symbol(
         self,
@@ -275,7 +366,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
 
-        import_bindings = self._extract_import_bindings(source_code, file_path)
+        import_bindings, module_aliases = self._extract_import_bindings(source_code, file_path)
         calls = []
         for node, tag in captures:
             if tag != "call":
@@ -346,13 +437,21 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
                     base = import_bindings.get(receiver_text, "")
                     if base:
-                        call["callee_qualified_name"] = f"{base}.{call_name}"
+                        if receiver_text in module_aliases:
+                            call["callee_qualified_name"] = f"{base}.{call_name}"
+                        else:
+                            base_leaf = base.rsplit(".", 1)[-1]
+                            if base_leaf == receiver_text:
+                                call["callee_qualified_name"] = base
+                            else:
+                                call["callee_qualified_name"] = f"{base}.{call_name}"
             calls.append(call)
 
         return calls
 
-    def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
+    def _extract_import_bindings(self, source_code: str, file_path: str) -> tuple[dict[str, str], set[str]]:
         bindings: dict[str, str] = {}
+        module_aliases: set[str] = set()
         for match in re.finditer(
             r"import\s+([^;]+?)\s+from\s+['\"]([^'\"]+)['\"]",
             source_code,
@@ -367,6 +466,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 alias = spec[len("* as ") :].strip()
                 if alias:
                     bindings[alias] = source
+                    module_aliases.add(alias)
             elif "," in spec:
                 default_alias, rest = spec.split(",", 1)
                 default_alias = default_alias.strip()
@@ -391,7 +491,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             source = self._normalize_import_source(file_path, match.group(2).strip())
             if alias and source:
                 bindings[alias] = source
-        return bindings
+        return bindings, module_aliases
 
     @staticmethod
     def _parse_named_import_bindings(spec: str, source: str, out: dict[str, str]) -> None:
@@ -420,11 +520,17 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return source.replace("/", ".")
         base = Path(file_path).parent
         resolved = (base / source).resolve()
-        candidates = [
-            resolved.with_suffix(".ts"),
-            resolved.with_suffix(".tsx"),
-            resolved / "index.ts",
-        ]
+        candidates = [resolved]
+        if resolved.suffix in {".ts", ".tsx", ".js", ".jsx"}:
+            candidates.append(resolved)
+        else:
+            # ``Path.with_suffix(".ts")`` turns ``shared.utils`` into
+            # ``shared.ts``. TypeScript projects commonly import dotted
+            # basenames like ``shared.utils`` or ``module-metadata.interface``,
+            # so append language suffixes to the full unresolved path first.
+            candidates.extend(Path(f"{resolved}{suffix}") for suffix in (".ts", ".tsx"))
+            candidates.extend([resolved.with_suffix(".ts"), resolved.with_suffix(".tsx")])
+        candidates.extend([resolved / "index.ts", resolved / "index.tsx"])
         for candidate in candidates:
             if candidate.exists():
                 return module_name_from_path(str(candidate))
@@ -485,12 +591,28 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def _enclosing_symbol_owner(self, node):
         parent = node.parent
         while parent:
+            if parent.type == "method_definition":
+                var_owner = self._object_literal_owner_variable(parent)
+                if var_owner is not None:
+                    return var_owner
             if parent.type in self.parent_types:
                 return parent
             if parent.type == "variable_declarator" and self._is_top_level_variable_declarator(
                 parent
             ):
                 return parent
+            parent = parent.parent
+        return None
+
+    def _object_literal_owner_variable(self, node):
+        parent = node.parent
+        while parent:
+            if parent.type == "variable_declarator" and self._is_top_level_variable_declarator(
+                parent
+            ):
+                return parent
+            if parent.type in self.parent_types:
+                return None
             parent = parent.parent
         return None
 

@@ -204,7 +204,7 @@ def _apply_graph(
     clear_edges = getattr(db, "clear_outgoing_symbol_edges", None)
     delete_imports = getattr(db, "delete_imports_for_file", None)
 
-    reporter.stage_start("graph", total=len(diffs))
+    reporter.stage_start("graph", total=len(diffs) * 2)
     for diff in diffs:
         ex = diff.extracted
         db.upsert_file_structure(
@@ -213,6 +213,14 @@ def _apply_graph(
 
         if callable(prune_symbols):
             prune_symbols(ex.path, keep_uids=diff.current_uids, workspace_id=workspace_id)
+
+        reporter.step("graph")
+
+    # Edges are linked only after every changed file has refreshed its
+    # File/Symbol nodes. Otherwise imports/calls to files processed later in
+    # this same batch are silently missed after a workspace reset or full reindex.
+    for diff in diffs:
+        ex = diff.extracted
 
         if callable(clear_edges):
             clear_edges(diff.edge_refresh_uids, workspace_id=workspace_id)
@@ -244,6 +252,22 @@ def _framework_hints_phase(
     indexer.apply_rules(diffs, workspace_id)
     reporter.stage_end("framework_hints")
     return len(diffs)
+
+
+def _ts_http_route_hints_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    project_path: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Link TS HTTP client surfaces to Python FastAPI handlers."""
+    from sidecar.indexer.ts_http_route_hints import TsHttpRouteHintsIndexer
+
+    reporter.stage_start("ts_http_route_hints", total=len(diffs))
+    created = TsHttpRouteHintsIndexer(db, project_path).apply(diffs, workspace_id)
+    reporter.stage_end("ts_http_route_hints")
+    return created
 
 
 def _embed_phase(
@@ -592,6 +616,16 @@ def run_fast_indexing(
         t_stage = time.perf_counter()
         stats["framework_hints_applied"] = _framework_hints_phase(diffs, db, workspace_id, reporter)
         stats["timings_sec"]["framework_hints"] = round(time.perf_counter() - t_stage, 3)
+
+        t_stage = time.perf_counter()
+        stats["ts_http_route_hints_applied"] = _ts_http_route_hints_phase(
+            diffs,
+            db,
+            workspace_id,
+            project_path,
+            reporter,
+        )
+        stats["timings_sec"]["ts_http_route_hints"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 5: global embedding batch
         t_stage = time.perf_counter()

@@ -150,7 +150,7 @@ class UnifiedRanker:
         Intent.NEW_FEATURE: 2500,
         Intent.REFACTORING: 2500,
         Intent.DESIGN_QUESTION: 3500,
-        Intent.IMPACT_ANALYSIS: 3000,
+        Intent.IMPACT_ANALYSIS: 2200,
     }
 
     # Copied from GraphExpander to keep UnifiedRanker self-contained.
@@ -257,6 +257,18 @@ class UnifiedRanker:
             WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT any_r) AS total_edges
         }
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges
+        ORDER BY
+          CASE
+            WHEN f.path CONTAINS '/test/' OR f.path CONTAINS '/tests/'
+              OR f.path CONTAINS '/integration/' OR f.path CONTAINS '/sample/'
+              OR f.path CONTAINS '/samples/' THEN 1
+            ELSE 0
+          END ASC,
+          total_edges DESC,
+          outgoing_edges DESC,
+          size(f.path) ASC
+        LIMIT $limit
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS kind,
@@ -271,7 +283,14 @@ class UnifiedRanker:
         """
         try:
             with self.db.driver.session() as session:
-                result = list(session.run(query, name=symbol_name, workspace_id=self.workspace_id))
+                result = list(
+                    session.run(
+                        query,
+                        name=symbol_name,
+                        workspace_id=self.workspace_id,
+                        limit=64,
+                    )
+                )
         except Exception:
             return []
         return result
@@ -330,6 +349,111 @@ class UnifiedRanker:
             "incoming_edges": 0,
             "total_edges": 0,
         }
+
+    def concept_anchor_candidates(
+        self,
+        symbol_name: str,
+        *,
+        query: str = "",
+        limit: int = 8,
+    ) -> list[str]:
+        return self.target_selector.concept_anchor_candidates(
+            symbol_name,
+            query=query,
+            limit=limit,
+        )
+
+    def _load_concept_anchor_candidates(
+        self,
+        symbol_name: str,
+        *,
+        query: str = "",
+        limit: int = 24,
+    ) -> list[dict]:
+        concept = (symbol_name or "").strip().lower()
+        if not concept:
+            return []
+        terms = {concept}
+        if concept.endswith("s") and len(concept) > 4:
+            terms.add(concept[:-1])
+        for term in self._query_terms(query):
+            terms.add(term)
+            if term.endswith("s") and len(term) > 4:
+                terms.add(term[:-1])
+        query_l = (query or "").lower()
+        target_l = f"{concept} {query_l}"
+        if "decorator" in target_l:
+            terms.update({"metadata", "reflect"})
+        if "module" in target_l and any(
+            token in target_l
+            for token in ("compose", "composition", "feature", "import", "provider", "controller")
+        ):
+            terms.update({"container", "metadata", "module", "registry", "scanner"})
+        terms = {term for term in terms if len(term) >= 4}
+        if not terms:
+            return []
+
+        query_limit = max(limit, min(400, limit * 10))
+        query_cypher = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE any(term IN $terms
+            WHERE toLower(s.name) CONTAINS term
+               OR toLower(coalesce(s.qualified_name, '')) CONTAINS term)
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(:Symbol)
+            WHERE coalesce(out_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT out_r) AS outgoing_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+            WHERE coalesce(in_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT in_r) AS incoming_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(:Symbol)
+            WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT any_r) AS total_edges
+        }
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges
+        ORDER BY
+          CASE
+            WHEN f.path CONTAINS '/test/' OR f.path CONTAINS '/tests/'
+              OR f.path CONTAINS '/integration/' OR f.path CONTAINS '/sample/'
+              OR f.path CONTAINS '/samples/' THEN 1
+            ELSE 0
+          END ASC,
+          total_edges DESC,
+          outgoing_edges DESC,
+          size(f.path) ASC
+        LIMIT $limit
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS kind,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               outgoing_edges,
+               incoming_edges,
+               total_edges
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = list(
+                    session.run(
+                        query_cypher,
+                        workspace_id=self.workspace_id,
+                        terms=sorted(terms),
+                        limit=query_limit,
+                    )
+                )
+        except Exception:
+            return []
+        return [row for row in rows if not _path_is_noisy(row.get("file_path", ""))]
 
     @staticmethod
     def _module_target_size(file_path: str) -> tuple[int, int]:
@@ -419,7 +543,7 @@ class UnifiedRanker:
         if not file_path:
             return 0.0
         if _path_is_noisy(file_path):
-            return -1.0
+            return -5.0
         if "/docs/" in file_path or "/examples/" in file_path:
             return -0.4
         if "/__init__." in file_path:
@@ -576,6 +700,23 @@ class UnifiedRanker:
         # 6. Mechanism-aware role backfill for sparse framework graphs.
         mechanism = self._determine_mechanism(target, query=query)
         required_roles = self._get_required_roles(mechanism, target=target)
+        if intent == Intent.IMPACT_ANALYSIS:
+            required_roles = normalize_roles(
+                [
+                    "impact_runtime",
+                    "impact_public_api",
+                    "impact_test_surface",
+                    "docs_or_concept",
+                ]
+            )
+            impact_reference_anchors = self.structural_recovery.impact_reference_anchor_candidates(
+                target,
+                query=query,
+                excluded_uids={target.uid},
+                pool=pool,
+            )
+            if impact_reference_anchors:
+                pool = self._merge_role_backfill(pool, impact_reference_anchors)
         roles_for_backfill = self._roles_needing_backfill(
             target,
             pool,
@@ -595,7 +736,11 @@ class UnifiedRanker:
                     required_roles,
                 )
         recovery_roles = (
-            required_roles if self._needs_structural_recovery(target) else roles_for_backfill
+            roles_for_backfill
+            if intent == Intent.IMPACT_ANALYSIS
+            else required_roles
+            if self._needs_structural_recovery(target)
+            else roles_for_backfill
         )
         if recovery_roles:
             recovery = self._generic_role_recovery_candidates(
@@ -619,6 +764,37 @@ class UnifiedRanker:
         )
         if trace_import_anchors:
             pool = self._merge_role_backfill(pool, trace_import_anchors)
+
+        module_composition_anchors = self._module_composition_anchor_candidates(
+            target,
+            query=query,
+            mechanism=mechanism,
+            required_roles=required_roles,
+            excluded_uids={target.uid},
+            pool=pool,
+        )
+        if module_composition_anchors:
+            pool = self._merge_role_backfill(pool, module_composition_anchors)
+
+        if intent != Intent.IMPACT_ANALYSIS:
+            query_topic_anchors = self.structural_recovery.query_topic_anchor_candidates(
+                target,
+                query=query,
+                excluded_uids={target.uid},
+                limit=16,
+            )
+            if query_topic_anchors:
+                pool = self._merge_role_backfill(pool, query_topic_anchors)
+
+        if intent == Intent.IMPACT_ANALYSIS:
+            impact_topic_anchors = self.structural_recovery.impact_topic_anchor_candidates(
+                target,
+                query=query,
+                excluded_uids={target.uid},
+                pool=pool,
+            )
+            if impact_topic_anchors:
+                pool = self._merge_role_backfill(pool, impact_topic_anchors)
 
         # 7. Assign intent weights and noise factors
 
@@ -668,18 +844,57 @@ class UnifiedRanker:
         # roles in this set deserve a sort-order bump, otherwise every doc
         # claims the bonus and the priority lift is meaningless.
         non_trivial_required = set(required_roles) - {"docs_or_concept"}
+        trace_mode_for_sort = RankerScoring.trace_dependency_gain_mode(mechanism, query)
+        trace_focus_text = f"{target.name or ''} {query or ''}".lower()
+        dependency_trace_sort = any(
+            token in trace_focus_text
+            for token in ("depend", "dependency", "dependencies", "inject", "provider", "container")
+        )
 
         def _sort_key(c: Candidate) -> tuple:
             base = self._blended(c)
             roles = set(self._roles_of(c))
+            path_lc = (c.file_path or "").lower().replace("\\", "/")
+            name_lc = f"{c.name or ''} {c.qualified_name or ''}".lower()
+            trace_name_focus = any(
+                token in name_lc
+                for token in (
+                    "depend",
+                    "dependant",
+                    "dependency",
+                    "dependencies",
+                    "inject",
+                    "provider",
+                    "container",
+                    "resolve",
+                    "solve",
+                )
+            )
+            trace_focus_rank = 0
+            if trace_mode_for_sort and dependency_trace_sort:
+                if trace_name_focus and "/dependencies/" in path_lc:
+                    trace_focus_rank = 3
+                elif trace_name_focus:
+                    trace_focus_rank = 2
+                elif "/dependencies/" in path_lc:
+                    trace_focus_rank = 1
+            is_trace_topic_anchor = trace_mode_for_sort and any(
+                step == "trace-topic-anchor" for step in c.provenance
+            )
+            is_query_topic_anchor = any(step == "query-topic-anchor" for step in c.provenance)
             # Tier 0 (best): candidates that fill a missing required role the
             # target itself doesn't cover. These must beat raw doc-relevance
             # so a large/weak role-filler still seats before unrelated docs.
             if roles & unfilled_required:
-                return (2, base)
+                return (2, trace_focus_rank, base)
+            if is_trace_topic_anchor:
+                trace_topic_tier = 1.5 if dependency_trace_sort else 2.5
+                return (trace_topic_tier, trace_focus_rank, base)
+            if is_query_topic_anchor:
+                return (1.25, trace_focus_rank, base)
             if roles & non_trivial_required:
-                return (1, base)
-            return (0, base)
+                return (1, trace_focus_rank, base)
+            return (0, trace_focus_rank, base)
 
         pool.sort(key=_sort_key, reverse=True)
 
@@ -693,6 +908,129 @@ class UnifiedRanker:
             required_roles,
             budget,
         )
+
+    def _module_composition_anchor_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        query: str,
+        mechanism: str,
+        required_roles: list[str],
+        excluded_uids: set[str],
+        pool: list[Candidate],
+        limit: int = 12,
+    ) -> list[Candidate]:
+        haystack = f"{target.name} {target.file_path} {query} {mechanism}".lower()
+        if "module" not in haystack:
+            return []
+        if not any(
+            term in haystack
+            for term in (
+                "compose",
+                "composition",
+                "controller",
+                "decorator",
+                "export",
+                "feature",
+                "import",
+                "provider",
+            )
+        ):
+            return []
+
+        rows = self._module_composition_symbol_rows(
+            excluded_uids={target.uid, *excluded_uids, *(c.uid for c in pool if c.uid)},
+            limit=limit * 4,
+        )
+        if not rows:
+            return []
+
+        scoped = set(
+            normalize_roles([*required_roles, "composition_surface", "integration_surface"])
+        )
+        candidates: list[Candidate] = []
+        for row in rows[:limit]:
+            candidate = self._recovery_candidate_from_row(
+                row,
+                origin="module_composition_anchor",
+                scoped_roles=scoped,
+                target=target,
+            )
+            if candidate is None:
+                continue
+            candidate.graph_score += 0.35
+            candidate.provenance.append("module-composition-anchor")
+            candidates.append(candidate)
+        return candidates
+
+    def _module_composition_symbol_rows(
+        self,
+        *,
+        excluded_uids: set[str],
+        limit: int,
+    ) -> list[dict]:
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+          AND NOT f.path CONTAINS '/test/'
+          AND NOT f.path CONTAINS '/tests/'
+          AND NOT f.path CONTAINS '/integration/'
+          AND NOT f.path CONTAINS '/sample/'
+          AND NOT f.path CONTAINS '/samples/'
+          AND (
+            f.path CONTAINS '/module'
+            OR f.path CONTAINS 'module.'
+            OR f.path CONTAINS 'metadata-scanner'
+            OR f.path CONTAINS '/scanner'
+            OR toLower(s.name) IN ['imports', 'controllers', 'providers', 'exports']
+            OR toLower(s.name) CONTAINS 'metadata'
+            OR toLower(s.name) CONTAINS 'scanner'
+          )
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges
+        WITH s, f, c, inbound_edges, outbound_edges,
+             CASE
+               WHEN f.path CONTAINS 'metadata-scanner' THEN 3.0
+               WHEN f.path CONTAINS '/injector/module' THEN 2.8
+               WHEN f.path CONTAINS '/scanner' THEN 2.3
+               WHEN f.path CONTAINS '/module' OR f.path CONTAINS 'module.' THEN 1.8
+               ELSE 0.0
+             END
+             + CASE
+               WHEN toLower(s.name) IN ['imports', 'controllers', 'providers', 'exports'] THEN 1.2
+               WHEN toLower(s.name) CONTAINS 'metadata' THEN 0.8
+               WHEN toLower(s.name) CONTAINS 'scanner' THEN 0.8
+               ELSE 0.0
+             END AS anchor_score
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               outbound_edges
+        ORDER BY anchor_score DESC, inbound_edges + outbound_edges DESC, size(file_path) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        excluded_uids=list(excluded_uids),
+                        limit=limit,
+                    )
+                )
+        except Exception:
+            return []
 
     def candidates_to_subgraph(
         self,
@@ -1702,6 +2040,7 @@ class UnifiedRanker:
         trace_dependency_mode = RankerScoring.trace_dependency_gain_mode(mechanism, query)
         if trace_dependency_mode and c.kind != "doc":
             path_lc = (c.file_path or "").lower().replace("\\", "/")
+            eligible_trace_breadth = c.noise_factor >= 1.0 or intent == Intent.IMPACT_ANALYSIS
             if "/dependencies/" in path_lc:
                 file_coverage_bonus += 0.14
             if any(token in path_lc for token in _HOOK_FLOW_PATH_TOKENS):
@@ -1712,7 +2051,7 @@ class UnifiedRanker:
                 file_coverage_bonus += 0.12
             if c.file_path and c.file_path != target.file_path:
                 chosen_files = {cc.file_path for cc in chosen}
-                if c.file_path not in chosen_files:
+                if c.file_path not in chosen_files and eligible_trace_breadth:
                     file_coverage_bonus += 0.22
             if c.relation in ("DEPENDS_ON", "CALLS_DIRECT", "CALLS_SCOPED", "CALLS_IMPORTED"):
                 file_coverage_bonus += 0.06

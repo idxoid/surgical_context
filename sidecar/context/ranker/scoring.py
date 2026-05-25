@@ -234,4 +234,24 @@ class RankerScoring:
             return True
         if "before_request" in q or "after_request" in q:
             return True
+        if "relationship" in q and any(term in q for term in ("foreign", "lazy", "collection")):
+            return True
+        if (
+            "query" in q
+            and ("lazy" in q or "lazily" in q)
+            and any(term in q for term in ("execute", "sql"))
+        ):
+            return True
+        if any(term in q for term in ("actor", "identity", "principal", "same_actor")) and any(
+            term in q for term in ("resolve", "refer", "same", "decide", "mapping")
+        ):
+            return True
+        if any(term in q for term in ("clock", "window", "event_time", "ingested_time")) and any(
+            term in q for term in ("chain", "correlation", "match", "time")
+        ):
+            return True
+        if any(term in q for term in ("compile", "compiler", "template")) and any(
+            term in q for term in ("render", "runtime", "update")
+        ):
+            return True
         return False

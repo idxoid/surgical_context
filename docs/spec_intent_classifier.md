@@ -104,7 +104,7 @@ cross-refs → code → specs → architecture → concept → idea
 
 **Known gaps / current review findings:**
 - `impact_analysis` classification is fragile because the current implementation scores matches but still selects the primary intent by fixed precedence. Impact questions containing "break" can route as `debugging` even when the impact score is higher. Primary selection should use max score, with precedence only as a tie-breaker.
-- Benchmark-style impact questions should be regression tests, especially `fastapi_q06`, `pydantic_q06`, `rtk_q05`, `django_q05`, and `flask_q05` from `tests/fixtures/real_repo_question_pack.yaml`.
+- Benchmark-style impact questions should remain regression tests across the real-repo question pack. They should verify generic impact roles (`impact_runtime`, `impact_public_api`, `impact_test_surface`) instead of framework-named routing behavior.
 - `/impact` and `impact_analysis` retrieval are currently separate surfaces. `/impact` reads materialized `AFFECTS` reachability, while `impact_analysis` ranker mode uses intent priors, topic-sensitive test noise, and impact roles. They should converge through the same retrieval contract.
 - `AFFECTS` is reachability evidence, not causal breakage proof. It should eventually contribute candidates to ranker with provenance such as `affects`, plus depth/path/relation/confidence metadata.
 - User-facing wording should stay conservative: "likely affected", "reachability-based candidates", or "blast-radius candidates"; avoid "will break" unless tests/runtime evidence prove it.
@@ -283,7 +283,7 @@ Add deeper retrieval modes aligned with benchmark-style questions:
 - **`compare_design`** — bias toward architecture/spec docs plus representative implementations.
 - **`implement_change`** — combine reference implementations, contracts, and narrow blast-radius candidates.
 
-`trace_dependency` already exists implicitly as ranker mechanism/recovery logic, but it is not a first-class intent. That makes the system less perceptive: "how does Depends work" and "how does Button work" both look like `exploration`, while the first needs runtime/DI tracing and the second may only need ordinary behavior explanation.
+`trace_dependency` already exists implicitly as ranker mechanism/recovery logic, but it is not a first-class intent. That makes the system less perceptive: a dependency-marker question and a UI-component behavior question can both look like `exploration`, while the first needs runtime/provider tracing and the second may only need ordinary behavior explanation.
 
 Intent planning should use more than text. The planner should consider:
 

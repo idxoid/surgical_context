@@ -1,5 +1,6 @@
 """Unit tests for durable indexing job log."""
 
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 
 import pytest
@@ -73,3 +74,17 @@ class TestIndexJobLog:
             new_job_id = log.start_file_job("/repo/app.py")
             assert new_job_id != dead["id"]
             assert log.get_job(new_job_id)["status"] == "running"
+
+    def test_parallel_file_jobs_do_not_lock_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log = IndexJobLog(f"{tmpdir}/jobs.sqlite3")
+
+            def track(idx: int):
+                with log.track_file_job(f"/repo/file_{idx}.py", file_hash=str(idx)):
+                    return idx
+
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                assert sorted(pool.map(track, range(64))) == list(range(64))
+
+            jobs = log.list_jobs("completed")
+            assert len(jobs) == 64

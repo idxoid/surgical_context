@@ -140,9 +140,16 @@ class IntentClassifier:
             "suggestion",
         },
         Intent.IMPACT_ANALYSIS: {
+            "affected",
+            "would be affected",
+            "tests affected",
+            "what tests",
+            "test suites",
             "most likely to break",
             "most likely to be affected",
             "likely to break",
+            "would break",
+            "which parts",
             "what would break",
             "what parts",
             "what breaks",
@@ -169,7 +176,6 @@ class IntentClassifier:
             "purpose",
             "mean",
             "does this",
-            "this function",
         },
     }
 
@@ -235,7 +241,7 @@ class IntentClassifier:
                 matched_keywords=matched_keywords,
             )
 
-        primary = next(intent for intent in cls.ORDER if raw_scores.get(intent, 0.0) > 0)
+        primary = next(intent for intent in cls.ORDER if raw_scores.get(intent, 0.0) == max_score)
         total_score = sum(score for score in raw_scores.values() if score > 0)
         distribution = {
             intent.value: raw_scores[intent] / total_score

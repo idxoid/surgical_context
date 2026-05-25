@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from neo4j import GraphDatabase
 
@@ -434,8 +435,15 @@ class Neo4jClient:
                     f"""
                     UNWIND $calls AS call
                     MATCH (caller:Symbol {{uid: call.caller_uid}})
-                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(callee:Symbol {{qualified_name: call.callee_qualified_name}})
-                    WHERE caller <> callee
+                    OPTIONAL MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(exact:Symbol {{qualified_name: call.callee_qualified_name}})
+                    OPTIONAL MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(surface:Symbol {{kind: 'object_api'}})
+                    WHERE exact IS NULL
+                      AND call.callee_qualified_name STARTS WITH surface.qualified_name + '.'
+                    WITH call, caller, exact, surface
+                    ORDER BY call.caller_uid, call.call_site_line, size(coalesce(surface.qualified_name, '')) DESC
+                    WITH call, caller, exact, collect(surface) AS surfaces
+                    WITH call, caller, coalesce(exact, surfaces[0]) AS callee
+                    WHERE callee IS NOT NULL AND caller <> callee
                     MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
                                                    call_site_line: call.call_site_line}}]->(callee)
                     SET r.confidence = call.confidence,
@@ -486,7 +494,7 @@ class Neo4jClient:
             UNWIND $imports AS imp
             MATCH (source:File {path: imp.source_file, workspace_id: $workspace_id})
             MATCH (target:File {workspace_id: $workspace_id})
-            WHERE target.path ENDS WITH imp.path_suffix
+            WHERE any(path_suffix IN imp.path_suffixes WHERE target.path ENDS WITH path_suffix)
               AND source <> target
             MERGE (source)-[:IMPORTS {type: imp.import_type, workspace_id: $workspace_id}]->(target)
             """,
@@ -620,12 +628,89 @@ def _grouped_call_rows(calls: list[dict]) -> list[tuple[str, str, list[dict[str,
     return [(rel_type, mode, rows) for (rel_type, mode), rows in groups.items()]
 
 
-def _import_row(imp: ImportEdge) -> dict[str, str]:
+def _import_row(imp: ImportEdge) -> dict[str, object]:
+    if imp.import_type == "relative" and imp.target_module_name.startswith("."):
+        base = (Path(imp.source_file).parent / imp.target_module_name).resolve()
+        module_path = str(base)
+        package_paths: list[str] = []
+    else:
+        module_name = imp.target_module_name.lstrip("./")
+        module_path = "/" + module_name.replace(".", "/")
+        package_paths = _monorepo_package_import_paths(module_name)
+    path_suffixes = [
+        f"{module_path}{suffix}"
+        for suffix in (
+            ".py",
+            "/__init__.py",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            "/index.js",
+            "/index.jsx",
+            "/index.ts",
+            "/index.tsx",
+        )
+    ]
+    for package_path in package_paths:
+        for suffix in (
+            ".py",
+            "/__init__.py",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            "/index.js",
+            "/index.jsx",
+            "/index.ts",
+            "/index.tsx",
+        ):
+            path_suffixes.append(f"{package_path}{suffix}")
     return {
         "source_file": imp.source_file,
-        "path_suffix": imp.target_module_name.lstrip(".").replace(".", "/") + ".py",
+        "path_suffixes": sorted(set(path_suffixes)),
         "import_type": imp.import_type,
     }
+
+
+def _monorepo_package_import_paths(module_name: str) -> list[str]:
+    """Return suffixes for package-manager workspace imports.
+
+    NPM/Python package imports often point at a workspace package rather than a
+    path that appears literally in the repository. For example
+    ``@vue/runtime-core`` lives under ``packages/runtime-core/src/index.ts``.
+    Keep this as suffix generation rather than framework-specific routing.
+    """
+    clean = module_name.strip().strip("/")
+    if not clean:
+        return []
+
+    parts = [part for part in clean.split("/") if part]
+    if not parts:
+        return []
+    if parts[0].startswith("@") and len(parts) >= 2:
+        package_name = parts[1]
+        subpath = parts[2:]
+    else:
+        package_name = parts[0]
+        subpath = parts[1:]
+
+    if not package_name:
+        return []
+
+    candidates = [
+        f"/packages/{package_name}",
+        f"/packages/{package_name}/src",
+    ]
+    if subpath:
+        suffix = "/".join(subpath)
+        candidates.extend(
+            [
+                f"/packages/{package_name}/{suffix}",
+                f"/packages/{package_name}/src/{suffix}",
+            ]
+        )
+    return candidates
 
 
 def _inheritance_row(edge: InheritanceEdge) -> dict[str, object]:

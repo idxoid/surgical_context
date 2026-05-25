@@ -7,7 +7,12 @@ from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.deduplicator import ContextDeduplicator
 from sidecar.context.graph_expander import GraphExpander
-from sidecar.context.intent_classifier import IntentClassifier, IntentResolution, IntentSignal
+from sidecar.context.intent_classifier import (
+    Intent,
+    IntentClassifier,
+    IntentResolution,
+    IntentSignal,
+)
 from sidecar.context.prompt_compiler import PromptCompiler
 from sidecar.context.types import PromptContext, SubgraphNode
 from sidecar.context.unified_ranker import (
@@ -111,6 +116,19 @@ class ContextArbitrator:
                 target_selection = fallback_selection
             else:
                 return f"Error: Symbol '{symbol_name}' not found in graph."
+        elif self._target_selection_is_low_quality(target_selection):
+            fallback_target, fallback_selection = self._resolve_concept_anchor_target(
+                ranker,
+                symbol_name=symbol_name,
+                question=question,
+                intent=intent,
+            )
+            if fallback_target is not None:
+                target = fallback_target
+                target_selection = {
+                    **fallback_selection,
+                    "replaced_target_selection": target_selection,
+                }
 
         reserved = UnifiedRanker.PREAMBLE_TOKENS + target.token_estimate
         if reserved > token_budget:
@@ -171,6 +189,13 @@ class ContextArbitrator:
 
         mechanism = ranker._determine_mechanism(target, query=question)
         required_roles = ranker._get_required_roles(mechanism)
+        if intent == Intent.IMPACT_ANALYSIS:
+            required_roles = [
+                "impact_runtime",
+                "impact_public_api",
+                "impact_test_surface",
+                "docs_or_concept",
+            ]
 
         ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
         ctx.stopped_reason = subgraph.stopped_reason
@@ -226,9 +251,21 @@ class ContextArbitrator:
     def _concept_anchor_candidates(symbol_name: str) -> list[str]:
         concept = (symbol_name or "").strip().lower()
         concept_map = {
+            "app": ["createApplication", "application", "createApp", "use", "handle"],
             "middleware": ["use", "handle", "router", "route"],
         }
         return concept_map.get(concept, [])
+
+    @staticmethod
+    def _target_selection_is_low_quality(target_selection: dict[str, Any] | None) -> bool:
+        if not target_selection:
+            return False
+        score = target_selection.get("selected_score")
+        try:
+            numeric_score = float(score)
+        except (TypeError, ValueError):
+            return False
+        return numeric_score < 0.0
 
     def _resolve_concept_anchor_target(
         self,
@@ -240,7 +277,11 @@ class ContextArbitrator:
     ) -> tuple[SubgraphNode | None, dict[str, Any]]:
         if not self._should_try_concept_anchor_fallback(question):
             return None, {}
-        anchors = self._concept_anchor_candidates(symbol_name)
+        anchors = list(self._concept_anchor_candidates(symbol_name))
+        dynamic_anchor_loader = getattr(ranker, "concept_anchor_candidates", None)
+        if callable(dynamic_anchor_loader):
+            anchors.extend(dynamic_anchor_loader(symbol_name, query=question))
+        anchors = list(dict.fromkeys(anchors))
         if not anchors:
             return None, {}
         for anchor in anchors:

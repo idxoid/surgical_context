@@ -73,7 +73,7 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
 - [ ] Add latency SLO checks for local asks and index operations.
 - [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
-- [~] Extend canonical role coverage beyond FastAPI: grow the new capability-role inference beyond validator/serializer handles, wrapper-body support, topic-aware impact retrieval, and module/package fallback targets. (FastAPI/Pydantic/RTK are green baselines; Flask/Django/Express tails remain.)
+- [~] Extend canonical role coverage beyond the current green baselines: grow capability-role inference, wrapper-body support, topic-aware impact retrieval, module/package fallback targets, and generic dependency/provider trace recovery. Flask/Django/Express tails remain.
 - [ ] Treat impact analysis as shallow until proven otherwise: current `AFFECTS` is bounded reverse reachability, not a full causal blast-radius model across framework registries, generated APIs, templates, runtime dispatch, and tests.
 
 ### P3 - Real-Repo Validation
@@ -84,9 +84,11 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [x] Use benchmark results to tune ranking rather than tuning by intuition.
 
 Current snapshot:
-- FastAPI `core12` retrieval baseline is green, including `Depends` trace path recovery.
+- FastAPI local retrieval is mostly green; dependency trace roles are recovered through generic dependency/provider signals rather than framework-symbol pairs. Remaining warning-class cases are file/precision tails.
 - Pydantic and Redux Toolkit local packs are broadly green with remaining precision tails on broad/doc-heavy questions.
 - Flask and Django mostly pass with role/file-coverage tails; Express still needs target-resolution and JS export-shape improvements before meaningful ranker tuning.
+- **surgical_context** (May 2026): **7/7 pass** with TS `object_api` indexing + `ts_http_route_hints`; query-topic recovery pulls explicit pipeline stages such as `ranking` / `PromptContext`, and the relaxed `trace_dependency` gate converts near-perfect single-axis recall to pass.
+- **dathund** (May 2026): **8/8 pass** after broadening trace recovery to identity/principal resolution and time-authority clock/window flows; no Dathund-specific fixtures required.
 - `UnifiedRanker` decomposition (big-bang first cut) is implemented: new `sidecar/context/ranker/*` components (`TargetSelector`, `GraphCandidateSource`, `VectorCandidateSource`, `RoleBackfill`, `BudgetSelector`, `SubgraphAssembler`) are wired, with `UnifiedRanker` kept as compatibility facade.
 
 ### P4 - Provider Boundaries, Defaults First
@@ -126,7 +128,7 @@ Current snapshot:
    Continue to treat impact as a separate iteration after the non-impact retrieval lanes stabilize.
 
 ### Immediate Retrieval Focus
-- keep broadening the now-shipped canonical role taxonomy beyond FastAPI, with the current baseline green across FastAPI, Pydantic, and Redux Toolkit
+- keep broadening the now-shipped canonical role taxonomy beyond the current green baselines
 - keep using real-repo benchmark reports plus `ready_context` payloads to debug misses before changing weights
 - continue precision work on doc-heavy and broad RTK/Pydantic paths, and on Flask/Django role/file-coverage tails
 - finish doc-anchor confidence/type calibration and extension surfacing so docs stop acting like undifferentiated semantic noise
@@ -538,7 +540,7 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 
 > **Specs:** [spec_unified_ranking.md](spec_unified_ranking.md), [spec_multi_label_intent.md](spec_multi_label_intent.md), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
 >
-> **Current status:** 9.1 (unified ranker) and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is ~70% complete. 9.2 (multi-label intent) is deferred to Phase 10. Real-repo benchmark misses like `fastapi_q02` show that ranker behavior and contract observability are on the critical path for Week 2 validation.
+> **Current status:** 9.1 (unified ranker) and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is ~70% complete. 9.2 (multi-label intent) is deferred to Phase 10. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
 
 ### 9.1 Unified Ranker ✅ COMPLETE
 - [x] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
@@ -547,12 +549,12 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] Budget-fill loop competes symbols and doc chunks on identical terms
 - [x] Weight tuning via eval harness sweep
 - [x] Decompose `UnifiedRanker` internals into focused components under `sidecar/context/ranker/`, while preserving `get_target(...)`, `rank(...)`, `candidates_to_subgraph(...)` contracts used by Arbitrator/QA
-- [x] Target disambiguation for duplicate symbol names within one workspace (`Depends`-style collisions)
-- [x] Module/package fallback targets for workspace-level questions such as `pydantic.v1`
+- [x] Target disambiguation for duplicate symbol names within one workspace
+- [x] Module/package fallback targets for package-surface questions
 - [x] Topic-aware subsystem noise control for focused API questions, so distant graph links through broad helpers do not crowd out relevant runtime/doc candidates
-- [x] Better mechanism routing/backfill for FastAPI serialization impact (`serialize_response` now routes to impact roles and targeted tests)
+- [x] Better mechanism routing/backfill for serialization impact (`serialize_response`-style flows now route to impact roles and targeted tests)
 - [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract (deferred)
-- [ ] Better doc-to-runtime bridge coverage for framework mechanisms where graph edges are structurally sparse (deferred to Week 2 post-benchmark)
+- [~] Better graph/doc/recovery coverage for structurally sparse runtime mechanisms through generic semantic hints, import recovery, and dependency-flow role recovery; remaining work is precision/file-recall telemetry.
 
 ### 9.2 Multi-Label Intent ❌ DEFERRED
 - [ ] `IntentDistribution` (sum-to-1 weights across 6 labels)

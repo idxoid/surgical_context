@@ -2,12 +2,18 @@
 
 NOISE_PATH_PATTERNS = (
     "/tests/",
+    "/test/",
     "/test_",
+    "-test/",
     "/__tests__/",
+    ".spec.",
+    ".test.",
     "/docs_src/",
     "/docs/virtual/",
     "/examples/",
     "/example/",
+    "/benchmarks/",
+    "/types/test/",
     "/__testfixtures__/",
     "/testfixtures/",
     "/codemods/",

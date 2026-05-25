@@ -147,6 +147,31 @@ def test_neo4j_link_calls_batches_same_resolution_mode():
     assert len(params["calls"]) == 2
 
 
+def test_neo4j_link_calls_falls_back_to_object_api_surface_for_member_qualified_name():
+    tx = MagicMock()
+
+    Neo4jClient._create_call_relations(
+        tx,
+        [
+            {
+                "caller_uid": "caller",
+                "callee_name": "askStream",
+                "callee_qualified_name": "extension.src.sidecarClient.SidecarClient.askStream",
+                "rel_type": "CALLS_IMPORTED",
+                "tier": "imported",
+                "confidence": 0.9,
+                "resolver": "ts-scope-v1",
+                "call_site_line": 12,
+            }
+        ],
+        "local/surgical_context@main",
+    )
+
+    query = tx.run.call_args.args[0]
+    assert "object_api" in query
+    assert "STARTS WITH surface.qualified_name" in query
+
+
 def test_workspace_resolver_parses_branch_header():
     workspace = WorkspaceResolver().from_header("acme/surgical_context@feature/payments")
     assert workspace.id == "acme/surgical_context@feature/payments"

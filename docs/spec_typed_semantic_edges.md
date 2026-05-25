@@ -77,7 +77,21 @@ Current call classification:
 
 TypeScript support is intentionally simpler than Python scoped/imported resolution today.
 
-### 3.3 Inheritance and References
+**Exported object APIs.** `export const SidecarClient = { ask(...) { ... } }` is indexed as one `object_api` symbol (`signature_status: object_api_export`). Nested methods are not separate top-level symbols. Call extraction attributes HTTP helper calls to the object surface. See `tests/unit/test_typescript_adapter.py`.
+
+### 3.3 Cross-language HTTP hints
+
+Implemented in `sidecar/indexer/ts_http_route_hints.py` (fast pipeline stage after `framework_hints`).
+
+When a monorepo contains both TypeScript client code and Python FastAPI handlers:
+
+1. Python scan extracts `@app.<method>("/path")` decorators and handler function names (test/QA files skipped; `main.py` preferred on duplicate paths).
+2. TypeScript scan finds `export const` object APIs and HTTP path literals in `post/get/fetch(...)` calls.
+3. Matching paths create `SEMANTIC_HINT` edges from the TS `object_api` symbol to the Python handler symbol.
+
+These edges are consumed by `UnifiedRanker` with the same strong prior as other `SEMANTIC_HINT` relationships. They are generic path matching, not repo-name dispatch.
+
+### 3.4 Inheritance and References
 
 Inheritance extraction exists, but `Neo4jClient.link_inheritance(...)` currently writes:
 

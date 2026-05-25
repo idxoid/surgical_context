@@ -72,6 +72,25 @@ class TestIntentClassifier:
         for q in queries:
             assert IntentClassifier.classify_intent(q) == Intent.DESIGN_QUESTION
 
+    def test_impact_intent_for_affected_tests_and_examples(self):
+        """Detect benchmark-style blast-radius questions without requiring 'break'."""
+        queries = [
+            "If Flask's routing dispatch mechanism changes, what test suites and example code would be affected?",
+            "What tests are affected if alias handling changes?",
+            "If the ORM field descriptor protocol changes, which parts of Django tests and public APIs would break?",
+        ]
+        for q in queries:
+            assert IntentClassifier.classify_intent(q) == Intent.IMPACT_ANALYSIS
+
+    def test_impact_primary_uses_score_before_precedence(self):
+        """A strong impact phrase should beat weaker earlier debugging/refactor tokens."""
+        signal = IntentClassifier.classify_with_metadata(
+            "If I change this generated action type, what parts are most likely to break?"
+        )
+
+        assert signal.primary == Intent.IMPACT_ANALYSIS
+        assert signal.distribution["impact_analysis"] > signal.distribution["debugging"]
+
     def test_empty_query_defaults_to_exploration(self):
         """Empty query defaults to exploration."""
         assert IntentClassifier.classify_intent("") == Intent.EXPLORATION

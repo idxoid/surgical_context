@@ -146,6 +146,19 @@ class Worker {
         assert call["tier"] == "dynamic"
         assert "callee_uid" not in call
 
+    def test_typed_function_call_owner_uid_matches_extracted_symbol_uid(self, adapter):
+        source = """
+export function Module(metadata: ModuleMetadata): ClassDecorator {
+  validateModuleKeys(Object.keys(metadata));
+}
+"""
+        symbols = adapter.extract_symbols(source, "module.decorator.ts")
+        calls = adapter.extract_calls_from_source(source, "module.decorator.ts")
+
+        module_symbol = next(symbol for symbol in symbols if symbol.name == "Module")
+        assert calls
+        assert {call["caller_uid"] for call in calls} == {module_symbol.uid}
+
     def test_extract_calls_from_exported_const_wrapper(self, adapter):
         source = """
 export const createApi = buildCreateApi(coreModule())
@@ -189,6 +202,24 @@ function bootstrap() {
         assert call["tier"] == "imported"
         assert call["callee_qualified_name"] == "@nestjs.core.NestFactory"
 
+    def test_extract_calls_links_object_api_member_to_imported_surface(self, adapter):
+        source = """
+import { SidecarClient } from './sidecarClient';
+
+export class SurgicalContextViewProvider {
+  runAsk() {
+    return SidecarClient.askStream('sym', 'question', {});
+  }
+}
+"""
+        calls = adapter.extract_calls_from_source(
+            source, "extension/src/providers/SurgicalContextViewProvider.ts"
+        )
+        call = next(call for call in calls if call.get("callee_name") == "askStream")
+
+        assert call["rel_type"] == "CALLS_IMPORTED"
+        assert call["callee_qualified_name"] == "sidecarClient.SidecarClient"
+
     def test_extract_symbols_includes_exported_interface_via_fallback(self, adapter):
         source = """
 export interface Ref<T = unknown> {
@@ -204,3 +235,20 @@ export interface Ref<T = unknown> {
 
     def test_file_extensions(self, adapter):
         assert adapter.file_extensions == {".ts", ".tsx"}
+
+    def test_exported_object_api_indexes_single_surface(self, adapter):
+        source = """
+export const SidecarClient = {
+  ask() {
+    return post('/ask', {});
+  },
+  health() {
+    return fetch(`${getBaseUrl()}/health`);
+  },
+};
+"""
+        symbols = adapter.extract_symbols(source, "extension/src/sidecarClient.ts")
+        assert {symbol.name for symbol in symbols} == {"SidecarClient"}
+        sidecar = symbols[0]
+        assert sidecar.kind == "object_api"
+        assert sidecar.signature_status == "object_api_export"

@@ -106,7 +106,7 @@ class TreeSitterAdapter(LanguageAdapter):
                 signature = normalize_signature(raw_signature or "", self.language_name)
                 symbols.append(
                     SymbolMetadata(
-                        uid=compute_uid(qualified_name, signature, self.language_name),
+                        uid=compute_uid(qualified_name, raw_signature, self.language_name),
                         name=name,
                         kind="function" if tag == "func.def" else "class",
                         start_line=node.start_point[0] + 1,

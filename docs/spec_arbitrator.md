@@ -93,7 +93,7 @@ The graph supplies symbol file paths and line ranges. Only the source of text ch
 
 - The graph-only fallback does not surface the same ranker metadata richness as the unified path.
 - Doc-anchor type/confidence is injected into `documentation[]` when a selected doc overlaps ranked graph symbols through `COVERS`; vector-only docs still carry empty/zero defaults.
-- Mechanism inference is now strong for FastAPI and partially generalized for Pydantic, but framework coverage is still uneven.
+- Mechanism inference now relies on repository profiles, role catalogs, and generic recovery signals rather than bundled framework dispatch tables. Coverage is still uneven for dynamic export/registration patterns.
 
 ## Planned Extensions
 
