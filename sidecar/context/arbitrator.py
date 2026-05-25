@@ -154,6 +154,18 @@ class ContextArbitrator:
         code_map = {}
         for node in [subgraph.primary] + subgraph.nodes:
             line_range = (node.range[0], node.range[1])
+            is_target_massive = (
+                node.uid == subgraph.primary.uid and node.relation == "target_signature_only"
+            )
+            is_distant_neighbor = node.render_mode == "signature_only"
+            if is_target_massive or is_distant_neighbor:
+                # Pull only the head (signature + docstring) and expose/cache
+                # the effective range, not the original full symbol span.
+                end_line = min(node.range[1], node.range[0] + 15)
+                line_range = (node.range[0], end_line)
+                node.range = [line_range[0], line_range[1]]
+                node.render_mode = "signature_only"
+
             overlay_dirty = bool(
                 self.overlay and self.overlay.has(node.file_path, workspace_id=self.workspace_id)
             )
@@ -165,18 +177,7 @@ class ContextArbitrator:
                 code_map[node.uid] = (cached.code, cached.is_dirty)
                 continue
 
-            # OPTIMAL CONTEXT: Resolve signature-only for low-gain or distant neighbors
-            is_target_massive = (
-                node.uid == subgraph.primary.uid and node.relation == "target_signature_only"
-            )
-            is_distant_neighbor = node.render_mode == "signature_only"
-
-            if is_target_massive or is_distant_neighbor:
-                # Pull only the head (signature + docstring) — approx first 15 lines
-                end_line = min(node.range[1], node.range[0] + 15)
-                code, is_dirty = resolver.resolve(node.file_path, node.range[0], end_line)
-            else:
-                code, is_dirty = resolver.resolve(node.file_path, *line_range)
+            code, is_dirty = resolver.resolve(node.file_path, *line_range)
 
             code_map[node.uid] = (code, is_dirty)
             if node.file_hash and not is_dirty:

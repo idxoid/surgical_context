@@ -21,6 +21,7 @@ class SymbolContext:
     semantic_score: float = 0.0
     blended_score: float = 0.0
     intent_weight: float = 0.0
+    render_mode: str = "full"
     is_dirty: bool = False
     code: str = ""
     provenance: list[str] = field(default_factory=list)
@@ -200,6 +201,7 @@ class PromptContext:
                 "intent_weight": symbol.intent_weight,
             },
             "provenance": symbol.provenance or ["graph", "code_resolver"],
+            "render_mode": symbol.render_mode,
             "is_dirty": symbol.is_dirty,
             "code": symbol.code,
         }

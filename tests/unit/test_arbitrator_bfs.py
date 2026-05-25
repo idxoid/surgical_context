@@ -406,6 +406,86 @@ class TestContextArbitratorBFS:
         assert payload["intent_details"]["primary"] == "exploration"
         assert payload["pruned"][0]["name"] == "Audit.log"
 
+    def test_unified_signature_only_uses_effective_range_for_payload_and_cache(self, mock_db):
+        """Massive targets should expose/cache the resolved head range, not the full span."""
+
+        class FakeRanker:
+            PREAMBLE_TOKENS = 100
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_target(self, *args, **kwargs):
+                return (
+                    SubgraphNode(
+                        uid="large-class",
+                        name="LargeClass",
+                        file_path="/repo/large.py",
+                        range=[10, 500],
+                        token_estimate=5000,
+                        relation="target",
+                        direction="primary",
+                        depth=0,
+                        relevance_score=1.0,
+                        file_hash="hash-large",
+                    ),
+                    {"strategy": "unique_match", "ambiguous": False},
+                )
+
+            def rank(self, target, query, intent, budget):
+                return (
+                    [],
+                    {"limit": budget, "spent": 600, "reserved": 100, "pool_size": 0},
+                    "role_complete",
+                    [],
+                    [],
+                )
+
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
+                return (
+                    Subgraph(
+                        primary=target,
+                        nodes=[],
+                        budget=budget_info,
+                        stopped_reason=stopped_reason,
+                        pruned_details=pruned_details,
+                    ),
+                    [],
+                )
+
+            def _determine_mechanism(self, target, query=""):
+                return "generic"
+
+            def _get_required_roles(self, mechanism):
+                return ["api_surface"]
+
+        arbitrator = ContextArbitrator(mock_db, vector_db=Mock())
+        with (
+            patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker),
+            patch(
+                "sidecar.context.arbitrator.CodeResolver.resolve",
+                return_value=("class LargeClass:\n    \"\"\"head only\"\"\"\n", False),
+            ) as resolve,
+        ):
+            ctx = arbitrator.get_context_for_symbol(
+                "LargeClass",
+                question="How does this class work?",
+                token_budget=4000,
+            )
+
+        assert isinstance(ctx, PromptContext)
+        resolve.assert_called_once_with("/repo/large.py", 10, 25)
+        assert ctx.primary_source.range == [10, 25]
+        assert ctx.primary_source.render_mode == "signature_only"
+        payload = ctx.to_dict()["primary_source"]
+        assert payload["range"] == [10, 25]
+        assert payload["render_mode"] == "signature_only"
+        cached = arbitrator.cache.get_body("/repo/large.py", (10, 25), "hash-large")
+        assert cached is not None
+        assert arbitrator.cache.get_body("/repo/large.py", (10, 500), "hash-large") is None
+
     def test_explain_behavior_missing_symbol_uses_concept_anchor_fallback(self, mock_db):
         """Missing conceptual symbols can resolve to anchor symbols for explain-style prompts."""
         arbitrator = ContextArbitrator(mock_db, vector_db=Mock())
