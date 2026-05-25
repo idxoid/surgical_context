@@ -498,10 +498,6 @@ Goal: Transition from local tool to shared team solution (ADR-003).
 - [ ] Distributed tracing via OpenTelemetry
 - [ ] Token savings visualization in VS Code (reuses Phase 2.5 metrics)
 
-### Final Polish
-- [ ] Binary compilation (Nuitka)
-- [ ] VS Code Marketplace publication (Public Release)
-
 ---
 
 ## Phase 8: Correctness Hardening 🚧 PARTIALLY IMPLEMENTED
