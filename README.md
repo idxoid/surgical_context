@@ -35,7 +35,7 @@ This folder contains the current product and technical documentation for the `co
 
 **APIs & Infrastructure:**
 - **[spec_sidecar_api.md](docs/spec_sidecar_api.md)** — FastAPI endpoints
-- **[spec_storage.md](docs/spec_storage.md)** — current Neo4j/LanceDB storage behavior
+- **[spec_storage.md](docs/spec_storage.md)** — current Neo4j/LanceDB/SQLite storage behavior
 - **[spec_storage_connectors.md](docs/spec_storage_connectors.md)** — planned Graph/Vector/History provider connector layer
 - **[spec_language_adapter.md](docs/spec_language_adapter.md)** — plugin architecture (ADR-005)
 - **[spec_overlay.md](docs/spec_overlay.md)** — in-memory dirty state

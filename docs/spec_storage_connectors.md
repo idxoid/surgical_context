@@ -1,6 +1,6 @@
 # Spec - Storage Provider Connectors
 
-> **Status:** Planned, staged. Local v0.1 needs provider boundaries around the default implementations first: Neo4j, LanceDB, and SQLite. Alternate graph/vector/history backends are Team/Enterprise horizon work, not a blocker for the local release.
+> **Status:** Staged. SQLite local history is implemented with `local`, `ephemeral`, and `disabled` modes. Retrieval-facing protocols/fakes exist for vector search, workspace metadata, and graph-driver access. Full graph/vector provider wrappers around Neo4j and LanceDB remain in progress. Alternate graph/vector/history backends are Team/Enterprise horizon work, not a blocker for the local release.
 
 ## 1. Problem
 
@@ -25,7 +25,7 @@ HistoryProvider
 
 Each connector implements a stable product contract. Privacy and retention policy sit above the connectors, so swapping databases changes where data lives but not what data is allowed to be stored.
 
-The first implementation slice should be narrow: wrap the existing Neo4j and LanceDB clients, then add SQLite local history. Do not add real alternate backends until the default providers have conformance tests.
+The first implementation slice is narrow: keep Neo4j and LanceDB as defaults, add provider seams where retrieval needs them, and persist local history through SQLite. Do not add real alternate backends until the default providers have conformance tests.
 
 ## 3. Provider Families
 
@@ -191,36 +191,38 @@ class VectorProvider(Protocol):
     def search_symbols(self, query: str, workspace_id: str, limit: int) -> list[dict]: ...
 
 class HistoryProvider(Protocol):
-    def create_conversation(self, workspace_id: str, user_id: str) -> str: ...
-    def append_message(self, conversation_id: str, message: dict) -> str: ...
+    def create_conversation(self, *, workspace_id: str, user_id: str, conversation_id: str | None = None, title: str = "", selected_request_id: str = "", metadata: dict | None = None) -> str: ...
+    def append_message(self, *, conversation_id: str, role: str, request_id: str = "", content_summary: str = "", content_hash: str = "", symbol: str = "", trace_id: str = "", feedback_token: str = "", metadata: dict | None = None) -> str: ...
     def save_ask_snapshot(self, message_id: str, snapshot: dict) -> None: ...
-    def list_conversations(self, workspace_id: str, user_id: str, limit: int) -> list[dict]: ...
+    def save_inspector_snapshot(self, message_id: str, snapshot: dict) -> None: ...
+    def save_impact_snapshot(self, message_id: str, snapshot: dict) -> None: ...
+    def list_conversations(self, *, workspace_id: str, user_id: str, limit: int) -> list[dict]: ...
 ```
 
 The actual Python interfaces can be narrower at first. This sketch names the ownership boundaries.
 
 ## 7. Migration Plan
 
-1. Keep `Neo4jClient` and `LanceDBClient` as concrete defaults.
-2. Introduce `GraphProvider` and `VectorProvider` protocols around the methods the sidecar already calls.
-3. Add `HistoryProvider` with SQLite as the first implementation.
-4. Move storage selection into configuration.
+1. Keep `Neo4jClient` and `LanceDBClient` as concrete defaults. ✅
+2. Introduce retrieval-facing protocols around the methods the sidecar already calls. ✅ for `VectorSearchProvider`, `WorkspaceMetaProvider`, and `GraphDriverProvider`; full `GraphProvider` / `VectorProvider` connector wrappers remain open.
+3. Add `HistoryProvider` with SQLite as the first implementation. ✅
+4. Move storage selection into configuration. 🚧 done for history via `HISTORY_MODE`, `HISTORY_DB_PATH`, and `HISTORY_RETENTION_DAYS`; graph/vector provider config remains open.
 5. Add provider capability checks, for example `supports_relationship_properties`, `supports_vector_metadata_filter`, and `supports_transactions`.
 6. Add conformance tests that run against fake/in-memory providers before adding real alternate backends.
 7. Defer `customer_managed`, `dedicated_managed`, and `enterprise_audit` implementations until local defaults are stable.
 
 ## 8. Tests
 
-- Provider config selects defaults when no config is present.
-- Privacy policy blocks raw prompt/code storage before the HistoryProvider receives payloads.
-- GraphProvider conformance covers workspace scoping, symbol lookup, call linking, and impact traversal.
-- VectorProvider conformance covers doc search, symbol search, metadata filters, and embedding version guards.
-- HistoryProvider conformance covers conversation listing, ask snapshots, retention deletion, and disabled/ephemeral modes.
+- Provider config selects defaults when no config is present. 🚧 history done; graph/vector open.
+- Privacy policy blocks raw prompt/code storage before the HistoryProvider receives payloads. ✅ for local history sanitization; broader storage policy open.
+- GraphProvider conformance covers workspace scoping, symbol lookup, call linking, and impact traversal. 📋
+- VectorProvider conformance covers doc search, symbol search, metadata filters, and embedding version guards. 🚧 retrieval search seam covered; full write/read connector conformance open.
+- HistoryProvider conformance covers conversation listing, ask snapshots, retention deletion, and disabled/ephemeral modes. ✅
 - Alternate providers cannot bypass tenant/workspace scoping.
 
 ## 9. Related
 
-- [spec_storage.md](spec_storage.md) - current concrete Neo4j/LanceDB storage behavior.
+- [spec_storage.md](spec_storage.md) - current concrete Neo4j/LanceDB/SQLite storage behavior.
 - [spec_tenant_api_graph.md](spec_tenant_api_graph.md) - tenant API links stored through the graph provider.
 - [spec_branch_isolation.md](spec_branch_isolation.md) - workspace and tenant scoping.
 - [spec_learning_loop.md](spec_learning_loop.md) - feedback metadata boundaries.

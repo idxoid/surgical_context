@@ -70,8 +70,8 @@ Keep `workspace_id` and `tenant_id` in contracts, but default `tenant_id` to `lo
 - [x] Soft fallback ladder for missing symbols.
 - [x] Finish remaining prompt-contract fields: `pruned[]`, ranker weights, intent distribution/confidence, ambiguous-intent signal.
 - [~] Add doc-anchor confidence/type metadata so definitions, examples, warnings, and passing mentions do not rank equally. (Core metadata exists; calibration + UI surfacing remain.)
-- [ ] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
-- [ ] Add latency SLO checks for local asks and index operations.
+- [x] Keep retrieval cache behavior visible in `metadata.assembly.cache_hits`.
+- [~] Add latency SLO checks for local asks and index operations. `/ask`, `/ask/stream`, and `/search/unified` emit request/stage SLO metrics; index queue counters exist, but index-duration SLO gates remain.
 - [ ] Make model route, fallback level, and rough token/cost signals easy to inspect from the extension.
 - [~] Extend canonical role coverage beyond the current green baselines: grow capability-role inference, wrapper-body support, topic-aware impact retrieval, module/package fallback targets, and generic dependency/provider trace recovery. Flask/Django/Express tails remain.
 - [ ] Treat impact analysis as shallow until proven otherwise: current `AFFECTS` is bounded reverse reachability, not a full causal blast-radius model across framework registries, generated APIs, templates, runtime dispatch, and tests.
@@ -94,10 +94,10 @@ Current snapshot:
 ### P4 - Provider Boundaries, Defaults First
 - [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
 - [ ] Define `VectorProvider` protocol around the methods the sidecar already uses and wrap `LanceDBClient` as the default implementation.
-- [ ] Define `HistoryProvider` protocol and implement SQLite local history.
-- [ ] Add provider config only for local defaults first: `local`, `local_docker`, `ephemeral`, and `disabled`.
-- [ ] Put storage policy above all providers for prompt text, response text, source snippets, retention, redaction, and sharing.
-- [ ] Add fake/in-memory provider conformance tests before adding real alternate backends.
+- [x] Implement SQLite local history with conversations, messages, ask snapshots, inspector snapshots, impact snapshots, retention pruning, and `disabled` / `ephemeral` modes.
+- [~] Add provider config only for local defaults first: history has `local`, `ephemeral`, and `disabled`; graph/vector config boundaries remain.
+- [~] Put storage policy above all providers for prompt text, response text, source snippets, retention, redaction, and sharing. Local history sanitization exists; broader vector/shared/audit policy remains.
+- [~] Add fake/in-memory provider conformance tests before adding real alternate backends. Retrieval protocol fakes and history tests exist; full graph/vector connector conformance remains.
 
 ### P5 - Future Team and Enterprise Horizon
 - [ ] Add roles `admin` and `user`, then map permissions onto indexing controls, audit/history access, model/provider settings, and graph queries.
@@ -419,7 +419,7 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 
 ### Phase 6.1: Intent Classifier ✅ COMPLETE
 - [x] `IntentClassifier` class with keyword-based intent detection (heuristics, ML upgrade in Phase 7)
-- [x] 6 intent types: navigation, debugging, refactor, exploration, new_feature, design_question
+- [x] 7 intent types: navigation, debugging, refactor, exploration, new_feature, design_question, impact_analysis
 - [x] `IntentConfig` with 6-tier priority orderings per intent (code, cross_refs, specs, architecture, concept, idea)
 - [x] Add `mode` field to `PromptContext`: "surgical_full" | "surgical_doc_only" | "standard"
 - [x] Add `intent` field to `PromptContext` for tracking detected query type
@@ -448,7 +448,7 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 - [x] 21 new unit tests covering routing, initialization, model selection
 
 ### Phase 6.4: Integration Testing & Observability ✅ COMPLETE
-- [x] Test intent classification accuracy on 6 intent types (9 cold-run integration tests)
+- [x] Test intent classification accuracy on 7 intent types plus prompt-compiler tier behavior
 - [x] Test tier-based budget allocation per intent
 - [x] Test graceful degradation (no matches → standard mode)
 - [x] Test mode field serialization in PromptContext.to_dict()
@@ -494,8 +494,8 @@ Goal: Transition from local tool to shared team solution (ADR-003).
 ### Analytics & Monitoring
 - [x] `GET /metrics` endpoint (Prometheus text format)
 - [x] Per-request trace ID threaded through logs
-- [ ] Latency SLO tracking (50ms p50, 200ms p95 target)
-- [ ] Distributed tracing via OpenTelemetry
+- [~] Latency SLO tracking: request/stage SLO checks exist through `SIDECAR_REQUEST_LATENCY_SLO_MS`; p50/p95 release gates remain.
+- [x] Optional OpenTelemetry stage tracing via `SIDECAR_OTEL_ENABLED`
 - [ ] Token savings visualization in VS Code (reuses Phase 2.5 metrics)
 
 ---
@@ -531,12 +531,12 @@ Goal: Fix the load-bearing identity, resolution, and isolation gaps before retri
 
 ---
 
-## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1 & 9.3 COMPLETE)
+## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1, 9.3 COMPLETE; 9.4 MOSTLY SHIPPED)
 Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
 
 > **Specs:** [spec_unified_ranking.md](spec_unified_ranking.md), [spec_multi_label_intent.md](spec_multi_label_intent.md), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
 >
-> **Current status:** 9.1 (unified ranker) and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is ~70% complete. 9.2 (multi-label intent) is deferred to Phase 10. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
+> **Current status:** 9.1 (unified ranker) and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is mostly shipped; the remaining gap is consuming multi-label intent metadata in budget/routing policy. Full multi-label routing is deferred to Phase 10. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
 
 ### 9.1 Unified Ranker ✅ COMPLETE
 - [x] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
@@ -552,13 +552,13 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract (deferred)
 - [~] Better graph/doc/recovery coverage for structurally sparse runtime mechanisms through generic semantic hints, import recovery, and dependency-flow role recovery; remaining work is precision/file-recall telemetry.
 
-### 9.2 Multi-Label Intent ❌ DEFERRED
-- [ ] `IntentDistribution` (sum-to-1 weights across 6 labels)
-- [ ] Classifier returns partial scores per label → normalized distribution
+### 9.2 Multi-Label Intent 🚧 METADATA DONE, ROUTING DEFERRED
+- [x] `IntentSignal.distribution` (sum-to-1 keyword weights across supported intents)
+- [x] Classifier returns partial scores per label → normalized distribution
 - [ ] Tier priority = weighted sum across intent distribution
 - [ ] Budget split across tiers in proportion to blended tier score (floor per tier)
-- [ ] `is_ambiguous()` signal in contract for client UX / routing decisions
-> **Decision:** Phase 9.2 punted to Phase 10 pending real-repo validation of 9.1 performance. Phase 9.1 single-label routing is sufficient for local v0.1 launch.
+- [x] `ambiguous` signal in the prompt contract for client UX / routing decisions
+> **Decision:** Full multi-label routing is punted to Phase 10 pending real-repo validation of 9.1 performance. Phase 9.1 primary-intent routing is sufficient for local v0.1 launch, while distribution/confidence/ambiguous metadata remains visible for debugging.
 
 ### 9.3 DocAnchor Confidence & Type ✅ COMPLETE
 - [x] Anchor type classification: definition / example / reference / warning / deprecated
@@ -576,7 +576,8 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
 - [x] `pruned[]` array — candidates that missed the budget, with reason, scores, cost, roles, noise factor, and provenance
 - [x] `metadata.ranker.weights` — tuning state snapshotted with every response
-- [ ] `intent.distribution` + `intent.ambiguous` + `intent.confidence` (Phase 9.2, deferred)
+- [x] `intent.distribution` + `intent.ambiguous` + `intent.confidence` in the prompt contract
+- [ ] Ranker budget policy consumes multi-label intent distribution instead of primary intent only (Phase 10)
 
 ---
 
@@ -620,8 +621,8 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 ### 10.4 Analytics & Monitoring (carried forward from Phase 7)
 - [x] `GET /metrics` endpoint (Prometheus text format)
 - [x] Per-request trace ID threaded through logs
-- [ ] Latency SLO tracking (50ms p50, 200ms p95 target)
-- [ ] Distributed tracing via OpenTelemetry
+- [~] Latency SLO tracking: request/stage SLO checks exist through `SIDECAR_REQUEST_LATENCY_SLO_MS`; p50/p95 release gates remain.
+- [x] Optional OpenTelemetry stage tracing via `SIDECAR_OTEL_ENABLED`
 - [ ] Token savings visualization in VS Code (reuses Phase 2.5 metrics)
 
 ### 10.5 Extension Productization
@@ -648,10 +649,10 @@ Goal: define storage boundaries without blocking the local release on alternate 
 
 - [ ] Define `GraphProvider` protocol and wrap `Neo4jClient` as the default implementation.
 - [ ] Define `VectorProvider` protocol and wrap `LanceDBClient` as the default implementation.
-- [ ] Define `HistoryProvider` protocol and implement SQLite local history for dialogs, ask snapshots, inspector snapshots, and impact snapshots.
-- [ ] Add local provider config with modes: `local`, `local_docker`, `ephemeral`, and `disabled`.
-- [ ] Add storage policy enforcement before any connector receives raw prompt text, response text, source snippets, or audit payloads.
-- [ ] Add provider capability checks and conformance tests for graph/vector/history providers.
+- [x] Implement SQLite local history for dialogs, ask snapshots, inspector snapshots, and impact snapshots.
+- [~] Add local provider config with modes: `local`, `local_docker`, `ephemeral`, and `disabled`. History modes are implemented; graph/vector modes remain.
+- [~] Add storage policy enforcement before any connector receives raw prompt text, response text, source snippets, or audit payloads. History snapshots are sanitized; vector/shared/audit policy remains.
+- [~] Add provider capability checks and conformance tests for graph/vector/history providers. History and retrieval protocol fakes are covered; full graph/vector provider capability checks remain.
 - [ ] Defer `customer_managed`, `dedicated_managed`, and `enterprise_audit` modes until the local provider contracts are stable.
 
 ---
@@ -711,9 +712,9 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | Missing incremental index | High | Full re-scan on every save breaks the <200ms SLO | Phase 3.5 file-level dirty tracking ✅ + Phase 5 AFFECTS rebuild ✅ | ✅ Resolved |
 | Doc-code semantic linking | **High** | SIMILARITY_THRESHOLD mismatch (0.4 too strict) → 36% resolution rate | Phase 5: threshold tuning (0.4 → 1.5) ✅ → 50%+ resolution | ✅ Resolved |
 | Embedding leakage to cloud | Medium | Vector inversion can recover source text — contradicts ADR-001 spirit | Phase 7: Security ADR before cloud vector sync | 🟡 Pending Phase 7 |
-| Intent classification immaturity | Medium | Query intent classifier premature before precision improves | Phase 6.1 complete: keyword heuristics classifier implemented + 36 unit tests ✅; ML upgrade in Phase 7 | 🟢 In Progress (6.1 ✅) |
-| Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Phase 6.1: tier-aware assembly + mode flag implemented ✅; Phase 6.2: orchestrator integration | 🟡 In Progress (6.1 ✅) |
-| Model Router misclassification | Medium | Misclassification sends complex task to cheap model | Phase 6 — escalation fallback on empty/error; Phase 7 RBAC | 🟡 Pending Phase 6+ |
+| Intent classification immaturity | Medium | Query intent classifier remains heuristic and primary-intent routing can under-serve mixed questions | Keyword classifier, impact intent, distribution/confidence/ambiguous metadata, and prompt-contract surfacing are implemented; full multi-label routing remains Phase 10 | 🟡 Mitigated |
+| Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Tier-aware assembly, mode flag, orchestrator fallback, and degraded context-only `/ask` responses are implemented. | ✅ Resolved |
+| Model Router misclassification | Medium | Misclassification can send a complex task to a cheaper model | Model routing and Claude→Ollama fallback are implemented; remaining mitigation is benchmark tuning and clearer extension surfacing. | 🟡 Mitigated |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
 | **Incremental index split-brain** | **Critical** | Graph storage can commit symbol/edge changes while vector storage writes fail or the process is killed. Graph/vector stores then disagree silently. | Durable job log + retry/dead-letter states implemented; next: idempotent replay worker or rollback strategy | 🟡 Mitigated |
 | **IDE event storm** | **High** | Mass refactor, find/replace across many files, or `git stash pop` can flood the sidecar with parse/embed/index work. | Bounded sidecar queue + VS Code save batching implemented; next: branch-sync enqueue integration | 🟡 Mitigated |
@@ -722,9 +723,9 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | **UID instability** | **Critical** | Old `sha256(file_path:name)` broke on rename/move and collided on overloads + nested funcs. | Stable UID v2 implemented; migration CLI remains cleanup | 🟡 Mitigated |
 | **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Python scoped/imported/dynamic resolver implemented; TS deep resolver remains cleanup | 🟡 Mitigated |
 | **No workspace isolation on managed graph provider** | **Critical** | Multi-user/team graph storage can collapse branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped graph reads/writes implemented | 🟡 Mitigated |
-| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is disambiguation + bridge quality on real repos ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 In Progress |
-| Single-label intent | High | Mixed queries (e.g. debugging+refactor) collapse to one tier strategy — loses half the answer. | Phase 9.2: `IntentDistribution` multi-label ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
+| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is precision/file-recall telemetry and long-tail export/framework shapes ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 Mitigated |
+| Primary-intent routing | High | Mixed queries (e.g. debugging+refactor) still route budget by one primary intent even though distribution metadata is visible. | Phase 9.2 metadata is implemented; Phase 10 should consume `intent.distribution` in budget/tier policy ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
 | Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3 implemented: per-edge `anchor_type`, `confidence`, `primary_bias`, and resolver-aware ranker consumption ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ✅ Resolved |
-| No retrieval observability | High | Contract says *what* was included, not *why*. Blocks debugging + learning loop. | Phase 9.4 now surfaces selected scores/provenance, ranker weights, and `pruned[]`; remaining gap is full multi-label intent diagnostics ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 In Progress |
-| No caching strategy | Medium | Repeated queries re-read bodies, re-run BFS, re-call LLM; the graph provider saturates before the model does. | Phase 10.1: three-layer cache ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ❌ Open |
-| Static retriever | Medium | No feedback signal — silent drift, silent miss. System cannot improve from usage. | Phase 10.2: feedback loop + `CO_RELEVANT` learned edges ([spec_learning_loop.md](spec_learning_loop.md)) | ❌ Open |
+| Retrieval observability polish | High | Contract fields exist, but extension/debug surfaces still need to make the ranker story easy to inspect. | Phase 9.4 surfaces selected scores/provenance, ranker weights, `pruned[]`, and intent metadata; remaining gap is UI consistency and multi-label budget-policy consumption ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 Mitigated |
+| Cache multi-instance gap | Medium | Local cache exists, but multi-instance deployments would need a shared backend. | Phase 10.1 local three-layer cache is implemented and surfaces `metadata.assembly.cache_hits`; Redis/multi-instance cache remains future ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ✅ Resolved for local |
+| Learning loop incomplete | Medium | Feedback telemetry exists, but retrieval does not yet adapt from usage. | Phase 10.2 has feedback tokens, snapshots, endpoint, privacy boundaries, and counters; EMA tuning, learned `CO_RELEVANT` edges, and training loops remain open ([spec_learning_loop.md](spec_learning_loop.md)) | 🟡 Mitigated |

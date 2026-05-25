@@ -71,6 +71,7 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 | POST | `/index/file` | ✅ |
 | POST | `/index/files` | ✅ |
 | GET | `/index/queue` | ✅ |
+| GET | `/index/manifest` | ✅ |
 | POST | `/ask` | ✅ |
 | POST | `/ask/stream` | ✅ |
 | POST | `/search` | ✅ |
@@ -78,6 +79,10 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 | POST | `/overlay` | ✅ |
 | DELETE | `/overlay` | ✅ |
 | POST | `/feedback` | ✅ |
+| POST | `/history/ask` | ✅ |
+| GET | `/history/conversations` | ✅ |
+| GET | `/history/conversations/{conversation_id}` | ✅ |
+| GET | `/history/conversations/{conversation_id}/requests/{request_id}` | ✅ |
 | GET | `/impact` | ✅ |
 | POST | `/auth/token` | ✅ |
 | GET | `/auth/users` | ✅ |
@@ -204,7 +209,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 - **Workspace:** File nodes, CONTAINS edges, call edges, AFFECTS edges, and graph reads are scoped by `workspace_id`.
 - **Current caveat:** changed files are handled by deleting their workspace-local file edges and re-upserting extracted symbols; symbol-level diffing is still deferred.
 - **VectorProvider:** delete-then-insert per file on re-index. LanceDB is the current default implementation.
-- **HistoryProvider (planned):** append-only conversations, messages, ask snapshots, inspector snapshots, and impact snapshots. SQLite local is the planned default.
+- **HistoryProvider:** append-only conversations, messages, ask snapshots, inspector snapshots, and impact snapshots. SQLite local is the default; `ephemeral` and `disabled` modes are available for local product policy.
 - **Recovery:** `/index/file` writes an indexing job record before mutating stores, then marks success, failed, or dead-letter state so partial graph/vector failures are visible and retryable.
 
 ### 3.4. Dirty State Handling ✅ Implemented

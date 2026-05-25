@@ -22,6 +22,9 @@ All via environment variables with defaults:
 | `MODEL_PREFERENCE` | `auto` | AI routing preference: `auto`, `claude`, or `ollama` |
 | `AUTH_REQUIRED` | `false` | When true, protected endpoints require `Authorization: Bearer <token>` |
 | `DEFAULT_WORKSPACE_ID` | `local/surgical_context@main` | Development fallback when `X-Workspace` is absent |
+| `HISTORY_MODE` | `local` | Local history mode: `local`, `ephemeral`, or `disabled` |
+| `HISTORY_DB_PATH` | `./data/history/surgical_context.sqlite3` | SQLite path for local history mode |
+| `HISTORY_RETENTION_DAYS` | unset | Optional non-negative retention window for local history |
 | `SIDECAR_REQUEST_LATENCY_SLO_MS` | `200` | Request latency SLO target used by metrics and structured logs |
 | `SIDECAR_OTEL_ENABLED` | `false` | When true and OpenTelemetry is installed/configured, request stages emit spans |
 
@@ -59,22 +62,27 @@ Liveness check.
 
 ---
 
+### GET /metrics
+Prometheus text metrics for request latency, indexing, feedback, and retrieval counters.
+
+---
+
 ### POST /index
 Index a code directory into Neo4j + LanceDB.
 
 **Request:**
 ```json
-{ "project_path": "/absolute/path/to/project" }
+{ "project_path": "/absolute/path/to/project", "queue": true }
 ```
 
 **Response:**
 ```json
-{ "status": "indexed", "path": "/absolute/path/to/project" }
+{ "status": "queued", "path": "/absolute/path/to/project", "queued": 42, "coalesced": 0 }
 ```
 
 **Errors:** `400` if path does not exist.
 
-**Behavior:** Calls `run_indexing()` from `indexer_main.py`. Runs all 4 phases: symbol extraction → call linking → symbol embeddings → pending DocAnchor resolution.
+**Behavior:** Queues discovered source files by default. With `queue=false`, runs `run_indexing()` immediately: symbol extraction → call linking → symbol embeddings → pending DocAnchor resolution.
 
 ---
 
@@ -102,21 +110,51 @@ Incrementally index one saved source file.
 
 **Request:**
 ```json
-{ "file_path": "/absolute/path/to/project/app.py" }
+{ "file_path": "/absolute/path/to/project/app.py", "queue": true }
 ```
 
 **Response:**
 ```json
 {
-  "status": "indexed",
+  "status": "queued",
   "file_path": "/absolute/path/to/project/app.py",
-  "job_id": 42
+  "job_id": 0,
+  "workspace_id": "local/repo@main",
+  "queue_depth": 1
 }
 ```
 
 **Errors:** `400` if the file does not exist; `500` with `job_id` and `job_status` if the graph/vector update fails.
 
-**Behavior:** Hashes the file, creates a durable indexing job record, deletes previous symbols for the file, re-indexes symbols/calls/embeddings, resolves pending DocAnchors, then marks the job `succeeded`. Failures are captured for retry/dead-letter handling.
+**Behavior:** Queues the file by default. With `queue=false`, hashes the file, creates a durable indexing job record, deletes previous symbols for the file, re-indexes symbols/calls/embeddings, resolves pending DocAnchors, then marks the job `succeeded`. Failures are captured for retry/dead-letter handling.
+
+---
+
+### POST /index/files
+Incrementally index a bounded batch of saved source files.
+
+**Request:**
+```json
+{ "file_paths": ["/absolute/path/to/project/app.py"], "queue": true }
+```
+
+**Response:** includes per-file results plus queue depth. When `queue=true`, files are queued and debounced; when `false`, the endpoint runs the batch immediately.
+
+---
+
+### GET /index/queue
+Return the bounded indexing queue snapshot.
+
+**Response:** queue status with pending count and recent job metadata.
+
+---
+
+### GET /index/manifest
+Return the current workspace index manifest from Neo4j when available.
+
+**Headers:** `X-Workspace` selects the workspace.
+
+**Response:** manifest schema version, manifest id, and git/index metadata. Returns `404` when the workspace has no stored manifest yet.
 
 ---
 
@@ -229,6 +267,60 @@ Semantic search over indexed documentation.
 
 ---
 
+### POST /search/unified
+Unified search over symbols, graph neighbors, and docs.
+
+**Request:**
+```json
+{
+  "query": "ranking recovery",
+  "symbol": "UnifiedRanker",
+  "include_graph": true,
+  "limit": 10
+}
+```
+
+**Response:** ranked mixed results plus optional retrieval trace and index manifest ids when graph context is included.
+
+---
+
+### POST /history/ask
+Persist a sanitized local ask/request snapshot.
+
+**Request:** conversation id (optional), request id, symbol, prompt/answer summaries or hashes, trace id, feedback token, and optional ask/inspector/impact snapshots.
+
+**Response:**
+```json
+{
+  "status": "recorded",
+  "conversation_id": "conv_...",
+  "user_message_id": "msg_...",
+  "assistant_message_id": "msg_...",
+  "selected_request_id": "req_..."
+}
+```
+
+**Behavior:** Uses `SQLiteHistoryProvider` in `local` mode, a temporary SQLite database in `ephemeral` mode, or returns a no-op response in `disabled` mode. Snapshots are sanitized before persistence.
+
+---
+
+### GET /history/conversations
+List local history conversations for the current workspace and user.
+
+**Query param:** `limit` default `30`.
+
+---
+
+### GET /history/conversations/{conversation_id}
+Return a sanitized conversation bundle with messages and snapshots. Workspace/user mismatches return `403`.
+
+---
+
+### GET /history/conversations/{conversation_id}/requests/{request_id}
+Return ask, inspector, and impact snapshots for one selected request. Workspace/user mismatches return `403`.
+
+---
+
 ### POST /overlay
 Push unsaved file content into the In-Memory Overlay.
 
@@ -330,7 +422,7 @@ Return recent audit log entries.
 
 ## Singletons
 
-`overlay` (`InMemoryOverlay`), `vector_db` (`LanceDBClient`), `ai_engine` (`AIEngine`), `user_auth`, and `audit_log` are process-level singletons.
+`overlay` (`InMemoryOverlay`), `vector_db` (`LanceDBClient`), `ai_engine` (`AIEngine`), `user_auth`, `audit_log`, `feedback_store`, and `history_provider` are process-level singletons.
 
 Neo4j access goes through `db_session(...)`, which creates a request-scoped client and closes it after the endpoint finishes. This avoids mutating shared request identity on the global database object.
 
@@ -346,5 +438,5 @@ Structured request logs and Prometheus metrics track request latency against `SI
 
 - Add production auth policy: persistent users, secret rotation, token revocation, and role-based authorization.
 - Expand `GET /metrics` with local release SLO checks and dashboard-ready health fields.
-- Finish prompt-contract observability: `pruned[]`, ranker weights, intent distribution, and ambiguous-intent signal.
-- Add SQLite-backed history for conversations, prompt snapshots, inspector snapshots, and impact snapshots.
+- Keep prompt-contract observability consistent across extension surfaces, especially `pruned[]`, ranker weights, intent distribution, and ambiguous-intent signal.
+- Extend history/storage policy only after local metadata-first retention behavior is validated.
