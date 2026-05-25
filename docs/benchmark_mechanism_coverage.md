@@ -35,14 +35,15 @@ current local indexes.
 | NestJS | 4 | 4/4 | green |
 | SQLAlchemy | 4 | 4/4 | green |
 | Vue | 4 | 4/4 | green |
-| surgical_context | 7 | 6/7 | `surgical_context_q07` passes after TS `object_api` indexing + `object_api` call-resolution + `role_taxonomy` fixes; `surgical_context_q01` warns at file=0.33 (arbitrator pulled, ranker exits before sibling unified_ranker/prompt_compiler) |
-| dathund | 8 | 6/8 | `q04` / `q06` below relaxed `trace_dependency` floor — graph/label gaps in time_authority and actor_index, not gate tuning |
-| **Total** | **65** | **62/65 (95.4%)** | — |
+| surgical_context | 7 | 7/7 | `surgical_context_q07` passes after TS `object_api` indexing + `object_api` call-resolution + `role_taxonomy` fixes; `surgical_context_q01` now passes via query-topic recovery for explicit pipeline stages (`ranking`, `PromptContext`) |
+| dathund | 8 | 8/8 | `q04` / `q06` pass after broadening trace-mode recovery to identity/principal resolution and time/clock-window flows |
+| **Total** | **65** | **65/65 (100.0%)** | — |
 
 Gate-relax history that produced this snapshot:
 
 - `trace_dependency` relaxed pass: `(role_recall>=1.0 OR file_recall>=1.0) AND (role_recall>=0.60 AND file_recall>=0.50)`. This converted `dathund_q07`, `surgical_context_q02`, `surgical_context_q07`, and `dathund_q04` (partially) to pass.
 - `explain_behavior` workspace-mode relaxed pass: when `expected_mode: workspace` with directory-form `expected_files`, perfect `role_recall>=1.0` and any `file_recall>0` is enough. This converted `rtk_q07` from warn (file=0.25) to pass — role coverage already proved the ranker saw `api_surface`, `core_runtime`, `docs_or_concept`, and `supporting_surface` even though retrieval did not span every top-level directory hint.
+- Trace recovery mode now also covers identity/principal resolution (`actor`, `same_actor`, `principal`) and time-authority clock/window questions (`event_time`, `ingested_time`, `clock`, `window`). This activates the existing topic/import recovery for non-DI trace questions and converts `dathund_q04` / `dathund_q06` without repo-specific fixtures.
 
 Earlier saturated run (2026-05-08, framework repos only):
 

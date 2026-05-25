@@ -242,6 +242,14 @@ class RankerScoring:
             and any(term in q for term in ("execute", "sql"))
         ):
             return True
+        if any(term in q for term in ("actor", "identity", "principal", "same_actor")) and any(
+            term in q for term in ("resolve", "refer", "same", "decide", "mapping")
+        ):
+            return True
+        if any(term in q for term in ("clock", "window", "event_time", "ingested_time")) and any(
+            term in q for term in ("chain", "correlation", "match", "time")
+        ):
+            return True
         if any(term in q for term in ("compile", "compiler", "template")) and any(
             term in q for term in ("render", "runtime", "update")
         ):

@@ -776,6 +776,16 @@ class UnifiedRanker:
         if module_composition_anchors:
             pool = self._merge_role_backfill(pool, module_composition_anchors)
 
+        if intent != Intent.IMPACT_ANALYSIS:
+            query_topic_anchors = self.structural_recovery.query_topic_anchor_candidates(
+                target,
+                query=query,
+                excluded_uids={target.uid},
+                limit=16,
+            )
+            if query_topic_anchors:
+                pool = self._merge_role_backfill(pool, query_topic_anchors)
+
         if intent == Intent.IMPACT_ANALYSIS:
             impact_topic_anchors = self.structural_recovery.impact_topic_anchor_candidates(
                 target,
@@ -871,6 +881,7 @@ class UnifiedRanker:
             is_trace_topic_anchor = trace_mode_for_sort and any(
                 step == "trace-topic-anchor" for step in c.provenance
             )
+            is_query_topic_anchor = any(step == "query-topic-anchor" for step in c.provenance)
             # Tier 0 (best): candidates that fill a missing required role the
             # target itself doesn't cover. These must beat raw doc-relevance
             # so a large/weak role-filler still seats before unrelated docs.
@@ -879,6 +890,8 @@ class UnifiedRanker:
             if is_trace_topic_anchor:
                 trace_topic_tier = 1.5 if dependency_trace_sort else 2.5
                 return (trace_topic_tier, trace_focus_rank, base)
+            if is_query_topic_anchor:
+                return (1.25, trace_focus_rank, base)
             if roles & non_trivial_required:
                 return (1, trace_focus_rank, base)
             return (0, trace_focus_rank, base)

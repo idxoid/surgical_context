@@ -1254,6 +1254,83 @@ def test_trace_query_terms_expand_webview_extension_flow():
     assert "activate" in terms
 
 
+def test_trace_gain_mode_covers_identity_and_time_authority_flows():
+    assert RankerScoring.trace_dependency_gain_mode(
+        "",
+        "How does ActorIndex.same_actor decide two connector-local actor strings refer to the same principal?",
+    )
+    assert RankerScoring.trace_dependency_gain_mode(
+        "",
+        "When does ChainEngine use ingested_time instead of event_time as the correlation clock, and how does that widen the match window?",
+    )
+
+
+def test_query_topic_anchors_expand_ranker_and_prompt_compiler_terms():
+    rows = [
+        {
+            "uid": "ranker",
+            "name": "UnifiedRanker",
+            "symbol_kind": "class",
+            "token_estimate": 900,
+            "qualified_name": "sidecar.context.unified_ranker.UnifiedRanker",
+            "file_path": "/repo/sidecar/context/unified_ranker.py",
+            "file_hash": "",
+            "range": [10, 80],
+            "inbound_edges": 2,
+            "outbound_edges": 3,
+            "query_anchor_score": 5,
+        },
+        {
+            "uid": "compiler",
+            "name": "PromptCompiler",
+            "symbol_kind": "class",
+            "token_estimate": 400,
+            "qualified_name": "sidecar.context.prompt_compiler.PromptCompiler",
+            "file_path": "/repo/sidecar/context/prompt_compiler.py",
+            "file_hash": "",
+            "range": [1, 40],
+            "inbound_edges": 1,
+            "outbound_edges": 1,
+            "query_anchor_score": 5,
+        },
+    ]
+    session = MagicMock()
+    session.run.return_value = rows
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="arbitrator",
+        name="ContextArbitrator",
+        file_path="/repo/sidecar/context/arbitrator.py",
+        range=[1, 100],
+        token_estimate=200,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+
+    terms = ranker.structural_recovery.query_topic_terms(
+        "How does ContextArbitrator assemble symbol context from intent classification through ranking to PromptContext?",
+        target,
+    )
+    candidates = ranker.structural_recovery.query_topic_anchor_candidates(
+        target,
+        query="How does ContextArbitrator assemble symbol context from intent classification through ranking to PromptContext?",
+        excluded_uids={target.uid},
+    )
+
+    assert "ranker" in terms
+    assert "compiler" in terms
+    assert {candidate.name for candidate in candidates} == {"UnifiedRanker", "PromptCompiler"}
+    assert all("query-topic-anchor" in candidate.provenance for candidate in candidates)
+
+
 def test_trace_topic_anchor_sorts_below_required_role_filler():
     ranker = UnifiedRanker(
         _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"

@@ -546,11 +546,11 @@ The benchmark now displays per-question:
 Current local snapshot (May 2026, `--no-index` on current indexes):
 
 ```text
-surgical_context  6/7 pass  | role=0.86 | file=0.74
-dathund           6/8 pass  | role=0.94 | file=0.67
+surgical_context  7/7 pass  | role=0.96 | file=0.90
+dathund           8/8 pass  | role=0.97 | file=0.81
 fastapi           green     | role=1.00 on trace_dependency questions (strict gate already satisfied)
 ```
 
-Framework repos (FastAPI, Pydantic, Django, etc.) remain saturated on `role_recall`; first-party repos (`surgical_context`, `dathund`) are the active tuning surface for cross-language graph edges and trace gate calibration.
+Framework repos (FastAPI, Pydantic, Django, etc.) remain saturated on `role_recall`; `surgical_context` and `dathund` are now green on the current local indexes, with remaining work shifting back to precision and token economy rather than pass-rate recovery.
 
 This makes it clear which mechanism-intent combinations are working well vs. needing tuning.
