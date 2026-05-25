@@ -327,7 +327,7 @@ indexer.rebuild_affects(["uid1", "uid2"])
 **Solution:** Three edge types (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED) with 
 confidence priors. Enables call-graph ranking without rewriting the BFS.
 
-**Trade-off:** Requires language-specific parser logic. Python done; TypeScript TODO.
+**Trade-off:** Requires language-specific parser logic. Python and TypeScript adapters implemented; additional languages follow the same plugin pattern.
 ```
 
 ### **Algorithm in Words**

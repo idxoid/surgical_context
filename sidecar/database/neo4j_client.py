@@ -435,8 +435,15 @@ class Neo4jClient:
                     f"""
                     UNWIND $calls AS call
                     MATCH (caller:Symbol {{uid: call.caller_uid}})
-                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(callee:Symbol {{qualified_name: call.callee_qualified_name}})
-                    WHERE caller <> callee
+                    OPTIONAL MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(exact:Symbol {{qualified_name: call.callee_qualified_name}})
+                    OPTIONAL MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(surface:Symbol {{kind: 'object_api'}})
+                    WHERE exact IS NULL
+                      AND call.callee_qualified_name STARTS WITH surface.qualified_name + '.'
+                    WITH call, caller, exact, surface
+                    ORDER BY call.caller_uid, call.call_site_line, size(coalesce(surface.qualified_name, '')) DESC
+                    WITH call, caller, exact, collect(surface) AS surfaces
+                    WITH call, caller, coalesce(exact, surfaces[0]) AS callee
+                    WHERE callee IS NOT NULL AND caller <> callee
                     MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
                                                    call_site_line: call.call_site_line}}]->(callee)
                     SET r.confidence = call.confidence,

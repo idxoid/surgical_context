@@ -15,7 +15,7 @@ Entry points:
 
 ### _collect_files(project_path) → list[str]
 
-1. Loads `.gitignore` from `project_path` (falls back to repo root `.gitignore`) using `pathspec` library.
+1. Loads `.gitignore` from `project_path` (falls back to repo root `.gitignore`) using `pathspec` library. Patterns are interpreted relative to the indexed project root, not the monorepo checkout root.
 2. `os.walk` with in-place dir pruning — ignored directories are removed from `dirs[:]` so `os.walk` never descends into them.
 3. Filters files by extension — only extensions registered in the language adapter registry are included.
 4. Skips dot-files (`name.startswith('.')`).
@@ -223,6 +223,15 @@ Canonical roles resolve through archetype preferences instead of direct cluster 
 `stats["role_taxonomy"]` exposes `chosen_k`, `silhouette`, and `sample_size` for benchmark and progress logs. `stats["role_catalog"]` exposes the number of archetypes and canonical role mappings. Timing is recorded under `stats["timings_sec"]["role_clustering"]`.
 
 **Consumers.** Pass 1 persists `derived_role_id`, structural archetypes in `role_catalog_json`, and — from schema v2 onward — the mechanism overlay keys (often `{}` until filled externally). `UnifiedRanker` reads cluster-derived roles via `derived_role_id` plus `_cluster_to_role`, optional catalog mechanism templates, structural overlap scoring, then repository `strategy_profile` / `generic`. Bundled name-based mechanism dispatch is intentionally stubbed.
+
+### Fast pipeline — semantic hint phases
+
+After per-file symbol/call linking, the fast project indexer (`sidecar/indexer/fast/pipeline.py`) runs two graph-enrichment passes before the embedding batch:
+
+1. **`framework_hints`** — applies shared typed rules from `semantic_hints.yaml` via `FrameworkHintsIndexer`; creates `SEMANTIC_HINT` edges for framework patterns already present in the indexed graph.
+2. **`ts_http_route_hints`** — implemented in `sidecar/indexer/ts_http_route_hints.py`. Scans Python FastAPI route decorators (`@app.post("/ask")`, etc.) and TypeScript HTTP client surfaces (`export const SidecarClient = { ... post('/ask') ... }`). Creates `SEMANTIC_HINT` edges from TS `object_api` symbols to Python handler symbols when paths match. Skips test/QA Python files and prefers `main.py` / `sidecar/` entrypoints when duplicate routes exist.
+
+Stats keys: `framework_hints_applied`, `ts_http_route_hints_applied`. Re-index after changing either pass; `--no-index` benchmark runs assume the graph already contains these edges.
 
 **Trade-offs.**
 - Cluster boundaries may not align with human intuition. A derived cluster can group two data-carrier surfaces while separating nearby builder functions if their fan-in/fan-out differs. That is fine for ranking but means the benchmark cannot match by mechanism string equality across repos.

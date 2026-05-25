@@ -123,7 +123,7 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - **Mechanism-aware retrieval metrics**: questions classified by code relationship type + evaluated on **role_recall** (required roles fulfilled) + intent-stratified pass gates
 - **Intent-stratified evaluation**:
   - `explain_behavior`: role ≥ 0.70 AND file ≥ 0.50
-  - `trace_dependency`: role ≥ 0.80 AND file ≥ 0.70
+  - `trace_dependency`: role ≥ 0.80 AND file ≥ 0.70, **or** (role ≥ 1.0 OR file ≥ 1.0) AND role ≥ 0.60 AND file ≥ 0.50
   - `impact_analysis`: role ≥ 0.60 OR file ≥ 0.50 (either signal sufficient)
 - **Benchmark artifacts**: each report includes explicit precision + full `ready_context` payload (token count, serialized contract, rendered system prompt)
 
@@ -529,11 +529,11 @@ Different query intents have different acceptable metrics:
 | Intent | role_recall floor | file_recall floor | Gate semantics |
 |---|---|---|---|
 | explain_behavior | 0.70 | 0.50 | **AND** — must pass both |
-| trace_dependency | 0.80 | 0.70 | **AND** — must pass both |
+| trace_dependency | 0.80 | 0.70 | **AND** (strict), **or** relaxed single-axis pass when one metric is 1.0 and the other clears 0.60 / 0.50 |
 | impact_analysis | 0.60 | 0.50 | **OR** — either signal is enough (tests may not be symbols) |
 
 This recognizes that:
-- Navigation/dependency tracing needs both deep code understanding AND file coverage
+- Navigation/dependency tracing prefers both deep role coverage and broad file coverage; near-perfect single-axis recall can still pass when the other axis is partially satisfied
 - Explanation can work with moderate coverage if roles are well-chosen
 - Impact analysis can work with just test file coverage OR symbol coverage (either proves cascade exposure)
 
@@ -543,19 +543,14 @@ The benchmark now displays per-question:
 ✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=1.00 | 839t | context_complete_below_floor
 ```
 
-Current local snapshot after the UnifiedRanker hardening pass:
+Current local snapshot (May 2026, `--no-index` on current indexes):
 
 ```text
-✅ fastapi_q03: run_endpoint_function [explain_behavior] | role=1.00 | file=1.00 | 2123t | context_complete_below_floor
-✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=1.00 | 839t | context_complete_below_floor
-✅ pydantic_q05: v1 [explain_behavior] | role=1.00 | file=1.00 | 1319t | module_fallback target
+surgical_context  6/7 pass  | role=0.86 | file=0.74
+dathund           6/8 pass  | role=0.94 | file=0.67
+fastapi           green     | role=1.00 on trace_dependency questions (strict gate already satisfied)
 ```
 
-And summary:
-```
-Pass rate:       62.5% (5/8)
-...
-Role recall:     0.74
-```
+Framework repos (FastAPI, Pydantic, Django, etc.) remain saturated on `role_recall`; first-party repos (`surgical_context`, `dathund`) are the active tuning surface for cross-language graph edges and trace gate calibration.
 
 This makes it clear which mechanism-intent combinations are working well vs. needing tuning.

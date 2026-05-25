@@ -290,6 +290,8 @@ class StructuralRecovery:
             )
         if "render" in text and any(term in text for term in ("compile", "template", "dom")):
             terms.update({"compile", "createvnode", "patch", "renderer", "vnode"})
+        if any(term in text for term in ("webview", "extension", "vscode", "provider")):
+            terms.update({"webview", "provider", "activate", "register", "handler"})
         if "sql" in text and any(term in text for term in ("query", "statement", "execute")):
             terms.update({"select", "clause", "compile", "compiler", "statement", "sql"})
         return sorted(term for term in terms if len(term) >= 4)
@@ -1576,7 +1578,7 @@ class StructuralRecovery:
         registration_flow_context: bool = False,
     ) -> bool:
         kind = (row.get("symbol_kind") or "").lower()
-        if kind and kind not in {"function", "method", "class"}:
+        if kind and kind not in {"function", "method", "class", "object_api"}:
             return False
         name = (row.get("name") or "").lower()
         qualified = (row.get("qualified_name") or "").lower()
@@ -1586,6 +1588,10 @@ class StructuralRecovery:
             re.search(r"(^|[^a-z])api([^a-z]|$)", haystack)
         )
         token_hit = token_hit or "openapi" in haystack
+        if kind == "object_api":
+            token_hit = token_hit or any(
+                token in haystack for token in ("client", "handler", "endpoint", "route")
+            )
         edge_hint = float(row.get("outbound_edges", 0) or 0) >= 1.0
         reg_hint = (
             registration_flow_context
@@ -1672,10 +1678,13 @@ class StructuralRecovery:
             return True
         path = (target.file_path or "").lower()
         name = (target.name or "").lower()
+        kind = (getattr(target, "kind", "") or "").lower()
         role_hint = {"api_surface", "factory_surface", "runtime_surface"}.intersection(scoped_roles)
         if not role_hint:
             return False
         haystack = f"{name} {path}"
+        if kind == "object_api" or "client" in name:
+            return True
         return any(token in haystack for token in REGISTRATION_FLOW_TARGET_TOKENS)
 
     def registration_flow_recovery_hint(self, row: dict, *, target: SubgraphNode) -> bool:

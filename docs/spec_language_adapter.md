@@ -420,6 +420,17 @@ Graph Completeness extends adapters:
 4. ✅ Arbitrator BFS expanded to traverse all three edge types (CALLS, IMPORTS, DEPENDS_ON).
 5. ✅ 18 new tests verify complete import/inheritance extraction.
 
+### Phase 3.6 ✅ Complete — TypeScript `object_api` surfaces
+
+The TypeScript adapter collapses `export const Foo = { ... }` client objects into a single symbol:
+
+- **kind:** `object_api`
+- **signature_status:** `object_api_export`
+- nested method symbols inside the object literal are suppressed to reduce graph noise
+- HTTP calls inside the object (`post('/ask')`, `fetch('/health')`) are attributed to the enclosing `object_api` symbol
+
+This enables cross-language trace questions (for example extension `SidecarClient` → sidecar `/ask` handler) when combined with the `ts_http_route_hints` indexer pass.
+
 ### Phase 5+
 
 Add new language adapters (Go, Rust, Java, etc.) as demand grows. Each is a single file.

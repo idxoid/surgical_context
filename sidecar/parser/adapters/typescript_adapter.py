@@ -366,7 +366,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
 
-        import_bindings = self._extract_import_bindings(source_code, file_path)
+        import_bindings, module_aliases = self._extract_import_bindings(source_code, file_path)
         calls = []
         for node, tag in captures:
             if tag != "call":
@@ -437,13 +437,21 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
                     base = import_bindings.get(receiver_text, "")
                     if base:
-                        call["callee_qualified_name"] = f"{base}.{call_name}"
+                        if receiver_text in module_aliases:
+                            call["callee_qualified_name"] = f"{base}.{call_name}"
+                        else:
+                            base_leaf = base.rsplit(".", 1)[-1]
+                            if base_leaf == receiver_text:
+                                call["callee_qualified_name"] = base
+                            else:
+                                call["callee_qualified_name"] = f"{base}.{call_name}"
             calls.append(call)
 
         return calls
 
-    def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
+    def _extract_import_bindings(self, source_code: str, file_path: str) -> tuple[dict[str, str], set[str]]:
         bindings: dict[str, str] = {}
+        module_aliases: set[str] = set()
         for match in re.finditer(
             r"import\s+([^;]+?)\s+from\s+['\"]([^'\"]+)['\"]",
             source_code,
@@ -458,6 +466,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 alias = spec[len("* as ") :].strip()
                 if alias:
                     bindings[alias] = source
+                    module_aliases.add(alias)
             elif "," in spec:
                 default_alias, rest = spec.split(",", 1)
                 default_alias = default_alias.strip()
@@ -482,7 +491,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             source = self._normalize_import_source(file_path, match.group(2).strip())
             if alias and source:
                 bindings[alias] = source
-        return bindings
+        return bindings, module_aliases
 
     @staticmethod
     def _parse_named_import_bindings(spec: str, source: str, out: dict[str, str]) -> None:

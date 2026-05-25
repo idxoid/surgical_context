@@ -210,15 +210,33 @@ def infer_supporting_roles(
     ):
         inferred.append("impact_runtime")
 
-    if lowered_kind in {"function", "method", "class", ""}:
+    if lowered_kind in {"function", "method", "class", "object_api", ""}:
         if (
             lowered_name
             and not lowered_name.startswith("_")
-            and lowered_name == file_stem
+            and (
+                lowered_name == file_stem
+                or lowered_name.lower() == file_stem.lower()
+                or (
+                    lowered_kind == "object_api"
+                    and (
+                        lowered_name.endswith("Client")
+                        or "client" in lowered_name.lower()
+                        or "api" in lowered_name.lower()
+                    )
+                )
+            )
             and "/docs/" not in lowered_path
             and "/examples/" not in lowered_path
         ):
             inferred.append("api_surface")
+
+        if (
+            lowered_kind in {"function", "method"}
+            and lowered_name == "activate"
+            and "/extension/" in lowered_path
+        ):
+            inferred.append("factory_surface")
 
         composition_tokens = (
             "builder",

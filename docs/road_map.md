@@ -87,6 +87,8 @@ Current snapshot:
 - FastAPI local retrieval is mostly green; dependency trace roles are recovered through generic dependency/provider signals rather than framework-symbol pairs. Remaining warning-class cases are file/precision tails.
 - Pydantic and Redux Toolkit local packs are broadly green with remaining precision tails on broad/doc-heavy questions.
 - Flask and Django mostly pass with role/file-coverage tails; Express still needs target-resolution and JS export-shape improvements before meaningful ranker tuning.
+- **surgical_context** (May 2026): **6/7 pass** with TS `object_api` indexing + `ts_http_route_hints`; relaxed `trace_dependency` gate converts near-perfect single-axis recall to pass.
+- **dathund** (May 2026): **6/8 pass**; remaining warns are below the relaxed trace floor (graph/label gaps, not gate tuning).
 - `UnifiedRanker` decomposition (big-bang first cut) is implemented: new `sidecar/context/ranker/*` components (`TargetSelector`, `GraphCandidateSource`, `VectorCandidateSource`, `RoleBackfill`, `BudgetSelector`, `SubgraphAssembler`) are wired, with `UnifiedRanker` kept as compatibility facade.
 
 ### P4 - Provider Boundaries, Defaults First

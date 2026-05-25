@@ -917,6 +917,17 @@ def test_short_dep_substring_does_not_infer_orchestrator_role():
     assert "orchestrator" not in roles
 
 
+def test_object_api_client_surface_infers_api_surface_role():
+    roles = infer_supporting_roles(
+        file_path="/repo/extension/src/sidecarClient.ts",
+        primary_role="supporting_surface",
+        name="SidecarClient",
+        kind="object_api",
+    )
+
+    assert "api_surface" in roles
+
+
 def test_editorial_docs_get_downranked_relative_to_mechanism_docs():
     assert (
         compute_noise_factor(
@@ -1214,6 +1225,33 @@ def test_trace_query_terms_skip_package_root_names():
     assert "fastapi" not in terms
     assert "dependency" in terms
     assert "param_functions" in terms
+
+
+def test_trace_query_terms_expand_webview_extension_flow():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="client",
+        name="SidecarClient",
+        file_path="/repo/extension/src/sidecarClient.ts",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="object_api",
+    )
+
+    terms = ranker.structural_recovery.trace_query_terms(
+        "How does the VS Code extension send a request from the webview to the sidecar /ask handler?",
+        target,
+    )
+
+    assert "webview" in terms
+    assert "provider" in terms
+    assert "activate" in terms
 
 
 def test_trace_topic_anchor_sorts_below_required_role_filler():

@@ -202,6 +202,24 @@ function bootstrap() {
         assert call["tier"] == "imported"
         assert call["callee_qualified_name"] == "@nestjs.core.NestFactory"
 
+    def test_extract_calls_links_object_api_member_to_imported_surface(self, adapter):
+        source = """
+import { SidecarClient } from './sidecarClient';
+
+export class SurgicalContextViewProvider {
+  runAsk() {
+    return SidecarClient.askStream('sym', 'question', {});
+  }
+}
+"""
+        calls = adapter.extract_calls_from_source(
+            source, "extension/src/providers/SurgicalContextViewProvider.ts"
+        )
+        call = next(call for call in calls if call.get("callee_name") == "askStream")
+
+        assert call["rel_type"] == "CALLS_IMPORTED"
+        assert call["callee_qualified_name"] == "sidecarClient.SidecarClient"
+
     def test_extract_symbols_includes_exported_interface_via_fallback(self, adapter):
         source = """
 export interface Ref<T = unknown> {
