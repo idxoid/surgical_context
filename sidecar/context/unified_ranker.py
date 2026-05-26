@@ -656,6 +656,9 @@ class UnifiedRanker:
         budget: int,
         graph_pool_size: int = 200,
         vector_limit: int = 100,
+        *,
+        ambiguous: bool = False,
+        secondary_intent: Intent | None = None,
     ) -> tuple[list[Candidate], dict, str, list[dict], list[str]]:
         """Return budget-fitting candidates sorted by blended score.
 
@@ -680,8 +683,21 @@ class UnifiedRanker:
             bridge_seeds, excluded, limit=30, hop_decay=1.0
         )
 
-        # 3b. 2-hop bridge is currently disabled by default to minimize noise.
-        bridge_pool = bridge_pool_h1
+        # 3b. 2-hop bridge: disabled by default. In benchmarking (65/65 real-repo
+        # pass rate), enabling it added noise in hub-heavy graphs (fastapi, pydantic)
+        # where hop-2 seeds retrieved unrelated utility symbols. Re-enable by setting
+        # RANKER_2HOP_BRIDGE=1 in the environment for evaluation.
+        import os as _os
+
+        if _os.getenv("RANKER_2HOP_BRIDGE"):
+            seeds_h2 = {c.uid for c in bridge_pool_h1 if c.graph_score > 0.4}
+            excluded_h2 = excluded | seeds_h2
+            bridge_pool_h2 = self._doc_bridge_candidates(
+                seeds_h2, excluded_h2, limit=20, hop_decay=0.5
+            )
+            bridge_pool = [*bridge_pool_h1, *bridge_pool_h2]
+        else:
+            bridge_pool = bridge_pool_h1
 
         # 4. Fuse into unified pool, boosting docs linked via COVERS
         pool = self._fuse(graph_pool, doc_pool, sym_vec_pool, target.uid, bridge_pool=bridge_pool)
@@ -898,7 +914,16 @@ class UnifiedRanker:
 
         pool.sort(key=_sort_key, reverse=True)
 
-        # 10. Optimal context selection (marginal gain + doc deferral)
+        # 10. Ambiguous-intent adjustment: when classifier is uncertain and the
+        # secondary intent is DEBUGGING, treat the context as partially debugging
+        # — require callers (execution_path role) and use the deeper floor.
+        if ambiguous and secondary_intent == Intent.DEBUGGING and intent != Intent.DEBUGGING:
+            if "execution_path" not in required_roles:
+                required_roles = normalize_roles([*required_roles, "execution_path"])
+            floor_override = self._INTENT_FLOORS.get(Intent.DEBUGGING, 1500)
+            budget = max(budget, floor_override)
+
+        # 11. Optimal context selection (marginal gain + doc deferral)
         return self.budget_pruner.select_under_budget(
             pool,
             target,

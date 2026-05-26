@@ -6,10 +6,7 @@
 
 `ContextArbitrator` assembles the JSON Prompt Contract for a target symbol. It is still an orchestrator rather than a planner: it composes intent classification, retrieval, code resolution, and prompt compilation, but it does not call the LLM itself.
 
-Two execution paths exist:
-
-- **Unified path** — used when `vector_db` is present. This is the default local product path.
-- **Graph-only fallback** — used when no vector DB is configured.
+**Single execution path.** All requests go through the unified path. When `vector_db` is absent `VectorSearcher` returns empty results — vector scores are zero but normalization, role backfill, and noise factors still run. A `WARNING` is logged and `budget.ranker` is set to `"unified_graph_only"` so callers can see the reduced quality without a different code path.
 
 ## Public API
 
@@ -21,6 +18,9 @@ ContextArbitrator(
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     cache: LayeredCache | None = None,
     ranker_weights: RankerWeights | None = None,
+    *,
+    vector_search: VectorSearchProvider | None = None,
+    workspace_meta: WorkspaceMetaProvider | None = None,
 )
 ```
 
@@ -30,32 +30,28 @@ Returns a `PromptContext`, or an error string like `Error: Symbol '...' not foun
 
 ## Unified Path
 
-When `vector_db` is present, the pipeline is:
+The pipeline for all requests:
 
 1. **Intent classification** — `IntentClassifier.classify_with_metadata(question)` returns the primary intent plus distribution, confidence, and ambiguity signal.
 2. **Target selection** — `UnifiedRanker.get_target(...)` resolves the symbol in the active workspace and records duplicate-resolution metadata when needed.
-3. **Unified ranking** — `UnifiedRanker.rank(...)` blends graph and semantic candidates, applies mechanism-aware role backfill, and returns:
+3. **Concept anchor fallback** — when the target is missing or low-quality, `_resolve_concept_anchor_target` asks the ranker's dynamic `concept_anchor_candidates()` method for alternative entry points. There is no static hardcoded framework map; all candidates come from the graph.
+4. **Unified ranking** — `UnifiedRanker.rank(...)` blends graph and semantic candidates, applies mechanism-aware role backfill, and returns:
    - selected candidates
    - budget info
    - stop reason
    - pruned candidate details
    - missing roles
-4. **Subgraph/doc split** — `UnifiedRanker.candidates_to_subgraph(...)` converts the chosen candidates back into `SubgraphNode` plus `DocChunk` objects for compilation.
-5. **Code resolution** — `CodeResolver.resolve(...)` reads dirty overlay content first, then falls back to disk. Massive targets and low-gain distant neighbors are resolved in signature-only mode.
-6. **Prompt compilation** — `PromptCompiler.compile_with_intent(...)` builds the base `PromptContext`.
-7. **Observability enrichment** — arbitrator writes mechanism, missing roles, ranker weights, target-selection metadata, cache hits, and intent metadata into the contract.
+5. **Subgraph/doc split** — `UnifiedRanker.candidates_to_subgraph(...)` converts the chosen candidates back into `SubgraphNode` plus `DocChunk` objects for compilation.
+6. **Code resolution** — `CodeResolver.resolve(...)` reads dirty overlay content first, then falls back to disk. Massive targets and low-gain distant neighbors are resolved in signature-only mode.
+7. **Prompt compilation** — `PromptCompiler.compile_with_intent(...)` builds the base `PromptContext`.
+8. **Observability enrichment** — arbitrator writes mechanism, missing roles, ranker weights, target-selection metadata, cache hits, and intent metadata into the contract.
 
-## Graph-Only Fallback
+## `budget.ranker` Values
 
-When no vector DB is configured, the pipeline falls back to:
-
-1. intent classification
-2. `GraphExpander.expand(...)`
-3. `ContextDeduplicator.deduplicate(...)`
-4. `CodeResolver.resolve(...)`
-5. `PromptCompiler.compile_with_intent(...)`
-
-This path is functional, but less observable and generally less retrieval-capable than the unified path.
+| Value | Meaning |
+|---|---|
+| `"unified"` | Full unified path with vector search active |
+| `"unified_graph_only"` | Unified path but `vector_db` is absent — semantic scores are zero |
 
 ## PromptContext Fields the Arbitrator Owns
 
@@ -91,9 +87,10 @@ The graph supplies symbol file paths and line ranges. Only the source of text ch
 
 ## Current Limitations
 
-- The graph-only fallback does not surface the same ranker metadata richness as the unified path.
+- When `vector_db` is absent, semantic scores are zero so ranking is graph-score dominated. Logging reports this; callers can detect it via `budget.ranker == "unified_graph_only"`.
 - Doc-anchor type/confidence is injected into `documentation[]` when a selected doc overlaps ranked graph symbols through `COVERS`; vector-only docs still carry empty/zero defaults.
 - Mechanism inference now relies on repository profiles, role catalogs, and generic recovery signals rather than bundled framework dispatch tables. Coverage is still uneven for dynamic export/registration patterns.
+- `_find_symbol_line` (used by the file-fallback path) matches on `def/class/function/const/let/var` keywords only. It is a fast heuristic, not a parser — may misfire on uncommon definition patterns.
 
 ## Planned Extensions
 

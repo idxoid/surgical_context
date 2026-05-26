@@ -42,22 +42,43 @@ class BudgetPruner:
 
         stopped_reason = "pool_exhausted"
         min_floor = self.host._INTENT_FLOORS.get(intent, 1200)
-        min_gain = 0.12  # Threshold for stopping
+        # Per-intent thresholds: NAVIGATION stops early (tight scope), DEBUGGING
+        # and IMPACT_ANALYSIS expand wider (need more evidence).
+        _INTENT_MIN_GAIN = {
+            Intent.NAVIGATION: 0.20,
+            Intent.EXPLORATION: 0.12,
+            Intent.DEBUGGING: 0.08,
+            Intent.NEW_FEATURE: 0.10,
+            Intent.REFACTORING: 0.12,
+            Intent.DESIGN_QUESTION: 0.10,
+            Intent.IMPACT_ANALYSIS: 0.08,
+        }
+        _INTENT_STALL_LIMIT = {
+            Intent.NAVIGATION: 4,
+            Intent.EXPLORATION: 8,
+            Intent.DEBUGGING: 12,
+            Intent.NEW_FEATURE: 10,
+            Intent.REFACTORING: 8,
+            Intent.DESIGN_QUESTION: 10,
+            Intent.IMPACT_ANALYSIS: 12,
+        }
+        min_gain = _INTENT_MIN_GAIN.get(intent, 0.12)
         low_gain_floor = 0.02  # Protect against pure junk
         useful_candidates_seen = 0
         no_progress_streak = 0
-        expansion_stall_limit = 8
+        expansion_stall_limit = _INTENT_STALL_LIMIT.get(intent, 8)
         # For DI/trace questions, role sets can be "complete" while file-level
         # evidence still lives in other modules; do not take marginal-gain early
         # exit until the context spans enough distinct code files.
         min_trace_code_file_breadth = 3
 
-        # Doc-tier deferral: when symbols still owe coverage breadth, hold docs
-        # back so they don't crowd out role-filling code. A doc may "claim" a
-        # role via supporting_roles and starve real graph candidates that would
-        # bring in additional expected files from runtime/supporting modules.
-        # IMPACT_ANALYSIS is exempt — its tier prior already favors docs.
-        defer_docs = intent != Intent.IMPACT_ANALYSIS
+        # Doc-tier deferral: hold docs back until code coverage is established,
+        # so they don't crowd out role-filling graph symbols.
+        # Intents where docs ARE the primary signal (design, new feature) should
+        # NOT defer — they need docs early to fill concept/architecture roles.
+        # IMPACT_ANALYSIS is also exempt (tier prior already favors docs/tests).
+        _DOC_FIRST_INTENTS = (Intent.DESIGN_QUESTION, Intent.NEW_FEATURE, Intent.IMPACT_ANALYSIS)
+        defer_docs = intent not in _DOC_FIRST_INTENTS
         min_code_files_before_docs = 3
         deferred_docs: list[Candidate] = []
 

@@ -539,6 +539,37 @@ class Neo4jClient:
             workspace_id=workspace_id,
         )
 
+    def get_symbol_uid_by_name(
+        self, name: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> str | None:
+        """Return the UID of the first symbol matching `name` in this workspace, or None."""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
+                RETURN s.uid AS uid LIMIT 1
+                """,
+                name=name,
+                workspace_id=workspace_id,
+            ).single()
+        return result["uid"] if result else None
+
+    def get_file_path_for_symbol(
+        self, symbol_uid: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> str:
+        """Return the file path containing `symbol_uid`, or '<unknown>'."""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (s:Symbol {uid: $uid})
+                OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s)
+                RETURN coalesce(f.path, '<unknown>') AS file_path
+                """,
+                uid=symbol_uid,
+                workspace_id=workspace_id,
+            ).single()
+        return result["file_path"] if result else "<unknown>"
+
 
 def _split_workspace_id(workspace_id: str) -> dict[str, str]:
     tenant_repo, _, ref = workspace_id.partition("@")

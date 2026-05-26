@@ -211,7 +211,7 @@ Streaming version of `/ask` using server-sent events.
 - `error` — JSON error payload.
 - `done` — terminal event.
 
-**Behavior:** Uses the same arbitration and model-routing path as `/ask`, but frames every SSE payload through JSON-safe `format_sse()`.
+**Behavior:** Uses the same arbitration, model-routing, and L3 response-cache path as `/ask`. On a cache hit the full cached answer is emitted as a single `chunk` event followed by `context` and `done`. On a miss, chunks stream normally and the complete answer is written to L3 after the final chunk. Both endpoints are cache-symmetric.
 
 ---
 
@@ -368,6 +368,8 @@ Return downstream symbols and files affected by changing a symbol.
   "max_depth": 4
 }
 ```
+
+**Implementation note:** symbol UID and file-path lookups go through `Neo4jClient.get_symbol_uid_by_name()` and `Neo4jClient.get_file_path_for_symbol()`. No raw Cypher is written in the route handler. `404` is returned when the symbol is not found in the workspace.
 
 ---
 

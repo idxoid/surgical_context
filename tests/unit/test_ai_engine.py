@@ -3,7 +3,62 @@
 import os
 from unittest.mock import patch
 
-from sidecar.ai.engine import AIEngine, ModelRouter
+from sidecar.ai.engine import _MIN_CACHE_TOKENS, AIEngine, ModelRouter, _build_system_blocks
+
+
+class TestBuildSystemBlocks:
+    """Unit tests for prompt-caching block splitter."""
+
+    def test_no_markers_returns_single_block(self):
+        prompt = "You are a code assistant."
+        blocks = _build_system_blocks(prompt)
+        assert len(blocks) == 1
+        assert blocks[0]["text"] == prompt
+        assert "cache_control" not in blocks[0]
+
+    def test_large_graph_block_gets_cache_control(self):
+        # Construct a prompt where the graph block exceeds _MIN_CACHE_TOKENS chars * 4
+        big_code = "x" * (_MIN_CACHE_TOKENS * 4 + 100)
+        prompt = f"You are a code assistant.\n--- TARGET SYMBOL: foo ---\n{big_code}"
+        blocks = _build_system_blocks(prompt)
+        cached = [b for b in blocks if b.get("cache_control")]
+        assert len(cached) == 1
+        assert cached[0]["cache_control"] == {"type": "ephemeral"}
+        assert "TARGET SYMBOL" in cached[0]["text"]
+
+    def test_small_graph_block_no_cache_control(self):
+        prompt = "Preamble\n--- TARGET SYMBOL: foo ---\nsmall code"
+        blocks = _build_system_blocks(prompt)
+        cached = [b for b in blocks if b.get("cache_control")]
+        assert cached == []
+
+    def test_doc_block_never_cached(self):
+        big_code = "x" * (_MIN_CACHE_TOKENS * 4 + 100)
+        doc = "Some documentation text."
+        prompt = f"Preamble\n--- TARGET SYMBOL: foo ---\n{big_code}\n--- DOCUMENTATION ---\n{doc}"
+        blocks = _build_system_blocks(prompt)
+        cached = [b for b in blocks if b.get("cache_control")]
+        assert len(cached) == 1
+        assert "DOCUMENTATION" not in cached[0]["text"]
+        # doc block exists and is not cached
+        doc_block = [
+            b for b in blocks if "DOCUMENTATION" in b.get("text", "") or doc in b.get("text", "")
+        ]
+        assert doc_block
+        assert "cache_control" not in doc_block[-1]
+
+    def test_preamble_is_separate_uncached_block(self):
+        preamble = "You are a Surgical Code Assistant."
+        big_code = "y" * (_MIN_CACHE_TOKENS * 4 + 100)
+        prompt = f"{preamble}\n--- TARGET SYMBOL: bar ---\n{big_code}"
+        blocks = _build_system_blocks(prompt)
+        assert blocks[0]["text"].startswith("You are")
+        assert "cache_control" not in blocks[0]
+
+    def test_empty_prompt_returns_single_block(self):
+        blocks = _build_system_blocks("")
+        assert len(blocks) == 1
+        assert blocks[0]["text"] == ""
 
 
 class TestModelRouter:

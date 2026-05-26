@@ -1,5 +1,6 @@
 """FastAPI endpoint tests with external services mocked out."""
 
+import asyncio
 import importlib
 import sys
 import tempfile
@@ -20,6 +21,7 @@ class FakeCtx:
     index_manifest_id = ""
     index_manifest_schema_version = None
     retrieval_trace: dict = {}
+    budget: dict = {}
     primary_source = SymbolContext(
         symbol="process_payment",
         file_path="/repo/payment.py",
@@ -435,6 +437,57 @@ def test_ask_stream_endpoint_emits_json_sse(monkeypatch):
     assert response.media_type == "text/event-stream"
 
 
+def _parse_sse_events(body: str) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    event_name = ""
+    data_lines: list[str] = []
+    for line in body.splitlines():
+        if not line.strip():
+            if event_name and data_lines:
+                import json
+
+                events.append((event_name, json.loads("\n".join(data_lines))))
+            event_name = ""
+            data_lines = []
+            continue
+        if line.startswith("event:"):
+            event_name = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line.split(":", 1)[1].strip())
+    return events
+
+
+async def _read_streaming_response(response) -> bytes:
+    chunks: list[bytes] = []
+    async for chunk in response.body_iterator:
+        if isinstance(chunk, str):
+            chunks.append(chunk.encode("utf-8"))
+        else:
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def test_ask_stream_emits_trace_event_on_l3_cache_hit(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    req = main.AskRequest(symbol="process_payment", question="Cached?")
+    first = main.ask_stream(req)
+    asyncio.run(_read_streaming_response(first))
+
+    second = main.ask_stream(req)
+    body = asyncio.run(_read_streaming_response(second)).decode("utf-8")
+    events = _parse_sse_events(body)
+    trace_events = [payload for name, payload in events if name == "trace"]
+
+    assert len(trace_events) >= 2
+    cache_trace = trace_events[1]
+    assert cache_trace["stage"] == "llm"
+    assert cache_trace["cache_hits"] == ["l3_response"]
+    assert cache_trace["model_route"]["cached"] is True
+    assert cache_trace["model_route"]["cache_layer"] == "l3_response"
+    assert any(name == "chunk" for name, _ in events)
+
+
 def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
@@ -661,27 +714,12 @@ def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path)
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
-    class FakeSession:
-        def __init__(self):
-            self.calls = 0
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        def run(self, query, **kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                return types.SimpleNamespace(single=lambda: {"uid": "symbol-1"})
-            return types.SimpleNamespace(single=lambda: {"file_path": "/repo/app.py"})
-
     class FakeDriverDb(FakeDb):
-        def __init__(self):
-            super().__init__()
-            self.session = FakeSession()
-            self.driver = types.SimpleNamespace(session=lambda: self.session)
+        def get_symbol_uid_by_name(self, name, workspace_id="local/surgical_context@main"):
+            return "symbol-1"
+
+        def get_file_path_for_symbol(self, uid, workspace_id="local/surgical_context@main"):
+            return "/repo/app.py"
 
     @contextmanager
     def impact_db_session(user_id="anonymous"):

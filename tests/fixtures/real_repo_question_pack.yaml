@@ -522,7 +522,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: flask_request_hooks
-    required_roles: [public_entrypoint, hook_registry, request_processor, handler_or_lifecycle]
+    required_roles: [public_entrypoint, hook_registry, handler_or_lifecycle, runtime_surface]
     expected_symbols: [before_request, after_request, preprocess_request, do_teardown_request]
     expected_files: [src/flask/app.py]
 

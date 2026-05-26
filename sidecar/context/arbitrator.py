@@ -1,12 +1,10 @@
 """ContextArbitrator — thin orchestrator facade composing pure components."""
 
-import hashlib
+import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
-from sidecar.context.deduplicator import ContextDeduplicator
-from sidecar.context.graph_expander import GraphExpander
 from sidecar.context.intent_classifier import (
     Intent,
     IntentClassifier,
@@ -21,9 +19,10 @@ from sidecar.context.unified_ranker import (
     UnifiedRanker,
     VectorSearcher,
 )
-from sidecar.retrieval.trace import graph_only_trace, unified_trace
+from sidecar.retrieval.trace import unified_trace
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
+_log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from sidecar.retrieval.protocols import VectorSearchProvider, WorkspaceMetaProvider
 
@@ -66,12 +65,14 @@ class ContextArbitrator:
         )
         cache_hits: list[str] = []
 
-        if self.vector_db or self._vector_search:
-            return self._get_context_unified(
-                symbol_name, question, token_budget, intent_signal, intent_resolution, cache_hits
+        if not self.vector_db and not self._vector_search:
+            _log.warning(
+                "No vector_db configured for workspace %s — running in graph-only mode "
+                "(semantic search and role backfill are active but vector scores will be zero).",
+                self.workspace_id,
             )
-        return self._get_context_graph_only(
-            symbol_name, token_budget, intent_signal, intent_resolution, cache_hits
+        return self._get_context_unified(
+            symbol_name, question, token_budget, intent_signal, intent_resolution, cache_hits
         )
 
     # ------------------------------------------------------------------
@@ -141,8 +142,27 @@ class ContextArbitrator:
                 return f"Error: Token budget {token_budget} too small even for signature."
 
         query_str = f"{symbol_name} {question}".strip()
+        # Derive secondary intent from score distribution (runner-up after primary).
+        secondary_intent: Intent | None = None
+        if intent_signal.ambiguous and intent_signal.distribution:
+            sorted_intents = sorted(
+                intent_signal.distribution.items(), key=lambda kv: kv[1], reverse=True
+            )
+            for name, _ in sorted_intents:
+                try:
+                    candidate_intent = Intent(name)
+                except ValueError:
+                    continue
+                if candidate_intent != intent:
+                    secondary_intent = candidate_intent
+                    break
         candidates, budget_info, stopped_reason, pruned_details, missing_roles = ranker.rank(
-            target, query_str, intent, token_budget
+            target,
+            query_str,
+            intent,
+            token_budget,
+            ambiguous=intent_signal.ambiguous,
+            secondary_intent=secondary_intent,
         )
 
         subgraph, docs = ranker.candidates_to_subgraph(
@@ -209,7 +229,8 @@ class ContextArbitrator:
         ctx.intent_effective_mode = intent_resolution.effective_mode
         ctx.intent_resolution = intent_resolution.to_dict()
         ctx.budget["cache_hits"] = sorted(set(cache_hits))
-        ctx.budget["ranker"] = "unified"
+        has_vector = bool(self.vector_db or self._vector_search)
+        ctx.budget["ranker"] = "unified" if has_vector else "unified_graph_only"
         w = self.ranker_weights
         ctx.budget["ranker_weights"] = {
             "alpha": w.alpha,
@@ -219,7 +240,7 @@ class ContextArbitrator:
             "epsilon": w.epsilon,
         }
         ctx.ranker_state = {
-            "strategy": "unified",
+            "strategy": "unified" if has_vector else "unified_graph_only",
             "weights": dict(ctx.budget["ranker_weights"]),
             "candidates_considered": budget_info.get("pool_size", 0),
             "candidates_selected": len(candidates),
@@ -249,15 +270,6 @@ class ContextArbitrator:
         return any(token in q for token in ("how ", "how does", "how do", "behavior", "works"))
 
     @staticmethod
-    def _concept_anchor_candidates(symbol_name: str) -> list[str]:
-        concept = (symbol_name or "").strip().lower()
-        concept_map = {
-            "app": ["createApplication", "application", "createApp", "use", "handle"],
-            "middleware": ["use", "handle", "router", "route"],
-        }
-        return concept_map.get(concept, [])
-
-    @staticmethod
     def _target_selection_is_low_quality(target_selection: dict[str, Any] | None) -> bool:
         if not target_selection:
             return False
@@ -278,7 +290,7 @@ class ContextArbitrator:
     ) -> tuple[SubgraphNode | None, dict[str, Any]]:
         if not self._should_try_concept_anchor_fallback(question):
             return None, {}
-        anchors = list(self._concept_anchor_candidates(symbol_name))
+        anchors: list[str] = []
         dynamic_anchor_loader = getattr(ranker, "concept_anchor_candidates", None)
         if callable(dynamic_anchor_loader):
             anchors.extend(dynamic_anchor_loader(symbol_name, query=question))
@@ -305,98 +317,6 @@ class ContextArbitrator:
                 }
                 return candidate, metadata
         return None, {}
-
-    # ------------------------------------------------------------------
-    # Graph-only path (no vector_db — original behaviour)
-    # ------------------------------------------------------------------
-
-    def _get_context_graph_only(
-        self,
-        symbol_name,
-        token_budget,
-        intent_signal: IntentSignal,
-        intent_resolution: IntentResolution,
-        cache_hits,
-    ) -> PromptContext | str:
-        intent = intent_signal.primary
-        intent_hash = hashlib.sha256(intent.value.encode("utf-8")).hexdigest()
-        graph_version = self._graph_version()
-
-        subgraph = None
-        primary_uid = self._primary_uid(symbol_name)
-        if primary_uid:
-            subgraph = self.cache.get_subgraph(
-                primary_uid, intent_hash, token_budget, self.workspace_id, graph_version
-            )
-            if subgraph is not None:
-                cache_hits.append("l2_subgraph")
-
-        if subgraph is None:
-            subgraph = GraphExpander(self.db, workspace_id=self.workspace_id).expand(
-                symbol_name, token_budget=token_budget
-            )
-            if not isinstance(subgraph, str):
-                primary_uid = subgraph.primary.uid
-                self.cache.put_subgraph(
-                    primary_uid,
-                    intent_hash,
-                    token_budget,
-                    self.workspace_id,
-                    graph_version,
-                    subgraph,
-                )
-        if isinstance(subgraph, str):
-            return subgraph
-
-        subgraph = ContextDeduplicator().deduplicate(subgraph)
-
-        resolver = CodeResolver(self.overlay, workspace_id=self.workspace_id)
-        code_map = {}
-        for node in [subgraph.primary] + subgraph.nodes:
-            line_range = (node.range[0], node.range[1])
-            overlay_dirty = bool(
-                self.overlay and self.overlay.has(node.file_path, workspace_id=self.workspace_id)
-            )
-            cached = None
-            if node.file_hash and not overlay_dirty:
-                cached = self.cache.get_body(node.file_path, line_range, node.file_hash)
-            if cached is not None:
-                cache_hits.append("l1_body")
-                code_map[node.uid] = (cached.code, cached.is_dirty)
-                continue
-            code, is_dirty = resolver.resolve(node.file_path, *line_range)
-            code_map[node.uid] = (code, is_dirty)
-            if node.file_hash and not is_dirty:
-                self.cache.put_body(
-                    node.file_path,
-                    line_range,
-                    node.file_hash,
-                    CachedBody(code=code, token_count=node.token_estimate, is_dirty=False),
-                )
-
-        ctx = PromptCompiler().compile_with_intent(subgraph, code_map, [], intent)
-        ctx.intent_distribution = intent_signal.distribution
-        ctx.intent_confidence = intent_signal.confidence
-        ctx.intent_ambiguous = intent_signal.ambiguous
-        ctx.intent_effective_mode = intent_resolution.effective_mode
-        ctx.intent_resolution = intent_resolution.to_dict()
-        ctx.budget["cache_hits"] = sorted(set(cache_hits))
-        ctx.budget["ranker"] = "graph_only"
-        ctx.ranker_state = {
-            "strategy": "graph_only",
-            "candidates_considered": len(subgraph.nodes),
-            "candidates_selected": len(subgraph.nodes),
-            "pruned_total_count": len(subgraph.pruned_details),
-        }
-        ctx.retrieval_trace = graph_only_trace(
-            workspace_id=self.workspace_id,
-            intent=intent.value,
-            stopped_reason=subgraph.stopped_reason or "",
-            cache_hits=sorted(set(cache_hits)),
-            ranker_state=ctx.ranker_state,
-            pruned_count=len(subgraph.pruned_details),
-        )
-        return ctx
 
     def _vector_search_for_ranker(self):
         if self._vector_search is not None:

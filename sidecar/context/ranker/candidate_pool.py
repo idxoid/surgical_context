@@ -83,6 +83,8 @@ class VectorSearcher:
         *,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ) -> list[dict]:
+        if self.db is None:
+            return []
         try:
             raw = self.db.search(query, limit, workspace_id=workspace_id)
         except TypeError:
@@ -107,6 +109,8 @@ class VectorSearcher:
         *,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ) -> list[dict]:
+        if self.db is None:
+            return []
         try:
             return cast(
                 list[dict[str, Any]],

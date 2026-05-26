@@ -5,6 +5,81 @@ import os
 import ollama
 from anthropic import Anthropic
 
+# Markers written by PromptContext.to_system_prompt()
+_CONTEXT_MARKERS = ("--- TARGET SYMBOL:", "--- DEPENDENCIES ---", "--- DOCUMENTATION ---")
+
+# Minimum tokens to bother caching a context block. The Anthropic cache
+# write overhead is only worth it above ~1024 tokens; below that we skip
+# cache_control to avoid paying the write fee for negligible savings.
+_MIN_CACHE_TOKENS = 1024
+
+
+def _build_system_blocks(system_prompt: str) -> list[dict]:
+    """Split system_prompt into cacheable API blocks.
+
+    Anthropic prompt caching requires the cacheable content to be a separate
+    text block with ``cache_control: {type: ephemeral}``. The block must not
+    be the last one — the final user turn always re-enters the cache lookup.
+
+    Structure we produce:
+      1. Instruction preamble (before any context marker) — not cached,
+         changes per intent/mode.
+      2. Code + graph context block — cached when large enough; this is the
+         expensive part that stays stable across follow-up questions on the
+         same symbol.
+      3. (Optional) Documentation block — not cached; doc chunks rotate more
+         than code and are usually short.
+
+    If there are no context markers the whole prompt goes as a single
+    uncached block (e.g. direct-LLM mode).
+    """
+    # Find the first context marker to split preamble from context body
+    split_pos = -1
+    for marker in _CONTEXT_MARKERS:
+        pos = system_prompt.find(marker)
+        if pos != -1 and (split_pos == -1 or pos < split_pos):
+            split_pos = pos
+
+    if split_pos == -1:
+        # No structured context — single block, no caching overhead
+        return [{"type": "text", "text": system_prompt}]
+
+    preamble = system_prompt[:split_pos].rstrip()
+    context_body = system_prompt[split_pos:]
+
+    # Split context_body at documentation marker so docs are a separate block
+    doc_marker = "\n--- DOCUMENTATION ---"
+    doc_pos = context_body.find(doc_marker)
+    if doc_pos != -1:
+        code_graph_block = context_body[:doc_pos].rstrip()
+        doc_block = context_body[doc_pos:].lstrip()
+    else:
+        code_graph_block = context_body
+        doc_block = ""
+
+    # Rough token estimate: 1 token ≈ 4 chars
+    code_graph_tokens = len(code_graph_block) // 4
+
+    blocks: list[dict] = []
+    if preamble:
+        blocks.append({"type": "text", "text": preamble})
+
+    if code_graph_tokens >= _MIN_CACHE_TOKENS:
+        blocks.append(
+            {
+                "type": "text",
+                "text": code_graph_block,
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
+    elif code_graph_block:
+        blocks.append({"type": "text", "text": code_graph_block})
+
+    if doc_block:
+        blocks.append({"type": "text", "text": doc_block})
+
+    return blocks if blocks else [{"type": "text", "text": system_prompt}]
+
 
 class ModelRouter:
     """Route queries to appropriate model based on context size and intent."""
@@ -120,25 +195,11 @@ class AIEngine:
     def _chat_claude(self, system_prompt: str, user_message: str, token_count: int) -> str:
         """Chat using Claude with prompt caching on graph_context."""
         try:
-            # Detect where graph context starts in system_prompt
-            # Graph context is the section between "--- DEPENDENCIES ---" and "--- DOCUMENTATION ---"
-            cache_control: dict[str, str] | None = None
-            if "--- DEPENDENCIES ---" in system_prompt:
-                # Enable cache control for the graph context block
-                # This saves costs on repeated large context queries
-                cache_control = {"type": "ephemeral"}
-
             assert self.anthropic is not None, "anthropic client must be initialized"
             message = self.anthropic.messages.create(
                 model=self.claude_model,
                 max_tokens=2048,
-                system=[
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": cache_control,  # type: ignore[typeddict-item]
-                    }
-                ],
+                system=_build_system_blocks(system_prompt),
                 messages=[{"role": "user", "content": user_message}],
             )
 
@@ -201,21 +262,11 @@ class AIEngine:
     def _stream_claude(self, system_prompt: str, user_message: str, token_count: int):
         """Stream Claude response."""
         try:
-            cache_control: dict[str, str] | None = None
-            if "--- DEPENDENCIES ---" in system_prompt:
-                cache_control = {"type": "ephemeral"}
-
             assert self.anthropic is not None, "anthropic client must be initialized"
             with self.anthropic.messages.stream(
                 model=self.claude_model,
                 max_tokens=2048,
-                system=[
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": cache_control,  # type: ignore[typeddict-item]
-                    }
-                ],
+                system=_build_system_blocks(system_prompt),
                 messages=[{"role": "user", "content": user_message}],
             ) as stream:
                 for text in stream.text_stream:

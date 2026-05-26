@@ -141,17 +141,32 @@ resolve_pending_anchors(db, lance)
 
 Checks LanceDB `docs.pending` against symbols now present in Neo4j. Creates `[:COVERS]` edges for any identifiers that have become resolvable since the last doc index run.
 
-### Phase 5 — AFFECTS index rebuild (per changed symbol, Phase 5+)
+### Phase 5 — AFFECTS index rebuild (once per batch, Phase 5+)
 
 ```python
 from sidecar.indexer.affects import AFFECTSIndexer
 indexer = AFFECTSIndexer(db)
-indexer.rebuild_affects(changed_uids)
+indexer.rebuild_affects(all_changed_uids)  # single call after all files processed
 ```
 
-After all symbols for a file are upserted, delete stale `AFFECTS` edges and recompute reverse-dependency paths (depth ≤ 4). Enables cascade-aware incremental reindexing.
+Deletes stale `AFFECTS` edges and recomputes reverse-dependency paths (depth ≤ 4). Called **once per batch**, not per file, to avoid O(N) `_load_reverse_adjacency` scans.
 
-Called synchronously at end of `index_file()` — blocks until AFFECTS edges are rebuilt. Future: batch across files.
+**`index_file` signature:**
+
+```python
+def index_file(
+    file_path, db, lance, extractor,
+    workspace_id=DEFAULT_WORKSPACE_ID,
+    *,
+    skip_affects: bool = False,
+) -> list[str]:
+```
+
+- Returns the list of changed symbol UIDs so batch callers can collect them.
+- `skip_affects=True` defers the AFFECTS rebuild to the batch caller.
+- When `skip_affects=False` (default, hot path via `/index/file`), AFFECTS is rebuilt synchronously for that file — preserving the on-save latency contract.
+
+Batch callers (`_process_index_batch` in `main.py`, `run_fast_indexing`) collect all changed UIDs across files and call `rebuild_affects` once after the loop, then call `LayeredCache.invalidate_files` for the full set of indexed paths.
 
 ### Phase 6 — Repository readiness profile (project pass)
 

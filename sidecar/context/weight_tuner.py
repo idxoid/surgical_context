@@ -16,6 +16,7 @@ import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from sidecar.context.unified_ranker import RankerWeights
 
@@ -420,6 +421,66 @@ def _save_results(tuner: WeightTuner, output_path: str) -> None:
             f,
             indent=2,
         )
+
+
+def make_feedback_eval_func(
+    feedback_store: Any,
+    arbitrator_factory: Callable[[], Any],
+    *,
+    workspace_id: str = "",
+) -> Callable[[RankerWeights], dict]:
+    """Build an eval_func driven by live feedback rather than a fixed QA set.
+
+    ``feedback_store`` must have a ``feedback_examples()`` method (FeedbackStore).
+    ``arbitrator_factory(weights) -> ContextArbitrator`` creates a fresh arbitrator
+    for each trial with the candidate weight set.
+
+    The returned metric dict contains:
+    - ``accept_rate``: fraction of accepted-feedback queries that returned the
+      same top-5 candidates as the snapshot (proxy for recall stability).
+    - ``reject_rate``: fraction of rejected queries — lower is better.
+    - ``examples_used``: number of feedback examples evaluated.
+    """
+
+    def eval_func(weights: RankerWeights) -> dict:
+        examples = feedback_store.feedback_examples(limit=200)
+        if not examples:
+            return {"accept_rate": 0.0, "reject_rate": 0.0, "examples_used": 0}
+
+        arbitrator = arbitrator_factory()
+        arbitrator.ranker_weights = weights
+
+        hits, total_accept, total_reject = 0, 0, 0
+        for ex in examples:
+            if ex["outcome"] == "accept":
+                total_accept += 1
+                # Score: did we return at least half the accepted candidates?
+                expected_uids = {c["uid"] for c in ex["selected_candidates"][:5] if "uid" in c}
+                if not expected_uids:
+                    continue
+                ctx = arbitrator.get_context_for_symbol(
+                    ex["symbol"],
+                    token_budget=4000,
+                )
+                if not hasattr(ctx, "graph_context"):
+                    continue
+                returned_uids = {s.uid for s in ctx.graph_context[:5] if s.uid}
+                overlap = len(expected_uids & returned_uids) / len(expected_uids)
+                if overlap >= 0.5:
+                    hits += 1
+            elif ex["outcome"] == "reject":
+                total_reject += 1
+
+        accept_rate = hits / total_accept if total_accept else 0.0
+        reject_rate = total_reject / len(examples) if examples else 0.0
+        return {
+            "accept_rate": accept_rate,
+            "reject_rate": reject_rate,
+            "recall_at_5": accept_rate,
+            "examples_used": len(examples),
+        }
+
+    return eval_func
 
 
 def main() -> int:

@@ -81,6 +81,30 @@ class IntentResolution:
 class IntentClassifier:
     """Classify query intent using keyword heuristics."""
 
+    # Multi-word phrases that act as strong overrides when present.
+    # Each entry is (phrase, intent, weight). Weight is additive to the raw score.
+    # Match order does not matter — all matches contribute.
+    _PHRASE_OVERRIDES: list[tuple[str, "Intent", float]] = [
+        # Debugging phrases that contain action verbs (add/remove) as instruments, not goals
+        ("to understand why", Intent.DEBUGGING, 2.0),
+        ("to figure out why", Intent.DEBUGGING, 2.0),
+        ("to see why", Intent.DEBUGGING, 2.0),
+        ("understand why", Intent.DEBUGGING, 1.8),
+        ("figure out why", Intent.DEBUGGING, 1.8),
+        ("to debug", Intent.DEBUGGING, 1.5),
+        ("to fix", Intent.DEBUGGING, 1.5),
+        ("why it fails", Intent.DEBUGGING, 2.0),
+        ("why it's failing", Intent.DEBUGGING, 2.0),
+        ("why the function", Intent.DEBUGGING, 1.5),
+        ("why this", Intent.DEBUGGING, 1.2),
+        # Exploration phrases that contain action verbs
+        ("how does this", Intent.EXPLORATION, 1.5),
+        ("how does the", Intent.EXPLORATION, 1.5),
+        ("what does this", Intent.EXPLORATION, 1.5),
+        ("explain how", Intent.EXPLORATION, 1.5),
+        ("explain why", Intent.EXPLORATION, 1.5),
+    ]
+
     # Keyword sets for intent detection (greedy match: first matching intent wins)
     KEYWORDS = {
         Intent.DEBUGGING: {
@@ -230,6 +254,15 @@ class IntentClassifier:
             if matches:
                 matched_keywords[intent.value] = sorted(matches)
             raw_scores[intent] = sum(cls._keyword_weight(keyword) for keyword in matches)
+
+        # Apply phrase overrides: multi-word patterns boost specific intents
+        # independently of individual token scores.
+        for phrase, intent, weight in cls._PHRASE_OVERRIDES:
+            if phrase in query_lower:
+                raw_scores[intent] = raw_scores.get(intent, 0.0) + weight
+                phrase_list = matched_keywords.setdefault(intent.value, [])
+                if phrase not in phrase_list:
+                    phrase_list.append(phrase)
 
         max_score = max(raw_scores.values(), default=0.0)
         if max_score <= 0:

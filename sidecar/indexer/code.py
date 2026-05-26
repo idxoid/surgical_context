@@ -77,8 +77,15 @@ def index_file(
     lance: LanceDBClient,
     extractor: SymbolExtractor,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
-):
-    """Index a single file: symbols → calls → embeddings → imports → inheritance → AFFECTS rebuild."""
+    *,
+    skip_affects: bool = False,
+) -> list[str]:
+    """Index a single file: symbols → calls → embeddings → imports → inheritance → AFFECTS rebuild.
+
+    Returns the list of changed symbol UIDs so batch callers can collect them
+    and run a single AFFECTS rebuild after all files are processed.
+    Pass ``skip_affects=True`` when the caller will do that itself.
+    """
     file_hash = hash_file(file_path)
     symbols = extractor.extract(file_path)
     for sym in symbols:
@@ -147,12 +154,12 @@ def index_file(
     if inheritance and edge_refresh_uids:
         db.link_inheritance(inheritance, workspace_id=workspace_id)
 
-    # Rebuild AFFECTS index for modified symbols (synchronous, blocking)
-    if changed_uids:
+    if changed_uids and not skip_affects:
         from sidecar.indexer.affects import AFFECTSIndexer
 
-        indexer = AFFECTSIndexer(db)
-        indexer.rebuild_affects(changed_uids, workspace_id=workspace_id)
+        AFFECTSIndexer(db).rebuild_affects(changed_uids, workspace_id=workspace_id)
+
+    return changed_uids
 
 
 def run_indexing(project_path: str, workspace_id: str | None = None):
