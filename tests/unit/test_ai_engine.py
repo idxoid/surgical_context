@@ -199,10 +199,27 @@ class TestAIEngineModels:
     """Test AIEngine model configuration."""
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
-    def test_claude_model_is_sonnet(self):
-        """Claude model should be Sonnet."""
+    def test_claude_model_defaults_to_sonnet_4_6(self):
+        """Default Claude model is Sonnet 4.6 (not retired claude-sonnet-4-20250514)."""
+        from sidecar.ai.engine import DEFAULT_CLAUDE_MODEL
+
         engine = AIEngine(model_preference="claude")
-        assert "sonnet" in engine.claude_model.lower()
+        assert engine.claude_model == DEFAULT_CLAUDE_MODEL
+        assert engine.claude_model == "claude-sonnet-4-6"
+        assert "20250514" not in engine.claude_model
+
+    @patch.dict(
+        os.environ,
+        {
+            "ANTHROPIC_API_KEY": "test-key",
+            "ALLOW_CLOUD_LLM": "true",
+            "ANTHROPIC_MODEL": "claude-sonnet-4-20250514",
+        },
+    )
+    def test_claude_model_respects_anthropic_model_env(self):
+        """ANTHROPIC_MODEL overrides the default when explicitly set."""
+        engine = AIEngine(model_preference="claude")
+        assert engine.claude_model == "claude-sonnet-4-20250514"
 
     def test_ollama_model_from_env(self):
         """Ollama model can be overridden via env var."""

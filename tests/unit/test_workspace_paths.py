@@ -8,7 +8,9 @@ from sidecar.workspace_paths import (
     PathOutsideWorkspaceError,
     WorkspaceRootNotRegisteredError,
     is_path_within_root,
+    prune_graph_paths_outside_root,
     registered_workspace_root,
+    resolve_graph_file_path,
     resolve_path_under_workspace_root,
     resolve_project_root,
 )
@@ -61,6 +63,41 @@ def test_resolve_project_root(tmp_path):
     root = tmp_path / "proj"
     root.mkdir()
     assert resolve_project_root(str(root)) == root.resolve()
+
+
+def test_resolve_graph_file_path_rejects_outside_root_when_registered(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "etc" / "passwd"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("x", encoding="utf-8")
+
+    assert resolve_graph_file_path(str(root / "app.py"), workspace_root=root) is not None
+    assert resolve_graph_file_path(str(outside), workspace_root=root) is None
+
+
+def test_prune_graph_paths_outside_root(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    inside = str(root / "ok.py")
+    outside = str(tmp_path / "bad.py")
+
+    class GraphDb:
+        def list_file_paths(self, workspace_id=None):
+            return [inside, outside]
+
+        def delete_symbols_for_file(self, path, workspace_id=None):
+            self.deleted.append(path)
+
+        def __init__(self):
+            self.deleted = []
+
+    db = GraphDb()
+    removed = prune_graph_paths_outside_root(
+        db, workspace_id="ws", project_root=root
+    )
+    assert removed == [outside]
+    assert db.deleted == [outside]
 
 
 def test_is_path_within_root(tmp_path):

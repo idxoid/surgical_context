@@ -213,6 +213,7 @@ Optional cloud model routing (explicit opt-in):
 ALLOW_CLOUD_LLM=true
 MODEL_PREFERENCE=auto
 ANTHROPIC_API_KEY=sk-ant-...
+# Optional; default is claude-sonnet-4-6 (do not use retired claude-sonnet-4-20250514)
 ANTHROPIC_MODEL=
 ```
 

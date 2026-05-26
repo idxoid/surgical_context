@@ -56,6 +56,11 @@ INDEX_QUEUE_MAX_PENDING = int(os.getenv("INDEX_QUEUE_MAX_PENDING", "500"))
 INDEX_QUEUE_DEBOUNCE_MS = int(os.getenv("INDEX_QUEUE_DEBOUNCE_MS", "500"))
 INDEX_QUEUE_BATCH_SIZE = int(os.getenv("INDEX_QUEUE_BATCH_SIZE", "50"))
 
+SEARCH_LIMIT_MIN = 1
+SEARCH_LIMIT_MAX = 50
+TOKEN_BUDGET_MIN = 400
+TOKEN_BUDGET_MAX = 32_000
+
 app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
 vector_db = LanceDBClient()
@@ -114,7 +119,7 @@ class IndexDocsRequest(BaseModel):
 class AskRequest(BaseModel):
     symbol: str | None = None
     question: str = "What does this code do?"
-    token_budget: int = 4000
+    token_budget: int = Field(default=4000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
     file_path: str | None = None
 
 
@@ -125,13 +130,13 @@ class OverlayRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    limit: int = 5
+    limit: int = Field(default=5, ge=SEARCH_LIMIT_MIN, le=SEARCH_LIMIT_MAX)
 
 
 class UnifiedSearchRequest(SearchRequest):
     symbol: str | None = None
     include_graph: bool = True
-    token_budget: int = 2000
+    token_budget: int = Field(default=2000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
 
 
 class HealthResponse(BaseModel):
@@ -1150,6 +1155,14 @@ def index(
                 )
                 for file_path in files
             ]
+            from sidecar.retrieval.manifest import register_workspace_project_root
+
+            register_workspace_project_root(
+                db=db,
+                workspace_id=workspace_id,
+                project_path=str(project_root),
+                file_count=len(safe_files),
+            )
             results = _enqueue_index_files(safe_files, workspace_id, user_id)
             summary = _summarize_enqueue_results(results)
             status = "queued"

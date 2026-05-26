@@ -108,6 +108,7 @@ def build_index_manifest(
     stats: dict[str, Any],
     graph_version: int | None,
     outcome: str,
+    indexing_pipeline: str = "fast_indexing",
 ) -> dict[str, Any]:
     """Assemble the canonical manifest dict (JSON-serializable)."""
     profile = (
@@ -137,7 +138,7 @@ def build_index_manifest(
         "project_path": os.path.abspath(project_path),
         "project_name": os.path.basename(os.path.abspath(project_path).rstrip(os.sep)),
         "indexing_outcome": outcome,
-        "indexing_pipeline": "fast_indexing",
+        "indexing_pipeline": indexing_pipeline,
         "git": git,
         "parser_languages": REGISTRY.supported_languages(),
         "embedding_model_id": _EMBED_MODEL,
@@ -191,6 +192,30 @@ def read_manifest_from_disk(project_path: str) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
+def register_workspace_project_root(
+    *,
+    db: Any,
+    workspace_id: str,
+    project_path: str,
+    file_count: int = 0,
+) -> dict[str, Any] | None:
+    """Persist ``project_path`` on the workspace before queued indexing finishes.
+
+    Path sandboxing (/overlay, /index/file, /ask file fallback) reads
+    ``project_path`` from the index manifest; queued ``POST /index`` must
+    register the root immediately, not only after the batch worker completes.
+    """
+    stats: dict[str, Any] = {"collected": file_count, "changed": 0}
+    return persist_index_manifest(
+        stats=stats,
+        db=db,
+        workspace_id=workspace_id,
+        project_path=project_path,
+        outcome="queued",
+        indexing_pipeline="queued_batch",
+    )
+
+
 def persist_index_manifest(
     *,
     stats: dict[str, Any],
@@ -198,6 +223,7 @@ def persist_index_manifest(
     workspace_id: str,
     project_path: str,
     outcome: str,
+    indexing_pipeline: str = "fast_indexing",
 ) -> dict[str, Any] | None:
     """Build manifest, best-effort disk + Neo4j. Failures are recorded in ``stats``; does not raise."""
     warnings: list[dict[str, str]] = []
@@ -214,6 +240,7 @@ def persist_index_manifest(
             stats=stats,
             graph_version=gv,
             outcome=outcome,
+            indexing_pipeline=indexing_pipeline,
         )
     except Exception as exc:  # noqa: BLE001
         stats["index_manifest_error"] = repr(exc)
@@ -242,4 +269,15 @@ def persist_index_manifest(
         stats["index_manifest_persist_warnings"] = warnings
     stats["index_manifest"] = manifest
     stats["index_manifest_path"] = disk_path
+
+    from sidecar.workspace_paths import prune_graph_paths_outside_root
+
+    removed = prune_graph_paths_outside_root(
+        db,
+        workspace_id=workspace_id,
+        project_root=Path(project_path).expanduser().resolve(),
+    )
+    if removed:
+        stats["pruned_outside_root_paths"] = removed
+
     return manifest

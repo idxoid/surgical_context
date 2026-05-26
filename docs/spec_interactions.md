@@ -41,10 +41,10 @@ run_demo.py
   ├── sidecar/database/neo4j_client.py   Neo4jClient
   └── sidecar/database/lancedb_client.py LanceDBClient
 
-sidecar/ai/  (stubs — not wired into active flows)
-  ├── engine.py                          AIEngine (commented implementations)
-  ├── auth.py                            GitHubAuth (device flow OAuth)
-  └── session.py                         SessionManager (token persistence)
+sidecar/ai/
+  ├── engine.py                          AIEngine — wired from main.py (Ollama + Anthropic SDK)
+  ├── auth.py                            GitHubAuth (device flow OAuth; not wired)
+  └── session.py                         SessionManager (token persistence; not wired)
 ```
 
 ---
@@ -172,8 +172,10 @@ ask(req)
 │
 ├─ context += doc chunks as "--- DOCUMENTATION ---" section
 │
-└─ ollama.chat(OLLAMA_MODEL, [{system: context}, {user: question}])
-      → {"symbol": ..., "answer": ...}
+└─ AIEngine.chat(system_prompt, question)     [sidecar/ai/engine.py via main.py]
+      → Ollama by default (`MODEL_PREFERENCE=ollama`)
+      → Anthropic SDK only when `ALLOW_CLOUD_LLM=true` and routing selects cloud
+      → {"symbol": ..., "answer": ..., "context": PromptContract}
 ```
 
 **Reads from:**
@@ -237,13 +239,24 @@ InMemoryOverlay ──[read by]──▶       ContextArbitrator  ──▶  LLM
 
 ---
 
-## Unused Modules (Pre-MVP Stubs)
+## LLM routing (`sidecar/ai/engine.py`)
+
+`main.py` constructs a process-wide `AIEngine` used by `/ask` and `/ask/stream`.
+
+| Backend | When |
+|---|---|
+| **Ollama** | Default (`MODEL_PREFERENCE=ollama`). Always available when Ollama is running. |
+| **Anthropic** | `MODEL_PREFERENCE` is `auto` or `claude`, **`ALLOW_CLOUD_LLM=true`**, and `ANTHROPIC_API_KEY` is set. |
+| **Fallback** | Cloud errors → Ollama when local model is reachable. |
+
+Prompt caching: Anthropic `cache_control` on the large code/graph block when above `_MIN_CACHE_TOKENS`. See [spec_sidecar_api.md](spec_sidecar_api.md) env table.
+
+## Unused Modules (stubs)
 
 | Module | Status | Notes |
 |---|---|---|
 | `sidecar/ai/auth.py` | Not wired | GitHub Device Flow OAuth. Not called from any current entry point. |
 | `sidecar/ai/session.py` | Not wired | Persists GitHub token to `~/.config/surgical_sidecar/session.json`. Not called from any current entry point. |
-| `sidecar/ai/engine.py` | Not wired | Two commented implementations (OpenAI SDK, Anthropic SDK). Active code uses `claude_api` browser session cookie — unofficial scraper, broken. Will be replaced by Anthropic SDK in Phase 5. |
 
 ---
 

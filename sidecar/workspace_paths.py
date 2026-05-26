@@ -82,3 +82,55 @@ def resolve_path_under_workspace_root(
             f"Path '{candidate}' is outside workspace root '{root}'"
         )
     return candidate
+
+
+def resolve_graph_file_path(
+    raw_path: str,
+    *,
+    workspace_root: Path | None,
+) -> str | None:
+    """Return a filesystem path safe to open for graph-resolved reads, or None to skip.
+
+    When *workspace_root* is set (index manifest registered), paths outside the root
+    are rejected so stale or corrupted graph nodes cannot escape the sandbox.
+    When no root is registered yet, behavior matches the legacy open-any-path path.
+    """
+    if not raw_path or raw_path == "<unknown>":
+        return None
+    path = Path(raw_path).expanduser()
+    if workspace_root is None:
+        try:
+            return str(path.resolve())
+        except OSError:
+            return None
+    root = workspace_root.resolve()
+    try:
+        if not path.is_absolute():
+            path = (root / path).resolve()
+        else:
+            path = path.resolve()
+    except OSError:
+        return None
+    if not is_path_within_root(path, root):
+        return None
+    return str(path)
+
+
+def prune_graph_paths_outside_root(
+    db: Any,
+    *,
+    workspace_id: str,
+    project_root: Path,
+) -> list[str]:
+    """Delete workspace File nodes (and symbols) whose paths fall outside *project_root*."""
+    list_paths = getattr(db, "list_file_paths", None)
+    delete_file = getattr(db, "delete_symbols_for_file", None)
+    if not callable(list_paths) or not callable(delete_file):
+        return []
+    root = project_root.resolve()
+    removed: list[str] = []
+    for path in list_paths(workspace_id=workspace_id):
+        if resolve_graph_file_path(path, workspace_root=root) is None:
+            delete_file(path, workspace_id=workspace_id)
+            removed.append(path)
+    return removed

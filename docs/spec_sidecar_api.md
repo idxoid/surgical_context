@@ -56,13 +56,15 @@ sent as a header.
 
 Any endpoint that reads or indexes files on disk (`POST /index`, `/index/file`, `/index/files`, `/index/docs`, `/ask` with `file_path`, `/overlay`) resolves paths against the **registered workspace project root**:
 
-- Root is stored in the index manifest (`project_path`) after `POST /index` (or full `run_indexing`).
+- Root is stored in the index manifest (`project_path`) as soon as `POST /index` succeeds (including `queue=true`, before the batch worker finishes).
 - Relative paths are resolved under that root; absolute paths must still lie inside it.
 - Paths outside the root return **`403`** with a detail message.
 - File/index operations before the workspace is indexed return **`400`** (“no registered project root; POST /index first”).
 - `POST /index` registers the resolved `project_path` directory as the root for that workspace (queued file paths are validated under it).
 
-This limits local callers when `AUTH_REQUIRED=false` from using the sidecar to read or index arbitrary readable files.
+**Graph-resolved reads:** `ContextArbitrator` / `CodeResolver` and `UnifiedRanker` module sizing use the same root for `file_path` values coming from Neo4j. Paths outside the root return empty code (no disk read). On manifest persist, outside-root `File` nodes are best-effort deleted from the graph.
+
+This limits local callers when `AUTH_REQUIRED=false` from using the sidecar to read or index arbitrary readable files, including via stale graph nodes.
 
 ---
 
@@ -95,7 +97,7 @@ Index a code directory into Neo4j + LanceDB.
 
 **Errors:** `400` if path does not exist or is not a directory.
 
-**Behavior:** Registers `project_path` as the workspace root for path sandboxing. Queues discovered source files by default. With `queue=false`, runs `run_indexing()` immediately: symbol extraction → call linking → symbol embeddings → pending DocAnchor resolution.
+**Behavior:** Registers `project_path` as the workspace root for path sandboxing **before** returning (writes a minimal index manifest with `indexing_outcome: queued` to Neo4j and `.surgical_context/index_manifest.json`, even when `queue=true`). Queues discovered source files by default. With `queue=false`, runs `run_indexing()` immediately and replaces the manifest when the full fast pipeline completes.
 
 ---
 
@@ -190,7 +192,7 @@ Assemble surgical context for a symbol and query the LLM.
 |---|---|---|
 | `symbol` | No | When present, surgical context is assembled for this graph symbol first. |
 | `question` | No | Defaults to `"What does this code do?"` |
-| `token_budget` | No | Defaults to `4000`. |
+| `token_budget` | No | Defaults to `4000`. Server bounds: **400–32 000** (inclusive); out-of-range → HTTP **422**. |
 | `file_path` | No | Optional path used when symbol resolution fails (see fallback ladder). Resolved under the workspace `project_path`; relative paths are allowed. Outside root → `403`. |
 
 **Response:**
@@ -291,6 +293,10 @@ Semantic search over indexed documentation.
 { "query": "how does chunking work", "limit": 5 }
 ```
 
+| Field | Bounds |
+|---|---|
+| `limit` | **1–50** (default `5`); out-of-range → HTTP **422** |
+
 **Response:**
 ```json
 {
@@ -311,9 +317,15 @@ Unified search over symbols, graph neighbors, and docs.
   "query": "ranking recovery",
   "symbol": "UnifiedRanker",
   "include_graph": true,
-  "limit": 10
+  "limit": 10,
+  "token_budget": 2000
 }
 ```
+
+| Field | Bounds |
+|---|---|
+| `limit` | **1–50** (inherited from `/search`) |
+| `token_budget` | **400–32 000** (default `2000`); used when `include_graph` and `symbol` are set |
 
 **Response:** ranked mixed results plus optional retrieval trace and index manifest ids when graph context is included.
 

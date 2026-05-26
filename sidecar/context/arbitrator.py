@@ -171,9 +171,15 @@ class ContextArbitrator:
             target, candidates, budget_info, stopped_reason, pruned_details
         )
 
-        # Resolve code for all nodes
+        # Resolve code for all nodes (sandbox graph file paths under workspace root)
+        from sidecar.workspace_paths import registered_workspace_root
+
+        project_root = registered_workspace_root(self.db, self.workspace_id)
         resolver = CodeResolver(
-            self.overlay, workspace_id=self.workspace_id, user_id=self.user_id
+            self.overlay,
+            workspace_id=self.workspace_id,
+            user_id=self.user_id,
+            workspace_root=project_root,
         )
         code_map = {}
         for node in [subgraph.primary] + subgraph.nodes:
@@ -190,28 +196,37 @@ class ContextArbitrator:
                 node.range = [line_range[0], line_range[1]]
                 node.render_mode = "signature_only"
 
+            from sidecar.workspace_paths import resolve_graph_file_path
+
+            safe_file_path = resolve_graph_file_path(
+                node.file_path, workspace_root=project_root
+            )
+            if safe_file_path is None:
+                code_map[node.uid] = ("", False)
+                continue
+
             overlay_dirty = bool(
                 self.overlay
                 and self.overlay.has(
-                    node.file_path,
+                    safe_file_path,
                     workspace_id=self.workspace_id,
                     user_id=self.user_id,
                 )
             )
             cached = None
             if node.file_hash and not overlay_dirty:
-                cached = self.cache.get_body(node.file_path, line_range, node.file_hash)
+                cached = self.cache.get_body(safe_file_path, line_range, node.file_hash)
             if cached is not None:
                 cache_hits.append("l1_body")
                 code_map[node.uid] = (cached.code, cached.is_dirty)
                 continue
 
-            code, is_dirty = resolver.resolve(node.file_path, *line_range)
+            code, is_dirty = resolver.resolve(safe_file_path, *line_range)
 
             code_map[node.uid] = (code, is_dirty)
             if node.file_hash and not is_dirty:
                 self.cache.put_body(
-                    node.file_path,
+                    safe_file_path,
                     line_range,
                     node.file_hash,
                     CachedBody(code=code, token_count=node.token_estimate, is_dirty=False),

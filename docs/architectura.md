@@ -98,11 +98,11 @@ Local development often runs with `AUTH_REQUIRED=false`. Without path checks, an
 
 | Step | Behavior |
 |---|---|
-| Register root | `POST /index` resolves `project_path` to an absolute directory and stores it in the workspace index manifest (`project_path`). |
+| Register root | `POST /index` resolves `project_path` and writes it to the index manifest immediately (including `queue=true`, via `register_workspace_project_root` before enqueue). |
 | Resolve paths | `/ask` (`file_path`), `/index/file`, `/index/files`, `/index/docs`, and `/overlay` normalize relative paths under that root; absolute paths must still lie inside it (`Path.resolve()` + `relative_to`). |
 | Reject | No manifest yet → HTTP `400`. Path escapes root → HTTP `403`. |
 
-`CodeResolver` and graph lookups use paths already stored at index time; this guard applies to **caller-supplied** filesystem paths. Full API detail: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
+`CodeResolver` and `UnifiedRanker` apply the same root check to **graph-resolved** `file_path` values before disk reads. Stale outside-root nodes are skipped at read time; manifest persist also best-effort **prunes** outside-root `File` nodes from Neo4j. Caller-supplied paths: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
 ---
 
@@ -276,10 +276,10 @@ Scenario: user edits `process_payment`, hasn't saved.
 4. LLM sees current work-in-progress surrounded by stable project structure.
 
 ### 4.4. Model Routing
-- Pre-score intent + context token count.
-- Small context + simple question → Ollama.
-- Large context or complex intent → Claude when `ANTHROPIC_API_KEY` is configured.
-- Fallback: Claude failures fall back to Ollama.
+- Default: **Ollama** (`MODEL_PREFERENCE=ollama`, `ALLOW_CLOUD_LLM=false`) — assembled context stays on the machine.
+- **Cloud opt-in:** Anthropic runs only when `ALLOW_CLOUD_LLM=true`, `ANTHROPIC_API_KEY` is set, and `MODEL_PREFERENCE` is `auto` or `claude`. A key alone does not enable cloud.
+- `AIEngine` (`sidecar/ai/engine.py`) scores intent + token count: large/complex contexts and design/exploration/refactor intents prefer Claude when cloud is allowed; otherwise Ollama.
+- Fallback: Claude failures fall back to Ollama; unreachable LLM → degraded `/ask` and `/ask/stream` still return `context`.
 
 ---
 

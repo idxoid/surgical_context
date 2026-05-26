@@ -236,6 +236,18 @@ class Neo4jClient:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def list_file_paths(self, workspace_id: str = DEFAULT_WORKSPACE_ID) -> list[str]:
+        """Return all File.path values for a workspace (for sandbox cleanup)."""
+        with self.driver.session() as session:
+            rows = session.run(
+                """
+                MATCH (f:File {workspace_id: $workspace_id})
+                RETURN f.path AS path
+                """,
+                workspace_id=workspace_id,
+            )
+        return [str(row["path"]) for row in rows if row.get("path")]
+
     def prune_symbols_for_file(
         self,
         file_path: str,

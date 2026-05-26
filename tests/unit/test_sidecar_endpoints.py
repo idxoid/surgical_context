@@ -679,6 +679,81 @@ def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
     assert body["job_id"] > 0
 
 
+def test_queued_index_registers_root_before_overlay_and_index_file(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    project = tmp_path / "proj"
+    project.mkdir()
+    source_file = project / "app.py"
+    source_file.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
+
+    class ManifestDb(FakeDb):
+        def __init__(self):
+            super().__init__()
+            self._manifest = None
+
+        def get_workspace_graph_version(self, workspace_id=None):
+            return 1
+
+        def save_index_manifest(self, manifest, workspace_id=None):
+            self._manifest = dict(manifest)
+
+        def get_index_manifest(self, workspace_id=None):
+            return self._manifest
+
+    manifest_db = ManifestDb()
+
+    @contextmanager
+    def manifest_db_session(user_id="anonymous"):
+        yield manifest_db
+
+    monkeypatch.setattr(main, "db_session", manifest_db_session)
+    monkeypatch.setattr(
+        main,
+        "_enqueue_index_files",
+        lambda files, workspace_id, user_id: [
+            main.EnqueueResult(
+                accepted=True,
+                status="queued",
+                file_path=files[0],
+                workspace_id=workspace_id,
+                queue_depth=1,
+            )
+        ],
+    )
+
+    index_body = main.index(main.IndexRequest(project_path=str(project), queue=True))
+    assert index_body["status"] == "queued"
+
+    overlay_body = main.update_overlay(
+        main.OverlayRequest(
+            file_path=str(source_file),
+            content="def hello():\n    return 'ok'\n",
+        )
+    )
+    assert overlay_body["file_path"] == str(source_file.resolve())
+
+    fake_anchor = types.ModuleType("sidecar.indexer.anchor")
+    fake_anchor.resolve_pending_anchors = lambda db, vector_db, workspace_id=None: None
+    monkeypatch.setitem(sys.modules, "sidecar.indexer.anchor", fake_anchor)
+    fake_code = types.ModuleType("sidecar.indexer.code")
+    fake_code.hash_file = lambda file_path: "abc123"
+    fake_code.index_file = lambda *args, **kwargs: []
+    monkeypatch.setitem(sys.modules, "sidecar.indexer.code", fake_code)
+    fake_extractor = types.ModuleType("sidecar.parser.extractor")
+
+    class FakeSymbolExtractor:
+        pass
+
+    fake_extractor.SymbolExtractor = FakeSymbolExtractor
+    monkeypatch.setitem(sys.modules, "sidecar.parser.extractor", fake_extractor)
+    monkeypatch.setattr(main, "IndexJobLog", lambda: IndexJobLog(f"{tmp_path}/jobs.sqlite3"))
+
+    file_body = main.index_file_endpoint(
+        main.IndexFileRequest(file_path=str(source_file), queue=False)
+    )
+    assert file_body["status"] == "indexed"
+
+
 def test_index_file_endpoint_queues_by_default(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)

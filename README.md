@@ -43,6 +43,9 @@ This folder contains the current product and technical documentation for the `co
 
 **Advanced Topics:**
 - **[spec_eval_harness.md](docs/spec_eval_harness.md)** — real-repo benchmark harness, token metrics, and report schema
+- **[benchmark_all_repos_context_comparison.md](docs/benchmark_all_repos_context_comparison.md)** — index to all-repo benchmark snapshots
+- **[benchmark_mechanism_coverage.md](docs/benchmark_mechanism_coverage.md)** — harness metrics and mechanism-coverage analysis
+- **[benchmark_path1_vs_path2.md](docs/benchmark_path1_vs_path2.md)** — LLM Judgment: Surgical Context vs first-time repo read
 - **[spec_embedding_versioning.md](docs/spec_embedding_versioning.md)** — managing embedding model versions
 - **[spec_affects_index.md](docs/spec_affects_index.md)** — reverse dependency index
 

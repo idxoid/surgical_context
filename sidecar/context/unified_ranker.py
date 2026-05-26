@@ -204,6 +204,14 @@ class UnifiedRanker:
         self.role_backfill = RoleBackfill(self)
         self.budget_selector = BudgetSelector(self)
         self.subgraph_assembler = SubgraphAssembler(self)
+        self._workspace_root = None
+
+    def _workspace_project_root(self):
+        if self._workspace_root is None:
+            from sidecar.workspace_paths import registered_workspace_root
+
+            self._workspace_root = registered_workspace_root(self.db, self.workspace_id)
+        return self._workspace_root
 
     # ------------------------------------------------------------------
     # Public API
@@ -335,7 +343,7 @@ class UnifiedRanker:
 
         file_path = row.get("path") if hasattr(row, "get") else row["path"]
         file_hash = row.get("file_hash", "") if hasattr(row, "get") else row["file_hash"]
-        end_line, token_estimate = self._module_target_size(file_path)
+        end_line, token_estimate = self._module_target_size(file_path, self._workspace_project_root())
         return {
             "uid": f"module:{self.workspace_id}:{file_path}",
             "name": symbol_name,
@@ -456,9 +464,14 @@ class UnifiedRanker:
         return [row for row in rows if not _path_is_noisy(row.get("file_path", ""))]
 
     @staticmethod
-    def _module_target_size(file_path: str) -> tuple[int, int]:
+    def _module_target_size(file_path: str, workspace_root=None) -> tuple[int, int]:
+        from sidecar.workspace_paths import resolve_graph_file_path
+
+        safe_path = resolve_graph_file_path(file_path, workspace_root=workspace_root)
+        if safe_path is None:
+            return 80, 640
         try:
-            with open(file_path, encoding="utf-8") as handle:
+            with open(safe_path, encoding="utf-8") as handle:
                 line_count = sum(1 for _ in handle)
         except OSError:
             line_count = 80

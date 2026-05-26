@@ -8,6 +8,9 @@ from anthropic import Anthropic
 
 _log = logging.getLogger(__name__)
 
+# Anthropic API model ID (pinned snapshot). claude-sonnet-4-20250514 retires 2026-06-15.
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
+
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -142,7 +145,8 @@ class AIEngine:
         self.allow_cloud_llm = (
             cloud_llm_enabled() if allow_cloud_llm is None else allow_cloud_llm
         )
-        self.claude_model = "claude-sonnet-4-20250514"  # Latest Sonnet
+        configured = (os.getenv("ANTHROPIC_MODEL") or "").strip()
+        self.claude_model = configured or DEFAULT_CLAUDE_MODEL
         self.ollama_model = os.getenv("OLLAMA_MODEL", "llama3")
 
         if model_preference == "claude" and not self.allow_cloud_llm:

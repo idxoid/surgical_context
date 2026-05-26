@@ -187,20 +187,35 @@ A budget-aware strategy that routes `explain_behavior` questions to a cheaper re
 
 ---
 
-## 4. Raw data
+## 4. Reproducing metrics and artifacts
 
-Full question-by-question results: `/tmp/benchmark_comparison.json`
+### Automated harness (P1 pipeline, checked in)
 
-Script to regenerate P1 contexts: `/tmp/run_path1.py`
+Per-repo retrieval metrics, `ready_context`, role/file recall:
 
-To re-run P1 extraction:
 ```bash
-python3 /tmp/run_path1.py
-# writes /tmp/path1_contexts.json
+PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py \
+  --questions tests/fixtures/real_repo_question_pack.yaml \
+  --repo <repo_id> \
+  --no-index
 ```
 
-Benchmark runner (existing harness):
-```bash
-python3 QA/qa_benchmark.py --repo fastapi
-python3 QA/run_full_benchmark_sweep.py
-```
+Full sweep: `PYTHONPATH=. .venv/bin/python QA/run_full_benchmark_sweep.py` (or repeat per repo).
+
+| Artifact | Location |
+|---|---|
+| Append-only run log | `QA/benchmark_runs.jsonl` (default; use `--benchmark-log` to override) |
+| Latest report JSON | path printed at end of `qa_benchmark.py` run |
+| Inspect history | `python QA/benchmark_runs.py` |
+
+Requires a pre-indexed workspace for each repo (`POST /index` or project indexing scripts). See [benchmark_mechanism_coverage.md](benchmark_mechanism_coverage.md) for the latest all-repo snapshot.
+
+### LLM Judgment matrix (this document)
+
+The per-question P1 vs P2 comparison table, token splits, and qualitative scores in §2–3 came from a **one-off judge session** (Claude Sonnet 4.6, max effort). That matrix is **not** stored in the repository. To regenerate:
+
+1. Run the harness above and archive `ready_context` from each row (P1 prompts).
+2. Re-run the P2 “first-time repo read” protocol under the same judge rules (see header).
+3. Record scores in a new file under `QA/benchmark_artifacts/` if you want a durable copy (recommended name: `path1_vs_path2_judgment.json`).
+
+Do not rely on `/tmp` paths — they are not part of the repo and are not reproducible across machines.
