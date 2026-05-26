@@ -22,6 +22,9 @@ class BudgetPruner:
         mechanism: str,
         required_roles: list[str],
         budget: int,
+        *,
+        floor_override: int | None = None,
+        doc_first: bool = False,
     ) -> tuple[list[Candidate], dict, str, list[dict], list[str]]:
         chosen: list[Candidate] = []
         spent = self.host.PREAMBLE_TOKENS + target.token_estimate
@@ -41,7 +44,7 @@ class BudgetPruner:
         trace_mode = RankerScoring.trace_dependency_gain_mode(mechanism, query)
 
         stopped_reason = "pool_exhausted"
-        min_floor = self.host._INTENT_FLOORS.get(intent, 1200)
+        min_floor = floor_override or self.host._INTENT_FLOORS.get(intent, 1200)
         # Per-intent thresholds: NAVIGATION stops early (tight scope), DEBUGGING
         # and IMPACT_ANALYSIS expand wider (need more evidence).
         _INTENT_MIN_GAIN = {
@@ -78,7 +81,7 @@ class BudgetPruner:
         # NOT defer — they need docs early to fill concept/architecture roles.
         # IMPACT_ANALYSIS is also exempt (tier prior already favors docs/tests).
         _DOC_FIRST_INTENTS = (Intent.DESIGN_QUESTION, Intent.NEW_FEATURE, Intent.IMPACT_ANALYSIS)
-        defer_docs = intent not in _DOC_FIRST_INTENTS
+        defer_docs = intent not in _DOC_FIRST_INTENTS and not doc_first
         min_code_files_before_docs = 3
         deferred_docs: list[Candidate] = []
 

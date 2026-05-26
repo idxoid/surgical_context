@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from sidecar.context.intent_classifier import Intent
+from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentSignal
 from sidecar.context.mechanism_registry import determine_preloaded_mechanism
 from sidecar.context.ranker.recovery import StructuralRecovery
 from sidecar.context.ranker.scoring import RankerScoring
@@ -1726,6 +1726,62 @@ def test_docs_not_deferred_for_impact_analysis():
 
     chosen_doc_count = sum(1 for c in chosen if c.kind == "doc")
     assert chosen_doc_count >= 1, "IMPACT_ANALYSIS should still admit docs without deferral"
+
+
+def test_mixed_intent_policy_adds_secondary_role_coverage():
+    """A debugging+refactor query should seat refactor/impact evidence too."""
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="target",
+        name="process_payment",
+        file_path="/repo/src/payment.py",
+        range=[1, 20],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    public_api_candidate = Candidate(
+        kind="symbol",
+        uid="public-api",
+        name="PaymentClient",
+        file_path="/repo/src/payment_client.py",
+        token_cost=80,
+        graph_score=0.2,
+        semantic_score=0.1,
+        relation="CALLS_DIRECT",
+        evidence_role="api_surface",
+        depth=1,
+    )
+    policy = IntentClassifier.policy_from_signal(
+        IntentSignal(
+            primary=Intent.DEBUGGING,
+            distribution={"debugging": 0.55, "refactor": 0.30, "exploration": 0.15},
+            confidence=0.55,
+            ambiguous=True,
+        )
+    )
+
+    ranker._graph_candidates = lambda *a, **kw: [public_api_candidate]
+    ranker._doc_candidates = lambda *a, **kw: []
+    ranker._sym_vec_candidates = lambda *a, **kw: []
+    ranker._doc_bridge_candidates = lambda *a, **kw: []
+
+    chosen, budget_info, _, _, missing_roles = ranker.rank(
+        target,
+        "process_payment why does this fail after the refactor?",
+        Intent.DEBUGGING,
+        budget=1600,
+        intent_policy=policy,
+    )
+
+    assert "PaymentClient" in {c.name for c in chosen}
+    assert "impact_public_api" not in missing_roles
+    assert budget_info["floor"] > UnifiedRanker._INTENT_FLOORS[Intent.DEBUGGING]
 
 
 def test_impact_analysis_seats_test_surface_even_when_topic_noise_is_low():

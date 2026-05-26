@@ -1,6 +1,6 @@
 # Spec — Multi-Label Intent (Phase 9)
 
-> **Status:** Proposed. Extends [spec_intent_classifier.md](spec_intent_classifier.md) from single-label → weighted distribution. Most real queries combine intents; single-label forces lossy collapse.
+> **Status:** Initially implemented for local retrieval. `IntentSignal.distribution` is converted into an `IntentPolicy` that blends tier priority, adds secondary-intent role requirements, blends symbol/doc priors, adjusts floor budget, and exposes policy metadata in the prompt contract. Explicit hard per-tier budget buckets and learned classification remain future work.
 
 ## 1. Problem
 
@@ -89,6 +89,15 @@ tier_budget[tier] = int(remaining_budget * tier_score[tier] / total_score)
 ```
 
 Soft cap: a floor (100 tokens) on every tier with score > 0 prevents narrow distributions from starving adjacent tiers entirely. Tiers with zero score get zero budget.
+
+Current implementation uses this as a soft policy rather than a hard allocator:
+- `IntentPolicy.tier_order` drives doc tier ordering in `PromptCompiler`.
+- strong secondary intents add supplemental retrieval roles before ranker selection.
+- symbol/doc priors are blended across active intents.
+- the ranker floor is the weighted floor across active intents, never below the primary intent floor.
+- doc-first behavior activates when `new_feature`, `design_question`, or `impact_analysis` has meaningful active share.
+
+Hard per-tier token buckets are still deferred until real-repo calibration proves the soft policy is under-serving mixed queries.
 
 ### 2.5 Mode Determination
 

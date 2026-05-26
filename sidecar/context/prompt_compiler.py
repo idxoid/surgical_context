@@ -58,6 +58,8 @@ class PromptCompiler:
         code_map: dict[str, tuple[str, bool]],
         docs: list[DocChunk],
         intent: Intent,
+        *,
+        tier_priority: list[str] | tuple[str, ...] | None = None,
     ) -> PromptContext:
         """Assemble PromptContext with tier-based budget filling per intent."""
 
@@ -131,7 +133,7 @@ class PromptCompiler:
         # Get tier priority for this intent
         from sidecar.context.intent_classifier import IntentConfig
 
-        tier_priority = IntentConfig.PRIORITY[intent]
+        tier_priority = list(tier_priority or IntentConfig.PRIORITY[intent])
 
         # Determine mode and fill docs tier-aware
         selected_docs = []

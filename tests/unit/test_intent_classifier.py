@@ -1,6 +1,11 @@
 """Unit tests for intent classification."""
 
-from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentConfig
+from sidecar.context.intent_classifier import (
+    Intent,
+    IntentClassifier,
+    IntentConfig,
+    IntentSignal,
+)
 
 
 class TestIntentClassifier:
@@ -126,6 +131,45 @@ class TestIntentClassifier:
         assert signal.ambiguous is True
         assert "debugging" in signal.distribution
         assert "new_feature" in signal.distribution
+
+    def test_policy_from_signal_promotes_strong_secondary_intent(self):
+        """Budget policy consumes distribution instead of collapsing to primary only."""
+        signal = IntentSignal(
+            primary=Intent.DEBUGGING,
+            distribution={
+                "debugging": 0.55,
+                "refactor": 0.30,
+                "exploration": 0.15,
+            },
+            confidence=0.55,
+            ambiguous=True,
+        )
+
+        policy = IntentClassifier.policy_from_signal(signal)
+
+        assert policy.active_intents == (
+            Intent.DEBUGGING,
+            Intent.REFACTORING,
+        )
+        assert policy.secondary_intents == (Intent.REFACTORING,)
+        assert "impact_runtime" in policy.supplemental_roles
+        assert "impact_public_api" in policy.supplemental_roles
+        assert policy.tier_order[:2] == ("code", "cross_refs")
+        assert policy.budget_share["debugging"] > policy.budget_share["refactor"]
+
+    def test_policy_from_signal_uses_ambiguous_runner_up_below_threshold(self):
+        """Ambiguous queries keep the runner-up even when it is below the hard threshold."""
+        signal = IntentSignal(
+            primary=Intent.REFACTORING,
+            distribution={"refactor": 0.62, "debugging": 0.22, "exploration": 0.16},
+            confidence=0.62,
+            ambiguous=True,
+        )
+
+        policy = IntentClassifier.policy_from_signal(signal)
+
+        assert policy.active_intents == (Intent.REFACTORING, Intent.DEBUGGING)
+        assert "runtime_surface" in policy.supplemental_roles
 
     def test_empty_query_metadata_defaults_to_exploration(self):
         """Empty queries keep the old default and expose a simple distribution."""

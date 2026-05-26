@@ -537,12 +537,12 @@ Goal: Fix the load-bearing identity, resolution, and isolation gaps before retri
 
 ---
 
-## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1, 9.3 ✅; 9.4 ~90%; 9.2 metadata only)
+## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1, 9.2 initial routing, 9.3 ✅; 9.4 ~90%)
 Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
 
 > **Specs:** [spec_unified_ranking.md](spec_unified_ranking.md), [spec_multi_label_intent.md](spec_multi_label_intent.md), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
 >
-> **Current status:** 9.1 (unified ranker) and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is mostly shipped; the remaining gap is consuming multi-label intent metadata in budget/routing policy. Full multi-label routing is deferred to Phase 10. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
+> **Current status:** 9.1 (unified ranker), initial 9.2 routing-policy consumption, and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is mostly shipped; remaining work is calibrating mixed-intent policy on real repos and deciding whether hard per-tier budget buckets beat the current soft policy. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
 
 ### 9.1 Unified Ranker ✅ COMPLETE
 - [x] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
@@ -558,13 +558,13 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [ ] Budget-safe primary-source truncation/signature mode reflected consistently in benchmark + prompt contract (deferred)
 - [~] Better graph/doc/recovery coverage for structurally sparse runtime mechanisms through generic semantic hints, import recovery, and dependency-flow role recovery; remaining work is precision/file-recall telemetry.
 
-### 9.2 Multi-Label Intent 🚧 METADATA DONE, ROUTING DEFERRED
+### 9.2 Multi-Label Intent 🚧 INITIAL ROUTING POLICY SHIPPED
 - [x] `IntentSignal.distribution` (sum-to-1 keyword weights across supported intents)
 - [x] Classifier returns partial scores per label → normalized distribution
-- [ ] Tier priority = weighted sum across intent distribution
-- [ ] Budget split across tiers in proportion to blended tier score (floor per tier)
+- [x] `IntentPolicy` consumes distribution for active/secondary intents, weighted tier order, blended priors, supplemental roles, doc-first mode, and weighted floor budget
+- [~] Budget split across tiers in proportion to blended tier score (soft policy shipped; hard per-tier buckets deferred pending validation)
 - [x] `ambiguous` signal in the prompt contract for client UX / routing decisions
-> **Decision:** Full multi-label routing is punted to Phase 10 pending real-repo validation of 9.1 performance. Phase 9.1 primary-intent routing is sufficient for local v0.1 launch, while distribution/confidence/ambiguous metadata remains visible for debugging.
+> **Decision:** Ship soft multi-label routing first: primary intent still anchors target selection, while strong secondary intents influence roles, priors, floor, and doc ordering. Phase 10 remains the place for learned classification and hard policy calibration.
 
 ### 9.3 DocAnchor Confidence & Type ✅ COMPLETE
 - [x] Anchor type classification: definition / example / reference / warning / deprecated
@@ -583,7 +583,7 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] `pruned[]` array — candidates that missed the budget, with reason, scores, cost, roles, noise factor, and provenance
 - [x] `metadata.ranker.weights` — tuning state snapshotted with every response
 - [x] `intent.distribution` + `intent.ambiguous` + `intent.confidence` in the prompt contract
-- [ ] Ranker budget policy consumes multi-label intent distribution instead of primary intent only (Phase 10)
+- [x] Ranker budget policy consumes multi-label intent distribution instead of primary intent only (initial soft policy)
 
 ---
 
@@ -718,7 +718,7 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | Missing incremental index | High | Full re-scan on every save breaks the <200ms SLO | Phase 3.5 file-level dirty tracking ✅ + Phase 5 AFFECTS rebuild ✅ | ✅ Resolved |
 | Doc-code semantic linking | **High** | SIMILARITY_THRESHOLD mismatch (0.4 too strict) → 36% resolution rate | Phase 5: threshold tuning (0.4 → 1.5) ✅ → 50%+ resolution | ✅ Resolved |
 | Embedding leakage to cloud | Medium | Vector inversion can recover source text — contradicts ADR-001 spirit | Phase 7: Security ADR before cloud vector sync | 🟡 Pending Phase 7 |
-| Intent classification immaturity | Medium | Query intent classifier remains heuristic and primary-intent routing can under-serve mixed questions | Keyword classifier, impact intent, distribution/confidence/ambiguous metadata, and prompt-contract surfacing are implemented; full multi-label routing remains Phase 10 | 🟡 Mitigated |
+| Intent classification immaturity | Medium | Query intent classifier remains heuristic and mixed-query routing still needs real-repo calibration | Keyword classifier, impact intent, distribution/confidence/ambiguous metadata, prompt-contract surfacing, and initial `IntentPolicy` consumption are implemented; learned classification remains Phase 10 | 🟡 Mitigated |
 | Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Tier-aware assembly, mode flag, orchestrator fallback, and degraded context-only `/ask` responses are implemented. | ✅ Resolved |
 | Model Router misclassification | Medium | Misclassification can send a complex task to a cheaper model | Model routing and Claude→Ollama fallback are implemented; remaining mitigation is benchmark tuning and clearer extension surfacing. | 🟡 Mitigated |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
@@ -735,8 +735,8 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | **Retired Claude Sonnet 4.0 model ID** | **Medium** | Hardcoded `claude-sonnet-4-20250514` fails after 2026-06-15 retirement. | Default `claude-sonnet-4-6` + `ANTHROPIC_MODEL` env | ✅ Resolved |
 | **Overlay cross-user leakage** | **Medium** | Shared overlay keys could expose unsaved buffers across users in one workspace. | Overlay keyed by `(workspace_id, user_id, file_path)` | ✅ Resolved |
 | Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is precision/file-recall telemetry and long-tail export/framework shapes ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 Mitigated |
-| Primary-intent routing | High | Mixed queries (e.g. debugging+refactor) still route budget by one primary intent even though distribution metadata is visible. | Phase 9.2 metadata is implemented; Phase 10 should consume `intent.distribution` in budget/tier policy ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |
+| Primary-intent routing | High | Mixed queries (e.g. debugging+refactor) can be under-served if secondary intent evidence is not seated. | Initial `IntentPolicy` consumes `intent.distribution` for active/secondary intents, weighted tier order, supplemental roles, blended priors, doc-first mode, and weighted ranker floor; remaining work is real-repo calibration and hard per-tier budget evaluation ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | 🟡 Mitigated |
 | Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3 implemented: per-edge `anchor_type`, `confidence`, `primary_bias`, and resolver-aware ranker consumption ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ✅ Resolved |
-| Retrieval observability polish | High | Contract fields exist, but extension/debug surfaces still need to make the ranker story easy to inspect. | Phase 9.4 surfaces selected scores/provenance, ranker weights, `pruned[]`, and intent metadata; remaining gap is UI consistency and multi-label budget-policy consumption ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 Mitigated |
+| Retrieval observability polish | High | Contract fields exist, but extension/debug surfaces still need to make the ranker story easy to inspect. | Phase 9.4 surfaces selected scores/provenance, ranker weights, `pruned[]`, intent metadata, and `intent_policy`; remaining gap is UI consistency ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 Mitigated |
 | Cache multi-instance gap | Medium | Local cache exists, but multi-instance deployments would need a shared backend. | Phase 10.1 local three-layer cache is implemented and surfaces `metadata.assembly.cache_hits`; Redis/multi-instance cache remains future ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ✅ Resolved for local |
 | Learning loop incomplete | Medium | Feedback telemetry exists, but retrieval does not yet adapt from usage. | Phase 10.2 has feedback tokens, snapshots, endpoint, privacy boundaries, and counters; EMA tuning, learned `CO_RELEVANT` edges, and training loops remain open ([spec_learning_loop.md](spec_learning_loop.md)) | 🟡 Mitigated |

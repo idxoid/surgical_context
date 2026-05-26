@@ -12,6 +12,7 @@ from sidecar.context.intent_classifier import (
     IntentSignal,
 )
 from sidecar.context.prompt_compiler import PromptCompiler
+from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.context.types import PromptContext, SubgraphNode
 from sidecar.context.unified_ranker import (
     DEFAULT_WEIGHTS,
@@ -61,6 +62,7 @@ class ContextArbitrator:
     ) -> PromptContext | str:
         """Orchestrate the pipeline: expand → deduplicate → resolve → compile (with intent-aware tier selection)."""
         intent_signal = IntentClassifier.classify_with_metadata(question)
+        intent_policy = IntentClassifier.policy_from_signal(intent_signal)
         intent_resolution = IntentClassifier.resolve_signal_with_profile(
             intent_signal,
             self._repository_profile(),
@@ -74,7 +76,13 @@ class ContextArbitrator:
                 self.workspace_id,
             )
         return self._get_context_unified(
-            symbol_name, question, token_budget, intent_signal, intent_resolution, cache_hits
+            symbol_name,
+            question,
+            token_budget,
+            intent_signal,
+            intent_policy,
+            intent_resolution,
+            cache_hits,
         )
 
     # ------------------------------------------------------------------
@@ -87,6 +95,7 @@ class ContextArbitrator:
         question,
         token_budget,
         intent_signal: IntentSignal,
+        intent_policy,
         intent_resolution: IntentResolution,
         cache_hits,
     ) -> PromptContext | str:
@@ -165,6 +174,7 @@ class ContextArbitrator:
             token_budget,
             ambiguous=intent_signal.ambiguous,
             secondary_intent=secondary_intent,
+            intent_policy=intent_policy,
         )
 
         subgraph, docs = ranker.candidates_to_subgraph(
@@ -241,8 +251,15 @@ class ContextArbitrator:
                 "impact_test_surface",
                 "docs_or_concept",
             ]
+        required_roles = normalize_roles([*required_roles, *intent_policy.supplemental_roles])
 
-        ctx = PromptCompiler().compile_with_intent(subgraph, code_map, docs, intent)
+        ctx = PromptCompiler().compile_with_intent(
+            subgraph,
+            code_map,
+            docs,
+            intent,
+            tier_priority=intent_policy.tier_order,
+        )
         ctx.stopped_reason = subgraph.stopped_reason
         ctx.mechanism = mechanism
         ctx.pruned_details = subgraph.pruned_details
@@ -263,6 +280,16 @@ class ContextArbitrator:
             "delta": w.delta,
             "epsilon": w.epsilon,
         }
+        ctx.budget["intent_policy"] = {
+            "active_intents": [intent.value for intent in intent_policy.active_intents],
+            "secondary_intents": [
+                intent.value for intent in intent_policy.secondary_intents
+            ],
+            "budget_share": intent_policy.budget_share,
+            "tier_order": list(intent_policy.tier_order),
+            "supplemental_roles": list(intent_policy.supplemental_roles),
+            "doc_first": intent_policy.doc_first,
+        }
         ctx.ranker_state = {
             "strategy": "unified" if has_vector else "unified_graph_only",
             "weights": dict(ctx.budget["ranker_weights"]),
@@ -270,6 +297,7 @@ class ContextArbitrator:
             "candidates_selected": len(candidates),
             "pruned_total_count": len(pruned_details),
             "required_roles": required_roles,
+            "intent_policy": dict(ctx.budget["intent_policy"]),
             "target_selection": target_selection,
             "strategy_profile": getattr(ranker, "strategy_profile", {}),
         }

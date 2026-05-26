@@ -21,7 +21,7 @@ import re
 from heapq import heappop, heappush
 from typing import cast
 
-from sidecar.context.intent_classifier import Intent
+from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentPolicy, IntentSignal
 from sidecar.context.mechanism_registry import role_backfill_specs_for_mechanism
 from sidecar.context.ranker import (
     BudgetSelector,
@@ -672,12 +672,19 @@ class UnifiedRanker:
         *,
         ambiguous: bool = False,
         secondary_intent: Intent | None = None,
+        intent_policy: IntentPolicy | None = None,
     ) -> tuple[list[Candidate], dict, str, list[dict], list[str]]:
         """Return budget-fitting candidates sorted by blended score.
 
         Returns (candidates, budget_info).  The primary symbol itself is not
         in the returned list — the caller holds it separately.
         """
+        intent_policy = self._normalize_intent_policy(
+            intent,
+            intent_policy=intent_policy,
+            ambiguous=ambiguous,
+            secondary_intent=secondary_intent,
+        )
         # 1. Collect graph BFS candidates (pool-size-limited, not budget-limited)
         graph_pool = self._graph_candidates(target.uid, pool_size=graph_pool_size, intent=intent)
 
@@ -746,6 +753,7 @@ class UnifiedRanker:
             )
             if impact_reference_anchors:
                 pool = self._merge_role_backfill(pool, impact_reference_anchors)
+        required_roles = self._apply_intent_policy_roles(required_roles, intent_policy)
         roles_for_backfill = self._roles_needing_backfill(
             target,
             pool,
@@ -827,7 +835,7 @@ class UnifiedRanker:
 
         # 7. Assign intent weights and noise factors
 
-        intent_priors = self._intent_priors(intent)
+        intent_priors = self._intent_priors_for_policy(intent, intent_policy)
         for c in pool:
             c.evidence_role = self._role_of(c)
             c.supporting_roles = self._supporting_roles_of(c)
@@ -927,14 +935,8 @@ class UnifiedRanker:
 
         pool.sort(key=_sort_key, reverse=True)
 
-        # 10. Ambiguous-intent adjustment: when classifier is uncertain and the
-        # secondary intent is DEBUGGING, treat the context as partially debugging
-        # — require callers (execution_path role) and use the deeper floor.
-        if ambiguous and secondary_intent == Intent.DEBUGGING and intent != Intent.DEBUGGING:
-            if "execution_path" not in required_roles:
-                required_roles = normalize_roles([*required_roles, "execution_path"])
-            floor_override = self._INTENT_FLOORS.get(Intent.DEBUGGING, 1500)
-            budget = max(budget, floor_override)
+        policy_floor = self._intent_policy_floor(intent, intent_policy)
+        doc_first = intent_policy.doc_first if intent_policy else False
 
         # 11. Optimal context selection (marginal gain + doc deferral)
         return self.budget_pruner.select_under_budget(
@@ -945,6 +947,8 @@ class UnifiedRanker:
             mechanism,
             required_roles,
             budget,
+            floor_override=policy_floor,
+            doc_first=doc_first,
         )
 
     def _module_composition_anchor_candidates(
@@ -1836,6 +1840,74 @@ class UnifiedRanker:
 
     def _intent_priors(self, intent: Intent) -> dict[str, float]:
         return self.scoring.intent_priors(intent)
+
+    def _normalize_intent_policy(
+        self,
+        intent: Intent,
+        *,
+        intent_policy: IntentPolicy | None,
+        ambiguous: bool,
+        secondary_intent: Intent | None,
+    ) -> IntentPolicy:
+        if intent_policy is not None:
+            return intent_policy
+        distribution = {intent.value: 1.0}
+        if ambiguous and secondary_intent is not None and secondary_intent != intent:
+            distribution = {intent.value: 0.55, secondary_intent.value: 0.45}
+        return IntentClassifier.policy_from_signal(
+            IntentSignal(
+                primary=intent,
+                distribution=distribution,
+                confidence=max(distribution.values()),
+                ambiguous=ambiguous,
+            )
+        )
+
+    @staticmethod
+    def _apply_intent_policy_roles(
+        required_roles: list[str], intent_policy: IntentPolicy | None
+    ) -> list[str]:
+        if not intent_policy or not intent_policy.supplemental_roles:
+            return normalize_roles(required_roles)
+        return normalize_roles([*required_roles, *intent_policy.supplemental_roles])
+
+    def _intent_priors_for_policy(
+        self, intent: Intent, intent_policy: IntentPolicy | None
+    ) -> dict[str, float]:
+        if not intent_policy or len(intent_policy.active_intents) <= 1:
+            return self._intent_priors(intent)
+
+        totals = {"symbol": 0.0, "doc": 0.0}
+        weight_total = 0.0
+        for active_intent in intent_policy.active_intents:
+            weight = intent_policy.weight(active_intent)
+            if weight <= 0:
+                continue
+            priors = self._intent_priors(active_intent)
+            totals["symbol"] += weight * priors.get("symbol", 0.3)
+            totals["doc"] += weight * priors.get("doc", 0.3)
+            weight_total += weight
+        if weight_total <= 0:
+            return self._intent_priors(intent)
+        return {kind: score / weight_total for kind, score in totals.items()}
+
+    def _intent_policy_floor(
+        self, intent: Intent, intent_policy: IntentPolicy | None
+    ) -> int | None:
+        if not intent_policy or len(intent_policy.active_intents) <= 1:
+            return None
+        weighted_floor = 0.0
+        weight_total = 0.0
+        for active_intent in intent_policy.active_intents:
+            weight = intent_policy.weight(active_intent)
+            if weight <= 0:
+                continue
+            weighted_floor += weight * self._INTENT_FLOORS.get(active_intent, 1200)
+            weight_total += weight
+        if weight_total <= 0:
+            return None
+        primary_floor = self._INTENT_FLOORS.get(intent, 1200)
+        return max(primary_floor, int(weighted_floor / weight_total))
 
     def _topic_focus_factor(
         self,
