@@ -208,9 +208,7 @@ class ContextArbitrator:
 
             from sidecar.workspace_paths import resolve_graph_file_path
 
-            safe_file_path = resolve_graph_file_path(
-                node.file_path, workspace_root=project_root
-            )
+            safe_file_path = resolve_graph_file_path(node.file_path, workspace_root=project_root)
             if safe_file_path is None:
                 code_map[node.uid] = ("", False)
                 continue
@@ -282,9 +280,7 @@ class ContextArbitrator:
         }
         ctx.budget["intent_policy"] = {
             "active_intents": [intent.value for intent in intent_policy.active_intents],
-            "secondary_intents": [
-                intent.value for intent in intent_policy.secondary_intents
-            ],
+            "secondary_intents": [intent.value for intent in intent_policy.secondary_intents],
             "budget_share": intent_policy.budget_share,
             "tier_order": list(intent_policy.tier_order),
             "supplemental_roles": list(intent_policy.supplemental_roles),

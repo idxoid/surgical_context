@@ -152,6 +152,38 @@ def test_callers_appear_before_callees_in_prompt():
     assert caller_pos < callee_pos, "callers must appear before callees"
 
 
+def test_ordered_graph_context_matches_prompt_filtering():
+    ctx = _make_ctx(
+        deps=[
+            {
+                "symbol": "deep_callee",
+                "relation": "callee",
+                "direction": "callee",
+                "depth": 2,
+                "blended_score": 0.9,
+            },
+            {
+                "symbol": "direct_caller",
+                "relation": "caller",
+                "direction": "caller",
+                "depth": 1,
+                "blended_score": 0.5,
+            },
+            {"symbol": "no_code", "code": "", "direction": "caller"},
+        ]
+    )
+
+    assert [dep.symbol for dep in ctx.ordered_graph_context()] == [
+        "direct_caller",
+        "deep_callee",
+    ]
+    assert [dep.symbol for dep in ctx.ordered_graph_context(include_empty_code=True)] == [
+        "direct_caller",
+        "no_code",
+        "deep_callee",
+    ]
+
+
 def test_among_callers_shallower_depth_comes_first():
     ctx = _make_ctx(
         deps=[

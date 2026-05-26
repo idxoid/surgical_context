@@ -116,6 +116,18 @@ def _compute_file_recall(expected_files: set[str], retrieved_files: set[str]) ->
 
 
 _SYMBOL_METRICS_K = 5
+_BRIDGE_RELATIONS = {"DOC_BRIDGE", "SEMANTIC_HINT", "ROLE_BACKFILL"}
+
+
+def _ranked_unique_symbols(primary_symbol: str, graph_symbols: list[str]) -> list[str]:
+    """Return primary + deps with duplicate symbol names collapsed, preserving order."""
+    ranked: list[str] = []
+    seen: set[str] = set()
+    for symbol in [primary_symbol, *graph_symbols]:
+        if symbol and symbol not in seen:
+            ranked.append(symbol)
+            seen.add(symbol)
+    return ranked
 
 
 def _compute_symbol_metrics(
@@ -130,12 +142,7 @@ def _compute_symbol_metrics(
     Top-k uses ranked selection order: primary target first, then graph deps
     in assembly order (matches spec "k=5 graph deps" plus the target symbol).
     """
-    ranked: list[str] = []
-    seen: set[str] = set()
-    for symbol in [primary_symbol, *graph_symbols]:
-        if symbol and symbol not in seen:
-            ranked.append(symbol)
-            seen.add(symbol)
+    ranked = _ranked_unique_symbols(primary_symbol, graph_symbols)
 
     expected = set(expected_symbols)
     context_set = set(ranked)
@@ -153,6 +160,99 @@ def _compute_symbol_metrics(
         "expected_count": len(expected),
         "hits_top_k": len(hits_top_k),
         "hits_context": len(hits_context),
+    }
+
+
+def _score_ordered_graph_symbols(graph_context: list[Any]) -> list[str]:
+    """Order graph deps by selected blended score for ranking diagnostics."""
+
+    def _score(dep: Any) -> float:
+        for attr in ("blended_score", "relevance_score"):
+            try:
+                value = float(getattr(dep, attr, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value:
+                return value
+        return 0.0
+
+    ordered = sorted(
+        graph_context,
+        key=lambda dep: (
+            -_score(dep),
+            int(getattr(dep, "depth", 0) or 0),
+            getattr(dep, "symbol", "") or "",
+        ),
+    )
+    return [getattr(dep, "symbol", "") for dep in ordered]
+
+
+def _is_role_backfill_dep(dep: Any) -> bool:
+    provenance = [str(step) for step in (getattr(dep, "provenance", None) or [])]
+    return getattr(dep, "relation", "") == "ROLE_BACKFILL" or any(
+        step.startswith("role-backfill:") for step in provenance
+    )
+
+
+def _is_bridge_dep(dep: Any) -> bool:
+    provenance = [str(step) for step in (getattr(dep, "provenance", None) or [])]
+    relation = getattr(dep, "relation", "")
+    return relation in _BRIDGE_RELATIONS or any("doc-bridge" in step for step in provenance)
+
+
+def _is_test_path(path: str) -> bool:
+    normalized = (path or "").replace("\\", "/").lower()
+    name = Path(normalized).name
+    return (
+        "/tests/" in normalized
+        or "/test/" in normalized
+        or "/__tests__/" in normalized
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or name.endswith(".test.ts")
+        or name.endswith(".spec.ts")
+    )
+
+
+def _head_dependency_diagnostics(
+    graph_context: list[Any],
+    *,
+    k: int = _SYMBOL_METRICS_K - 1,
+) -> dict[str, Any]:
+    """Describe what occupies the dependency head used by P@5."""
+    raw_head = list(graph_context[: max(0, k)])
+    unique_head: list[Any] = []
+    seen_symbols: set[str] = set()
+    for dep in graph_context:
+        symbol = getattr(dep, "symbol", "")
+        if not symbol or symbol in seen_symbols:
+            continue
+        unique_head.append(dep)
+        seen_symbols.add(symbol)
+        if len(unique_head) >= k:
+            break
+
+    relation_counts: dict[str, int] = {}
+    for dep in unique_head:
+        relation = getattr(dep, "relation", "") or "unknown"
+        relation_counts[relation] = relation_counts.get(relation, 0) + 1
+
+    raw_symbols = [getattr(dep, "symbol", "") for dep in raw_head if getattr(dep, "symbol", "")]
+    unique_symbols = [
+        getattr(dep, "symbol", "") for dep in unique_head if getattr(dep, "symbol", "")
+    ]
+
+    return {
+        "dependency_slots": k,
+        "raw_dependency_symbols": raw_symbols,
+        "unique_dependency_symbols": unique_symbols,
+        "duplicate_symbol_count": max(0, len(raw_symbols) - len(set(raw_symbols))),
+        "role_backfill_count": sum(1 for dep in unique_head if _is_role_backfill_dep(dep)),
+        "bridge_count": sum(1 for dep in unique_head if _is_bridge_dep(dep)),
+        "test_path_count": sum(
+            1 for dep in unique_head if _is_test_path(getattr(dep, "file_path", ""))
+        ),
+        "relation_counts": relation_counts,
     }
 
 
@@ -329,6 +429,10 @@ def build_snapshot_manifest_row(
         "pass_count": summary.get("pass_count", 0),
         "pass_rate": summary.get("pass_rate", 0.0),
         "precision_at_5": summary.get("precision_at_5", summary.get("precision", 0.0)),
+        "precision_at_5_prompt_order": summary.get("precision_at_5_prompt_order", 0.0),
+        "precision_at_5_blended_order": summary.get("precision_at_5_blended_order", 0.0),
+        "top_k_multi_backfill_rate": summary.get("top_k_multi_backfill_rate", 0.0),
+        "top_k_multi_bridge_rate": summary.get("top_k_multi_bridge_rate", 0.0),
         "file_recall": summary.get("file_recall", 0.0),
         "role_recall": summary.get("role_recall", 0.0),
         "tokens_surgical": summary.get("tokens_surgical", 0),
@@ -1014,11 +1118,31 @@ def run_benchmark(
         )
         strategy_profile = getattr(ctx, "ranker_state", {}).get("strategy_profile", {}) or {}
 
+        fill_order_graph_symbols = [dep.symbol for dep in ctx.graph_context]
+        prompt_order_deps = (
+            ctx.ordered_graph_context()
+            if hasattr(ctx, "ordered_graph_context")
+            else list(ctx.graph_context)
+        )
+        prompt_order_graph_symbols = [dep.symbol for dep in prompt_order_deps]
+        blended_order_graph_symbols = _score_ordered_graph_symbols(ctx.graph_context)
+
         symbol_metrics = _compute_symbol_metrics(
             ctx.primary_source.symbol,
-            [dep.symbol for dep in ctx.graph_context],
+            fill_order_graph_symbols,
             expected_symbols,
         )
+        prompt_order_symbol_metrics = _compute_symbol_metrics(
+            ctx.primary_source.symbol,
+            prompt_order_graph_symbols,
+            expected_symbols,
+        )
+        blended_order_symbol_metrics = _compute_symbol_metrics(
+            ctx.primary_source.symbol,
+            blended_order_graph_symbols,
+            expected_symbols,
+        )
+        head_diagnostics = _head_dependency_diagnostics(ctx.graph_context)
         recall_at_k = float(symbol_metrics["recall_at_k"])
         precision_at_k = float(symbol_metrics["precision_at_k"])
         context_recall = float(symbol_metrics["context_recall"])
@@ -1079,7 +1203,10 @@ def run_benchmark(
 
         print(
             f"  {status_emoji} {q['id']}: {symbol:20} [{intent}]"
-            f" | p@5={precision_at_k:.2f} ctx={context_precision:.2f}"
+            f" | p@5={precision_at_k:.2f}"
+            f"/prompt={float(prompt_order_symbol_metrics['precision_at_k']):.2f}"
+            f"/score={float(blended_order_symbol_metrics['precision_at_k']):.2f}"
+            f" ctx={context_precision:.2f}"
             f" | role={role_recall:.2f} | file={file_recall:.2f} | {tokens_surgical}t"
             f" | expected_roles={_format_roles_for_column(required_roles_canonical)}"
             f" | missing_roles={_format_roles_for_column(missing_expected_roles)}"
@@ -1103,11 +1230,30 @@ def run_benchmark(
                 "recall_at_k": recall_at_k,
                 "precision": precision_at_k,
                 "precision_at_k": precision_at_k,
+                "precision_at_k_fill_order": precision_at_k,
+                "precision_at_k_prompt_order": prompt_order_symbol_metrics["precision_at_k"],
+                "precision_at_k_blended_order": blended_order_symbol_metrics["precision_at_k"],
+                "recall_at_k_fill_order": recall_at_k,
+                "recall_at_k_prompt_order": prompt_order_symbol_metrics["recall_at_k"],
+                "recall_at_k_blended_order": blended_order_symbol_metrics["recall_at_k"],
                 "context_recall": context_recall,
                 "context_precision": context_precision,
                 "retrieved_count": symbol_metrics["retrieved_count"],
                 "hits_top_k": symbol_metrics["hits_top_k"],
+                "hits_top_k_fill_order": symbol_metrics["hits_top_k"],
+                "hits_top_k_prompt_order": prompt_order_symbol_metrics["hits_top_k"],
+                "hits_top_k_blended_order": blended_order_symbol_metrics["hits_top_k"],
                 "hits_context": symbol_metrics["hits_context"],
+                "top_k_fill_order_symbols": _ranked_unique_symbols(
+                    ctx.primary_source.symbol, fill_order_graph_symbols
+                )[:_SYMBOL_METRICS_K],
+                "top_k_prompt_order_symbols": _ranked_unique_symbols(
+                    ctx.primary_source.symbol, prompt_order_graph_symbols
+                )[:_SYMBOL_METRICS_K],
+                "top_k_blended_order_symbols": _ranked_unique_symbols(
+                    ctx.primary_source.symbol, blended_order_graph_symbols
+                )[:_SYMBOL_METRICS_K],
+                "top_k_dependency_diagnostics": head_diagnostics,
                 "file_recall": file_recall,
                 "role_recall": role_recall,
                 "stopped_reason": ctx.stopped_reason,
@@ -1145,6 +1291,18 @@ def run_benchmark(
 
     avg_recall = sum(r.get("recall_at_k", 0) for r in results) / total if total > 0 else 0.0
     avg_precision = sum(r.get("precision_at_k", 0) for r in results) / total if total > 0 else 0.0
+    avg_precision_prompt_order = (
+        sum(r.get("precision_at_k_prompt_order", r.get("precision_at_k", 0)) for r in results)
+        / total
+        if total > 0
+        else 0.0
+    )
+    avg_precision_blended_order = (
+        sum(r.get("precision_at_k_blended_order", r.get("precision_at_k", 0)) for r in results)
+        / total
+        if total > 0
+        else 0.0
+    )
     avg_context_precision = (
         sum(r.get("context_precision", r.get("precision_at_k", 0)) for r in results) / total
         if total > 0
@@ -1153,6 +1311,50 @@ def run_benchmark(
     avg_file_recall = sum(r.get("file_recall", 0) for r in results) / total if total > 0 else 0.0
     avg_role_recall = sum(r.get("role_recall", 0) for r in results) / total if total > 0 else 0.0
     total_tokens_surgical = sum(r.get("tokens_surgical", 0) for r in results)
+    avg_top_k_backfill = (
+        sum(
+            (r.get("top_k_dependency_diagnostics") or {}).get("role_backfill_count", 0)
+            for r in results
+        )
+        / total
+        if total > 0
+        else 0.0
+    )
+    avg_top_k_bridge = (
+        sum((r.get("top_k_dependency_diagnostics") or {}).get("bridge_count", 0) for r in results)
+        / total
+        if total > 0
+        else 0.0
+    )
+    multi_backfill_rate = (
+        sum(
+            1
+            for r in results
+            if (r.get("top_k_dependency_diagnostics") or {}).get("role_backfill_count", 0) >= 2
+        )
+        / total
+        if total > 0
+        else 0.0
+    )
+    multi_bridge_rate = (
+        sum(
+            1
+            for r in results
+            if (r.get("top_k_dependency_diagnostics") or {}).get("bridge_count", 0) >= 2
+        )
+        / total
+        if total > 0
+        else 0.0
+    )
+    avg_top_k_duplicate_symbols = (
+        sum(
+            (r.get("top_k_dependency_diagnostics") or {}).get("duplicate_symbol_count", 0)
+            for r in results
+        )
+        / total
+        if total > 0
+        else 0.0
+    )
     # Carpet-bomb is only summed for questions that declared a real baseline
     # (expected_files resolved to >0 tokens). Mixing in "0" rows would
     # deflate the ratio artificially.
@@ -1202,9 +1404,17 @@ def run_benchmark(
             "recall_at_5": avg_recall,
             "precision": avg_precision,
             "precision_at_5": avg_precision,
+            "precision_at_5_fill_order": avg_precision,
+            "precision_at_5_prompt_order": avg_precision_prompt_order,
+            "precision_at_5_blended_order": avg_precision_blended_order,
             "context_precision": avg_context_precision,
             "file_recall": avg_file_recall,
             "role_recall": avg_role_recall,
+            "top_k_backfill_avg": avg_top_k_backfill,
+            "top_k_multi_backfill_rate": multi_backfill_rate,
+            "top_k_bridge_avg": avg_top_k_bridge,
+            "top_k_multi_bridge_rate": multi_bridge_rate,
+            "top_k_duplicate_symbol_avg": avg_top_k_duplicate_symbols,
             "tokens_surgical": total_tokens_surgical,
             "tokens_carpet_bomb": total_tokens_carpet,
             "baseline_questions": len(scored_results),
@@ -1221,10 +1431,20 @@ def run_benchmark(
     print(f"{'=' * 70}")
     print(f"Pass rate:       {metrics['summary']['pass_rate']:.1%} ({passes}/{total})")
     print(f"Recall@5:        {metrics['summary']['recall_at_5']:.2f}")
-    print(f"Precision@5:     {metrics['summary']['precision_at_5']:.2f}")
+    print(f"Precision@5:     {metrics['summary']['precision_at_5']:.2f} fill-order")
+    print(f"Precision@5(p):  {metrics['summary']['precision_at_5_prompt_order']:.2f} prompt-order")
+    print(f"Precision@5(s):  {metrics['summary']['precision_at_5_blended_order']:.2f} score-order")
     print(f"Context prec:    {metrics['summary']['context_precision']:.2f}")
     print(f"File recall:     {metrics['summary']['file_recall']:.2f}")
     print(f"Role recall:     {metrics['summary']['role_recall']:.2f}")
+    print(
+        "Top-k deps:      "
+        f"backfill avg={metrics['summary']['top_k_backfill_avg']:.2f}, "
+        f">=2 backfill={metrics['summary']['top_k_multi_backfill_rate']:.1%}, "
+        f"bridge avg={metrics['summary']['top_k_bridge_avg']:.2f}, "
+        f">=2 bridge={metrics['summary']['top_k_multi_bridge_rate']:.1%}, "
+        f"dup avg={metrics['summary']['top_k_duplicate_symbol_avg']:.2f}"
+    )
     print(f"Tokens (surgical): {metrics['summary']['tokens_surgical']:,}")
     print(
         f"Tokens (carpet):   {metrics['summary']['tokens_carpet_bomb']:,}"

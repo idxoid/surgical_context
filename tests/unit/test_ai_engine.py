@@ -1,9 +1,9 @@
 """Unit tests for AIEngine with model routing."""
 
 import os
+from unittest.mock import patch
 
 import pytest
-from unittest.mock import patch
 
 from sidecar.ai.engine import (
     _MIN_CACHE_TOKENS,

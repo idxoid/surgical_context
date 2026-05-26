@@ -238,7 +238,22 @@ class RankerScoring:
         q = (query or "").lower()
         if "depend" in m or "trace_dependency" in m:
             return True
+        if "routing" in m or "dispatch" in m:
+            return True
         if "hook" in m or "lifecycle" in m:
+            return True
+        if any(term in q for term in ("router", "routing", "middleware")) and any(
+            term in q
+            for term in (
+                "delegate",
+                "delegates",
+                "handling",
+                "handler",
+                "request",
+                "dispatch",
+                "create",
+            )
+        ):
             return True
         if "dependency injection" in q:
             return True

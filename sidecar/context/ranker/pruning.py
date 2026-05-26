@@ -84,9 +84,47 @@ class BudgetPruner:
         defer_docs = intent not in _DOC_FIRST_INTENTS and not doc_first
         min_code_files_before_docs = 3
         deferred_docs: list[Candidate] = []
+        # P@5 treats the target + first four graph symbols as the "head".
+        # Bridge candidates are useful for role recall, but several bridges in
+        # that head tend to crowd out concrete call/depends chains. Defer extras
+        # until the head has one bridge and enough structural symbols.
+        head_symbol_slots = 4
+        head_bridge_cap = 1
+        deferred_head_bridges: list[Candidate] = []
+        head_bridge_deferred = 0
+        head_bridge_replayed = 0
+        head_backfill_deferred = 0
+        head_backfill_replayed = 0
+        defer_head_bridges = trace_mode
 
         def _is_code_file(c: Candidate) -> bool:
             return c.kind != "doc"
+
+        def _selected_symbol_count() -> int:
+            return sum(1 for c in chosen if c.kind != "doc")
+
+        def _is_role_backfill(c: Candidate) -> bool:
+            return c.kind != "doc" and (
+                c.relation == "ROLE_BACKFILL" or self.host._has_role_backfill(c)
+            )
+
+        def _is_head_bridge(c: Candidate) -> bool:
+            provenance = "".join(str(step) for step in c.provenance)
+            return c.kind != "doc" and (
+                c.relation in ("DOC_BRIDGE", "SEMANTIC_HINT", "ROLE_BACKFILL")
+                or self.host._has_role_backfill(c)
+                or "doc-bridge" in provenance
+            )
+
+        def _chosen_head_bridge_count() -> int:
+            head_symbols: list[Candidate] = []
+            for selected in chosen:
+                if selected.kind == "doc":
+                    continue
+                head_symbols.append(selected)
+                if len(head_symbols) >= head_symbol_slots:
+                    break
+            return sum(1 for selected in head_symbols if _is_head_bridge(selected))
 
         def _adds_trace_file_breadth(c: Candidate) -> bool:
             return (
@@ -226,8 +264,80 @@ class BudgetPruner:
                 )
             return None
 
+        def _replay_deferred_head_bridges(*, force: bool = False) -> bool:
+            """Seat deferred bridges after the symbol head, preserving recall."""
+            nonlocal head_bridge_replayed, head_backfill_replayed
+            if not deferred_head_bridges:
+                return False
+            if not force and _selected_symbol_count() < head_symbol_slots:
+                return False
+
+            replaying = list(deferred_head_bridges)
+            deferred_head_bridges.clear()
+            selected_any = False
+            chosen_uids = {c.uid for c in chosen}
+            for c in replaying:
+                if c.uid in chosen_uids:
+                    continue
+                candidate_roles = self.host.role_fulfilment.selection_roles(
+                    c,
+                    target,
+                    query=query,
+                    mechanism=mechanism,
+                    intent=intent,
+                    required_roles=required_roles,
+                )
+                gain = self.host._calculate_marginal_gain(
+                    c,
+                    chosen,
+                    target,
+                    intent=intent,
+                    mechanism=mechanism,
+                    query=query,
+                    required_roles=required_roles,
+                    candidate_roles=candidate_roles,
+                )
+                fills_role = any(
+                    role in required_roles and role not in fulfilled_roles
+                    for role in candidate_roles
+                )
+                adds_new_trace_file = _adds_trace_file_breadth(c)
+                fills_role_or_trace = fills_role or adds_new_trace_file
+                is_useful = (
+                    fills_role
+                    or adds_new_trace_file
+                    or _is_head_bridge(c)
+                    or (self.host.scoring.blended(c) > 0.15)
+                )
+                if gain < min_gain:
+                    if not is_useful:
+                        _record_pruned(
+                            c,
+                            "deferred_head_bridge_low_utility",
+                            gain=gain,
+                            candidate_roles=candidate_roles,
+                        )
+                        continue
+                    if gain < low_gain_floor and not fills_role_or_trace:
+                        _record_pruned(
+                            c,
+                            "deferred_head_bridge_low_gain_floor",
+                            gain=gain,
+                            candidate_roles=candidate_roles,
+                        )
+                        continue
+
+                if _try_select(c, gain, candidate_roles) is None:
+                    chosen_uids.add(c.uid)
+                    head_bridge_replayed += 1
+                    if _is_role_backfill(c):
+                        head_backfill_replayed += 1
+                    selected_any = True
+            return selected_any
+
         stop_index: int | None = None
         for idx, c in enumerate(pool):
+            _replay_deferred_head_bridges()
             # Selection Gating Logic: Mechanism-Aware
             missing_roles = set(required_roles) - fulfilled_roles
             candidate_roles = self.host.role_fulfilment.selection_roles(
@@ -299,6 +409,23 @@ class BudgetPruner:
                 and no_progress_streak >= expansion_stall_limit
                 and not fills_role_or_trace
             ):
+                deferred_fills_missing = any(
+                    any(
+                        role in required_roles and role not in fulfilled_roles
+                        for role in self.host.role_fulfilment.selection_roles(
+                            deferred,
+                            target,
+                            query=query,
+                            mechanism=mechanism,
+                            intent=intent,
+                            required_roles=required_roles,
+                        )
+                    )
+                    for deferred in deferred_head_bridges
+                )
+                if deferred_fills_missing and _replay_deferred_head_bridges(force=True):
+                    no_progress_streak = 0
+                    continue
                 stopped_reason = "expansion_no_progress"
                 _record_pruned(
                     c,
@@ -428,13 +555,49 @@ class BudgetPruner:
                     )
                     continue
 
-            _try_select(c, gain, candidate_roles)
+            if (
+                defer_head_bridges
+                and _is_head_bridge(c)
+                and _selected_symbol_count() < head_symbol_slots
+                and _chosen_head_bridge_count() >= head_bridge_cap
+            ):
+                deferred_head_bridges.append(c)
+                head_bridge_deferred += 1
+                if _is_role_backfill(c):
+                    head_backfill_deferred += 1
+                continue
+
+            selected_reason = _try_select(c, gain, candidate_roles)
+            if selected_reason is None:
+                _replay_deferred_head_bridges()
+
+        if stop_index is None and deferred_head_bridges:
+            _replay_deferred_head_bridges(force=True)
 
         if stop_index is not None:
+            if deferred_head_bridges:
+                deferred_fills_missing = any(
+                    any(
+                        role in required_roles and role not in fulfilled_roles
+                        for role in self.host.role_fulfilment.selection_roles(
+                            deferred,
+                            target,
+                            query=query,
+                            mechanism=mechanism,
+                            intent=intent,
+                            required_roles=required_roles,
+                        )
+                    )
+                    for deferred in deferred_head_bridges
+                )
+                if deferred_fills_missing:
+                    _replay_deferred_head_bridges(force=True)
             for c in pool[stop_index + 1 :]:
                 _record_pruned(c, "not_considered_after_threshold")
             for c in deferred_docs:
                 _record_pruned(c, "deferred_doc_not_replayed_after_threshold")
+            for c in deferred_head_bridges:
+                _record_pruned(c, "deferred_head_bridge_not_replayed_after_threshold")
 
         # Second pass: deferred docs, now that code-file breadth is established
         # (or the main pass exhausted the pool). Re-evaluate gain against the
@@ -538,5 +701,9 @@ class BudgetPruner:
             "reserved": self.host.PREAMBLE_TOKENS,
             "pool_size": len(pool),
             "pruned": len(pruned_details),
+            "head_bridge_deferred": head_bridge_deferred,
+            "head_bridge_replayed": head_bridge_replayed,
+            "head_backfill_deferred": head_backfill_deferred,
+            "head_backfill_replayed": head_backfill_replayed,
         }
         return chosen, budget_info, stopped_reason, pruned_details, missing_roles_list

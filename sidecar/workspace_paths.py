@@ -78,9 +78,7 @@ def resolve_path_under_workspace_root(
         candidate = candidate.resolve()
 
     if not is_path_within_root(candidate, root):
-        raise PathOutsideWorkspaceError(
-            f"Path '{candidate}' is outside workspace root '{root}'"
-        )
+        raise PathOutsideWorkspaceError(f"Path '{candidate}' is outside workspace root '{root}'")
     return candidate
 
 

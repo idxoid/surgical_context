@@ -156,6 +156,52 @@ REGISTRATION_FLOW_PATH_TOKENS = (
     "/middleware",
     "/app",
 )
+ROUTING_FLOW_TARGET_TOKENS = (
+    "app",
+    "application",
+    "express",
+    "router",
+    "routing",
+    "middleware",
+    "dispatch",
+    "handle",
+)
+ROUTING_FLOW_PATH_TOKENS = (
+    "/lib/",
+    "application",
+    "express",
+    "router",
+    "middleware",
+)
+IDENTITY_ENGINE_PATH_MARKERS = (
+    "/identity/",
+    "/engine/",
+    "actor_index",
+    "chain_engine",
+)
+IDENTITY_TRACE_EXECUTOR_NAMES = frozenset(
+    {
+        "same_actor",
+        "ingest",
+        "ingested",
+    }
+)
+IDENTITY_TRACE_ORCHESTRATOR_NAMES = frozenset(
+    {
+        "same_actor",
+        "ingest",
+    }
+)
+ROUTING_COMPOSITION_SYMBOL_NAMES = frozenset(
+    {
+        "router",
+        "use",
+        "init",
+        "handle",
+        "layer",
+        "dispatch",
+    }
+)
 REGISTRATION_FACTORY_TOKENS = (
     "register",
     "record",

@@ -116,7 +116,9 @@ class MyClass:
         overlay.update("test.py", "alice draft\n", workspace_id=ws, user_id="alice")
         overlay.update("test.py", "bob draft\n", workspace_id=ws, user_id="bob")
 
-        assert overlay.read_lines("test.py", 1, 1, workspace_id=ws, user_id="alice") == "alice draft\n"
+        assert (
+            overlay.read_lines("test.py", 1, 1, workspace_id=ws, user_id="alice") == "alice draft\n"
+        )
         assert overlay.read_lines("test.py", 1, 1, workspace_id=ws, user_id="bob") == "bob draft\n"
 
         overlay.clear("test.py", workspace_id=ws, user_id="alice")

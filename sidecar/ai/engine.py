@@ -23,6 +23,7 @@ def cloud_llm_enabled() -> bool:
     """Whether outbound cloud LLM calls (Anthropic) are permitted."""
     return _env_flag("ALLOW_CLOUD_LLM", default=False)
 
+
 # Markers written by PromptContext.to_system_prompt()
 _CONTEXT_MARKERS = ("--- TARGET SYMBOL:", "--- DEPENDENCIES ---", "--- DOCUMENTATION ---")
 
@@ -142,9 +143,7 @@ class AIEngine:
                 "claude" require allow_cloud_llm=True.
         """
         self.model_preference = model_preference
-        self.allow_cloud_llm = (
-            cloud_llm_enabled() if allow_cloud_llm is None else allow_cloud_llm
-        )
+        self.allow_cloud_llm = cloud_llm_enabled() if allow_cloud_llm is None else allow_cloud_llm
         configured = (os.getenv("ANTHROPIC_MODEL") or "").strip()
         self.claude_model = configured or DEFAULT_CLAUDE_MODEL
         self.ollama_model = os.getenv("OLLAMA_MODEL", "llama3")

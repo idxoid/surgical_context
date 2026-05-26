@@ -4,7 +4,7 @@ from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentSi
 from sidecar.context.mechanism_registry import determine_preloaded_mechanism
 from sidecar.context.ranker.recovery import StructuralRecovery
 from sidecar.context.ranker.scoring import RankerScoring
-from sidecar.context.role_taxonomy import infer_supporting_roles
+from sidecar.context.role_taxonomy import infer_identity_trace_roles, infer_supporting_roles
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
     _NOISE_FACTOR,
@@ -926,6 +926,28 @@ def test_object_api_client_surface_infers_api_surface_role():
     )
 
     assert "api_surface" in roles
+
+
+def test_camel_case_class_name_matches_snake_file_stem_for_api_surface():
+    roles = infer_supporting_roles(
+        file_path="/repo/sidecar/context/intent_classifier.py",
+        primary_role="orchestrator",
+        name="IntentClassifier",
+        kind="class",
+    )
+
+    assert "api_surface" in roles
+
+
+def test_unrelated_class_name_does_not_match_unrelated_file_stem():
+    roles = infer_supporting_roles(
+        file_path="/repo/fastapi/exceptions.py",
+        primary_role="supporting_surface",
+        name="FastAPIDeprecationWarning",
+        kind="class",
+    )
+
+    assert "api_surface" not in roles
 
 
 def test_editorial_docs_get_downranked_relative_to_mechanism_docs():
@@ -2400,6 +2422,137 @@ def test_trace_dependency_gain_mode_from_compile_render_question():
     )
 
 
+def test_identity_trace_roles_for_same_actor_ingest_and_gates():
+    same_actor_roles = infer_identity_trace_roles(
+        file_path="/repo/src/dathund_core/identity/actor_index.py",
+        name="same_actor",
+    )
+    assert "executor" in same_actor_roles
+    assert "orchestrator" in same_actor_roles
+    assert "runtime_surface" in same_actor_roles
+
+    ingest_roles = infer_identity_trace_roles(
+        file_path="/repo/src/dathund_core/engine/chain_engine.py",
+        name="ingest",
+    )
+    assert "executor" in ingest_roles
+    assert "orchestrator" in ingest_roles
+
+    gate_roles = infer_identity_trace_roles(
+        file_path="/repo/src/dathund_core/engine/chain_engine.py",
+        name="_same_actor_gate",
+    )
+    assert "executor" in gate_roles
+    assert "config_surface" in gate_roles
+
+    assert not infer_identity_trace_roles(
+        file_path="/repo/src/dathund_core/plugins/catalog.py",
+        name="same_actor",
+    )
+
+
+def test_minimal_trace_import_anchor_assigns_identity_executor_role():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    row = {
+        "uid": "same-actor",
+        "name": "same_actor",
+        "symbol_kind": "method",
+        "token_estimate": 40,
+        "qualified_name": "",
+        "file_path": "/repo/src/dathund_core/identity/actor_index.py",
+        "file_hash": "",
+        "range": [10, 30],
+        "inbound_edges": 1,
+        "outbound_edges": 0,
+        "trace_anchor_score": 4.0,
+    }
+    candidate = ranker.structural_recovery.minimal_trace_import_anchor_candidate(
+        row,
+        required_roles=["orchestrator", "executor", "runtime_surface", "config_surface"],
+    )
+    assert candidate.evidence_role == "executor"
+    assert "orchestrator" in candidate.supporting_roles
+
+
+def test_trace_dependency_gain_mode_from_routing_dispatch_question():
+    assert RankerScoring.trace_dependency_gain_mode(
+        "express_routing_dispatch",
+        "How does Express create an app and delegate request handling to its router?",
+    )
+
+
+def test_trace_routing_composition_anchor_candidates_explicit_composition_role():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="create-app",
+        name="createApplication",
+        file_path="/repo/express/lib/express.js",
+        range=[1, 40],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    rows = [
+        {
+            "uid": "use-fn",
+            "name": "use",
+            "symbol_kind": "function",
+            "token_estimate": 48,
+            "qualified_name": "",
+            "file_path": "/repo/express/lib/application.js",
+            "file_hash": "h1",
+            "range": [80, 120],
+            "inbound_edges": 2,
+            "outbound_edges": 1,
+            "routing_anchor_score": 5.5,
+        },
+        {
+            "uid": "router-cls",
+            "name": "Router",
+            "symbol_kind": "class",
+            "token_estimate": 64,
+            "qualified_name": "",
+            "file_path": "/repo/express/lib/application.js",
+            "file_hash": "h2",
+            "range": [20, 60],
+            "inbound_edges": 4,
+            "outbound_edges": 2,
+            "routing_anchor_score": 6.0,
+        },
+    ]
+    with patch.object(
+        ranker.structural_recovery,
+        "routing_flow_symbol_rows",
+        return_value=rows,
+    ):
+        anchors = ranker._trace_routing_composition_anchor_candidates(
+            target,
+            query="How does Express create an app and delegate request handling to its router?",
+            mechanism="express_routing_dispatch",
+            required_roles=[
+                "api_surface",
+                "factory_surface",
+                "runtime_surface",
+                "composition_surface",
+            ],
+            excluded_uids=set(),
+            pool=[],
+        )
+
+    assert {anchor.name for anchor in anchors} == {"use", "Router"}
+    assert all(anchor.evidence_role == "composition_surface" for anchor in anchors)
+    router = next(anchor for anchor in anchors if anchor.name == "Router")
+    assert "factory_surface" in router.supporting_roles
+    assert all("trace-routing-composition-anchor" in anchor.provenance for anchor in anchors)
+
+
 def test_resolve_intra_repo_package_import_paths(tmp_path):
     """Absolute ``from pkg.sub.mod import …`` maps to sibling package files on disk."""
     inner = tmp_path / "fastapi" / "fastapi"
@@ -2627,3 +2780,150 @@ def test_budget_pruner_stops_after_required_roles_without_extra_expansion():
     assert [c.uid for c in chosen] == ["solve-dependencies"]
     assert stopped_reason == "role_complete"
     assert {item["uid"]: item["reason"] for item in pruned}["extra-noise"] == "role_complete"
+
+
+def test_budget_pruner_defers_extra_head_backfill_until_chain_symbols():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="target",
+        name="Depends",
+        file_path="/repo/fastapi/params.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    api_backfill = Candidate(
+        kind="symbol",
+        uid="api-backfill",
+        name="Depends",
+        file_path="/repo/fastapi/params.py",
+        token_cost=60,
+        graph_score=0.8,
+        semantic_score=0.7,
+        relation="ROLE_BACKFILL",
+        evidence_role="api_surface",
+        provenance=["role-backfill:api_surface"],
+    )
+    runtime_backfill = Candidate(
+        kind="symbol",
+        uid="runtime-backfill",
+        name="solve_dependencies",
+        file_path="/repo/fastapi/dependencies/utils.py",
+        token_cost=60,
+        graph_score=0.8,
+        semantic_score=0.7,
+        relation="ROLE_BACKFILL",
+        evidence_role="runtime_surface",
+        provenance=["role-backfill:runtime_surface"],
+    )
+    chain_symbols = [
+        Candidate(
+            kind="symbol",
+            uid=f"chain-{idx}",
+            name=name,
+            file_path=f"/repo/fastapi/dependencies/{name}.py",
+            token_cost=60,
+            graph_score=0.9,
+            semantic_score=0.6,
+            relation=relation,
+            depth=1,
+        )
+        for idx, (name, relation) in enumerate(
+            [
+                ("get_dependant", "CALLS_DIRECT"),
+                ("Dependant", "DEPENDS_ON"),
+                ("run_endpoint_function", "IMPLEMENTS"),
+            ],
+            start=1,
+        )
+    ]
+
+    chosen, budget_info, _, _, missing = ranker.budget_pruner.select_under_budget(
+        [api_backfill, runtime_backfill, *chain_symbols],
+        target,
+        "How does Depends trace dependency injection into endpoint calls?",
+        Intent.EXPLORATION,
+        "trace_dependency",
+        required_roles=["api_surface", "runtime_surface"],
+        budget=1600,
+        floor_override=1000,
+    )
+
+    assert [c.uid for c in chosen] == [
+        "api-backfill",
+        "chain-1",
+        "chain-2",
+        "chain-3",
+        "runtime-backfill",
+    ]
+    assert missing == []
+    assert budget_info["head_bridge_deferred"] == 1
+    assert budget_info["head_bridge_replayed"] == 1
+    assert budget_info["head_backfill_deferred"] == 1
+    assert budget_info["head_backfill_replayed"] == 1
+
+
+def test_budget_pruner_replays_deferred_head_backfill_when_chain_is_sparse():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="target",
+        name="Field",
+        file_path="/repo/pydantic/fields.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    api_backfill = Candidate(
+        kind="symbol",
+        uid="api-backfill",
+        name="FieldInfo",
+        file_path="/repo/pydantic/fields.py",
+        token_cost=60,
+        graph_score=0.8,
+        semantic_score=0.7,
+        relation="ROLE_BACKFILL",
+        evidence_role="api_surface",
+        provenance=["role-backfill:api_surface"],
+    )
+    runtime_backfill = Candidate(
+        kind="symbol",
+        uid="runtime-backfill",
+        name="ModelField",
+        file_path="/repo/pydantic/main.py",
+        token_cost=60,
+        graph_score=0.8,
+        semantic_score=0.7,
+        relation="ROLE_BACKFILL",
+        evidence_role="runtime_surface",
+        provenance=["role-backfill:runtime_surface"],
+    )
+
+    chosen, budget_info, _, _, missing = ranker.budget_pruner.select_under_budget(
+        [api_backfill, runtime_backfill],
+        target,
+        "Trace how Field feeds runtime model validation.",
+        Intent.EXPLORATION,
+        "trace_dependency",
+        required_roles=["api_surface", "runtime_surface"],
+        budget=1200,
+        floor_override=1000,
+    )
+
+    assert [c.uid for c in chosen] == ["api-backfill", "runtime-backfill"]
+    assert missing == []
+    assert budget_info["head_bridge_deferred"] == 1
+    assert budget_info["head_bridge_replayed"] == 1
+    assert budget_info["head_backfill_deferred"] == 1
+    assert budget_info["head_backfill_replayed"] == 1

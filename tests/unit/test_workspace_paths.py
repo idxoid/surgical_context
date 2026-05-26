@@ -37,9 +37,7 @@ def test_resolve_relative_path_under_root(tmp_path):
     src.parent.mkdir()
     src.write_text("x", encoding="utf-8")
     db = FakeDb({"project_path": str(root)})
-    resolved = resolve_path_under_workspace_root(
-        "src/main.py", workspace_id="ws", db=db
-    )
+    resolved = resolve_path_under_workspace_root("src/main.py", workspace_id="ws", db=db)
     assert resolved == src.resolve()
 
 
@@ -93,9 +91,7 @@ def test_prune_graph_paths_outside_root(tmp_path):
             self.deleted = []
 
     db = GraphDb()
-    removed = prune_graph_paths_outside_root(
-        db, workspace_id="ws", project_root=root
-    )
+    removed = prune_graph_paths_outside_root(db, workspace_id="ws", project_root=root)
     assert removed == [outside]
     assert db.deleted == [outside]
 

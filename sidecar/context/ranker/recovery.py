@@ -6,7 +6,7 @@ import math
 import re
 from pathlib import Path
 
-from sidecar.context.role_taxonomy import normalize_roles
+from sidecar.context.role_taxonomy import infer_identity_trace_roles, normalize_roles
 from sidecar.context.types import SubgraphNode
 
 from .candidate_pool import Candidate
@@ -19,6 +19,9 @@ from .signal_constants import (
     HOOK_FLOW_PATH_TOKENS,
     HOOK_FLOW_TARGET_TOKENS,
     HOOK_RUNTIME_TOKENS,
+    IDENTITY_ENGINE_PATH_MARKERS,
+    IDENTITY_TRACE_EXECUTOR_NAMES,
+    IDENTITY_TRACE_ORCHESTRATOR_NAMES,
     NOISE_PATH_PATTERNS,
     REGISTRATION_FACTORY_TOKENS,
     REGISTRATION_FLOW_PATH_TOKENS,
@@ -27,6 +30,9 @@ from .signal_constants import (
     REGISTRATION_RUNTIME_TOKENS,
     REPRESENTATION_SIGNAL_PATH_TOKENS,
     REPRESENTATION_SIGNAL_TOKENS,
+    ROUTING_COMPOSITION_SYMBOL_NAMES,
+    ROUTING_FLOW_PATH_TOKENS,
+    ROUTING_FLOW_TARGET_TOKENS,
     RUNTIME_SIGNAL_TOKENS,
     TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS,
     TRACE_DEPENDENCY_TARGET_TOKENS,
@@ -143,11 +149,21 @@ class StructuralRecovery:
             float(row.get("outbound_edges", 0) or 0)
         )
         trace_anchor_score = float(row.get("trace_anchor_score", 0) or 0)
-        role = (
-            self.first_reasoning_role(required_roles)
-            if trace_anchor_score > 0
-            else "supporting_surface"
+        identity_roles = infer_identity_trace_roles(
+            file_path=row.get("file_path") or "",
+            name=row.get("name") or "",
         )
+        scoped = set(normalize_roles(required_roles))
+        if identity_roles and trace_anchor_score > 0:
+            matched = [role for role in identity_roles if role in scoped]
+            role = matched[0] if matched else identity_roles[0]
+            supporting = [r for r in identity_roles if r != role and r in scoped]
+        elif trace_anchor_score > 0:
+            role = self.first_reasoning_role(required_roles)
+            supporting = []
+        else:
+            role = "supporting_surface"
+            supporting = []
         candidate = Candidate(
             kind="symbol",
             uid=str(row["uid"]),
@@ -163,7 +179,7 @@ class StructuralRecovery:
             depth=2,
             file_hash=row.get("file_hash") or "",
             evidence_role=role,
-            supporting_roles=[],
+            supporting_roles=normalize_roles(supporting),
             provenance=["recovery:import-module-trace"],
         )
         candidate.symbol_kind = row.get("symbol_kind", "")
@@ -261,6 +277,8 @@ class StructuralRecovery:
             terms.update({"depend", "dependant", "dependency", "solve", "resolver"})
         if any(term in text for term in ("route", "routing", "dispatch", "middleware", "handler")):
             terms.update({"route", "router", "dispatch", "middleware", "handle"})
+        if "delegate" in text:
+            terms.update({"router", "dispatch", "handle", "middleware"})
         if any(term in text for term in ("before_request", "after_request", "hook", "lifecycle")):
             terms.update(
                 {
@@ -293,6 +311,19 @@ class StructuralRecovery:
             terms.update({"webview", "provider", "activate", "register", "handler"})
         if "sql" in text and any(term in text for term in ("query", "statement", "execute")):
             terms.update({"select", "clause", "compile", "compiler", "statement", "sql"})
+        if any(term in text for term in ("actor", "identity", "principal", "same_actor")):
+            terms.update(
+                {
+                    "actor",
+                    "identity",
+                    "principal",
+                    "same_actor",
+                    "ingest",
+                    "index",
+                }
+            )
+        if any(term in text for term in ("gate", "lifecycle", "ingested", "event_time", "clock")):
+            terms.update({"gate", "ingest", "engine", "chain", "window", "time"})
         return sorted(term for term in terms if len(term) >= 4)
 
     def trace_dependency_runtime_symbol_rows(
@@ -1178,6 +1209,194 @@ class StructuralRecovery:
             out.append(candidate)
         return out
 
+    def is_routing_flow_context(
+        self,
+        *,
+        target: SubgraphNode,
+        mechanism: str,
+        query: str,
+        required_roles: list[str],
+    ) -> bool:
+        scoped = set(normalize_roles(required_roles))
+        if "composition_surface" not in scoped:
+            return False
+        m = (mechanism or "").lower()
+        q = (query or "").lower()
+        if "routing" in m or "dispatch" in m:
+            return True
+        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
+        if any(token in target_ctx for token in ROUTING_FLOW_TARGET_TOKENS):
+            return True
+        return any(term in q for term in ("router", "routing", "middleware")) and any(
+            term in q
+            for term in ("delegate", "handling", "handler", "request", "dispatch", "create")
+        )
+
+    def routing_flow_recovery_hint(self, row: dict, *, target: SubgraphNode) -> bool:
+        target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
+        row_ctx = " ".join(
+            [
+                str(row.get("name") or "").lower(),
+                str(row.get("qualified_name") or "").lower(),
+                str(row.get("file_path") or "").lower(),
+            ]
+        )
+        target_hit = any(token in target_ctx for token in ROUTING_FLOW_TARGET_TOKENS)
+        row_hit = any(token in row_ctx for token in ROUTING_FLOW_TARGET_TOKENS)
+        path_hit = any(token in row_ctx for token in ROUTING_FLOW_PATH_TOKENS)
+        name_hit = (row.get("name") or "").lower() in ROUTING_COMPOSITION_SYMBOL_NAMES
+        return (target_hit and row_hit) or path_hit or name_hit
+
+    def routing_flow_symbol_rows(
+        self,
+        target: SubgraphNode,
+        *,
+        excluded_uids: set[str],
+        limit: int = 16,
+    ) -> list[dict]:
+        """Symbols in ``lib/`` (and scoped source roots) that evidence router/middleware flow."""
+        scope_prefixes = self.source_scope_prefixes(target.file_path or "")
+        if not scope_prefixes:
+            return []
+        terms = sorted(
+            {
+                "router",
+                "routing",
+                "middleware",
+                "dispatch",
+                "handle",
+                "layer",
+                "use",
+                "init",
+            }
+        )
+        query_cypher = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+          AND any(prefix IN $scope_prefixes WHERE f.path STARTS WITH prefix)
+          AND NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
+          AND (
+            f.path CONTAINS '/lib/'
+            OR any(term IN $terms
+              WHERE toLower(s.name) CONTAINS term
+                 OR toLower(f.path) CONTAINS term)
+          )
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
+        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
+        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+             CASE WHEN f.path CONTAINS '/lib/' THEN 3.0 ELSE 0.0 END
+             + CASE WHEN toLower(s.name) IN $composition_names THEN 2.5 ELSE 0.0 END
+             + size([term IN $terms WHERE toLower(s.name) = term]) * 2.0
+             + size([term IN $terms WHERE toLower(s.name) CONTAINS term]) AS routing_anchor_score
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               outbound_edges,
+               routing_anchor_score
+        ORDER BY routing_anchor_score DESC,
+                 inbound_edges + outbound_edges DESC,
+                 size(file_path) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query_cypher,
+                        workspace_id=self.workspace_id,
+                        scope_prefixes=scope_prefixes,
+                        excluded_uids=list(excluded_uids),
+                        noise_patterns=list(NOISE_PATH_PATTERNS),
+                        terms=terms,
+                        composition_names=sorted(ROUTING_COMPOSITION_SYMBOL_NAMES),
+                        limit=limit,
+                    )
+                )
+        except Exception:
+            return []
+
+    def trace_routing_composition_anchor_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        query: str,
+        mechanism: str,
+        required_roles: list[str],
+        excluded_uids: set[str],
+        pool: list[Candidate],
+        limit: int = 8,
+    ) -> list[Candidate]:
+        """Explicit ``composition_surface`` anchors for router/middleware trace questions."""
+        if not RankerScoring.trace_dependency_gain_mode(mechanism, query):
+            return []
+        if not self.is_routing_flow_context(
+            target=target,
+            mechanism=mechanism,
+            query=query,
+            required_roles=required_roles,
+        ):
+            return []
+
+        existing_uids = {c.uid for c in pool if getattr(c, "uid", "")}
+        excluded = {*excluded_uids, *existing_uids}
+        if target.uid:
+            excluded.add(target.uid)
+
+        rows = self.routing_flow_symbol_rows(target, excluded_uids=excluded, limit=limit * 3)
+        out: list[Candidate] = []
+        seen: set[str] = set()
+        for row in rows:
+            if not self.routing_flow_recovery_hint(row, target=target):
+                continue
+            uid = str(row.get("uid") or "")
+            if not uid or uid in seen:
+                continue
+            raw_token_cost = int(
+                row.get("token_estimate") or 0
+            ) or self.host._estimate_tokens_range(row.get("range") or [0, 0])
+            anchor_score = float(row.get("routing_anchor_score", 0) or 0)
+            edge_bonus = 0.08 * math.log1p(
+                float(row.get("inbound_edges", 0) or 0)
+            ) + 0.10 * math.log1p(float(row.get("outbound_edges", 0) or 0))
+            name = row.get("name") or ""
+            supporting: list[str] = []
+            if name.lower() == "router":
+                supporting.append("factory_surface")
+            candidate = Candidate(
+                kind="symbol",
+                uid=uid,
+                token_cost=min(raw_token_cost, 140),
+                graph_score=1.35 + min(1.2, anchor_score * 0.15) + edge_bonus,
+                semantic_score=0.42,
+                name=name,
+                file_path=row.get("file_path") or "",
+                range=row.get("range") or [0, 0],
+                render_mode="signature_only",
+                relation="ROLE_BACKFILL",
+                direction="routing",
+                depth=2,
+                file_hash=row.get("file_hash") or "",
+                evidence_role="composition_surface",
+                supporting_roles=normalize_roles(supporting),
+                provenance=["trace-routing-composition-anchor"],
+            )
+            candidate.symbol_kind = row.get("symbol_kind", "")
+            candidate.qualified_name = row.get("qualified_name", "")
+            seen.add(uid)
+            out.append(candidate)
+            if len(out) >= limit:
+                break
+        return out
+
     def same_file_symbol_rows(
         self,
         file_path: str,
@@ -1511,14 +1730,21 @@ class StructuralRecovery:
         )
         config_signal = self.config_surface_recovery_signal(row, target=target)
         orchestrator_signal = self.orchestrator_recovery_signal(row, target=target)
+        identity_orchestrator_signal = self.identity_orchestrator_recovery_signal(
+            row, target=target
+        )
+        executor_signal = self.executor_recovery_signal(row, target=target)
         if "api_surface" in scoped_roles and api_signal:
             candidate_roles = normalize_roles([*candidate_roles, "api_surface"])
         if "factory_surface" in scoped_roles and factory_signal:
             candidate_roles = normalize_roles([*candidate_roles, "factory_surface"])
-        if "config_surface" in scoped_roles and config_signal:
+        identity_config_signal = self.identity_config_recovery_signal(row, target=target)
+        if "config_surface" in scoped_roles and (config_signal or identity_config_signal):
             candidate_roles = normalize_roles([*candidate_roles, "config_surface"])
-        if "orchestrator" in scoped_roles and orchestrator_signal:
+        if "orchestrator" in scoped_roles and (orchestrator_signal or identity_orchestrator_signal):
             candidate_roles = normalize_roles([*candidate_roles, "orchestrator"])
+        if "executor" in scoped_roles and executor_signal:
+            candidate_roles = normalize_roles([*candidate_roles, "executor"])
         if "representation_surface" in scoped_roles and representation_signal:
             candidate_roles = normalize_roles([*candidate_roles, "representation_surface"])
         if "runtime_surface" in scoped_roles and runtime_signal:
@@ -1538,8 +1764,14 @@ class StructuralRecovery:
         runtime_bonus = 0.20 if ("runtime_surface" in matched_roles and runtime_signal) else 0.0
         config_bonus = 0.18 if ("config_surface" in matched_roles and config_signal) else 0.0
         orchestrator_bonus = (
-            0.22 if ("orchestrator" in matched_roles and orchestrator_signal) else 0.0
+            0.22
+            if (
+                "orchestrator" in matched_roles
+                and (orchestrator_signal or identity_orchestrator_signal)
+            )
+            else 0.0
         )
+        executor_bonus = 0.22 if ("executor" in matched_roles and executor_signal) else 0.0
         if registration_flow_context and "runtime_surface" in matched_roles and runtime_signal:
             runtime_bonus += 0.06
         role_bonus = 0.18 * len(matched_roles)
@@ -1560,6 +1792,7 @@ class StructuralRecovery:
                 + runtime_bonus
                 + config_bonus
                 + orchestrator_bonus
+                + executor_bonus
                 + role_bonus
                 + edge_bonus
             ),
@@ -1602,6 +1835,42 @@ class StructuralRecovery:
         row_hit = any(token in row_ctx for token in dependency_terms)
         path_hit = "/dependencies/" in row_ctx
         return row_hit and (target_hit or path_hit)
+
+    def identity_flow_recovery_hint(
+        self,
+        row: dict,
+        *,
+        target: SubgraphNode | None = None,
+    ) -> bool:
+        path = (row.get("file_path") or "").lower()
+        if not any(marker in path for marker in IDENTITY_ENGINE_PATH_MARKERS):
+            return False
+        name = (row.get("name") or "").lower()
+        if name in IDENTITY_TRACE_EXECUTOR_NAMES or name in IDENTITY_TRACE_ORCHESTRATOR_NAMES:
+            return True
+        if name.endswith("_gate") or "_gate" in name:
+            return True
+        if target is not None and "actor" in (target.name or "").lower():
+            return name in {"same_actor", "ingest", "ingested"} or "gate" in name
+        return False
+
+    def identity_orchestrator_recovery_signal(self, row: dict, *, target: SubgraphNode) -> bool:
+        if not self.identity_flow_recovery_hint(row, target=target):
+            return False
+        name = (row.get("name") or "").lower()
+        return name in IDENTITY_TRACE_ORCHESTRATOR_NAMES
+
+    def executor_recovery_signal(self, row: dict, *, target: SubgraphNode) -> bool:
+        if not self.identity_flow_recovery_hint(row, target=target):
+            return False
+        name = (row.get("name") or "").lower()
+        return name in IDENTITY_TRACE_EXECUTOR_NAMES or name.endswith("_gate") or "_gate" in name
+
+    def identity_config_recovery_signal(self, row: dict, *, target: SubgraphNode) -> bool:
+        if not self.identity_flow_recovery_hint(row, target=target):
+            return False
+        name = (row.get("name") or "").lower()
+        return name.endswith("_gate") or "_gate" in name
 
     def config_surface_recovery_signal(self, row: dict, *, target: SubgraphNode) -> bool:
         kind = (row.get("symbol_kind") or "").lower()

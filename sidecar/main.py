@@ -1711,9 +1711,7 @@ def ask_stream(
                                     "workspace": workspace_id,
                                 },
                             )
-                            yield format_sse(
-                                "chunk", {"type": "chunk", "content": degraded_text}
-                            )
+                            yield format_sse("chunk", {"type": "chunk", "content": degraded_text})
                         else:
                             default_cache.put_response(
                                 prompt_hash,

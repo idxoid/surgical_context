@@ -95,6 +95,13 @@ class PromptContext:
         is_caller = dep.direction == "caller" or dep.relation in self._CALLER_RELATIONS
         return (0 if is_caller else 1, dep.depth, -(dep.blended_score or dep.relevance_score))
 
+    def ordered_graph_context(self, *, include_empty_code: bool = False) -> list[SymbolContext]:
+        """Return graph deps in the same order used for prompt rendering."""
+        ordered = sorted(self.graph_context, key=self._dep_sort_key)
+        if include_empty_code:
+            return ordered
+        return [dep for dep in ordered if dep.code and dep.code.strip()]
+
     @staticmethod
     def _dep_annotation(dep: "SymbolContext") -> str:
         parts = [dep.relation]
@@ -133,8 +140,7 @@ class PromptContext:
         # #1: annotate each dependency with role, depth, and score.
         # #9: skip entries with no code.
         if self.graph_context:
-            sorted_deps = sorted(self.graph_context, key=self._dep_sort_key)
-            non_empty = [d for d in sorted_deps if d.code and d.code.strip()]
+            non_empty = self.ordered_graph_context()
             if non_empty:
                 blocks.append("\n--- DEPENDENCIES ---")
                 for dep in non_empty:

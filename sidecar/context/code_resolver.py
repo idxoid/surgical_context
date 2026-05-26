@@ -21,23 +21,17 @@ class CodeResolver:
         self.overlay = overlay
         self.workspace_id = workspace_id
         self.user_id = user_id
-        self.workspace_root = (
-            Path(workspace_root).resolve() if workspace_root is not None else None
-        )
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root is not None else None
 
     def resolve(self, file_path: str, start_line: int, end_line: int) -> tuple[str, bool]:
         """Return (code, is_dirty). Checks overlay first, falls back to FS."""
-        safe_path = resolve_graph_file_path(
-            file_path, workspace_root=self.workspace_root
-        )
+        safe_path = resolve_graph_file_path(file_path, workspace_root=self.workspace_root)
         if safe_path is None:
             return "", False
 
         is_dirty = bool(
             self.overlay
-            and self.overlay.has(
-                safe_path, workspace_id=self.workspace_id, user_id=self.user_id
-            )
+            and self.overlay.has(safe_path, workspace_id=self.workspace_id, user_id=self.user_id)
         )
         if is_dirty:
             code = self.overlay.read_lines(

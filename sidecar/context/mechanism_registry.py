@@ -25,11 +25,28 @@ from sidecar.context.types import SubgraphNode
 ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY = "mechanism_required_roles"
 ROLE_CATALOG_MECHANISM_BACKFILL_KEY = "mechanism_role_backfill"
 
-_REQUIRED_ROLES: dict[str, tuple[str, ...]] = {}
+_REQUIRED_ROLES: dict[str, tuple[str, ...]] = {
+    "surgical_context_ranker_fusion": (
+        "public_entrypoint",
+        "dependency_solver",
+        "registration_step",
+        "handler_or_lifecycle",
+    ),
+}
 
-# Built-in code backfill is empty — framework-specific hints live in opt-in YAML packs
+# Built-in code backfill: product-local mechanisms only. Framework packs stay in opt-in YAML
 # (e.g. ``mechanism_packs/bundled/flask_registration.yaml`` via ``MECHANISM_PACK_PATH``).
-_ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {}
+_ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {
+    "surgical_context_ranker_fusion": {
+        "factory_surface": [
+            {"name": "rank", "path_hint": "unified_ranker.py", "priority": 1.0},
+            {"name": "_fuse", "path_hint": "unified_ranker.py", "priority": 0.98},
+            {"name": "_graph_candidates", "path_hint": "unified_ranker.py", "priority": 0.92},
+            {"name": "BudgetPruner", "path_hint": "ranker/pruning.py", "priority": 0.95},
+            {"name": "select_under_budget", "path_hint": "ranker/pruning.py", "priority": 0.88},
+        ],
+    },
+}
 
 
 def _roles_from_role_catalog_override(
@@ -111,9 +128,28 @@ def required_roles_for_mechanism(
 def determine_preloaded_mechanism(target: SubgraphNode, query: str = "") -> str:
     """Return the best preloaded mechanism for a target, if one matches.
 
-    Stubbed: no bundled name/query rules; always ``""``.
+    Product-local rules only (no third-party framework literals). Framework-shaped
+    dispatch stays in opt-in YAML packs.
     """
-    _ = (target, query)
+    name = (target.name or "").lower()
+    path = (target.file_path or "").replace("\\", "/").lower()
+    query_lc = (query or "").lower()
+    if "unifiedranker" in name or "unified_ranker" in path:
+        if any(
+            term in query_lc
+            for term in (
+                "unifiedranker",
+                "rank",
+                "fuse",
+                "merge",
+                "graph bfs",
+                "vector",
+                "doc bridge",
+                "budget prun",
+                "candidate pool",
+            )
+        ):
+            return "surgical_context_ranker_fusion"
     return ""
 
 

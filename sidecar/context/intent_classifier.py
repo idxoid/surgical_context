@@ -376,8 +376,7 @@ class IntentClassifier:
         active = list(dict.fromkeys(active))
         budget_total = sum(distribution.get(intent.value, 0.0) for intent in active) or 1.0
         budget_share = {
-            intent.value: distribution.get(intent.value, 0.0) / budget_total
-            for intent in active
+            intent.value: distribution.get(intent.value, 0.0) / budget_total for intent in active
         }
         tier_scores = cls._blended_tier_scores(distribution)
         tier_order = tuple(

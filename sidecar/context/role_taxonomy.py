@@ -8,6 +8,7 @@ into it so evaluation and ranking can share one scale.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 ROLE_ALIASES: dict[str, str] = {
@@ -156,6 +157,106 @@ def normalize_roles(roles: Iterable[str], *, dedupe: bool = True) -> list[str]:
     return normalized
 
 
+def _to_snake_case(identifier: str) -> str:
+    """Convert CamelCase / PascalCase identifiers to lower_snake_case."""
+    if not identifier:
+        return ""
+    normalized = identifier.replace("-", "_")
+    # HTTPBase -> HTTP_Base, IntentClassifier -> Intent_Classifier
+    step1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", normalized)
+    step2 = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", step1)
+    return step2.replace("__", "_").strip("_").lower()
+
+
+def infer_ranker_fusion_roles(
+    *,
+    file_path: str = "",
+    name: str = "",
+) -> list[str]:
+    """Roles for UnifiedRanker fusion pipeline symbols (rank → fuse → prune)."""
+    lowered_path = (file_path or "").lower()
+    lowered_name = (name or "").lower()
+    in_ranker_module = "unified_ranker" in lowered_path or lowered_name == "unifiedranker"
+    in_pruning_module = "ranker/pruning" in lowered_path or lowered_path.endswith(
+        "ranker/pruning.py"
+    )
+    fusion_symbols = {
+        "rank",
+        "_fuse",
+        "_graph_candidates",
+        "budgetpruner",
+        "select_under_budget",
+    }
+    if not in_ranker_module and not (in_pruning_module and lowered_name in fusion_symbols):
+        if lowered_name not in fusion_symbols:
+            return []
+
+    roles: list[str] = []
+    if lowered_name in {
+        "rank",
+        "_fuse",
+        "_graph_candidates",
+        "budgetpruner",
+        "select_under_budget",
+    }:
+        roles.append("factory_surface")
+    if lowered_name == "rank" or lowered_name == "unifiedranker":
+        roles.append("api_surface")
+    if lowered_name in {"_fuse", "_graph_candidates"}:
+        roles.append("orchestrator")
+    if lowered_name in {"budgetpruner", "select_under_budget"}:
+        roles.append("runtime_surface")
+    return normalize_roles(roles)
+
+
+def infer_identity_trace_roles(
+    *,
+    file_path: str = "",
+    name: str = "",
+) -> list[str]:
+    """Roles for identity resolution and engine gate symbols (trace/topic recovery)."""
+    lowered_path = (file_path or "").lower()
+    lowered_name = (name or "").lower()
+    if not lowered_name or not any(
+        marker in lowered_path
+        for marker in (
+            "/identity/",
+            "/engine/",
+            "actor_index",
+            "chain_engine",
+        )
+    ):
+        return []
+
+    roles: list[str] = []
+    if lowered_name in {"same_actor", "ingest", "ingested"} or lowered_name.endswith("_gate"):
+        roles.append("executor")
+    if lowered_name in {"same_actor", "ingest"}:
+        roles.append("orchestrator")
+    if lowered_name.endswith("_gate") or "_gate" in lowered_name:
+        roles.append("config_surface")
+    if lowered_name == "same_actor":
+        roles.append("runtime_surface")
+    return normalize_roles(roles)
+
+
+def symbol_name_matches_file_stem(name: str, file_stem: str) -> bool:
+    """True when a symbol name denotes the primary export of a module file.
+
+    Matches exact stems, case-insensitive equality, and CamelCase vs snake_case
+    (``IntentClassifier`` in ``intent_classifier.py``).
+    """
+    if not name or not file_stem:
+        return False
+    symbol = name.strip()
+    stem = file_stem.strip()
+    if symbol == stem or symbol.lower() == stem.lower():
+        return True
+    symbol_snake = _to_snake_case(symbol)
+    stem_snake = _to_snake_case(stem)
+    return bool(symbol_snake) and symbol_snake == stem_snake
+
+
 def infer_supporting_roles(
     *,
     file_path: str = "",
@@ -215,8 +316,7 @@ def infer_supporting_roles(
             lowered_name
             and not lowered_name.startswith("_")
             and (
-                lowered_name == file_stem
-                or lowered_name.lower() == file_stem.lower()
+                symbol_name_matches_file_stem(name, file_stem)
                 or (
                     lowered_kind == "object_api"
                     and (
@@ -348,6 +448,12 @@ def infer_supporting_roles(
             token in haystack for token in executor_tokens
         ):
             inferred.append("executor")
+        inferred.extend(
+            infer_identity_trace_roles(file_path=file_path, name=name),
+        )
+        inferred.extend(
+            infer_ranker_fusion_roles(file_path=file_path, name=name),
+        )
         if (
             ("composition_surface" in inferred or "executor" in inferred)
             and "/docs/" not in lowered_path

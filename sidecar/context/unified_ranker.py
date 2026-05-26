@@ -343,7 +343,9 @@ class UnifiedRanker:
 
         file_path = row.get("path") if hasattr(row, "get") else row["path"]
         file_hash = row.get("file_hash", "") if hasattr(row, "get") else row["file_hash"]
-        end_line, token_estimate = self._module_target_size(file_path, self._workspace_project_root())
+        end_line, token_estimate = self._module_target_size(
+            file_path, self._workspace_project_root()
+        )
         return {
             "uid": f"module:{self.workspace_id}:{file_path}",
             "name": symbol_name,
@@ -801,6 +803,19 @@ class UnifiedRanker:
         )
         if trace_import_anchors:
             pool = self._merge_role_backfill(pool, trace_import_anchors)
+
+        trace_routing_anchors = (
+            self.structural_recovery.trace_routing_composition_anchor_candidates(
+                target,
+                query=query,
+                mechanism=mechanism,
+                required_roles=required_roles,
+                excluded_uids={target.uid},
+                pool=pool,
+            )
+        )
+        if trace_routing_anchors:
+            pool = self._merge_role_backfill(pool, trace_routing_anchors)
 
         module_composition_anchors = self._module_composition_anchor_candidates(
             target,
@@ -1808,6 +1823,25 @@ class UnifiedRanker:
     ):
         return self.structural_recovery.generic_role_recovery_candidates(
             target, roles, excluded_uids=excluded_uids
+        )
+
+    def _trace_routing_composition_anchor_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        query: str,
+        mechanism: str,
+        required_roles: list[str],
+        excluded_uids: set[str],
+        pool: list[Candidate],
+    ):
+        return self.structural_recovery.trace_routing_composition_anchor_candidates(
+            target,
+            query=query,
+            mechanism=mechanism,
+            required_roles=required_roles,
+            excluded_uids=excluded_uids,
+            pool=pool,
         )
 
     def _trace_dependency_import_anchor_candidates(

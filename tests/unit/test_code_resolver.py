@@ -15,9 +15,7 @@ def test_code_resolver_reads_overlay_for_requesting_user_only(tmp_path):
     alice_resolver = CodeResolver(
         overlay, workspace_id=ws, user_id="alice", workspace_root=tmp_path
     )
-    bob_resolver = CodeResolver(
-        overlay, workspace_id=ws, user_id="bob", workspace_root=tmp_path
-    )
+    bob_resolver = CodeResolver(overlay, workspace_id=ws, user_id="bob", workspace_root=tmp_path)
 
     alice_code, alice_dirty = alice_resolver.resolve(str(source), 1, 1)
     bob_code, bob_dirty = bob_resolver.resolve(str(source), 1, 1)

@@ -577,11 +577,11 @@ The benchmark now displays per-question:
 Current local snapshot (May 2026, `--no-index` on current indexes):
 
 ```text
-surgical_context  7/7 pass  | role=0.96 | file=0.90
-dathund           8/8 pass  | role=0.97 | file=0.81
-fastapi           green     | role=1.00 on trace_dependency questions (strict gate already satisfied)
+surgical_context  7/7 pass  | role=1.00 | file=0.79
+dathund           8/8 pass  | role=1.00 | file=0.83
+fastapi           8/8 pass  | role=1.00 | file=0.81
 ```
 
-Framework repos (FastAPI, Pydantic, Django, etc.) remain saturated on `role_recall`; `surgical_context` and `dathund` are now green on the current local indexes, with remaining work shifting back to precision and token economy rather than pass-rate recovery.
+All 65 real-repo questions pass with `--no-index`; `role_recall` is saturated at **1.00**. Remaining work is precision@5 and file-recall tails, not mechanism role coverage.
 
 This makes it clear which mechanism-intent combinations are working well vs. needing tuning.
