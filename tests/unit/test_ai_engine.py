@@ -1,9 +1,17 @@
 """Unit tests for AIEngine with model routing."""
 
 import os
+
+import pytest
 from unittest.mock import patch
 
-from sidecar.ai.engine import _MIN_CACHE_TOKENS, AIEngine, ModelRouter, _build_system_blocks
+from sidecar.ai.engine import (
+    _MIN_CACHE_TOKENS,
+    AIEngine,
+    ModelRouter,
+    _build_system_blocks,
+    cloud_llm_enabled,
+)
 
 
 class TestBuildSystemBlocks:
@@ -113,7 +121,7 @@ class TestModelRouter:
 class TestAIEngineInitialization:
     """Test AIEngine initialization."""
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     def test_init_claude_preference(self):
         """Initialize with Claude preference."""
         engine = AIEngine(model_preference="claude")
@@ -125,23 +133,28 @@ class TestAIEngineInitialization:
         engine = AIEngine(model_preference="ollama")
         assert engine.model_preference == "ollama"
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     def test_init_auto_preference(self):
         """Initialize with auto preference."""
         engine = AIEngine(model_preference="auto")
         assert engine.model_preference == "auto"
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
-    def test_init_default_is_claude(self):
-        """Default preference is claude (requires ANTHROPIC_API_KEY)."""
+    def test_init_default_is_ollama_local_first(self):
+        """Default preference is ollama (local-first)."""
         engine = AIEngine()
-        assert engine.model_preference == "claude"
+        assert engine.model_preference == "ollama"
+        assert engine.allow_cloud_llm is False
+
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "false"})
+    def test_claude_preference_requires_cloud_opt_in(self):
+        with pytest.raises(ValueError, match="ALLOW_CLOUD_LLM"):
+            AIEngine(model_preference="claude")
 
 
 class TestAIEngineRouting:
     """Test AIEngine routing decisions."""
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     def test_should_use_claude_with_claude_preference(self):
         """Claude preference always uses Claude."""
         engine = AIEngine(model_preference="claude")
@@ -152,29 +165,40 @@ class TestAIEngineRouting:
         engine = AIEngine(model_preference="ollama")
         assert engine._should_use_claude(token_count=5000, intent="design_question") is False
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     def test_should_use_claude_with_auto_preference_large(self):
         """Auto preference uses Claude for large contexts."""
         engine = AIEngine(model_preference="auto")
         assert engine._should_use_claude(token_count=2500, intent="navigation") is True
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     def test_should_use_claude_with_auto_preference_small_simple(self):
         """Auto preference uses Ollama for small simple queries."""
         engine = AIEngine(model_preference="auto")
         assert engine._should_use_claude(token_count=500, intent="debugging") is False
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     def test_should_use_claude_with_auto_preference_small_complex(self):
         """Auto preference uses Claude for small but complex queries."""
         engine = AIEngine(model_preference="auto")
         assert engine._should_use_claude(token_count=500, intent="design_question") is True
 
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "false"})
+    def test_auto_with_api_key_stays_local_without_cloud_opt_in(self):
+        engine = AIEngine(model_preference="auto")
+        assert engine.anthropic is None
+        assert engine._should_use_claude(token_count=5000, intent="exploration") is False
+        assert engine._should_use_claude(token_count=500, intent="design_question") is False
+
+    @patch.dict(os.environ, {"ALLOW_CLOUD_LLM": "false"}, clear=False)
+    def test_cloud_llm_enabled_default_false(self):
+        assert cloud_llm_enabled() is False
+
 
 class TestAIEngineModels:
     """Test AIEngine model configuration."""
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     def test_claude_model_is_sonnet(self):
         """Claude model should be Sonnet."""
         engine = AIEngine(model_preference="claude")

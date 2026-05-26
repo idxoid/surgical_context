@@ -163,6 +163,7 @@ This section preserves the post-MVP hardening record. Completed items remain use
 - [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
 - [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
 - [x] Add auth-boundary enforcement tests for protected endpoints with `AUTH_REQUIRED=true`.
+- [x] Workspace path sandboxing: normalize `file_path` / index paths under the registered `project_path` from the index manifest; reject paths outside the workspace root (`403`) so local callers cannot read or index arbitrary files when `AUTH_REQUIRED=false` (`sidecar/workspace_paths.py`, `spec_sidecar_api.md`).
 
 ### P1 - Retrieval Correctness
 - [x] Implement stable UID v2 from [spec_uid_stability.md](spec_uid_stability.md).

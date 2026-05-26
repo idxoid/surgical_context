@@ -36,6 +36,7 @@ class ContextArbitrator:
         overlay=None,
         vector_db=None,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
+        user_id: str = "anonymous",
         cache: LayeredCache | None = None,
         ranker_weights: RankerWeights | None = None,
         *,
@@ -46,6 +47,7 @@ class ContextArbitrator:
         self.overlay = overlay
         self.vector_db = vector_db
         self.workspace_id = workspace_id
+        self.user_id = (user_id or "anonymous").lower().strip() or "anonymous"
         self.cache = cache or default_cache
         self.ranker_weights = ranker_weights or DEFAULT_WEIGHTS
         self._vector_search = vector_search
@@ -170,7 +172,9 @@ class ContextArbitrator:
         )
 
         # Resolve code for all nodes
-        resolver = CodeResolver(self.overlay, workspace_id=self.workspace_id)
+        resolver = CodeResolver(
+            self.overlay, workspace_id=self.workspace_id, user_id=self.user_id
+        )
         code_map = {}
         for node in [subgraph.primary] + subgraph.nodes:
             line_range = (node.range[0], node.range[1])
@@ -187,7 +191,12 @@ class ContextArbitrator:
                 node.render_mode = "signature_only"
 
             overlay_dirty = bool(
-                self.overlay and self.overlay.has(node.file_path, workspace_id=self.workspace_id)
+                self.overlay
+                and self.overlay.has(
+                    node.file_path,
+                    workspace_id=self.workspace_id,
+                    user_id=self.user_id,
+                )
             )
             cached = None
             if node.file_hash and not overlay_dirty:

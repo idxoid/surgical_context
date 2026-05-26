@@ -6,7 +6,7 @@ class InMemoryOverlay:
     """Holds unsaved file content keyed by workspace and re-parses symbols on the fly."""
 
     def __init__(self):
-        self._files: dict[tuple[str, str], str] = {}
+        self._files: dict[tuple[str, str, str], str] = {}
         self._extractor = SymbolExtractor()  # Auto-detect language per file
 
     def update(
@@ -56,6 +56,6 @@ class InMemoryOverlay:
         return {m.name: (m.start_line, m.end_line) for m in metas}
 
     @staticmethod
-    def _key(file_path: str, workspace_id: str, user_id: str) -> tuple[str, str]:
-        # user_id is accepted for forward compatibility; workspace isolation is the load-bearing key.
-        return workspace_id, file_path
+    def _key(file_path: str, workspace_id: str, user_id: str) -> tuple[str, str, str]:
+        normalized_user = (user_id or "anonymous").lower().strip() or "anonymous"
+        return workspace_id, normalized_user, file_path

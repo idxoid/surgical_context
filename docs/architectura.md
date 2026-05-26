@@ -25,7 +25,7 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 
 ### 1.4. Design Principles
 - **Ownership over Hype:** robust data infrastructure, not an API wrapper.
-- **Security by Design:** source code never enters graph storage; vector/history persistence follows explicit storage policy and defaults local.
+- **Security by Design:** source code never enters graph storage; vector/history persistence follows explicit storage policy and defaults local. Filesystem access from the sidecar is limited to paths under the workspace **project root** registered at index time (see §2.3.1).
 - **Transparency:** user always sees what context was collected and what it cost.
 
 ### 1.5. Product Layers
@@ -89,6 +89,20 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 | GET | `/status/cloud` | ✅ |
 | GET | `/audit/actions` | ✅ |
 | GET | `/metrics` | ✅ |
+
+### 2.3.1. Filesystem path sandboxing ✅
+
+Local development often runs with `AUTH_REQUIRED=false`. Without path checks, any process on the machine could ask the sidecar to read or index arbitrary readable files.
+
+**Rules** (implemented in `sidecar/workspace_paths.py`, enforced in `sidecar/main.py`):
+
+| Step | Behavior |
+|---|---|
+| Register root | `POST /index` resolves `project_path` to an absolute directory and stores it in the workspace index manifest (`project_path`). |
+| Resolve paths | `/ask` (`file_path`), `/index/file`, `/index/files`, `/index/docs`, and `/overlay` normalize relative paths under that root; absolute paths must still lie inside it (`Path.resolve()` + `relative_to`). |
+| Reject | No manifest yet → HTTP `400`. Path escapes root → HTTP `403`. |
+
+`CodeResolver` and graph lookups use paths already stored at index time; this guard applies to **caller-supplied** filesystem paths. Full API detail: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
 ---
 
@@ -230,7 +244,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ## Section 4: Core Workflows
 
 ### 4.1. Prompt Lifecycle
-1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`.
+1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`. When `file_path` is present, it is resolved under the workspace project root before any disk read.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
 3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking (Phase 6 + Phase 4 enhancements).
 4. **Mechanism determination** (Phase 4): if intent = `impact_analysis`, classify the code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`) → informs role backfill strategy and impact-analysis precision controls.

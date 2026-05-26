@@ -1,9 +1,24 @@
 """AI Engine — unified interface for both Ollama and Anthropic SDK with prompt caching."""
 
+import logging
 import os
 
 import ollama
 from anthropic import Anthropic
+
+_log = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+def cloud_llm_enabled() -> bool:
+    """Whether outbound cloud LLM calls (Anthropic) are permitted."""
+    return _env_flag("ALLOW_CLOUD_LLM", default=False)
 
 # Markers written by PromptContext.to_system_prompt()
 _CONTEXT_MARKERS = ("--- TARGET SYMBOL:", "--- DEPENDENCIES ---", "--- DOCUMENTATION ---")
@@ -108,27 +123,48 @@ class ModelRouter:
 class AIEngine:
     """Unified AI interface supporting Ollama and Anthropic SDK with model routing."""
 
-    def __init__(self, model_preference: str = "claude"):
+    def __init__(
+        self,
+        model_preference: str = "ollama",
+        *,
+        allow_cloud_llm: bool | None = None,
+    ):
         """
         Initialize AI engine.
 
         Args:
-            model_preference: "claude" (default), "ollama", or "auto" (route by context size/intent)
+            model_preference: "ollama" (local-first default), "auto", or "claude"
+            allow_cloud_llm: When False (default via ALLOW_CLOUD_LLM env), never send
+                prompts to Anthropic even if ANTHROPIC_API_KEY is set. "auto" and
+                "claude" require allow_cloud_llm=True.
         """
         self.model_preference = model_preference
+        self.allow_cloud_llm = (
+            cloud_llm_enabled() if allow_cloud_llm is None else allow_cloud_llm
+        )
         self.claude_model = "claude-sonnet-4-20250514"  # Latest Sonnet
         self.ollama_model = os.getenv("OLLAMA_MODEL", "llama3")
 
-        # Initialize Anthropic client if using Claude
+        if model_preference == "claude" and not self.allow_cloud_llm:
+            raise ValueError(
+                "MODEL_PREFERENCE=claude requires ALLOW_CLOUD_LLM=true. "
+                "Local-first default keeps assembled context on Ollama unless you opt in."
+            )
+
         self.anthropic: Anthropic | None = None
-        if model_preference in ("claude", "auto"):
+        if self.allow_cloud_llm and model_preference in ("claude", "auto"):
             api_key = os.getenv("ANTHROPIC_API_KEY")
             if not api_key and model_preference == "claude":
                 raise ValueError(
-                    "ANTHROPIC_API_KEY not set. Either set it or use OLLAMA_MODEL with model_preference='ollama'"
+                    "ANTHROPIC_API_KEY not set. Either set it or use model_preference='ollama'"
                 )
             if api_key:
                 self.anthropic = Anthropic(api_key=api_key)
+        elif model_preference in ("claude", "auto") and os.getenv("ANTHROPIC_API_KEY"):
+            _log.info(
+                "ANTHROPIC_API_KEY is set but ALLOW_CLOUD_LLM is false; "
+                "routing stays on Ollama (local-first default)."
+            )
         self.last_route = self.route(0, "exploration")
 
     def chat(
@@ -185,12 +221,13 @@ class AIEngine:
 
     def _should_use_claude(self, token_count: int, intent: str) -> bool:
         """Determine which model to use."""
+        if not self.allow_cloud_llm:
+            return False
         if self.model_preference == "claude":
             return True
-        elif self.model_preference == "ollama":
+        if self.model_preference == "ollama":
             return False
-        else:  # "auto"
-            return ModelRouter.should_use_claude(token_count, intent)
+        return ModelRouter.should_use_claude(token_count, intent)
 
     def _chat_claude(self, system_prompt: str, user_message: str, token_count: int) -> str:
         """Chat using Claude with prompt caching on graph_context."""

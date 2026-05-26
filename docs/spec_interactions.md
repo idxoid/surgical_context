@@ -31,6 +31,7 @@ sidecar/main.py  (FastAPI)
   ├── sidecar/indexer/docs.py            index_docs()
   ├── sidecar/context/arbitrator.py      ContextArbitrator
   ├── sidecar/context/overlay.py         InMemoryOverlay  [singleton]
+  ├── sidecar/workspace_paths.py         resolve_path_under_workspace_root()
   └── sidecar/database/lancedb_client.py LanceDBClient    [singleton]
 
 run_demo.py
@@ -142,7 +143,9 @@ index_docs(docs_path)
 
 ## Flow 3: /ask — Surgical Context Assembly
 
-**Trigger:** `POST /ask {symbol, question}`
+**Trigger:** `POST /ask {symbol, question, file_path?}`
+
+**Path guard:** when `file_path` is set (file fallback), `main._sandbox_path()` resolves it under the workspace `project_path` from the index manifest before `_read_file_context()` opens the file. Outside root → `403`; no manifest → `400`.
 
 ```
 ask(req)
@@ -184,6 +187,8 @@ ask(req)
 
 **Trigger:** `POST /overlay {file_path, content}` (called on every keypress from VS Code)
 
+**Path guard:** `file_path` is sandboxed to the workspace project root before overlay storage (same rules as Flow 3).
+
 ```
 update_overlay(req)
 │
@@ -196,7 +201,7 @@ update_overlay(req)
         → {name: (start_line, end_line)}
 ```
 
-**Effect on Flow 3:** Next `/ask` call picks up dirty content via `overlay.has(file_path)` check in `_read_code()`. No Neo4j write — overlay is ephemeral.
+**Effect on Flow 3:** Next `/ask` call for the **same user** picks up dirty content via `overlay.has(file_path, workspace_id, user_id)` in `CodeResolver` / `ContextArbitrator`. Overlay keys are `(workspace_id, user_id, file_path)` — not workspace-wide. No Neo4j write — overlay is ephemeral.
 
 ---
 

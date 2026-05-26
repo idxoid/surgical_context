@@ -19,7 +19,8 @@ All via environment variables with defaults:
 | `NEO4J_USER` | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | `password` | Neo4j password |
 | `OLLAMA_MODEL` | `llama3` | Ollama model for `/ask` |
-| `MODEL_PREFERENCE` | `auto` | AI routing preference: `auto`, `claude`, or `ollama` |
+| `MODEL_PREFERENCE` | `ollama` | AI routing: `ollama` (local-first default), `auto`, or `claude` |
+| `ALLOW_CLOUD_LLM` | `false` | Must be `true` before `auto`/`claude` may send assembled context to Anthropic, even if `ANTHROPIC_API_KEY` is set |
 | `AUTH_REQUIRED` | `false` | When true, protected endpoints require `Authorization: Bearer <token>` |
 | `DEFAULT_WORKSPACE_ID` | `local/surgical_context@main` | Development fallback when `X-Workspace` is absent |
 | `HISTORY_MODE` | `local` | Local history mode: `local`, `ephemeral`, or `disabled` |
@@ -51,6 +52,18 @@ explicit `surgicalContext.workspaceId`, the extension sends that value instead.
 The legacy extension default `local/default@main` is treated as unset and is not
 sent as a header.
 
+### Filesystem path sandboxing
+
+Any endpoint that reads or indexes files on disk (`POST /index`, `/index/file`, `/index/files`, `/index/docs`, `/ask` with `file_path`, `/overlay`) resolves paths against the **registered workspace project root**:
+
+- Root is stored in the index manifest (`project_path`) after `POST /index` (or full `run_indexing`).
+- Relative paths are resolved under that root; absolute paths must still lie inside it.
+- Paths outside the root return **`403`** with a detail message.
+- File/index operations before the workspace is indexed return **`400`** (“no registered project root; POST /index first”).
+- `POST /index` registers the resolved `project_path` directory as the root for that workspace (queued file paths are validated under it).
+
+This limits local callers when `AUTH_REQUIRED=false` from using the sidecar to read or index arbitrary readable files.
+
 ---
 
 ## Endpoints
@@ -80,9 +93,9 @@ Index a code directory into Neo4j + LanceDB.
 { "status": "queued", "path": "/absolute/path/to/project", "queued": 42, "coalesced": 0 }
 ```
 
-**Errors:** `400` if path does not exist.
+**Errors:** `400` if path does not exist or is not a directory.
 
-**Behavior:** Queues discovered source files by default. With `queue=false`, runs `run_indexing()` immediately: symbol extraction → call linking → symbol embeddings → pending DocAnchor resolution.
+**Behavior:** Registers `project_path` as the workspace root for path sandboxing. Queues discovered source files by default. With `queue=false`, runs `run_indexing()` immediately: symbol extraction → call linking → symbol embeddings → pending DocAnchor resolution.
 
 ---
 
@@ -99,7 +112,7 @@ Index a documentation directory into LanceDB + DocAnchor graph.
 { "status": "indexed", "path": "/absolute/path/to/docs" }
 ```
 
-**Errors:** `400` if path does not exist.
+**Errors:** `400` if path does not exist or workspace root is not registered; `403` if path is outside the workspace root.
 
 **Behavior:** Section-aware markdown chunking → LanceDB upsert → `link_docs_to_symbols()`.
 
@@ -124,7 +137,7 @@ Incrementally index one saved source file.
 }
 ```
 
-**Errors:** `400` if the file does not exist; `500` with `job_id` and `job_status` if the graph/vector update fails.
+**Errors:** `400` if the file does not exist or workspace root is not registered; `403` if path is outside the workspace root; `500` with `job_id` and `job_status` if the graph/vector update fails.
 
 **Behavior:** Queues the file by default. With `queue=false`, hashes the file, creates a durable indexing job record, deletes previous symbols for the file, re-indexes symbols/calls/embeddings, resolves pending DocAnchors, then marks the job `succeeded`. Failures are captured for retry/dead-letter handling.
 
@@ -139,6 +152,8 @@ Incrementally index a bounded batch of saved source files.
 ```
 
 **Response:** includes per-file results plus queue depth. When `queue=true`, files are queued and debounced; when `false`, the endpoint runs the batch immediately.
+
+**Errors:** `400` / `403` same path sandboxing rules as `/index/file` (per path in the batch).
 
 ---
 
@@ -165,9 +180,18 @@ Assemble surgical context for a symbol and query the LLM.
 ```json
 {
   "symbol": "SymbolExtractor",
-  "question": "How does call extraction work?"
+  "question": "How does call extraction work?",
+  "token_budget": 4000,
+  "file_path": "/absolute/path/to/project/module.py"
 }
 ```
+
+| Field | Required | Notes |
+|---|---|---|
+| `symbol` | No | When present, surgical context is assembled for this graph symbol first. |
+| `question` | No | Defaults to `"What does this code do?"` |
+| `token_budget` | No | Defaults to `4000`. |
+| `file_path` | No | Optional path used when symbol resolution fails (see fallback ladder). Resolved under the workspace `project_path`; relative paths are allowed. Outside root → `403`. |
 
 **Response:**
 ```json
@@ -187,13 +211,22 @@ Assemble surgical context for a symbol and query the LLM.
 }
 ```
 
-**Errors:** `404` if symbol not found in graph.
+**Errors:** `/ask` does **not** return `404` when a symbol is missing from the graph. Missing symbols trigger the fallback ladder below; the response is always HTTP `200` with a populated `context` (unless auth/workspace validation fails).
+
+**Context resolution (fallback ladder):** `_resolve_ask_context` in `sidecar/main.py` tries, in order:
+
+1. **Symbol** — when `symbol` is set, `ContextArbitrator.get_context_for_symbol(...)` runs intent classification, workspace-scoped graph expansion, code resolution, and doc retrieval. On success, `context.budget.ask_level` is `"symbol"`.
+2. **File** — when symbol resolution returns an error string and `file_path` is set, assemble context from that file on disk (`ask_level`: `"file"`).
+3. **Workspace** — vector search over indexed docs + symbols for the question (`ask_level`: `"workspace"`, `mode`: `"workspace"`). Skipped when both searches return nothing.
+4. **Direct LLM** — minimal `PromptContext` with no graph or docs (`ask_level`: `"direct_llm"`, `mode`: `"direct"`). This step always succeeds.
+
+When a later step is used after a failed symbol lookup, `context.budget` includes `missing_symbol`, `fallback_from`, `fallback_reason` (e.g. `symbol_not_found`), `fallback_ladder`, and a `warnings[]` entry explaining the downgrade. Clients should read these fields instead of treating a missing symbol as a hard error.
 
 **Behavior:**
 1. Resolve the user from `Authorization: Bearer <token>` or `X-User-Id`. When `AUTH_REQUIRED=true`, missing or invalid bearer tokens return `401`.
 2. Resolve workspace from `X-Workspace` (`tenant/repo@ref`) or `DEFAULT_WORKSPACE_ID` when the header is absent.
-3. `ContextArbitrator.get_context_for_symbol(symbol, question, token_budget)` runs intent classification, workspace-scoped graph expansion, deduplication, code resolution, and doc retrieval.
-4. `AIEngine.chat()` routes to the configured local/cloud model based on model preference, context size, and intent.
+3. Run the fallback ladder above to build `PromptContext`.
+4. `AIEngine.chat()` routes to Ollama by default. Cloud routing (`auto`/`claude` → Anthropic) runs only when `ALLOW_CLOUD_LLM=true` and `ANTHROPIC_API_KEY` is set; otherwise assembled `system_prompt` never leaves the machine regardless of key presence.
 5. Audit logging records successful and failed query actions.
 6. A privacy-scoped retrieval snapshot is written with an opaque `feedback_token`. The snapshot stores selected candidate metadata and hashes, not raw prompts, code bodies, answers, or free-text comments.
 7. If the selected model is unreachable, `/ask` returns HTTP 200 with a degraded context-only answer, `model_route.degraded=true`, and the full assembled `context`.
@@ -211,7 +244,9 @@ Streaming version of `/ask` using server-sent events.
 - `error` — JSON error payload.
 - `done` — terminal event.
 
-**Behavior:** Uses the same arbitration, model-routing, and L3 response-cache path as `/ask`. On a cache hit the full cached answer is emitted as a single `chunk` event followed by `context` and `done`. On a miss, chunks stream normally and the complete answer is written to L3 after the final chunk. Both endpoints are cache-symmetric.
+**Behavior:** Uses the same context fallback ladder, model-routing, and L3 response-cache path as `/ask` (including `missing_symbol` / `fallback_*` metadata when symbol resolution fails). On a cache hit the full cached answer is emitted as a single `chunk` event followed by `context` and `done`. On a miss, chunks stream normally and the complete answer is written to L3 after the final chunk. Both endpoints are cache-symmetric.
+
+**LLM degradation:** When the model is unreachable (`RuntimeError` from the provider), streaming mirrors non-streaming `/ask`: emit one `chunk` with the degraded context-only message, then `context` (full Prompt Contract + `feedback_token`, `model_route.degraded=true`) and `done`. Do not emit only `error` for this case — clients still receive assembled context for inspection.
 
 ---
 
@@ -334,7 +369,9 @@ Push unsaved file content into the In-Memory Overlay.
 { "file_path": "/abs/path/file.py", "symbols": ["foo", "MyClass"] }
 ```
 
-**Behavior:** Stores content in `InMemoryOverlay`, re-parses symbols via tree-sitter (no disk I/O), returns symbol names found in the dirty version.
+**Behavior:** Stores content in `InMemoryOverlay` keyed by `(workspace_id, user_id, file_path)` (resolved from `X-Workspace` and the authenticated user). Re-parses symbols via tree-sitter (no disk I/O), returns symbol names found in the dirty version. Two users in the same workspace do not share unsaved buffers.
+
+**Errors:** `400` / `403` path sandboxing (same as `/index/file`).
 
 ---
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import os
 import sys
 import tempfile
 import types
@@ -75,6 +76,9 @@ class FakeDb:
         return False
 
     def get_index_manifest(self, workspace_id=None):
+        root = os.environ.get("TEST_WORKSPACE_ROOT")
+        if root:
+            return {"project_path": root}
         return None
 
     def delete_symbols_for_file(self, file_path, workspace_id="local/surgical_context@main"):
@@ -152,8 +156,9 @@ def import_main_with_fakes(monkeypatch):
     fake_engine = types.ModuleType("sidecar.ai.engine")
 
     class FakeAIEngine:
-        def __init__(self, model_preference="auto"):
+        def __init__(self, model_preference="auto", allow_cloud_llm=True):
             self.model_preference = model_preference
+            self.allow_cloud_llm = allow_cloud_llm
 
         def chat(self, system_prompt, user_message, token_count=0, intent="exploration"):
             return "fake answer"
@@ -467,6 +472,40 @@ async def _read_streaming_response(response) -> bytes:
     return b"".join(chunks)
 
 
+def test_ask_stream_degrades_when_llm_unreachable(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    def fail_stream(*args, **kwargs):
+        raise RuntimeError("Ollama streaming failed: connection refused")
+
+    monkeypatch.setattr(main.ai_engine, "stream_chat", fail_stream)
+
+    response = main.ask_stream(
+        main.AskRequest(
+            symbol="process_payment",
+            question="How does this work when Ollama is offline?",
+        ),
+        x_trace_id="trace-stream-degraded",
+    )
+    body = asyncio.run(_read_streaming_response(response)).decode("utf-8")
+    events = _parse_sse_events(body)
+
+    chunks = [p["content"] for name, p in events if name == "chunk"]
+    assert len(chunks) == 1
+    assert "degraded context-only response" in chunks[0]
+    assert "Ollama streaming failed" in chunks[0]
+
+    context_events = [p for name, p in events if name == "context"]
+    assert len(context_events) == 1
+    assert context_events[0]["trace_id"] == "trace-stream-degraded"
+    assert context_events[0]["context"]["primary_source"]["symbol"] == "process_payment"
+    assert context_events[0]["feedback_token"].startswith("fbk_")
+    assert context_events[0]["context"]["metadata"]["assembly"]["model_route"]["degraded"] is True
+
+    assert any(name == "done" for name, _ in events)
+    assert not any(name == "error" for name, _ in events)
+
+
 def test_ask_stream_emits_trace_event_on_l3_cache_hit(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
@@ -515,6 +554,7 @@ def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
 
 
 def test_ask_endpoint_uses_file_fallback_before_workspace(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
     source_file = tmp_path / "checkout.py"
     source_file.write_text("def checkout():\n    return 'ok'\n", encoding="utf-8")
@@ -608,6 +648,7 @@ def test_auth_required_accepts_valid_bearer_token(monkeypatch):
 
 
 def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
 
     source_file = tmp_path / "app.py"
@@ -639,6 +680,7 @@ def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
 
 
 def test_index_file_endpoint_queues_by_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
 
     source_file = tmp_path / "app.py"
@@ -653,6 +695,7 @@ def test_index_file_endpoint_queues_by_default(monkeypatch, tmp_path):
 
 
 def test_index_files_endpoint_coalesces_duplicate_paths(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
 
     source_file = tmp_path / "app.py"
@@ -709,6 +752,24 @@ def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path)
         1,
         {"reason": "unsupported_extension", "workspace": "local/surgical_context@main"},
     ) in metric_calls
+
+
+def test_ask_rejects_file_path_outside_workspace_root(monkeypatch, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(root))
+    main = import_main_with_fakes(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main._resolve_ask_context(
+            req=main.AskRequest(question="q", file_path=str(outside), token_budget=1000),
+            user_id="alice",
+            workspace_id="local/surgical_context@main",
+            db=FakeDb(),
+        )
+    assert exc_info.value.status_code == 403
 
 
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):

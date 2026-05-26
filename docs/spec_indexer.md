@@ -7,7 +7,7 @@
 Entry points:
 - CLI: `python sidecar/indexer/code.py [path]` (defaults to repo root)
 - Programmatic: `run_indexing(path)`, `index_file(path, db, lance, extractor)`
-- API: `POST /index` via `sidecar/main.py`
+- API: `POST /index` via `sidecar/main.py` — registers `project_path` as the workspace root for path sandboxing on incremental index and `/ask` file fallback ([spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing))
 
 ---
 

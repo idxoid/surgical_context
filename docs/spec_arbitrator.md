@@ -16,6 +16,7 @@ ContextArbitrator(
     overlay: InMemoryOverlay | None = None,
     vector_db=None,
     workspace_id: str = DEFAULT_WORKSPACE_ID,
+    user_id: str = "anonymous",
     cache: LayeredCache | None = None,
     ranker_weights: RankerWeights | None = None,
     *,
@@ -42,7 +43,7 @@ The pipeline for all requests:
    - pruned candidate details
    - missing roles
 5. **Subgraph/doc split** — `UnifiedRanker.candidates_to_subgraph(...)` converts the chosen candidates back into `SubgraphNode` plus `DocChunk` objects for compilation.
-6. **Code resolution** — `CodeResolver.resolve(...)` reads dirty overlay content first, then falls back to disk. Massive targets and low-gain distant neighbors are resolved in signature-only mode.
+6. **Code resolution** — `CodeResolver.resolve(...)` reads dirty overlay content for `(workspace_id, user_id, file_path)` first, then falls back to disk. Massive targets and low-gain distant neighbors are resolved in signature-only mode.
 7. **Prompt compilation** — `PromptCompiler.compile_with_intent(...)` builds the base `PromptContext`.
 8. **Observability enrichment** — arbitrator writes mechanism, missing roles, ranker weights, target-selection metadata, cache hits, and intent metadata into the contract.
 
