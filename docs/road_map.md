@@ -8,7 +8,7 @@
 >
 > **See also:** [concept.md](concept.md), [product_direction_memo.md](product_direction_memo.md), [review_findings_2026-04-17.md](review_findings_2026-04-17.md), [README.md](../README.md)
 >
-> **Last updated:** 2026-05-26 (`context-engine-refocus`)
+> **Last updated:** 2026-05-26 (`context-engine-refocus`; safety hardening through `a9f04bd`)
 
 ---
 
@@ -66,12 +66,14 @@ Active work for the local release. Completed stabilization and phase history are
 - [x] Clean local bootstrap and smoke path (`scripts/local_dev.py`, [local_development.md](local_development.md)).
 - [x] Local history and request snapshots (SQLite `local` / `ephemeral` / `disabled`).
 - [x] Local-first LLM defaults: `MODEL_PREFERENCE=ollama`, `ALLOW_CLOUD_LLM=false` (cloud opt-in only).
+- [x] Default cloud model `claude-sonnet-4-6` via `ANTHROPIC_MODEL` (replaces retired `claude-sonnet-4-20250514`).
 - [x] `/ask/stream` returns degraded `chunk` + `context` when the LLM is unreachable (not error-only).
 - [ ] Finish streaming and selected-request synchronization so `Ask / Inspect / Impact` always point to the same request.
 - [ ] Keep dashboard, settings, and health states useful when providers are missing, local-only, or degraded.
 - [ ] Add small but solid accessibility/keyboard polish for the extension surfaces.
 
 ### P2 — Retrieval quality and observability
+- [x] Server-side API bounds: `limit` 1–50 on `/search*`, `token_budget` 400–32 000 on `/ask` and `/search/unified` (Pydantic → HTTP 422).
 - [x] Unified Ranker + prompt-contract observability as the active retrieval path (Phase 9.1 / 9.4).
 - [x] Soft fallback ladder: `symbol → file → workspace → direct_llm` (missing symbol is not HTTP 404).
 - [x] Prompt-contract fields: `pruned[]`, ranker weights, `intent.distribution` / `confidence` / `ambiguous`.
@@ -143,7 +145,7 @@ Ordered execution lanes — do not regress green control repos while working tai
 - Debug misses from `ready_context` before changing weights.
 - Pre-registered role-label pass before treating `role_recall=1.00` as full mechanism coverage.
 
-**Docs:** product thesis docs are current (maintenance only). Benchmark index: [benchmark_all_repos_context_comparison.md](benchmark_all_repos_context_comparison.md). Path sandboxing: [spec_sidecar_api.md](spec_sidecar_api.md). LLM judgment: [benchmark_path1_vs_path2.md](benchmark_path1_vs_path2.md).
+**Docs:** product thesis + safety specs current (maintenance only). Index: [benchmark_all_repos_context_comparison.md](benchmark_all_repos_context_comparison.md). API/sandbox: [spec_sidecar_api.md](spec_sidecar_api.md). LLM judgment: [benchmark_path1_vs_path2.md](benchmark_path1_vs_path2.md).
 
 ---
 
@@ -159,7 +161,10 @@ This section preserves the post-MVP hardening record. Completed items remain use
 - [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
 - [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
 - [x] Add auth-boundary enforcement tests for protected endpoints with `AUTH_REQUIRED=true`.
-- [x] Workspace path sandboxing: normalize `file_path` / index paths under the registered `project_path` from the index manifest; reject paths outside the workspace root (`403`) so local callers cannot read or index arbitrary files when `AUTH_REQUIRED=false` (`sidecar/workspace_paths.py`, `spec_sidecar_api.md`).
+- [x] Workspace path sandboxing: caller-supplied paths and **graph-resolved** `file_path` values normalized under registered `project_path`; outside root → `403` or empty code; stale Neo4j paths pruned on manifest persist (`sidecar/workspace_paths.py`, `spec_sidecar_api.md`).
+- [x] Queued `POST /index` registers workspace root immediately via `register_workspace_project_root()` (extension default `queue=true` no longer leaves `/overlay` / `/index/file` without a manifest).
+- [x] Bounded public API limits: search `limit` 1–50, `token_budget` 400–32 000 (HTTP 422 when out of range).
+- [x] Anthropic default model `claude-sonnet-4-6` (`ANTHROPIC_MODEL` override; retired `claude-sonnet-4-20250514`).
 - [x] Per-user overlay isolation (`workspace_id`, `user_id`, `file_path`) so unsaved buffers do not leak across users.
 - [x] Local-first LLM routing: default Ollama; `ALLOW_CLOUD_LLM=false` unless explicitly enabled.
 - [x] `/ask/stream` degraded answer + context when LLM unreachable; L3 cache trace SSE after cache hit.
@@ -724,7 +729,10 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | **UID instability** | **Critical** | Old `sha256(file_path:name)` broke on rename/move and collided on overloads + nested funcs. | Stable UID v2 implemented; migration CLI remains cleanup | 🟡 Mitigated |
 | **Naive CALLS resolution** | **Critical** | Name-match across whole graph; collisions across modules/methods; imports ignored. Noise in BFS → precision cap. | Python scoped/imported/dynamic resolver implemented; TS deep resolver remains cleanup | 🟡 Mitigated |
 | **No workspace isolation on managed graph provider** | **Critical** | Multi-user/team graph storage can collapse branches/tenants into one graph; wrong-version bodies returned silently. | Workspace node + scoped graph reads/writes implemented | 🟡 Mitigated |
-| **Unsandboxed filesystem paths** | **High** | With `AUTH_REQUIRED=false`, `/ask` and index endpoints could read arbitrary local files. | Workspace `project_path` sandbox (`sidecar/workspace_paths.py`); outside root → 403 | ✅ Resolved |
+| **Unsandboxed filesystem paths** | **High** | With `AUTH_REQUIRED=false`, API and stale graph nodes could read arbitrary local files. | `workspace_paths` on API paths + `CodeResolver` graph reads + Neo4j prune on manifest | ✅ Resolved |
+| **Queued index without manifest** | **High** | Extension `queue=true` on `/index` left no `project_path` until batch finished → 400 on `/overlay`. | `register_workspace_project_root()` before enqueue | ✅ Resolved |
+| **Unbounded API limits** | **Medium** | Huge `token_budget` / `limit` → local DoS and cloud cost spikes. | Pydantic bounds on request models (`tests/unit/test_api_bounds.py`) | ✅ Resolved |
+| **Retired Claude Sonnet 4.0 model ID** | **Medium** | Hardcoded `claude-sonnet-4-20250514` fails after 2026-06-15 retirement. | Default `claude-sonnet-4-6` + `ANTHROPIC_MODEL` env | ✅ Resolved |
 | **Overlay cross-user leakage** | **Medium** | Shared overlay keys could expose unsaved buffers across users in one workspace. | Overlay keyed by `(workspace_id, user_id, file_path)` | ✅ Resolved |
 | Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is precision/file-recall telemetry and long-tail export/framework shapes ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 Mitigated |
 | Primary-intent routing | High | Mixed queries (e.g. debugging+refactor) still route budget by one primary intent even though distribution metadata is visible. | Phase 9.2 metadata is implemented; Phase 10 should consume `intent.distribution` in budget/tier policy ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | ❌ Open |

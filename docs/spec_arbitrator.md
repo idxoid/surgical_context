@@ -29,6 +29,8 @@ ContextArbitrator(
 
 Returns a `PromptContext`, or an error string like `Error: Symbol '...' not found in graph.` Callers translate that string into endpoint-level errors.
 
+When called from HTTP (`/ask`), `token_budget` is already validated to **400–32 000** on the request model. Graph assembly reads files only through `CodeResolver` with the workspace `project_path` sandbox ([spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)).
+
 ## Unified Path
 
 The pipeline for all requests:

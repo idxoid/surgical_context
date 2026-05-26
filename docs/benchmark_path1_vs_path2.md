@@ -29,6 +29,8 @@ ctx = arb.get_context_for_symbol(symbol, question=question, token_budget=4000)
 prompt = ctx.to_system_prompt()
 ```
 
+(`token_budget` is clamped to **400–32 000** when invoked via HTTP `/ask`; the harness calls the arbitrator directly with `4000`.)
+
 The judge answers using only this prompt. Full pipeline: intent classification → `UnifiedRanker.get_target()` → BFS graph candidates + vector search → `BudgetPruner.select_under_budget()` → `CodeResolver.resolve()` per node → `PromptCompiler.compile_with_intent()`. Context includes: target symbol, N-hop neighbors, callers, callees, doc bridge results, role annotations.
 
 **Path 2 (P2) — First-time repo read (no pre-trained repo skills)**

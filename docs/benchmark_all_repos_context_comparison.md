@@ -40,3 +40,5 @@ PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py \
 ```
 
 Log: `QA/benchmark_runs.jsonl`. See [spec_eval_harness.md](spec_eval_harness.md).
+
+**Related (ops):** path sandboxing, API bounds, and queued `/index` root registration — [spec_sidecar_api.md](spec_sidecar_api.md). Product status — [road_map.md](road_map.md).

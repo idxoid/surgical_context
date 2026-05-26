@@ -28,6 +28,7 @@ All via environment variables with defaults:
 | `HISTORY_RETENTION_DAYS` | unset | Optional non-negative retention window for local history |
 | `SIDECAR_REQUEST_LATENCY_SLO_MS` | `200` | Request latency SLO target used by metrics and structured logs |
 | `SIDECAR_OTEL_ENABLED` | `false` | When true and OpenTelemetry is installed/configured, request stages emit spans |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Anthropic model ID when cloud routing is enabled. Override via env; do not use retired `claude-sonnet-4-20250514` (API retirement 2026-06-15). |
 
 ### Workspace Identity
 
@@ -65,6 +66,17 @@ Any endpoint that reads or indexes files on disk (`POST /index`, `/index/file`, 
 **Graph-resolved reads:** `ContextArbitrator` / `CodeResolver` and `UnifiedRanker` module sizing use the same root for `file_path` values coming from Neo4j. Paths outside the root return empty code (no disk read). On manifest persist, outside-root `File` nodes are best-effort deleted from the graph.
 
 This limits local callers when `AUTH_REQUIRED=false` from using the sidecar to read or index arbitrary readable files, including via stale graph nodes.
+
+### Request validation bounds
+
+Server-side Pydantic limits (invalid values → HTTP **422**):
+
+| Field | Endpoints | Bounds | Default |
+|---|---|---|---|
+| `limit` | `/search`, `/search/unified` | 1–50 | `5` |
+| `token_budget` | `/ask`, `/ask/stream`, `/search/unified` (graph leg) | 400–32 000 | `4000` / `2000` |
+
+Implementation: `SEARCH_LIMIT_*` and `TOKEN_BUDGET_*` in `sidecar/main.py`. Tests: `tests/unit/test_api_bounds.py`.
 
 ---
 

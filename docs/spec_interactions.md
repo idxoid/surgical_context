@@ -249,7 +249,7 @@ InMemoryOverlay ──[read by]──▶       ContextArbitrator  ──▶  LLM
 | **Anthropic** | `MODEL_PREFERENCE` is `auto` or `claude`, **`ALLOW_CLOUD_LLM=true`**, and `ANTHROPIC_API_KEY` is set. |
 | **Fallback** | Cloud errors → Ollama when local model is reachable. |
 
-Prompt caching: Anthropic `cache_control` on the large code/graph block when above `_MIN_CACHE_TOKENS`. See [spec_sidecar_api.md](spec_sidecar_api.md) env table.
+Prompt caching: Anthropic `cache_control` on the large code/graph block when above `_MIN_CACHE_TOKENS`. Default model **`claude-sonnet-4-6`** (`ANTHROPIC_MODEL` env). See [spec_sidecar_api.md](spec_sidecar_api.md) configuration tables.
 
 ## Unused Modules (stubs)
 

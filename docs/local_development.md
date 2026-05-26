@@ -218,3 +218,5 @@ ANTHROPIC_MODEL=
 ```
 
 With `ALLOW_CLOUD_LLM=false`, `MODEL_PREFERENCE=auto` never sends assembled context to Anthropic even when a key is present. Set `MODEL_PREFERENCE=claude` only together with `ALLOW_CLOUD_LLM=true`.
+
+**Safety defaults (sidecar):** after `POST /index`, path sandboxing applies to API and graph reads. Search `limit` is capped at 50; `/ask` `token_budget` at 32 000. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing) and [spec_sidecar_api.md](spec_sidecar_api.md#request-validation-bounds).

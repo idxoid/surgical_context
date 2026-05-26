@@ -104,6 +104,17 @@ Local development often runs with `AUTH_REQUIRED=false`. Without path checks, an
 
 `CodeResolver` and `UnifiedRanker` apply the same root check to **graph-resolved** `file_path` values before disk reads. Stale outside-root nodes are skipped at read time; manifest persist also best-effort **prunes** outside-root `File` nodes from Neo4j. Caller-supplied paths: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
+### 2.3.2. API request bounds ✅
+
+Public request models enforce bounded resource use (local DoS and cloud cost protection):
+
+| Parameter | Typical use | Server range |
+|---|---|---|
+| `limit` | `/search`, `/search/unified` | 1–50 |
+| `token_budget` | `/ask`, unified search graph leg | 400–32 000 |
+
+Out-of-range values return HTTP 422 before vector search or context assembly runs.
+
 ---
 
 ### 2.4. Observability (current)
@@ -279,6 +290,7 @@ Scenario: user edits `process_payment`, hasn't saved.
 - Default: **Ollama** (`MODEL_PREFERENCE=ollama`, `ALLOW_CLOUD_LLM=false`) — assembled context stays on the machine.
 - **Cloud opt-in:** Anthropic runs only when `ALLOW_CLOUD_LLM=true`, `ANTHROPIC_API_KEY` is set, and `MODEL_PREFERENCE` is `auto` or `claude`. A key alone does not enable cloud.
 - `AIEngine` (`sidecar/ai/engine.py`) scores intent + token count: large/complex contexts and design/exploration/refactor intents prefer Claude when cloud is allowed; otherwise Ollama.
+- Default Anthropic model: **`claude-sonnet-4-6`** (`ANTHROPIC_MODEL` env). Retired `claude-sonnet-4-20250514` must not be used after 2026-06-15.
 - Fallback: Claude failures fall back to Ollama; unreachable LLM → degraded `/ask` and `/ask/stream` still return `context`.
 
 ---
