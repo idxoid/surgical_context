@@ -35,6 +35,8 @@ Required topologies:
 
 ### 3.2 Question set — `tests/fixtures/real_repo_question_pack.yaml`
 
+Satellite packs merge via top-level `includes` (e.g. [click_questions.yaml](../tests/fixtures/click_questions.yaml), [celery_questions.yaml](../tests/fixtures/celery_questions.yaml)). Questions may use `required_roles` (legacy) or `required_roles_canonical` (canonical taxonomy names used as-is after normalization).
+
 ```yaml
 - id: repo_q06
   repo: example_repo

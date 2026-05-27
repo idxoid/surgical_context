@@ -108,7 +108,7 @@ class RoleFulfilment:
 
     def one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
         query = """
-        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(n:Symbol)
+        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(n:Symbol)
         WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
         RETURN DISTINCT n.uid AS uid
         LIMIT $limit

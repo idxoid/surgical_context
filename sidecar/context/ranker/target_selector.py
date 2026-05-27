@@ -107,7 +107,14 @@ class TargetSelector:
             }
 
         if len(rows) == 1:
-            target = self.host._build_target_node(rows[0], provenance=["primary:target"])
+            from sidecar.indexer.mro_api_bridge import parse_class_method_symbol
+
+            provenance = (
+                ["primary:class-method-target"]
+                if parse_class_method_symbol(symbol_name)
+                else ["primary:target"]
+            )
+            target = self.host._build_target_node(rows[0], provenance=provenance)
             return target, {
                 "strategy": "unique_match",
                 "ambiguous": False,

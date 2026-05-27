@@ -86,7 +86,7 @@ Active work for the local release. Completed stabilization and phase history are
 - [ ] Impact analysis remains **shallow by design** until proven otherwise: `AFFECTS` is bounded reverse reachability, not full blast-radius across frameworks, codegen, templates, runtime dispatch, and tests.
 
 ### P3 — Real-repo validation
-- [x] QA harness on [real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml) (65 questions, 11 repos, 3 intents).
+- [x] QA harness on [real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml) (75 questions with click/celery satellite includes, 13 repos, 3 intents).
 - [x] `core12` subset, then full pack expansion.
 - [x] Automated harness sweep: **65/65 pass** per repo with `--no-index` (May 2026; pre-indexed graph/vector assumed).
 - [x] LLM Judgment: Path1 (Surgical Context) vs Path2 (first-time repo read) on the full pack — [benchmark_path1_vs_path2.md](benchmark_path1_vs_path2.md) (Sonnet 4.6 max effort).

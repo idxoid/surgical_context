@@ -59,9 +59,43 @@ def test_load_question_pack_reads_real_repo_metadata():
 
     assert pack["kind"] == "real_repo"
     repo_ids = {repo["id"] for repo in pack["repositories"]}
-    assert {"fastapi", "pydantic", "redux_toolkit"}.issubset(repo_ids)
-    assert len(pack["repositories"]) >= 3
-    assert len(pack["questions"]) >= 24
+    assert {"fastapi", "pydantic", "redux_toolkit", "click", "celery"}.issubset(repo_ids)
+    assert len(pack["repositories"]) >= 13
+    assert len(pack["questions"]) >= 75
+
+
+def test_load_celery_question_pack_standalone():
+    pack_path = Path(__file__).parent.parent / "fixtures" / "celery_questions.yaml"
+
+    pack = load_question_pack(str(pack_path))
+    questions = load_questions(str(pack_path), repo="celery")
+
+    assert pack["kind"] == "real_repo"
+    assert len(questions) == 5
+    assert questions[0]["id"] == "celery_q01"
+    assert questions[1]["required_roles_canonical"] == [
+        "api_surface",
+        "serializer_handle",
+        "integration_surface",
+        "orchestrator",
+    ]
+
+
+def test_load_click_question_pack_standalone():
+    pack_path = Path(__file__).parent.parent / "fixtures" / "click_questions.yaml"
+
+    pack = load_question_pack(str(pack_path))
+    questions = load_questions(str(pack_path), repo="click")
+
+    assert pack["kind"] == "real_repo"
+    assert len(questions) == 5
+    assert questions[0]["id"] == "click_q01"
+    assert questions[0]["required_roles_canonical"] == [
+        "api_surface",
+        "factory_surface",
+        "representation_surface",
+        "runtime_surface",
+    ]
 
 
 def test_load_questions_filters_real_repo_core12_subset():

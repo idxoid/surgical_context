@@ -628,29 +628,61 @@ def setup_fixture_db(
     return DEFAULT_WORKSPACE_ID, stats
 
 
-def load_question_pack(questions_path: str) -> dict:
+def _merge_repository_lists(
+    base: list[dict],
+    extra: list[dict],
+) -> list[dict]:
+    by_id = {repo["id"]: repo for repo in base if repo.get("id")}
+    for repo in extra:
+        repo_id = repo.get("id")
+        if repo_id:
+            by_id[repo_id] = repo
+    return list(by_id.values())
+
+
+def load_question_pack(questions_path: str, *, _seen: set[str] | None = None) -> dict:
     """Load a question pack from YAML.
 
     Supports:
     - legacy fixture format: top-level list[question]
-    - real-repo pack format: {repositories: [...], questions: [...]}
+    - real-repo pack format: {repositories: [...], questions: [...], includes: [...]}
+    - ``includes``: paths relative to the pack file directory (merged recursively)
     """
-    with open(questions_path) as f:
+    path = Path(questions_path).resolve()
+    resolved = str(path)
+    if _seen is None:
+        _seen = set()
+    if resolved in _seen:
+        raise ValueError(f"Circular include in question packs: {resolved}")
+    _seen.add(resolved)
+
+    with open(path) as f:
         payload = yaml.safe_load(f) or []
 
     if isinstance(payload, list):
-        return {
+        pack = {
             "repositories": [],
             "questions": payload,
             "kind": "fixture",
         }
-    if isinstance(payload, dict):
-        return {
-            "repositories": payload.get("repositories", []),
-            "questions": payload.get("questions", []),
+    elif isinstance(payload, dict):
+        pack = {
+            "repositories": list(payload.get("repositories", [])),
+            "questions": list(payload.get("questions", [])),
             "kind": "real_repo" if payload.get("repositories") else "fixture",
         }
-    raise ValueError(f"Unsupported question pack format in {questions_path}")
+    else:
+        raise ValueError(f"Unsupported question pack format in {questions_path}")
+
+    for include in payload.get("includes", []) if isinstance(payload, dict) else []:
+        include_path = (path.parent / include).resolve()
+        sub = load_question_pack(str(include_path), _seen=_seen)
+        pack["repositories"] = _merge_repository_lists(pack["repositories"], sub["repositories"])
+        pack["questions"].extend(sub["questions"])
+        if sub["kind"] == "real_repo":
+            pack["kind"] = "real_repo"
+
+    return pack
 
 
 def resolve_questions_path(
@@ -873,6 +905,28 @@ def compute_carpet_bomb_tokens(
     return total
 
 
+def _run_llm_judge(ctx, question: str, intent: str, *, effort: str | None) -> dict[str, Any] | None:
+    if effort is None:
+        return None
+    try:
+        from QA.llm_judge import judge_question
+    except ImportError:
+        from llm_judge import judge_question
+    system_prompt = ctx.to_system_prompt() if not isinstance(ctx, str) else ctx
+    result = judge_question(system_prompt, question, intent=intent, effort=effort)  # type: ignore[arg-type]
+    if result is None:
+        return None
+    return {
+        "answer_quality": result.answer_quality,
+        "context_sufficiency": result.context_sufficiency,
+        "answer": result.answer,
+        "model": result.model,
+        "effort": result.effort,
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+    }
+
+
 def _build_ready_context_payload(ctx, token_count: int) -> dict[str, Any]:
     """Serialize the fully assembled context that would be sent to the model."""
     return {
@@ -947,6 +1001,7 @@ def run_benchmark(
     skip_affects: bool = False,
     skip_docs: bool = False,
     ranker_weights=None,
+    llm_judge: str | None = None,
 ) -> dict:
     """Run the benchmark suite and return metrics dict."""
     questions_path = resolve_questions_path(
@@ -1046,7 +1101,7 @@ def run_benchmark(
         intent = q.get("intent", "unknown")
         expected_mode = q.get("expected_mode", "symbol")
         mechanism = q.get("mechanism", "")
-        required_roles = q.get("required_roles", [])
+        required_roles = q.get("required_roles") or q.get("required_roles_canonical") or []
         expected_files = set(q.get("expected_files", []))
 
         # Measure assembly time
@@ -1274,6 +1329,7 @@ def run_benchmark(
                 "reduction_ratio": reduction_ratio,
                 "assembly_ms": assembly_ms,
                 "ready_context": _build_ready_context_payload(ctx, tokens_surgical),
+                "judge": _run_llm_judge(ctx, question_text, intent, effort=llm_judge),
             }
         )
 
@@ -1426,6 +1482,24 @@ def run_benchmark(
         "results": results,
     }
 
+    judge_results = [r["judge"] for r in results if r.get("judge")]
+    if judge_results:
+        aq_counts: dict[str, int] = {}
+        cs_counts: dict[str, int] = {}
+        judge_tokens = sum(j["input_tokens"] + j["output_tokens"] for j in judge_results)
+        for j in judge_results:
+            aq_counts[j["answer_quality"]] = aq_counts.get(j["answer_quality"], 0) + 1
+            cs_counts[j["context_sufficiency"]] = cs_counts.get(j["context_sufficiency"], 0) + 1
+        first = judge_results[0]
+        metrics["summary"]["judge"] = {
+            "n": len(judge_results),
+            "effort": first.get("effort", ""),
+            "model": first.get("model", ""),
+            "answer_quality": aq_counts,
+            "context_sufficiency": cs_counts,
+            "judge_tokens": judge_tokens,
+        }
+
     print(f"\n{'=' * 70}")
     print("SUMMARY")
     print(f"{'=' * 70}")
@@ -1452,6 +1526,17 @@ def run_benchmark(
     )
     print(f"Reduction:       {metrics['summary']['reduction_ratio']:.1%}")
     print(f"Avg assembly:    {metrics['summary']['assembly_ms_avg']:.1f}ms")
+    if judge_summary := metrics["summary"].get("judge"):
+        n = judge_summary["n"]
+        aq = judge_summary["answer_quality"]
+        cs = judge_summary["context_sufficiency"]
+        effort_label = f"{judge_summary['effort']} ({judge_summary['model']})"
+        print(
+            f"Judge [{effort_label}] ({n}q):  "
+            f"answer correct={aq.get('correct',0)} partial={aq.get('partial',0)} wrong={aq.get('wrong',0)}  |  "
+            f"ctx sufficient={cs.get('sufficient',0)} overfed={cs.get('overfed',0)} incomplete={cs.get('incomplete',0)}  "
+            f"[{judge_summary['judge_tokens']:,} tokens]"
+        )
     if metrics["indexing"]["skipped"]:
         print("Indexing:        skipped")
     else:
@@ -1561,6 +1646,17 @@ def main():
     parser.add_argument(
         "--epsilon", type=float, default=None, help="UnifiedRanker ε (token cost penalty)"
     )
+    parser.add_argument(
+        "--judge",
+        choices=["low", "medium", "high"],
+        default=None,
+        metavar="EFFORT",
+        help=(
+            "Call the LLM judge on each assembled context at the given effort level: "
+            "low=haiku, medium=sonnet (default), high=opus. "
+            "Requires ANTHROPIC_API_KEY and ALLOW_CLOUD_LLM=1."
+        ),
+    )
     args = parser.parse_args()
 
     ranker_weights = None
@@ -1587,6 +1683,7 @@ def main():
         skip_affects=args.skip_affects,
         skip_docs=args.skip_docs,
         ranker_weights=ranker_weights,
+        llm_judge=args.judge,  # None | "low" | "medium" | "high"
     )
 
     report_path = write_metrics_report(

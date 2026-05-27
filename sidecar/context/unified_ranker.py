@@ -176,6 +176,10 @@ class UnifiedRanker:
         "CALLS_in": 1.2,
         "SEMANTIC_HINT_out": 1.3,
         "SEMANTIC_HINT_in": 1.3,
+        "HAS_API_out": 1.45,
+        "HAS_API_in": 1.2,
+        "INHERITED_API_out": 1.35,
+        "INHERITED_API_in": 1.15,
     }
 
     def __init__(
@@ -245,23 +249,31 @@ class UnifiedRanker:
         )
 
     def _load_target_candidates(self, symbol_name: str) -> list[dict]:
+        from sidecar.indexer.mro_api_bridge import parse_class_method_symbol
+
+        parsed = parse_class_method_symbol(symbol_name)
+        if parsed:
+            api_rows = self._load_class_method_target_candidates(*parsed)
+            if api_rows:
+                return api_rows
+
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {name: $name})
         CALL {
             WITH s
-            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(:Symbol)
+            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(:Symbol)
             WHERE coalesce(out_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT out_r) AS outgoing_edges
         }
         CALL {
             WITH s
-            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(s)
             WHERE coalesce(in_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT in_r) AS incoming_edges
         }
         CALL {
             WITH s
-            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(:Symbol)
+            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(:Symbol)
             WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT any_r) AS total_edges
         }
@@ -296,6 +308,89 @@ class UnifiedRanker:
                         query,
                         name=symbol_name,
                         workspace_id=self.workspace_id,
+                        limit=64,
+                    )
+                )
+        except Exception:
+            return []
+        return result
+
+    def _load_class_method_target_candidates(
+        self,
+        class_name: str,
+        method_name: str,
+    ) -> list[dict]:
+        """Resolve ``Class.method`` via MRO API edges or qualified-name tail."""
+        qualified_suffix = f".{class_name}.{method_name}"
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {name: $method_name})
+        WHERE EXISTS {
+            MATCH (:Symbol {name: $class_name, kind: 'class'})
+                  -[:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(s)
+        }
+           OR coalesce(s.qualified_name, '') ENDS WITH $qualified_suffix
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(:Symbol)
+            WHERE coalesce(out_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT out_r) AS outgoing_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(s)
+            WHERE coalesce(in_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT in_r) AS incoming_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(:Symbol)
+            WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT any_r) AS total_edges
+        }
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges
+        ORDER BY
+          CASE
+            WHEN EXISTS {
+              MATCH (:Symbol {name: $class_name, kind: 'class'})
+                    -[:HAS_API {workspace_id: $workspace_id}]->(s)
+            } THEN 0
+            WHEN EXISTS {
+              MATCH (:Symbol {name: $class_name, kind: 'class'})
+                    -[:INHERITED_API {workspace_id: $workspace_id}]->(s)
+            } THEN 1
+            ELSE 2
+          END ASC,
+          CASE
+            WHEN f.path CONTAINS '/test/' OR f.path CONTAINS '/tests/'
+              OR f.path CONTAINS '/integration/' OR f.path CONTAINS '/sample/'
+              OR f.path CONTAINS '/samples/' THEN 1
+            ELSE 0
+          END ASC,
+          total_edges DESC,
+          outgoing_edges DESC,
+          size(f.path) ASC
+        LIMIT $limit
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS kind,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               outgoing_edges,
+               incoming_edges,
+               total_edges
+        """
+        try:
+            with self.db.driver.session() as session:
+                result = list(
+                    session.run(
+                        query,
+                        workspace_id=self.workspace_id,
+                        class_name=class_name,
+                        method_name=method_name,
+                        qualified_suffix=qualified_suffix,
                         limit=64,
                     )
                 )
@@ -2288,7 +2383,7 @@ class UnifiedRanker:
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(n:Symbol)
         WHERE NOT n.uid IN $visited
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)

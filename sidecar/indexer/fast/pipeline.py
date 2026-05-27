@@ -240,6 +240,19 @@ def _apply_graph(
     reporter.stage_end("graph")
 
 
+def _mro_api_bridge_phase(
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    from sidecar.indexer.mro_api_bridge import MroApiBridgeIndexer
+
+    reporter.stage_start("mro_api_bridge", total=1)
+    created = MroApiBridgeIndexer(db).apply(workspace_id)
+    reporter.stage_end("mro_api_bridge")
+    return created
+
+
 def _framework_hints_phase(
     diffs: list[FileDiff],
     db: Neo4jClient,
@@ -611,6 +624,10 @@ def run_fast_indexing(
         t_stage = time.perf_counter()
         _apply_graph(diffs, db, workspace_id, reporter)
         stats["timings_sec"]["graph"] = round(time.perf_counter() - t_stage, 3)
+
+        t_stage = time.perf_counter()
+        stats["mro_api_edges"] = _mro_api_bridge_phase(db, workspace_id, reporter)
+        stats["timings_sec"]["mro_api_bridge"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.5: framework hints
         t_stage = time.perf_counter()

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from neo4j import GraphDatabase
 
-from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
+from sidecar.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 _CALL_REL_TYPES = {
@@ -239,12 +239,14 @@ class Neo4jClient:
     def list_file_paths(self, workspace_id: str = DEFAULT_WORKSPACE_ID) -> list[str]:
         """Return all File.path values for a workspace (for sandbox cleanup)."""
         with self.driver.session() as session:
-            rows = session.run(
-                """
-                MATCH (f:File {workspace_id: $workspace_id})
-                RETURN f.path AS path
-                """,
-                workspace_id=workspace_id,
+            rows = list(
+                session.run(
+                    """
+                    MATCH (f:File {workspace_id: $workspace_id})
+                    RETURN f.path AS path
+                    """,
+                    workspace_id=workspace_id,
+                )
             )
         return [str(row["path"]) for row in rows if row.get("path")]
 
@@ -264,7 +266,7 @@ class Neo4jClient:
                 WHERE r IS NULL OR (
                     type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
                                 'CALLS_DYNAMIC', 'CALLS_INFERRED', 'CALLS_GUESS', 'DEPENDS_ON',
-                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS']
+                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS', 'HAS_API', 'INHERITED_API']
                     AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 )
                 DELETE r, c
@@ -295,7 +297,7 @@ class Neo4jClient:
         with self.driver.session() as session:
             session.run(
                 """
-                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES]->(:Symbol)
+                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|HAS_API|INHERITED_API]->(:Symbol)
                 WHERE s.uid IN $symbol_uids
                   AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 WITH collect(r) AS edges
@@ -336,7 +338,7 @@ class Neo4jClient:
                 WHERE r IS NULL OR (
                     type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
                                 'CALLS_DYNAMIC', 'CALLS_INFERRED', 'CALLS_GUESS', 'DEPENDS_ON',
-                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS']
+                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS', 'HAS_API', 'INHERITED_API']
                     AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 )
                 DELETE r, c
@@ -513,6 +515,83 @@ class Neo4jClient:
             imports=[_import_row(imp) for imp in imports],
             workspace_id=workspace_id,
         )
+
+    def link_class_api(
+        self,
+        edges: list[ClassApiEdge],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        with self.driver.session() as session:
+            session.execute_write(self._create_class_api_relations, edges, workspace_id)
+            if edges:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
+
+    def clear_class_api_edges(self, workspace_id: str = DEFAULT_WORKSPACE_ID):
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (:Symbol)-[r:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(:Symbol)
+                WITH collect(r) AS edges
+                FOREACH (edge IN edges | DELETE edge)
+                WITH size(edges) AS deleted_edges
+                MATCH (w:Workspace {id: $workspace_id})
+                WHERE deleted_edges > 0
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_class_api_relations(tx, edges: list[ClassApiEdge], workspace_id: str):
+        if not edges:
+            return
+        direct = [edge for edge in edges if edge.edge_type == "HAS_API"]
+        inherited = [edge for edge in edges if edge.edge_type == "INHERITED_API"]
+        if direct:
+            tx.run(
+                """
+                UNWIND $edges AS edge
+                MATCH (cls:Symbol {uid: edge.class_uid})
+                MATCH (method:Symbol {uid: edge.method_uid})
+                MERGE (cls)-[r:HAS_API {workspace_id: $workspace_id}]->(method)
+                SET r.resolver = 'mro-v1',
+                    r.confidence = 0.95,
+                    r.tier = 'scoped'
+                """,
+                edges=[
+                    {"class_uid": edge.class_uid, "method_uid": edge.method_uid}
+                    for edge in direct
+                ],
+                workspace_id=workspace_id,
+            )
+        if inherited:
+            tx.run(
+                """
+                UNWIND $edges AS edge
+                MATCH (cls:Symbol {uid: edge.class_uid})
+                MATCH (method:Symbol {uid: edge.method_uid})
+                MERGE (cls)-[r:INHERITED_API {workspace_id: $workspace_id}]->(method)
+                SET r.resolver = 'mro-v1',
+                    r.confidence = 0.9,
+                    r.tier = 'scoped',
+                    r.originating_class = edge.originating_class
+                """,
+                edges=[
+                    {
+                        "class_uid": edge.class_uid,
+                        "method_uid": edge.method_uid,
+                        "originating_class": edge.originating_class,
+                    }
+                    for edge in inherited
+                ],
+                workspace_id=workspace_id,
+            )
 
     def link_inheritance(
         self,

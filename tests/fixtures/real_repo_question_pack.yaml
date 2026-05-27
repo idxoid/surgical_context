@@ -10,6 +10,11 @@
 # - `expected_symbols` and `expected_files` are seed hypotheses, not final labels.
 #   They should be corrected after the first human-reviewed benchmark pass.
 # - This file is intentionally separate from tests/fixtures/sample_project/questions.yaml.
+# - Satellite packs (e.g. click_questions.yaml) are merged via `includes`.
+
+includes:
+  - click_questions.yaml
+  - celery_questions.yaml
 
 repositories:
   - id: fastapi

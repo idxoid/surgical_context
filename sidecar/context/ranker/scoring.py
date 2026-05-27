@@ -197,6 +197,10 @@ class RankerScoring:
             relation = "IMPORTS"
         elif rel_type == "SEMANTIC_HINT":
             relation = "SEMANTIC_HINT_out" if outgoing else "SEMANTIC_HINT_in"
+        elif rel_type == "HAS_API":
+            relation = "HAS_API_out" if outgoing else "HAS_API_in"
+        elif rel_type == "INHERITED_API":
+            relation = "INHERITED_API_out" if outgoing else "INHERITED_API_in"
         else:
             relation = "DEPENDS_ON"
 
