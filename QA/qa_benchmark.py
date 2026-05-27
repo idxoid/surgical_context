@@ -905,25 +905,48 @@ def compute_carpet_bomb_tokens(
     return total
 
 
-def _run_llm_judge(ctx, question: str, intent: str, *, effort: str | None) -> dict[str, Any] | None:
-    if effort is None:
+def _judge_result_to_dict(result) -> dict[str, Any]:
+    payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+    return payload
+
+
+def _run_llm_judge(
+    ctx,
+    question: str,
+    intent: str,
+    *,
+    judge_mode: str | None,
+) -> dict[str, Any] | None:
+    if judge_mode is None:
         return None
     try:
-        from QA.llm_judge import judge_question
+        from QA.llm_judge import EFFORTS, PROVIDERS, judge_question_matrix
     except ImportError:
-        from llm_judge import judge_question
+        from llm_judge import EFFORTS, PROVIDERS, judge_question_matrix
+
     system_prompt = ctx.to_system_prompt() if not isinstance(ctx, str) else ctx
-    result = judge_question(system_prompt, question, intent=intent, effort=effort)  # type: ignore[arg-type]
-    if result is None:
-        return None
+    efforts = EFFORTS
+    if judge_mode in ("low", "medium", "high"):
+        efforts = (judge_mode,)  # type: ignore[assignment]
+
+    matrix_payload = judge_question_matrix(
+        system_prompt,
+        question,
+        intent=intent,
+        efforts=efforts,
+        providers=PROVIDERS,
+    )
+    matrix = matrix_payload.get("matrix", {})
+    serialized: dict[str, dict[str, Any]] = {}
+    for effort, per_provider in matrix.items():
+        serialized[effort] = {
+            provider: _judge_result_to_dict(result)
+            for provider, result in per_provider.items()
+        }
     return {
-        "answer_quality": result.answer_quality,
-        "context_sufficiency": result.context_sufficiency,
-        "answer": result.answer,
-        "model": result.model,
-        "effort": result.effort,
-        "input_tokens": result.input_tokens,
-        "output_tokens": result.output_tokens,
+        "mode": judge_mode,
+        "available": matrix_payload.get("available", {}),
+        "matrix": serialized,
     }
 
 
@@ -1001,7 +1024,7 @@ def run_benchmark(
     skip_affects: bool = False,
     skip_docs: bool = False,
     ranker_weights=None,
-    llm_judge: str | None = None,
+    llm_judge: str | None = None,  # None | "all" | "low" | "medium" | "high"
 ) -> dict:
     """Run the benchmark suite and return metrics dict."""
     questions_path = resolve_questions_path(
@@ -1329,7 +1352,7 @@ def run_benchmark(
                 "reduction_ratio": reduction_ratio,
                 "assembly_ms": assembly_ms,
                 "ready_context": _build_ready_context_payload(ctx, tokens_surgical),
-                "judge": _run_llm_judge(ctx, question_text, intent, effort=llm_judge),
+                "judge": _run_llm_judge(ctx, question_text, intent, judge_mode=llm_judge),
             }
         )
 
@@ -1482,22 +1505,49 @@ def run_benchmark(
         "results": results,
     }
 
-    judge_results = [r["judge"] for r in results if r.get("judge")]
-    if judge_results:
-        aq_counts: dict[str, int] = {}
-        cs_counts: dict[str, int] = {}
-        judge_tokens = sum(j["input_tokens"] + j["output_tokens"] for j in judge_results)
-        for j in judge_results:
-            aq_counts[j["answer_quality"]] = aq_counts.get(j["answer_quality"], 0) + 1
-            cs_counts[j["context_sufficiency"]] = cs_counts.get(j["context_sufficiency"], 0) + 1
-        first = judge_results[0]
+    judge_rows = [r["judge"] for r in results if r.get("judge")]
+    if judge_rows:
+        by_cell: dict[str, dict[str, Any]] = {}
+        judge_tokens = 0
+        errors = 0
+        for row in judge_rows:
+            for effort, providers in (row.get("matrix") or {}).items():
+                for provider, cell in providers.items():
+                    key = f"{provider}/{effort}"
+                    bucket = by_cell.setdefault(
+                        key,
+                        {
+                            "provider": provider,
+                            "effort": effort,
+                            "model": cell.get("model", ""),
+                            "n": 0,
+                            "errors": 0,
+                            "answer_quality": {},
+                            "context_sufficiency": {},
+                            "latency_ms_total": 0,
+                        },
+                    )
+                    bucket["n"] += 1
+                    if cell.get("error"):
+                        bucket["errors"] += 1
+                        errors += 1
+                    aq = cell.get("answer_quality", "wrong")
+                    cs = cell.get("context_sufficiency", "incomplete")
+                    bucket["answer_quality"][aq] = bucket["answer_quality"].get(aq, 0) + 1
+                    bucket["context_sufficiency"][cs] = (
+                        bucket["context_sufficiency"].get(cs, 0) + 1
+                    )
+                    bucket["latency_ms_total"] += int(cell.get("latency_ms", 0))
+                    judge_tokens += int(cell.get("input_tokens", 0)) + int(
+                        cell.get("output_tokens", 0)
+                    )
         metrics["summary"]["judge"] = {
-            "n": len(judge_results),
-            "effort": first.get("effort", ""),
-            "model": first.get("model", ""),
-            "answer_quality": aq_counts,
-            "context_sufficiency": cs_counts,
+            "mode": judge_rows[0].get("mode", "all"),
+            "questions": len(judge_rows),
+            "cells": by_cell,
+            "errors": errors,
             "judge_tokens": judge_tokens,
+            "bridges": judge_rows[0].get("available", {}),
         }
 
     print(f"\n{'=' * 70}")
@@ -1527,16 +1577,27 @@ def run_benchmark(
     print(f"Reduction:       {metrics['summary']['reduction_ratio']:.1%}")
     print(f"Avg assembly:    {metrics['summary']['assembly_ms_avg']:.1f}ms")
     if judge_summary := metrics["summary"].get("judge"):
-        n = judge_summary["n"]
-        aq = judge_summary["answer_quality"]
-        cs = judge_summary["context_sufficiency"]
-        effort_label = f"{judge_summary['effort']} ({judge_summary['model']})"
+        bridges = judge_summary.get("bridges", {})
         print(
-            f"Judge [{effort_label}] ({n}q):  "
-            f"answer correct={aq.get('correct',0)} partial={aq.get('partial',0)} wrong={aq.get('wrong',0)}  |  "
-            f"ctx sufficient={cs.get('sufficient',0)} overfed={cs.get('overfed',0)} incomplete={cs.get('incomplete',0)}  "
-            f"[{judge_summary['judge_tokens']:,} tokens]"
+            f"Judge matrix ({judge_summary.get('questions', 0)}q, "
+            f"mode={judge_summary.get('mode', 'all')}, "
+            f"bridges claude={bridges.get('claude')} codex={bridges.get('codex')}, "
+            f"errors={judge_summary.get('errors', 0)}, "
+            f"tokens={judge_summary.get('judge_tokens', 0):,}):"
         )
+        for key in sorted(judge_summary.get("cells", {})):
+            cell = judge_summary["cells"][key]
+            aq = cell.get("answer_quality", {})
+            cs = cell.get("context_sufficiency", {})
+            avg_ms = (
+                cell["latency_ms_total"] / cell["n"] if cell.get("n") else 0
+            )
+            print(
+                f"  {key:22} model={cell.get('model', '')[:28]:28}  "
+                f"aq ok={aq.get('correct', 0)} part={aq.get('partial', 0)} wrong={aq.get('wrong', 0)}  "
+                f"ctx suf={cs.get('sufficient', 0)} over={cs.get('overfed', 0)} inc={cs.get('incomplete', 0)}  "
+                f"err={cell.get('errors', 0)} avg={avg_ms:.0f}ms"
+            )
     if metrics["indexing"]["skipped"]:
         print("Indexing:        skipped")
     else:
@@ -1648,13 +1709,14 @@ def main():
     )
     parser.add_argument(
         "--judge",
-        choices=["low", "medium", "high"],
+        choices=["all", "low", "medium", "high"],
         default=None,
-        metavar="EFFORT",
+        metavar="MODE",
         help=(
-            "Call the LLM judge on each assembled context at the given effort level: "
-            "low=haiku, medium=sonnet (default), high=opus. "
-            "Requires ANTHROPIC_API_KEY and ALLOW_CLOUD_LLM=1."
+            "Run LLM judge matrix via CLI bridges (claude + codex per tier). "
+            "all=6 parallel judges (low/medium/high × claude+codex); "
+            "low|medium|high=2 judges for that tier only. "
+            "Requires `claude` and/or `codex` on PATH."
         ),
     )
     args = parser.parse_args()

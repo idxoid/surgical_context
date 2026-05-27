@@ -131,6 +131,7 @@ RUNTIME_SIGNAL_TOKENS = (
 )
 API_SIGNAL_TOKENS = (
     "api",
+    "openapi",
     "route",
     "router",
     "endpoint",
@@ -165,6 +166,9 @@ ROUTING_FLOW_TARGET_TOKENS = (
     "middleware",
     "dispatch",
     "handle",
+    "decorator",
+    "resolver",
+    "explorer",
 )
 ROUTING_FLOW_PATH_TOKENS = (
     "/lib/",
@@ -172,6 +176,8 @@ ROUTING_FLOW_PATH_TOKENS = (
     "express",
     "router",
     "middleware",
+    "packages/core/router",
+    "/decorators/",
 )
 IDENTITY_ENGINE_PATH_MARKERS = (
     "/identity/",
@@ -223,10 +229,10 @@ REGISTRATION_RUNTIME_TOKENS = (
     "handle",
 )
 HOOK_FLOW_TARGET_TOKENS = (
-    "before_request",
-    "after_request",
-    "teardown_request",
-    "preprocess_request",
+    "before_",
+    "after_",
+    "teardown",
+    "preprocess",
     "dispatch",
     "wsgi",
     "lifecycle",
@@ -234,15 +240,11 @@ HOOK_FLOW_TARGET_TOKENS = (
 )
 HOOK_FLOW_PATH_TOKENS = (
     "/app.py",
-    "/scaffold",
-    "/globals",
-    "/ctx",
     "/handlers/",
 )
 HOOK_RUNTIME_TOKENS = (
-    "preprocess_request",
-    "do_teardown_request",
-    "full_dispatch_request",
+    "preprocess",
+    "teardown",
     "dispatch_request",
     "wsgi_app",
 )

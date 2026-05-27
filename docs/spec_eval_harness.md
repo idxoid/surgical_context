@@ -148,7 +148,27 @@ The per-question console line now prints role diagnostics explicitly:
 Use `missing_roles` as the pass-gate indicator. Treat raw trailing `missing:` as
 internal telemetry for tuning recovery and role-planning behavior.
 
-**Note:** Quality metric (answer correctness) is **intentionally deferred** — it requires an LLM judge, which introduces noise and cost. Recall@k and role_recall are proxies: if the right symbols and roles are in the context, quality is the model's problem, not ours.
+### 4.5 Optional LLM judge matrix (`--judge`)
+
+Retrieval gates (`role_recall`, `file_recall`, pass/warn) remain the primary CI signal. Optional answer-quality judgment runs via **local CLI bridges** (not Anthropic HTTP):
+
+```bash
+PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py \
+  --questions tests/fixtures/click_questions.yaml \
+  --repo click --no-index \
+  --judge all
+```
+
+| Flag | Behavior |
+|---|---|
+| `--judge all` | Six parallel judges: `claude` + `codex` × `low` / `medium` / `high` effort tiers |
+| `--judge low` \| `medium` \| `high` | Two parallel judges for that tier only |
+
+Requires `claude` and/or `codex` on `PATH`. Per-question JSON stores full `judge.matrix[effort][provider]` cells (answer, `answer_quality`, `context_sufficiency`, model, latency, errors). Summary prints one row per cell.
+
+Model overrides: `QA_JUDGE_CLAUDE_MODEL_HIGH`, `QA_JUDGE_CODEX_MODEL_MEDIUM`, etc. Default tier map lives in `QA/llm_judge.py`.
+
+**Note:** Judge output is diagnostic and expensive; default harness runs skip it. Recall@k and `role_recall` remain the merge gates.
 
 ## 5. Module Layout
 
@@ -196,7 +216,7 @@ Current repo truth: CI runs the unit suite only; benchmark-diff automation remai
 
 ## 7. Non-Goals
 
-- **Not** an answer-quality evaluator. LLM-as-judge is deferred to Phase 5 when Anthropic SDK is wired — cost and noise make it premature now.
+- **Not** a default answer-quality gate in CI. Optional `--judge` matrix uses CLI bridges locally; merge policy still keys off retrieval metrics unless a separate judge baseline is adopted.
 - **Not** a load test. Latency is measured on a single-threaded synthetic workload; real concurrency testing lives in Phase 4.
 - **Not** a regression suite for Ollama output. The LLM is stubbed in integration tests — we measure what *we* ship (the context), not what the model does with it.
 

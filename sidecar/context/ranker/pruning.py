@@ -397,9 +397,19 @@ class BudgetPruner:
                 and intent != Intent.IMPACT_ANALYSIS
                 and not fills_role_or_trace
             )
+            # Redundant symbols from a file already selected do not represent
+            # failed expansion — they are duplicates from the same module.
+            # Counting them inflates the stall and fires expansion_no_progress
+            # before trace-topic-anchors from new files are reached.
+            is_redundant_same_file = (
+                c.kind != "doc"
+                and bool(c.file_path)
+                and c.file_path in chosen_files
+                and not fills_role_or_trace
+            )
             if fills_role_or_trace:
                 no_progress_streak = 0
-            elif (trace_mode and c.kind == "doc") or skips_noise_without_trace_role:
+            elif (trace_mode and c.kind == "doc") or skips_noise_without_trace_role or is_redundant_same_file:
                 pass
             else:
                 no_progress_streak += 1

@@ -12,6 +12,7 @@ from sidecar.context.intent_classifier import (
     IntentSignal,
 )
 from sidecar.context.prompt_compiler import PromptCompiler
+from sidecar.context.ranker.signal_constants import NOISE_PATH_PATTERNS
 from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.context.types import PromptContext, SubgraphNode
 from sidecar.context.unified_ranker import (
@@ -386,14 +387,23 @@ class ContextArbitrator:
 
     def _primary_uid(self, symbol_name: str) -> str | Any | None:
         query = """
-        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
-        RETURN s.uid AS uid
+        MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
+        WHERE NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
+        OPTIONAL MATCH ()-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, count(DISTINCT r) AS inbound_edges,
+             CASE WHEN toLower(f.path) CONTAINS ('/' + toLower($name) + '.') THEN 1 ELSE 0 END AS stem_match
+        RETURN s.uid AS uid, inbound_edges, stem_match
+        ORDER BY stem_match DESC, inbound_edges DESC
         LIMIT 1
         """
         try:
             with self.db.driver.session() as session:
                 result = session.run(
-                    query, name=symbol_name, workspace_id=self.workspace_id
+                    query,
+                    name=symbol_name,
+                    workspace_id=self.workspace_id,
+                    noise_patterns=list(NOISE_PATH_PATTERNS),
                 ).single()
         except Exception:
             return None

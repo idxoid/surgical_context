@@ -285,6 +285,20 @@ def infer_supporting_roles(
     if "/tests/" in lowered_path or lowered_path.endswith("_test.py") or "/test_" in lowered_path:
         inferred.append("impact_test_surface")
 
+    # Structural compat_bridge: files/symbols that expose a version-shim or
+    # backward-compat layer. Pattern: path contains "compat" or "version", or
+    # symbol name starts with "v" followed only by digits (e.g. "v1", "v2").
+    import re as _re
+    _is_compat_path = (
+        "/compat" in lowered_path
+        or "version" in file_stem
+        or "/v1/" in lowered_path
+        or lowered_path.endswith("/v1")
+    )
+    _is_compat_name = bool(_re.fullmatch(r"v\d+", lowered_name))
+    if _is_compat_path or _is_compat_name:
+        inferred.append("compat_bridge")
+
     if (
         primary
         in {
@@ -311,12 +325,18 @@ def infer_supporting_roles(
     ):
         inferred.append("impact_runtime")
 
-    if lowered_kind in {"function", "method", "class", "object_api", ""}:
+    if lowered_kind in {"function", "method", "class", "object_api", "module", ""}:
+        # Symbol name matches its package directory (e.g. symbol "v1" inside
+        # "pydantic/v1/__init__.py") — the __init__ is a barrel re-export, so
+        # the package itself is the api_surface entry point.
+        _parent_dir = lowered_path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in lowered_path else ""
+        _is_package_barrel = file_stem == "__init__" and lowered_name == _parent_dir
         if (
             lowered_name
             and not lowered_name.startswith("_")
             and (
                 symbol_name_matches_file_stem(name, file_stem)
+                or _is_package_barrel
                 or (
                     lowered_kind == "object_api"
                     and (
@@ -348,6 +368,7 @@ def infer_supporting_roles(
             "context_creator",
             "creator",
             "controllers",
+            "explorer",
             "exports",
             "imports",
             "middleware",
@@ -409,6 +430,7 @@ def infer_supporting_roles(
             "dependency",
             "effect",
             "notify",
+            "resolve",
             "scheduler",
             "track",
             "trigger",
@@ -428,6 +450,8 @@ def infer_supporting_roles(
 
         if any(token in haystack for token in composition_tokens):
             inferred.append("composition_surface")
+        if any(token in lowered_name for token in ("factory", "builder", "creator", "registry")):
+            inferred.append("factory_surface")
         if any(token in haystack for token in ("controller", "export", "import", "provider")):
             inferred.append("integration_surface")
         if any(token in haystack for token in representation_tokens):

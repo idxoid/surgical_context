@@ -285,4 +285,10 @@ class RankerScoring:
             term in q for term in ("render", "runtime", "update")
         ):
             return True
+        # Message-publish / task-dispatch trace: "sent to broker", "publish message",
+        # "constructed and sent", "enqueue", etc.
+        if any(term in q for term in ("broker", "publish", "enqueue", "dispatch")) and any(
+            term in q for term in ("sent", "send", "message", "constructed", "task")
+        ):
+            return True
         return False

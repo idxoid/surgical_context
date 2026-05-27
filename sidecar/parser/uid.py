@@ -95,6 +95,12 @@ def normalize_signature(raw: str, language: str = "python") -> str:
     return f"{name}({','.join(normalized_params)})->{normalized_return}"
 
 
+def _node_text(node) -> str:
+    """Decode a tree-sitter node using byte offsets owned by tree-sitter."""
+    text = getattr(node, "text", None)
+    return text.decode("utf-8") if text is not None else ""
+
+
 def qualified_name_for(node, source_code: str, file_path: str) -> str:
     """Build a dotted qualified name for a tree-sitter symbol node."""
     module = module_name_from_path(file_path)
@@ -110,7 +116,7 @@ def qualified_name_for(node, source_code: str, file_path: str) -> str:
         }:
             name_node = current.child_by_field_name("name")
             if name_node is not None:
-                name = source_code[name_node.start_byte : name_node.end_byte]
+                name = _node_text(name_node)
                 if current is not node and current.type in {
                     "function_definition",
                     "function_declaration",
@@ -127,13 +133,13 @@ def signature_from_node(node, source_code: str, language: str = "python") -> tup
     name_node = node.child_by_field_name("name")
     if name_node is None:
         return None, "unresolved"
-    name = source_code[name_node.start_byte : name_node.end_byte]
+    name = _node_text(name_node)
 
     if node.type in {"class_definition", "class_declaration"}:
         return f"{name}()->_", "resolved"
 
     params_node = node.child_by_field_name("parameters")
-    params = source_code[params_node.start_byte : params_node.end_byte] if params_node else "()"
+    params = _node_text(params_node) if params_node else "()"
     returns = _return_annotation_from_node(node, source_code, language)
     raw = f"{name}{params}"
     if returns:
@@ -144,10 +150,10 @@ def signature_from_node(node, source_code: str, language: str = "python") -> tup
 def _return_annotation_from_node(node, source_code: str, language: str) -> str:
     return_node = node.child_by_field_name("return_type") or node.child_by_field_name("type")
     if return_node is not None:
-        text = source_code[return_node.start_byte : return_node.end_byte]
+        text = _node_text(return_node)
         return text.lstrip("->:").strip()
 
-    header = source_code[node.start_byte : min(node.end_byte, node.start_byte + 500)]
+    header = _node_text(node)[:500]
     if language == "python":
         match = re.search(r"\)\s*->\s*([^:]+):", header)
         return match.group(1).strip() if match else ""
@@ -156,7 +162,7 @@ def _return_annotation_from_node(node, source_code: str, language: str) -> str:
 
 
 def _split_signature(raw: str) -> tuple[str, str, str]:
-    match = re.match(r"\s*([\w$]+)\s*\((.*)\)\s*(?:->\s*(.+)|:\s*(.+))?\s*$", raw)
+    match = re.match(r"\s*([\w$]+)\s*\((.*)\)\s*(?:->\s*(.+)|:\s*(.+))?\s*$", raw, re.S)
     if not match:
         return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
     name = match.group(1)

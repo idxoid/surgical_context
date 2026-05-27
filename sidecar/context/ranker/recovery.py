@@ -228,10 +228,18 @@ class StructuralRecovery:
             prefixes.append("/".join(parts[:end_idx]) + "/")
 
         parent = norm.rsplit("/", 1)[0]
+        file_name = norm.rsplit("/", 1)[-1]
+        file_stem = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
         if "/" in parent:
             grandparent = parent.rsplit("/", 1)[0]
-            if parent.rsplit("/", 1)[-1] == grandparent.rsplit("/", 1)[-1]:
+            parent_dir_name = parent.rsplit("/", 1)[-1]
+            if parent_dir_name == grandparent.rsplit("/", 1)[-1]:
+                # foo/foo/ pattern — scope to the repeated dir
                 prefixes.append(parent + "/")
+            elif file_stem == parent_dir_name:
+                # Subpackage entry point: consumer/consumer.py, worker/worker.py, etc.
+                # Siblings live in the grandparent dir, so widen scope there.
+                prefixes.append(grandparent + "/")
 
         if not prefixes:
             prefixes.append(parent + "/")
@@ -274,22 +282,30 @@ class StructuralRecovery:
         }
         terms = {term for term in re.findall(r"[a-z_][a-z0-9_]{3,}", text) if term not in stop}
         if any(term in text for term in ("depend", "inject")):
-            terms.update({"depend", "dependant", "dependency", "solve", "resolver"})
+            terms.update(
+                {
+                    "container",
+                    "depend",
+                    "dependant",
+                    "dependency",
+                    "inject",
+                    "injector",
+                    "instance",
+                    "module",
+                    "provider",
+                    "resolve",
+                    "resolver",
+                    "solve",
+                    "wrapper",
+                }
+            )
         if any(term in text for term in ("route", "routing", "dispatch", "middleware", "handler")):
             terms.update({"route", "router", "dispatch", "middleware", "handle"})
         if "delegate" in text:
             terms.update({"router", "dispatch", "handle", "middleware"})
-        if any(term in text for term in ("before_request", "after_request", "hook", "lifecycle")):
-            terms.update(
-                {
-                    "before_request",
-                    "after_request",
-                    "preprocess_request",
-                    "process_response",
-                    "do_teardown_request",
-                    "dispatch_request",
-                }
-            )
+        if any(term in text for term in HOOK_FLOW_TARGET_TOKENS):
+            terms.update(HOOK_FLOW_TARGET_TOKENS)
+            terms.update(HOOK_RUNTIME_TOKENS)
         if any(
             term in text for term in ("relationship", "foreign", "lazy", "loading", "collection")
         ):
@@ -306,7 +322,7 @@ class StructuralRecovery:
                 }
             )
         if "render" in text and any(term in text for term in ("compile", "template", "dom")):
-            terms.update({"compile", "createvnode", "patch", "renderer", "vnode"})
+            terms.update({"compile", "patch", "renderer"})
         if any(term in text for term in ("webview", "extension", "vscode", "provider")):
             terms.update({"webview", "provider", "activate", "register", "handler"})
         if "sql" in text and any(term in text for term in ("query", "statement", "execute")):
@@ -324,6 +340,14 @@ class StructuralRecovery:
             )
         if any(term in text for term in ("gate", "lifecycle", "ingested", "event_time", "clock")):
             terms.update({"gate", "ingest", "engine", "chain", "window", "time"})
+        if any(term in text for term in ("broker", "publish", "enqueue")) and any(
+            term in text for term in ("message", "task", "send", "sent")
+        ):
+            terms.update({"producer", "publish", "channel", "connection", "backend", "send"})
+        if any(term in text for term in ("execute", "receive", "process")) and any(
+            term in text for term in ("worker", "task", "message", "job")
+        ):
+            terms.update({"request", "strategy", "handler", "pool", "invoke"})
         return sorted(term for term in terms if len(term) >= 4)
 
     def trace_dependency_runtime_symbol_rows(
@@ -938,7 +962,7 @@ class StructuralRecovery:
             return []
 
     def trace_topic_scope_prefixes(self, file_path: str, terms: list[str]) -> list[str]:
-        """Scopes for topic search, widened for monorepo compile/build pipelines."""
+        """Scopes for topic search, widened for monorepo cross-package traces."""
         prefixes = self.source_scope_prefixes(file_path)
         lowered_terms = {term.lower() for term in terms}
         if lowered_terms.intersection(
@@ -946,10 +970,21 @@ class StructuralRecovery:
                 "build",
                 "compile",
                 "compiler",
+                "container",
+                "depend",
+                "dependency",
                 "hydrate",
+                "inject",
+                "injector",
+                "instance",
+                "module",
+                "provider",
                 "render",
+                "resolve",
+                "resolver",
                 "template",
                 "transform",
+                "wrapper",
             }
         ):
             norm = (file_path or "").replace("\\", "/")
@@ -1218,7 +1253,8 @@ class StructuralRecovery:
         required_roles: list[str],
     ) -> bool:
         scoped = set(normalize_roles(required_roles))
-        if "composition_surface" not in scoped:
+        _routing_eligible = {"composition_surface", "factory_surface", "route_builder", "decorator_processor"}
+        if not scoped.intersection(_routing_eligible):
             return False
         m = (mechanism or "").lower()
         q = (query or "").lower()
@@ -1241,7 +1277,9 @@ class StructuralRecovery:
                 str(row.get("file_path") or "").lower(),
             ]
         )
-        target_hit = any(token in target_ctx for token in ROUTING_FLOW_TARGET_TOKENS)
+        target_hit = any(token in target_ctx for token in ROUTING_FLOW_TARGET_TOKENS) or any(
+            token in target_ctx for token in ROUTING_FLOW_PATH_TOKENS
+        )
         row_hit = any(token in row_ctx for token in ROUTING_FLOW_TARGET_TOKENS)
         path_hit = any(token in row_ctx for token in ROUTING_FLOW_PATH_TOKENS)
         name_hit = (row.get("name") or "").lower() in ROUTING_COMPOSITION_SYMBOL_NAMES
@@ -1258,6 +1296,15 @@ class StructuralRecovery:
         scope_prefixes = self.source_scope_prefixes(target.file_path or "")
         if not scope_prefixes:
             return []
+        # Monorepo widening: packages/<pkg>/... → packages/ so that sibling
+        # packages (e.g. packages/core/router vs packages/common/decorators)
+        # are reachable for routing resolution questions.
+        norm = (target.file_path or "").replace("\\", "/")
+        marker = "/packages/"
+        if marker in norm:
+            packages_root = norm.split(marker, 1)[0] + marker
+            if packages_root not in scope_prefixes:
+                scope_prefixes = [packages_root, *scope_prefixes]
         terms = sorted(
             {
                 "router",
@@ -1336,7 +1383,8 @@ class StructuralRecovery:
         limit: int = 8,
     ) -> list[Candidate]:
         """Explicit ``composition_surface`` anchors for router/middleware trace questions."""
-        if not RankerScoring.trace_dependency_gain_mode(mechanism, query):
+        m = (mechanism or "").lower()
+        if not RankerScoring.trace_dependency_gain_mode(mechanism, query) and "decorator_routing" not in m:
             return []
         if not self.is_routing_flow_context(
             target=target,
@@ -1906,17 +1954,7 @@ class StructuralRecovery:
         qualified = str(row.get("qualified_name") or "").lower()
         haystack = f"{name} {qualified} {str(row.get('file_path') or '').lower()}"
         if self.hook_flow_recovery_hint(row, target=target):
-            return any(
-                token in haystack
-                for token in (
-                    "preprocess_request",
-                    "process_response",
-                    "do_teardown_request",
-                    "full_dispatch_request",
-                    "dispatch_request",
-                    "wsgi_app",
-                )
-            )
+            return any(token in haystack for token in HOOK_RUNTIME_TOKENS)
         if not self.dependency_flow_recovery_hint(row, target=target):
             return False
         action_hit = any(
@@ -1992,7 +2030,6 @@ class StructuralRecovery:
         token_hit = any(token in haystack for token in API_SIGNAL_TOKENS if token != "api") or bool(
             re.search(r"(^|[^a-z])api([^a-z]|$)", haystack)
         )
-        token_hit = token_hit or "openapi" in haystack
         if kind == "object_api":
             token_hit = token_hit or any(
                 token in haystack for token in ("client", "handler", "endpoint", "route")
@@ -2133,7 +2170,7 @@ class StructuralRecovery:
         target_ctx = f"{(target.name or '').lower()} {(target.file_path or '').lower()}"
         if any(token in target_ctx for token in HOOK_FLOW_TARGET_TOKENS):
             return True
-        return "before_request" in q or "after_request" in q
+        return any(token in q for token in HOOK_FLOW_TARGET_TOKENS)
 
     def needs_structural_recovery(self, target: SubgraphNode) -> bool:
         """Identify thin wrapper targets that benefit from file/import recovery.

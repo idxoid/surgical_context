@@ -29,6 +29,12 @@ _GENERIC_AUTO_ROLE_PLANS: dict[str, tuple[str, ...]] = {
         "core_runtime",
         "runtime_surface",
     ),
+    "worker_execution": (
+        "integration_surface",
+        "orchestrator",
+        "executor",
+        "runtime_surface",
+    ),
 }
 
 
@@ -50,6 +56,8 @@ class RoleFulfilment:
             name=getattr(c, "name", "") or "",
             kind=getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "",
         )
+        if self._is_public_primary_target(c):
+            inferred.extend(["api_surface", "impact_public_api"])
         return normalize_roles([*explicit, *inferred])
 
     def roles_of(self, c: Candidate | object) -> list[str]:
@@ -100,6 +108,21 @@ class RoleFulfilment:
                     return str(role)
         return "supporting_surface"
 
+    def _is_public_primary_target(self, c: Candidate | object) -> bool:
+        """A directly requested public symbol is itself an API surface."""
+        if getattr(c, "relation", "") not in {"target", "target_signature_only"}:
+            return False
+        name = (getattr(c, "name", "") or "").strip()
+        if not name or name.startswith("_"):
+            return False
+        kind = (getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "").lower()
+        if kind not in {"class", "function", "method", "object_api", "module"}:
+            return False
+        path = (getattr(c, "file_path", "") or "").replace("\\", "/").lower()
+        if any(marker in path for marker in ("/tests/", "/test_", "/docs/", "/examples/")):
+            return False
+        return True
+
     def canonical_role_for_symbol_uid(self, uid: str) -> str:
         cid = self.host._derived_role_by_uid.get(uid)
         if cid is None:
@@ -130,6 +153,12 @@ class RoleFulfilment:
             return ""
         uid = getattr(target, "uid", "") or ""
         if not uid:
+            return ""
+        # Barrel __init__ files aggregate the entire package as neighbors, so
+        # role overlap scores reflect the package contents rather than the
+        # target's own mechanism — skip structural detection for them.
+        file_path = (getattr(target, "file_path", "") or "").replace("\\", "/")
+        if file_path.endswith("/__init__.py"):
             return ""
         neighbors = self.host._one_hop_connected_symbol_uids(uid, limit=48)
         roles_observed: list[str] = []
@@ -273,6 +302,10 @@ class RoleFulfilment:
             )
         ):
             return "auto:module_composition"
+        if any(term in haystack for term in ("receive", "execute", "consume", "process")) and any(
+            term in haystack for term in ("worker", "message", "task", "job", "broker")
+        ):
+            return "auto:worker_execution"
         if not archetypes:
             return ""
         for item in archetypes:

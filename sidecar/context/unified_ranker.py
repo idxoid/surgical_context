@@ -277,7 +277,8 @@ class UnifiedRanker:
             WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT any_r) AS total_edges
         }
-        WITH s, f, c, outgoing_edges, incoming_edges, total_edges
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges,
+             CASE WHEN toLower(f.path) CONTAINS ('/' + toLower($name) + '.') THEN 1 ELSE 0 END AS stem_match
         ORDER BY
           CASE
             WHEN f.path CONTAINS '/test/' OR f.path CONTAINS '/tests/'
@@ -285,6 +286,7 @@ class UnifiedRanker:
               OR f.path CONTAINS '/samples/' THEN 1
             ELSE 0
           END ASC,
+          stem_match DESC,
           total_edges DESC,
           outgoing_edges DESC,
           size(f.path) ASC
@@ -658,6 +660,11 @@ class UnifiedRanker:
             return -0.4
         if "/__init__." in file_path:
             return 0.1
+        # Primary package entry files rank above sibling modules when resolving
+        # duplicate symbol matches (e.g. main.py beats root_model.py).
+        file_lc = file_path.lower().replace("\\", "/")
+        if any(file_lc.endswith(s) for s in ("/main.py", "/index.py", "/app.py", "/base.py")):
+            return 0.55
         return 0.35
 
     def _target_role_bonus(self, role: str) -> float:
@@ -732,14 +739,16 @@ class UnifiedRanker:
         ):
             bonus += 0.2
         if "high-level api" in query_lower or "high level api" in query_lower:
-            if "/main.py" in file_path.lower() or "basemodel" in qualified_name.lower():
-                bonus += 0.45
-        if (
-            "rootmodel" in qualified_name.lower()
-            and "rootmodel" not in query_lower
-            and "root model" not in query_lower
-        ):
-            bonus -= 0.35
+            bonus += 0.25
+        # Suppress api_surface siblings not mentioned in the query: if the query
+        # names a specific class via a query term overlap, penalise other top-level
+        # classes in the same role whose name does not appear in the query at all.
+        if role == "api_surface" and kind == "class" and qualified_name:
+            name_lc = qualified_name.lower().rsplit(".", 1)[-1]
+            if name_lc and name_lc not in query_lower and len(name_lc) >= 5:
+                query_terms_set = set(self._query_terms(query))
+                if query_terms_set and not any(t in name_lc for t in query_terms_set):
+                    bonus -= 0.35
 
         query_terms = self._query_terms(query)
         haystack = f"{file_path.lower()} {qualified_name.lower()}"
@@ -1029,10 +1038,16 @@ class UnifiedRanker:
                 step == "trace-topic-anchor" for step in c.provenance
             )
             is_query_topic_anchor = any(step == "query-topic-anchor" for step in c.provenance)
+            # Subsystem-isolated candidates (noise_factor driven to ~0.15 by
+            # topic_focus_factor) should not claim the top role-filler tier —
+            # they are off-topic even if their cluster role overlaps required.
+            is_subsystem_isolated = c.noise_factor < 0.2 and c.kind != "doc"
             # Tier 0 (best): candidates that fill a missing required role the
             # target itself doesn't cover. These must beat raw doc-relevance
             # so a large/weak role-filler still seats before unrelated docs.
             if roles & unfilled_required:
+                if is_subsystem_isolated:
+                    return (0.5, trace_focus_rank, base)
                 return (2, trace_focus_rank, base)
             if is_trace_topic_anchor:
                 trace_topic_tier = 1.5 if dependency_trace_sort else 2.5

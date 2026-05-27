@@ -11,6 +11,7 @@ from tree_sitter import Query
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge
 from sidecar.parser.uid import (
+    _node_text,
     compute_uid,
     current_project_root,
     module_name_from_path,
@@ -161,7 +162,7 @@ class PythonAdapter(TreeSitterAdapter):
             if child.type == "keyword_argument":
                 break
             if child.type == "identifier":
-                out.append(source_code[child.start_byte : child.end_byte])
+                out.append(_node_text(child))
                 if len(out) >= limit:
                     break
                 continue
@@ -213,7 +214,7 @@ class PythonAdapter(TreeSitterAdapter):
             confidence = 0.4
 
             if func_node.type == "identifier":
-                call_name = source_code[func_node.start_byte : func_node.end_byte]
+                call_name = _node_text(func_node)
                 rel_type = self._classify_direct_call(call_name)
                 tier = "direct" if rel_type == "CALLS_DIRECT" else "guess"
                 confidence = 1.0 if rel_type == "CALLS_DIRECT" else 0.4
@@ -239,8 +240,8 @@ class PythonAdapter(TreeSitterAdapter):
                     continue
                 receiver_node = children[0]
                 method_node = children[-1]
-                receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
-                call_name = source_code[method_node.start_byte : method_node.end_byte]
+                receiver_text = _node_text(receiver_node)
+                call_name = _node_text(method_node)
 
                 if receiver_text == "self":
                     rel_type = "CALLS_DYNAMIC"

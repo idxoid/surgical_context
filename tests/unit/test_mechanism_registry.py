@@ -58,22 +58,18 @@ def test_unknown_mechanism_has_no_builtin_roles():
     assert required_roles_for_mechanism("generated_api_schema") == []
 
 
-def test_builtin_ranker_fusion_mechanism():
-    assert "surgical_context_ranker_fusion" in known_mechanisms()
-    roles = required_roles_for_mechanism("surgical_context_ranker_fusion")
-    assert roles == ["api_surface", "orchestrator", "factory_surface", "runtime_surface"]
-    specs = role_backfill_specs_for_mechanism("surgical_context_ranker_fusion")
-    names = {row["name"] for row in specs["factory_surface"]}
-    assert names >= {"rank", "_fuse", "BudgetPruner"}
+def test_builtin_ranker_fusion_mechanism_no_longer_hardcoded():
+    # surgical_context_ranker_fusion is no longer a builtin — all preloaded dispatch removed.
+    assert "surgical_context_ranker_fusion" not in known_mechanisms()
+    assert required_roles_for_mechanism("surgical_context_ranker_fusion") == []
+    assert role_backfill_specs_for_mechanism("surgical_context_ranker_fusion") == {}
 
 
-def test_preloaded_ranker_fusion_for_unified_ranker_query():
-    target = _target("UnifiedRanker", "/repo/sidecar/context/unified_ranker.py")
-    query = (
-        "How does UnifiedRanker.rank merge graph BFS candidates, vector hits, "
-        "and doc bridges before budget pruning?"
-    )
-    assert determine_preloaded_mechanism(target, query) == "surgical_context_ranker_fusion"
+def test_preloaded_mechanism_always_empty():
+    # determine_preloaded_mechanism is intentionally inert — no hardcoded dispatch for any repo.
+    assert determine_preloaded_mechanism(_target("v1", "/repo/pydantic/v1/__init__.py"), "compat") == ""
+    assert determine_preloaded_mechanism(_target("Controller", "/repo/nestjs/controller.decorator.ts"), "route") == ""
+    assert determine_preloaded_mechanism(_target("UnifiedRanker", "/repo/sidecar/context/unified_ranker.py"), "rank") == ""
 
 
 def test_infer_ranker_fusion_roles_marks_factory_surface():
@@ -96,7 +92,6 @@ def test_known_mechanisms_includes_catalog_overlay_keys():
     assert set(known_mechanisms(role_catalog=catalog)) == {
         "custom_mech",
         "other_mech",
-        "surgical_context_ranker_fusion",
     }
 
 

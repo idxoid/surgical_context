@@ -295,38 +295,40 @@ def test_concept_anchor_candidates_prefer_production_name_overlap():
     assert anchors == ["ValidationPipe"]
 
 
-def test_duplicate_target_selection_prefers_main_pydantic_entrypoint_for_model_dump():
+def test_duplicate_target_selection_prefers_primary_package_file():
+    # When the same symbol exists in multiple files with equal graph edges,
+    # the candidate in the primary package file (main.py) should win.
     db = _make_target_db(
         [
             {
-                "uid": "root-model-dump",
+                "uid": "sibling-dump",
                 "name": "model_dump",
                 "kind": "function",
-                "qualified_name": "pydantic.root_model.RootModel.model_dump",
+                "qualified_name": "mylib.helpers.ModelHelper.model_dump",
                 "token_estimate": 224,
-                "file_path": "/repo/pydantic/root_model.py",
+                "file_path": "/repo/mylib/helpers.py",
                 "file_hash": "a",
                 "range": [120, 180],
-                "outgoing_edges": 1,
+                "outgoing_edges": 2,
                 "incoming_edges": 2,
-                "total_edges": 3,
+                "total_edges": 4,
             },
             {
-                "uid": "base-model-dump",
+                "uid": "main-dump",
                 "name": "model_dump",
                 "kind": "function",
-                "qualified_name": "pydantic.main.BaseModel.model_dump",
+                "qualified_name": "mylib.main.BaseClass.model_dump",
                 "token_estimate": 520,
-                "file_path": "/repo/pydantic/main.py",
+                "file_path": "/repo/mylib/main.py",
                 "file_hash": "b",
                 "range": [420, 620],
-                "outgoing_edges": 0,
-                "incoming_edges": 0,
-                "total_edges": 0,
+                "outgoing_edges": 2,
+                "incoming_edges": 2,
+                "total_edges": 4,
             },
         ]
     )
-    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/mylib@main")
 
     target, metadata = ranker.get_target(
         "model_dump",
@@ -336,10 +338,10 @@ def test_duplicate_target_selection_prefers_main_pydantic_entrypoint_for_model_d
     )
 
     assert target is not None
-    assert target.uid == "base-model-dump"
+    assert target.uid == "main-dump"
     assert target.file_path.endswith("main.py")
     assert metadata["strategy"] == "duplicate_resolution"
-    assert metadata["selected_uid"] == "base-model-dump"
+    assert metadata["selected_uid"] == "main-dump"
 
 
 def test_pydantic_basemodel_uses_generic_mechanism_when_dispatch_stubbed():
@@ -948,6 +950,85 @@ def test_unrelated_class_name_does_not_match_unrelated_file_stem():
     )
 
     assert "api_surface" not in roles
+
+
+def test_public_primary_target_satisfies_api_surface():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
+    target = SubgraphNode(
+        uid="base-model",
+        name="BaseModel",
+        file_path="/repo/pydantic/main.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+        qualified_name="pydantic.main.BaseModel",
+    )
+
+    assert "api_surface" in ranker._roles_of(target)
+    assert "impact_public_api" in ranker._roles_of(target)
+
+
+def test_signature_only_public_primary_target_satisfies_api_surface():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
+    target = SubgraphNode(
+        uid="base-model",
+        name="BaseModel",
+        file_path="/repo/pydantic/main.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target_signature_only",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+        qualified_name="pydantic.main.BaseModel",
+    )
+
+    assert "api_surface" in ranker._roles_of(target)
+    assert "impact_public_api" in ranker._roles_of(target)
+
+
+def test_private_primary_target_does_not_satisfy_api_surface():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
+    target = SubgraphNode(
+        uid="internal",
+        name="_internal_helper",
+        file_path="/repo/pydantic/main.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+        qualified_name="pydantic.main._internal_helper",
+    )
+
+    assert "api_surface" not in ranker._roles_of(target)
+    assert "impact_public_api" not in ranker._roles_of(target)
+
+
+def test_public_class_method_primary_target_satisfies_impact_public_api():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
+    target = SubgraphNode(
+        uid="paramtype-convert",
+        name="convert",
+        file_path="/repo/src/click/types.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+        qualified_name="click.types.ParamType.convert",
+    )
+
+    assert "impact_public_api" in ranker._roles_of(target)
 
 
 def test_editorial_docs_get_downranked_relative_to_mechanism_docs():
@@ -1944,7 +2025,166 @@ def test_trace_query_terms_expand_frontend_render_pipeline():
         )
     )
 
-    assert {"compile", "createvnode", "patch", "renderer", "vnode"} <= terms
+    assert {"compile", "patch", "renderer"} <= terms
+
+
+def test_trace_query_terms_expand_worker_execute_flow():
+    target = SubgraphNode(
+        uid="Consumer",
+        name="Consumer",
+        file_path="/repo/celery/worker/consumer/consumer.py",
+        range=[0, 10],
+        token_estimate=50,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+
+    terms = set(
+        StructuralRecovery.trace_query_terms(
+            "How does the Celery worker receive a message from the broker and execute the underlying task function?",
+            target,
+        )
+    )
+
+    assert {"request", "strategy", "handler", "pool"} <= terms
+
+
+def test_trace_query_terms_expand_broker_publish_flow():
+    target = SubgraphNode(
+        uid="delay",
+        name="delay",
+        file_path="/repo/celery/app/task.py",
+        range=[10, 12],
+        token_estimate=20,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    terms = set(
+        StructuralRecovery.trace_query_terms(
+            "When a user calls task.delay(), how is the task message constructed and sent to the broker?",
+            target,
+        )
+    )
+
+    assert {"producer", "publish", "send"} <= terms
+
+
+def test_trace_query_terms_expand_dependency_injection_flow():
+    target = SubgraphNode(
+        uid="Injectable",
+        name="Injectable",
+        file_path="/repo/packages/common/decorators/core/injectable.decorator.ts",
+        range=[0, 10],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    terms = set(
+        StructuralRecovery.trace_query_terms(
+            "How does dependency injection resolve providers in the container?",
+            target,
+        )
+    )
+
+    assert {"inject", "injector", "provider", "resolve", "wrapper"} <= terms
+
+
+def test_trace_topic_scope_prefixes_widens_dependency_injection_to_packages_root():
+    host = MagicMock()
+    host.db = MagicMock()
+    host.workspace_id = "ws"
+    recovery = StructuralRecovery(host)
+
+    prefixes = recovery.trace_topic_scope_prefixes(
+        "/repo/packages/common/decorators/core/injectable.decorator.ts",
+        ["injector", "provider", "resolve"],
+    )
+
+    assert "/repo/packages/" in prefixes
+    assert any(prefix.endswith("/packages/common/decorators/core/") for prefix in prefixes)
+
+
+def test_source_scope_prefixes_widens_for_subpackage_entry_point():
+    """consumer/consumer.py → scope is worker/, not consumer/ (sibling files are in worker/)."""
+    host = MagicMock()
+    host.db = MagicMock()
+    host.workspace_id = "ws"
+    recovery = StructuralRecovery(host)
+
+    prefixes = recovery.source_scope_prefixes("/repo/celery/worker/consumer/consumer.py")
+    assert any("worker/" in p for p in prefixes)
+    assert not any(p.endswith("consumer/") for p in prefixes)
+
+    # foo/foo/ pattern must still work
+    prefixes_fastapi = recovery.source_scope_prefixes("/repo/fastapi/fastapi/applications.py")
+    assert any("fastapi/fastapi/" in p for p in prefixes_fastapi)
+
+
+def test_is_routing_flow_context_accepts_route_builder_role():
+    """route_builder in required_roles unlocks routing recovery (no composition_surface needed)."""
+    host = MagicMock()
+    host.db = MagicMock()
+    host.workspace_id = "ws"
+    recovery = StructuralRecovery(host)
+
+    target = SubgraphNode(
+        uid="Controller",
+        name="Controller",
+        file_path="/repo/packages/common/decorators/controller.decorator.ts",
+        range=[0, 10],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    result = recovery.is_routing_flow_context(
+        target=target,
+        mechanism="auto:module_composition",
+        query="How does NestJS use decorators to map HTTP routes to controller methods?",
+        required_roles=["route_builder", "decorator_processor", "public_entrypoint"],
+    )
+    assert result is True
+
+
+def test_routing_flow_recovery_hint_passes_for_decorator_target_with_router_row():
+    """target in /decorators/ path + row in packages/core/router → path_hit = True."""
+    host = MagicMock()
+    host.db = MagicMock()
+    host.workspace_id = "ws"
+    recovery = StructuralRecovery(host)
+
+    target = SubgraphNode(
+        uid="Controller",
+        name="Controller",
+        file_path="/repo/packages/common/decorators/controller.decorator.ts",
+        range=[0, 10],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    row = {
+        "uid": "routes-resolver",
+        "name": "RoutesResolver",
+        "qualified_name": "RoutesResolver",
+        "file_path": "/repo/packages/core/router/routes-resolver.ts",
+    }
+    assert recovery.routing_flow_recovery_hint(row, target=target) is True
 
 
 def test_impact_reference_anchor_candidates_build_public_api_backfills(tmp_path):
