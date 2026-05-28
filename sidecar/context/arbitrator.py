@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 
 class ContextArbitrator:
-    """Orchestrator: composes GraphExpander, ContextDeduplicator, CodeResolver, DocResolver, PromptCompiler."""
+    """Orchestrator: UnifiedRanker → CodeResolver → PromptCompiler (intent-aware tier assembly)."""
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class ContextArbitrator:
         question: str = "",
         token_budget: int = 4000,
     ) -> PromptContext | str:
-        """Orchestrate the pipeline: expand → deduplicate → resolve → compile (with intent-aware tier selection)."""
+        """Orchestrate the pipeline: rank → resolve → compile (with intent-aware tier selection)."""
         intent_signal = IntentClassifier.classify_with_metadata(question)
         intent_policy = IntentClassifier.policy_from_signal(intent_signal)
         intent_resolution = IntentClassifier.resolve_signal_with_profile(

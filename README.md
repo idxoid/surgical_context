@@ -73,6 +73,8 @@ Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the a
 
 The local setup and smoke-test path live in **[local_development.md](docs/local_development.md)** and `scripts/local_dev.py`. The most important open gaps are broader real-repo benchmark coverage beyond the current FastAPI, Redux Toolkit, and Pydantic baselines, continued precision work on broad/doc-heavy retrieval paths, doc-anchor confidence/type scoring, consistent workspace/branch metadata in the prompt contract, and extension synchronization/accessibility polish. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](docs/road_map.md)** for the canonical backlog in this branch.
 
+**Related experiments (external repos, not submodules):** [context-deduplicator](https://github.com/idxoid/context-deduplicator) and [marginal-utility-selector](https://github.com/idxoid/marginal-utility-selector) were early standalone prototypes. Production logic lives in `sidecar/context/` (`PromptCompiler`, `BudgetPruner`, `sidecar/context/deduplicator.py`).
+
 ---
 
 ## Writing Documentation
