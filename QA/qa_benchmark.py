@@ -570,26 +570,10 @@ def reset_index_state(
     db.close()
 
     vector_db = LanceDBClient()
-    doc_rows = vector_db._table.to_pandas()
-    doc_ids = [
-        row["id"]
-        for _, row in doc_rows.iterrows()
-        if _path_matches_prefix(row.get("file_path"), prefixes)
-    ]
-    for row_id in doc_ids:
-        try:
-            vector_db._table.delete(f"id = '{_quote_lancedb(row_id)}'")
-        except Exception:
-            pass
-
-    symbol_rows = vector_db._sym_table.to_pandas()
-    symbol_uids = [
-        row["uid"]
-        for _, row in symbol_rows.iterrows()
-        if _path_matches_prefix(row.get("file_path"), prefixes)
-    ]
-    if symbol_uids:
-        vector_db.delete_symbol_embeddings(symbol_uids)
+    if wipe_workspace:
+        vector_db.delete_workspace(workspace_id)
+    else:
+        vector_db.delete_path_prefixes(workspace_id, prefixes)
 
 
 def setup_fixture_db(
