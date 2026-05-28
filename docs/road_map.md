@@ -8,7 +8,7 @@
 >
 > **See also:** [concept.md](concept.md), [product_direction_memo.md](product_direction_memo.md), [review_findings_2026-04-17.md](review_findings_2026-04-17.md), [README.md](../README.md)
 >
-> **Last updated:** 2026-05-26 (`context-engine-refocus`; safety hardening through `a9f04bd`)
+> **Last updated:** 2026-05-28 (`context-engine-refocus`; extension Impact + selected-request sync docs)
 
 ---
 
@@ -68,7 +68,7 @@ Active work for the local release. Completed stabilization and phase history are
 - [x] Local-first LLM defaults: `MODEL_PREFERENCE=ollama`, `ALLOW_CLOUD_LLM=false` (cloud opt-in only).
 - [x] Default cloud model `claude-sonnet-4-6` via `ANTHROPIC_MODEL` (replaces retired `claude-sonnet-4-20250514`).
 - [x] `/ask/stream` returns degraded `chunk` + `context` when the LLM is unreachable (not error-only).
-- [ ] Finish streaming and selected-request synchronization so `Ask / Inspect / Impact` always point to the same request.
+- [~] Finish streaming and selected-request synchronization so `Ask / Inspect / Impact` always point to the same request. **Current:** selected request is synced from webview to extension host (`request.selected`) and reused by Inspector/Impact commands; **remaining:** restore/persist this selection across reloads from stored history bundles.
 - [ ] Keep dashboard, settings, and health states useful when providers are missing, local-only, or degraded.
 - [ ] Add small but solid accessibility/keyboard polish for the extension surfaces.
 
@@ -83,7 +83,7 @@ Active work for the local release. Completed stabilization and phase history are
 - [~] Latency SLO — request/stage metrics for `/ask`, `/ask/stream`, `/search/unified`; index queue counters exist; **remaining:** index-duration SLO gates.
 - [ ] Extension UX: model route, fallback level, token/cost signals easy to inspect.
 - [~] Canonical role coverage — green on control repos; **remaining:** Flask/Django/Express/Vue/NestJS tails (export shape, file recall).
-- [ ] Impact analysis remains **shallow by design** until proven otherwise: `AFFECTS` is bounded reverse reachability, not full blast-radius across frameworks, codegen, templates, runtime dispatch, and tests.
+- [~] Impact analysis remains **shallow by design** until proven otherwise: `AFFECTS` is bounded reverse reachability, not full blast-radius across frameworks, codegen, templates, runtime dispatch, and tests. **Current:** VS Code Impact tab shows affected symbols/files, impact counts/depth, and opens related files; **remaining:** explicit shallow-scope disclaimer and broader validation.
 
 ### P3 — Real-repo validation
 - [x] QA harness on [real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml) (75 questions with click/celery satellite includes, 13 repos, 3 intents).
@@ -135,7 +135,7 @@ Ordered execution lanes — do not regress green control repos while working tai
 | 1 | **Baseline lock** | Keep `fastapi`, `pydantic`, `redux_toolkit`, `sqlalchemy` green after every ranker change. |
 | 2 | **Python tails** | Close role/file tails in `django` / `flask` (trace/explain only; not impact scope). |
 | 3 | **JS target resolution** | `express` / `vue` / `nestjs` — export shapes and symbol resolution before weight tuning. |
-| 4 | **Extension product** | `Ask / Inspect / Impact` request sync; surface route, fallback level, `pruned[]`, cache hits in UI. |
+| 4 | **Extension product** | Finish request-sync persistence; surface route, fallback level, `pruned[]`, cache hits in UI. |
 | 5 | **Doc-anchor polish** | Calibrate confidence/type; stop docs ranking as undifferentiated noise in the inspector. |
 | 6 | **Impact (deferred)** | Separate iteration after non-impact lanes stabilize; document shallow `AFFECTS` in UI. |
 
