@@ -34,8 +34,8 @@ questions:
   - id: celery_q02
     repo: celery
     core12: false
-    symbol: Task.delay
-    question: "When a user calls task.delay(), how is the task message constructed and sent to the broker?"
+    symbol: Task.apply_async
+    question: "When a user calls task.delay() and it delegates to apply_async(), how is the task message constructed and sent to the broker?"
     difficulty: hard
     intent: trace_dependency
     expected_mode: symbol
@@ -45,7 +45,7 @@ questions:
       - serializer_handle
       - integration_surface
       - orchestrator
-    expected_symbols: [Task, delay, apply_async, send_task, Producer]
+    expected_symbols: [Task, delay, apply_async, send_task, create_task_message, send_task_message, Producer]
     expected_files: [celery/app/task.py, celery/app/amqp.py, celery/app/base.py]
 
   - id: celery_q03

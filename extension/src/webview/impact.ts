@@ -9,7 +9,7 @@ import {
 import {
   renderSymbolSummaryCard,
   renderAffectsGroup,
-  renderPlaceholderGroup,
+  renderFilesGroup,
   renderActionButtonRow,
   escapeHtml,
 } from './shared/impactLayout';
@@ -117,26 +117,24 @@ class ImpactPanel {
       symbol: this.currentSymbol,
       filePath: this.currentImpact.file_path || 'unknown',
       uid: this.currentImpact.symbol_uid || this.currentSymbol,
+      affectedCount: this.currentImpact.affected_count || this.currentImpact.affected_symbols?.length || 0,
+      fileCount: this.currentImpact.affected_file_count || this.currentImpact.affected_files?.length || 0,
+      maxDepth: this.currentImpact.max_depth || 0,
+      sourceLabel: 'live graph',
     });
 
     const affectsGroup = renderAffectsGroup(this.currentImpact.affected_symbols || []);
-    const callsGroup = renderPlaceholderGroup('Calls', 'Calls are coming in Phase 6');
-    const calledByGroup = renderPlaceholderGroup('Called By', 'Called By information is coming in Phase 6');
-    const dependsOnGroup = renderPlaceholderGroup('Depends On', 'Dependency analysis is coming in Phase 6');
-    const docsCoveringGroup = renderPlaceholderGroup('Docs Covering', 'Documentation linking is coming in Phase 6');
+    const filesGroup = renderFilesGroup(this.currentImpact.affected_files || [], false);
     const actionButtons = renderActionButtonRow();
 
     root.innerHTML = `
       <div class="impact-container">
         ${summaryCard}
+        ${actionButtons}
         <div class="impact-groups">
           ${affectsGroup}
-          ${callsGroup}
-          ${calledByGroup}
-          ${dependsOnGroup}
-          ${docsCoveringGroup}
+          ${filesGroup}
         </div>
-        ${actionButtons}
       </div>
     `;
 
@@ -165,6 +163,16 @@ class ImpactPanel {
         vscode.postMessage({
           type: 'action.openChat',
           prefillSymbol: this.currentSymbol,
+        });
+      });
+    }
+
+    const openFilesBtn = document.querySelector('[data-action="open-related-files"]');
+    if (openFilesBtn && this.currentImpact?.affected_files?.length) {
+      openFilesBtn.addEventListener('click', () => {
+        vscode.postMessage({
+          type: 'impact.openFiles',
+          filePaths: this.currentImpact?.affected_files || [],
         });
       });
     }

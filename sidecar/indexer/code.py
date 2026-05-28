@@ -102,6 +102,15 @@ def index_file(
     edge_refresh_uids = changed_uids or current_uids
     removed_uids = sorted(set(existing_symbols) - set(current_uids))
 
+    # Snapshot degree-edge neighbors of symbols whose edges are about to change or
+    # be deleted, BEFORE mutation: a removed symbol's neighbor still needs its
+    # degree corrected, but becomes unreachable once the symbol is detached.
+    degree_neighbors = getattr(db, "degree_neighbor_uids", None)
+    pre_neighbor_uids: list[str] = []
+    if callable(degree_neighbors):
+        seed_for_neighbors = sorted(set(edge_refresh_uids) | set(removed_uids))
+        pre_neighbor_uids = degree_neighbors(seed_for_neighbors, workspace_id=workspace_id)
+
     # Always update File.hash, but preserve unchanged Symbol nodes and embeddings.
     db.upsert_file_structure(file_path, file_hash, changed_symbols, workspace_id=workspace_id)
 
@@ -153,6 +162,44 @@ def index_file(
     inheritance = extractor.extract_inheritance(file_path)
     if inheritance and edge_refresh_uids:
         db.link_inheritance(inheritance, workspace_id=workspace_id)
+
+    # Lazy-proxy bindings: drop stale ProxyBinding nodes for this file, recreate,
+    # then forward this file's proxy-var calls through PROXY_OF to the real type.
+    delete_proxies = getattr(db, "delete_proxy_bindings_for_file", None)
+    link_proxies = getattr(db, "link_proxy_bindings", None)
+    resolve_proxies = getattr(db, "resolve_proxy_calls", None)
+    proxy_uids: list[str] = []
+    if callable(delete_proxies):
+        delete_proxies(file_path, workspace_id=workspace_id)
+    if callable(link_proxies):
+        proxy_bindings = extractor.extract_proxy_bindings(file_path)
+        if proxy_bindings:
+            link_proxies(proxy_bindings, workspace_id=workspace_id)
+            proxy_uids = [str(b["proxy_uid"]) for b in proxy_bindings if b.get("proxy_uid")]
+    if callable(resolve_proxies):
+        proxy_calls = [
+            {
+                "caller_uid": c.get("caller_uid"),
+                "callee_qualified_name": c.get("callee_qualified_name"),
+                "call_site_line": c.get("call_site_line"),
+            }
+            for c in calls
+            if c.get("callee_qualified_name")
+        ]
+        if proxy_calls:
+            resolve_proxies(proxy_calls, workspace_id=workspace_id)
+
+    # Refresh materialized degree over the affected closure now that edges are
+    # relinked. Removed symbols are excluded (they no longer exist); their former
+    # neighbors come from the pre-mutation snapshot.
+    recompute_degree = getattr(db, "recompute_degree_for_closure", None)
+    if callable(recompute_degree):
+        removed_set = set(removed_uids)
+        degree_seeds = sorted(
+            (set(edge_refresh_uids) | set(pre_neighbor_uids) | set(proxy_uids)) - removed_set
+        )
+        if degree_seeds:
+            recompute_degree(degree_seeds, workspace_id=workspace_id)
 
     if changed_uids and not skip_affects:
         from sidecar.indexer.affects import AFFECTSIndexer

@@ -170,6 +170,102 @@ Model overrides: `QA_JUDGE_CLAUDE_MODEL_HIGH`, `QA_JUDGE_CODEX_MODEL_MEDIUM`, et
 
 **Note:** Judge output is diagnostic and expensive; default harness runs skip it. Recall@k and `role_recall` remain the merge gates.
 
+### 4.6 Ad-hoc repo tuning — mechanism packs (`MECHANISM_PACK_PATH`)
+
+When a real-repo question **`warn`s with `missing_roles`** (or the graph is too sparse for generic trace recovery to reach a sibling package), use a **declarative mechanism pack** as **per-repo ad-hoc tuning** — not as a change to core ranker scoring.
+
+**What it is**
+
+- YAML under `sidecar/context/mechanism_packs/` (bundled templates in `bundled/`, e.g. [`flask_registration.yaml`](../sidecar/context/mechanism_packs/bundled/flask_registration.yaml)).
+- Keys merged into index-time `role_catalog_json` on the Neo4j `Workspace`:
+  - `mechanism_required_roles` — mechanism id → list of canonical roles (e.g. `api_surface`, `orchestrator`).
+  - `mechanism_role_backfill` — mechanism id → role → `[{name, path_hint?, priority?}, …]` symbol hints for `_role_backfill_candidates`.
+- **Opt-in only:** bundled files are **not** loaded unless listed in **`MECHANISM_PACK_PATH`** (`os.pathsep`-separated file paths). See `.env.example`.
+
+**When to use**
+
+| Signal | Typical pack fix |
+|---|---|
+| `missing_roles=orchestrator` on a decorator/API target with no graph path to runtime | Backfill `Injector`-class symbols under `path_hint: packages/core/injector` |
+| Registration-flow questions miss `factory_surface` / `runtime_surface` | Copy/adapt `auto:registration_flow` backfill (Flask template) |
+| Benchmark `mechanism:` in YAML does not match ranker’s auto-detected mechanism | Pack can define the same mechanism id + roles; still prefer generic recovery first |
+
+**Workflow**
+
+1. Copy a bundled template or author a new YAML (mechanism ids must match question `mechanism:` or `auto:*` strategy archetypes the ranker selects).
+2. Export path before **re-index** (pack is merged at Pass 1 persist, not at `--no-index` time):
+
+   ```bash
+   export MECHANISM_PACK_PATH=/home/idxoid/surgical_context/sidecar/context/mechanism_packs/bundled/flask_registration.yaml
+   PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py --repo flask --report /tmp/flask_reindex.json
+   ```
+
+   **Celery PoC** (publish/consume content gap — `celery_q02` / `celery_q03`):
+
+   ```bash
+   export MECHANISM_PACK_PATH=$PWD/sidecar/context/mechanism_packs/bundled/celery_publish_consume.yaml
+   # Re-index celery (pack merges at Pass 1 persist), then:
+   PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py \
+     --questions tests/fixtures/celery_questions.yaml --repo celery --no-index \
+     --report /tmp/celery_pack_noindex.json
+   ```
+
+3. Verify with **`--no-index`** on the same repo after indexing completes.
+4. Commit the YAML if the tuning is stable; keep **`MECHANISM_PACK_PATH` out of CI** unless the job re-indexes that repo with the same env.
+
+**What it does not replace**
+
+- Pass 1 role clustering (`derived_role_id`, `role_to_archetypes`) — primary role supply.
+- Generic structural recovery in `ranker/recovery.py` — try widening trace scope before adding pack literals.
+- Question-pack labels (`required_roles`, `expected_files`) — packs only help the ranker **fill** roles; evaluation still uses YAML expectations.
+
+**Loader chain:** `mechanism_packs/loader.py` → `preloaded_mechanism_catalog_extensions()` → `merge_preloaded_mechanisms_into_role_catalog()` → `Workspace.role_catalog_json` → `UnifiedRanker._role_backfill_candidates()`. Details: [spec_indexer.md § Pass 1 mechanism profiles](spec_indexer.md), [retrieval_kernel.md § Mechanism packs](retrieval_kernel.md).
+
+### 4.7 Future — `suggest-pack` (automate pack drafts from benchmark gaps)
+
+**Status:** not implemented. Manual packs (§4.6) remain the supported path.
+
+**Goal:** when the same `(repo, mechanism, missing_role)` pattern repeats across benchmark runs, emit a **reviewable YAML draft** instead of hand-authoring `name` / `path_hint` rows from Neo4j grep.
+
+**Proposed CLI** (product surface; exact binary name TBD):
+
+```bash
+surgical suggest-pack --repo flask \
+  --from-report /tmp/qa_bench_noindex_all/flask.json \
+  --out sidecar/context/mechanism_packs/generated/flask_draft.yaml
+```
+
+Alias during harness-only workflows: `python QA/suggest_mechanism_pack.py --repo flask` (same logic, no new top-level binary required for v1).
+
+**Inputs**
+
+| Source | Use |
+|---|---|
+| Latest or explicit `--report` JSON | Per-question `missing_expected_roles`, `mechanism`, `required_roles`, `retrieved_files`, `ranker_state` |
+| Neo4j workspace for `--repo` | Symbols under `expected_files` / sibling paths not in prompt; high in-degree hubs in packages referenced by warns |
+| Question pack YAML | Stable `mechanism:` id and canonical `required_roles` to key the pack |
+
+**Heuristics (deterministic v1; LLM optional v2)**
+
+1. **Aggregate** warns: count `(mechanism, missing_role)` across questions; surface only roles missing in ≥2 questions or ≥50% of mechanism-tagged items for that repo.
+2. **Candidate symbols** per missing role: symbols in graph matching role taxonomy / path tokens from `expected_files` and query terms; rank by edge count + path overlap with `expected_files` not present in `retrieved_files`.
+3. **Emit** `mechanism_role_backfill` rows: `{name, path_hint, priority}` deduped by `(name, path_hint)`; optional `mechanism_required_roles` copy from pack YAML.
+4. **Header comment** in generated file: source report path, timestamp, questions cited, “human review required — re-index with `MECHANISM_PACK_PATH` then `--no-index`”.
+
+**Output contract**
+
+- Valid pack schema (same keys as bundled templates).
+- Never auto-enable: user sets `MECHANISM_PACK_PATH` and re-indexes after edit.
+- Idempotent re-runs: merge with existing draft or write `*.yaml.new` for diff.
+
+**Non-goals for v1**
+
+- No automatic commit or CI wiring.
+- No replacement for Pass 1 clustering or generic recovery — only accelerates §4.6.
+- No framework literals in core ranker; generated hints stay in YAML under `mechanism_packs/generated/`.
+
+**Success criterion:** running suggest-pack on a repo with known `missing_roles` warns produces a draft that, after ≤5 minutes of human edit + re-index, clears those warns on `--no-index` without changing `qa_benchmark.py` gates.
+
 ## 5. Module Layout
 
 ```

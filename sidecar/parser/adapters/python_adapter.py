@@ -150,6 +150,35 @@ class PythonAdapter(TreeSitterAdapter):
                             edges.append(InheritanceEdge(subclass_uid, base_name, False))
         return edges
 
+    def extract_proxy_bindings(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """Module-level lazy-proxy bindings: ``X: TargetType = SomeProxy(...)``.
+
+        Each entry anchors a ProxyBinding node + ``PROXY_OF`` edge in the graph so
+        cross-file calls on the proxy (``from .globals import current_app``) can be
+        forwarded to the real type. Only the annotated form yields a ``target_type``
+        here; the bare form (``x = Proxy(get_current_app)``) needs the callable's
+        return type (a separate hop) and is omitted.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+        table = self._build_proxy_binding_table(tree, import_bindings, module)
+        out: list[dict] = []
+        for var_name, target_type in table.items():
+            out.append(
+                {
+                    "proxy_uid": self._uid(file_path, var_name),
+                    "proxy_name": var_name,
+                    "proxy_qualified_name": f"{module}.{var_name}",
+                    "target_type": target_type,
+                    "file_path": file_path,
+                }
+            )
+        return out
+
     def _positional_identifier_arguments(
         self, call_node, source_code: str, *, limit: int = 8
     ) -> list[str]:
@@ -189,6 +218,9 @@ class PythonAdapter(TreeSitterAdapter):
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
         import_bindings = self._extract_import_bindings(source_code, file_path)
+        module = module_name_from_path(file_path)
+        attr_type_table = self._build_attr_type_table(tree, import_bindings, module)
+        alias_cache: dict[int, dict[str, str]] = {}
 
         calls = []
         for node, tag in captures:
@@ -235,26 +267,41 @@ class PythonAdapter(TreeSitterAdapter):
                     confidence = 0.4
 
             elif func_node.type == "attribute":
-                children = [c for c in func_node.children if c.type == "identifier"]
-                if len(children) < 2:
+                obj_node = func_node.child_by_field_name("object")
+                method_node = func_node.child_by_field_name("attribute")
+                if obj_node is None or method_node is None or method_node.type != "identifier":
                     continue
-                receiver_node = children[0]
-                method_node = children[-1]
-                receiver_text = _node_text(receiver_node)
                 call_name = _node_text(method_node)
+                rel_type = "CALLS_DYNAMIC"
+                tier = "dynamic"
+                confidence = 0.7
 
-                if receiver_text == "self":
-                    rel_type = "CALLS_DYNAMIC"
-                    tier = "dynamic"
-                    confidence = 0.7
-                    callee_uid = self._resolve_method_uid(parent, call_name, by_name)
-                else:
-                    rel_type = "CALLS_DYNAMIC"
-                    tier = "dynamic"
-                    confidence = 0.7
-                    if receiver_text in import_bindings:
+                if obj_node.type == "identifier":
+                    receiver_text = _node_text(obj_node)
+                    if receiver_text == "self":
+                        callee_uid = self._resolve_method_uid(parent, call_name, by_name)
+                    elif receiver_text in import_bindings:
                         base = import_bindings[receiver_text]
                         callee_qualified_name = f"{base}.{call_name}"
+                    else:
+                        typed = self._typed_qualified_target(
+                            parent, obj_node, call_name, attr_type_table, alias_cache
+                        )
+                        if typed is not None:
+                            tier = "typed"
+                            confidence = 0.8
+                            callee_qualified_name = typed
+                elif obj_node.type == "attribute":
+                    typed = self._typed_qualified_target(
+                        parent, obj_node, call_name, attr_type_table, alias_cache
+                    )
+                    if typed is None:
+                        continue
+                    tier = "typed"
+                    confidence = 0.8
+                    callee_qualified_name = typed
+                else:
+                    continue
             else:
                 continue
 
@@ -313,6 +360,207 @@ class PythonAdapter(TreeSitterAdapter):
         qualified_name = qualified_name_for(node, source_code, file_path)
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
+
+    @staticmethod
+    def _iter_nodes(node):
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            yield current
+            stack.extend(current.children)
+
+    @staticmethod
+    def _string_literal_text(node) -> str:
+        raw = _node_text(node).strip()
+        idx = 0
+        while idx < len(raw) and raw[idx] in "rbfuRBFU":
+            idx += 1
+        raw = raw[idx:]
+        for quote in ("'''", '"""', "'", '"'):
+            if raw.startswith(quote) and raw.endswith(quote) and len(raw) >= 2 * len(quote):
+                return raw[len(quote) : -len(quote)]
+        return raw
+
+    @staticmethod
+    def _enclosing_class_name(node) -> str:
+        current = node
+        while current is not None and current.type != "class_definition":
+            current = current.parent
+        if current is None:
+            return ""
+        name_node = current.child_by_field_name("name")
+        return _node_text(name_node) if name_node else ""
+
+    def _resolve_type_name(self, raw: str, import_bindings: dict[str, str], module: str) -> str:
+        """Map a bare class name to a qualified name via imports, else same-module."""
+        if raw in import_bindings:
+            return import_bindings[raw]
+        return f"{module}.{raw}"
+
+    def _build_attr_type_table(
+        self, tree, import_bindings: dict[str, str], module: str
+    ) -> dict[str, dict[str, str]]:
+        """Infer instance-attribute types per class (structural; no framework literals).
+
+        Sources: ``<base>_cls = 'mod:Class'`` string convention, ``__init__`` direct
+        instantiation ``self.x = Class(...)``, and class-level annotation ``x: Class``.
+        """
+        table: dict[str, dict[str, str]] = {}
+        for cls in self._iter_nodes(tree.root_node):
+            if cls.type != "class_definition":
+                continue
+            name_node = cls.child_by_field_name("name")
+            body = cls.child_by_field_name("body")
+            if name_node is None or body is None:
+                continue
+            cname = _node_text(name_node)
+            attrs: dict[str, str] = {}
+            # Class-body assignments: string-cls convention + annotations (direct children only).
+            for stmt in body.children:
+                if stmt.type != "expression_statement":
+                    continue
+                for assign in stmt.children:
+                    if assign.type != "assignment":
+                        continue
+                    left = assign.child_by_field_name("left")
+                    right = assign.child_by_field_name("right")
+                    typ = assign.child_by_field_name("type")
+                    if left is None or left.type != "identifier":
+                        continue
+                    lname = _node_text(left)
+                    if lname.endswith("_cls") and right is not None and right.type == "string":
+                        literal = self._string_literal_text(right)
+                        if ":" in literal:
+                            attrs.setdefault(lname[:-4], literal.replace(":", "."))
+                    elif typ is not None:
+                        type_ident = self._type_identifier(typ)
+                        if type_ident:
+                            attrs.setdefault(
+                                lname, self._resolve_type_name(type_ident, import_bindings, module)
+                            )
+            # __init__ direct instantiation: self.x = ClassName(...)
+            for fn in body.children:
+                if fn.type != "function_definition":
+                    continue
+                fn_name = fn.child_by_field_name("name")
+                if fn_name is None or _node_text(fn_name) != "__init__":
+                    continue
+                for assign in self._iter_nodes(fn):
+                    if assign.type != "assignment":
+                        continue
+                    left = assign.child_by_field_name("left")
+                    right = assign.child_by_field_name("right")
+                    if left is None or left.type != "attribute" or right is None:
+                        continue
+                    obj = left.child_by_field_name("object")
+                    attr = left.child_by_field_name("attribute")
+                    if obj is None or _node_text(obj) != "self" or attr is None:
+                        continue
+                    if right.type != "call":
+                        continue
+                    callee = right.child_by_field_name("function")
+                    if callee is not None and callee.type == "identifier":
+                        attrs.setdefault(
+                            _node_text(attr),
+                            self._resolve_type_name(_node_text(callee), import_bindings, module),
+                        )
+            if attrs:
+                table.setdefault(cname, {}).update(attrs)
+        return table
+
+    def _build_proxy_binding_table(
+        self, tree, import_bindings: dict[str, str], module: str
+    ) -> dict[str, str]:
+        """Resolve module-level lazy-proxy variables to the type they forward to.
+
+        ``X = SomeProxy(callable)`` is a generic Python idiom (werkzeug ``LocalProxy``,
+        celery ``Proxy`` — "stolen from werkzeug"); attribute access forwards to the
+        wrapped object. Detection is by class-name convention (ends with ``Proxy``),
+        mirroring the ``_cls = 'mod:Class'`` convention, not a receiver name-match.
+
+        Only the ANNOTATED form (``current_app: FlaskProxy = LocalProxy(...)``) yields a
+        type here: the annotation names the forwarded type directly. The bare form
+        (``current_app = Proxy(get_current_app)``, no annotation) is intentionally left
+        unresolved — recovering it needs the callable's return type (a separate hop).
+        """
+        table: dict[str, str] = {}
+        for stmt in self._iter_nodes(tree.root_node):
+            if stmt.type != "assignment":
+                continue
+            left = stmt.child_by_field_name("left")
+            right = stmt.child_by_field_name("right")
+            typ = stmt.child_by_field_name("type")
+            if left is None or left.type != "identifier" or right is None or typ is None:
+                continue
+            if right.type != "call":
+                continue
+            callee = right.child_by_field_name("function")
+            if callee is None or callee.type != "identifier":
+                continue
+            if not _node_text(callee).endswith("Proxy"):
+                continue
+            type_ident = self._type_identifier(typ)
+            if not type_ident:
+                continue
+            table[_node_text(left)] = self._resolve_type_name(type_ident, import_bindings, module)
+        return table
+
+    @staticmethod
+    def _type_identifier(type_node) -> str:
+        """Extract a bare class name from an annotation node, ignoring generics/unions."""
+        if type_node.type == "identifier":
+            return _node_text(type_node)
+        for child in PythonAdapter._iter_nodes(type_node):
+            if child.type == "identifier":
+                return _node_text(child)
+        return ""
+
+    def _local_alias_types(self, func_node, cls_table: dict[str, str]) -> dict[str, str]:
+        """Map locals aliased to typed attributes: ``v = self.attr`` within a function."""
+        aliases: dict[str, str] = {}
+        for assign in self._iter_nodes(func_node):
+            if assign.type != "assignment":
+                continue
+            left = assign.child_by_field_name("left")
+            right = assign.child_by_field_name("right")
+            if left is None or left.type != "identifier" or right is None or right.type != "attribute":
+                continue
+            obj = right.child_by_field_name("object")
+            attr = right.child_by_field_name("attribute")
+            if obj is not None and _node_text(obj) == "self" and attr is not None:
+                inferred = cls_table.get(_node_text(attr))
+                if inferred:
+                    aliases[_node_text(left)] = inferred
+        return aliases
+
+    def _typed_qualified_target(
+        self,
+        parent,
+        receiver_node,
+        call_name: str,
+        attr_type_table: dict[str, dict[str, str]],
+        alias_cache: dict[int, dict[str, str]],
+    ) -> str | None:
+        """Tier 4.5 CALLS_TYPED: resolve ``self.attr.m()`` / ``local.m()`` to ``Type.m``."""
+        cls_table = attr_type_table.get(self._enclosing_class_name(parent), {})
+        target_type: str | None = None
+        if receiver_node.type == "attribute":
+            inner_obj = receiver_node.child_by_field_name("object")
+            inner_attr = receiver_node.child_by_field_name("attribute")
+            if (
+                inner_obj is not None
+                and inner_obj.type == "identifier"
+                and _node_text(inner_obj) == "self"
+                and inner_attr is not None
+            ):
+                target_type = cls_table.get(_node_text(inner_attr))
+        elif receiver_node.type == "identifier":
+            if parent.id not in alias_cache:
+                alias_cache[parent.id] = self._local_alias_types(parent, cls_table)
+            target_type = alias_cache[parent.id].get(_node_text(receiver_node))
+        if target_type:
+            return f"{target_type}.{call_name}"
+        return None
 
     def _resolve_method_uid(
         self, caller_node, method_name: str, by_name: dict[str, list]

@@ -1,6 +1,7 @@
 import { PromptContextPayload } from '../sidecarClient';
 
 export interface LastRequest {
+  requestId?: string;
   symbol?: string;
   question?: string;
   timestamp: number;

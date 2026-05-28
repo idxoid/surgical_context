@@ -1303,6 +1303,235 @@ def test_trace_dependency_runtime_symbol_rows_skipped_without_marker_terms():
     assert ranker._trace_dependency_runtime_symbol_rows(target, excluded_uids=set()) == []
 
 
+def test_trace_publish_runtime_rows_for_app_dispatch_method():
+    producer_row = {
+        "uid": "producer-u",
+        "name": "Producer",
+        "symbol_kind": "class",
+        "token_estimate": 120,
+        "qualified_name": "pkg.app.amqp.Producer",
+        "file_path": "pkg/app/amqp.py",
+        "file_hash": "",
+        "range": [1, 40],
+        "inbound_edges": 4,
+        "outbound_edges": 2,
+    }
+
+    session = MagicMock()
+
+    def run(query, **_kwargs):
+        if "path_penalties" in query:
+            assert "apply_async" in _kwargs["names"]
+            assert any("pkg/app/" in p for p in _kwargs["scope_prefixes"])
+            return [producer_row]
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="delay-u",
+        name="delay",
+        file_path="pkg/app/task.py",
+        range=[1, 12],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    rows = ranker._trace_dependency_runtime_symbol_rows(
+        target,
+        excluded_uids=set(),
+        mechanism="celery_task_publish",
+        query="sent to broker",
+    )
+    assert rows and rows[0]["name"] == "Producer"
+
+
+def test_trace_consume_runtime_rows_use_worker_scope_and_penalize_backends():
+    request_row = {
+        "uid": "req-u",
+        "name": "Request",
+        "symbol_kind": "class",
+        "token_estimate": 200,
+        "qualified_name": "pkg.worker.request.Request",
+        "file_path": "pkg/worker/request.py",
+        "file_hash": "",
+        "range": [1, 80],
+        "inbound_edges": 6,
+        "outbound_edges": 3,
+    }
+
+    session = MagicMock()
+
+    def run(query, **_kwargs):
+        if "path_penalties" in query:
+            assert "/backends/" in _kwargs["path_penalties"]
+            assert any("pkg/worker/" in p for p in _kwargs["scope_prefixes"])
+            assert "consumer" in {n.lower() for n in _kwargs["names"]}
+            return [request_row]
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="rpc-consumer",
+        name="Consumer",
+        file_path="pkg/backends/rpc.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    rows = ranker._trace_dependency_runtime_symbol_rows(
+        target,
+        excluded_uids=set(),
+        mechanism="celery_worker_consume",
+        query="How does the worker receive a message and execute the task?",
+    )
+    assert rows and rows[0]["name"] == "Request"
+
+
+def test_trace_gain_mode_covers_publish_consume_mechanism_ids():
+    assert RankerScoring.trace_dependency_gain_mode("celery_task_publish", "")
+    assert RankerScoring.trace_dependency_gain_mode("celery_worker_consume", "")
+
+
+def test_direct_callee_anchor_candidates_for_thin_dispatch_method():
+    apply_async_row = {
+        "uid": "apply-u",
+        "name": "apply_async",
+        "symbol_kind": "function",
+        "token_estimate": 400,
+        "qualified_name": "pkg.app.task.Task.apply_async",
+        "file_path": "pkg/app/task.py",
+        "file_hash": "",
+        "range": [40, 120],
+        "rel_type": "CALLS_DIRECT",
+        "outgoing": True,
+        "caller_count": 2,
+    }
+    map_row = {
+        "uid": "map-u",
+        "name": "map",
+        "symbol_kind": "function",
+        "token_estimate": 200,
+        "qualified_name": "pkg.app.task.Task.map",
+        "file_path": "pkg/app/task.py",
+        "file_hash": "",
+        "range": [200, 260],
+        "rel_type": "HAS_API",
+        "outgoing": True,
+        "caller_count": 1,
+    }
+
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="delay-u",
+        name="delay",
+        file_path="pkg/app/task.py",
+        range=[1, 12],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    with patch.object(
+        ranker,
+        "_get_neighbors",
+        return_value=[apply_async_row, map_row],
+    ):
+        anchors = ranker.structural_recovery.direct_callee_anchor_candidates(
+            target,
+            mechanism="celery_task_publish",
+            query="sent to the broker",
+            excluded_uids=set(),
+        )
+    assert len(anchors) >= 1
+    assert anchors[0].name == "apply_async"
+    assert anchors[0].relation == "MANDATORY_CALLEE"
+    assert anchors[0].render_mode == "full"
+    assert anchors[0].graph_score >= 5.0
+
+
+def test_direct_callee_skipped_for_non_trace_targets():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="app-u",
+        name="Application",
+        file_path="pkg/app/application.py",
+        range=[1, 200],
+        token_estimate=500,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    with patch.object(ranker, "_get_neighbors") as get_neighbors:
+        anchors = ranker.structural_recovery.direct_callee_anchor_candidates(
+            target,
+            mechanism="",
+            query="overview of the application",
+            excluded_uids=set(),
+        )
+    assert anchors == []
+    get_neighbors.assert_not_called()
+
+
+def test_merge_mandatory_callee_pool_upgrades_existing_graph_hit():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="ws")
+    existing = Candidate(
+        kind="symbol",
+        uid="apply-u",
+        token_cost=400,
+        graph_score=0.8,
+        name="apply_async",
+        file_path="pkg/app/task.py",
+        range=[40, 120],
+        render_mode="signature_only",
+        relation="CALLS_DIRECT",
+        direction="callee",
+        depth=2,
+    )
+    mandatory = Candidate(
+        kind="symbol",
+        uid="apply-u",
+        token_cost=400,
+        graph_score=6.0,
+        name="apply_async",
+        file_path="pkg/app/task.py",
+        range=[40, 120],
+        render_mode="full",
+        relation="MANDATORY_CALLEE",
+        direction="callee",
+        depth=1,
+    )
+    merged = ranker._merge_mandatory_callee_pool([existing], [mandatory])
+    assert len(merged) == 1
+    assert merged[0].relation == "MANDATORY_CALLEE"
+    assert merged[0].render_mode == "full"
+    assert merged[0].graph_score >= 6.0
+
+
 def test_trace_query_terms_skip_package_root_names():
     ranker = UnifiedRanker(
         _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
@@ -1713,7 +1942,7 @@ def test_role_filler_outranks_unrelated_high_score_docs():
     }
     target = SubgraphNode(
         uid="primary",
-        name="get_openapi",
+        name="_build_openapi_schema",
         file_path="/repo/src/main.py",
         range=[1, 10],
         token_estimate=100,
@@ -1838,7 +2067,7 @@ def test_mixed_intent_policy_adds_secondary_role_coverage():
     )
     target = SubgraphNode(
         uid="target",
-        name="process_payment",
+        name="_process_payment_internal",
         file_path="/repo/src/payment.py",
         range=[1, 20],
         token_estimate=100,

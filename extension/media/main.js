@@ -295,7 +295,21 @@
         <span>${escapeHtml2(symbolInfo.filePath)}</span>
         <code>${escapeHtml2(symbolInfo.uid)}</code>
       </div>
+      <div class="impact-metrics" aria-label="Impact summary">
+        ${renderMetric("Symbols", symbolInfo.affectedCount)}
+        ${renderMetric("Files", symbolInfo.fileCount)}
+        ${renderMetric("Depth", symbolInfo.maxDepth)}
+        ${symbolInfo.sourceLabel ? `<span class="impact-source-chip">${escapeHtml2(symbolInfo.sourceLabel)}</span>` : ""}
+      </div>
     </div>
+  `;
+  }
+  function renderMetric(label, value) {
+    return `
+    <span class="impact-metric">
+      <strong>${Number.isFinite(value) ? value : 0}</strong>
+      <span>${escapeHtml2(label)}</span>
+    </span>
   `;
   }
   function renderAffectsGroup(affectedSymbols, title = "Affects", expanded = true) {
@@ -316,15 +330,24 @@
       const isDirty = sym.is_dirty;
       const relation = sym.relation || sym.direction || "related";
       const depth = typeof sym.depth === "number" ? `d${sym.depth}` : "";
+      const line = lineFromSymbol(sym);
+      const depthClass = typeof sym.depth === "number" && sym.depth <= 1 ? "direct" : "indirect";
       return `
-        <div class="impact-row" data-file-path="${escapeHtml2(filePath)}">
+        <button
+          type="button"
+          class="impact-row"
+          data-action="openFile"
+          data-file-path="${escapeHtml2(filePath)}"
+          data-line="${line}"
+          title="Open ${escapeHtml2(symbolName)}"
+        >
           <span class="impact-chevron" aria-hidden="true">\u203A</span>
           <span class="impact-symbol">${escapeHtml2(symbolName)}</span>
           <span class="impact-file">${escapeHtml2(filePath)}</span>
-          <span class="impact-tag direct">${escapeHtml2(depth || relation)}</span>
+          <span class="impact-tag ${depthClass}">${escapeHtml2(depth || relation)}</span>
           ${score ? `<span class="impact-tag indirect">${(score * 100).toFixed(0)}%</span>` : ""}
           ${isDirty ? '<span class="impact-tag conditional">dirty</span>' : ""}
-        </div>
+        </button>
       `;
     }).join("");
     return `
@@ -339,6 +362,17 @@
       </div>
     </div>
   `;
+  }
+  function lineFromSymbol(sym) {
+    const explicit = sym.line || sym.start_line || sym.lineno;
+    if (typeof explicit === "number" && Number.isFinite(explicit)) {
+      return Math.max(1, explicit);
+    }
+    const range = sym.range;
+    if (Array.isArray(range) && typeof range[0] === "number") {
+      return Math.max(1, range[0]);
+    }
+    return 1;
   }
   function renderFilesGroup(filePaths, expanded = false) {
     const uniquePaths = Array.from(new Set(filePaths.filter(Boolean)));
@@ -888,6 +922,7 @@ ${doc.content}`);
               this.currentImpact = this.impactFromContext(message.state.lastContext);
               this.currentImpactSymbol = message.state.lastContext.primary_source.symbol;
               this.currentImpactSource = "prompt";
+              this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
             }
             this.render();
             break;
@@ -1186,7 +1221,11 @@ ${doc.content}`);
         ${renderSymbolSummaryCard({
         symbol,
         filePath: this.currentImpact.file_path || "unknown",
-        uid: this.currentImpact.symbol_uid || symbol
+        uid: this.currentImpact.symbol_uid || symbol,
+        affectedCount: this.currentImpact.affected_count || this.currentImpact.affected_symbols?.length || 0,
+        fileCount: this.currentImpact.affected_file_count || this.currentImpact.affected_files?.length || 0,
+        maxDepth: this.currentImpact.max_depth || 0,
+        sourceLabel: this.currentImpactSource === "prompt" ? "prompt context" : "live graph"
       })}
         ${renderActionButtonRow()}
         <div class="impact-groups">
@@ -1391,7 +1430,7 @@ ${doc.content}`);
           );
           break;
         case "open-related-files":
-          this.showToast("Related file opener is coming soon.", "info");
+          this.openRelatedImpactFiles();
           break;
         case "openFile":
           this.openFileFromImpact(target);
@@ -1466,6 +1505,18 @@ ${doc.content}`);
         type: "action.showImpact",
         symbol: selectedSymbol
       });
+    }
+    openRelatedImpactFiles() {
+      const filePaths = Array.from(new Set(this.currentImpact?.affected_files || [])).filter(Boolean).slice(0, 12);
+      if (filePaths.length === 0) {
+        this.showToast("No related files to open.", "info");
+        return;
+      }
+      this.postMessage({
+        type: "impact.openFiles",
+        filePaths
+      });
+      this.showToast(`Opening ${filePaths.length} related file${filePaths.length === 1 ? "" : "s"}.`, "info");
     }
     askAboutSymbol() {
       const composer = document.getElementById("composer-input");
@@ -1779,6 +1830,28 @@ ${doc.content}`);
       this.currentImpactSymbol = context.primary_source.symbol;
       this.currentImpactSource = "prompt";
       this.impactError = null;
+      this.syncSelectedRequestToHost(requestId, context);
+    }
+    syncSelectedRequestToHost(requestId, context) {
+      const assistantMessage = this.messages.get(requestId);
+      this.postMessage({
+        type: "request.selected",
+        requestId,
+        symbol: context.primary_source.symbol,
+        question: this.selectedPromptText() || void 0,
+        answer: assistantMessage?.content || void 0,
+        context
+      });
+    }
+    findRequestIdForContext(context) {
+      const traceId = context.metadata?.assembly?.trace_id;
+      const entries = Array.from(this.messages.values()).filter((message) => message.context);
+      if (traceId) {
+        const exact = entries.find((message) => message.context?.metadata?.assembly?.trace_id === traceId);
+        if (exact?.requestId) return exact.requestId;
+      }
+      const bySymbol = entries.filter((message) => message.context?.primary_source.symbol === context.primary_source.symbol).sort((left, right) => right.timestamp - left.timestamp);
+      return bySymbol[0]?.requestId || null;
     }
     summaryFromContext(context) {
       return buildContextSummary(context);
@@ -1805,7 +1878,10 @@ ${doc.content}`);
         symbol_uid: context.primary_source.symbol,
         file_path: context.primary_source.file_path,
         affected_symbols: affectedSymbols,
-        affected_files: affectedFiles
+        affected_files: affectedFiles,
+        affected_count: affectedSymbols.length,
+        affected_file_count: affectedFiles.length,
+        max_depth: affectedSymbols.reduce((max, symbol) => typeof symbol.depth === "number" ? Math.max(max, symbol.depth) : max, 0)
       };
     }
     selectedPromptText() {

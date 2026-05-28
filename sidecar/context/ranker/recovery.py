@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from sidecar.context.role_taxonomy import infer_identity_trace_roles, normalize_roles
@@ -34,10 +35,23 @@ from .signal_constants import (
     ROUTING_FLOW_PATH_TOKENS,
     ROUTING_FLOW_TARGET_TOKENS,
     RUNTIME_SIGNAL_TOKENS,
+    TRACE_CONSUME_PATH_PENALTIES,
+    TRACE_CONSUME_RUNTIME_NAMES,
+    TRACE_CONSUME_SCOPE_SEGMENT,
+    TRACE_CONSUME_TARGET_NAMES,
     TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS,
     TRACE_DEPENDENCY_TARGET_TOKENS,
+    TRACE_EXECUTION_SIBLING_FILE_MARKERS,
     TRACE_HOOK_RUNTIME_NAMES,
     TRACE_HOOK_RUNTIME_TRIGGER_NAMES,
+    MANDATORY_CALLEE_RELATION,
+    THIN_DISPATCH_MAX_CHAIN_CALLEES,
+    THIN_DISPATCH_MAX_MANDATORY_CALLEES,
+    THIN_DISPATCH_MAX_TOKEN_ESTIMATE,
+    TRACE_PUBLISH_APP_METHOD_NAMES,
+    TRACE_PUBLISH_RUNTIME_NAMES,
+    TRACE_PUBLISH_SCOPE_SEGMENT,
+    TRACE_TASK_REGISTRATION_TARGET_NAMES,
 )
 
 
@@ -115,6 +129,7 @@ class StructuralRecovery:
         def _file_rank(item: tuple[str, list[dict]]) -> tuple[float, float, str]:
             fp, rows_for_file = item
             anchor = max(float(row.get("trace_anchor_score", 0) or 0) for row in rows_for_file)
+            anchor += max(self._trace_execution_sibling_file_bonus(row) for row in rows_for_file)
             edges = max(
                 float(row.get("inbound_edges", 0) or 0) + float(row.get("outbound_edges", 0) or 0)
                 for row in rows_for_file
@@ -125,7 +140,7 @@ class StructuralRecovery:
             rows_for_fp = sorted(
                 rows_for_file_all,
                 key=lambda r: (
-                    float(r.get("trace_anchor_score", 0) or 0),
+                    float(r.get("trace_anchor_score", 0) or 0) + self._trace_execution_sibling_file_bonus(r),
                     float(r.get("inbound_edges", 0) or 0) + float(r.get("outbound_edges", 0) or 0),
                     str(r.get("name") or ""),
                 ),
@@ -350,11 +365,162 @@ class StructuralRecovery:
             terms.update({"request", "strategy", "handler", "pool", "invoke"})
         return sorted(term for term in terms if len(term) >= 4)
 
+    @staticmethod
+    def _normalized_path(file_path: str) -> str:
+        return (file_path or "").replace("\\", "/")
+
+    @staticmethod
+    def _path_scope_through_segment(file_path: str, segment: str) -> str | None:
+        """Return path prefix through ``.../segment/`` when present as a directory."""
+        norm = StructuralRecovery._normalized_path(file_path)
+        marker = f"/{segment.strip('/')}/"
+        idx = norm.find(marker)
+        if idx < 0:
+            return None
+        return norm[: idx + len(marker)]
+
+    @staticmethod
+    def _trace_execution_sibling_file_bonus(row: dict) -> float:
+        fp = (row.get("file_path") or "").replace("\\", "/").lower()
+        return (
+            3.0
+            if any(marker in fp for marker in TRACE_EXECUTION_SIBLING_FILE_MARKERS)
+            else 0.0
+        )
+
+    def is_message_publish_trace_target(
+        self,
+        target: SubgraphNode,
+        mechanism: str = "",
+    ) -> bool:
+        """App-layer dispatch entrypoints that delegate to publisher/broker runtime."""
+        _ = mechanism  # reserved for future mechanism-specific scopes
+        name = (target.name or "").lower()
+        path = self._normalized_path(target.file_path).lower()
+        if name not in TRACE_PUBLISH_APP_METHOD_NAMES:
+            return False
+        return TRACE_PUBLISH_SCOPE_SEGMENT in path or path.endswith("/app.py")
+
+    def is_worker_consume_trace_target(
+        self,
+        target: SubgraphNode,
+        mechanism: str = "",
+        query: str = "",
+    ) -> bool:
+        """Worker-side consumer targets (not result-backend consumers)."""
+        m = (mechanism or "").lower()
+        q = (query or "").lower()
+        name = (target.name or "").strip()
+        if name.lower() not in {n.lower() for n in TRACE_CONSUME_TARGET_NAMES}:
+            return False
+        if m.endswith("_consume") or "consume" in m:
+            return True
+        if not any(term in q for term in ("worker", "execute", "receive", "broker", "message")):
+            return False
+        path = self._normalized_path(target.file_path).lower()
+        if TRACE_CONSUME_SCOPE_SEGMENT in path:
+            return True
+        if any(penalty in path for penalty in TRACE_CONSUME_PATH_PENALTIES):
+            return bool(
+                any(term in q for term in ("worker", "execute", "receive"))
+                and "broker" in q
+            )
+        return "execute" in q and "receive" in q
+
+    def is_task_registration_target(
+        self,
+        target: SubgraphNode,
+        mechanism: str = "",
+        query: str = "",
+    ) -> bool:
+        """Celery decorator registration entrypoint, even when lookup lands on a homonym."""
+        name = (target.name or "").strip()
+        if name not in TRACE_TASK_REGISTRATION_TARGET_NAMES:
+            return False
+        m = (mechanism or "").lower()
+        q = (query or "").lower()
+        if "task_registration" in m:
+            return True
+        return bool(
+            "@app.task" in q
+            or (
+                "decorator" in q
+                and "register" in q
+                and any(term in q for term in ("registry", "worker", "task"))
+            )
+        )
+
+    def trace_runtime_scope_prefixes(
+        self,
+        target: SubgraphNode,
+        *,
+        mechanism: str = "",
+        query: str = "",
+    ) -> list[str]:
+        """Scope prefixes for runtime-row lookup (may widen beyond target file)."""
+        prefixes = list(self.source_scope_prefixes(target.file_path or ""))
+        path = self._normalized_path(target.file_path)
+        seen: set[str] = set(prefixes)
+        if self.is_message_publish_trace_target(target, mechanism):
+            app_scope = self._path_scope_through_segment(path, "app")
+            if app_scope and app_scope not in seen:
+                seen.add(app_scope)
+                prefixes.append(app_scope)
+        if self.is_worker_consume_trace_target(target, mechanism, query):
+            worker_scope = self._path_scope_through_segment(path, "worker")
+            if not worker_scope:
+                worker_scope = self._infer_worker_scope_from_path(path)
+            if worker_scope and worker_scope not in seen:
+                seen.add(worker_scope)
+                prefixes.append(worker_scope)
+        if self.is_task_registration_target(target, mechanism, query):
+            app_scope = self._path_scope_through_segment(path, "app")
+            if app_scope and app_scope not in seen:
+                seen.add(app_scope)
+                prefixes.append(app_scope)
+        return prefixes
+
+    @staticmethod
+    def _infer_worker_scope_from_path(path: str) -> str | None:
+        """When the target sits under backends/helpers, infer sibling ``worker/`` scope."""
+        norm = StructuralRecovery._normalized_path(path)
+        for segment in ("backends", "backend", "helpers", "utils"):
+            marker = f"/{segment}/"
+            if marker in norm:
+                return norm.split(marker, 1)[0] + TRACE_CONSUME_SCOPE_SEGMENT
+        pkg = norm.split("/")[0] if "/" in norm else ""
+        if pkg:
+            return f"{pkg}{TRACE_CONSUME_SCOPE_SEGMENT}"
+        return None
+
+    def trace_runtime_path_penalties(
+        self,
+        target: SubgraphNode,
+        *,
+        mechanism: str = "",
+        query: str = "",
+    ) -> list[str]:
+        if self.is_worker_consume_trace_target(target, mechanism, query):
+            return list(TRACE_CONSUME_PATH_PENALTIES)
+        return []
+
+    def is_subpackage_entry_target(self, target: SubgraphNode) -> bool:
+        """``pkg/pkg.py`` entry modules whose siblings live in the parent directory."""
+        path = self._normalized_path(target.file_path)
+        if "/" not in path:
+            return False
+        parent, file_name = path.rsplit("/", 1)
+        file_stem = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
+        parent_dir = parent.rsplit("/", 1)[-1] if "/" in parent else parent
+        return bool(file_stem and parent_dir and file_stem == parent_dir)
+
     def trace_dependency_runtime_symbol_rows(
         self,
         target: SubgraphNode,
         *,
         excluded_uids: set[str],
+        mechanism: str = "",
+        query: str = "",
     ) -> list[dict]:
         """Workspace symbols for trace/runtime resolution when import topology is sparse."""
         target_name = target.name or ""
@@ -364,13 +530,22 @@ class StructuralRecovery:
             name_terms = list(TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS)
         elif target_name in TRACE_HOOK_RUNTIME_TRIGGER_NAMES:
             names = list(TRACE_HOOK_RUNTIME_NAMES)
+        elif self.is_message_publish_trace_target(target, mechanism):
+            names = sorted(TRACE_PUBLISH_RUNTIME_NAMES)
+        elif self.is_worker_consume_trace_target(target, mechanism, query):
+            names = sorted(TRACE_CONSUME_RUNTIME_NAMES | TRACE_CONSUME_TARGET_NAMES)
         else:
             return []
         excluded = set(excluded_uids)
         if target.uid:
             excluded.add(target.uid)
-        scope_prefixes = self.source_scope_prefixes(target.file_path or "")
-        query = """
+        scope_prefixes = self.trace_runtime_scope_prefixes(
+            target, mechanism=mechanism, query=query
+        )
+        path_penalties = self.trace_runtime_path_penalties(
+            target, mechanism=mechanism, query=query
+        )
+        query_cypher = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
         WHERE (
             (size($names) > 0 AND s.name IN $names)
@@ -381,12 +556,9 @@ class StructuralRecovery:
           AND NOT s.uid IN $excluded_uids
           AND (size($scope_prefixes) = 0 OR any(prefix IN $scope_prefixes WHERE f.path STARTS WITH prefix))
           AND NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+          AND NOT any(penalty IN $path_penalties WHERE f.path CONTAINS penalty)
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
+        WITH s, f, c, inbound_edges, coalesce(s.out_degree, 0) AS outbound_edges,
              CASE
                WHEN any(term IN $name_terms WHERE toLower(f.path) CONTAINS term) THEN 2
                ELSE 0
@@ -416,13 +588,14 @@ class StructuralRecovery:
             with self.db.driver.session() as session:
                 return list(
                     session.run(
-                        query,
+                        query_cypher,
                         workspace_id=self.workspace_id,
                         names=names,
                         name_terms=name_terms,
                         excluded_uids=list(excluded),
                         scope_prefixes=scope_prefixes,
                         noise_patterns=list(NOISE_PATH_PATTERNS),
+                        path_penalties=path_penalties,
                     )
                 )
         except Exception:
@@ -434,11 +607,18 @@ class StructuralRecovery:
         *,
         query: str,
         excluded_uids: set[str],
+        mechanism: str = "",
         max_rows: int = 64,
     ) -> list[dict]:
         """Source-local symbols whose names/paths match the trace question recipe."""
         terms = self.trace_query_terms(query, target)
-        scope_prefixes = self.trace_topic_scope_prefixes(target.file_path or "", terms)
+        scope_prefixes = self.trace_topic_scope_prefixes(
+            target.file_path or "",
+            terms,
+            target=target,
+            mechanism=mechanism,
+            query=query,
+        )
         if not terms or not scope_prefixes:
             return []
 
@@ -451,12 +631,8 @@ class StructuralRecovery:
             WHERE toLower(f.path) CONTAINS term
                OR toLower(s.name) CONTAINS term
                OR toLower(coalesce(s.qualified_name, '')) CONTAINS term)
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
+        WITH s, f, c, inbound_edges, coalesce(s.out_degree, 0) AS outbound_edges,
              size([term IN $terms WHERE toLower(s.name) = term]) AS exact_name_hits,
              size([term IN $terms WHERE toLower(s.name) CONTAINS term]) AS name_hits,
              size([term IN $terms WHERE toLower(coalesce(s.qualified_name, '')) CONTAINS term]) AS qname_hits,
@@ -678,11 +854,7 @@ class StructuralRecovery:
           AND any(prefix IN $scope_prefixes WHERE f.path STARTS WITH prefix)
           AND NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
           AND s.name IN $names
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS symbol_kind,
@@ -692,7 +864,7 @@ class StructuralRecovery:
                coalesce(f.hash, '') AS file_hash,
                coalesce(c.range, s.range, [0, 0]) AS range,
                inbound_edges,
-               count(DISTINCT or) AS outbound_edges
+               coalesce(s.out_degree, 0) AS outbound_edges
         ORDER BY inbound_edges + outbound_edges DESC,
                  size(file_path) ASC
         LIMIT $limit
@@ -859,12 +1031,8 @@ class StructuralRecovery:
             WHERE toLower(s.name) CONTAINS term
                OR toLower(coalesce(s.qualified_name, '')) CONTAINS term
                OR toLower(f.path) CONTAINS term)
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
+        WITH s, f, c, inbound_edges, coalesce(s.out_degree, 0) AS outbound_edges,
              size([term IN $terms WHERE toLower(s.name) CONTAINS term]) AS name_hits,
              size([term IN $terms WHERE toLower(coalesce(s.qualified_name, '')) CONTAINS term]) AS qname_hits,
              size([term IN $terms WHERE toLower(f.path) CONTAINS term]) AS path_hits
@@ -920,12 +1088,8 @@ class StructuralRecovery:
             WHERE toLower(s.name) CONTAINS term
                OR toLower(coalesce(s.qualified_name, '')) CONTAINS term
                OR toLower(f.path) CONTAINS term)
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
+        WITH s, f, c, inbound_edges, coalesce(s.out_degree, 0) AS outbound_edges,
              size([term IN $terms WHERE toLower(s.name) CONTAINS term]) AS name_hits,
              size([term IN $terms WHERE toLower(coalesce(s.qualified_name, '')) CONTAINS term]) AS qname_hits,
              size([term IN $terms WHERE toLower(f.path) CONTAINS term]) AS path_hits
@@ -961,10 +1125,33 @@ class StructuralRecovery:
         except Exception:
             return []
 
-    def trace_topic_scope_prefixes(self, file_path: str, terms: list[str]) -> list[str]:
+    def trace_topic_scope_prefixes(
+        self,
+        file_path: str,
+        terms: list[str],
+        *,
+        target: SubgraphNode | None = None,
+        mechanism: str = "",
+        query: str = "",
+    ) -> list[str]:
         """Scopes for topic search, widened for monorepo cross-package traces."""
         prefixes = self.source_scope_prefixes(file_path)
         lowered_terms = {term.lower() for term in terms}
+        if target is not None:
+            prefixes = list(
+                dict.fromkeys(
+                    prefixes
+                    + self.trace_runtime_scope_prefixes(
+                        target, mechanism=mechanism, query=query
+                    )
+                )
+            )
+        if lowered_terms.intersection({"request", "strategy", "pool", "handler", "invoke"}):
+            worker_scope = self._path_scope_through_segment(file_path, "worker")
+            if not worker_scope:
+                worker_scope = self._infer_worker_scope_from_path(file_path)
+            if worker_scope:
+                prefixes.append(worker_scope)
         if lowered_terms.intersection(
             {
                 "build",
@@ -1055,11 +1242,7 @@ class StructuralRecovery:
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
         WHERE NOT s.uid IN $excluded_uids
           AND any(prefix IN $dir_prefixes WHERE f.path STARTS WITH prefix)
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS symbol_kind,
@@ -1069,7 +1252,7 @@ class StructuralRecovery:
                coalesce(f.hash, '') AS file_hash,
                coalesce(c.range, s.range, [0, 0]) AS range,
                inbound_edges,
-               count(DISTINCT or) AS outbound_edges
+               coalesce(s.out_degree, 0) AS outbound_edges
         LIMIT $limit
         """
         try:
@@ -1080,6 +1263,61 @@ class StructuralRecovery:
                         workspace_id=self.workspace_id,
                         excluded_uids=list(excluded_uids),
                         dir_prefixes=sorted(dir_prefixes),
+                        limit=max_rows,
+                    )
+                )
+        except Exception:
+            return []
+
+    def trace_dependency_dir_symbol_rows(
+        self,
+        dir_prefixes: list[str],
+        *,
+        excluded_uids: set[str],
+        max_rows: int = 48,
+    ) -> list[dict]:
+        """Load symbols under explicit directory prefixes (worker/ sibling expansion)."""
+        prefixes = [p for p in dir_prefixes if p]
+        if not prefixes:
+            return []
+        query_cypher = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+        WHERE NOT s.uid IN $excluded_uids
+          AND any(prefix IN $dir_prefixes WHERE f.path STARTS WITH prefix)
+          AND NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
+        WITH s, f, c, inbound_edges, coalesce(s.out_degree, 0) AS outbound_edges,
+             CASE
+               WHEN any(marker IN $sibling_markers WHERE f.path CONTAINS marker) THEN 4
+               ELSE 0
+             END AS trace_anchor_score
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS symbol_kind,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               inbound_edges,
+               outbound_edges,
+               trace_anchor_score,
+               false AS trace_topic_anchor
+        ORDER BY trace_anchor_score DESC,
+                 inbound_edges + outbound_edges DESC,
+                 size(f.path) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                return list(
+                    session.run(
+                        query_cypher,
+                        workspace_id=self.workspace_id,
+                        excluded_uids=list(excluded_uids),
+                        dir_prefixes=sorted(set(prefixes)),
+                        noise_patterns=list(NOISE_PATH_PATTERNS),
+                        sibling_markers=list(TRACE_EXECUTION_SIBLING_FILE_MARKERS),
                         limit=max_rows,
                     )
                 )
@@ -1117,11 +1355,7 @@ class StructuralRecovery:
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
         WHERE NOT s.uid IN $excluded_uids
           AND any(prefix IN $parent_prefixes WHERE f.path STARTS WITH prefix)
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS symbol_kind,
@@ -1131,7 +1365,7 @@ class StructuralRecovery:
                coalesce(f.hash, '') AS file_hash,
                coalesce(c.range, s.range, [0, 0]) AS range,
                inbound_edges,
-               count(DISTINCT or) AS outbound_edges
+               coalesce(s.out_degree, 0) AS outbound_edges
         LIMIT $limit
         """
         try:
@@ -1175,16 +1409,37 @@ class StructuralRecovery:
         runtime_rows = self.host._trace_dependency_runtime_symbol_rows(
             target,
             excluded_uids=excluded_uids,
+            mechanism=mechanism,
+            query=query,
         )
         topic_rows = self.trace_dependency_topic_symbol_rows(
             target,
             query=query,
             excluded_uids=excluded_uids,
+            mechanism=mechanism,
         )
         sibling_rows = self.trace_dependency_sibling_dir_symbol_rows(
             runtime_rows,
             excluded_uids=excluded_uids,
         )
+        if self.is_worker_consume_trace_target(
+            target, mechanism, query
+        ) or self.is_subpackage_entry_target(target):
+            worker_scope = self.trace_runtime_scope_prefixes(
+                target, mechanism=mechanism, query=query
+            )
+            merged_siblings: dict[str, dict] = {}
+            for row in (
+                *sibling_rows,
+                *self.trace_dependency_dir_symbol_rows(
+                    worker_scope,
+                    excluded_uids=excluded_uids,
+                ),
+            ):
+                uid = str(row.get("uid") or "")
+                if uid:
+                    merged_siblings[uid] = row
+            sibling_rows = list(merged_siblings.values())
         parent_rows = (
             self.trace_dependency_parent_dir_symbol_rows(
                 runtime_rows,
@@ -1328,12 +1583,8 @@ class StructuralRecovery:
               WHERE toLower(s.name) CONTAINS term
                  OR toLower(f.path) CONTAINS term)
           )
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges,
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
+        WITH s, f, c, inbound_edges, coalesce(s.out_degree, 0) AS outbound_edges,
              CASE WHEN f.path CONTAINS '/lib/' THEN 3.0 ELSE 0.0 END
              + CASE WHEN toLower(s.name) IN $composition_names THEN 2.5 ELSE 0.0 END
              + size([term IN $terms WHERE toLower(s.name) = term]) * 2.0
@@ -1454,11 +1705,7 @@ class StructuralRecovery:
         query = """
         MATCH (f:File {workspace_id: $workspace_id, path: $file_path})-[c:CONTAINS]->(s:Symbol)
         WHERE NOT s.uid IN $excluded_uids
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS symbol_kind,
@@ -1468,7 +1715,7 @@ class StructuralRecovery:
                coalesce(f.hash, '') AS file_hash,
                coalesce(c.range, s.range, [0, 0]) AS range,
                inbound_edges,
-               count(DISTINCT or) AS outbound_edges
+               coalesce(s.out_degree, 0) AS outbound_edges
         """
         try:
             with self.db.driver.session() as session:
@@ -1502,11 +1749,7 @@ class StructuralRecovery:
         WHERE dep IS NOT NULL
         MATCH (dep)-[c:CONTAINS]->(s:Symbol)
         WHERE NOT s.uid IN $excluded_uids
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, dep, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, dep, c, coalesce(s.in_degree, 0) AS inbound_edges
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS symbol_kind,
@@ -1516,7 +1759,7 @@ class StructuralRecovery:
                coalesce(dep.hash, '') AS file_hash,
                coalesce(c.range, s.range, [0, 0]) AS range,
                inbound_edges,
-               count(DISTINCT or) AS outbound_edges
+               coalesce(s.out_degree, 0) AS outbound_edges
         """
         try:
             with self.db.driver.session() as session:
@@ -1563,11 +1806,7 @@ class StructuralRecovery:
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
         WHERE f.path IN $file_paths
           AND NOT s.uid IN $excluded_uids
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
+        WITH s, f, c, coalesce(s.in_degree, 0) AS inbound_edges
         RETURN s.uid AS uid,
                s.name AS name,
                coalesce(s.kind, '') AS symbol_kind,
@@ -1577,7 +1816,7 @@ class StructuralRecovery:
                coalesce(f.hash, '') AS file_hash,
                coalesce(c.range, s.range, [0, 0]) AS range,
                inbound_edges,
-               count(DISTINCT or) AS outbound_edges
+               coalesce(s.out_degree, 0) AS outbound_edges
         """
         try:
             with self.db.driver.session() as session:
@@ -2186,6 +2425,223 @@ class StructuralRecovery:
             return True
         start, end = (target.range or [0, 0])[:2]
         return bool(start and end and start == end)
+
+    def is_thin_dispatch_wrapper_target(
+        self,
+        target: SubgraphNode,
+        *,
+        mechanism: str = "",
+        query: str = "",
+    ) -> bool:
+        """Public API facades that delegate in one hop (delay → apply_async, etc.)."""
+        if not RankerScoring.trace_dependency_gain_mode(mechanism, query):
+            return False
+        if self.is_message_publish_trace_target(target, mechanism):
+            return True
+        token_est = int(target.token_estimate or 0)
+        if 0 < token_est <= THIN_DISPATCH_MAX_TOKEN_ESTIMATE:
+            start, end = (target.range or [0, 0])[:2]
+            if start and end and end > start:
+                return True
+        return False
+
+    @staticmethod
+    def _mandatory_callee_priority(target: SubgraphNode, neighbor: dict) -> float:
+        score = 1.0
+        target_path = (target.file_path or "").replace("\\", "/")
+        neighbor_path = (neighbor.get("file_path") or "").replace("\\", "/")
+        if target_path and neighbor_path == target_path:
+            score += 2.5
+        name = str(neighbor.get("name") or "")
+        if name in TRACE_PUBLISH_RUNTIME_NAMES:
+            score += 1.5
+        if name in TRACE_CONSUME_RUNTIME_NAMES:
+            score += 1.5
+        rel = str(neighbor.get("rel_type") or "")
+        if rel in ("CALLS_DIRECT", "HAS_API", "INHERITED_API"):
+            score += 0.75
+        return score
+
+    def _mandatory_callee_from_row(
+        self,
+        target: SubgraphNode,
+        row: dict,
+        *,
+        depth: int,
+        provenance: list[str],
+    ) -> Candidate | None:
+        uid = str(row.get("uid") or "")
+        if not uid:
+            return None
+        token_cost = int(row.get("token_estimate") or 0) or self.host._estimate_tokens_range(
+            row.get("range") or [0, 0]
+        )
+        priority = self._mandatory_callee_priority(target, row)
+        candidate = Candidate(
+            kind="symbol",
+            uid=uid,
+            token_cost=token_cost,
+            graph_score=3.5 + priority,
+            name=row.get("name") or "",
+            file_path=row.get("file_path") or "",
+            range=row.get("range") or [0, 0],
+            render_mode="full",
+            relation=MANDATORY_CALLEE_RELATION,
+            direction="callee",
+            depth=depth,
+            file_hash=row.get("file_hash") or "",
+            provenance=provenance,
+        )
+        candidate.symbol_kind = row.get("symbol_kind", "")
+        candidate.qualified_name = row.get("qualified_name", "")
+        return candidate
+
+
+    def direct_callee_anchor_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        mechanism: str = "",
+        query: str = "",
+        excluded_uids: set[str],
+    ) -> list[Candidate]:
+        """Force depth-1 outgoing callees into the pool so BFS cannot skip them."""
+        if not self.is_thin_dispatch_wrapper_target(
+            target, mechanism=mechanism, query=query
+        ):
+            return []
+
+        visited = set(excluded_uids)
+        visited.add(target.uid)
+        neighbors = self.host._get_neighbors(target.uid, visited, distance=1)
+        outgoing = [
+            row
+            for row in neighbors
+            if row.get("outgoing")
+            and self.host._is_outgoing_call(str(row.get("rel_type") or ""), True)
+        ]
+        if not outgoing:
+            return []
+
+        outgoing.sort(
+            key=lambda row: self._mandatory_callee_priority(target, row),
+            reverse=True,
+        )
+        target_path = (target.file_path or "").replace("\\", "/")
+        selected: list[dict] = []
+        seen_uids: set[str] = set()
+        for row in outgoing:
+            uid = str(row.get("uid") or "")
+            if not uid or uid in seen_uids:
+                continue
+            seen_uids.add(uid)
+            selected.append(row)
+            if len(selected) >= THIN_DISPATCH_MAX_MANDATORY_CALLEES:
+                break
+        if target_path:
+            for row in outgoing:
+                uid = str(row.get("uid") or "")
+                if not uid or uid in seen_uids:
+                    continue
+                if (row.get("file_path") or "").replace("\\", "/") != target_path:
+                    continue
+                selected.insert(0, row)
+                seen_uids.add(uid)
+                if len(selected) > THIN_DISPATCH_MAX_MANDATORY_CALLEES:
+                    selected.pop()
+                break
+
+        candidates: list[Candidate] = []
+        for row in selected:
+            candidate = self._mandatory_callee_from_row(
+                target,
+                row,
+                depth=1,
+                provenance=[
+                    f"mandatory-callee:{row.get('rel_type', 'CALLS')}",
+                    f"callee:{row.get('name', '')}",
+                ],
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+        if self.is_message_publish_trace_target(target, mechanism) and candidates:
+            chain_seen = set(excluded_uids) | {target.uid} | {c.uid for c in candidates}
+            chain_added = 0
+            for hop1 in candidates[:THIN_DISPATCH_MAX_MANDATORY_CALLEES]:
+                hop_neighbors = self.host._get_neighbors(hop1.uid, set(chain_seen), distance=1)
+                outgoing_chain = [
+                    row
+                    for row in hop_neighbors
+                    if row.get("outgoing")
+                    and self.host._is_outgoing_call(str(row.get("rel_type") or ""), True)
+                ]
+                outgoing_chain.sort(
+                    key=lambda row: self._mandatory_callee_priority(target, row),
+                    reverse=True,
+                )
+                for row in outgoing_chain:
+                    uid = str(row.get("uid") or "")
+                    if not uid or uid in chain_seen:
+                        continue
+                    chain_seen.add(uid)
+                    chain_candidate = self._mandatory_callee_from_row(
+                        target,
+                        row,
+                        depth=2,
+                        provenance=[
+                            f"mandatory-chain:{hop1.name}",
+                            f"callee:{row.get('name', '')}",
+                        ],
+                    )
+                    if chain_candidate is None:
+                        continue
+                    candidates.append(chain_candidate)
+                    chain_added += 1
+                    if chain_added >= THIN_DISPATCH_MAX_CHAIN_CALLEES:
+                        break
+                if chain_added >= THIN_DISPATCH_MAX_CHAIN_CALLEES:
+                    break
+        return candidates
+
+    @staticmethod
+    def merge_mandatory_callee_pool(
+        pool: list[Candidate], mandatory: list[Candidate]
+    ) -> list[Candidate]:
+        merged: dict[str, Candidate] = {candidate.uid: candidate for candidate in pool}
+        for candidate in mandatory:
+            existing = merged.get(candidate.uid)
+            if existing is None:
+                merged[candidate.uid] = candidate
+                continue
+            existing.graph_score = max(existing.graph_score, candidate.graph_score)
+            existing.relation = MANDATORY_CALLEE_RELATION
+            existing.render_mode = "full"
+            existing.depth = min(existing.depth, candidate.depth)
+            is_contract = any(
+                str(step).startswith("mandatory-") and str(step).endswith("-contract")
+                for step in candidate.provenance
+            )
+            candidate_range_contains_existing = (
+                isinstance(existing.range, list)
+                and isinstance(candidate.range, list)
+                and len(existing.range) >= 2
+                and len(candidate.range) >= 2
+                and int(candidate.range[0]) <= int(existing.range[0])
+                and int(candidate.range[1]) >= int(existing.range[1])
+            )
+            if not existing.range or existing.range == [0, 0]:
+                existing.range = candidate.range
+            elif is_contract and candidate_range_contains_existing:
+                existing.range = candidate.range
+            if existing.token_cost <= 1 or existing.range == candidate.range:
+                existing.token_cost = max(existing.token_cost, candidate.token_cost)
+            if not existing.file_hash:
+                existing.file_hash = candidate.file_hash
+            if not getattr(existing, "qualified_name", ""):
+                existing.qualified_name = getattr(candidate, "qualified_name", "")
+            existing.provenance = list(existing.provenance) + list(candidate.provenance)
+        return list(merged.values())
 
     # ------------------------------------------------------------------
     # Scoring helpers

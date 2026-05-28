@@ -651,6 +651,10 @@ class UnifiedRanker:
         score = sum(components.values())
         return score, {"role": role, "components": components}
 
+    @staticmethod
+    def _normalized_target_path(file_path: str) -> str:
+        return (file_path or "").replace("\\", "/").lower()
+
     def _target_path_bonus(self, file_path: str) -> float:
         if not file_path:
             return 0.0
@@ -662,7 +666,7 @@ class UnifiedRanker:
             return 0.1
         # Primary package entry files rank above sibling modules when resolving
         # duplicate symbol matches (e.g. main.py beats root_model.py).
-        file_lc = file_path.lower().replace("\\", "/")
+        file_lc = self._normalized_target_path(file_path)
         if any(file_lc.endswith(s) for s in ("/main.py", "/index.py", "/app.py", "/base.py")):
             return 0.55
         return 0.35
@@ -841,6 +845,14 @@ class UnifiedRanker:
 
         # 6. Mechanism-aware role backfill for sparse framework graphs.
         mechanism = self._determine_mechanism(target, query=query)
+        mandatory_callees = self.structural_recovery.direct_callee_anchor_candidates(
+            target,
+            mechanism=mechanism,
+            query=query,
+            excluded_uids={target.uid},
+        )
+        if mandatory_callees:
+            pool = self._merge_mandatory_callee_pool(pool, mandatory_callees)
         required_roles = self._get_required_roles(mechanism, target=target)
         if intent == Intent.IMPACT_ANALYSIS:
             required_roles = normalize_roles(
@@ -1034,6 +1046,15 @@ class UnifiedRanker:
                     trace_focus_rank = 2
                 elif "/dependencies/" in path_lc:
                     trace_focus_rank = 1
+            if c.relation == "MANDATORY_CALLEE":
+                is_contract_anchor = any(
+                    (
+                        str(step).startswith("mandatory-")
+                        and str(step).endswith("-contract")
+                    )
+                    for step in c.provenance
+                )
+                return (4 if is_contract_anchor else 3, trace_focus_rank, base)
             is_trace_topic_anchor = trace_mode_for_sort and any(
                 step == "trace-topic-anchor" for step in c.provenance
             )
@@ -1722,6 +1743,14 @@ class UnifiedRanker:
     ) -> list[Candidate]:
         return cast(list[Candidate], self.role_backfill.merge_role_backfill(pool, backfill))
 
+    def _merge_mandatory_callee_pool(
+        self, pool: list[Candidate], mandatory: list[Candidate]
+    ) -> list[Candidate]:
+        return cast(
+            list[Candidate],
+            self.structural_recovery.merge_mandatory_callee_pool(pool, mandatory),
+        )
+
     def _merge_role_backfill_impl(
         self, pool: list[Candidate], backfill: list[Candidate]
     ) -> list[Candidate]:
@@ -2207,10 +2236,14 @@ class UnifiedRanker:
         target: SubgraphNode,
         *,
         excluded_uids: set[str],
+        mechanism: str = "",
+        query: str = "",
     ):
         return self.structural_recovery.trace_dependency_runtime_symbol_rows(
             target,
             excluded_uids=excluded_uids,
+            mechanism=mechanism,
+            query=query,
         )
 
     def _resolve_filesystem_import_paths(self, file_path: str) -> list[str]:

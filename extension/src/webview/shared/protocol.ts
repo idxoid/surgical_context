@@ -11,6 +11,14 @@ export type WebviewToHostMessage =
   | { type: 'chat.ask'; prompt: string; symbol?: string; conversationId?: string }
   | { type: 'chat.stop'; requestId: string }
   | { type: 'chat.retry'; messageId: string }
+  | {
+      type: 'request.selected';
+      requestId: string;
+      symbol?: string;
+      question?: string;
+      answer?: string;
+      context: PromptContextPayload;
+    }
   | { type: 'composer.changed'; text: string; heightPx: number }
   | { type: 'accordion.toggled'; id: string; expanded: boolean }
   | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down'; feedbackToken?: string }
@@ -20,6 +28,7 @@ export type WebviewToHostMessage =
   | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'action.openDashboard' }
   | { type: 'link.openFile'; filePath: string; line?: number }
+  | { type: 'impact.openFiles'; filePaths: string[] }
   | { type: 'dashboard.refresh' }
   | { type: 'dashboard.indexWorkspace' }
   | { type: 'settings.loaded' }
@@ -162,6 +171,9 @@ export interface ImpactResponse {
   file_path: string;
   affected_symbols: Array<Record<string, unknown>>;
   affected_files: string[];
+  affected_count: number;
+  affected_file_count: number;
+  max_depth: number;
 }
 
 export interface AuditAction {

@@ -242,6 +242,10 @@ class RankerScoring:
         q = (query or "").lower()
         if "depend" in m or "trace_dependency" in m:
             return True
+        if m.endswith("_publish") or m.endswith("_consume"):
+            return True
+        if "publish" in m or "consume" in m:
+            return True
         if "routing" in m or "dispatch" in m:
             return True
         if "hook" in m or "lifecycle" in m:

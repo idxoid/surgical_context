@@ -237,7 +237,11 @@ class BudgetPruner:
                         candidate_roles=candidate_roles,
                     )
                     return "budget_balance_debit_limit"
-                if not closes_missing_role and gain < min_gain:
+                if (
+                    not closes_missing_role
+                    and gain < min_gain
+                    and c.relation != "MANDATORY_CALLEE"
+                ):
                     _record_pruned(
                         c,
                         "expansion_low_gain",
@@ -248,7 +252,11 @@ class BudgetPruner:
                     return "expansion_low_gain"
                 budget_balance = projected_balance
 
-            if c.depth >= 2 and gain < 0.25:
+            if (
+                c.depth >= 2
+                and gain < 0.25
+                and c.relation != "MANDATORY_CALLEE"
+            ):
                 c.render_mode = "signature_only"
                 c.token_cost = potential_cost
 
@@ -368,13 +376,14 @@ class BudgetPruner:
                 "SEMANTIC_HINT",
                 "ROLE_BACKFILL",
             ) or self.host._has_role_backfill(c)
+            is_mandatory_callee = c.relation == "MANDATORY_CALLEE"
             is_strong_relation = c.relation in (
                 "CALLS_DIRECT",
                 "CALLS_SCOPED",
                 "DEPENDS_ON",
                 "IMPLEMENTS",
                 "OVERRIDES",
-            )
+            ) or is_mandatory_callee
 
             # Determine if this candidate provides any unique reasoning signal
             is_useful = (
@@ -382,6 +391,7 @@ class BudgetPruner:
                 or adds_new_trace_file
                 or is_bridge
                 or is_strong_relation
+                or is_mandatory_callee
                 or (self.host.scoring.blended(c) > 0.15)
             )
 
@@ -452,7 +462,7 @@ class BudgetPruner:
             # Let them through only when they fill a required role; otherwise
             # production code and focused docs should own the budget.
             is_noisy_code = c.kind != "doc" and c.noise_factor < 1.0
-            if is_noisy_code:
+            if is_noisy_code and not is_mandatory_callee:
                 if intent == Intent.IMPACT_ANALYSIS:
                     if not fills_role:
                         _record_pruned(
@@ -556,7 +566,7 @@ class BudgetPruner:
                 # critical evidence. A large/weak symbol with negative blended
                 # score (e.g. fastapi `openapi` in applications.py: 256 tokens
                 # of largely-static config logic) still earns its seat here.
-                if gain < low_gain_floor and not fills_role_or_trace:
+                if gain < low_gain_floor and not fills_role_or_trace and not is_mandatory_callee:
                     _record_pruned(
                         c,
                         "low_gain_floor",

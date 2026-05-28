@@ -728,6 +728,46 @@ button {
   font-family: var(--sc-mono);
 }
 
+.impact-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 8px;
+  margin-top: 12px;
+  align-items: stretch;
+}
+
+.impact-metric,
+.impact-source-chip {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius);
+  background: color-mix(in srgb, var(--sc-text) 4%, transparent);
+  color: var(--sc-muted);
+}
+
+.impact-metric {
+  display: grid;
+  gap: 1px;
+}
+
+.impact-metric strong {
+  color: var(--sc-text);
+  font-size: 15px;
+  line-height: 1.1;
+}
+
+.impact-metric span,
+.impact-source-chip {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.impact-source-chip {
+  align-self: center;
+  color: var(--sc-link);
+}
+
 .impact-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1581,6 +1621,14 @@ button {
 
   .impact-file {
     grid-column: 2 / -1;
+  }
+
+  .impact-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .impact-source-chip {
+    grid-column: 1 / -1;
   }
 
   .dashboard-header,

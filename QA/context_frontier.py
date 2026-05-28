@@ -11,6 +11,7 @@ budget curve and optional greedy pruning.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import re
 import time
@@ -27,10 +28,12 @@ try:
     from QA.llm_bridge import BridgeRequest, build_bridge_provider
     from QA.llm_judge import Effort, Provider, tier_model
     from QA.qa_benchmark import _expected_file_matches
+    from sidecar.context.role_taxonomy import normalize_roles
 except ImportError:  # pragma: no cover - direct script invocation fallback.
     from llm_bridge import BridgeRequest, build_bridge_provider
     from llm_judge import Effort, Provider, tier_model
     from qa_benchmark import _expected_file_matches
+    from sidecar.context.role_taxonomy import normalize_roles
 
 
 _ENCODER = None
@@ -227,12 +230,38 @@ def _variant(
     )
 
 
-def select_units_under_budget(units: list[ContextUnit], token_budget: int) -> list[ContextUnit]:
+def _unit_selection_rank(
+    unit: ContextUnit,
+    *,
+    expected_symbols: set[str],
+) -> tuple[int, int, int, float, int]:
+    is_mandatory = (unit.relation or "").upper() == "MANDATORY_CALLEE"
+    expected_hit = unit.symbol in expected_symbols if expected_symbols and unit.symbol else False
+    return (
+        0 if is_mandatory else 1,
+        0 if expected_hit else 1,
+        -unit.score,
+        unit.depth,
+        unit.token_count,
+    )
+
+
+def select_units_under_budget(
+    units: list[ContextUnit],
+    token_budget: int,
+    *,
+    expected_symbols: Iterable[str] | None = None,
+) -> list[ContextUnit]:
     if not units:
         return []
+    expected = {str(symbol) for symbol in (expected_symbols or []) if symbol}
     selected = [unit for unit in units if unit.kind == "primary"][:1]
     spent = sum(unit.token_count for unit in selected) + 80
-    for unit in [unit for unit in units if unit.kind != "primary"]:
+    rest = sorted(
+        [unit for unit in units if unit.kind != "primary"],
+        key=lambda unit: _unit_selection_rank(unit, expected_symbols=expected),
+    )
+    for unit in rest:
         if spent + unit.token_count > token_budget:
             continue
         selected.append(unit)
@@ -246,10 +275,13 @@ def build_budget_variants(
 ) -> list[Variant]:
     question_id = str(result.get("id") or "question")
     units = units_from_result(result)
+    expected_symbols = result.get("expected_symbols") or []
     variants: list[Variant] = []
     seen: set[tuple[str, ...]] = set()
     for budget in budgets:
-        selected = select_units_under_budget(units, budget)
+        selected = select_units_under_budget(
+            units, budget, expected_symbols=expected_symbols
+        )
         key = tuple(unit.unit_id for unit in selected)
         if key in seen:
             continue
@@ -287,28 +319,146 @@ def _context_files_symbols(units: Iterable[ContextUnit]) -> tuple[set[str], set[
     return files, symbols, text
 
 
-def _matches_file_hint(expected: str, files: set[str]) -> bool:
-    expected_norm = expected.strip().strip("/").replace("\\", "/")
-    if not expected_norm:
+def _normalize_path(path: str) -> str:
+    return path.strip().strip("/").replace("\\", "/")
+
+
+def _file_path_matches(hint: str, paths: set[str]) -> bool:
+    """True when ``hint`` refers to the same file as any path in ``paths``.
+
+    Judges often cite repo-relative paths (``src/click/core.py``) while context
+    units carry absolute benchmark paths (``.../QA/repos/click/src/click/core.py``).
+    Uses the same suffix / directory rules as ``QA.qa_benchmark._expected_file_matches``
+    in both directions so either side may be relative or absolute.
+    """
+    hint_norm = _normalize_path(hint)
+    if not hint_norm or not paths:
         return False
-    normalized_files = {path.strip().strip("/").replace("\\", "/") for path in files if path}
-    if expected_norm in normalized_files:
+    normalized = {_normalize_path(path) for path in paths if path}
+    if hint_norm in normalized:
         return True
-    if any(path.endswith("/" + expected_norm) for path in normalized_files):
+    if _expected_file_matches(hint_norm, normalized):
         return True
-    return _expected_file_matches(expected_norm, files)
+    for path in normalized:
+        if _expected_file_matches(path, {hint_norm}):
+            return True
+        if path.endswith("/" + hint_norm) or hint_norm.endswith("/" + path):
+            return True
+    return False
+
+
+def _matches_file_hint(expected: str, files: set[str]) -> bool:
+    """Backward-compatible alias for pack-hint ↔ path-set matching."""
+    return _file_path_matches(expected, files)
 
 
 def _citation_matches_file(citation: dict[str, Any], context_files: set[str]) -> bool:
     cited_file = str(citation.get("file_path") or citation.get("file") or "").strip()
     if not cited_file:
         return False
-    return _matches_file_hint(cited_file, context_files)
+    return _file_path_matches(cited_file, context_files)
+
+
+def _symbol_name_matches(cited: str, context_symbols: set[str]) -> bool:
+    """Match exact ids or qualified heads/tails (``Consumer.create``, ``Request.execute``)."""
+    cited = cited.strip()
+    if not cited or not context_symbols:
+        return False
+    if cited in context_symbols:
+        return True
+    if "." in cited:
+        head, tail = cited.split(".", 1)
+        if head in context_symbols or tail in context_symbols:
+            return True
+    return False
 
 
 def _citation_matches_symbol(citation: dict[str, Any], context_symbols: set[str]) -> bool:
     cited_symbol = str(citation.get("symbol") or "").strip()
-    return bool(cited_symbol and cited_symbol in context_symbols)
+    return _symbol_name_matches(cited_symbol, context_symbols)
+
+
+_QUOTE_FUZZY_MIN_LEN = 12
+_QUOTE_FUZZY_MIN_RATIO = 0.82
+_QUOTE_FUZZY_LINE_RATIO = 0.88
+
+
+def _normalize_quote_text(text: str) -> str:
+    """Collapse whitespace so judge copies match rendered context units."""
+    cleaned = (text or "").replace("\\n", "\n").replace("\r\n", "\n")
+    return re.sub(r"\s+", " ", cleaned.strip())
+
+
+def _quote_matches_context(
+    quote: str,
+    context_text: str,
+    *,
+    min_ratio: float = _QUOTE_FUZZY_MIN_RATIO,
+) -> bool:
+    """True when ``quote`` is present in context, allowing minor judge drift."""
+    if not quote:
+        return True
+    quote_norm = _normalize_quote_text(quote)
+    if not quote_norm:
+        return True
+    context_norm = _normalize_quote_text(context_text)
+    if quote_norm in context_norm:
+        return True
+    if len(quote_norm) < _QUOTE_FUZZY_MIN_LEN:
+        return False
+
+    if difflib.SequenceMatcher(None, quote_norm, context_norm).ratio() >= min_ratio:
+        return True
+
+    for line in context_text.splitlines():
+        line_norm = _normalize_quote_text(line)
+        if len(line_norm) < _QUOTE_FUZZY_MIN_LEN:
+            continue
+        if difflib.SequenceMatcher(None, quote_norm, line_norm).ratio() >= _QUOTE_FUZZY_LINE_RATIO:
+            return True
+
+    window = len(quote_norm)
+    if window > len(context_norm):
+        return False
+    best = 0.0
+    step = max(1, window // 8)
+    for start in range(0, len(context_norm) - window + 1, step):
+        chunk = context_norm[start : start + window]
+        score = difflib.SequenceMatcher(None, quote_norm, chunk).ratio()
+        if score > best:
+            best = score
+        if best >= min_ratio:
+            return True
+    return best >= min_ratio
+
+
+def _evidence_role_token(item: str) -> str:
+    """Extract canonical role id from judge free-text role entries."""
+    text = item.strip()
+    if not text:
+        return ""
+    text = text.split(":", 1)[0].strip()
+    if "(" in text:
+        text = text.split("(", 1)[0].strip()
+    return text
+
+
+def _evidence_roles_covered_set(raw: Any) -> set[str]:
+    """Parse judge ``evidence_roles_covered`` into canonical role ids.
+
+    Judges often return ``"core_runtime: ..."`` or ``"executor (Pool)"`` instead
+    of bare ``executor``. Strip suffixes, then ``normalize_roles``.
+    """
+    if not isinstance(raw, list):
+        return set()
+    role_tokens: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        token = _evidence_role_token(item)
+        if token:
+            role_tokens.append(token)
+    return set(normalize_roles(role_tokens))
 
 
 def score_citation_gate(
@@ -350,15 +500,21 @@ def score_citation_gate(
         file_ok = _citation_matches_file(citation, context_files)
         symbol_ok = _citation_matches_symbol(citation, context_symbols)
         quote = str(citation.get("quote") or "").strip()
-        quote_ok = not quote or quote in context_text
+        quote_ok = _quote_matches_context(quote, context_text)
         if (file_ok or symbol_ok) and quote_ok:
             valid_citations += 1
+        cited_file = str(citation.get("file_path") or citation.get("file") or "").strip()
         for expected in expected_files:
-            if _matches_file_hint(expected, {str(citation.get("file_path", ""))}):
+            if cited_file and _file_path_matches(expected, {cited_file}):
                 cited_expected_files.add(expected)
         cited_symbol = str(citation.get("symbol") or "")
-        if cited_symbol in expected_symbols:
-            cited_expected_symbols.add(cited_symbol)
+        for expected in expected_symbols:
+            if _symbol_name_matches(cited_symbol, {expected}):
+                cited_expected_symbols.add(expected)
+                break
+            if _symbol_name_matches(expected, {cited_symbol}):
+                cited_expected_symbols.add(expected)
+                break
 
     if citations and valid_citations == 0:
         reasons.append("citations_do_not_match_context")
@@ -367,8 +523,15 @@ def score_citation_gate(
     if expected_symbols and not cited_expected_symbols:
         reasons.append("expected_symbols_not_cited")
 
-    required_roles = set(result.get("required_roles_canonical") or result.get("expected_roles") or [])
-    covered_roles = set(payload.get("evidence_roles_covered") or [])
+    required_roles = set(
+        normalize_roles(
+            result.get("required_roles_canonical")
+            or result.get("required_roles")
+            or result.get("expected_roles")
+            or []
+        )
+    )
+    covered_roles = _evidence_roles_covered_set(payload.get("evidence_roles_covered"))
     if required_roles and not required_roles.issubset(covered_roles):
         missing = ",".join(sorted(required_roles - covered_roles))
         reasons.append(f"evidence_roles_missing={missing}")
@@ -551,6 +714,16 @@ def run_question_frontier(
             "unit_ids": frontier_variant.unit_ids,
             "gate": asdict(frontier_gate),
         }
+    elif run_judge and attempts:
+        best_failed = min(attempts, key=lambda item: int(item.get("token_count") or 0))
+        frontier = {
+            "variant_id": best_failed.get("variant_id", ""),
+            "token_count": best_failed.get("token_count", 0),
+            "unit_count": best_failed.get("unit_count", 0),
+            "unit_ids": best_failed.get("unit_ids", []),
+            "gate": best_failed.get("gate", {}),
+            "status": "no_passing_context_found",
+        }
     else:
         smallest = min(variants, key=lambda item: item.token_count) if variants else None
         frontier = {
@@ -559,6 +732,7 @@ def run_question_frontier(
             "unit_count": len(smallest.units) if smallest else 0,
             "unit_ids": smallest.unit_ids if smallest else [],
             "gate": {"verdict": "not_run"},
+            "status": "not_judged",
         }
 
     original_tokens = (result.get("ready_context") or {}).get("token_count") or result.get(

@@ -1,37 +1,38 @@
-# Opt-in: set MECHANISM_PACK_PATH to this file (or append via os.pathsep).
-# Registration-flow symbol hints (Flask-oriented names); not loaded by default.
-mechanism_required_roles: {}
+# Opt-in ad-hoc repo tuning template (not loaded by default).
+# Set MECHANISM_PACK_PATH to this file, re-index the repo, then --no-index benchmark.
+# See docs/spec_eval_harness.md §4.6. Uncomment/Add section/Chanage YAML below to activate.
+# mechanism_required_roles: {}
 
-mechanism_role_backfill:
-  auto:registration_flow:
-    api_surface:
-      - name: Blueprint
-        path_hint: /blueprint
-        priority: 0.95
-      - name: request
-        path_hint: /globals
-        priority: 0.82
-    factory_surface:
-      - name: register_blueprint
-        path_hint: /app
-        priority: 0.92
-      - name: record
-        path_hint: /blueprint
-        priority: 0.86
-    representation_surface:
-      - name: deferred_functions
-        path_hint: /blueprint
-        priority: 0.88
-      - name: make_setup_state
-        path_hint: /blueprint
-        priority: 0.82
-    runtime_surface:
-      - name: wsgi_app
-        path_hint: /app
-        priority: 0.9
-      - name: full_dispatch_request
-        path_hint: /app
-        priority: 0.86
-      - name: dispatch_request
-        path_hint: /app
-        priority: 0.83
+# mechanism_role_backfill:
+#   auto:registration_flow:
+#     api_surface:
+#       - name: Blueprint
+#         path_hint: /blueprint
+#         priority: 0.95
+#       - name: request
+#         path_hint: /globals
+#         priority: 0.82
+#     factory_surface:
+#       - name: register_blueprint
+#         path_hint: /app
+#         priority: 0.92
+#       - name: record
+#         path_hint: /blueprint
+#         priority: 0.86
+#     representation_surface:
+#       - name: deferred_functions
+#         path_hint: /blueprint
+#         priority: 0.88
+#       - name: make_setup_state
+#         path_hint: /blueprint
+#         priority: 0.82
+#     runtime_surface:
+#       - name: wsgi_app
+#         path_hint: /app
+#         priority: 0.9
+#       - name: full_dispatch_request
+#         path_hint: /app
+#         priority: 0.86
+#       - name: dispatch_request
+#         path_hint: /app
+#         priority: 0.83

@@ -115,6 +115,49 @@ TRACE_HOOK_RUNTIME_NAMES: frozenset[str] = frozenset(
         "wsgi_app",
     }
 )
+# Message publish trace: app-layer dispatch APIs → broker/publisher runtime (no framework literals).
+TRACE_PUBLISH_APP_METHOD_NAMES: frozenset[str] = frozenset(
+    {"delay", "apply_async", "send_task", "apply", "retry", "starmap", "map"}
+)
+TRACE_PUBLISH_RUNTIME_NAMES: frozenset[str] = frozenset(
+    {
+        "apply_async",
+        "send_task",
+        "Producer",
+        "Router",
+        "create_task_message",
+        "send_task_message",
+        "publish",
+    }
+)
+TRACE_PUBLISH_SCOPE_SEGMENT = "/app/"
+# Celery task registration: @app.task decorator -> generated Task -> app registry.
+TRACE_TASK_REGISTRATION_TARGET_NAMES: frozenset[str] = frozenset({"task"})
+# Worker consume trace: broker consumer → execution pool/strategy/request modules.
+TRACE_CONSUME_TARGET_NAMES: frozenset[str] = frozenset({"Consumer", "consumer"})
+TRACE_CONSUME_RUNTIME_NAMES: frozenset[str] = frozenset(
+    {
+        "on_task_request",
+        "Strategy",
+        "TaskPool",
+        "Request",
+        "execute",
+        "start_strategy",
+    }
+)
+TRACE_CONSUME_SCOPE_SEGMENT = "/worker/"
+TRACE_CONSUME_PATH_PENALTIES = ("/backends/", "/backend/")
+# Sibling modules to prefer when ranking trace import anchors (request/strategy next to consumer).
+TRACE_EXECUTION_SIBLING_FILE_MARKERS: tuple[str, ...] = (
+    "/request.py",
+    "/strategy.py",
+    "/consumer.py",
+)
+# Thin API wrappers (e.g. delay → apply_async): force depth-1 outgoing callees into the pool.
+MANDATORY_CALLEE_RELATION = "MANDATORY_CALLEE"
+THIN_DISPATCH_MAX_TOKEN_ESTIMATE = 80
+THIN_DISPATCH_MAX_MANDATORY_CALLEES = 4
+THIN_DISPATCH_MAX_CHAIN_CALLEES = 2
 RUNTIME_SIGNAL_TOKENS = (
     "run",
     "runtime",

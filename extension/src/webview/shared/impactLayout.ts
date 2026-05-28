@@ -14,6 +14,10 @@ export interface SymbolInfo {
   symbol: string;
   filePath: string;
   uid: string;
+  affectedCount?: number;
+  fileCount?: number;
+  maxDepth?: number;
+  sourceLabel?: string;
 }
 
 export function renderSymbolSummaryCard(symbolInfo: SymbolInfo): string {
@@ -28,7 +32,22 @@ export function renderSymbolSummaryCard(symbolInfo: SymbolInfo): string {
         <span>${escapeHtml(symbolInfo.filePath)}</span>
         <code>${escapeHtml(symbolInfo.uid)}</code>
       </div>
+      <div class="impact-metrics" aria-label="Impact summary">
+        ${renderMetric('Symbols', symbolInfo.affectedCount)}
+        ${renderMetric('Files', symbolInfo.fileCount)}
+        ${renderMetric('Depth', symbolInfo.maxDepth)}
+        ${symbolInfo.sourceLabel ? `<span class="impact-source-chip">${escapeHtml(symbolInfo.sourceLabel)}</span>` : ''}
+      </div>
     </div>
+  `;
+}
+
+function renderMetric(label: string, value: number | undefined): string {
+  return `
+    <span class="impact-metric">
+      <strong>${Number.isFinite(value) ? value : 0}</strong>
+      <span>${escapeHtml(label)}</span>
+    </span>
   `;
 }
 
@@ -56,16 +75,25 @@ export function renderAffectsGroup(
       const isDirty = sym.is_dirty as boolean | undefined;
       const relation = (sym.relation as string) || (sym.direction as string) || 'related';
       const depth = typeof sym.depth === 'number' ? `d${sym.depth}` : '';
+      const line = lineFromSymbol(sym);
+      const depthClass = typeof sym.depth === 'number' && sym.depth <= 1 ? 'direct' : 'indirect';
 
       return `
-        <div class="impact-row" data-file-path="${escapeHtml(filePath)}">
+        <button
+          type="button"
+          class="impact-row"
+          data-action="openFile"
+          data-file-path="${escapeHtml(filePath)}"
+          data-line="${line}"
+          title="Open ${escapeHtml(symbolName)}"
+        >
           <span class="impact-chevron" aria-hidden="true">›</span>
           <span class="impact-symbol">${escapeHtml(symbolName)}</span>
           <span class="impact-file">${escapeHtml(filePath)}</span>
-          <span class="impact-tag direct">${escapeHtml(depth || relation)}</span>
+          <span class="impact-tag ${depthClass}">${escapeHtml(depth || relation)}</span>
           ${score ? `<span class="impact-tag indirect">${(score * 100).toFixed(0)}%</span>` : ''}
           ${isDirty ? '<span class="impact-tag conditional">dirty</span>' : ''}
-        </div>
+        </button>
       `;
     })
     .join('');
@@ -82,6 +110,18 @@ export function renderAffectsGroup(
       </div>
     </div>
   `;
+}
+
+function lineFromSymbol(sym: Record<string, unknown>): number {
+  const explicit = sym.line || sym.start_line || sym.lineno;
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) {
+    return Math.max(1, explicit);
+  }
+  const range = sym.range;
+  if (Array.isArray(range) && typeof range[0] === 'number') {
+    return Math.max(1, range[0]);
+  }
+  return 1;
 }
 
 export function renderFilesGroup(filePaths: string[], expanded = false): string {
@@ -117,44 +157,6 @@ export function renderFilesGroup(filePaths: string[], expanded = false): string 
       </button>
       <div class="group-content" ${expanded ? '' : 'hidden'}>
         ${rows}
-      </div>
-    </div>
-  `;
-}
-
-export function renderPlaceholderGroup(
-  title: string,
-  message: string,
-  count?: number,
-  expanded = false
-): string {
-  return `
-    <div class="impact-group ${expanded ? 'expanded' : ''}">
-      <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
-        <span aria-hidden="true">›</span>
-        <strong>${escapeHtml(title)}</strong>
-        ${count !== undefined ? `<span>(${count})</span>` : ''}
-      </button>
-      <div class="group-content placeholder" ${expanded ? '' : 'hidden'}>
-        <p>${escapeHtml(message)}</p>
-        ${
-          expanded
-            ? `
-              <div class="impact-row static">
-                <span class="impact-chevron" aria-hidden="true">›</span>
-                <span class="impact-symbol">SymbolResolver.resolve()</span>
-                <span class="impact-file">packages/core/src/symbolResolver.ts:87</span>
-                <span class="impact-tag direct">direct</span>
-              </div>
-              <div class="impact-row static">
-                <span class="impact-chevron" aria-hidden="true">›</span>
-                <span class="impact-symbol">Graph.getNeighbors()</span>
-                <span class="impact-file">packages/core/src/graphBuilder.ts:142</span>
-                <span class="impact-tag direct">direct</span>
-              </div>
-            `
-            : ''
-        }
       </div>
     </div>
   `;

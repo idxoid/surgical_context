@@ -70,6 +70,21 @@ export class ImpactViewProvider implements vscode.WebviewViewProvider {
           vscode.window.showTextDocument(uri, opts);
         }
         break;
+
+      case 'impact.openFiles':
+        await this.openImpactFiles(message.filePaths);
+        break;
+    }
+  }
+
+  private async openImpactFiles(filePaths: string[]): Promise<void> {
+    const uniquePaths = Array.from(new Set(filePaths.filter(Boolean))).slice(0, 12);
+    for (const filePath of uniquePaths) {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+      await vscode.window.showTextDocument(document, {
+        preview: false,
+        preserveFocus: true,
+      });
     }
   }
 
