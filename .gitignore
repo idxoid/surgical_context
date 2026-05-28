@@ -42,6 +42,7 @@ QA/repos/
 # Graphify local outputs
 graphify-out/
 graphify-obsidian-repo/
+.graphifyignore
 
 # Environment files
 .env
