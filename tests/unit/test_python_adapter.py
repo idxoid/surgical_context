@@ -133,6 +133,57 @@ class Thing:
         calls = adapter.extract_calls_from_source(source, "pkg/thing.py")
         assert not any(c["callee_name"] == "do_work" for c in calls)
 
+    def test_return_type_self_method_ctor(self, adapter):
+        # `s = self.factory()` where factory `return SomeClass(...)` → s : SomeClass.
+        source = """
+from pkg.svc import Service
+
+class Worker:
+    def make_svc(self):
+        return Service()
+
+    def run(self):
+        s = self.make_svc()
+        s.handle()
+"""
+        calls = adapter.extract_calls_from_source(source, "pkg/worker.py")
+        call = next(c for c in calls if c["callee_name"] == "handle")
+        assert call["tier"] == "typed"
+        assert call["callee_qualified_name"] == "pkg.svc.Service.handle"
+
+    def test_return_type_module_func_annotation(self, adapter):
+        # `s = get_svc()` where `def get_svc() -> Service` → s : Service, even though
+        # the body returns a non-inferable expression.
+        source = """
+from pkg.svc import Service
+
+def get_svc() -> Service:
+    return _global_singleton
+
+def run():
+    s = get_svc()
+    s.handle()
+"""
+        calls = adapter.extract_calls_from_source(source, "pkg/m.py")
+        call = next(c for c in calls if c["callee_name"] == "handle")
+        assert call["tier"] == "typed"
+        assert call["callee_qualified_name"] == "pkg.svc.Service.handle"
+
+    def test_return_type_global_return_yields_no_edge(self, adapter):
+        # `x = get_app()` where the func returns a bare global (Celery current_app
+        # shape) → type not statically present, so no fabricated edge.
+        source = """
+def get_app():
+    return _tls.current_app or default_app
+
+def run():
+    x = get_app()
+    x.send_task()
+"""
+        calls = adapter.extract_calls_from_source(source, "pkg/state.py")
+        send = next((c for c in calls if c["callee_name"] == "send_task"), None)
+        assert send is None or "callee_qualified_name" not in send
+
     def test_proxy_binding_extracted_for_annotated_lazy_proxy(self, adapter):
         # `name: ProxyType = SomeProxy(...)` (Flask current_app shape): emit a proxy
         # binding to ProxyType. Cross-file call forwarding happens at index time

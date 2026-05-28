@@ -220,6 +220,9 @@ class PythonAdapter(TreeSitterAdapter):
         import_bindings = self._extract_import_bindings(source_code, file_path)
         module = module_name_from_path(file_path)
         attr_type_table = self._build_attr_type_table(tree, import_bindings, module)
+        method_returns, function_returns = self._build_return_type_table(
+            tree, import_bindings, module
+        )
         alias_cache: dict[int, dict[str, str]] = {}
 
         calls = []
@@ -285,7 +288,8 @@ class PythonAdapter(TreeSitterAdapter):
                         callee_qualified_name = f"{base}.{call_name}"
                     else:
                         typed = self._typed_qualified_target(
-                            parent, obj_node, call_name, attr_type_table, alias_cache
+                            parent, obj_node, call_name, attr_type_table, alias_cache,
+                            method_returns, function_returns,
                         )
                         if typed is not None:
                             tier = "typed"
@@ -293,7 +297,8 @@ class PythonAdapter(TreeSitterAdapter):
                             callee_qualified_name = typed
                 elif obj_node.type == "attribute":
                     typed = self._typed_qualified_target(
-                        parent, obj_node, call_name, attr_type_table, alias_cache
+                        parent, obj_node, call_name, attr_type_table, alias_cache,
+                        method_returns, function_returns,
                     )
                     if typed is None:
                         continue
@@ -468,6 +473,75 @@ class PythonAdapter(TreeSitterAdapter):
                 table.setdefault(cname, {}).update(attrs)
         return table
 
+    def _build_return_type_table(
+        self, tree, import_bindings: dict[str, str], module: str
+    ) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
+        """Infer function/method return types, structurally and conservatively.
+
+        Two sources, both unambiguous: an explicit ``-> Type`` annotation, or a body
+        whose return yields a direct constructor ``return SomeClass(...)``. Returns
+        ``return some_global`` / ``return self.x`` / bare names are NOT inferred (their
+        type is not statically present) — precision over recall.
+
+        Returns ``(method_returns, function_returns)``:
+        - ``method_returns[(ClassName, method)] = qualified_type``
+        - ``function_returns[func] = qualified_type`` (module-level / nested funcs)
+        """
+        method_returns: dict[tuple[str, str], str] = {}
+        function_returns: dict[str, str] = {}
+
+        def _return_type_of(fn_node) -> str:
+            ret = fn_node.child_by_field_name("return_type")
+            if ret is not None:
+                ident = self._type_identifier(ret)
+                if ident:
+                    return self._resolve_type_name(ident, import_bindings, module)
+            body = fn_node.child_by_field_name("body")
+            if body is None:
+                return ""
+            for node in self._iter_nodes(body):
+                if node.type != "return_statement":
+                    continue
+                expr = node.named_children[0] if node.named_children else None
+                # Don't descend into nested functions' returns.
+                if expr is not None and expr.type == "call":
+                    callee = expr.child_by_field_name("function")
+                    if callee is not None and callee.type == "identifier":
+                        name = _node_text(callee)
+                        if name[:1].isupper():
+                            return self._resolve_type_name(name, import_bindings, module)
+            return ""
+
+        for cls in self._iter_nodes(tree.root_node):
+            if cls.type != "class_definition":
+                continue
+            cname_node = cls.child_by_field_name("name")
+            body = cls.child_by_field_name("body")
+            if cname_node is None or body is None:
+                continue
+            cname = _node_text(cname_node)
+            for fn in body.children:
+                if fn.type != "function_definition":
+                    continue
+                fname_node = fn.child_by_field_name("name")
+                if fname_node is None:
+                    continue
+                rtype = _return_type_of(fn)
+                if rtype:
+                    method_returns.setdefault((cname, _node_text(fname_node)), rtype)
+
+        for fn in self._iter_nodes(tree.root_node):
+            if fn.type != "function_definition":
+                continue
+            fname_node = fn.child_by_field_name("name")
+            if fname_node is None:
+                continue
+            rtype = _return_type_of(fn)
+            if rtype:
+                function_returns.setdefault(_node_text(fname_node), rtype)
+
+        return method_returns, function_returns
+
     def _build_proxy_binding_table(
         self, tree, import_bindings: dict[str, str], module: str
     ) -> dict[str, str]:
@@ -515,22 +589,59 @@ class PythonAdapter(TreeSitterAdapter):
                 return _node_text(child)
         return ""
 
-    def _local_alias_types(self, func_node, cls_table: dict[str, str]) -> dict[str, str]:
-        """Map locals aliased to typed attributes: ``v = self.attr`` within a function."""
+    def _local_alias_types(
+        self,
+        func_node,
+        cls_table: dict[str, str],
+        *,
+        enclosing_class: str = "",
+        method_returns: dict[tuple[str, str], str] | None = None,
+        function_returns: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Map locals to types within a function.
+
+        - ``v = self.attr`` → the attribute's type (attr_type_table).
+        - ``v = self.method()`` → the method's inferred return type.
+        - ``v = func()`` → a module/nested function's inferred return type.
+        """
+        method_returns = method_returns or {}
+        function_returns = function_returns or {}
         aliases: dict[str, str] = {}
         for assign in self._iter_nodes(func_node):
             if assign.type != "assignment":
                 continue
             left = assign.child_by_field_name("left")
             right = assign.child_by_field_name("right")
-            if left is None or left.type != "identifier" or right is None or right.type != "attribute":
+            if left is None or left.type != "identifier" or right is None:
                 continue
-            obj = right.child_by_field_name("object")
-            attr = right.child_by_field_name("attribute")
-            if obj is not None and _node_text(obj) == "self" and attr is not None:
-                inferred = cls_table.get(_node_text(attr))
-                if inferred:
-                    aliases[_node_text(left)] = inferred
+            local_name = _node_text(left)
+            if right.type == "attribute":
+                obj = right.child_by_field_name("object")
+                attr = right.child_by_field_name("attribute")
+                if obj is not None and _node_text(obj) == "self" and attr is not None:
+                    inferred = cls_table.get(_node_text(attr))
+                    if inferred:
+                        aliases[local_name] = inferred
+            elif right.type == "call":
+                callee = right.child_by_field_name("function")
+                if callee is None:
+                    continue
+                if callee.type == "attribute":
+                    inner = callee.child_by_field_name("object")
+                    meth = callee.child_by_field_name("attribute")
+                    if (
+                        inner is not None
+                        and _node_text(inner) == "self"
+                        and meth is not None
+                        and enclosing_class
+                    ):
+                        inferred = method_returns.get((enclosing_class, _node_text(meth)))
+                        if inferred:
+                            aliases[local_name] = inferred
+                elif callee.type == "identifier":
+                    inferred = function_returns.get(_node_text(callee))
+                    if inferred:
+                        aliases[local_name] = inferred
         return aliases
 
     def _typed_qualified_target(
@@ -540,9 +651,12 @@ class PythonAdapter(TreeSitterAdapter):
         call_name: str,
         attr_type_table: dict[str, dict[str, str]],
         alias_cache: dict[int, dict[str, str]],
+        method_returns: dict[tuple[str, str], str] | None = None,
+        function_returns: dict[str, str] | None = None,
     ) -> str | None:
         """Tier 4.5 CALLS_TYPED: resolve ``self.attr.m()`` / ``local.m()`` to ``Type.m``."""
-        cls_table = attr_type_table.get(self._enclosing_class_name(parent), {})
+        enclosing = self._enclosing_class_name(parent)
+        cls_table = attr_type_table.get(enclosing, {})
         target_type: str | None = None
         if receiver_node.type == "attribute":
             inner_obj = receiver_node.child_by_field_name("object")
@@ -556,7 +670,13 @@ class PythonAdapter(TreeSitterAdapter):
                 target_type = cls_table.get(_node_text(inner_attr))
         elif receiver_node.type == "identifier":
             if parent.id not in alias_cache:
-                alias_cache[parent.id] = self._local_alias_types(parent, cls_table)
+                alias_cache[parent.id] = self._local_alias_types(
+                    parent,
+                    cls_table,
+                    enclosing_class=enclosing,
+                    method_returns=method_returns,
+                    function_returns=function_returns,
+                )
             target_type = alias_cache[parent.id].get(_node_text(receiver_node))
         if target_type:
             return f"{target_type}.{call_name}"

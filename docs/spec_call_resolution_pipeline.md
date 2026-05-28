@@ -101,6 +101,7 @@ Resolution: a file-local instance-attribute **type table** `(Class, attr) → qu
 - **String-class convention:** `<base>_cls = 'mod:Class'` (paired with a `@cached_property def <base>`) → `<base> : mod.Class`. Celery/kombu's own self-description; the `module:attr` string is a precise static pointer.
 - **`__init__` instantiation:** `self.x = ClassName(...)` → `x : <resolved ClassName>` (via the imports table, else same module).
 - **Class/instance annotation:** `x: ClassName` → `x : <resolved ClassName>`.
+- **Return type:** a function/method with `-> ClassName` or a `return ClassName(...)` body → calls assigned from it (`x = self.factory()`, `x = make()`) give `x : ClassName`. Bare-global / non-constructor returns are not inferred.
 
 Local aliases (`amqp = self.amqp`) inherit the attribute's type within the function. The resolved edge carries `callee_qualified_name = <type>.<method>`, so `link_calls` connects it to the **exact** symbol by qualified name (no global-name-uniqueness gamble).
 
@@ -210,7 +211,7 @@ they bridge.
 ## 6. Limitations (current)
 
 - Python `getattr(obj, "method")()` — Tier 4 can detect the shape but not the method name. Recorded in `pending_calls` with a `resolver = "getattr"` hint.
-- Tier 4.5 infers attribute types from `__init__`/annotations/string-cls only. Collaborators obtained via a **method return** are not yet typed — that hop stays name-only. Method-return-type inference is the planned sibling source. Inference is also file-local; cross-file attribute types resolve only when the qualified target string is self-describing (string-cls) or the class is imported.
+- Tier 4.5 also infers types from a **method/function return**: `local = self.method()` / `local = func()` resolves when the callee has a `-> Type` annotation or a `return SomeClass(...)` body. Returns of a bare global, `self.attr`, or any non-constructor expression are **not** inferred (their type is not statically present) — e.g. celery's `get_current_app()` returns a thread-local global, so it stays untyped. Inference is file-local; cross-file attribute types resolve only when the qualified target string is self-describing (string-cls) or the class is imported.
 - Lazy proxies (`X: T = SomeProxy(...)`) are handled cross-file by the ProxySurface phase (§5.1), but only when the proxy var is **annotated** with its forwarded type. An **un-annotated** proxy (e.g. Celery `current_app = Proxy(get_current_app)`) leaves the proxy's target type unknown — it would require return-type inference on the wrapped callable (`get_current_app() → Celery`), the same planned method-return source. Until then, calls through an un-annotated proxy stay name-only.
 - Stdlib imports (`json`, `os`, `re`) are not indexed — edges to them are omitted, not promoted to `CALLS_GUESS`.
 - TypeScript declaration merging and generic-bound method calls require a deeper TS resolver; current implementation keeps TypeScript on adapter-level extraction plus unique-name fallback in `Neo4jClient.link_calls()`.
