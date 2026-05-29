@@ -151,7 +151,13 @@ _ARCHETYPE_ROLE_PLANS: Mapping[str, tuple[str, ...]] = {
         "runtime_surface",
         "executor",
     ),
-    "dependency_injection": ("api_surface", "config_surface", "orchestrator", "runtime_surface"),
+    "dependency_injection": (
+        "api_surface",
+        "config_surface",
+        "representation_surface",
+        "orchestrator",
+        "runtime_surface",
+    ),
     "middleware_pipeline": (
         "api_surface",
         "factory_surface",

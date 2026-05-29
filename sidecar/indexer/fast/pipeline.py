@@ -393,6 +393,79 @@ def _decorator_phase(
     return len(decorators)
 
 
+def _type_reference_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create USES_TYPE edges (referrer -> the project class it names).
+
+    A type reference (annotation / isinstance) is a syntactic fact, like a
+    decoration. Runs after `_apply_graph` so the referenced class symbols exist,
+    and under the same project_root_scope so referrer uids match stored nodes.
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    link_types = getattr(db, "link_type_references", None)
+    reporter.stage_start("type_refs", total=1)
+    references: list[dict] = []
+    if callable(link_types):
+        adapter = PythonAdapter()
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    references.extend(adapter.extract_type_references(ex.source, ex.path))
+                except Exception:
+                    continue
+        if references:
+            link_types(references, workspace_id=workspace_id)
+    reporter.step("type_refs")
+    reporter.stage_end("type_refs")
+    return len(references)
+
+
+def _injection_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create INJECTS edges (owner -> provider wired into a parameter default).
+
+    Static DI binding fact, like USES_TYPE. Runs after `_apply_graph` so providers
+    exist, under project_root_scope so owner uids match stored nodes.
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    link_inj = getattr(db, "link_injections", None)
+    reporter.stage_start("injections", total=1)
+    injections: list[dict] = []
+    if callable(link_inj):
+        adapter = PythonAdapter()
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    injections.extend(adapter.extract_injections(ex.source, ex.path))
+                except Exception:
+                    continue
+        if injections:
+            link_inj(injections, workspace_id=workspace_id)
+    reporter.step("injections")
+    reporter.stage_end("injections")
+    return len(injections)
+
+
 def _mro_api_bridge_phase(
     db: Neo4jClient,
     workspace_id: str,
@@ -822,6 +895,22 @@ def run_fast_indexing(
             diffs, db, workspace_id, reporter, project_path
         )
         stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.66: USES_TYPE edges. Like DECORATED_BY, kept out of materialized
+        # degree (separate, low-weight, filterable relation), so ordering vs the
+        # degree phase is irrelevant.
+        t_stage = time.perf_counter()
+        stats["type_refs_linked"] = _type_reference_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["type_refs"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.67: INJECTS edges (DI bindings). Like USES_TYPE, not in degree.
+        t_stage = time.perf_counter()
+        stats["injections_linked"] = _injection_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["injections"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.7: recompute materialized degree now that all edge-creating
         # phases (calls, imports, inheritance, MRO API, hints, proxy) have run.

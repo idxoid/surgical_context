@@ -39,14 +39,10 @@ from sidecar.context.ranker.candidate_pool import (
     anchor_edge_quality,
 )
 from sidecar.context.ranker.pruning import BudgetPruner
-from sidecar.context.ranker.recovery import StructuralRecovery
 from sidecar.context.ranker.role_fulfilment import RoleFulfilment
 from sidecar.context.ranker.scoring import RankerScoring
 from sidecar.context.ranker.signal_constants import (
     EXPLORATION_NOISE_FACTOR as _EXPLORATION_NOISE_FACTOR,
-)
-from sidecar.context.ranker.signal_constants import (
-    HOOK_FLOW_PATH_TOKENS as _HOOK_FLOW_PATH_TOKENS,
 )
 from sidecar.context.ranker.signal_constants import (
     IMPACT_TOPIC_STOPWORDS as _IMPACT_TOPIC_STOPWORDS,
@@ -65,9 +61,6 @@ from sidecar.context.ranker.signal_constants import (
 )
 from sidecar.context.ranker.signal_constants import (
     NOISE_PATH_PATTERNS as _NOISE_PATH_PATTERNS,
-)
-from sidecar.context.ranker.signal_constants import (
-    REGISTRATION_FLOW_PATH_TOKENS as _REGISTRATION_FLOW_PATH_TOKENS,
 )
 from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.context.types import DocChunk, Subgraph, SubgraphNode
@@ -185,6 +178,24 @@ class UnifiedRanker:
         # a decorator reaching the symbols it decorates (registration surface).
         "DECORATED_BY_out": 1.0,
         "DECORATED_BY_in": 1.1,
+        # referrer -[USES_TYPE]-> project class it names (annotation/isinstance).
+        # outgoing = a symbol reaching a type it consumes; incoming = a type
+        # reaching its consumers. Low prior: a weaker association than a call, kept
+        # separate so it can be filtered and never inflates degree.
+        "USES_TYPE_out": 0.6,
+        "USES_TYPE_in": 0.5,
+        # ...but a DISPATCHER reference (isinstance/issubclass on the type) is the
+        # resolution machinery for that type. Incoming from the type to its
+        # dispatcher is the strong hop (a marker class -> the code that resolves it),
+        # so it outranks the low-signal flood of param-annotation consumers.
+        "USES_TYPE_DISPATCH_out": 0.7,
+        "USES_TYPE_DISPATCH_in": 1.25,
+        # owner -[INJECTS]-> provider wired into a parameter default. outgoing = an
+        # owner reaching what it has injected (its runtime collaborators); incoming =
+        # a provider reaching the owners that inject it. A real control-flow binding,
+        # weighted near a scoped call.
+        "INJECTS_out": 0.9,
+        "INJECTS_in": 0.85,
     }
 
     def __init__(
@@ -205,7 +216,6 @@ class UnifiedRanker:
         self._cluster_to_role = self._build_cluster_to_role_map()
         self.role_fulfilment = RoleFulfilment(self)
         self.scoring = RankerScoring(self)
-        self.structural_recovery = StructuralRecovery(self)
         self.budget_pruner = BudgetPruner(self)
         self.target_selector = TargetSelector(self)
         self.graph_candidate_source = GraphCandidateSource(self)
@@ -848,16 +858,11 @@ class UnifiedRanker:
             if fallback_doc is not None:
                 pool.append(fallback_doc)
 
-        # 6. Mechanism-aware role backfill for sparse framework graphs.
+        # 6. Mechanism + required roles (drives role-filling tiers in scoring/selection).
+        # The recovery / anchor-injection layer and the archetype resolver were removed:
+        # the pool is the fused vector + graph-BFS candidates, with no framework-keyed
+        # recovery and no resolver-synthesized anchors.
         mechanism = self._determine_mechanism(target, query=query)
-        mandatory_callees = self.structural_recovery.direct_callee_anchor_candidates(
-            target,
-            mechanism=mechanism,
-            query=query,
-            excluded_uids={target.uid},
-        )
-        if mandatory_callees:
-            pool = self._merge_mandatory_callee_pool(pool, mandatory_callees)
         required_roles = self._get_required_roles(mechanism, target=target)
         if intent == Intent.IMPACT_ANALYSIS:
             required_roles = normalize_roles(
@@ -868,106 +873,7 @@ class UnifiedRanker:
                     "docs_or_concept",
                 ]
             )
-            impact_reference_anchors = self.structural_recovery.impact_reference_anchor_candidates(
-                target,
-                query=query,
-                excluded_uids={target.uid},
-                pool=pool,
-            )
-            if impact_reference_anchors:
-                pool = self._merge_role_backfill(pool, impact_reference_anchors)
         required_roles = self._apply_intent_policy_roles(required_roles, intent_policy)
-        roles_for_backfill = self._roles_needing_backfill(
-            target,
-            pool,
-            required_roles,
-        )
-        if roles_for_backfill:
-            backfill = self._role_backfill_candidates(
-                mechanism,
-                roles_for_backfill,
-                excluded_uids={target.uid},
-            )
-            if backfill:
-                pool = self._merge_role_backfill(pool, backfill)
-                roles_for_backfill = self._roles_needing_backfill(
-                    target,
-                    pool,
-                    required_roles,
-                )
-        recovery_roles = (
-            roles_for_backfill
-            if intent == Intent.IMPACT_ANALYSIS
-            else required_roles
-            if self._needs_structural_recovery(target)
-            else roles_for_backfill
-        )
-        if recovery_roles:
-            recovery = self._generic_role_recovery_candidates(
-                target,
-                recovery_roles,
-                excluded_uids={target.uid},
-            )
-            if recovery:
-                pool = self._merge_role_backfill(pool, recovery)
-
-        # 6c. Trace-style dependency questions: same imported modules as generic
-        # recovery (graph IMPORTS + filesystem-resolved relatives), but relax seating
-        # when strict role overlap fails so hub symbols in sibling modules still land.
-        trace_import_anchors = self._trace_dependency_import_anchor_candidates(
-            target,
-            query=query,
-            mechanism=mechanism,
-            required_roles=required_roles,
-            excluded_uids={target.uid},
-            pool=pool,
-        )
-        if trace_import_anchors:
-            pool = self._merge_role_backfill(pool, trace_import_anchors)
-
-        trace_routing_anchors = (
-            self.structural_recovery.trace_routing_composition_anchor_candidates(
-                target,
-                query=query,
-                mechanism=mechanism,
-                required_roles=required_roles,
-                excluded_uids={target.uid},
-                pool=pool,
-            )
-        )
-        if trace_routing_anchors:
-            pool = self._merge_role_backfill(pool, trace_routing_anchors)
-
-        module_composition_anchors = self._module_composition_anchor_candidates(
-            target,
-            query=query,
-            mechanism=mechanism,
-            required_roles=required_roles,
-            excluded_uids={target.uid},
-            pool=pool,
-        )
-        if module_composition_anchors:
-            pool = self._merge_role_backfill(pool, module_composition_anchors)
-
-        if intent != Intent.IMPACT_ANALYSIS:
-            query_topic_anchors = self.structural_recovery.query_topic_anchor_candidates(
-                target,
-                query=query,
-                excluded_uids={target.uid},
-                limit=16,
-            )
-            if query_topic_anchors:
-                pool = self._merge_role_backfill(pool, query_topic_anchors)
-
-        if intent == Intent.IMPACT_ANALYSIS:
-            impact_topic_anchors = self.structural_recovery.impact_topic_anchor_candidates(
-                target,
-                query=query,
-                excluded_uids={target.uid},
-                pool=pool,
-            )
-            if impact_topic_anchors:
-                pool = self._merge_role_backfill(pool, impact_topic_anchors)
 
         # 7. Assign intent weights and noise factors
 
@@ -1017,69 +923,27 @@ class UnifiedRanker:
         # roles in this set deserve a sort-order bump, otherwise every doc
         # claims the bonus and the priority lift is meaningless.
         non_trivial_required = set(required_roles) - {"docs_or_concept"}
-        trace_mode_for_sort = RankerScoring.trace_dependency_gain_mode(mechanism, query)
-        trace_focus_text = f"{target.name or ''} {query or ''}".lower()
-        dependency_trace_sort = any(
-            token in trace_focus_text
-            for token in ("depend", "dependency", "dependencies", "inject", "provider", "container")
-        )
 
         def _sort_key(c: Candidate) -> tuple:
             base = self._blended(c)
             roles = set(self._roles_of(c))
-            path_lc = (c.file_path or "").lower().replace("\\", "/")
-            name_lc = f"{c.name or ''} {c.qualified_name or ''}".lower()
-            trace_name_focus = any(
-                token in name_lc
-                for token in (
-                    "depend",
-                    "dependant",
-                    "dependency",
-                    "dependencies",
-                    "inject",
-                    "provider",
-                    "container",
-                    "resolve",
-                    "solve",
-                )
-            )
-            trace_focus_rank = 0
-            if trace_mode_for_sort and dependency_trace_sort:
-                if trace_name_focus and "/dependencies/" in path_lc:
-                    trace_focus_rank = 3
-                elif trace_name_focus:
-                    trace_focus_rank = 2
-                elif "/dependencies/" in path_lc:
-                    trace_focus_rank = 1
+            is_subsystem_isolated = c.noise_factor < 0.2 and c.kind != "doc"
             if c.relation == "MANDATORY_CALLEE":
                 is_contract_anchor = any(
                     (str(step).startswith("mandatory-") and str(step).endswith("-contract"))
                     for step in c.provenance
                 )
-                return (4 if is_contract_anchor else 3, trace_focus_rank, base)
-            is_trace_topic_anchor = trace_mode_for_sort and any(
-                step == "trace-topic-anchor" for step in c.provenance
-            )
-            is_query_topic_anchor = any(step == "query-topic-anchor" for step in c.provenance)
-            # Subsystem-isolated candidates (noise_factor driven to ~0.15 by
-            # topic_focus_factor) should not claim the top role-filler tier —
-            # they are off-topic even if their cluster role overlaps required.
-            is_subsystem_isolated = c.noise_factor < 0.2 and c.kind != "doc"
+                return (4 if is_contract_anchor else 3, base)
             # Tier 0 (best): candidates that fill a missing required role the
             # target itself doesn't cover. These must beat raw doc-relevance
             # so a large/weak role-filler still seats before unrelated docs.
             if roles & unfilled_required:
                 if is_subsystem_isolated:
-                    return (0.5, trace_focus_rank, base)
-                return (2, trace_focus_rank, base)
-            if is_trace_topic_anchor:
-                trace_topic_tier = 1.5 if dependency_trace_sort else 2.5
-                return (trace_topic_tier, trace_focus_rank, base)
-            if is_query_topic_anchor:
-                return (1.25, trace_focus_rank, base)
+                    return (0.5, base)
+                return (2, base)
             if roles & non_trivial_required:
-                return (1, trace_focus_rank, base)
-            return (0, trace_focus_rank, base)
+                return (1, base)
+            return (0, base)
 
         pool.sort(key=_sort_key, reverse=True)
 
@@ -1098,129 +962,6 @@ class UnifiedRanker:
             floor_override=policy_floor,
             doc_first=doc_first,
         )
-
-    def _module_composition_anchor_candidates(
-        self,
-        target: SubgraphNode,
-        *,
-        query: str,
-        mechanism: str,
-        required_roles: list[str],
-        excluded_uids: set[str],
-        pool: list[Candidate],
-        limit: int = 12,
-    ) -> list[Candidate]:
-        haystack = f"{target.name} {target.file_path} {query} {mechanism}".lower()
-        if "module" not in haystack:
-            return []
-        if not any(
-            term in haystack
-            for term in (
-                "compose",
-                "composition",
-                "controller",
-                "decorator",
-                "export",
-                "feature",
-                "import",
-                "provider",
-            )
-        ):
-            return []
-
-        rows = self._module_composition_symbol_rows(
-            excluded_uids={target.uid, *excluded_uids, *(c.uid for c in pool if c.uid)},
-            limit=limit * 4,
-        )
-        if not rows:
-            return []
-
-        scoped = set(
-            normalize_roles([*required_roles, "composition_surface", "integration_surface"])
-        )
-        candidates: list[Candidate] = []
-        for row in rows[:limit]:
-            candidate = self._recovery_candidate_from_row(
-                row,
-                origin="module_composition_anchor",
-                scoped_roles=scoped,
-                target=target,
-            )
-            if candidate is None:
-                continue
-            candidate.graph_score += 0.35
-            candidate.provenance.append("module-composition-anchor")
-            candidates.append(candidate)
-        return candidates
-
-    def _module_composition_symbol_rows(
-        self,
-        *,
-        excluded_uids: set[str],
-        limit: int,
-    ) -> list[dict]:
-        query = """
-        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-        WHERE NOT s.uid IN $excluded_uids
-          AND NOT f.path CONTAINS '/test/'
-          AND NOT f.path CONTAINS '/tests/'
-          AND NOT f.path CONTAINS '/integration/'
-          AND NOT f.path CONTAINS '/sample/'
-          AND NOT f.path CONTAINS '/samples/'
-          AND (
-            f.path CONTAINS '/module'
-            OR f.path CONTAINS 'module.'
-            OR f.path CONTAINS 'metadata-scanner'
-            OR f.path CONTAINS '/scanner'
-            OR toLower(s.name) IN ['imports', 'controllers', 'providers', 'exports']
-            OR toLower(s.name) CONTAINS 'metadata'
-            OR toLower(s.name) CONTAINS 'scanner'
-          )
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, count(DISTINCT cr) AS inbound_edges
-        OPTIONAL MATCH (s)-[or:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->()
-        WHERE coalesce(or.workspace_id, $workspace_id) = $workspace_id
-        WITH s, f, c, inbound_edges, count(DISTINCT or) AS outbound_edges
-        WITH s, f, c, inbound_edges, outbound_edges,
-             CASE
-               WHEN f.path CONTAINS 'metadata-scanner' THEN 3.0
-               WHEN f.path CONTAINS '/injector/module' THEN 2.8
-               WHEN f.path CONTAINS '/scanner' THEN 2.3
-               WHEN f.path CONTAINS '/module' OR f.path CONTAINS 'module.' THEN 1.8
-               ELSE 0.0
-             END
-             + CASE
-               WHEN toLower(s.name) IN ['imports', 'controllers', 'providers', 'exports'] THEN 1.2
-               WHEN toLower(s.name) CONTAINS 'metadata' THEN 0.8
-               WHEN toLower(s.name) CONTAINS 'scanner' THEN 0.8
-               ELSE 0.0
-             END AS anchor_score
-        RETURN s.uid AS uid,
-               s.name AS name,
-               coalesce(s.kind, '') AS symbol_kind,
-               coalesce(s.token_estimate, 0) AS token_estimate,
-               coalesce(s.qualified_name, '') AS qualified_name,
-               coalesce(f.path, '<unknown>') AS file_path,
-               coalesce(f.hash, '') AS file_hash,
-               coalesce(c.range, s.range, [0, 0]) AS range,
-               inbound_edges,
-               outbound_edges
-        ORDER BY anchor_score DESC, inbound_edges + outbound_edges DESC, size(file_path) ASC
-        LIMIT $limit
-        """
-        try:
-            with self.db.driver.session() as session:
-                return list(
-                    session.run(
-                        query,
-                        workspace_id=self.workspace_id,
-                        excluded_uids=list(excluded_uids),
-                        limit=limit,
-                    )
-                )
-        except Exception:
-            return []
 
     def candidates_to_subgraph(
         self,
@@ -1303,6 +1044,20 @@ class UnifiedRanker:
     # distance penalty along outgoing CALLS edges so the BFS reaches
     # depth 5-6 instead of decaying around depth 3.
     _CHAIN_PURSUIT_INTENTS = frozenset({Intent.DESIGN_QUESTION, Intent.EXPLORATION})
+    _API_ENTRY_RELATIONS = frozenset({"HAS_API", "INHERITED_API"})
+    _REGISTRATION_CHAIN_RELATIONS = frozenset(
+        {
+            "CALLS",
+            "CALLS_DIRECT",
+            "CALLS_SCOPED",
+            "CALLS_IMPORTED",
+            "CALLS_DYNAMIC",
+            "CALLS_INFERRED",
+            "CALLS_GUESS",
+            "USES_TYPE",
+            "INJECTS",
+        }
+    )
 
     def _graph_candidates(
         self,
@@ -1327,26 +1082,41 @@ class UnifiedRanker:
         traversed is an outgoing CALLS_* edge, the distance penalty is
         cut so the chain can be followed deeper. Other edges and other
         intents keep the original scoring.
+
+        For the same intents, a class target's outgoing ``HAS_API`` /
+        ``INHERITED_API`` hops start a *registration chain*: subsequent
+        outgoing ``CALLS_*``, ``USES_TYPE``, and ``INJECTS`` hops keep the
+        softened penalty so ``Class → api_route → APIRoute`` survives BFS
+        pruning even when the artifact class is large.
         """
         chain_pursuit = intent in self._CHAIN_PURSUIT_INTENTS if intent else False
         visited = {target_uid}
         candidates: list[Candidate] = []
-        # Tuple shape: (-score, push_seq, uid, neighbor_dict, rel_type, outgoing, distance)
+        # Tuple shape:
+        # (-score, push_seq, uid, neighbor_dict, rel_type, outgoing, distance, reg_chain)
         # ``push_seq`` is a monotonic counter that breaks ties before Python
         # has to compare the dict fields (which raises TypeError).
-        frontier: list[tuple[float, int, str, dict, str, bool, int]] = []
+        frontier: list[tuple[float, int, str, dict, str, bool, int, bool]] = []
         push_seq = 0
 
         for n in self._get_neighbors(target_uid, visited, distance=1):
-            score = self._raw_graph_score(n, distance=1, chain_pursuit=chain_pursuit)
+            reg_chain = chain_pursuit and self._is_api_entry_edge(n["rel_type"], n["outgoing"])
+            score = self._raw_graph_score(
+                n,
+                distance=1,
+                chain_pursuit=chain_pursuit,
+                registration_chain=reg_chain,
+            )
             heappush(
                 frontier,
-                (-score, push_seq, n["uid"], n, n["rel_type"], n["outgoing"], 1),
+                (-score, push_seq, n["uid"], n, n["rel_type"], n["outgoing"], 1, reg_chain),
             )
             push_seq += 1
 
         while frontier and len(candidates) < pool_size:
-            neg_score, _seq, uid, neighbor, rel_type, outgoing, distance = heappop(frontier)
+            neg_score, _seq, uid, neighbor, rel_type, outgoing, distance, reg_chain = heappop(
+                frontier
+            )
             score = -neg_score
             if uid in visited:
                 continue
@@ -1358,6 +1128,9 @@ class UnifiedRanker:
             chain_tag = ""
             if chain_pursuit and self._is_outgoing_call(rel_type, outgoing):
                 chain_tag = ",chain"
+            elif reg_chain:
+                chain_tag = ",reg_chain"
+            provenance = [f"graph:{rel_type},depth={distance}{chain_tag}"]
             c = Candidate(
                 kind="symbol",
                 uid=uid,
@@ -1370,15 +1143,33 @@ class UnifiedRanker:
                 direction=self._direction(rel_type, outgoing),
                 depth=distance,
                 file_hash=neighbor.get("file_hash", ""),
-                provenance=[f"graph:{rel_type},depth={distance}{chain_tag}"],
+                provenance=provenance,
             )
             candidates.append(c)
 
             for nn in self._get_neighbors(uid, visited, distance=distance + 1):
-                ns = self._raw_graph_score(nn, distance=distance + 1, chain_pursuit=chain_pursuit)
+                child_reg_chain = chain_pursuit and reg_chain and self._is_registration_chain_edge(
+                    nn["rel_type"],
+                    nn["outgoing"],
+                )
+                ns = self._raw_graph_score(
+                    nn,
+                    distance=distance + 1,
+                    chain_pursuit=chain_pursuit,
+                    registration_chain=child_reg_chain,
+                )
                 heappush(
                     frontier,
-                    (-ns, push_seq, nn["uid"], nn, nn["rel_type"], nn["outgoing"], distance + 1),
+                    (
+                        -ns,
+                        push_seq,
+                        nn["uid"],
+                        nn,
+                        nn["rel_type"],
+                        nn["outgoing"],
+                        distance + 1,
+                        child_reg_chain,
+                    ),
                 )
                 push_seq += 1
 
@@ -1395,6 +1186,14 @@ class UnifiedRanker:
             "CALLS_INFERRED",
             "CALLS_GUESS",
         )
+
+    @classmethod
+    def _is_api_entry_edge(cls, rel_type: str, outgoing: bool) -> bool:
+        return outgoing and rel_type in cls._API_ENTRY_RELATIONS
+
+    @classmethod
+    def _is_registration_chain_edge(cls, rel_type: str, outgoing: bool) -> bool:
+        return outgoing and rel_type in cls._REGISTRATION_CHAIN_RELATIONS
 
     def _doc_candidates(self, query: str, limit: int) -> list[Candidate]:
         return cast(list[Candidate], self.vector_candidate_source.doc_candidates(query, limit))
@@ -1745,14 +1544,6 @@ class UnifiedRanker:
     ) -> list[Candidate]:
         return cast(list[Candidate], self.role_backfill.merge_role_backfill(pool, backfill))
 
-    def _merge_mandatory_callee_pool(
-        self, pool: list[Candidate], mandatory: list[Candidate]
-    ) -> list[Candidate]:
-        return cast(
-            list[Candidate],
-            self.structural_recovery.merge_mandatory_callee_pool(pool, mandatory),
-        )
-
     def _merge_role_backfill_impl(
         self, pool: list[Candidate], backfill: list[Candidate]
     ) -> list[Candidate]:
@@ -1955,58 +1746,6 @@ class UnifiedRanker:
         return candidates
 
     # --- Delegates to ranker submodules ---
-    def _generic_role_recovery_candidates(
-        self,
-        target: SubgraphNode,
-        roles: list[str],
-        *,
-        excluded_uids: set[str],
-    ):
-        return self.structural_recovery.generic_role_recovery_candidates(
-            target, roles, excluded_uids=excluded_uids
-        )
-
-    def _trace_routing_composition_anchor_candidates(
-        self,
-        target: SubgraphNode,
-        *,
-        query: str,
-        mechanism: str,
-        required_roles: list[str],
-        excluded_uids: set[str],
-        pool: list[Candidate],
-    ):
-        return self.structural_recovery.trace_routing_composition_anchor_candidates(
-            target,
-            query=query,
-            mechanism=mechanism,
-            required_roles=required_roles,
-            excluded_uids=excluded_uids,
-            pool=pool,
-        )
-
-    def _trace_dependency_import_anchor_candidates(
-        self,
-        target: SubgraphNode,
-        *,
-        query: str,
-        mechanism: str,
-        required_roles: list[str],
-        excluded_uids: set[str],
-        pool: list[Candidate],
-    ):
-        return self.structural_recovery.trace_dependency_import_anchor_candidates(
-            target,
-            query=query,
-            mechanism=mechanism,
-            required_roles=required_roles,
-            excluded_uids=excluded_uids,
-            pool=pool,
-        )
-
-    def _needs_structural_recovery(self, target: SubgraphNode) -> bool:
-        return self.structural_recovery.needs_structural_recovery(target)
-
     def _blended(self, c: Candidate) -> float:
         return self.scoring.blended(c)
 
@@ -2122,15 +1861,17 @@ class UnifiedRanker:
         distance: int,
         *,
         chain_pursuit: bool = False,
+        registration_chain: bool = False,
     ) -> float:
-        return self.scoring.raw_graph_score(neighbor, distance, chain_pursuit=chain_pursuit)
+        return self.scoring.raw_graph_score(
+            neighbor,
+            distance,
+            chain_pursuit=chain_pursuit,
+            registration_chain=registration_chain,
+        )
 
     def _direction(self, rel_type: str, outgoing: bool) -> str:
         return self.scoring.direction(rel_type, outgoing)
-
-    @staticmethod
-    def _trace_dependency_gain_mode(mechanism: str, query: str) -> bool:
-        return RankerScoring.trace_dependency_gain_mode(mechanism, query)
 
     def _infer_role(self, c: Candidate | SubgraphNode) -> str:
         return self.role_fulfilment.infer_role(c)
@@ -2209,51 +1950,6 @@ class UnifiedRanker:
     def _one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
         return self.role_fulfilment.one_hop_connected_symbol_uids(target_uid, limit=limit)
 
-    # StructuralRecovery entrypoints (tests may patch these on UnifiedRanker)
-    def _same_file_symbol_rows(self, file_path: str, *, excluded_uids: set[str]):
-        return self.structural_recovery.same_file_symbol_rows(
-            file_path, excluded_uids=excluded_uids
-        )
-
-    def _imported_symbol_rows(self, file_path: str, *, excluded_uids: set[str]):
-        return self.structural_recovery.imported_symbol_rows(file_path, excluded_uids=excluded_uids)
-
-    def _recovery_candidate_from_row(
-        self,
-        row: dict,
-        *,
-        origin: str,
-        scoped_roles: set[str],
-        target: SubgraphNode,
-    ):
-        return self.structural_recovery.recovery_candidate_from_row(
-            row,
-            origin=origin,
-            scoped_roles=scoped_roles,
-            target=target,
-        )
-
-    def _trace_dependency_runtime_symbol_rows(
-        self,
-        target: SubgraphNode,
-        *,
-        excluded_uids: set[str],
-        mechanism: str = "",
-        query: str = "",
-    ):
-        return self.structural_recovery.trace_dependency_runtime_symbol_rows(
-            target,
-            excluded_uids=excluded_uids,
-            mechanism=mechanism,
-            query=query,
-        )
-
-    def _resolve_filesystem_import_paths(self, file_path: str) -> list[str]:
-        return self.structural_recovery.resolve_filesystem_import_paths(file_path)
-
-    def _resolve_intra_repo_package_import_paths(self, file_path: str) -> list[str]:
-        return self.structural_recovery.resolve_intra_repo_package_import_paths(file_path)
-
     def _calculate_marginal_gain(
         self,
         c: Candidate,
@@ -2323,32 +2019,6 @@ class UnifiedRanker:
         # as they often represent runtime connections static analysis misses.
         bridge_bonus = 0.1 if "doc-bridge" in "".join(c.provenance) else 0.0
 
-        # 3b. For dependency tracing, reward breadth across files so we
-        # improve file-level recall instead of overfitting one module.
-        file_coverage_bonus = 0.0
-        trace_dependency_mode = RankerScoring.trace_dependency_gain_mode(mechanism, query)
-        if trace_dependency_mode and c.kind != "doc":
-            path_lc = (c.file_path or "").lower().replace("\\", "/")
-            eligible_trace_breadth = c.noise_factor >= 1.0 or intent == Intent.IMPACT_ANALYSIS
-            if "/dependencies/" in path_lc:
-                file_coverage_bonus += 0.14
-            if any(token in path_lc for token in _HOOK_FLOW_PATH_TOKENS):
-                file_coverage_bonus += 0.10
-            if "registration_flow" in (mechanism or "").lower() and any(
-                token in path_lc for token in _REGISTRATION_FLOW_PATH_TOKENS
-            ):
-                file_coverage_bonus += 0.12
-            if c.file_path and c.file_path != target.file_path:
-                chosen_files = {cc.file_path for cc in chosen}
-                if c.file_path not in chosen_files and eligible_trace_breadth:
-                    file_coverage_bonus += 0.22
-            if c.relation in ("DEPENDS_ON", "CALLS_DIRECT", "CALLS_SCOPED", "CALLS_IMPORTED"):
-                file_coverage_bonus += 0.06
-            if "registration_flow" in (mechanism or "").lower() and "runtime_surface" in (
-                candidate_roles or self.role_fulfilment.roles_of(c)
-            ):
-                file_coverage_bonus += 0.08
-
         # 4. Redundancy Penalty: Diminishing returns for many symbols in the same file.
         same_file_count = sum(1 for cc in chosen if cc.file_path == c.file_path)
         redundancy_penalty = min(0.4, 0.15 * same_file_count)
@@ -2358,7 +2028,6 @@ class UnifiedRanker:
             + role_bonus
             + coverage_bonus
             + bridge_bonus
-            + file_coverage_bonus
             - redundancy_penalty
         )
 
@@ -2433,7 +2102,7 @@ class UnifiedRanker:
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS]-(n:Symbol)
         WHERE NOT n.uid IN $visited
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)
@@ -2447,6 +2116,7 @@ class UnifiedRanker:
                coalesce(n.token_estimate, 0) AS token_estimate,
                coalesce(c.range, n.range, [0, 0]) AS range,
                type(r) AS rel_type,
+               coalesce(r.kind, '') AS rel_kind,
                outgoing,
                caller_count
         """
@@ -2467,6 +2137,7 @@ class UnifiedRanker:
                         "token_estimate": r["token_estimate"],
                         "range": r["range"],
                         "rel_type": r["rel_type"],
+                        "rel_kind": r["rel_kind"],
                         "outgoing": r["outgoing"],
                         "caller_count": r["caller_count"],
                     }

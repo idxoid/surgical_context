@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 class GraphCandidateSource:
-    """Graph neighbor and structural-recovery candidate loader."""
+    """Graph neighbor candidate loader."""
 
     def __init__(self, host):
         self.host = host

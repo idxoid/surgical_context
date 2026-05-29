@@ -172,6 +172,7 @@ class RankerScoring:
         distance: int,
         *,
         chain_pursuit: bool = False,
+        registration_chain: bool = False,
     ) -> float:
         rel_type = neighbor["rel_type"]
         outgoing = neighbor["outgoing"]
@@ -203,6 +204,20 @@ class RankerScoring:
             relation = "INHERITED_API_out" if outgoing else "INHERITED_API_in"
         elif rel_type == "DECORATED_BY":
             relation = "DECORATED_BY_out" if outgoing else "DECORATED_BY_in"
+        elif rel_type == "INJECTS":
+            relation = "INJECTS_out" if outgoing else "INJECTS_in"
+        elif rel_type == "USES_TYPE":
+            # A dispatcher (`isinstance(x, T)` / `issubclass`) is the code that
+            # branches ON the type — the resolution machinery for T. Reaching it
+            # FROM the type (incoming) is the high-value hop: it isolates the few
+            # machinery symbols from the many that merely annotate the type as a
+            # parameter (registration surface). Kind, not connectivity, discriminates.
+            kind = (neighbor.get("rel_kind") or "").lower()
+            dispatcher = kind in ("isinstance", "issubclass")
+            if dispatcher:
+                relation = "USES_TYPE_DISPATCH_out" if outgoing else "USES_TYPE_DISPATCH_in"
+            else:
+                relation = "USES_TYPE_out" if outgoing else "USES_TYPE_in"
         else:
             relation = "DEPENDS_ON"
 
@@ -210,14 +225,18 @@ class RankerScoring:
 
         if (
             chain_pursuit and self.host._is_outgoing_call(rel_type, outgoing)
-        ) or rel_type == "SEMANTIC_HINT":
+        ) or registration_chain or rel_type == "SEMANTIC_HINT":
             distance_penalty = 0.15 * distance
         else:
             distance_penalty = 0.4 * distance
 
-        return float(
-            r + 0.3 * math.log1p(caller_count) - 0.1 * token_estimate / 100 - distance_penalty
-        )
+        token_penalty = 0.1 * token_estimate / 100
+        # Registration methods reference large artifact classes (e.g. APIRoute)
+        # via USES_TYPE; the type hop is structural, not a body-cost signal.
+        if registration_chain and rel_type == "USES_TYPE":
+            token_penalty = 0.0
+
+        return float(r + 0.3 * math.log1p(caller_count) - token_penalty - distance_penalty)
 
     def direction(self, rel_type: str, outgoing: bool) -> str:
         if rel_type in (
@@ -237,64 +256,3 @@ class RankerScoring:
         if rel_type in ("IMPLEMENTS", "OVERRIDES", "REFERENCES"):
             return rel_type.lower()
         return "sibling"
-
-    @staticmethod
-    def trace_dependency_gain_mode(mechanism: str, query: str) -> bool:
-        m = (mechanism or "").lower()
-        q = (query or "").lower()
-        if "depend" in m or "trace_dependency" in m:
-            return True
-        if m.endswith("_publish") or m.endswith("_consume"):
-            return True
-        if "publish" in m or "consume" in m:
-            return True
-        if "routing" in m or "dispatch" in m:
-            return True
-        if "hook" in m or "lifecycle" in m:
-            return True
-        if any(term in q for term in ("router", "routing", "middleware")) and any(
-            term in q
-            for term in (
-                "delegate",
-                "delegates",
-                "handling",
-                "handler",
-                "request",
-                "dispatch",
-                "create",
-            )
-        ):
-            return True
-        if "dependency injection" in q:
-            return True
-        if "inject" in q and "depend" in q:
-            return True
-        if "before_request" in q or "after_request" in q:
-            return True
-        if "relationship" in q and any(term in q for term in ("foreign", "lazy", "collection")):
-            return True
-        if (
-            "query" in q
-            and ("lazy" in q or "lazily" in q)
-            and any(term in q for term in ("execute", "sql"))
-        ):
-            return True
-        if any(term in q for term in ("actor", "identity", "principal", "same_actor")) and any(
-            term in q for term in ("resolve", "refer", "same", "decide", "mapping")
-        ):
-            return True
-        if any(term in q for term in ("clock", "window", "event_time", "ingested_time")) and any(
-            term in q for term in ("chain", "correlation", "match", "time")
-        ):
-            return True
-        if any(term in q for term in ("compile", "compiler", "template")) and any(
-            term in q for term in ("render", "runtime", "update")
-        ):
-            return True
-        # Message-publish / task-dispatch trace: "sent to broker", "publish message",
-        # "constructed and sent", "enqueue", etc.
-        if any(term in q for term in ("broker", "publish", "enqueue", "dispatch")) and any(
-            term in q for term in ("sent", "send", "message", "constructed", "task")
-        ):
-            return True
-        return False

@@ -11,6 +11,7 @@ from QA.qa_benchmark import (
     _empty_indexing_summary,
     _expected_file_matches,
     _head_dependency_diagnostics,
+    _missing_expected_roles,
     _normalize_cleanup_prefixes,
     _path_matches_prefix,
     _score_ordered_graph_symbols,
@@ -39,6 +40,20 @@ def test_compute_role_recall_normalizes_legacy_roles_to_canonical_taxonomy():
     )
 
     assert recall == pytest.approx(1 / 3)
+
+
+def test_missing_expected_roles_include_ranker_omissions():
+    missing = _missing_expected_roles(
+        ["public_entrypoint", "intermediate_model", "dependency_solver"],
+        [],
+        ["api_surface", "orchestrator"],
+    )
+
+    assert missing == ["representation_surface"]
+    assert _compute_role_recall(
+        ["public_entrypoint", "intermediate_model", "dependency_solver"],
+        missing,
+    ) == pytest.approx(2 / 3)
 
 
 def test_expected_file_matches_extensionless_source_file_hints():

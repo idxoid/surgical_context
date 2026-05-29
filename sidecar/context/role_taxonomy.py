@@ -168,6 +168,22 @@ def _to_snake_case(identifier: str) -> str:
     return step2.replace("__", "_").strip("_").lower()
 
 
+def _semantic_tokens(*parts: str) -> set[str]:
+    """Tokenize names/paths without substring matches inside larger words."""
+    tokens: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", "_", _to_snake_case(part))
+        for token in normalized.split("_"):
+            if not token:
+                continue
+            tokens.add(token)
+            if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+                tokens.add(token[:-1])
+    return tokens
+
+
 def infer_ranker_fusion_roles(
     *,
     file_path: str = "",
@@ -420,6 +436,7 @@ def infer_supporting_roles(
         )
         representation_tokens = (
             "ast",
+            "model",
             "node",
             "proxy",
             "reactive",
@@ -451,13 +468,14 @@ def infer_supporting_roles(
             "watch",
         )
 
+        semantic_tokens = _semantic_tokens(name or "", file_path or "")
         if any(token in haystack for token in composition_tokens):
             inferred.append("composition_surface")
         if any(token in lowered_name for token in ("factory", "builder", "creator", "registry")):
             inferred.append("factory_surface")
         if any(token in haystack for token in ("controller", "export", "import", "provider")):
             inferred.append("integration_surface")
-        if any(token in haystack for token in representation_tokens):
+        if semantic_tokens.intersection(representation_tokens):
             inferred.append("representation_surface")
         if any(token in haystack for token in orchestration_tokens):
             inferred.append("orchestrator")

@@ -200,6 +200,28 @@ def index_file(
         if decorators:
             link_decos(decorators, workspace_id=workspace_id)
 
+    # USES_TYPE edges: drop this file's stale type-reference edges, recreate from the
+    # current annotations/isinstance checks. Like DECORATED_BY, not counted into degree.
+    delete_type_refs = getattr(db, "delete_type_references_for_file", None)
+    link_type_refs = getattr(db, "link_type_references", None)
+    if callable(delete_type_refs):
+        delete_type_refs(file_path, workspace_id=workspace_id)
+    if callable(link_type_refs):
+        type_refs = extractor.extract_type_references(file_path)
+        if type_refs:
+            link_type_refs(type_refs, workspace_id=workspace_id)
+
+    # INJECTS edges: drop this file's stale DI bindings, recreate from current
+    # parameter-default markers. Like USES_TYPE, not counted into degree.
+    delete_injects = getattr(db, "delete_injections_for_file", None)
+    link_injects = getattr(db, "link_injections", None)
+    if callable(delete_injects):
+        delete_injects(file_path, workspace_id=workspace_id)
+    if callable(link_injects):
+        injections = extractor.extract_injections(file_path)
+        if injections:
+            link_injects(injections, workspace_id=workspace_id)
+
     # Refresh materialized degree over the affected closure now that edges are
     # relinked. Removed symbols are excluded (they no longer exist); their former
     # neighbors come from the pre-mutation snapshot.

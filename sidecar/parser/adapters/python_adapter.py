@@ -177,27 +177,35 @@ class PythonAdapter(TreeSitterAdapter):
         return edges
 
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
-        """Module-level lazy-proxy bindings: ``X: TargetType = SomeProxy(...)``.
+        """Module-level lazy-proxy bindings: ``X = SomeProxy(...)``.
 
-        Each entry anchors a ProxyBinding node + ``PROXY_OF`` edge in the graph so
-        cross-file calls on the proxy (``from .globals import current_app``) can be
-        forwarded to the real type. Only the annotated form yields a ``target_type``
-        here; the bare form (``x = Proxy(get_current_app)``) needs the callable's
-        return type (a separate hop) and is omitted.
+        Each entry anchors a ProxyBinding node + ``PROXY_OF`` edge so cross-file calls
+        on the proxy are forwarded to the real type. Two target sources, both keeping
+        the schema identical (ProxyBinding + PROXY_OF + CALLS_DYNAMIC{via_proxy}):
+
+        - ``annotation``: ``current_app: FlaskProxy = LocalProxy(...)`` — the annotation
+          names the forwarded type directly (high confidence).
+        - ``wrapped_callable``: ``current_app = Proxy(get_current_app)`` — no annotation;
+          the target is the class the wrapped callable constructs/imports in its body
+          (celery ``Proxy(get_current_app)`` -> ``Celery``). Lower confidence — it is a
+          structural points-to approximation, not a declared type.
         """
         if tree is None:
             tree = self._parse(source_code)
         module = module_name_from_path(file_path)
         import_bindings = self._extract_import_bindings(source_code, file_path)
-        table = self._build_proxy_binding_table(tree, import_bindings, module)
+        table = self._build_proxy_binding_table(tree, source_code, import_bindings, module)
         out: list[dict] = []
-        for var_name, target_type in table.items():
+        for var_name, meta in table.items():
             out.append(
                 {
                     "proxy_uid": self._uid(file_path, var_name),
                     "proxy_name": var_name,
                     "proxy_qualified_name": f"{module}.{var_name}",
-                    "target_type": target_type,
+                    "target_type": meta["target_type"],
+                    "target_source": meta["target_source"],
+                    "wrapped_callable": meta.get("wrapped_callable", ""),
+                    "confidence": meta.get("confidence", 1.0),
                     "file_path": file_path,
                 }
             )
@@ -245,6 +253,180 @@ class PythonAdapter(TreeSitterAdapter):
                     }
                 )
         return out
+
+    def extract_type_references(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """USES_TYPE references: a symbol names a project class in an AST-visible
+        position → ``referrer`` USES_TYPE ``type``.
+
+        Like an import (``from m import T``) or a decoration (``@deco``), a type
+        reference is a *static* fact written in the source — a parameter/return
+        annotation, an annotated assignment, or an ``isinstance``/``issubclass``
+        check. We extract it as a derived edge rather than re-deriving the same
+        connection from name tokens at query time. Resolution to an in-graph
+        Symbol happens at link time, so builtins/stdlib types produce no edge
+        (precision over recall; project classes only).
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+        out: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+
+        def emit(referrer_node, type_node, kind: str) -> None:
+            if referrer_node is None or type_node is None:
+                return
+            referrer_uid = self._uid_for_node(referrer_node, source_code, file_path)
+            rname_node = referrer_node.child_by_field_name("name")
+            referrer_name = _node_text(rname_node) if rname_node is not None else ""
+            for type_name, type_qn in self._type_ref_targets(
+                type_node, import_bindings, module
+            ):
+                key = (referrer_uid, type_qn)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "referrer_uid": referrer_uid,
+                        "referrer_name": referrer_name,
+                        "type_name": type_name,
+                        "type_qualified_name": type_qn,
+                        "kind": kind,
+                        "file_path": file_path,
+                    }
+                )
+
+        for node in self._iter_nodes(tree.root_node):
+            if node.type == "function_definition":
+                params = node.child_by_field_name("parameters")
+                if params is not None:
+                    for p in params.named_children:
+                        if p.type in ("typed_parameter", "typed_default_parameter"):
+                            emit(node, p.child_by_field_name("type"), "param")
+                emit(node, node.child_by_field_name("return_type"), "return")
+            elif node.type == "call":
+                fn = node.child_by_field_name("function")
+                if fn is not None and fn.type == "identifier" and _node_text(fn) in (
+                    "isinstance",
+                    "issubclass",
+                ):
+                    args = node.child_by_field_name("arguments")
+                    referrer = self._enclosing_def_node(node)
+                    if args is not None and referrer is not None:
+                        type_args = [c for c in args.named_children]
+                        if len(type_args) >= 2:
+                            emit(referrer, type_args[1], "isinstance")
+            elif node.type == "assignment":
+                typ = node.child_by_field_name("type")
+                if typ is not None:
+                    referrer = self._enclosing_def_node(node)
+                    if referrer is not None:
+                        emit(referrer, typ, "annotation")
+        return out
+
+    def _type_ref_targets(
+        self, type_node, import_bindings: dict[str, str], module: str
+    ) -> list[tuple[str, str]]:
+        """Collect (bare_name, qualified_name) for every class named in a type node.
+
+        Handles bare names (``Dependant``), attribute access (``params.Depends`` →
+        head resolved via imports), unions/optionals and subscripts (``A | B``,
+        ``Optional[A]``, ``List[A]``). Generic/builtin heads (``Optional``, ``List``)
+        are emitted too but resolve to no Symbol at link time and are dropped there.
+        """
+        out: list[tuple[str, str]] = []
+        seen_local: set[str] = set()
+
+        def walk(n) -> None:
+            if n.type == "attribute":
+                obj = n.child_by_field_name("object")
+                attr = n.child_by_field_name("attribute")
+                if attr is not None and attr.type == "identifier":
+                    final = _node_text(attr)
+                    if obj is not None and obj.type == "identifier":
+                        head = _node_text(obj)
+                        base = import_bindings.get(head, head)
+                        qn = f"{base}.{final}"
+                    else:
+                        qn = self._resolve_type_name(final, import_bindings, module)
+                    if qn not in seen_local:
+                        seen_local.add(qn)
+                        out.append((final, qn))
+                return  # do not descend into the attribute's identifier children
+            if n.type == "identifier":
+                name = _node_text(n)
+                qn = self._resolve_type_name(name, import_bindings, module)
+                if qn not in seen_local:
+                    seen_local.add(qn)
+                    out.append((name, qn))
+                return
+            for ch in n.children:
+                walk(ch)
+
+        walk(type_node)
+        return out
+
+    def extract_injections(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        """Dependency-injection bindings: ``def f(x = Marker(provider))`` → ``f`` INJECTS
+        ``provider``.
+
+        A provider wired into a parameter default (FastAPI ``Depends(get_db)``,
+        dependency-injector ``Provide[...]``, pytest-style fixtures) is a static AST
+        fact, like an import. Detection is structural: a parameter whose default (or
+        ``Annotated[...]`` metadata) is a call whose positional argument is a bare
+        symbol reference. The wrapped symbol is the injected provider; resolution to an
+        in-graph symbol at link time drops locals/literals (project providers only).
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+        out: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "function_definition":
+                continue
+            params = node.child_by_field_name("parameters")
+            if params is None:
+                continue
+            owner_uid = self._uid_for_node(node, source_code, file_path)
+            owner_name_node = node.child_by_field_name("name")
+            owner_name = _node_text(owner_name_node) if owner_name_node is not None else ""
+            for p in params.named_children:
+                if p.type not in ("default_parameter", "typed_default_parameter"):
+                    continue
+                for call in self._iter_nodes(p):
+                    if call.type != "call":
+                        continue
+                    for prov in self._positional_identifier_arguments(call, source_code):
+                        prov_qn = self._resolve_type_name(prov, import_bindings, module)
+                        key = (owner_uid, prov_qn)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        out.append(
+                            {
+                                "owner_uid": owner_uid,
+                                "owner_name": owner_name,
+                                "provider_name": prov,
+                                "provider_qualified_name": prov_qn,
+                                "file_path": file_path,
+                            }
+                        )
+        return out
+
+    @staticmethod
+    def _enclosing_def_node(node):
+        """Nearest enclosing function/class definition node, or None."""
+        current = node.parent
+        while current is not None:
+            if current.type in ("function_definition", "class_definition"):
+                return current
+            current = current.parent
+        return None
 
     @staticmethod
     def _decorator_base_name(decorator_node) -> str:
@@ -646,8 +828,8 @@ class PythonAdapter(TreeSitterAdapter):
         return method_returns, function_returns
 
     def _build_proxy_binding_table(
-        self, tree, import_bindings: dict[str, str], module: str
-    ) -> dict[str, str]:
+        self, tree, source_code: str, import_bindings: dict[str, str], module: str
+    ) -> dict[str, dict]:
         """Resolve module-level lazy-proxy variables to the type they forward to.
 
         ``X = SomeProxy(callable)`` is a generic Python idiom (werkzeug ``LocalProxy``,
@@ -655,19 +837,37 @@ class PythonAdapter(TreeSitterAdapter):
         wrapped object. Detection is by class-name convention (ends with ``Proxy``),
         mirroring the ``_cls = 'mod:Class'`` convention, not a receiver name-match.
 
-        Only the ANNOTATED form (``current_app: FlaskProxy = LocalProxy(...)``) yields a
-        type here: the annotation names the forwarded type directly. The bare form
-        (``current_app = Proxy(get_current_app)``, no annotation) is intentionally left
-        unresolved — recovering it needs the callable's return type (a separate hop).
+        Returns ``{var_name: {target_type, target_source, wrapped_callable, confidence}}``.
+        Two sources: the ANNOTATED form names the type directly; the BARE form resolves
+        through the wrapped callable's body (the class it imports-and-constructs).
         """
-        table: dict[str, str] = {}
+        # name -> function_definition node, and simple ``alias = other`` function aliases.
+        func_nodes: dict[str, object] = {}
+        func_aliases: dict[str, str] = {}
+        for node in self._iter_nodes(tree.root_node):
+            if node.type == "function_definition":
+                nm = node.child_by_field_name("name")
+                if nm is not None:
+                    func_nodes[_node_text(nm)] = node
+            elif node.type == "assignment":
+                lf = node.child_by_field_name("left")
+                rt = node.child_by_field_name("right")
+                if (
+                    lf is not None
+                    and lf.type == "identifier"
+                    and rt is not None
+                    and rt.type == "identifier"
+                ):
+                    func_aliases[_node_text(lf)] = _node_text(rt)
+
+        table: dict[str, dict] = {}
         for stmt in self._iter_nodes(tree.root_node):
             if stmt.type != "assignment":
                 continue
             left = stmt.child_by_field_name("left")
             right = stmt.child_by_field_name("right")
             typ = stmt.child_by_field_name("type")
-            if left is None or left.type != "identifier" or right is None or typ is None:
+            if left is None or left.type != "identifier" or right is None:
                 continue
             if right.type != "call":
                 continue
@@ -676,11 +876,92 @@ class PythonAdapter(TreeSitterAdapter):
                 continue
             if not _node_text(callee).endswith("Proxy"):
                 continue
-            type_ident = self._type_identifier(typ)
-            if not type_ident:
+            var_name = _node_text(left)
+
+            # Source 1: annotation names the forwarded type directly.
+            if typ is not None:
+                type_ident = self._type_identifier(typ)
+                if type_ident:
+                    table[var_name] = {
+                        "target_type": self._resolve_type_name(
+                            type_ident, import_bindings, module
+                        ),
+                        "target_source": "annotation",
+                        "wrapped_callable": "",
+                        "confidence": 1.0,
+                    }
                 continue
-            table[_node_text(left)] = self._resolve_type_name(type_ident, import_bindings, module)
+
+            # Source 2: bare ``Proxy(callable)`` — resolve via the wrapped callable's body.
+            wrapped = self._first_positional_identifier(right)
+            if not wrapped:
+                continue
+            resolved_wrapped = func_aliases.get(wrapped, wrapped)
+            fn = func_nodes.get(resolved_wrapped)
+            if fn is None:
+                continue
+            target_qn = self._constructed_imported_class(fn, source_code, import_bindings, module)
+            if not target_qn:
+                continue
+            table[var_name] = {
+                "target_type": target_qn,
+                "target_source": "wrapped_callable",
+                "wrapped_callable": f"{module}.{resolved_wrapped}",
+                "confidence": 0.65,
+            }
         return table
+
+    @staticmethod
+    def _first_positional_identifier(call_node):
+        """First positional argument of a call, if it is a bare identifier."""
+        args = call_node.child_by_field_name("arguments")
+        if args is None:
+            return ""
+        for child in args.named_children:
+            if child.type == "identifier":
+                return _node_text(child)
+            return ""  # first positional is not a bare identifier (e.g. a lambda)
+        return ""
+
+    def _constructed_imported_class(
+        self, func_node, source_code: str, import_bindings: dict[str, str], module: str
+    ) -> str:
+        """The single class a function imports-and-constructs in its body, else ''.
+
+        Structural points-to: a function whose body does ``from m import C`` (module- or
+        body-local) and then ``C(...)`` is producing a ``C``. Keyed on the import binding
+        (not capitalization). Returns the resolved qualified name only when exactly one
+        such class is constructed (ambiguity -> no edge, precision over recall).
+        """
+        # Body-local from-imports add to the visible bindings for this function.
+        bindings = dict(import_bindings)
+        for node in self._iter_nodes(func_node):
+            if node.type in ("import_from_statement",):
+                text = _node_text(node).strip()
+                import re as _re
+
+                m = _re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", text)
+                if m:
+                    target_module = self._resolve_import_module(m.group(1), module.rsplit(".", 1)[0]
+                                                                if "." in module else "")
+                    for item in m.group(2).split(","):
+                        item = item.strip()
+                        original, _, alias = item.partition(" as ")
+                        local = (alias.strip() or original.strip())
+                        if local and local != "*":
+                            bindings[local] = f"{target_module}.{original.strip()}"
+
+        constructed: set[str] = set()
+        for node in self._iter_nodes(func_node):
+            if node.type != "call":
+                continue
+            fn = node.child_by_field_name("function")
+            if fn is None or fn.type != "identifier":
+                continue
+            name = _node_text(fn)
+            if name in bindings:
+                constructed.add(bindings[name])
+        return next(iter(constructed)) if len(constructed) == 1 else ""
 
     @staticmethod
     def _type_identifier(type_node) -> str:

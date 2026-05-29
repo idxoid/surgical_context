@@ -6,7 +6,6 @@ from sidecar.context.intent_classifier import Intent
 from sidecar.context.types import SubgraphNode
 
 from .candidate_pool import Candidate
-from .scoring import RankerScoring
 
 
 class BudgetPruner:
@@ -41,7 +40,6 @@ class BudgetPruner:
         pruned_uids: set[str] = set()
         chosen_files = {target.file_path}
         fulfilled_roles = set(self.host.role_fulfilment.roles_of(target))
-        trace_mode = RankerScoring.trace_dependency_gain_mode(mechanism, query)
 
         stopped_reason = "pool_exhausted"
         min_floor = floor_override or self.host._INTENT_FLOORS.get(intent, 1200)
@@ -70,10 +68,6 @@ class BudgetPruner:
         useful_candidates_seen = 0
         no_progress_streak = 0
         expansion_stall_limit = _INTENT_STALL_LIMIT.get(intent, 8)
-        # For DI/trace questions, role sets can be "complete" while file-level
-        # evidence still lives in other modules; do not take marginal-gain early
-        # exit until the context spans enough distinct code files.
-        min_trace_code_file_breadth = 3
 
         # Doc-tier deferral: hold docs back until code coverage is established,
         # so they don't crowd out role-filling graph symbols.
@@ -95,7 +89,7 @@ class BudgetPruner:
         head_bridge_replayed = 0
         head_backfill_deferred = 0
         head_backfill_replayed = 0
-        defer_head_bridges = trace_mode
+        defer_head_bridges = False
 
         def _is_code_file(c: Candidate) -> bool:
             return c.kind != "doc"
@@ -125,15 +119,6 @@ class BudgetPruner:
                 if len(head_symbols) >= head_symbol_slots:
                     break
             return sum(1 for selected in head_symbols if _is_head_bridge(selected))
-
-        def _adds_trace_file_breadth(c: Candidate) -> bool:
-            return (
-                trace_mode
-                and c.kind != "doc"
-                and c.noise_factor >= 1.0
-                and (c.file_path or "")
-                and c.file_path not in chosen_files
-            )
 
         def _record_pruned(
             c: Candidate,
@@ -223,8 +208,6 @@ class BudgetPruner:
             closes_missing_role = any(
                 role in required_roles and role not in fulfilled_roles for role in candidate_roles
             )
-            if _adds_trace_file_breadth(c):
-                closes_missing_role = True
             if spent + potential_cost > base_budget:
                 overflow = spent + potential_cost - base_budget
                 projected_balance = budget_balance - overflow
@@ -301,11 +284,8 @@ class BudgetPruner:
                     role in required_roles and role not in fulfilled_roles
                     for role in candidate_roles
                 )
-                adds_new_trace_file = _adds_trace_file_breadth(c)
-                fills_role_or_trace = fills_role or adds_new_trace_file
                 is_useful = (
                     fills_role
-                    or adds_new_trace_file
                     or _is_head_bridge(c)
                     or (self.host.scoring.blended(c) > 0.15)
                 )
@@ -318,7 +298,7 @@ class BudgetPruner:
                             candidate_roles=candidate_roles,
                         )
                         continue
-                    if gain < low_gain_floor and not fills_role_or_trace:
+                    if gain < low_gain_floor and not fills_role:
                         _record_pruned(
                             c,
                             "deferred_head_bridge_low_gain_floor",
@@ -361,8 +341,6 @@ class BudgetPruner:
             fills_role = any(
                 role in required_roles and role not in fulfilled_roles for role in candidate_roles
             )
-            adds_new_trace_file = _adds_trace_file_breadth(c)
-            fills_role_or_trace = fills_role or adds_new_trace_file
             is_bridge = c.relation in (
                 "DOC_BRIDGE",
                 "SEMANTIC_HINT",
@@ -384,7 +362,6 @@ class BudgetPruner:
             # Determine if this candidate provides any unique reasoning signal
             is_useful = (
                 fills_role
-                or adds_new_trace_file
                 or is_bridge
                 or is_strong_relation
                 or is_mandatory_callee
@@ -393,33 +370,24 @@ class BudgetPruner:
 
             if is_useful:
                 useful_candidates_seen += 1
-            # Docs almost never add trace file breadth; noisy junk we skip below is
-            # not a failed expansion attempt. Counting them toward the stall streak
-            # stopped trace_dependency runs early (expansion_no_progress) before
-            # symbols deeper in the sorted pool (e.g. fastapi ``dependencies/*``).
-            skips_noise_without_trace_role = (
+            # Noisy junk we skip below is not a failed expansion attempt.
+            skips_noise_without_role = (
                 c.kind != "doc"
                 and c.noise_factor < 1.0
                 and intent != Intent.IMPACT_ANALYSIS
-                and not fills_role_or_trace
+                and not fills_role
             )
             # Redundant symbols from a file already selected do not represent
             # failed expansion — they are duplicates from the same module.
-            # Counting them inflates the stall and fires expansion_no_progress
-            # before trace-topic-anchors from new files are reached.
             is_redundant_same_file = (
                 c.kind != "doc"
                 and bool(c.file_path)
                 and c.file_path in chosen_files
-                and not fills_role_or_trace
+                and not fills_role
             )
-            if fills_role_or_trace:
+            if fills_role:
                 no_progress_streak = 0
-            elif (
-                (trace_mode and c.kind == "doc")
-                or skips_noise_without_trace_role
-                or is_redundant_same_file
-            ):
+            elif skips_noise_without_role or is_redundant_same_file:
                 pass
             else:
                 no_progress_streak += 1
@@ -427,7 +395,7 @@ class BudgetPruner:
             if (
                 spent > base_budget
                 and no_progress_streak >= expansion_stall_limit
-                and not fills_role_or_trace
+                and not fills_role
             ):
                 deferred_fills_missing = any(
                     any(
@@ -472,7 +440,7 @@ class BudgetPruner:
                             candidate_roles=candidate_roles,
                         )
                         continue
-                if not fills_role_or_trace:
+                if not fills_role:
                     _record_pruned(
                         c,
                         "noise_penalty",
@@ -508,11 +476,7 @@ class BudgetPruner:
                 break
 
             if intent != Intent.IMPACT_ANALYSIS and not missing_roles and spent >= min_floor:
-                distinct_code_files = len({x.file_path for x in chosen if _is_code_file(x)})
-                trace_breadth_ok = (
-                    not trace_mode or distinct_code_files >= min_trace_code_file_breadth
-                )
-                if trace_breadth_ok and not fills_role_or_trace:
+                if not fills_role:
                     stopped_reason = "role_complete"
                     _record_pruned(
                         c,
@@ -526,15 +490,6 @@ class BudgetPruner:
             if gain < min_gain:
                 # Only break if floor is met AND no required roles are missing
                 if spent >= min_floor and not missing_roles:
-                    distinct_code_files = len({x.file_path for x in chosen if _is_code_file(x)})
-                    if trace_mode and distinct_code_files < min_trace_code_file_breadth:
-                        _record_pruned(
-                            c,
-                            "marginal_gain_deferred_trace_breadth",
-                            gain=gain,
-                            candidate_roles=candidate_roles,
-                        )
-                        continue
                     stopped_reason = "marginal_gain_threshold"
                     _record_pruned(
                         c,
@@ -566,7 +521,7 @@ class BudgetPruner:
                 # critical evidence. A large/weak symbol with negative blended
                 # score (e.g. fastapi `openapi` in applications.py: 256 tokens
                 # of largely-static config logic) still earns its seat here.
-                if gain < low_gain_floor and not fills_role_or_trace and not is_mandatory_callee:
+                if gain < low_gain_floor and not fills_role and not is_mandatory_callee:
                     _record_pruned(
                         c,
                         "low_gain_floor",

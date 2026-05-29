@@ -105,6 +105,26 @@ def _compute_role_recall(required_roles: list[str], ctx_missing_roles: list[str]
     return fulfilled / len(required)
 
 
+def _missing_expected_roles(
+    required_roles: list[str],
+    ctx_missing_roles: list[str],
+    ranker_required_roles: list[str] | None = None,
+) -> list[str]:
+    """Expected roles missing from context, including roles omitted by the ranker.
+
+    ``ctx.missing_roles`` only reports roles the ranker asked selection to fill.
+    When a local/adaptive role plan silently drops an expected benchmark role, the
+    old metric counted it as fulfilled. Treat that omission as missing whenever
+    the prompt contract exposes a non-empty ranker role plan.
+    """
+    required = normalize_roles(required_roles)
+    missing = set(normalize_roles(ctx_missing_roles))
+    ranker_required = normalize_roles(ranker_required_roles or [])
+    if ranker_required:
+        missing.update(role for role in required if role not in set(ranker_required))
+    return [role for role in required if role in missing]
+
+
 def _compute_file_recall(expected_files: set[str], retrieved_files: set[str]) -> float:
     """Fraction of expected_files for which at least one retrieved path matches."""
     if not expected_files:
@@ -1171,12 +1191,19 @@ def run_benchmark(
 
         required_roles_canonical = normalize_roles(required_roles)
         missing_roles_canonical = normalize_roles(ctx.missing_roles)
-        missing_expected_roles = [
-            role for role in required_roles_canonical if role in set(missing_roles_canonical)
-        ]
         ranker_required_roles = normalize_roles(
             getattr(ctx, "ranker_state", {}).get("required_roles", [])
         )
+        missing_expected_roles = _missing_expected_roles(
+            required_roles_canonical,
+            missing_roles_canonical,
+            ranker_required_roles,
+        )
+        ranker_omitted_expected_roles = [
+            role
+            for role in required_roles_canonical
+            if ranker_required_roles and role not in set(ranker_required_roles)
+        ]
         strategy_profile = getattr(ctx, "ranker_state", {}).get("strategy_profile", {}) or {}
 
         fill_order_graph_symbols = [dep.symbol for dep in ctx.graph_context]
@@ -1209,7 +1236,7 @@ def run_benchmark(
         context_recall = float(symbol_metrics["context_recall"])
         context_precision = float(symbol_metrics["context_precision"])
         file_recall = _compute_file_recall(expected_files, retrieved_files)
-        role_recall = _compute_role_recall(required_roles_canonical, missing_roles_canonical)
+        role_recall = _compute_role_recall(required_roles_canonical, missing_expected_roles)
 
         # Token counts
         tokens_surgical = ctx.token_count()
@@ -1259,7 +1286,9 @@ def run_benchmark(
         status_emoji = "✅" if status == "pass" else "⚠️"
 
         reasoning_info = f" | {ctx.stopped_reason}"
-        if ctx.missing_roles:
+        if missing_expected_roles:
+            reasoning_info += f" | missing: {','.join(missing_expected_roles)}"
+        elif ctx.missing_roles:
             reasoning_info += f" | missing: {','.join(ctx.missing_roles)}"
 
         print(
@@ -1321,6 +1350,7 @@ def run_benchmark(
                 "missing_roles": ctx.missing_roles,
                 "missing_roles_canonical": missing_roles_canonical,
                 "missing_expected_roles": missing_expected_roles,
+                "ranker_omitted_expected_roles": ranker_omitted_expected_roles,
                 "mechanism": mechanism,
                 "expected_roles": required_roles_canonical,
                 "required_roles": required_roles,

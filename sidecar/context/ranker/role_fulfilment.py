@@ -189,17 +189,11 @@ class RoleFulfilment:
         roles = []
         if mechanism.startswith("auto:"):
             roles = self.roles_for_auto_mechanism(mechanism.removeprefix("auto:"))
-            local = self.filter_roles_by_target_supply(roles, target)
-            if local:
-                roles = local
         else:
             roles = required_roles_for_mechanism(
                 mechanism,
                 role_catalog=self.host.role_catalog or None,
             )
-            if roles:
-                local = self.filter_roles_by_target_supply(roles, target)
-                roles = local or self.filter_roles_by_workspace_supply(roles)
             if not roles:
                 roles = self.adaptive_role_plan(target=target)
 

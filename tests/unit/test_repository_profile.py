@@ -77,6 +77,38 @@ def test_repository_profile_detects_generic_archetypes_and_shallow_impact(tmp_pa
     assert "impact=shallow" in summarize_repository_profile(profile)
 
 
+def test_dependency_injection_archetype_requires_representation_surface(tmp_path: Path):
+    source = tmp_path / "app.py"
+    source.write_text(
+        "class Dependant:\n"
+        "    pass\n\n"
+        "def Depends(provider):\n"
+        "    return provider\n\n"
+        "def solve_dependencies(dependant):\n"
+        "    return dependant\n",
+        encoding="utf-8",
+    )
+
+    profile = build_repository_profile(
+        RepositoryProfileInputs(
+            project_path=str(tmp_path),
+            workspace_id="local/repo@main",
+            collected_files=[str(source)],
+            parsed_files=1,
+            symbols_indexed=3,
+            sample_texts=[source.read_text(encoding="utf-8")],
+        )
+    )
+
+    dependency_archetype = next(
+        item
+        for item in profile["strategy_profile"]["mechanism_archetypes"]
+        if item["type"] == "dependency_injection"
+    )
+
+    assert "representation_surface" in dependency_archetype["role_plan"]
+
+
 def test_repository_profile_is_plain_db_storable_payload(tmp_path: Path):
     source = tmp_path / "app.py"
     source.write_text("def handler():\n    return 1\n", encoding="utf-8")

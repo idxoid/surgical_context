@@ -794,15 +794,15 @@ questions:
   - id: surgical_context_q04
     repo: surgical_context
     core12: false
-    symbol: StructuralRecovery
-    question: "When the call graph is sparse, how does trace-dependency recovery find import anchors and runtime symbols to backfill roles?"
+    symbol: UnifiedRanker
+    question: "How does UnifiedRanker build the candidate pool from graph BFS and vector search before budget selection?"
     difficulty: hard
     intent: trace_dependency
     expected_mode: symbol
-    mechanism: surgical_context_trace_dependency_recovery
-    required_roles: [dependency_solver, runtime_executor, handler_or_lifecycle, registration_step]
-    expected_symbols: [StructuralRecovery, trace_dependency_import_anchor_candidates, trace_dependency_runtime_symbol_rows]
-    expected_files: [sidecar/context/ranker/recovery.py, sidecar/context/ranker/scoring.py]
+    mechanism: surgical_context_ranker_fusion
+    required_roles: [public_entrypoint, marker_or_config, handler_or_lifecycle, docs_or_concept]
+    expected_symbols: [UnifiedRanker, _graph_candidates, _fuse, rank]
+    expected_files: [sidecar/context/unified_ranker.py, sidecar/context/ranker/scoring.py]
 
   - id: surgical_context_q05
     repo: surgical_context

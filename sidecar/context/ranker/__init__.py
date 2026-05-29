@@ -1,6 +1,6 @@
 """UnifiedRanker decomposition components.
 
-Heavier slices (scoring, recovery, pruning, role_fulfilment) live in sibling
+Heavier slices (scoring, pruning, role_fulfilment) live in sibling
 modules; import them explicitly, e.g. ``from sidecar.context.ranker.scoring``.
 """
 

@@ -750,7 +750,12 @@ class Neo4jClient:
             WITH p, b, collect(target)[0] AS target
             WHERE target IS NOT NULL
             MERGE (p)-[r:PROXY_OF {workspace_id: $workspace_id}]->(target)
-            SET r.resolver = 'proxysurface-v1'
+            SET r.resolver = CASE b.target_source
+                               WHEN 'wrapped_callable' THEN 'proxysurface-callable-v1'
+                               ELSE 'proxysurface-v1' END,
+                r.target_source = coalesce(b.target_source, 'annotation'),
+                r.wrapped_callable = b.wrapped_callable,
+                r.confidence = coalesce(b.confidence, 1.0)
             """,
             bindings=proxy_bindings,
             workspace_id=workspace_id,
@@ -894,6 +899,140 @@ class Neo4jClient:
             session.run(
                 """
                 MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:DECORATED_BY]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
+    def link_type_references(
+        self,
+        references: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create USES_TYPE edges: referrer symbol -> the project class it names.
+
+        A type reference (parameter/return annotation, annotated assignment,
+        ``isinstance``/``issubclass``) is a static AST fact, so this is a derived
+        edge. The type is matched to an in-graph symbol by qualified name (exact,
+        else trailing-name segment, shortest-qn wins). Types resolving to no
+        in-graph symbol (builtins/stdlib/external) produce no edge — project
+        classes only, precision over recall.
+        """
+        if not references:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_type_reference_relations, references, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_type_reference_relations(tx, references, workspace_id):
+        if not references:
+            return
+        tx.run(
+            """
+            UNWIND $references AS d
+            MATCH (referrer:Symbol {uid: d.referrer_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(typ:Symbol)
+            WHERE (typ.qualified_name = d.type_qualified_name OR typ.name = d.type_name)
+              AND typ.kind IN ['class', 'interface', 'type', 'struct', 'enum']
+            WITH referrer, d, typ
+            ORDER BY
+              CASE WHEN typ.qualified_name = d.type_qualified_name THEN 0 ELSE 1 END,
+              size(typ.qualified_name) ASC
+            WITH referrer, d, collect(typ)[0] AS typ
+            WHERE typ IS NOT NULL AND referrer <> typ
+            MERGE (referrer)-[r:USES_TYPE {workspace_id: $workspace_id}]->(typ)
+            SET r.resolver = 'type-ref-v1',
+                r.type_name = d.type_name,
+                r.kind = d.kind
+            """,
+            references=references,
+            workspace_id=workspace_id,
+        )
+
+    def delete_type_references_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear USES_TYPE edges from a file's symbols before relinking."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:USES_TYPE]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
+    def link_injections(
+        self,
+        injections: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create INJECTS edges: owner symbol -> the provider wired into its parameters.
+
+        ``def f(x = Marker(provider))`` is a static binding (like an import), so this is
+        a derived edge. The provider is matched to an in-graph symbol by qualified name
+        (exact, else trailing-name segment, shortest-qn wins). Providers resolving to no
+        in-graph symbol (locals/literals/external) produce no edge — project providers
+        only, precision over recall.
+        """
+        if not injections:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_injection_relations, injections, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_injection_relations(tx, injections, workspace_id):
+        if not injections:
+            return
+        tx.run(
+            """
+            UNWIND $injections AS d
+            MATCH (owner:Symbol {uid: d.owner_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(prov:Symbol)
+            WHERE (prov.qualified_name = d.provider_qualified_name
+                   OR prov.name = d.provider_name)
+              AND prov.kind IN ['function', 'method', 'class']
+            WITH owner, d, prov
+            ORDER BY
+              CASE WHEN prov.qualified_name = d.provider_qualified_name THEN 0 ELSE 1 END,
+              size(prov.qualified_name) ASC
+            WITH owner, d, collect(prov)[0] AS prov
+            WHERE prov IS NOT NULL AND owner <> prov
+            MERGE (owner)-[r:INJECTS {workspace_id: $workspace_id}]->(prov)
+            SET r.resolver = 'inject-v1',
+                r.provider_name = d.provider_name,
+                r.confidence = 0.85
+            """,
+            injections=injections,
+            workspace_id=workspace_id,
+        )
+
+    def delete_injections_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear INJECTS edges from a file's symbols before relinking."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:INJECTS]->()
                 WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 DELETE r
                 """,
