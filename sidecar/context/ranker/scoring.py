@@ -201,6 +201,8 @@ class RankerScoring:
             relation = "HAS_API_out" if outgoing else "HAS_API_in"
         elif rel_type == "INHERITED_API":
             relation = "INHERITED_API_out" if outgoing else "INHERITED_API_in"
+        elif rel_type == "DECORATED_BY":
+            relation = "DECORATED_BY_out" if outgoing else "DECORATED_BY_in"
         else:
             relation = "DEPENDS_ON"
 

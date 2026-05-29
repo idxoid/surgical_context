@@ -180,6 +180,11 @@ class UnifiedRanker:
         "HAS_API_in": 1.2,
         "INHERITED_API_out": 1.35,
         "INHERITED_API_in": 1.15,
+        # decorated_symbol -[DECORATED_BY]-> decorator. outgoing = the decorated
+        # symbol reaching its decorator (the mechanism it plugs into); incoming =
+        # a decorator reaching the symbols it decorates (registration surface).
+        "DECORATED_BY_out": 1.0,
+        "DECORATED_BY_in": 1.1,
     }
 
     def __init__(
@@ -1048,10 +1053,7 @@ class UnifiedRanker:
                     trace_focus_rank = 1
             if c.relation == "MANDATORY_CALLEE":
                 is_contract_anchor = any(
-                    (
-                        str(step).startswith("mandatory-")
-                        and str(step).endswith("-contract")
-                    )
+                    (str(step).startswith("mandatory-") and str(step).endswith("-contract"))
                     for step in c.provenance
                 )
                 return (4 if is_contract_anchor else 3, trace_focus_rank, base)
@@ -2431,7 +2433,7 @@ class UnifiedRanker:
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY]-(n:Symbol)
         WHERE NOT n.uid IN $visited
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)
