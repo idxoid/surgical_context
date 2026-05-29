@@ -58,12 +58,41 @@ def test_resolve_reset_target_requires_existing_checkout():
         )
 
 
-def test_resolve_default_targets_includes_fixture_and_existing_checkouts(tmp_path):
+def test_resolve_reset_target_uses_pack_project_path_for_dogfood_repo():
     pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+    project_root = Path(__file__).resolve().parents[2]
+
+    workspace_id, project_path, docs_path = resolve_reset_target(
+        fixture=False,
+        repo="surgical_context",
+        questions_path=str(pack_path),
+        project_path=None,
+        docs_path=None,
+        workspace_id=None,
+        repos_root=None,
+    )
+
+    assert project_path == str(project_root.resolve())
+    assert workspace_id.startswith("local/surgical_context@")
+    assert docs_path == str((project_root / "docs").resolve())
+
+
+def test_resolve_default_targets_includes_fixture_and_existing_checkouts(tmp_path):
     repos_root = tmp_path / "repos"
     fastapi_checkout = repos_root / "fastapi"
     fastapi_docs = fastapi_checkout / "docs"
     fastapi_docs.mkdir(parents=True)
+
+    pack_path = tmp_path / "pack.yaml"
+    pack_path.write_text(
+        """
+repositories:
+  - id: fastapi
+    name: FastAPI
+    clone_url: https://github.com/tiangolo/fastapi
+""".strip()
+        + "\n"
+    )
 
     with patch(
         "QA.reset_databases.default_repo_checkout_path",
