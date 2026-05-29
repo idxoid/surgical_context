@@ -1,7 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from QA.llm_judge import (
     _parse_verdict,
     judge_question_matrix,

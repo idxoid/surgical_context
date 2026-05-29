@@ -6,17 +6,16 @@ Uses SYNTO_* / DEV_FACTORY_* env vars when set for timeouts and bridge dirs.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 from QA.bridge_output import normalize_bridge_stdout
 
@@ -40,7 +39,9 @@ def _env(
     return fallback
 
 
-def _env_bool(synto_name: str, dev_factory_name: str | None = None, *, default: bool = False) -> bool:
+def _env_bool(
+    synto_name: str, dev_factory_name: str | None = None, *, default: bool = False
+) -> bool:
     raw = _env(synto_name, dev_factory_name)
     if raw is None:
         return default
@@ -144,14 +145,10 @@ class ClaudeCodeBridgeProvider(BridgeProvider):
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(
-                    f"claude -p timed out after {self.timeout_s}s"
-                ) from exc
+                raise RuntimeError(f"claude -p timed out after {self.timeout_s}s") from exc
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout or "").strip()
-                raise RuntimeError(
-                    f"claude -p failed with exit {result.returncode}: {detail}"
-                )
+                raise RuntimeError(f"claude -p failed with exit {result.returncode}: {detail}")
             raw = (result.stdout or "").strip()
             if not raw:
                 raise RuntimeError("claude -p returned empty stdout")
@@ -207,9 +204,7 @@ class CodexBridgeProvider(BridgeProvider):
         self.ephemeral = _env_bool(
             "SYNTO_CODEX_EPHEMERAL", "DEV_FACTORY_CODEX_EPHEMERAL", default=True
         )
-        self.ignore_rules = _env_bool(
-            "SYNTO_CODEX_IGNORE_RULES", "DEV_FACTORY_CODEX_IGNORE_RULES"
-        )
+        self.ignore_rules = _env_bool("SYNTO_CODEX_IGNORE_RULES", "DEV_FACTORY_CODEX_IGNORE_RULES")
 
     def _cli_name(self) -> str:
         return "codex"
@@ -234,14 +229,10 @@ class CodexBridgeProvider(BridgeProvider):
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(
-                    f"codex exec timed out after {self.timeout_s}s"
-                ) from exc
+                raise RuntimeError(f"codex exec timed out after {self.timeout_s}s") from exc
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout or "").strip()
-                raise RuntimeError(
-                    f"codex exec failed with exit {result.returncode}: {detail}"
-                )
+                raise RuntimeError(f"codex exec failed with exit {result.returncode}: {detail}")
             raw = (
                 outbox.read_text(encoding="utf-8").strip()
                 if outbox.exists()

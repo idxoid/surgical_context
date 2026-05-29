@@ -67,9 +67,22 @@ def test_builtin_ranker_fusion_mechanism_no_longer_hardcoded():
 
 def test_preloaded_mechanism_always_empty():
     # determine_preloaded_mechanism is intentionally inert — no hardcoded dispatch for any repo.
-    assert determine_preloaded_mechanism(_target("v1", "/repo/pydantic/v1/__init__.py"), "compat") == ""
-    assert determine_preloaded_mechanism(_target("Controller", "/repo/nestjs/controller.decorator.ts"), "route") == ""
-    assert determine_preloaded_mechanism(_target("UnifiedRanker", "/repo/sidecar/context/unified_ranker.py"), "rank") == ""
+    assert (
+        determine_preloaded_mechanism(_target("v1", "/repo/pydantic/v1/__init__.py"), "compat")
+        == ""
+    )
+    assert (
+        determine_preloaded_mechanism(
+            _target("Controller", "/repo/nestjs/controller.decorator.ts"), "route"
+        )
+        == ""
+    )
+    assert (
+        determine_preloaded_mechanism(
+            _target("UnifiedRanker", "/repo/sidecar/context/unified_ranker.py"), "rank"
+        )
+        == ""
+    )
 
 
 def test_infer_ranker_fusion_roles_marks_factory_surface():

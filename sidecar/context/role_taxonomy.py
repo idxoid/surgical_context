@@ -289,6 +289,7 @@ def infer_supporting_roles(
     # backward-compat layer. Pattern: path contains "compat" or "version", or
     # symbol name starts with "v" followed only by digits (e.g. "v1", "v2").
     import re as _re
+
     _is_compat_path = (
         "/compat" in lowered_path
         or "version" in file_stem
@@ -329,7 +330,9 @@ def infer_supporting_roles(
         # Symbol name matches its package directory (e.g. symbol "v1" inside
         # "pydantic/v1/__init__.py") — the __init__ is a barrel re-export, so
         # the package itself is the api_surface entry point.
-        _parent_dir = lowered_path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in lowered_path else ""
+        _parent_dir = (
+            lowered_path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in lowered_path else ""
+        )
         _is_package_barrel = file_stem == "__init__" and lowered_name == _parent_dir
         if (
             lowered_name

@@ -176,9 +176,7 @@ class PythonAdapter(TreeSitterAdapter):
                             edges.append(InheritanceEdge(subclass_uid, base_name, False))
         return edges
 
-    def extract_proxy_bindings(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Module-level lazy-proxy bindings: ``X: TargetType = SomeProxy(...)``.
 
         Each entry anchors a ProxyBinding node + ``PROXY_OF`` edge in the graph so
@@ -205,9 +203,7 @@ class PythonAdapter(TreeSitterAdapter):
             )
         return out
 
-    def extract_decorators(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_decorators(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Decoration relations: ``@deco\\ndef f`` → ``f`` is DECORATED_BY ``deco``.
 
         The ``@decorator`` application is a syntactic fact (the decorator name sits
@@ -385,8 +381,13 @@ class PythonAdapter(TreeSitterAdapter):
                         callee_qualified_name = f"{base}.{call_name}"
                     else:
                         typed = self._typed_qualified_target(
-                            parent, obj_node, call_name, attr_type_table, alias_cache,
-                            method_returns, function_returns,
+                            parent,
+                            obj_node,
+                            call_name,
+                            attr_type_table,
+                            alias_cache,
+                            method_returns,
+                            function_returns,
                         )
                         if typed is not None:
                             tier = "typed"
@@ -394,8 +395,13 @@ class PythonAdapter(TreeSitterAdapter):
                             callee_qualified_name = typed
                 elif obj_node.type == "attribute":
                     typed = self._typed_qualified_target(
-                        parent, obj_node, call_name, attr_type_table, alias_cache,
-                        method_returns, function_returns,
+                        parent,
+                        obj_node,
+                        call_name,
+                        attr_type_table,
+                        alias_cache,
+                        method_returns,
+                        function_returns,
                     )
                     if typed is None:
                         continue

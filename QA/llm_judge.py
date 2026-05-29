@@ -262,9 +262,7 @@ def judge_question_matrix(
     providers = providers or PROVIDERS
     available = bridges_available()
 
-    matrix: dict[str, dict[str, JudgeResult]] = {
-        effort: {} for effort in efforts
-    }
+    matrix: dict[str, dict[str, JudgeResult]] = {effort: {} for effort in efforts}
 
     jobs: list[tuple[Provider, Effort]] = [
         (provider, effort)

@@ -237,11 +237,7 @@ class BudgetPruner:
                         candidate_roles=candidate_roles,
                     )
                     return "budget_balance_debit_limit"
-                if (
-                    not closes_missing_role
-                    and gain < min_gain
-                    and c.relation != "MANDATORY_CALLEE"
-                ):
+                if not closes_missing_role and gain < min_gain and c.relation != "MANDATORY_CALLEE":
                     _record_pruned(
                         c,
                         "expansion_low_gain",
@@ -252,11 +248,7 @@ class BudgetPruner:
                     return "expansion_low_gain"
                 budget_balance = projected_balance
 
-            if (
-                c.depth >= 2
-                and gain < 0.25
-                and c.relation != "MANDATORY_CALLEE"
-            ):
+            if c.depth >= 2 and gain < 0.25 and c.relation != "MANDATORY_CALLEE":
                 c.render_mode = "signature_only"
                 c.token_cost = potential_cost
 
@@ -377,13 +369,17 @@ class BudgetPruner:
                 "ROLE_BACKFILL",
             ) or self.host._has_role_backfill(c)
             is_mandatory_callee = c.relation == "MANDATORY_CALLEE"
-            is_strong_relation = c.relation in (
-                "CALLS_DIRECT",
-                "CALLS_SCOPED",
-                "DEPENDS_ON",
-                "IMPLEMENTS",
-                "OVERRIDES",
-            ) or is_mandatory_callee
+            is_strong_relation = (
+                c.relation
+                in (
+                    "CALLS_DIRECT",
+                    "CALLS_SCOPED",
+                    "DEPENDS_ON",
+                    "IMPLEMENTS",
+                    "OVERRIDES",
+                )
+                or is_mandatory_callee
+            )
 
             # Determine if this candidate provides any unique reasoning signal
             is_useful = (
@@ -419,7 +415,11 @@ class BudgetPruner:
             )
             if fills_role_or_trace:
                 no_progress_streak = 0
-            elif (trace_mode and c.kind == "doc") or skips_noise_without_trace_role or is_redundant_same_file:
+            elif (
+                (trace_mode and c.kind == "doc")
+                or skips_noise_without_trace_role
+                or is_redundant_same_file
+            ):
                 pass
             else:
                 no_progress_streak += 1

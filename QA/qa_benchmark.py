@@ -924,8 +924,7 @@ def _run_llm_judge(
     serialized: dict[str, dict[str, Any]] = {}
     for effort, per_provider in matrix.items():
         serialized[effort] = {
-            provider: _judge_result_to_dict(result)
-            for provider, result in per_provider.items()
+            provider: _judge_result_to_dict(result) for provider, result in per_provider.items()
         }
     return {
         "mode": judge_mode,
@@ -1518,9 +1517,7 @@ def run_benchmark(
                     aq = cell.get("answer_quality", "wrong")
                     cs = cell.get("context_sufficiency", "incomplete")
                     bucket["answer_quality"][aq] = bucket["answer_quality"].get(aq, 0) + 1
-                    bucket["context_sufficiency"][cs] = (
-                        bucket["context_sufficiency"].get(cs, 0) + 1
-                    )
+                    bucket["context_sufficiency"][cs] = bucket["context_sufficiency"].get(cs, 0) + 1
                     bucket["latency_ms_total"] += int(cell.get("latency_ms", 0))
                     judge_tokens += int(cell.get("input_tokens", 0)) + int(
                         cell.get("output_tokens", 0)
@@ -1573,9 +1570,7 @@ def run_benchmark(
             cell = judge_summary["cells"][key]
             aq = cell.get("answer_quality", {})
             cs = cell.get("context_sufficiency", {})
-            avg_ms = (
-                cell["latency_ms_total"] / cell["n"] if cell.get("n") else 0
-            )
+            avg_ms = cell["latency_ms_total"] / cell["n"] if cell.get("n") else 0
             print(
                 f"  {key:22} model={cell.get('model', '')[:28]:28}  "
                 f"aq ok={aq.get('correct', 0)} part={aq.get('partial', 0)} wrong={aq.get('wrong', 0)}  "

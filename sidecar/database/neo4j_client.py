@@ -639,8 +639,7 @@ class Neo4jClient:
                     r.tier = 'scoped'
                 """,
                 edges=[
-                    {"class_uid": edge.class_uid, "method_uid": edge.method_uid}
-                    for edge in direct
+                    {"class_uid": edge.class_uid, "method_uid": edge.method_uid} for edge in direct
                 ],
                 workspace_id=workspace_id,
             )
@@ -812,9 +811,7 @@ class Neo4jClient:
         """
         try:
             with self.driver.session() as session:
-                rec = session.run(
-                    query, rows=rows, workspace_id=workspace_id
-                ).single()
+                rec = session.run(query, rows=rows, workspace_id=workspace_id).single()
                 created = int(rec["created"]) if rec else 0
                 if created:
                     session.run(
@@ -891,9 +888,7 @@ class Neo4jClient:
             workspace_id=workspace_id,
         )
 
-    def delete_decorators_for_file(
-        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
-    ):
+    def delete_decorators_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
         """Clear DECORATED_BY edges from a file's symbols before relinking."""
         with self.driver.session() as session:
             session.run(

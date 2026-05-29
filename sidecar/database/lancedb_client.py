@@ -3,8 +3,8 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from pathlib import Path
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 
 import lancedb
@@ -41,9 +41,7 @@ LANCEDB_DELETE_BATCH_SIZE = int(os.getenv("LANCEDB_DELETE_BATCH_SIZE", "256"))
 # Bulk-replace workspace symbols when upserting this many rows and the batch
 # covers most of the workspace (cold/full reindex). Delta updates stay per-uid.
 LANCEDB_SYMBOL_BULK_REPLACE_MIN = int(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_MIN", "512"))
-LANCEDB_SYMBOL_BULK_REPLACE_RATIO = float(
-    os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_RATIO", "0.85")
-)
+LANCEDB_SYMBOL_BULK_REPLACE_RATIO = float(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_RATIO", "0.85"))
 DOCS_TABLE = "docs"
 SYMBOLS_TABLE = "symbols"
 
@@ -201,9 +199,7 @@ class LanceDBClient:
         except Exception:
             df = table.to_pandas()
             rows = [
-                row.to_dict()
-                for _, row in df.iterrows()
-                if row.get("workspace_id") == workspace_id
+                row.to_dict() for _, row in df.iterrows() if row.get("workspace_id") == workspace_id
             ]
             if columns:
                 rows = [{key: row.get(key) for key in columns} for row in rows]
@@ -679,8 +675,10 @@ class LanceDBClient:
             )
         uids = [s["uid"] for s in symbols]
         existing = self.count_symbols_workspace(workspace_id)
-        bulk_replace = existing > 0 and len(uids) >= LANCEDB_SYMBOL_BULK_REPLACE_MIN and (
-            len(uids) >= int(existing * LANCEDB_SYMBOL_BULK_REPLACE_RATIO)
+        bulk_replace = (
+            existing > 0
+            and len(uids) >= LANCEDB_SYMBOL_BULK_REPLACE_MIN
+            and (len(uids) >= int(existing * LANCEDB_SYMBOL_BULK_REPLACE_RATIO))
         )
         t0 = time.perf_counter()
         if existing == 0:
@@ -716,9 +714,7 @@ class LanceDBClient:
             return int(self._sym_table.count_rows(f"workspace_id = '{ws}'"))
         except Exception:
             return len(
-                self._scan_table_by_workspace(
-                    self._sym_table, workspace_id, columns=["uid"]
-                )
+                self._scan_table_by_workspace(self._sym_table, workspace_id, columns=["uid"])
             )
 
     def delete_symbols_workspace(

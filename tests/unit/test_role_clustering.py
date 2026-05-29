@@ -6,7 +6,6 @@ separate them using only structural features — no name patterns, no
 file paths.
 """
 
-import json
 
 from sidecar.indexer.role_clustering import (
     RoleCluster,

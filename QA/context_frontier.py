@@ -15,9 +15,10 @@ import difflib
 import json
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 try:
     import tiktoken
@@ -33,6 +34,7 @@ except ImportError:  # pragma: no cover - direct script invocation fallback.
     from llm_bridge import BridgeRequest, build_bridge_provider
     from llm_judge import Effort, Provider, tier_model
     from qa_benchmark import _expected_file_matches
+
     from sidecar.context.role_taxonomy import normalize_roles
 
 
@@ -132,11 +134,7 @@ def _render_graph(item: dict[str, Any]) -> str:
     score = _score(item)
     path = item.get("file_path") or ""
     code = _clean_text(item.get("code"))
-    return (
-        f"# {symbol} [{relation}, depth={depth}, score={score:.2f}]\n"
-        f"# file: {path}\n"
-        f"{code}\n"
-    )
+    return f"# {symbol} [{relation}, depth={depth}, score={score:.2f}]\n# file: {path}\n{code}\n"
 
 
 def _render_doc(item: dict[str, Any]) -> str:
@@ -146,9 +144,7 @@ def _render_doc(item: dict[str, Any]) -> str:
     score = _score(item)
     content = _clean_text(item.get("content"))
     return (
-        f"# DOC {chunk_id} [{anchor_type}, score={score:.2f}]\n"
-        f"# file: {source_file}\n"
-        f"{content}\n"
+        f"# DOC {chunk_id} [{anchor_type}, score={score:.2f}]\n# file: {source_file}\n{content}\n"
     )
 
 
@@ -279,16 +275,12 @@ def build_budget_variants(
     variants: list[Variant] = []
     seen: set[tuple[str, ...]] = set()
     for budget in budgets:
-        selected = select_units_under_budget(
-            units, budget, expected_symbols=expected_symbols
-        )
+        selected = select_units_under_budget(units, budget, expected_symbols=expected_symbols)
         key = tuple(unit.unit_id for unit in selected)
         if key in seen:
             continue
         seen.add(key)
-        variants.append(
-            _variant(question_id, f"budget:{budget}", budget, selected, "budget_curve")
-        )
+        variants.append(_variant(question_id, f"budget:{budget}", budget, selected, "budget_curve"))
     variants.append(_variant(question_id, "full", None, units, "full_context"))
     return sorted(variants, key=lambda item: (item.token_count, item.variant_id != "full"))
 
@@ -662,7 +654,9 @@ def run_question_frontier(
     passing: list[tuple[Variant, GateResult | None]] = []
 
     for variant in variants:
-        gate = judge_variant(variant, result, provider=provider, effort=effort) if run_judge else None
+        gate = (
+            judge_variant(variant, result, provider=provider, effort=effort) if run_judge else None
+        )
         if gate and gate.gate_pass:
             passing.append((variant, gate))
         attempts.append(

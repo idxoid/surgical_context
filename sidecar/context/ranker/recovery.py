@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable
 from pathlib import Path
 
 from sidecar.context.role_taxonomy import infer_identity_trace_roles, normalize_roles
@@ -23,6 +22,7 @@ from .signal_constants import (
     IDENTITY_ENGINE_PATH_MARKERS,
     IDENTITY_TRACE_EXECUTOR_NAMES,
     IDENTITY_TRACE_ORCHESTRATOR_NAMES,
+    MANDATORY_CALLEE_RELATION,
     NOISE_PATH_PATTERNS,
     REGISTRATION_FACTORY_TOKENS,
     REGISTRATION_FLOW_PATH_TOKENS,
@@ -35,6 +35,9 @@ from .signal_constants import (
     ROUTING_FLOW_PATH_TOKENS,
     ROUTING_FLOW_TARGET_TOKENS,
     RUNTIME_SIGNAL_TOKENS,
+    THIN_DISPATCH_MAX_CHAIN_CALLEES,
+    THIN_DISPATCH_MAX_MANDATORY_CALLEES,
+    THIN_DISPATCH_MAX_TOKEN_ESTIMATE,
     TRACE_CONSUME_PATH_PENALTIES,
     TRACE_CONSUME_RUNTIME_NAMES,
     TRACE_CONSUME_SCOPE_SEGMENT,
@@ -44,10 +47,6 @@ from .signal_constants import (
     TRACE_EXECUTION_SIBLING_FILE_MARKERS,
     TRACE_HOOK_RUNTIME_NAMES,
     TRACE_HOOK_RUNTIME_TRIGGER_NAMES,
-    MANDATORY_CALLEE_RELATION,
-    THIN_DISPATCH_MAX_CHAIN_CALLEES,
-    THIN_DISPATCH_MAX_MANDATORY_CALLEES,
-    THIN_DISPATCH_MAX_TOKEN_ESTIMATE,
     TRACE_PUBLISH_APP_METHOD_NAMES,
     TRACE_PUBLISH_RUNTIME_NAMES,
     TRACE_PUBLISH_SCOPE_SEGMENT,
@@ -140,7 +139,8 @@ class StructuralRecovery:
             rows_for_fp = sorted(
                 rows_for_file_all,
                 key=lambda r: (
-                    float(r.get("trace_anchor_score", 0) or 0) + self._trace_execution_sibling_file_bonus(r),
+                    float(r.get("trace_anchor_score", 0) or 0)
+                    + self._trace_execution_sibling_file_bonus(r),
                     float(r.get("inbound_edges", 0) or 0) + float(r.get("outbound_edges", 0) or 0),
                     str(r.get("name") or ""),
                 ),
@@ -382,11 +382,7 @@ class StructuralRecovery:
     @staticmethod
     def _trace_execution_sibling_file_bonus(row: dict) -> float:
         fp = (row.get("file_path") or "").replace("\\", "/").lower()
-        return (
-            3.0
-            if any(marker in fp for marker in TRACE_EXECUTION_SIBLING_FILE_MARKERS)
-            else 0.0
-        )
+        return 3.0 if any(marker in fp for marker in TRACE_EXECUTION_SIBLING_FILE_MARKERS) else 0.0
 
     def is_message_publish_trace_target(
         self,
@@ -422,8 +418,7 @@ class StructuralRecovery:
             return True
         if any(penalty in path for penalty in TRACE_CONSUME_PATH_PENALTIES):
             return bool(
-                any(term in q for term in ("worker", "execute", "receive"))
-                and "broker" in q
+                any(term in q for term in ("worker", "execute", "receive")) and "broker" in q
             )
         return "execute" in q and "receive" in q
 
@@ -539,12 +534,8 @@ class StructuralRecovery:
         excluded = set(excluded_uids)
         if target.uid:
             excluded.add(target.uid)
-        scope_prefixes = self.trace_runtime_scope_prefixes(
-            target, mechanism=mechanism, query=query
-        )
-        path_penalties = self.trace_runtime_path_penalties(
-            target, mechanism=mechanism, query=query
-        )
+        scope_prefixes = self.trace_runtime_scope_prefixes(target, mechanism=mechanism, query=query)
+        path_penalties = self.trace_runtime_path_penalties(target, mechanism=mechanism, query=query)
         query_cypher = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
         WHERE (
@@ -1141,9 +1132,7 @@ class StructuralRecovery:
             prefixes = list(
                 dict.fromkeys(
                     prefixes
-                    + self.trace_runtime_scope_prefixes(
-                        target, mechanism=mechanism, query=query
-                    )
+                    + self.trace_runtime_scope_prefixes(target, mechanism=mechanism, query=query)
                 )
             )
         if lowered_terms.intersection({"request", "strategy", "pool", "handler", "invoke"}):
@@ -1508,7 +1497,12 @@ class StructuralRecovery:
         required_roles: list[str],
     ) -> bool:
         scoped = set(normalize_roles(required_roles))
-        _routing_eligible = {"composition_surface", "factory_surface", "route_builder", "decorator_processor"}
+        _routing_eligible = {
+            "composition_surface",
+            "factory_surface",
+            "route_builder",
+            "decorator_processor",
+        }
         if not scoped.intersection(_routing_eligible):
             return False
         m = (mechanism or "").lower()
@@ -1635,7 +1629,10 @@ class StructuralRecovery:
     ) -> list[Candidate]:
         """Explicit ``composition_surface`` anchors for router/middleware trace questions."""
         m = (mechanism or "").lower()
-        if not RankerScoring.trace_dependency_gain_mode(mechanism, query) and "decorator_routing" not in m:
+        if (
+            not RankerScoring.trace_dependency_gain_mode(mechanism, query)
+            and "decorator_routing" not in m
+        ):
             return []
         if not self.is_routing_flow_context(
             target=target,
@@ -2496,7 +2493,6 @@ class StructuralRecovery:
         candidate.qualified_name = row.get("qualified_name", "")
         return candidate
 
-
     def direct_callee_anchor_candidates(
         self,
         target: SubgraphNode,
@@ -2506,9 +2502,7 @@ class StructuralRecovery:
         excluded_uids: set[str],
     ) -> list[Candidate]:
         """Force depth-1 outgoing callees into the pool so BFS cannot skip them."""
-        if not self.is_thin_dispatch_wrapper_target(
-            target, mechanism=mechanism, query=query
-        ):
+        if not self.is_thin_dispatch_wrapper_target(target, mechanism=mechanism, query=query):
             return []
 
         visited = set(excluded_uids)

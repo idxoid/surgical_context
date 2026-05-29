@@ -57,9 +57,7 @@ def rows_from_report(path: Path) -> list[dict[str, str]]:
                         "completeness": cell.get("completeness", ""),
                         "context_sufficient": cell.get(
                             "context_sufficient",
-                            "yes"
-                            if cell.get("context_sufficiency") == "sufficient"
-                            else "no",
+                            "yes" if cell.get("context_sufficiency") == "sufficient" else "no",
                         ),
                         "unsupported_claims": cell.get("unsupported_claims", ""),
                         "missing_evidence": cell.get("missing_evidence", ""),

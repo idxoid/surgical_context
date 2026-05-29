@@ -112,9 +112,9 @@ def determine_preloaded_mechanism(target: SubgraphNode, query: str = "") -> str:
     Product-local rules only (no third-party framework literals). Framework-shaped
     dispatch stays in opt-in YAML packs.
     """
-    name = (target.name or "").lower()
-    path = (target.file_path or "").replace("\\", "/").lower()
-    query_lc = (query or "").lower()
+    _name = (target.name or "").lower()
+    _path = (target.file_path or "").replace("\\", "/").lower()
+    _query = (query or "").lower()
     return ""
 
 

@@ -17,7 +17,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 try:
     import tiktoken
@@ -206,9 +206,7 @@ def _file_recall(expected_files: list[str], mentioned_files: set[str]) -> tuple[
             return True
         return _expected_file_matches(expected_norm, mentioned_files)
 
-    missing = [
-        expected for expected in expected_files if not _matches(expected)
-    ]
+    missing = [expected for expected in expected_files if not _matches(expected)]
     return (len(expected_files) - len(missing)) / len(expected_files), missing
 
 
@@ -312,8 +310,10 @@ def _write_tsv(rows: list[TranscriptSummary], output: Path) -> None:
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.cursor_root).expanduser()
-    paths = [Path(path) for path in args.transcript] if args.transcript else discover_transcripts(
-        root, args.project_substring
+    paths = (
+        [Path(path) for path in args.transcript]
+        if args.transcript
+        else discover_transcripts(root, args.project_substring)
     )
     questions = _load_questions(args.questions)
     rows = [summarize_transcript(path, questions=questions) for path in paths]

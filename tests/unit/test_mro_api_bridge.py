@@ -5,7 +5,6 @@ from sidecar.indexer.mro_api_bridge import (
     index_methods_by_owner,
     parse_class_method_symbol,
 )
-from sidecar.parser.protocol import ClassApiEdge
 
 
 def test_parse_class_method_symbol():
@@ -17,8 +16,12 @@ def test_parse_class_method_symbol():
 
 
 def test_build_mro_api_edges_marks_inherited_methods():
-    task = ClassRecord(uid="task", name="Task", qualified_name="celery.app.task.Task", file_path="a.py")
-    base = ClassRecord(uid="base", name="BaseTask", qualified_name="celery.app.base.BaseTask", file_path="b.py")
+    task = ClassRecord(
+        uid="task", name="Task", qualified_name="celery.app.task.Task", file_path="a.py"
+    )
+    base = ClassRecord(
+        uid="base", name="BaseTask", qualified_name="celery.app.base.BaseTask", file_path="b.py"
+    )
     apply_async = MethodRecord(
         uid="m1",
         name="apply_async",

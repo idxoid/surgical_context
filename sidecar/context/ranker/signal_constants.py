@@ -99,7 +99,13 @@ TRACE_DEPENDENCY_RUNTIME_NAME_TOKENS = (
     "solve",
 )
 TRACE_HOOK_RUNTIME_TRIGGER_NAMES: frozenset[str] = frozenset(
-    {"before_request", "after_request", "teardown_request", "wsgi_app", "dispatch_request"}
+    {
+        "before_request",
+        "after_request",
+        "teardown_request",
+        "wsgi_app",
+        "dispatch_request",
+    }
 )
 TRACE_HOOK_RUNTIME_NAMES: frozenset[str] = frozenset(
     {
@@ -117,7 +123,15 @@ TRACE_HOOK_RUNTIME_NAMES: frozenset[str] = frozenset(
 )
 # Message publish trace: app-layer dispatch APIs → broker/publisher runtime (no framework literals).
 TRACE_PUBLISH_APP_METHOD_NAMES: frozenset[str] = frozenset(
-    {"delay", "apply_async", "send_task", "apply", "retry", "starmap", "map"}
+    {
+        "delay",
+        "apply_async",
+        "send_task",
+        "apply",
+        "retry",
+        "starmap",
+        "map",
+    }
 )
 TRACE_PUBLISH_RUNTIME_NAMES: frozenset[str] = frozenset(
     {

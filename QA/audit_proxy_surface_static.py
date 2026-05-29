@@ -57,9 +57,7 @@ def _scan_python_tree(root: Path) -> dict:
                 or qn.count(".") < 2
                 or qn.split(".")[-2] in {"self", "cls"}
             ):
-                phantom_risk.append(
-                    {"file": rel, "callee": qn, "line": call.get("call_site_line")}
-                )
+                phantom_risk.append({"file": rel, "callee": qn, "line": call.get("call_site_line")})
 
     return {
         "files_scanned": files,
