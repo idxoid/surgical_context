@@ -178,6 +178,11 @@ class UnifiedRanker:
         # a decorator reaching the symbols it decorates (registration surface).
         "DECORATED_BY_out": 1.0,
         "DECORATED_BY_in": 1.1,
+        # dispatcher -[HANDLES]-> registered handler (inverse of DECORATED_BY).
+        # outgoing = registry/decorator reaching handlers it owns; incoming = a
+        # handler reached from its registration hook (@app.route, @app.task, …).
+        "HANDLES_out": 1.15,
+        "HANDLES_in": 0.95,
         # referrer -[USES_TYPE]-> project class it names (annotation/isinstance).
         # outgoing = a symbol reaching a type it consumes; incoming = a type
         # reaching its consumers. Low prior: a weaker association than a call, kept
@@ -194,8 +199,8 @@ class UnifiedRanker:
         # owner reaching what it has injected (its runtime collaborators); incoming =
         # a provider reaching the owners that inject it. A real control-flow binding,
         # weighted near a scoped call.
-        "INJECTS_out": 0.9,
-        "INJECTS_in": 0.85,
+        "INJECTS_out": 1.05,
+        "INJECTS_in": 1.15,
     }
 
     def __init__(
@@ -747,7 +752,19 @@ class UnifiedRanker:
             phrase in query_lower for phrase in ("parameter", "annotation", "config", "marker")
         ):
             bonus += 0.25
-        if role == "schema_builder" and "schema" in query_lower:
+        if role == "runtime_surface" and any(
+            phrase in query_lower for phrase in ("endpoint", "request", "handler", "lifecycle")
+        ) and any(
+            phrase in query_lower for phrase in ("before", "called", "resolved", "run")
+        ):
+            bonus += 0.35
+        if role == "orchestrator" and any(
+            phrase in query_lower for phrase in ("depend", "dependency", "injection", "resolved")
+        ):
+            bonus += 0.25
+        if role == "schema_builder" and any(
+            term in query_lower for term in ("schema", "openapi", "swagger")
+        ):
             bonus += 0.25
         if role in ("validator_handle", "core_runtime") and any(
             phrase in query_lower for phrase in ("validate", "validation", "validated", "core")
@@ -811,7 +828,13 @@ class UnifiedRanker:
             secondary_intent=secondary_intent,
         )
         # 1. Collect graph BFS candidates (pool-size-limited, not budget-limited)
-        graph_pool = self._graph_candidates(target.uid, pool_size=graph_pool_size, intent=intent)
+        graph_pool = self._graph_candidates(
+            target.uid,
+            pool_size=graph_pool_size,
+            intent=intent,
+            target=target,
+            query=query,
+        )
 
         # 2. Collect vector candidates for docs and symbols
         doc_pool = self._doc_candidates(query, limit=vector_limit)
@@ -1056,18 +1079,27 @@ class UnifiedRanker:
             "CALLS_GUESS",
             "USES_TYPE",
             "INJECTS",
+            "HANDLES",
         }
     )
-
     def _graph_candidates(
         self,
         target_uid: str,
         pool_size: int,
         intent: Intent | None = None,
+        *,
+        target: SubgraphNode | None = None,
+        query: str = "",
     ) -> list[Candidate]:
         return cast(
             list[Candidate],
-            self.graph_candidate_source.graph_candidates(target_uid, pool_size, intent=intent),
+            self.graph_candidate_source.graph_candidates(
+                target_uid,
+                pool_size,
+                intent=intent,
+                target=target,
+                query=query,
+            ),
         )
 
     def _graph_candidates_impl(
@@ -1075,6 +1107,9 @@ class UnifiedRanker:
         target_uid: str,
         pool_size: int,
         intent: Intent | None = None,
+        *,
+        target: SubgraphNode | None = None,
+        query: str = "",
     ) -> list[Candidate]:
         """BFS from target, collecting up to pool_size candidates without token budget.
 
@@ -1088,14 +1123,16 @@ class UnifiedRanker:
         outgoing ``CALLS_*``, ``USES_TYPE``, and ``INJECTS`` hops keep the
         softened penalty so ``Class → api_route → APIRoute`` survives BFS
         pruning even when the artifact class is large.
+
+        For sync/async endpoint execution questions, an *execution chain*
+        softens distance/token along runtime handler hops (including large
+        ``get_request_handler`` reached via ``USES_TYPE`` in the same module).
         """
         chain_pursuit = intent in self._CHAIN_PURSUIT_INTENTS if intent else False
         visited = {target_uid}
         candidates: list[Candidate] = []
         # Tuple shape:
         # (-score, push_seq, uid, neighbor_dict, rel_type, outgoing, distance, reg_chain)
-        # ``push_seq`` is a monotonic counter that breaks ties before Python
-        # has to compare the dict fields (which raises TypeError).
         frontier: list[tuple[float, int, str, dict, str, bool, int, bool]] = []
         push_seq = 0
 
@@ -1137,6 +1174,7 @@ class UnifiedRanker:
                 token_cost=token_cost,
                 graph_score=score,
                 name=neighbor["name"],
+                symbol_kind=neighbor.get("symbol_kind", ""),
                 file_path=neighbor["file_path"],
                 range=neighbor.get("range", [0, 0]),
                 relation=rel_type,
@@ -2102,7 +2140,7 @@ class UnifiedRanker:
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|HANDLES]-(n:Symbol)
         WHERE NOT n.uid IN $visited
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)
@@ -2111,6 +2149,7 @@ class UnifiedRanker:
         WITH n, fn, c, r, startNode(r) = s AS outgoing, count(cr) AS caller_count
         RETURN n.uid AS uid,
                n.name AS name,
+               coalesce(n.kind, '') AS symbol_kind,
                coalesce(fn.path, '<unknown>') AS file_path,
                coalesce(fn.hash, '') AS file_hash,
                coalesce(n.token_estimate, 0) AS token_estimate,
@@ -2132,6 +2171,7 @@ class UnifiedRanker:
                     {
                         "uid": r["uid"],
                         "name": r["name"],
+                        "symbol_kind": r["symbol_kind"],
                         "file_path": r["file_path"],
                         "file_hash": r["file_hash"],
                         "token_estimate": r["token_estimate"],

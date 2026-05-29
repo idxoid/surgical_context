@@ -750,56 +750,6 @@ def test_topic_focus_downranks_unrelated_query_subsystem_candidates():
     )
 
 
-def test_pipeline_named_symbols_add_composition_and_executor_supporting_roles():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main")
-    candidate = Candidate(
-        kind="symbol",
-        uid="apply-pipes",
-        name="applyPipes",
-        file_path="/repo/packages/core/pipes/pipes-consumer.ts",
-        token_cost=80,
-    )
-    candidate.symbol_kind = "method"
-
-    roles = ranker._roles_of(candidate)
-
-    assert "composition_surface" in roles
-    assert "executor" in roles
-    assert "runtime_surface" in roles
-
-
-def test_validation_and_serialization_symbols_add_handle_supporting_roles():
-    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="local/app@main")
-    validate_candidate = Candidate(
-        kind="symbol",
-        uid="run-validators",
-        name="run_validators",
-        file_path="/repo/forms/fields.py",
-        token_cost=80,
-    )
-    validate_candidate.symbol_kind = "method"
-    dump_candidate = Candidate(
-        kind="symbol",
-        uid="model-dump",
-        name="model_dump",
-        file_path="/repo/models/main.py",
-        token_cost=80,
-    )
-    dump_candidate.symbol_kind = "method"
-    core_candidate = Candidate(
-        kind="symbol",
-        uid="schema-validator",
-        name="SchemaValidator",
-        file_path="/repo/core/schema_validator.py",
-        token_cost=80,
-    )
-    core_candidate.symbol_kind = "class"
-
-    assert "validator_handle" in ranker._roles_of(validate_candidate)
-    assert "serializer_handle" in ranker._roles_of(dump_candidate)
-    assert "core_runtime" in ranker._roles_of(core_candidate)
-
-
 def test_rank_records_pruned_reasons_and_score_breakdown():
     ranker = UnifiedRanker(
         _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/redux@main"
@@ -892,28 +842,6 @@ def test_short_dep_substring_does_not_infer_orchestrator_role():
     )
 
     assert "orchestrator" not in roles
-
-
-def test_object_api_client_surface_infers_api_surface_role():
-    roles = infer_supporting_roles(
-        file_path="/repo/extension/src/sidecarClient.ts",
-        primary_role="supporting_surface",
-        name="SidecarClient",
-        kind="object_api",
-    )
-
-    assert "api_surface" in roles
-
-
-def test_camel_case_class_name_matches_snake_file_stem_for_api_surface():
-    roles = infer_supporting_roles(
-        file_path="/repo/sidecar/context/intent_classifier.py",
-        primary_role="orchestrator",
-        name="IntentClassifier",
-        kind="class",
-    )
-
-    assert "api_surface" in roles
 
 
 def test_unrelated_class_name_does_not_match_unrelated_file_stem():

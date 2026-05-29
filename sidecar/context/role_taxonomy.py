@@ -168,111 +168,6 @@ def _to_snake_case(identifier: str) -> str:
     return step2.replace("__", "_").strip("_").lower()
 
 
-def _semantic_tokens(*parts: str) -> set[str]:
-    """Tokenize names/paths without substring matches inside larger words."""
-    tokens: set[str] = set()
-    for part in parts:
-        if not part:
-            continue
-        normalized = re.sub(r"[^a-z0-9]+", "_", _to_snake_case(part))
-        for token in normalized.split("_"):
-            if not token:
-                continue
-            tokens.add(token)
-            if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
-                tokens.add(token[:-1])
-    return tokens
-
-
-def infer_ranker_fusion_roles(
-    *,
-    file_path: str = "",
-    name: str = "",
-) -> list[str]:
-    """Roles for UnifiedRanker fusion pipeline symbols (rank → fuse → prune)."""
-    lowered_path = (file_path or "").lower()
-    lowered_name = (name or "").lower()
-    in_ranker_module = "unified_ranker" in lowered_path or lowered_name == "unifiedranker"
-    in_pruning_module = "ranker/pruning" in lowered_path or lowered_path.endswith(
-        "ranker/pruning.py"
-    )
-    fusion_symbols = {
-        "rank",
-        "_fuse",
-        "_graph_candidates",
-        "budgetpruner",
-        "select_under_budget",
-    }
-    if not in_ranker_module and not (in_pruning_module and lowered_name in fusion_symbols):
-        if lowered_name not in fusion_symbols:
-            return []
-
-    roles: list[str] = []
-    if lowered_name in {
-        "rank",
-        "_fuse",
-        "_graph_candidates",
-        "budgetpruner",
-        "select_under_budget",
-    }:
-        roles.append("factory_surface")
-    if lowered_name == "rank" or lowered_name == "unifiedranker":
-        roles.append("api_surface")
-    if lowered_name in {"_fuse", "_graph_candidates"}:
-        roles.append("orchestrator")
-    if lowered_name in {"budgetpruner", "select_under_budget"}:
-        roles.append("runtime_surface")
-    return normalize_roles(roles)
-
-
-def infer_identity_trace_roles(
-    *,
-    file_path: str = "",
-    name: str = "",
-) -> list[str]:
-    """Roles for identity resolution and engine gate symbols (trace/topic recovery)."""
-    lowered_path = (file_path or "").lower()
-    lowered_name = (name or "").lower()
-    if not lowered_name or not any(
-        marker in lowered_path
-        for marker in (
-            "/identity/",
-            "/engine/",
-            "actor_index",
-            "chain_engine",
-        )
-    ):
-        return []
-
-    roles: list[str] = []
-    if lowered_name in {"same_actor", "ingest", "ingested"} or lowered_name.endswith("_gate"):
-        roles.append("executor")
-    if lowered_name in {"same_actor", "ingest"}:
-        roles.append("orchestrator")
-    if lowered_name.endswith("_gate") or "_gate" in lowered_name:
-        roles.append("config_surface")
-    if lowered_name == "same_actor":
-        roles.append("runtime_surface")
-    return normalize_roles(roles)
-
-
-def symbol_name_matches_file_stem(name: str, file_stem: str) -> bool:
-    """True when a symbol name denotes the primary export of a module file.
-
-    Matches exact stems, case-insensitive equality, and CamelCase vs snake_case
-    (``IntentClassifier`` in ``intent_classifier.py``).
-    """
-    if not name or not file_stem:
-        return False
-    symbol = name.strip()
-    stem = file_stem.strip()
-    if symbol == stem or symbol.lower() == stem.lower():
-        return True
-    symbol_snake = _to_snake_case(symbol)
-    stem_snake = _to_snake_case(stem)
-    return bool(symbol_snake) and symbol_snake == stem_snake
-
-
 def infer_supporting_roles(
     *,
     file_path: str = "",
@@ -280,41 +175,24 @@ def infer_supporting_roles(
     name: str = "",
     kind: str = "",
 ) -> list[str]:
-    """Infer additional roles a symbol can satisfy based on structural context.
+    """Infer additional roles from STRUCTURAL context only (location + primary role).
 
+    No symbol-name or keyword matching — name-pattern role inference was removed.
     Path-based: files under test directories serve as ``impact_test_surface``;
-    non-doc, non-example source symbols of any production primary role serve
-    as ``impact_runtime`` evidence for change-impact reasoning.
+    non-doc, non-example source symbols of any production primary role serve as
+    ``impact_runtime`` evidence; an ``api_surface`` primary (from Pass-1 topology)
+    serves as ``impact_public_api``. ``name``/``kind`` are accepted for call-site
+    compatibility but no longer drive role inference.
     """
     primary = normalize_role(primary_role)
     if primary == "docs_or_concept":
         return []
 
     lowered_path = (file_path or "").lower()
-    lowered_name = (name or "").lower()
-    lowered_kind = (kind or "").lower()
-    haystack = f"{lowered_name} {lowered_path}"
     inferred: list[str] = []
-    file_name = lowered_path.rsplit("/", 1)[-1]
-    file_stem = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
 
     if "/tests/" in lowered_path or lowered_path.endswith("_test.py") or "/test_" in lowered_path:
         inferred.append("impact_test_surface")
-
-    # Structural compat_bridge: files/symbols that expose a version-shim or
-    # backward-compat layer. Pattern: path contains "compat" or "version", or
-    # symbol name starts with "v" followed only by digits (e.g. "v1", "v2").
-    import re as _re
-
-    _is_compat_path = (
-        "/compat" in lowered_path
-        or "version" in file_stem
-        or "/v1/" in lowered_path
-        or lowered_path.endswith("/v1")
-    )
-    _is_compat_name = bool(_re.fullmatch(r"v\d+", lowered_name))
-    if _is_compat_path or _is_compat_name:
-        inferred.append("compat_bridge")
 
     if (
         primary
@@ -342,170 +220,7 @@ def infer_supporting_roles(
     ):
         inferred.append("impact_runtime")
 
-    if lowered_kind in {"function", "method", "class", "object_api", "module", ""}:
-        # Symbol name matches its package directory (e.g. symbol "v1" inside
-        # "pydantic/v1/__init__.py") — the __init__ is a barrel re-export, so
-        # the package itself is the api_surface entry point.
-        _parent_dir = (
-            lowered_path.rsplit("/", 1)[0].rsplit("/", 1)[-1] if "/" in lowered_path else ""
-        )
-        _is_package_barrel = file_stem == "__init__" and lowered_name == _parent_dir
-        if (
-            lowered_name
-            and not lowered_name.startswith("_")
-            and (
-                symbol_name_matches_file_stem(name, file_stem)
-                or _is_package_barrel
-                or (
-                    lowered_kind == "object_api"
-                    and (
-                        lowered_name.endswith("Client")
-                        or "client" in lowered_name.lower()
-                        or "api" in lowered_name.lower()
-                    )
-                )
-            )
-            and "/docs/" not in lowered_path
-            and "/examples/" not in lowered_path
-        ):
-            inferred.append("api_surface")
-
-        if (
-            lowered_kind in {"function", "method"}
-            and lowered_name == "activate"
-            and "/extension/" in lowered_path
-        ):
-            inferred.append("factory_surface")
-
-        composition_tokens = (
-            "builder",
-            "chain",
-            "compose",
-            "composition",
-            "consumer",
-            "context-creator",
-            "context_creator",
-            "creator",
-            "controllers",
-            "explorer",
-            "exports",
-            "imports",
-            "middleware",
-            "pipeline",
-            "pipe",
-            "pipes",
-            "providers",
-            "registry",
-            "scanner",
-        )
-        executor_prefixes = (
-            "apply",
-            "consume",
-            "dispatch",
-            "execute",
-            "handle",
-            "process",
-            "resolve",
-            "run",
-            "transform",
-            "validate",
-        )
-        executor_tokens = (
-            "consumer",
-            "execution",
-            "executor",
-            "handler",
-            "runtime",
-        )
-        validator_tokens = (
-            "clean",
-            "schema_validator",
-            "validate",
-            "validation",
-            "validator",
-            "validators",
-        )
-        serializer_tokens = (
-            "dump",
-            "schema_serializer",
-            "serialize",
-            "serializer",
-            "serializers",
-            "to_json",
-            "to_python",
-        )
-        representation_tokens = (
-            "ast",
-            "model",
-            "node",
-            "proxy",
-            "reactive",
-            "ref",
-            "schema",
-            "state",
-            "tree",
-            "vnode",
-        )
-        orchestration_tokens = (
-            "dependency",
-            "effect",
-            "notify",
-            "resolve",
-            "scheduler",
-            "track",
-            "trigger",
-            "watch",
-        )
-        runtime_tokens = (
-            "dispatch",
-            "effect",
-            "execute",
-            "mount",
-            "patch",
-            "render",
-            "runtime",
-            "trigger",
-            "watch",
-        )
-
-        semantic_tokens = _semantic_tokens(name or "", file_path or "")
-        if any(token in haystack for token in composition_tokens):
-            inferred.append("composition_surface")
-        if any(token in lowered_name for token in ("factory", "builder", "creator", "registry")):
-            inferred.append("factory_surface")
-        if any(token in haystack for token in ("controller", "export", "import", "provider")):
-            inferred.append("integration_surface")
-        if semantic_tokens.intersection(representation_tokens):
-            inferred.append("representation_surface")
-        if any(token in haystack for token in orchestration_tokens):
-            inferred.append("orchestrator")
-        if any(token in haystack for token in runtime_tokens):
-            inferred.append("runtime_surface")
-        if any(token in haystack for token in validator_tokens):
-            inferred.append("validator_handle")
-        if any(token in haystack for token in serializer_tokens):
-            inferred.append("serializer_handle")
-        if any(
-            token in haystack for token in ("core_schema", "schema_validator", "schema_serializer")
-        ):
-            inferred.append("core_runtime")
-        if lowered_name.startswith(executor_prefixes) or any(
-            token in haystack for token in executor_tokens
-        ):
-            inferred.append("executor")
-        inferred.extend(
-            infer_identity_trace_roles(file_path=file_path, name=name),
-        )
-        inferred.extend(
-            infer_ranker_fusion_roles(file_path=file_path, name=name),
-        )
-        if (
-            ("composition_surface" in inferred or "executor" in inferred)
-            and "/docs/" not in lowered_path
-            and "/examples/" not in lowered_path
-        ):
-            inferred.append("runtime_surface")
-    if (primary == "api_surface" or "api_surface" in inferred) and "/docs/" not in lowered_path:
+    if primary == "api_surface" and "/docs/" not in lowered_path:
         inferred.append("impact_public_api")
 
     return normalize_roles(inferred)

@@ -261,3 +261,18 @@ class C:
 
     def test_file_extensions(self, adapter):
         assert adapter.file_extensions == {".py", ".pyi"}
+
+    def test_extract_injections_links_provider(self, adapter):
+        source = """
+from fastapi import Depends
+
+def get_query():
+    pass
+
+async def read_items(q: str = Depends(get_query)):
+    pass
+"""
+        rows = adapter.extract_injections(source, "app/routes.py")
+        pairs = {(r["owner_name"], r["provider_name"]) for r in rows}
+        # Structural: the wrapped provider symbol, not the marker name.
+        assert ("read_items", "get_query") in pairs

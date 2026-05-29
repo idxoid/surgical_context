@@ -196,7 +196,7 @@ _ARCHETYPE_ROLE_PLANS: Mapping[str, tuple[str, ...]] = {
         "core_runtime",
         "runtime_surface",
     ),
-    "schema_generation": ("api_surface", "schema_builder", "representation_surface"),
+    "schema_generation": ("api_surface", "schema_builder", "representation_surface", "factory_surface"),
     "orm_mapping": ("api_surface", "factory_surface", "representation_surface", "core_runtime"),
     "declarative_mapping": (
         "api_surface",
@@ -213,6 +213,12 @@ _ARCHETYPE_ROLE_PLANS: Mapping[str, tuple[str, ...]] = {
     ),
     "migration_system": ("api_surface", "factory_surface", "executor", "runtime_surface"),
     "request_context": ("api_surface", "binding_surface", "runtime_surface"),
+    "request_body_resolution": (
+        "runtime_surface",
+        "schema_builder",
+        "orchestrator",
+        "binding_surface",
+    ),
     "component_lifecycle": ("api_surface", "factory_surface", "runtime_surface"),
     "reactivity_graph": (
         "api_surface",

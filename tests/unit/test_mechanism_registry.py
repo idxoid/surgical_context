@@ -11,7 +11,6 @@ from sidecar.context.mechanism_registry import (
     required_roles_for_mechanism,
     role_backfill_specs_for_mechanism,
 )
-from sidecar.context.role_taxonomy import infer_ranker_fusion_roles
 from sidecar.context.types import SubgraphNode
 
 
@@ -83,18 +82,6 @@ def test_preloaded_mechanism_always_empty():
         )
         == ""
     )
-
-
-def test_infer_ranker_fusion_roles_marks_factory_surface():
-    assert "factory_surface" in infer_ranker_fusion_roles(
-        file_path="/repo/sidecar/context/unified_ranker.py",
-        name="rank",
-    )
-    assert "factory_surface" in infer_ranker_fusion_roles(
-        file_path="/repo/sidecar/context/ranker/pruning.py",
-        name="BudgetPruner",
-    )
-    assert infer_ranker_fusion_roles(file_path="/repo/other.py", name="foo") == []
 
 
 def test_known_mechanisms_includes_catalog_overlay_keys():

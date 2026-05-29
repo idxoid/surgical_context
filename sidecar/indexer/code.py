@@ -189,7 +189,7 @@ def index_file(
         if proxy_calls:
             resolve_proxies(proxy_calls, workspace_id=workspace_id)
 
-    # DECORATED_BY edges: drop this file's stale decoration edges, recreate from the
+    # DECORATED_BY / HANDLES edges: drop this file's stale decoration edges, recreate from the
     # current decorators. Not counted into degree (separate from _DEGREE_REL_PATTERN).
     delete_decos = getattr(db, "delete_decorators_for_file", None)
     link_decos = getattr(db, "link_decorators", None)

@@ -7,7 +7,6 @@ import re
 from typing import TYPE_CHECKING
 
 from sidecar.context.intent_classifier import Intent
-from sidecar.context.role_taxonomy import normalize_roles
 
 from .candidate_pool import Candidate
 from .signal_constants import FOCUS_QUERY_STOPWORDS
@@ -107,11 +106,6 @@ class RankerScoring:
         ):
             return 0.15 if candidate.kind != "doc" else 0.45
 
-        required = set(normalize_roles(required_roles)) - {"docs_or_concept"}
-        primary_role = self.host.role_fulfilment.role_of(candidate)
-        if candidate.kind != "doc" and (primary_role in required or has_explicit_role_backfill):
-            return 1.0
-
         if self.candidate_matches_query_topic(candidate, target, query=query):
             return 1.0
 
@@ -204,6 +198,8 @@ class RankerScoring:
             relation = "INHERITED_API_out" if outgoing else "INHERITED_API_in"
         elif rel_type == "DECORATED_BY":
             relation = "DECORATED_BY_out" if outgoing else "DECORATED_BY_in"
+        elif rel_type == "HANDLES":
+            relation = "HANDLES_out" if outgoing else "HANDLES_in"
         elif rel_type == "INJECTS":
             relation = "INJECTS_out" if outgoing else "INJECTS_in"
         elif rel_type == "USES_TYPE":
@@ -231,10 +227,21 @@ class RankerScoring:
             distance_penalty = 0.4 * distance
 
         token_penalty = 0.1 * token_estimate / 100
-        # Registration methods reference large artifact classes (e.g. APIRoute)
-        # via USES_TYPE; the type hop is structural, not a body-cost signal.
-        if registration_chain and rel_type == "USES_TYPE":
+        if rel_type == "USES_TYPE" and registration_chain:
             token_penalty = 0.0
+        elif rel_type == "USES_TYPE":
+            token_penalty = min(token_penalty, 0.35)
+        # Large handlers reached during registration-chain pursuit are control-flow hops.
+        elif registration_chain and rel_type in (
+            "CALLS",
+            "CALLS_DIRECT",
+            "CALLS_SCOPED",
+            "CALLS_IMPORTED",
+            "CALLS_DYNAMIC",
+            "CALLS_INFERRED",
+            "CALLS_GUESS",
+        ):
+            token_penalty *= 0.25
 
         return float(r + 0.3 * math.log1p(caller_count) - token_penalty - distance_penalty)
 

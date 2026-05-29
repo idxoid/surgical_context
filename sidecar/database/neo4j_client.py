@@ -849,12 +849,12 @@ class Neo4jClient:
         decorators: list[dict],
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ):
-        """Create DECORATED_BY edges: decorated_symbol -> decorator symbol.
+        """Create DECORATED_BY and HANDLES edges from decoration facts.
 
-        The decoration is a syntactic fact, so this is a derived edge. The decorator
-        is matched to an in-graph symbol by qualified name (exact, else trailing-name
-        segment, shortest-qn wins, like proxy resolution). Decorators that resolve to
-        no in-graph symbol (stdlib/external) produce no edge — precision over recall.
+        DECORATED_BY: decorated_symbol -> decorator (handler → registry hook).
+        HANDLES: decorator -> decorated_symbol (dispatcher → registered handler).
+        Both are derived from the same ``@deco`` AST fact; HANDLES is the inverse
+        edge ranker BFS needs to walk from ``@app.route`` / ``@app.task`` outward.
         """
         if not decorators:
             return
@@ -888,17 +888,29 @@ class Neo4jClient:
             MERGE (decorated)-[r:DECORATED_BY {workspace_id: $workspace_id}]->(deco)
             SET r.resolver = 'decorator-v1',
                 r.decorator_name = d.decorator_name
+            MERGE (deco)-[h:HANDLES {workspace_id: $workspace_id}]->(decorated)
+            SET h.resolver = 'decorator-v1',
+                h.decorator_name = d.decorator_name
             """,
             decorators=decorators,
             workspace_id=workspace_id,
         )
 
     def delete_decorators_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
-        """Clear DECORATED_BY edges from a file's symbols before relinking."""
+        """Clear DECORATED_BY / HANDLES edges for symbols defined in a file."""
         with self.driver.session() as session:
             session.run(
                 """
                 MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:DECORATED_BY]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)<-[r:HANDLES]-()
                 WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 DELETE r
                 """,

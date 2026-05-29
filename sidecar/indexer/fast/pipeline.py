@@ -361,7 +361,7 @@ def _decorator_phase(
     reporter: ProgressReporter,
     project_path: str = "",
 ) -> int:
-    """Create DECORATED_BY edges (decorated_symbol -> decorator).
+    """Create DECORATED_BY (handler→hook) and HANDLES (hook→handler) edges.
 
     Runs after `_apply_graph` so the decorator symbols (possibly cross-file) exist.
     The decoration is a syntactic fact extracted per-file; gathered across diffs.
@@ -887,7 +887,7 @@ def run_fast_indexing(
         # their PROXY_OF / via_proxy neighbors.
         degree_seeds |= proxy_uids
 
-        # Stage 4.65: DECORATED_BY edges. Not counted into materialized degree
+        # Stage 4.65: DECORATED_BY + HANDLES edges. Not counted into materialized degree
         # (kept out of _DEGREE_REL_PATTERN to avoid a global degree shift), so it
         # need not precede the degree phase for counting.
         t_stage = time.perf_counter()
