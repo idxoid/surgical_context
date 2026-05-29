@@ -208,6 +208,54 @@ current_app = Proxy(get_current_app)
         bindings = adapter.extract_proxy_bindings(source, "pkg/_state.py")
         assert not any(b["proxy_name"] == "current_app" for b in bindings)
 
+    def test_extract_decorators_forms(self, adapter):
+        # @name, @obj.attr(...), @call() all yield a DECORATED_BY fact with the
+        # decorator's callable identifier as the base name.
+        source = """
+@my_decorator
+def handler(x):
+    return x
+
+@app.route("/p")
+def view():
+    pass
+
+@register()
+def job():
+    pass
+"""
+        decos = adapter.extract_decorators(source, "pkg/m.py")
+        by_decorated = {d["decorated_name"]: d["decorator_name"] for d in decos}
+        assert by_decorated["handler"] == "my_decorator"
+        assert by_decorated["view"] == "route"
+        assert by_decorated["job"] == "register"
+
+    def test_extract_decorators_skips_builtins(self, adapter):
+        # property/staticmethod/functools.wraps are machinery, never DECORATED_BY targets.
+        source = """
+import functools
+
+class C:
+    @property
+    def p(self):
+        return 1
+
+    @staticmethod
+    def s():
+        pass
+
+    @functools.wraps(fn)
+    def w(self):
+        pass
+
+    @app.task
+    def tsk(self):
+        pass
+"""
+        decos = adapter.extract_decorators(source, "pkg/m.py")
+        names = {d["decorated_name"]: d["decorator_name"] for d in decos}
+        assert names == {"tsk": "task"}  # only the real framework decorator survives
+
     def test_language_name(self, adapter):
         assert adapter.language_name == "python"
 

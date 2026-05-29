@@ -189,6 +189,17 @@ def index_file(
         if proxy_calls:
             resolve_proxies(proxy_calls, workspace_id=workspace_id)
 
+    # DECORATED_BY edges: drop this file's stale decoration edges, recreate from the
+    # current decorators. Not counted into degree (separate from _DEGREE_REL_PATTERN).
+    delete_decos = getattr(db, "delete_decorators_for_file", None)
+    link_decos = getattr(db, "link_decorators", None)
+    if callable(delete_decos):
+        delete_decos(file_path, workspace_id=workspace_id)
+    if callable(link_decos):
+        decorators = extractor.extract_decorators(file_path)
+        if decorators:
+            link_decos(decorators, workspace_id=workspace_id)
+
     # Refresh materialized degree over the affected closure now that edges are
     # relinked. Removed symbols are excluded (they no longer exist); their former
     # neighbors come from the pre-mutation snapshot.

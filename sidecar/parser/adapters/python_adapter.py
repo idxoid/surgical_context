@@ -19,6 +19,32 @@ from sidecar.parser.uid import (
     signature_from_node,
 )
 
+# Language/stdlib decorators that are machinery, never a meaningful DECORATED_BY
+# target — skip them so we don't attempt no-op edges. Anything else (framework
+# or in-repo decorators) is kept and resolved structurally.
+_BUILTIN_DECORATORS = frozenset(
+    {
+        "property",
+        "staticmethod",
+        "classmethod",
+        "abstractmethod",
+        "abstractproperty",
+        "cached_property",
+        "wraps",
+        "lru_cache",
+        "cache",
+        "contextmanager",
+        "asynccontextmanager",
+        "dataclass",
+        "override",
+        "final",
+        "overload",
+        "setter",
+        "getter",
+        "deleter",
+    }
+)
+
 
 class PythonAdapter(TreeSitterAdapter):
     """Python parser adapter."""
@@ -178,6 +204,77 @@ class PythonAdapter(TreeSitterAdapter):
                 }
             )
         return out
+
+    def extract_decorators(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """Decoration relations: ``@deco\\ndef f`` → ``f`` is DECORATED_BY ``deco``.
+
+        The ``@decorator`` application is a syntactic fact (the decorator name sits
+        directly above the def/class), so the edge is derived, not guessed — unlike a
+        closure's runtime call-site. Handles ``@name``, ``@a.b.c``, ``@call(...)``,
+        ``@obj.attr(...)``. The decorator name is resolved through the imports table
+        to a qualified target where possible; bare same-module names are kept as-is.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+        out: list[dict] = []
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "decorated_definition":
+                continue
+            defn = node.child_by_field_name("definition")
+            if defn is None or defn.type not in ("function_definition", "class_definition"):
+                continue
+            name_node = defn.child_by_field_name("name")
+            if name_node is None:
+                continue
+            decorated_uid = self._uid_for_node(defn, source_code, file_path)
+            decorated_name = _node_text(name_node)
+            for deco in node.children:
+                if deco.type != "decorator":
+                    continue
+                base = self._decorator_base_name(deco)
+                if not base or base in _BUILTIN_DECORATORS:
+                    continue
+                resolved = self._resolve_type_name(base, import_bindings, module)
+                out.append(
+                    {
+                        "decorated_uid": decorated_uid,
+                        "decorated_name": decorated_name,
+                        "decorator_name": base,
+                        "decorator_qualified_name": resolved,
+                        "file_path": file_path,
+                    }
+                )
+        return out
+
+    @staticmethod
+    def _decorator_base_name(decorator_node) -> str:
+        """The decorator's callable identifier: ``@route`` → route, ``@app.route(...)`` → route.
+
+        For an attribute chain we take the final attribute (the method being applied);
+        for a bare/called name we take the identifier. Returns '' if not extractable.
+        """
+        # The decorator node wraps an expression after '@': identifier | attribute | call.
+        expr = None
+        for ch in decorator_node.children:
+            if ch.type in ("identifier", "attribute", "call"):
+                expr = ch
+                break
+        if expr is None:
+            return ""
+        if expr.type == "call":
+            expr = expr.child_by_field_name("function")
+            if expr is None:
+                return ""
+        if expr.type == "identifier":
+            return _node_text(expr)
+        if expr.type == "attribute":
+            attr = expr.child_by_field_name("attribute")
+            return _node_text(attr) if attr is not None else ""
+        return ""
 
     def _positional_identifier_arguments(
         self, call_node, source_code: str, *, limit: int = 8

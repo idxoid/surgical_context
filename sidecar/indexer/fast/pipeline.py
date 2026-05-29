@@ -354,6 +354,45 @@ def _proxy_call_resolution_phase(
     return created
 
 
+def _decorator_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create DECORATED_BY edges (decorated_symbol -> decorator).
+
+    Runs after `_apply_graph` so the decorator symbols (possibly cross-file) exist.
+    The decoration is a syntactic fact extracted per-file; gathered across diffs.
+    Must run under the same project_root_scope as symbol extraction so the decorated
+    symbol's uid matches the stored node (uid derives from the project-relative
+    qualified name).
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    link_deco = getattr(db, "link_decorators", None)
+    reporter.stage_start("decorators", total=1)
+    decorators: list[dict] = []
+    if callable(link_deco):
+        adapter = PythonAdapter()
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    decorators.extend(adapter.extract_decorators(ex.source, ex.path))
+                except Exception:
+                    continue
+        if decorators:
+            link_deco(decorators, workspace_id=workspace_id)
+    reporter.step("decorators")
+    reporter.stage_end("decorators")
+    return len(decorators)
+
+
 def _mro_api_bridge_phase(
     db: Neo4jClient,
     workspace_id: str,
@@ -774,6 +813,15 @@ def run_fast_indexing(
         # proxy nodes into the seed set; the closure recompute then covers them and
         # their PROXY_OF / via_proxy neighbors.
         degree_seeds |= proxy_uids
+
+        # Stage 4.65: DECORATED_BY edges. Not counted into materialized degree
+        # (kept out of _DEGREE_REL_PATTERN to avoid a global degree shift), so it
+        # need not precede the degree phase for counting.
+        t_stage = time.perf_counter()
+        stats["decorators_linked"] = _decorator_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.7: recompute materialized degree now that all edge-creating
         # phases (calls, imports, inheritance, MRO API, hints, proxy) have run.

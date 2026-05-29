@@ -842,6 +842,70 @@ class Neo4jClient:
                 workspace_id=workspace_id,
             )
 
+    def link_decorators(
+        self,
+        decorators: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create DECORATED_BY edges: decorated_symbol -> decorator symbol.
+
+        The decoration is a syntactic fact, so this is a derived edge. The decorator
+        is matched to an in-graph symbol by qualified name (exact, else trailing-name
+        segment, shortest-qn wins, like proxy resolution). Decorators that resolve to
+        no in-graph symbol (stdlib/external) produce no edge — precision over recall.
+        """
+        if not decorators:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_decorator_relations, decorators, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_decorator_relations(tx, decorators, workspace_id):
+        if not decorators:
+            return
+        tx.run(
+            """
+            UNWIND $decorators AS d
+            MATCH (decorated:Symbol {uid: d.decorated_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(deco:Symbol)
+            WHERE deco.qualified_name = d.decorator_qualified_name
+               OR deco.name = d.decorator_name
+            WITH decorated, d, deco
+            ORDER BY
+              CASE WHEN deco.qualified_name = d.decorator_qualified_name THEN 0 ELSE 1 END,
+              size(deco.qualified_name) ASC
+            WITH decorated, d, collect(deco)[0] AS deco
+            WHERE deco IS NOT NULL AND decorated <> deco
+            MERGE (decorated)-[r:DECORATED_BY {workspace_id: $workspace_id}]->(deco)
+            SET r.resolver = 'decorator-v1',
+                r.decorator_name = d.decorator_name
+            """,
+            decorators=decorators,
+            workspace_id=workspace_id,
+        )
+
+    def delete_decorators_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear DECORATED_BY edges from a file's symbols before relinking."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:DECORATED_BY]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
     def get_symbol_uid_by_name(
         self, name: str, workspace_id: str = DEFAULT_WORKSPACE_ID
     ) -> str | None:
