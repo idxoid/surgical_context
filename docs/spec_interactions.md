@@ -31,6 +31,7 @@ sidecar/main.py  (FastAPI)
   ├── sidecar/indexer/docs.py            index_docs()
   ├── sidecar/context/arbitrator.py      ContextArbitrator
   ├── sidecar/context/overlay.py         InMemoryOverlay  [singleton]
+  ├── sidecar/workspace_paths.py         resolve_path_under_workspace_root()
   └── sidecar/database/lancedb_client.py LanceDBClient    [singleton]
 
 run_demo.py
@@ -40,10 +41,10 @@ run_demo.py
   ├── sidecar/database/neo4j_client.py   Neo4jClient
   └── sidecar/database/lancedb_client.py LanceDBClient
 
-sidecar/ai/  (stubs — not wired into active flows)
-  ├── engine.py                          AIEngine (commented implementations)
-  ├── auth.py                            GitHubAuth (device flow OAuth)
-  └── session.py                         SessionManager (token persistence)
+sidecar/ai/
+  ├── engine.py                          AIEngine — wired from main.py (Ollama + Anthropic SDK)
+  ├── auth.py                            GitHubAuth (device flow OAuth; not wired)
+  └── session.py                         SessionManager (token persistence; not wired)
 ```
 
 ---
@@ -142,7 +143,9 @@ index_docs(docs_path)
 
 ## Flow 3: /ask — Surgical Context Assembly
 
-**Trigger:** `POST /ask {symbol, question}`
+**Trigger:** `POST /ask {symbol, question, file_path?}`
+
+**Path guard:** when `file_path` is set (file fallback), `main._sandbox_path()` resolves it under the workspace `project_path` from the index manifest before `_read_file_context()` opens the file. Outside root → `403`; no manifest → `400`.
 
 ```
 ask(req)
@@ -169,8 +172,10 @@ ask(req)
 │
 ├─ context += doc chunks as "--- DOCUMENTATION ---" section
 │
-└─ ollama.chat(OLLAMA_MODEL, [{system: context}, {user: question}])
-      → {"symbol": ..., "answer": ...}
+└─ AIEngine.chat(system_prompt, question)     [sidecar/ai/engine.py via main.py]
+      → Ollama by default (`MODEL_PREFERENCE=ollama`)
+      → Anthropic SDK only when `ALLOW_CLOUD_LLM=true` and routing selects cloud
+      → {"symbol": ..., "answer": ..., "context": PromptContract}
 ```
 
 **Reads from:**
@@ -184,6 +189,8 @@ ask(req)
 
 **Trigger:** `POST /overlay {file_path, content}` (called on every keypress from VS Code)
 
+**Path guard:** `file_path` is sandboxed to the workspace project root before overlay storage (same rules as Flow 3).
+
 ```
 update_overlay(req)
 │
@@ -196,7 +203,7 @@ update_overlay(req)
         → {name: (start_line, end_line)}
 ```
 
-**Effect on Flow 3:** Next `/ask` call picks up dirty content via `overlay.has(file_path)` check in `_read_code()`. No Neo4j write — overlay is ephemeral.
+**Effect on Flow 3:** Next `/ask` call for the **same user** picks up dirty content via `overlay.has(file_path, workspace_id, user_id)` in `CodeResolver` / `ContextArbitrator`. Overlay keys are `(workspace_id, user_id, file_path)` — not workspace-wide. No Neo4j write — overlay is ephemeral.
 
 ---
 
@@ -232,13 +239,24 @@ InMemoryOverlay ──[read by]──▶       ContextArbitrator  ──▶  LLM
 
 ---
 
-## Unused Modules (Pre-MVP Stubs)
+## LLM routing (`sidecar/ai/engine.py`)
+
+`main.py` constructs a process-wide `AIEngine` used by `/ask` and `/ask/stream`.
+
+| Backend | When |
+|---|---|
+| **Ollama** | Default (`MODEL_PREFERENCE=ollama`). Always available when Ollama is running. |
+| **Anthropic** | `MODEL_PREFERENCE` is `auto` or `claude`, **`ALLOW_CLOUD_LLM=true`**, and `ANTHROPIC_API_KEY` is set. |
+| **Fallback** | Cloud errors → Ollama when local model is reachable. |
+
+Prompt caching: Anthropic `cache_control` on the large code/graph block when above `_MIN_CACHE_TOKENS`. Default model **`claude-sonnet-4-6`** (`ANTHROPIC_MODEL` env). See [spec_sidecar_api.md](spec_sidecar_api.md) configuration tables.
+
+## Unused Modules (stubs)
 
 | Module | Status | Notes |
 |---|---|---|
 | `sidecar/ai/auth.py` | Not wired | GitHub Device Flow OAuth. Not called from any current entry point. |
 | `sidecar/ai/session.py` | Not wired | Persists GitHub token to `~/.config/surgical_sidecar/session.json`. Not called from any current entry point. |
-| `sidecar/ai/engine.py` | Not wired | Two commented implementations (OpenAI SDK, Anthropic SDK). Active code uses `claude_api` browser session cookie — unofficial scraper, broken. Will be replaced by Anthropic SDK in Phase 5. |
 
 ---
 

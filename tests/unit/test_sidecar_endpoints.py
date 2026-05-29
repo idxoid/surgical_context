@@ -1,6 +1,8 @@
 """FastAPI endpoint tests with external services mocked out."""
 
+import asyncio
 import importlib
+import os
 import sys
 import tempfile
 import types
@@ -20,6 +22,7 @@ class FakeCtx:
     index_manifest_id = ""
     index_manifest_schema_version = None
     retrieval_trace: dict = {}
+    budget: dict = {}
     primary_source = SymbolContext(
         symbol="process_payment",
         file_path="/repo/payment.py",
@@ -73,6 +76,9 @@ class FakeDb:
         return False
 
     def get_index_manifest(self, workspace_id=None):
+        root = os.environ.get("TEST_WORKSPACE_ROOT")
+        if root:
+            return {"project_path": root}
         return None
 
     def delete_symbols_for_file(self, file_path, workspace_id="local/surgical_context@main"):
@@ -150,8 +156,9 @@ def import_main_with_fakes(monkeypatch):
     fake_engine = types.ModuleType("sidecar.ai.engine")
 
     class FakeAIEngine:
-        def __init__(self, model_preference="auto"):
+        def __init__(self, model_preference="auto", allow_cloud_llm=True):
             self.model_preference = model_preference
+            self.allow_cloud_llm = allow_cloud_llm
 
         def chat(self, system_prompt, user_message, token_count=0, intent="exploration"):
             return "fake answer"
@@ -435,6 +442,91 @@ def test_ask_stream_endpoint_emits_json_sse(monkeypatch):
     assert response.media_type == "text/event-stream"
 
 
+def _parse_sse_events(body: str) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    event_name = ""
+    data_lines: list[str] = []
+    for line in body.splitlines():
+        if not line.strip():
+            if event_name and data_lines:
+                import json
+
+                events.append((event_name, json.loads("\n".join(data_lines))))
+            event_name = ""
+            data_lines = []
+            continue
+        if line.startswith("event:"):
+            event_name = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line.split(":", 1)[1].strip())
+    return events
+
+
+async def _read_streaming_response(response) -> bytes:
+    chunks: list[bytes] = []
+    async for chunk in response.body_iterator:
+        if isinstance(chunk, str):
+            chunks.append(chunk.encode("utf-8"))
+        else:
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def test_ask_stream_degrades_when_llm_unreachable(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    def fail_stream(*args, **kwargs):
+        raise RuntimeError("Ollama streaming failed: connection refused")
+
+    monkeypatch.setattr(main.ai_engine, "stream_chat", fail_stream)
+
+    response = main.ask_stream(
+        main.AskRequest(
+            symbol="process_payment",
+            question="How does this work when Ollama is offline?",
+        ),
+        x_trace_id="trace-stream-degraded",
+    )
+    body = asyncio.run(_read_streaming_response(response)).decode("utf-8")
+    events = _parse_sse_events(body)
+
+    chunks = [p["content"] for name, p in events if name == "chunk"]
+    assert len(chunks) == 1
+    assert "degraded context-only response" in chunks[0]
+    assert "Ollama streaming failed" in chunks[0]
+
+    context_events = [p for name, p in events if name == "context"]
+    assert len(context_events) == 1
+    assert context_events[0]["trace_id"] == "trace-stream-degraded"
+    assert context_events[0]["context"]["primary_source"]["symbol"] == "process_payment"
+    assert context_events[0]["feedback_token"].startswith("fbk_")
+    assert context_events[0]["context"]["metadata"]["assembly"]["model_route"]["degraded"] is True
+
+    assert any(name == "done" for name, _ in events)
+    assert not any(name == "error" for name, _ in events)
+
+
+def test_ask_stream_emits_trace_event_on_l3_cache_hit(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    req = main.AskRequest(symbol="process_payment", question="Cached?")
+    first = main.ask_stream(req)
+    asyncio.run(_read_streaming_response(first))
+
+    second = main.ask_stream(req)
+    body = asyncio.run(_read_streaming_response(second)).decode("utf-8")
+    events = _parse_sse_events(body)
+    trace_events = [payload for name, payload in events if name == "trace"]
+
+    assert len(trace_events) >= 2
+    cache_trace = trace_events[1]
+    assert cache_trace["stage"] == "llm"
+    assert cache_trace["cache_hits"] == ["l3_response"]
+    assert cache_trace["model_route"]["cached"] is True
+    assert cache_trace["model_route"]["cache_layer"] == "l3_response"
+    assert any(name == "chunk" for name, _ in events)
+
+
 def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
@@ -462,6 +554,7 @@ def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
 
 
 def test_ask_endpoint_uses_file_fallback_before_workspace(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
     source_file = tmp_path / "checkout.py"
     source_file.write_text("def checkout():\n    return 'ok'\n", encoding="utf-8")
@@ -555,6 +648,7 @@ def test_auth_required_accepts_valid_bearer_token(monkeypatch):
 
 
 def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
 
     source_file = tmp_path / "app.py"
@@ -585,7 +679,83 @@ def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
     assert body["job_id"] > 0
 
 
+def test_queued_index_registers_root_before_overlay_and_index_file(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    project = tmp_path / "proj"
+    project.mkdir()
+    source_file = project / "app.py"
+    source_file.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
+
+    class ManifestDb(FakeDb):
+        def __init__(self):
+            super().__init__()
+            self._manifest = None
+
+        def get_workspace_graph_version(self, workspace_id=None):
+            return 1
+
+        def save_index_manifest(self, manifest, workspace_id=None):
+            self._manifest = dict(manifest)
+
+        def get_index_manifest(self, workspace_id=None):
+            return self._manifest
+
+    manifest_db = ManifestDb()
+
+    @contextmanager
+    def manifest_db_session(user_id="anonymous"):
+        yield manifest_db
+
+    monkeypatch.setattr(main, "db_session", manifest_db_session)
+    monkeypatch.setattr(
+        main,
+        "_enqueue_index_files",
+        lambda files, workspace_id, user_id: [
+            main.EnqueueResult(
+                accepted=True,
+                status="queued",
+                file_path=files[0],
+                workspace_id=workspace_id,
+                queue_depth=1,
+            )
+        ],
+    )
+
+    index_body = main.index(main.IndexRequest(project_path=str(project), queue=True))
+    assert index_body["status"] == "queued"
+
+    overlay_body = main.update_overlay(
+        main.OverlayRequest(
+            file_path=str(source_file),
+            content="def hello():\n    return 'ok'\n",
+        )
+    )
+    assert overlay_body["file_path"] == str(source_file.resolve())
+
+    fake_anchor = types.ModuleType("sidecar.indexer.anchor")
+    fake_anchor.resolve_pending_anchors = lambda db, vector_db, workspace_id=None: None
+    monkeypatch.setitem(sys.modules, "sidecar.indexer.anchor", fake_anchor)
+    fake_code = types.ModuleType("sidecar.indexer.code")
+    fake_code.hash_file = lambda file_path: "abc123"
+    fake_code.index_file = lambda *args, **kwargs: []
+    monkeypatch.setitem(sys.modules, "sidecar.indexer.code", fake_code)
+    fake_extractor = types.ModuleType("sidecar.parser.extractor")
+
+    class FakeSymbolExtractor:
+        pass
+
+    fake_extractor.SymbolExtractor = FakeSymbolExtractor
+    monkeypatch.setitem(sys.modules, "sidecar.parser.extractor", fake_extractor)
+    monkeypatch.setattr(main, "IndexJobLog", lambda: IndexJobLog(f"{tmp_path}/jobs.sqlite3"))
+
+    file_body = main.index_file_endpoint(
+        main.IndexFileRequest(file_path=str(source_file), queue=False)
+    )
+    assert file_body["status"] == "indexed"
+
+
 def test_index_file_endpoint_queues_by_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
 
     source_file = tmp_path / "app.py"
@@ -600,6 +770,7 @@ def test_index_file_endpoint_queues_by_default(monkeypatch, tmp_path):
 
 
 def test_index_files_endpoint_coalesces_duplicate_paths(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
 
     source_file = tmp_path / "app.py"
@@ -658,30 +829,33 @@ def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path)
     ) in metric_calls
 
 
+def test_ask_rejects_file_path_outside_workspace_root(monkeypatch, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(root))
+    main = import_main_with_fakes(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main._resolve_ask_context(
+            req=main.AskRequest(question="q", file_path=str(outside), token_budget=1000),
+            user_id="alice",
+            workspace_id="local/surgical_context@main",
+            db=FakeDb(),
+        )
+    assert exc_info.value.status_code == 403
+
+
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
-    class FakeSession:
-        def __init__(self):
-            self.calls = 0
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
-        def run(self, query, **kwargs):
-            self.calls += 1
-            if self.calls == 1:
-                return types.SimpleNamespace(single=lambda: {"uid": "symbol-1"})
-            return types.SimpleNamespace(single=lambda: {"file_path": "/repo/app.py"})
-
     class FakeDriverDb(FakeDb):
-        def __init__(self):
-            super().__init__()
-            self.session = FakeSession()
-            self.driver = types.SimpleNamespace(session=lambda: self.session)
+        def get_symbol_uid_by_name(self, name, workspace_id="local/surgical_context@main"):
+            return "symbol-1"
+
+        def get_file_path_for_symbol(self, uid, workspace_id="local/surgical_context@main"):
+            return "/repo/app.py"
 
     @contextmanager
     def impact_db_session(user_id="anonymous"):

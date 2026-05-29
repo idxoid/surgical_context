@@ -3,7 +3,7 @@ from pathlib import Path
 
 from neo4j import GraphDatabase
 
-from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
+from sidecar.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 _CALL_REL_TYPES = {
@@ -15,6 +15,14 @@ _CALL_REL_TYPES = {
     "CALLS_INFERRED",
     "CALLS_GUESS",
 }
+
+# Edge types counted into Symbol.in_degree / out_degree. MUST stay identical to
+# the relationship list the ranker read queries aggregate (recovery.py), or the
+# materialized degree will not faithfully replace their count(DISTINCT) subquery.
+_DEGREE_REL_PATTERN = (
+    "CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|"
+    "CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT"
+)
 
 
 class Neo4jClient:
@@ -236,6 +244,20 @@ class Neo4jClient:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def list_file_paths(self, workspace_id: str = DEFAULT_WORKSPACE_ID) -> list[str]:
+        """Return all File.path values for a workspace (for sandbox cleanup)."""
+        with self.driver.session() as session:
+            rows = list(
+                session.run(
+                    """
+                    MATCH (f:File {workspace_id: $workspace_id})
+                    RETURN f.path AS path
+                    """,
+                    workspace_id=workspace_id,
+                )
+            )
+        return [str(row["path"]) for row in rows if row.get("path")]
+
     def prune_symbols_for_file(
         self,
         file_path: str,
@@ -252,7 +274,7 @@ class Neo4jClient:
                 WHERE r IS NULL OR (
                     type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
                                 'CALLS_DYNAMIC', 'CALLS_INFERRED', 'CALLS_GUESS', 'DEPENDS_ON',
-                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS']
+                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS', 'HAS_API', 'INHERITED_API']
                     AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 )
                 DELETE r, c
@@ -283,7 +305,7 @@ class Neo4jClient:
         with self.driver.session() as session:
             session.run(
                 """
-                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES]->(:Symbol)
+                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|HAS_API|INHERITED_API]->(:Symbol)
                 WHERE s.uid IN $symbol_uids
                   AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 WITH collect(r) AS edges
@@ -294,6 +316,72 @@ class Neo4jClient:
                 SET w.graph_version = coalesce(w.graph_version, 0) + 1
                 """,
                 symbol_uids=symbol_uids,
+                workspace_id=workspace_id,
+            )
+
+    def degree_neighbor_uids(
+        self,
+        seed_uids: list[str],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[str]:
+        """Direct degree-edge neighbors of ``seed_uids`` (snapshot before mutation).
+
+        Call this before deleting symbols/edges so neighbors that lose an edge are
+        still recomputed afterward — once a symbol is DETACH DELETE'd it is no longer
+        reachable from the seeds, so the closure must be captured up front.
+        """
+        if not seed_uids:
+            return []
+        with self.driver.session() as session:
+            rows = session.run(
+                f"""
+                MATCH (seed:Symbol)-[r:{_DEGREE_REL_PATTERN}]-(neighbor:Symbol)
+                WHERE seed.uid IN $seed_uids
+                  AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN DISTINCT neighbor.uid AS uid
+                """,
+                seed_uids=seed_uids,
+                workspace_id=workspace_id,
+            )
+            return [str(row["uid"]) for row in rows if row.get("uid")]
+
+    def recompute_degree_for_closure(
+        self,
+        seed_uids: list[str],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Recompute Symbol.in_degree/out_degree for seed symbols and their 1-hop neighbors.
+
+        Degree is static topology, so the ranker reads it as a node property instead
+        of recomputing count(DISTINCT) per query. To stay accurate under incremental
+        ``update`` we recompute only the affected closure: when a file is relinked,
+        edges change only for its symbols and their direct neighbors. Both endpoints
+        of every changed edge land in the closure, so a neighbor whose own file was
+        not reindexed still gets its degree corrected here.
+        """
+        if not seed_uids:
+            return
+        with self.driver.session() as session:
+            session.run(
+                f"""
+                MATCH (seed:Symbol)
+                WHERE seed.uid IN $seed_uids
+                OPTIONAL MATCH (seed)-[nr:{_DEGREE_REL_PATTERN}]-(neighbor:Symbol)
+                WHERE coalesce(nr.workspace_id, $workspace_id) = $workspace_id
+                WITH collect(DISTINCT seed) + collect(DISTINCT neighbor) AS nodes
+                UNWIND nodes AS s
+                WITH DISTINCT s
+                WHERE s IS NOT NULL
+                OPTIONAL MATCH ()-[ir:{_DEGREE_REL_PATTERN}]->(s)
+                WHERE coalesce(ir.workspace_id, $workspace_id) = $workspace_id
+                WITH s, count(DISTINCT ir) AS in_degree
+                OPTIONAL MATCH (s)-[orel:{_DEGREE_REL_PATTERN}]->()
+                WHERE coalesce(orel.workspace_id, $workspace_id) = $workspace_id
+                WITH s, in_degree, count(DISTINCT orel) AS out_degree
+                SET s.in_degree = in_degree,
+                    s.out_degree = out_degree
+                """,
+                seed_uids=seed_uids,
                 workspace_id=workspace_id,
             )
 
@@ -324,7 +412,7 @@ class Neo4jClient:
                 WHERE r IS NULL OR (
                     type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
                                 'CALLS_DYNAMIC', 'CALLS_INFERRED', 'CALLS_GUESS', 'DEPENDS_ON',
-                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS']
+                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS', 'HAS_API', 'INHERITED_API']
                     AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 )
                 DELETE r, c
@@ -502,6 +590,82 @@ class Neo4jClient:
             workspace_id=workspace_id,
         )
 
+    def link_class_api(
+        self,
+        edges: list[ClassApiEdge],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        with self.driver.session() as session:
+            session.execute_write(self._create_class_api_relations, edges, workspace_id)
+            if edges:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
+
+    def clear_class_api_edges(self, workspace_id: str = DEFAULT_WORKSPACE_ID):
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (:Symbol)-[r:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(:Symbol)
+                WITH collect(r) AS edges
+                FOREACH (edge IN edges | DELETE edge)
+                WITH size(edges) AS deleted_edges
+                MATCH (w:Workspace {id: $workspace_id})
+                WHERE deleted_edges > 0
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_class_api_relations(tx, edges: list[ClassApiEdge], workspace_id: str):
+        if not edges:
+            return
+        direct = [edge for edge in edges if edge.edge_type == "HAS_API"]
+        inherited = [edge for edge in edges if edge.edge_type == "INHERITED_API"]
+        if direct:
+            tx.run(
+                """
+                UNWIND $edges AS edge
+                MATCH (cls:Symbol {uid: edge.class_uid})
+                MATCH (method:Symbol {uid: edge.method_uid})
+                MERGE (cls)-[r:HAS_API {workspace_id: $workspace_id}]->(method)
+                SET r.resolver = 'mro-v1',
+                    r.confidence = 0.95,
+                    r.tier = 'scoped'
+                """,
+                edges=[
+                    {"class_uid": edge.class_uid, "method_uid": edge.method_uid} for edge in direct
+                ],
+                workspace_id=workspace_id,
+            )
+        if inherited:
+            tx.run(
+                """
+                UNWIND $edges AS edge
+                MATCH (cls:Symbol {uid: edge.class_uid})
+                MATCH (method:Symbol {uid: edge.method_uid})
+                MERGE (cls)-[r:INHERITED_API {workspace_id: $workspace_id}]->(method)
+                SET r.resolver = 'mro-v1',
+                    r.confidence = 0.9,
+                    r.tier = 'scoped',
+                    r.originating_class = edge.originating_class
+                """,
+                edges=[
+                    {
+                        "class_uid": edge.class_uid,
+                        "method_uid": edge.method_uid,
+                        "originating_class": edge.originating_class,
+                    }
+                    for edge in inherited
+                ],
+                workspace_id=workspace_id,
+            )
+
     def link_inheritance(
         self,
         inheritance_edges: list[InheritanceEdge],
@@ -538,6 +702,235 @@ class Neo4jClient:
             inheritance_edges=[_inheritance_row(edge) for edge in inheritance_edges],
             workspace_id=workspace_id,
         )
+
+    def link_proxy_bindings(
+        self,
+        proxy_bindings: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create ProxyBinding nodes + PROXY_OF edges for lazy-proxy module vars.
+
+        A ProxyBinding is a transit anchor (``kind='proxy_binding'``), not a retrieval
+        target; the resolution phase forwards calls THROUGH it to the real type. The
+        ``PROXY_OF`` edge points at the annotated target type (matched by trailing
+        qualified-name segment, robust to source-root prefix differences).
+        """
+        if not proxy_bindings:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_proxy_relations, proxy_bindings, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_proxy_relations(tx, proxy_bindings, workspace_id):
+        if not proxy_bindings:
+            return
+        tx.run(
+            """
+            UNWIND $bindings AS b
+            MATCH (f:File {path: b.file_path, workspace_id: $workspace_id})
+            MERGE (p:Symbol {uid: b.proxy_uid})
+            SET p.name = b.proxy_name,
+                p.kind = 'proxy_binding',
+                p.qualified_name = b.proxy_qualified_name
+            MERGE (f)-[:CONTAINS {workspace_id: $workspace_id}]->(p)
+            WITH p, b
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(target:Symbol)
+            WHERE target.kind IN ['class', 'function', 'method']
+              AND (target.qualified_name = b.target_type
+                   OR target.qualified_name ENDS WITH ('.' + split(b.target_type, '.')[-1]))
+            WITH p, b, target
+            ORDER BY size(target.qualified_name) ASC
+            WITH p, b, collect(target)[0] AS target
+            WHERE target IS NOT NULL
+            MERGE (p)-[r:PROXY_OF {workspace_id: $workspace_id}]->(target)
+            SET r.resolver = 'proxysurface-v1'
+            """,
+            bindings=proxy_bindings,
+            workspace_id=workspace_id,
+        )
+
+    def resolve_proxy_calls(
+        self,
+        proxy_calls: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> int:
+        """Forward calls on a proxy var to the real type's method via PROXY_OF.
+
+        ``proxy_calls`` are parsed call facts whose ``callee_qualified_name`` is
+        ``<proxy_var_qn>.<method>``. We split off the trailing method, match the
+        prefix to a ProxyBinding (by trailing var name, prefix-agnostic), follow
+        ``PROXY_OF`` to the target type, and wire ``caller -> target.method`` (the
+        method found directly on the target or via INHERITED_API). The ``via_proxy``
+        edge property marks the hop as transparent for the ranker.
+        """
+        if not proxy_calls:
+            return 0
+        rows = []
+        for c in proxy_calls:
+            qn = c.get("callee_qualified_name") or ""
+            if "." not in qn:
+                continue
+            prefix, _, method = qn.rpartition(".")
+            proxy_var = prefix.rpartition(".")[2]
+            if not proxy_var or not method or not c.get("caller_uid"):
+                continue
+            rows.append(
+                {
+                    "caller_uid": c["caller_uid"],
+                    "proxy_var": proxy_var,
+                    "method": method,
+                    "call_site_line": c.get("call_site_line") or 0,
+                }
+            )
+        if not rows:
+            return 0
+        query = """
+        UNWIND $rows AS row
+        MATCH (caller:Symbol {uid: row.caller_uid})
+        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(p:Symbol {kind: 'proxy_binding', name: row.proxy_var})
+        MATCH (p)-[:PROXY_OF {workspace_id: $workspace_id}]->(t:Symbol)
+        OPTIONAL MATCH (t)-[:HAS_API|INHERITED_API]->(direct:Symbol {name: row.method})
+        OPTIONAL MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(own:Symbol {name: row.method})
+        WHERE own.qualified_name STARTS WITH t.qualified_name + '.'
+        WITH caller, p, row, coalesce(direct, own) AS callee
+        WHERE callee IS NOT NULL AND caller <> callee
+        MERGE (caller)-[r:CALLS_DYNAMIC {workspace_id: $workspace_id,
+                                        call_site_line: row.call_site_line}]->(callee)
+        SET r.confidence = 0.75,
+            r.tier = 'proxy',
+            r.resolver = 'proxysurface-v1',
+            r.via_proxy = row.proxy_var
+        RETURN count(r) AS created
+        """
+        try:
+            with self.driver.session() as session:
+                rec = session.run(query, rows=rows, workspace_id=workspace_id).single()
+                created = int(rec["created"]) if rec else 0
+                if created:
+                    session.run(
+                        """
+                        MATCH (w:Workspace {id: $workspace_id})
+                        SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                        """,
+                        workspace_id=workspace_id,
+                    )
+                return created
+        except Exception:
+            return 0
+
+    def delete_proxy_bindings_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Remove ProxyBinding nodes (and their edges) for a file before relinking."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(p:Symbol {kind: 'proxy_binding'})
+                DETACH DELETE p
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
+    def link_decorators(
+        self,
+        decorators: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create DECORATED_BY edges: decorated_symbol -> decorator symbol.
+
+        The decoration is a syntactic fact, so this is a derived edge. The decorator
+        is matched to an in-graph symbol by qualified name (exact, else trailing-name
+        segment, shortest-qn wins, like proxy resolution). Decorators that resolve to
+        no in-graph symbol (stdlib/external) produce no edge — precision over recall.
+        """
+        if not decorators:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_decorator_relations, decorators, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_decorator_relations(tx, decorators, workspace_id):
+        if not decorators:
+            return
+        tx.run(
+            """
+            UNWIND $decorators AS d
+            MATCH (decorated:Symbol {uid: d.decorated_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(deco:Symbol)
+            WHERE deco.qualified_name = d.decorator_qualified_name
+               OR deco.name = d.decorator_name
+            WITH decorated, d, deco
+            ORDER BY
+              CASE WHEN deco.qualified_name = d.decorator_qualified_name THEN 0 ELSE 1 END,
+              size(deco.qualified_name) ASC
+            WITH decorated, d, collect(deco)[0] AS deco
+            WHERE deco IS NOT NULL AND decorated <> deco
+            MERGE (decorated)-[r:DECORATED_BY {workspace_id: $workspace_id}]->(deco)
+            SET r.resolver = 'decorator-v1',
+                r.decorator_name = d.decorator_name
+            """,
+            decorators=decorators,
+            workspace_id=workspace_id,
+        )
+
+    def delete_decorators_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
+        """Clear DECORATED_BY edges from a file's symbols before relinking."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:DECORATED_BY]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
+    def get_symbol_uid_by_name(
+        self, name: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> str | None:
+        """Return the UID of the first symbol matching `name` in this workspace, or None."""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
+                RETURN s.uid AS uid LIMIT 1
+                """,
+                name=name,
+                workspace_id=workspace_id,
+            ).single()
+        return result["uid"] if result else None
+
+    def get_file_path_for_symbol(
+        self, symbol_uid: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> str:
+        """Return the file path containing `symbol_uid`, or '<unknown>'."""
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (s:Symbol {uid: $uid})
+                OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s)
+                RETURN coalesce(f.path, '<unknown>') AS file_path
+                """,
+                uid=symbol_uid,
+                workspace_id=workspace_id,
+            ).single()
+        return result["file_path"] if result else "<unknown>"
 
 
 def _split_workspace_id(workspace_id: str) -> dict[str, str]:

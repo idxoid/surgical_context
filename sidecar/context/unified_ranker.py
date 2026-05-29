@@ -21,7 +21,7 @@ import re
 from heapq import heappop, heappush
 from typing import cast
 
-from sidecar.context.intent_classifier import Intent
+from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentPolicy, IntentSignal
 from sidecar.context.mechanism_registry import role_backfill_specs_for_mechanism
 from sidecar.context.ranker import (
     BudgetSelector,
@@ -176,6 +176,15 @@ class UnifiedRanker:
         "CALLS_in": 1.2,
         "SEMANTIC_HINT_out": 1.3,
         "SEMANTIC_HINT_in": 1.3,
+        "HAS_API_out": 1.45,
+        "HAS_API_in": 1.2,
+        "INHERITED_API_out": 1.35,
+        "INHERITED_API_in": 1.15,
+        # decorated_symbol -[DECORATED_BY]-> decorator. outgoing = the decorated
+        # symbol reaching its decorator (the mechanism it plugs into); incoming =
+        # a decorator reaching the symbols it decorates (registration surface).
+        "DECORATED_BY_out": 1.0,
+        "DECORATED_BY_in": 1.1,
     }
 
     def __init__(
@@ -204,6 +213,14 @@ class UnifiedRanker:
         self.role_backfill = RoleBackfill(self)
         self.budget_selector = BudgetSelector(self)
         self.subgraph_assembler = SubgraphAssembler(self)
+        self._workspace_root = None
+
+    def _workspace_project_root(self):
+        if self._workspace_root is None:
+            from sidecar.workspace_paths import registered_workspace_root
+
+            self._workspace_root = registered_workspace_root(self.db, self.workspace_id)
+        return self._workspace_root
 
     # ------------------------------------------------------------------
     # Public API
@@ -237,28 +254,119 @@ class UnifiedRanker:
         )
 
     def _load_target_candidates(self, symbol_name: str) -> list[dict]:
+        from sidecar.indexer.mro_api_bridge import parse_class_method_symbol
+
+        parsed = parse_class_method_symbol(symbol_name)
+        if parsed:
+            api_rows = self._load_class_method_target_candidates(*parsed)
+            if api_rows:
+                return api_rows
+
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {name: $name})
         CALL {
             WITH s
-            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(:Symbol)
+            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(:Symbol)
             WHERE coalesce(out_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT out_r) AS outgoing_edges
         }
         CALL {
             WITH s
-            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]->(s)
+            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(s)
             WHERE coalesce(in_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT in_r) AS incoming_edges
         }
         CALL {
             WITH s
-            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(:Symbol)
+            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(:Symbol)
+            WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT any_r) AS total_edges
+        }
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges,
+             CASE WHEN toLower(f.path) CONTAINS ('/' + toLower($name) + '.') THEN 1 ELSE 0 END AS stem_match
+        ORDER BY
+          CASE
+            WHEN f.path CONTAINS '/test/' OR f.path CONTAINS '/tests/'
+              OR f.path CONTAINS '/integration/' OR f.path CONTAINS '/sample/'
+              OR f.path CONTAINS '/samples/' THEN 1
+            ELSE 0
+          END ASC,
+          stem_match DESC,
+          total_edges DESC,
+          outgoing_edges DESC,
+          size(f.path) ASC
+        LIMIT $limit
+        RETURN s.uid AS uid,
+               s.name AS name,
+               coalesce(s.kind, '') AS kind,
+               coalesce(s.qualified_name, '') AS qualified_name,
+               coalesce(s.token_estimate, 0) AS token_estimate,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(c.range, s.range, [0, 0]) AS range,
+               outgoing_edges,
+               incoming_edges,
+               total_edges
+        """
+        try:
+            with self.db.driver.session() as session:
+                result = list(
+                    session.run(
+                        query,
+                        name=symbol_name,
+                        workspace_id=self.workspace_id,
+                        limit=64,
+                    )
+                )
+        except Exception:
+            return []
+        return result
+
+    def _load_class_method_target_candidates(
+        self,
+        class_name: str,
+        method_name: str,
+    ) -> list[dict]:
+        """Resolve ``Class.method`` via MRO API edges or qualified-name tail."""
+        qualified_suffix = f".{class_name}.{method_name}"
+        query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {name: $method_name})
+        WHERE EXISTS {
+            MATCH (:Symbol {name: $class_name, kind: 'class'})
+                  -[:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(s)
+        }
+           OR coalesce(s.qualified_name, '') ENDS WITH $qualified_suffix
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(:Symbol)
+            WHERE coalesce(out_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT out_r) AS outgoing_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (:Symbol)-[in_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(s)
+            WHERE coalesce(in_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT in_r) AS incoming_edges
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[any_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(:Symbol)
             WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT any_r) AS total_edges
         }
         WITH s, f, c, outgoing_edges, incoming_edges, total_edges
         ORDER BY
+          CASE
+            WHEN EXISTS {
+              MATCH (:Symbol {name: $class_name, kind: 'class'})
+                    -[:HAS_API {workspace_id: $workspace_id}]->(s)
+            } THEN 0
+            WHEN EXISTS {
+              MATCH (:Symbol {name: $class_name, kind: 'class'})
+                    -[:INHERITED_API {workspace_id: $workspace_id}]->(s)
+            } THEN 1
+            ELSE 2
+          END ASC,
           CASE
             WHEN f.path CONTAINS '/test/' OR f.path CONTAINS '/tests/'
               OR f.path CONTAINS '/integration/' OR f.path CONTAINS '/sample/'
@@ -286,8 +394,10 @@ class UnifiedRanker:
                 result = list(
                     session.run(
                         query,
-                        name=symbol_name,
                         workspace_id=self.workspace_id,
+                        class_name=class_name,
+                        method_name=method_name,
+                        qualified_suffix=qualified_suffix,
                         limit=64,
                     )
                 )
@@ -335,7 +445,9 @@ class UnifiedRanker:
 
         file_path = row.get("path") if hasattr(row, "get") else row["path"]
         file_hash = row.get("file_hash", "") if hasattr(row, "get") else row["file_hash"]
-        end_line, token_estimate = self._module_target_size(file_path)
+        end_line, token_estimate = self._module_target_size(
+            file_path, self._workspace_project_root()
+        )
         return {
             "uid": f"module:{self.workspace_id}:{file_path}",
             "name": symbol_name,
@@ -456,9 +568,14 @@ class UnifiedRanker:
         return [row for row in rows if not _path_is_noisy(row.get("file_path", ""))]
 
     @staticmethod
-    def _module_target_size(file_path: str) -> tuple[int, int]:
+    def _module_target_size(file_path: str, workspace_root=None) -> tuple[int, int]:
+        from sidecar.workspace_paths import resolve_graph_file_path
+
+        safe_path = resolve_graph_file_path(file_path, workspace_root=workspace_root)
+        if safe_path is None:
+            return 80, 640
         try:
-            with open(file_path, encoding="utf-8") as handle:
+            with open(safe_path, encoding="utf-8") as handle:
                 line_count = sum(1 for _ in handle)
         except OSError:
             line_count = 80
@@ -539,6 +656,10 @@ class UnifiedRanker:
         score = sum(components.values())
         return score, {"role": role, "components": components}
 
+    @staticmethod
+    def _normalized_target_path(file_path: str) -> str:
+        return (file_path or "").replace("\\", "/").lower()
+
     def _target_path_bonus(self, file_path: str) -> float:
         if not file_path:
             return 0.0
@@ -548,6 +669,11 @@ class UnifiedRanker:
             return -0.4
         if "/__init__." in file_path:
             return 0.1
+        # Primary package entry files rank above sibling modules when resolving
+        # duplicate symbol matches (e.g. main.py beats root_model.py).
+        file_lc = self._normalized_target_path(file_path)
+        if any(file_lc.endswith(s) for s in ("/main.py", "/index.py", "/app.py", "/base.py")):
+            return 0.55
         return 0.35
 
     def _target_role_bonus(self, role: str) -> float:
@@ -622,14 +748,16 @@ class UnifiedRanker:
         ):
             bonus += 0.2
         if "high-level api" in query_lower or "high level api" in query_lower:
-            if "/main.py" in file_path.lower() or "basemodel" in qualified_name.lower():
-                bonus += 0.45
-        if (
-            "rootmodel" in qualified_name.lower()
-            and "rootmodel" not in query_lower
-            and "root model" not in query_lower
-        ):
-            bonus -= 0.35
+            bonus += 0.25
+        # Suppress api_surface siblings not mentioned in the query: if the query
+        # names a specific class via a query term overlap, penalise other top-level
+        # classes in the same role whose name does not appear in the query at all.
+        if role == "api_surface" and kind == "class" and qualified_name:
+            name_lc = qualified_name.lower().rsplit(".", 1)[-1]
+            if name_lc and name_lc not in query_lower and len(name_lc) >= 5:
+                query_terms_set = set(self._query_terms(query))
+                if query_terms_set and not any(t in name_lc for t in query_terms_set):
+                    bonus -= 0.35
 
         query_terms = self._query_terms(query)
         haystack = f"{file_path.lower()} {qualified_name.lower()}"
@@ -656,12 +784,22 @@ class UnifiedRanker:
         budget: int,
         graph_pool_size: int = 200,
         vector_limit: int = 100,
+        *,
+        ambiguous: bool = False,
+        secondary_intent: Intent | None = None,
+        intent_policy: IntentPolicy | None = None,
     ) -> tuple[list[Candidate], dict, str, list[dict], list[str]]:
         """Return budget-fitting candidates sorted by blended score.
 
         Returns (candidates, budget_info).  The primary symbol itself is not
         in the returned list — the caller holds it separately.
         """
+        intent_policy = self._normalize_intent_policy(
+            intent,
+            intent_policy=intent_policy,
+            ambiguous=ambiguous,
+            secondary_intent=secondary_intent,
+        )
         # 1. Collect graph BFS candidates (pool-size-limited, not budget-limited)
         graph_pool = self._graph_candidates(target.uid, pool_size=graph_pool_size, intent=intent)
 
@@ -680,8 +818,21 @@ class UnifiedRanker:
             bridge_seeds, excluded, limit=30, hop_decay=1.0
         )
 
-        # 3b. 2-hop bridge is currently disabled by default to minimize noise.
-        bridge_pool = bridge_pool_h1
+        # 3b. 2-hop bridge: disabled by default. In benchmarking (65/65 real-repo
+        # pass rate), enabling it added noise in hub-heavy graphs (fastapi, pydantic)
+        # where hop-2 seeds retrieved unrelated utility symbols. Re-enable by setting
+        # RANKER_2HOP_BRIDGE=1 in the environment for evaluation.
+        import os as _os
+
+        if _os.getenv("RANKER_2HOP_BRIDGE"):
+            seeds_h2 = {c.uid for c in bridge_pool_h1 if c.graph_score > 0.4}
+            excluded_h2 = excluded | seeds_h2
+            bridge_pool_h2 = self._doc_bridge_candidates(
+                seeds_h2, excluded_h2, limit=20, hop_decay=0.5
+            )
+            bridge_pool = [*bridge_pool_h1, *bridge_pool_h2]
+        else:
+            bridge_pool = bridge_pool_h1
 
         # 4. Fuse into unified pool, boosting docs linked via COVERS
         pool = self._fuse(graph_pool, doc_pool, sym_vec_pool, target.uid, bridge_pool=bridge_pool)
@@ -699,6 +850,14 @@ class UnifiedRanker:
 
         # 6. Mechanism-aware role backfill for sparse framework graphs.
         mechanism = self._determine_mechanism(target, query=query)
+        mandatory_callees = self.structural_recovery.direct_callee_anchor_candidates(
+            target,
+            mechanism=mechanism,
+            query=query,
+            excluded_uids={target.uid},
+        )
+        if mandatory_callees:
+            pool = self._merge_mandatory_callee_pool(pool, mandatory_callees)
         required_roles = self._get_required_roles(mechanism, target=target)
         if intent == Intent.IMPACT_ANALYSIS:
             required_roles = normalize_roles(
@@ -717,6 +876,7 @@ class UnifiedRanker:
             )
             if impact_reference_anchors:
                 pool = self._merge_role_backfill(pool, impact_reference_anchors)
+        required_roles = self._apply_intent_policy_roles(required_roles, intent_policy)
         roles_for_backfill = self._roles_needing_backfill(
             target,
             pool,
@@ -765,6 +925,19 @@ class UnifiedRanker:
         if trace_import_anchors:
             pool = self._merge_role_backfill(pool, trace_import_anchors)
 
+        trace_routing_anchors = (
+            self.structural_recovery.trace_routing_composition_anchor_candidates(
+                target,
+                query=query,
+                mechanism=mechanism,
+                required_roles=required_roles,
+                excluded_uids={target.uid},
+                pool=pool,
+            )
+        )
+        if trace_routing_anchors:
+            pool = self._merge_role_backfill(pool, trace_routing_anchors)
+
         module_composition_anchors = self._module_composition_anchor_candidates(
             target,
             query=query,
@@ -798,7 +971,7 @@ class UnifiedRanker:
 
         # 7. Assign intent weights and noise factors
 
-        intent_priors = self._intent_priors(intent)
+        intent_priors = self._intent_priors_for_policy(intent, intent_policy)
         for c in pool:
             c.evidence_role = self._role_of(c)
             c.supporting_roles = self._supporting_roles_of(c)
@@ -878,14 +1051,26 @@ class UnifiedRanker:
                     trace_focus_rank = 2
                 elif "/dependencies/" in path_lc:
                     trace_focus_rank = 1
+            if c.relation == "MANDATORY_CALLEE":
+                is_contract_anchor = any(
+                    (str(step).startswith("mandatory-") and str(step).endswith("-contract"))
+                    for step in c.provenance
+                )
+                return (4 if is_contract_anchor else 3, trace_focus_rank, base)
             is_trace_topic_anchor = trace_mode_for_sort and any(
                 step == "trace-topic-anchor" for step in c.provenance
             )
             is_query_topic_anchor = any(step == "query-topic-anchor" for step in c.provenance)
+            # Subsystem-isolated candidates (noise_factor driven to ~0.15 by
+            # topic_focus_factor) should not claim the top role-filler tier —
+            # they are off-topic even if their cluster role overlaps required.
+            is_subsystem_isolated = c.noise_factor < 0.2 and c.kind != "doc"
             # Tier 0 (best): candidates that fill a missing required role the
             # target itself doesn't cover. These must beat raw doc-relevance
             # so a large/weak role-filler still seats before unrelated docs.
             if roles & unfilled_required:
+                if is_subsystem_isolated:
+                    return (0.5, trace_focus_rank, base)
                 return (2, trace_focus_rank, base)
             if is_trace_topic_anchor:
                 trace_topic_tier = 1.5 if dependency_trace_sort else 2.5
@@ -898,7 +1083,10 @@ class UnifiedRanker:
 
         pool.sort(key=_sort_key, reverse=True)
 
-        # 10. Optimal context selection (marginal gain + doc deferral)
+        policy_floor = self._intent_policy_floor(intent, intent_policy)
+        doc_first = intent_policy.doc_first if intent_policy else False
+
+        # 11. Optimal context selection (marginal gain + doc deferral)
         return self.budget_pruner.select_under_budget(
             pool,
             target,
@@ -907,6 +1095,8 @@ class UnifiedRanker:
             mechanism,
             required_roles,
             budget,
+            floor_override=policy_floor,
+            doc_first=doc_first,
         )
 
     def _module_composition_anchor_candidates(
@@ -1555,6 +1745,14 @@ class UnifiedRanker:
     ) -> list[Candidate]:
         return cast(list[Candidate], self.role_backfill.merge_role_backfill(pool, backfill))
 
+    def _merge_mandatory_callee_pool(
+        self, pool: list[Candidate], mandatory: list[Candidate]
+    ) -> list[Candidate]:
+        return cast(
+            list[Candidate],
+            self.structural_recovery.merge_mandatory_callee_pool(pool, mandatory),
+        )
+
     def _merge_role_backfill_impl(
         self, pool: list[Candidate], backfill: list[Candidate]
     ) -> list[Candidate]:
@@ -1768,6 +1966,25 @@ class UnifiedRanker:
             target, roles, excluded_uids=excluded_uids
         )
 
+    def _trace_routing_composition_anchor_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        query: str,
+        mechanism: str,
+        required_roles: list[str],
+        excluded_uids: set[str],
+        pool: list[Candidate],
+    ):
+        return self.structural_recovery.trace_routing_composition_anchor_candidates(
+            target,
+            query=query,
+            mechanism=mechanism,
+            required_roles=required_roles,
+            excluded_uids=excluded_uids,
+            pool=pool,
+        )
+
     def _trace_dependency_import_anchor_candidates(
         self,
         target: SubgraphNode,
@@ -1798,6 +2015,74 @@ class UnifiedRanker:
 
     def _intent_priors(self, intent: Intent) -> dict[str, float]:
         return self.scoring.intent_priors(intent)
+
+    def _normalize_intent_policy(
+        self,
+        intent: Intent,
+        *,
+        intent_policy: IntentPolicy | None,
+        ambiguous: bool,
+        secondary_intent: Intent | None,
+    ) -> IntentPolicy:
+        if intent_policy is not None:
+            return intent_policy
+        distribution = {intent.value: 1.0}
+        if ambiguous and secondary_intent is not None and secondary_intent != intent:
+            distribution = {intent.value: 0.55, secondary_intent.value: 0.45}
+        return IntentClassifier.policy_from_signal(
+            IntentSignal(
+                primary=intent,
+                distribution=distribution,
+                confidence=max(distribution.values()),
+                ambiguous=ambiguous,
+            )
+        )
+
+    @staticmethod
+    def _apply_intent_policy_roles(
+        required_roles: list[str], intent_policy: IntentPolicy | None
+    ) -> list[str]:
+        if not intent_policy or not intent_policy.supplemental_roles:
+            return normalize_roles(required_roles)
+        return normalize_roles([*required_roles, *intent_policy.supplemental_roles])
+
+    def _intent_priors_for_policy(
+        self, intent: Intent, intent_policy: IntentPolicy | None
+    ) -> dict[str, float]:
+        if not intent_policy or len(intent_policy.active_intents) <= 1:
+            return self._intent_priors(intent)
+
+        totals = {"symbol": 0.0, "doc": 0.0}
+        weight_total = 0.0
+        for active_intent in intent_policy.active_intents:
+            weight = intent_policy.weight(active_intent)
+            if weight <= 0:
+                continue
+            priors = self._intent_priors(active_intent)
+            totals["symbol"] += weight * priors.get("symbol", 0.3)
+            totals["doc"] += weight * priors.get("doc", 0.3)
+            weight_total += weight
+        if weight_total <= 0:
+            return self._intent_priors(intent)
+        return {kind: score / weight_total for kind, score in totals.items()}
+
+    def _intent_policy_floor(
+        self, intent: Intent, intent_policy: IntentPolicy | None
+    ) -> int | None:
+        if not intent_policy or len(intent_policy.active_intents) <= 1:
+            return None
+        weighted_floor = 0.0
+        weight_total = 0.0
+        for active_intent in intent_policy.active_intents:
+            weight = intent_policy.weight(active_intent)
+            if weight <= 0:
+                continue
+            weighted_floor += weight * self._INTENT_FLOORS.get(active_intent, 1200)
+            weight_total += weight
+        if weight_total <= 0:
+            return None
+        primary_floor = self._INTENT_FLOORS.get(intent, 1200)
+        return max(primary_floor, int(weighted_floor / weight_total))
 
     def _topic_focus_factor(
         self,
@@ -1953,10 +2238,14 @@ class UnifiedRanker:
         target: SubgraphNode,
         *,
         excluded_uids: set[str],
+        mechanism: str = "",
+        query: str = "",
     ):
         return self.structural_recovery.trace_dependency_runtime_symbol_rows(
             target,
             excluded_uids=excluded_uids,
+            mechanism=mechanism,
+            query=query,
         )
 
     def _resolve_filesystem_import_paths(self, file_path: str) -> list[str]:
@@ -2144,7 +2433,7 @@ class UnifiedRanker:
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY]-(n:Symbol)
         WHERE NOT n.uid IN $visited
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)

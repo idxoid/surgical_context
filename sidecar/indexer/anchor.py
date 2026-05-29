@@ -416,29 +416,27 @@ def _normalize_pending(value) -> list[str]:
 
 
 def _build_symbol_vector_index(lance, workspace_id: str):
-    sym_table = getattr(lance, "_sym_table", None)
-    if sym_table is None:
+    if getattr(lance, "_sym_table", None) is None:
         return None
     try:
         import numpy as np
     except Exception:
         return None
+    scan = getattr(lance, "scan_symbols_workspace", None)
+    if not callable(scan):
+        return None
     try:
-        rows = sym_table.to_pandas()
+        row_dicts = scan(workspace_id)
     except Exception:
         return None
-    if rows.empty:
+    if not row_dicts:
         return None
-    if hasattr(rows, "columns") and "workspace_id" in rows.columns:
-        rows = rows[rows["workspace_id"] == workspace_id]
-        if rows.empty:
-            return None
 
     uids = []
     names = []
     file_paths = []
     vectors = []
-    for _, row in rows.iterrows():
+    for row in row_dicts:
         vector = row.get("vector")
         if vector is None:
             continue
@@ -573,8 +571,8 @@ def _prepare_doc_link_batches(
     workspace_id: str,
     allowed_prefixes: list[str] | None = None,
 ):
-    rows = lance._table.to_pandas()
-    if rows.empty:
+    scan_docs = getattr(lance, "scan_docs_workspace", None)
+    if not callable(scan_docs):
         return {
             "chunks": 0,
             "batches": [],
@@ -584,25 +582,15 @@ def _prepare_doc_link_batches(
             "pending_updates": 0,
             "prepare_sec": 0.0,
         }
-    if hasattr(rows, "columns") and "workspace_id" in rows.columns:
-        rows = rows[rows["workspace_id"] == workspace_id]
-        if rows.empty:
-            return {
-                "chunks": 0,
-                "batches": [],
-                "anchors": 0,
-                "covers": 0,
-                "related": 0,
-                "pending_updates": 0,
-                "prepare_sec": 0.0,
-            }
+    try:
+        all_rows = scan_docs(workspace_id)
+    except Exception:
+        all_rows = []
 
     t0 = time.perf_counter()
     prefixes = _normalize_allowed_prefixes(allowed_prefixes)
     row_records = [
-        row
-        for row in rows.to_dict("records")
-        if _matches_allowed_prefix(row.get("file_path"), prefixes)
+        row for row in all_rows if _matches_allowed_prefix(row.get("file_path"), prefixes)
     ]
     if not row_records:
         return {

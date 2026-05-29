@@ -47,6 +47,24 @@ class IntentSignal:
 
 
 @dataclass(frozen=True)
+class IntentPolicy:
+    """Retrieval policy derived from a weighted intent distribution."""
+
+    primary: Intent
+    distribution: dict[str, float]
+    active_intents: tuple[Intent, ...]
+    secondary_intents: tuple[Intent, ...]
+    tier_scores: dict[str, float]
+    tier_order: tuple[str, ...]
+    budget_share: dict[str, float]
+    supplemental_roles: tuple[str, ...] = ()
+    doc_first: bool = False
+
+    def weight(self, intent: Intent) -> float:
+        return float(self.distribution.get(intent.value, 0.0))
+
+
+@dataclass(frozen=True)
 class IntentResolution:
     """Desired user intent resolved against repository capabilities."""
 
@@ -80,6 +98,30 @@ class IntentResolution:
 
 class IntentClassifier:
     """Classify query intent using keyword heuristics."""
+
+    # Multi-word phrases that act as strong overrides when present.
+    # Each entry is (phrase, intent, weight). Weight is additive to the raw score.
+    # Match order does not matter — all matches contribute.
+    _PHRASE_OVERRIDES: list[tuple[str, "Intent", float]] = [
+        # Debugging phrases that contain action verbs (add/remove) as instruments, not goals
+        ("to understand why", Intent.DEBUGGING, 2.0),
+        ("to figure out why", Intent.DEBUGGING, 2.0),
+        ("to see why", Intent.DEBUGGING, 2.0),
+        ("understand why", Intent.DEBUGGING, 1.8),
+        ("figure out why", Intent.DEBUGGING, 1.8),
+        ("to debug", Intent.DEBUGGING, 1.5),
+        ("to fix", Intent.DEBUGGING, 1.5),
+        ("why it fails", Intent.DEBUGGING, 2.0),
+        ("why it's failing", Intent.DEBUGGING, 2.0),
+        ("why the function", Intent.DEBUGGING, 1.5),
+        ("why this", Intent.DEBUGGING, 1.2),
+        # Exploration phrases that contain action verbs
+        ("how does this", Intent.EXPLORATION, 1.5),
+        ("how does the", Intent.EXPLORATION, 1.5),
+        ("what does this", Intent.EXPLORATION, 1.5),
+        ("explain how", Intent.EXPLORATION, 1.5),
+        ("explain why", Intent.EXPLORATION, 1.5),
+    ]
 
     # Keyword sets for intent detection (greedy match: first matching intent wins)
     KEYWORDS = {
@@ -189,6 +231,24 @@ class IntentClassifier:
         Intent.EXPLORATION,
     ]
 
+    _SECONDARY_INTENT_ROLES: dict[Intent, tuple[str, ...]] = {
+        Intent.DEBUGGING: ("runtime_surface", "executor", "error_surface"),
+        Intent.REFACTORING: ("impact_runtime", "impact_public_api", "integration_surface"),
+        Intent.IMPACT_ANALYSIS: (
+            "impact_runtime",
+            "impact_public_api",
+            "impact_test_surface",
+        ),
+        Intent.NEW_FEATURE: ("docs_or_concept", "api_surface", "composition_surface"),
+        Intent.DESIGN_QUESTION: ("docs_or_concept",),
+    }
+    _DOC_FIRST_INTENTS = {
+        Intent.IMPACT_ANALYSIS,
+        Intent.NEW_FEATURE,
+        Intent.DESIGN_QUESTION,
+    }
+    _SECONDARY_WEIGHT_THRESHOLD = 0.25
+
     @staticmethod
     def _keyword_weight(keyword: str) -> float:
         """Prefer more specific phrase matches over short generic tokens."""
@@ -230,6 +290,15 @@ class IntentClassifier:
             if matches:
                 matched_keywords[intent.value] = sorted(matches)
             raw_scores[intent] = sum(cls._keyword_weight(keyword) for keyword in matches)
+
+        # Apply phrase overrides: multi-word patterns boost specific intents
+        # independently of individual token scores.
+        for phrase, intent, weight in cls._PHRASE_OVERRIDES:
+            if phrase in query_lower:
+                raw_scores[intent] = raw_scores.get(intent, 0.0) + weight
+                phrase_list = matched_keywords.setdefault(intent.value, [])
+                if phrase not in phrase_list:
+                    phrase_list.append(phrase)
 
         max_score = max(raw_scores.values(), default=0.0)
         if max_score <= 0:
@@ -277,6 +346,120 @@ class IntentClassifier:
     def get_tier_priority(intent: Intent) -> list[str]:
         """Return tier priority ordering for a given intent."""
         return IntentConfig.PRIORITY[intent]
+
+    @classmethod
+    def policy_from_signal(
+        cls,
+        signal: IntentSignal,
+        *,
+        secondary_threshold: float = _SECONDARY_WEIGHT_THRESHOLD,
+    ) -> IntentPolicy:
+        """Turn intent metadata into a budget/tier policy for retrieval.
+
+        The primary intent remains the anchor, but strong secondary intents can
+        add role coverage and alter tier ordering without forcing a second full
+        retrieval pass.
+        """
+        distribution = cls._normalized_distribution(signal.primary, signal.distribution)
+        ranked = sorted(
+            ((intent, distribution.get(intent.value, 0.0)) for intent in Intent),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        active: list[Intent] = [signal.primary]
+        for intent, weight in ranked:
+            if intent == signal.primary or weight <= 0:
+                continue
+            if weight >= secondary_threshold or (signal.ambiguous and len(active) < 2):
+                active.append(intent)
+
+        active = list(dict.fromkeys(active))
+        budget_total = sum(distribution.get(intent.value, 0.0) for intent in active) or 1.0
+        budget_share = {
+            intent.value: distribution.get(intent.value, 0.0) / budget_total for intent in active
+        }
+        tier_scores = cls._blended_tier_scores(distribution)
+        tier_order = tuple(
+            sorted(
+                IntentConfig.TIERS,
+                key=lambda tier: (tier_scores.get(tier, 0.0), -IntentConfig.TIERS.index(tier)),
+                reverse=True,
+            )
+        )
+
+        supplemental_roles: list[str] = []
+        for intent in active:
+            if intent == signal.primary:
+                continue
+            supplemental_roles.extend(cls._SECONDARY_INTENT_ROLES.get(intent, ()))
+
+        doc_first = any(
+            intent in cls._DOC_FIRST_INTENTS and budget_share.get(intent.value, 0.0) >= 0.2
+            for intent in active
+        )
+
+        return IntentPolicy(
+            primary=signal.primary,
+            distribution={k: round(v, 6) for k, v in distribution.items() if v > 0},
+            active_intents=tuple(active),
+            secondary_intents=tuple(intent for intent in active if intent != signal.primary),
+            tier_scores={tier: round(score, 6) for tier, score in tier_scores.items()},
+            tier_order=tier_order,
+            budget_share={k: round(v, 6) for k, v in budget_share.items()},
+            supplemental_roles=tuple(dict.fromkeys(supplemental_roles)),
+            doc_first=doc_first,
+        )
+
+    @classmethod
+    def policy_for_primary(cls, intent: Intent) -> IntentPolicy:
+        """Back-compat policy for callers that only know a single intent."""
+        return cls.policy_from_signal(
+            IntentSignal(
+                primary=intent,
+                distribution={intent.value: 1.0},
+                confidence=1.0,
+                ambiguous=False,
+            )
+        )
+
+    @classmethod
+    def _normalized_distribution(
+        cls, primary: Intent, distribution: dict[str, float] | None
+    ) -> dict[str, float]:
+        raw: dict[str, float] = {}
+        for name, weight in (distribution or {}).items():
+            try:
+                intent = Intent(name)
+            except ValueError:
+                continue
+            try:
+                numeric_weight = float(weight)
+            except (TypeError, ValueError):
+                continue
+            if numeric_weight > 0:
+                raw[intent.value] = numeric_weight
+        if not raw:
+            raw = {primary.value: 1.0}
+        elif primary.value not in raw:
+            raw[primary.value] = max(raw.values())
+
+        total = sum(raw.values()) or 1.0
+        return {name: weight / total for name, weight in raw.items()}
+
+    @staticmethod
+    def _blended_tier_scores(distribution: dict[str, float]) -> dict[str, float]:
+        scores = {tier: 0.0 for tier in IntentConfig.TIERS}
+        max_rank = len(IntentConfig.TIERS)
+        for name, weight in distribution.items():
+            try:
+                intent = Intent(name)
+            except ValueError:
+                continue
+            priority = IntentConfig.PRIORITY[intent]
+            for idx, tier in enumerate(priority):
+                scores[tier] += weight * (max_rank - idx)
+        total = sum(scores.values()) or 1.0
+        return {tier: score / total for tier, score in scores.items()}
 
     @classmethod
     def resolve_with_profile(

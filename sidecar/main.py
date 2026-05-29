@@ -44,16 +44,33 @@ from sidecar.workspace import WorkspaceResolver
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-MODEL_PREFERENCE = os.getenv("MODEL_PREFERENCE", "auto")  # "claude" | "ollama" | "auto"
+MODEL_PREFERENCE = os.getenv("MODEL_PREFERENCE", "ollama")  # "ollama" | "auto" | "claude"
+ALLOW_CLOUD_LLM = os.getenv("ALLOW_CLOUD_LLM", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes", "on"}
 INDEX_QUEUE_MAX_PENDING = int(os.getenv("INDEX_QUEUE_MAX_PENDING", "500"))
 INDEX_QUEUE_DEBOUNCE_MS = int(os.getenv("INDEX_QUEUE_DEBOUNCE_MS", "500"))
 INDEX_QUEUE_BATCH_SIZE = int(os.getenv("INDEX_QUEUE_BATCH_SIZE", "50"))
 
+SEARCH_LIMIT_MIN = 1
+SEARCH_LIMIT_MAX = 50
+TOKEN_BUDGET_MIN = 400
+TOKEN_BUDGET_MAX = 32_000
+
 app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
 vector_db = LanceDBClient()
-ai_engine = AIEngine(model_preference=MODEL_PREFERENCE)
+ai_engine = AIEngine(model_preference=MODEL_PREFERENCE, allow_cloud_llm=ALLOW_CLOUD_LLM)
+if MODEL_PREFERENCE in {"auto", "claude"} and not ALLOW_CLOUD_LLM:
+    logger.info(
+        "Local-first LLM routing: MODEL_PREFERENCE=%s with ALLOW_CLOUD_LLM=false "
+        "— assembled context stays on Ollama even when ANTHROPIC_API_KEY is set.",
+        MODEL_PREFERENCE,
+    )
 user_auth = UserAuth()
 audit_log = AuditLog()
 workspace_resolver = WorkspaceResolver()
@@ -65,13 +82,16 @@ history_provider = build_history_provider(
 )
 
 
-def _context_arbitrator(db: Any, workspace_id: str) -> ContextArbitrator:
-    """Workspace-scoped graph + vector retrieval with explicit provider wiring."""
+def _context_arbitrator(
+    db: Any, workspace_id: str, user_id: str = "anonymous"
+) -> ContextArbitrator:
+    """Workspace- and user-scoped graph + vector retrieval with explicit provider wiring."""
     return ContextArbitrator(
         db,
         overlay,
         vector_db,
         workspace_id=workspace_id,
+        user_id=user_id,
         workspace_meta=neo4j_workspace_meta(db),
         vector_search=VectorSearcher(vector_db),
     )
@@ -99,7 +119,7 @@ class IndexDocsRequest(BaseModel):
 class AskRequest(BaseModel):
     symbol: str | None = None
     question: str = "What does this code do?"
-    token_budget: int = 4000
+    token_budget: int = Field(default=4000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
     file_path: str | None = None
 
 
@@ -110,13 +130,13 @@ class OverlayRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    limit: int = 5
+    limit: int = Field(default=5, ge=SEARCH_LIMIT_MIN, le=SEARCH_LIMIT_MAX)
 
 
 class UnifiedSearchRequest(SearchRequest):
     symbol: str | None = None
     include_graph: bool = True
-    token_budget: int = 2000
+    token_budget: int = Field(default=2000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
 
 
 class HealthResponse(BaseModel):
@@ -397,6 +417,31 @@ def _request_metrics(trace: RequestTrace) -> dict[str, Any]:
     }
 
 
+def _stream_trace_payload(
+    trace: RequestTrace,
+    *,
+    stage: str | None = None,
+    ctx: PromptContext | None = None,
+) -> dict[str, Any]:
+    """Build an SSE trace payload for /ask/stream stage and cache visibility."""
+    payload: dict[str, Any] = {
+        "type": "trace",
+        "trace_id": trace.trace_id,
+    }
+    if stage:
+        payload["stage"] = stage
+        elapsed = trace.stage_timings_ms.get(stage)
+        if elapsed is not None:
+            payload["elapsed_ms"] = elapsed
+    if ctx is not None:
+        cache_hits = getattr(ctx, "budget", {}).get("cache_hits")
+        if cache_hits:
+            payload["cache_hits"] = list(cache_hits)
+    if trace.model_route:
+        payload["model_route"] = dict(trace.model_route)
+    return payload
+
+
 def _degraded_llm_answer(exc: Exception) -> str:
     return (
         "The language model is currently unreachable, so this is a degraded "
@@ -521,13 +566,52 @@ def _history_snapshot(
     }
 
 
+def _require_workspace_root_dir(raw_project_path: str):
+    from sidecar.workspace_paths import resolve_project_root
+
+    try:
+        return resolve_project_root(raw_project_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _sandbox_path(
+    raw_path: str,
+    *,
+    workspace_id: str,
+    db: Any,
+    workspace_root=None,
+) -> str:
+    from sidecar.workspace_paths import (
+        PathOutsideWorkspaceError,
+        WorkspaceRootNotRegisteredError,
+        resolve_path_under_workspace_root,
+    )
+
+    try:
+        return str(
+            resolve_path_under_workspace_root(
+                raw_path,
+                workspace_id=workspace_id,
+                db=db,
+                workspace_root=workspace_root,
+            )
+        )
+    except WorkspaceRootNotRegisteredError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PathOutsideWorkspaceError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 def _read_file_context(
     file_path: str,
     *,
     workspace_id: str,
     user_id: str,
     token_budget: int,
+    anchor_line: int | None = None,
 ) -> tuple[str, bool]:
+    # file_path must already be resolved under the workspace root (see _sandbox_path).
     if overlay.has(file_path, workspace_id=workspace_id, user_id=user_id):
         symbols = overlay.get_symbols(file_path, workspace_id=workspace_id, user_id=user_id)
         if symbols:
@@ -548,26 +632,39 @@ def _read_file_context(
                 workspace_id=workspace_id,
                 user_id=user_id,
             )
-        return _trim_text_to_budget(code, token_budget), True
+        return _trim_text_to_budget(code, token_budget, anchor_line), True
 
     try:
         with open(file_path, encoding="utf-8") as file:
             code = file.read()
     except (OSError, FileNotFoundError):
         return "", False
-    return _trim_text_to_budget(code, token_budget), False
+    return _trim_text_to_budget(code, token_budget, anchor_line), False
 
 
-def _trim_text_to_budget(text: str, token_budget: int) -> str:
+def _trim_text_to_budget(text: str, token_budget: int, anchor_line: int | None = None) -> str:
     if not text:
         return ""
     max_tokens = max(400, int(token_budget * 0.75))
     if estimate_text_tokens(text) <= max_tokens:
         return text
 
-    # Cheap deterministic trimming. Keep the top of the file because definitions/imports
-    # usually explain module shape better than a middle slice.
     lines = text.splitlines()
+    total = len(lines)
+    max_lines = max(50, max_tokens // 4)
+
+    if anchor_line is not None:
+        # Center window around the anchor (1-based), biased slightly upward so
+        # the definition header lands near the top of the window.
+        center = max(0, min(anchor_line - 1, total - 1))
+        half = max_lines // 2
+        start = max(0, center - half // 2)
+        end = min(total, start + max_lines)
+        # Re-anchor start if we hit the bottom boundary.
+        start = max(0, end - max_lines)
+        return "\n".join(lines[start:end])
+
+    # No anchor: keep from the top (imports / module-level definitions).
     kept: list[str] = []
     for line in lines:
         candidate = "\n".join([*kept, line])
@@ -577,6 +674,24 @@ def _trim_text_to_budget(text: str, token_budget: int) -> str:
     return "\n".join(kept)
 
 
+def _find_symbol_line(file_path: str, symbol: str | None) -> int | None:
+    """Return the 1-based line number of the first definition matching `symbol`, or None."""
+    if not symbol or not file_path:
+        return None
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            for lineno, line in enumerate(f, 1):
+                stripped = line.lstrip()
+                if stripped.startswith(
+                    ("def ", "class ", "async def ", "function ", "const ", "let ", "var ")
+                ):
+                    if symbol in line:
+                        return lineno
+    except (OSError, FileNotFoundError):
+        pass
+    return None
+
+
 def _context_from_file(
     *,
     file_path: str,
@@ -584,12 +699,15 @@ def _context_from_file(
     token_budget: int,
     workspace_id: str,
     user_id: str,
+    symbol: str | None = None,
 ) -> PromptContext | None:
+    anchor_line = _find_symbol_line(file_path, symbol)
     code, is_dirty = _read_file_context(
         file_path,
         workspace_id=workspace_id,
         user_id=user_id,
         token_budget=token_budget,
+        anchor_line=anchor_line,
     )
     if not code:
         return None
@@ -715,6 +833,18 @@ def _doc_tier_tokens(docs: list[DocChunk]) -> dict[str, int]:
     return {"docs": sum(estimate_text_tokens(doc.content) for doc in docs)}
 
 
+def _context_file_paths(ctx: PromptContext) -> list[str]:
+    """Collect unique real file paths from a resolved PromptContext for cache tagging."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for sym in [ctx.primary_source, *ctx.graph_context]:
+        fp = getattr(sym, "file_path", "") or ""
+        if fp and fp not in ("<none>", "<unknown>", "<workspace>") and fp not in seen:
+            seen.add(fp)
+            paths.append(fp)
+    return paths
+
+
 def _resolve_ask_context(
     *,
     req: AskRequest,
@@ -724,7 +854,7 @@ def _resolve_ask_context(
 ) -> PromptContext:
     symbol_error = ""
     if req.symbol:
-        arb = _context_arbitrator(db, workspace_id)
+        arb = _context_arbitrator(db, workspace_id, user_id)
         ctx = arb.get_context_for_symbol(
             req.symbol,
             question=req.question,
@@ -736,12 +866,18 @@ def _resolve_ask_context(
         symbol_error = ctx
 
     if req.file_path:
+        safe_file_path = _sandbox_path(
+            req.file_path,
+            workspace_id=workspace_id,
+            db=db,
+        )
         file_ctx = _context_from_file(
-            file_path=req.file_path,
+            file_path=safe_file_path,
             question=req.question,
             token_budget=req.token_budget,
             workspace_id=workspace_id,
             user_id=user_id,
+            symbol=req.symbol,
         )
         if file_ctx:
             _mark_ask_fallback(file_ctx, req, "file", symbol_error)
@@ -847,6 +983,7 @@ def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
                 workspace_id=workspace_id,
             )
             resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
+    default_cache.invalidate_files([file_path], workspace_id)
     return tracked_job_id
 
 
@@ -922,6 +1059,8 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
 
         current_hashes = {path: hash_file(path) for path in indexable_paths}
         completed = 0
+        all_changed_uids: list[str] = []
+        indexed_paths: list[str] = []
         with db_session(user_id=user_id) as db:
             get_file_hashes = getattr(db, "get_file_hashes", None)
             stored_hashes = (
@@ -939,7 +1078,16 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                     continue
                 try:
                     with job_log.track_file_job(path, file_hash=file_hash):
-                        index_file(path, db, vector_db, extractor, workspace_id=workspace_id)
+                        changed = index_file(
+                            path,
+                            db,
+                            vector_db,
+                            extractor,
+                            workspace_id=workspace_id,
+                            skip_affects=True,
+                        )
+                        all_changed_uids.extend(changed)
+                        indexed_paths.append(path)
                         completed += 1
                 except Exception:
                     logger.exception("Queued indexing failed for %s", path)
@@ -948,7 +1096,15 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                         labels={"workspace": workspace_id},
                     )
             if completed:
+                if all_changed_uids:
+                    from sidecar.indexer.affects import AFFECTSIndexer
+
+                    AFFECTSIndexer(db).rebuild_affects(
+                        list(dict.fromkeys(all_changed_uids)),
+                        workspace_id=workspace_id,
+                    )
                 resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
+                default_cache.invalidate_files(indexed_paths, workspace_id)
                 default_metrics.increment(
                     "sidecar_index_queue_completed_files_total",
                     value=completed,
@@ -983,26 +1139,43 @@ def index(
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
-    if not os.path.isdir(req.project_path):
-        raise HTTPException(status_code=400, detail=f"Path not found: {req.project_path}")
+    project_root = _require_workspace_root_dir(req.project_path)
 
-    if req.queue:
-        from sidecar.indexer.code import _collect_files
+    with db_session(user_id=user_id) as db:
+        if req.queue:
+            from sidecar.indexer.code import _collect_files
 
-        files = _collect_files(req.project_path)
-        results = _enqueue_index_files(files, workspace_id, user_id)
-        summary = _summarize_enqueue_results(results)
-        status = "queued"
-        if not files:
-            status = "no_files"
-        elif summary["rejected"]:
-            status = "partial_queued"
-        return {"status": status, "path": req.project_path, **summary}
+            files = _collect_files(str(project_root))
+            safe_files = [
+                _sandbox_path(
+                    file_path,
+                    workspace_id=workspace_id,
+                    db=db,
+                    workspace_root=project_root,
+                )
+                for file_path in files
+            ]
+            from sidecar.retrieval.manifest import register_workspace_project_root
 
-    from sidecar.indexer.code import run_indexing
+            register_workspace_project_root(
+                db=db,
+                workspace_id=workspace_id,
+                project_path=str(project_root),
+                file_count=len(safe_files),
+            )
+            results = _enqueue_index_files(safe_files, workspace_id, user_id)
+            summary = _summarize_enqueue_results(results)
+            status = "queued"
+            if not safe_files:
+                status = "no_files"
+            elif summary["rejected"]:
+                status = "partial_queued"
+            return {"status": status, "path": str(project_root), **summary}
 
-    run_indexing(req.project_path, workspace_id=workspace_id)
-    return {"status": "indexed", "path": req.project_path}
+        from sidecar.indexer.code import run_indexing
+
+        run_indexing(str(project_root), workspace_id=workspace_id)
+    return {"status": "indexed", "path": str(project_root)}
 
 
 @app.post("/index/file", response_model=IndexFileResponse)
@@ -1014,16 +1187,18 @@ def index_file_endpoint(
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
-    if not os.path.isfile(req.file_path):
+    with db_session(user_id=user_id) as db:
+        safe_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
+    if not os.path.isfile(safe_path):
         raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
 
     if req.queue:
-        result = _enqueue_index_file(req.file_path, workspace_id, user_id)
+        result = _enqueue_index_file(safe_path, workspace_id, user_id)
         if not result.accepted:
             raise HTTPException(status_code=429, detail=result.to_dict())
         return {
             "status": result.status,
-            "file_path": req.file_path,
+            "file_path": safe_path,
             "job_id": 0,
             "workspace_id": workspace_id,
             "queue_depth": result.queue_depth,
@@ -1032,7 +1207,7 @@ def index_file_endpoint(
 
     job_id = 0
     try:
-        job_id = _index_file_now(req.file_path, workspace_id, user_id)
+        job_id = _index_file_now(safe_path, workspace_id, user_id)
     except Exception as exc:
         job_log = IndexJobLog()
         job = job_log.get_job(job_id) if job_id else None
@@ -1044,7 +1219,7 @@ def index_file_endpoint(
         raise HTTPException(status_code=500, detail=detail) from exc
     return {
         "status": "indexed",
-        "file_path": req.file_path,
+        "file_path": safe_path,
         "job_id": job_id,
         "workspace_id": workspace_id,
     }
@@ -1059,6 +1234,11 @@ def index_files_endpoint(
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
+    with db_session(user_id=user_id) as db:
+        safe_paths = [
+            _sandbox_path(file_path, workspace_id=workspace_id, db=db)
+            for file_path in req.file_paths
+        ]
     missing = [
         EnqueueResult(
             accepted=False,
@@ -1068,10 +1248,10 @@ def index_files_endpoint(
             queue_depth=index_queue.snapshot()["pending"],
             reason="file_not_found",
         )
-        for file_path in req.file_paths
+        for file_path in safe_paths
         if not os.path.isfile(file_path)
     ]
-    valid_paths = [file_path for file_path in req.file_paths if os.path.isfile(file_path)]
+    valid_paths = [file_path for file_path in safe_paths if os.path.isfile(file_path)]
 
     if req.queue:
         results = [*missing, *_enqueue_index_files(valid_paths, workspace_id, user_id)]
@@ -1154,15 +1334,17 @@ def index_docs_endpoint(
     authorization: str = Header(None),
     x_workspace: str = Header(None),
 ):
-    _resolve_request_user(x_user_id, authorization)
+    user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
-    if not os.path.isdir(req.docs_path):
+    with db_session(user_id=user_id) as db:
+        safe_docs_path = _sandbox_path(req.docs_path, workspace_id=workspace_id, db=db)
+    if not os.path.isdir(safe_docs_path):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.docs_path}")
 
     from sidecar.indexer.docs import index_docs
 
-    index_docs(req.docs_path, workspace_id=workspace_id)
-    return {"status": "indexed", "path": req.docs_path}
+    index_docs(safe_docs_path, workspace_id=workspace_id)
+    return {"status": "indexed", "path": safe_docs_path}
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -1233,7 +1415,7 @@ def unified_search(
         if req.include_graph and req.symbol:
             with trace.stage("graph_neighbors"):
                 with db_session(user_id=user_id) as db:
-                    arb = _context_arbitrator(db, workspace_id)
+                    arb = _context_arbitrator(db, workspace_id, user_id)
                     ctx = arb.get_context_for_symbol(
                         req.symbol,
                         question=req.query,
@@ -1293,9 +1475,11 @@ def update_overlay(
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
-    overlay.update(req.file_path, req.content, workspace_id=workspace_id, user_id=user_id)
-    symbols = overlay.get_symbols(req.file_path, workspace_id=workspace_id, user_id=user_id)
-    return {"file_path": req.file_path, "symbols": list(symbols.keys())}
+    with db_session(user_id=user_id) as db:
+        safe_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
+    overlay.update(safe_path, req.content, workspace_id=workspace_id, user_id=user_id)
+    symbols = overlay.get_symbols(safe_path, workspace_id=workspace_id, user_id=user_id)
+    return {"file_path": safe_path, "symbols": list(symbols.keys())}
 
 
 @app.delete("/overlay", response_model=ClearOverlayResponse)
@@ -1307,8 +1491,10 @@ def clear_overlay(
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
-    overlay.clear(file_path, workspace_id=workspace_id, user_id=user_id)
-    return {"cleared": file_path}
+    with db_session(user_id=user_id) as db:
+        safe_path = _sandbox_path(file_path, workspace_id=workspace_id, db=db)
+    overlay.clear(safe_path, workspace_id=workspace_id, user_id=user_id)
+    return {"cleared": safe_path}
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -1385,6 +1571,7 @@ def ask(
                             workspace_id,
                             answer,
                             {"intent": ctx.intent, "mode": ctx.mode},
+                            file_paths=_context_file_paths(ctx),
                         )
             if not response_cache_hit and not degraded_response:
                 trace.model_route = _last_model_route(trace.model_route)
@@ -1477,15 +1664,64 @@ def ask_stream(
                     trace.model_route = _model_route(context_tokens, ctx.intent)
 
                 with trace.stage("llm"):
-                    for chunk in ai_engine.stream_chat(
-                        system_prompt=system_prompt,
-                        user_message=req.question,
-                        token_count=context_tokens,
-                        intent=ctx.intent,
-                    ):
-                        answer_parts.append(chunk)
-                        yield format_sse("chunk", {"type": "chunk", "content": chunk})
-                trace.model_route = _last_model_route(trace.model_route)
+                    response_cache_hit = False
+                    degraded_response = False
+                    prompt_hash = hashlib.sha256(
+                        f"{system_prompt}\n{req.question}".encode()
+                    ).hexdigest()
+                    cached_response = default_cache.get_response(prompt_hash, workspace_id)
+                    if cached_response:
+                        response_cache_hit = True
+                        answer_parts.append(cached_response.answer)
+                        if hasattr(ctx, "budget"):
+                            ctx.budget["cache_hits"] = sorted(
+                                {*ctx.budget.get("cache_hits", []), "l3_response"}
+                            )
+                        trace.model_route = {
+                            **trace.model_route,
+                            "cached": True,
+                            "cache_layer": "l3_response",
+                        }
+                        yield format_sse(
+                            "trace",
+                            _stream_trace_payload(trace, stage="llm", ctx=ctx),
+                        )
+                        yield format_sse(
+                            "chunk", {"type": "chunk", "content": cached_response.answer}
+                        )
+                    else:
+                        try:
+                            for chunk in ai_engine.stream_chat(
+                                system_prompt=system_prompt,
+                                user_message=req.question,
+                                token_count=context_tokens,
+                                intent=ctx.intent,
+                            ):
+                                answer_parts.append(chunk)
+                                yield format_sse("chunk", {"type": "chunk", "content": chunk})
+                        except RuntimeError as exc:
+                            degraded_response = True
+                            degraded_text = _degraded_llm_answer(exc)
+                            answer_parts.append(degraded_text)
+                            trace.model_route = _mark_degraded_route(trace.model_route, exc)
+                            default_metrics.increment(
+                                "sidecar_llm_degraded_total",
+                                labels={
+                                    "endpoint": "/ask/stream",
+                                    "workspace": workspace_id,
+                                },
+                            )
+                            yield format_sse("chunk", {"type": "chunk", "content": degraded_text})
+                        else:
+                            default_cache.put_response(
+                                prompt_hash,
+                                workspace_id,
+                                "".join(answer_parts),
+                                {"intent": ctx.intent, "mode": ctx.mode},
+                                file_paths=_context_file_paths(ctx),
+                            )
+                if not response_cache_hit and not degraded_response:
+                    trace.model_route = _last_model_route(trace.model_route)
 
                 output_tokens = estimate_text_tokens("".join(answer_parts))
                 trace.token_counts["output_estimate"] = output_tokens
@@ -1793,33 +2029,13 @@ def impact(
     with db_session() as db:
         from sidecar.indexer.affects import AFFECTSIndexer
 
-        # Look up symbol UID by name
-        query = """
-        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
-        RETURN s.uid AS uid LIMIT 1
-        """
-        with db.driver.session() as session:
-            result = session.run(query, name=symbol, workspace_id=workspace_id).single()
-
-        if not result:
+        symbol_uid = db.get_symbol_uid_by_name(symbol, workspace_id=workspace_id)
+        if not symbol_uid:
             raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
 
-        symbol_uid = result["uid"]
-
-        # Get affected symbols
         indexer = AFFECTSIndexer(db)
         affected_symbols = indexer.get_affected_symbols(symbol_uid, workspace_id=workspace_id)
-
-        # Get file containing the symbol
-        query = """
-        MATCH (s:Symbol {uid: $uid})
-        OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s)
-        RETURN coalesce(f.path, '<unknown>') AS file_path
-        """
-        with db.driver.session() as session:
-            result = session.run(query, uid=symbol_uid, workspace_id=workspace_id).single()
-
-        symbol_file = result["file_path"] if result else "<unknown>"
+        symbol_file = db.get_file_path_for_symbol(symbol_uid, workspace_id=workspace_id)
 
         # Get affected files
         if symbol_file != "<unknown>":

@@ -1,6 +1,6 @@
 """Unit tests for ContextArbitrator orchestration and BFS traversal."""
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -8,6 +8,53 @@ from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.graph_expander import GraphExpander
 from sidecar.context.types import DocChunk, PromptContext, Subgraph, SubgraphNode
 from sidecar.context.unified_ranker import RankerWeights
+
+
+def _make_fake_ranker(target_node: SubgraphNode | None, budget_override: int | None = None):
+    """Return a FakeRanker class that serves a fixed target node."""
+
+    class FakeRanker:
+        PREAMBLE_TOKENS = 100
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_target(self, *args, **kwargs):
+            if target_node is None:
+                return (None, {"strategy": "not_found"})
+            return (target_node, {"strategy": "unique_match", "ambiguous": False})
+
+        def rank(self, target, query, intent, budget, **_kw):
+            spent = budget_override if budget_override is not None else target.token_estimate + 100
+            return (
+                [],
+                {"limit": budget, "spent": spent, "reserved": 100, "pool_size": 0},
+                "pool_exhausted",
+                [],
+                [],
+            )
+
+        def candidates_to_subgraph(
+            self, target, candidates, budget_info, stopped_reason, pruned_details
+        ):
+            return (
+                Subgraph(
+                    primary=target,
+                    nodes=[],
+                    budget=budget_info,
+                    stopped_reason=stopped_reason,
+                    pruned_details=pruned_details,
+                ),
+                [],
+            )
+
+        def _determine_mechanism(self, target, query=""):
+            return "generic"
+
+        def _get_required_roles(self, mechanism):
+            return ["api_surface", "executor"]
+
+    return FakeRanker
 
 
 class TestContextArbitratorBFS:
@@ -21,28 +68,29 @@ class TestContextArbitratorBFS:
 
     @pytest.fixture
     def arbitrator(self, mock_db):
-        """Create arbitrator with mocked db."""
+        """Create arbitrator with mocked db (no vector_db — unified path with zero vector scores)."""
         return ContextArbitrator(mock_db)
 
     def test_get_context_for_symbol_found(self, arbitrator, mock_db):
         """Test retrieving context for a symbol that exists in the graph."""
-        target_node = {
-            "uid": "abc123",
-            "name": "process_payment",
-            "range": [10, 25],
-            "token_estimate": 120,
-        }
-
-        mock_session = MagicMock()
-        mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
-
-        mock_session.run.return_value.single.return_value = {
-            "s": target_node,
-            "file_path": "/payments/processor.py",
-        }
-
-        with patch("builtins.open", create=True):
+        target = SubgraphNode(
+            uid="abc123",
+            name="process_payment",
+            file_path="/payments/processor.py",
+            range=[10, 25],
+            token_estimate=120,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+        )
+        with (
+            patch("sidecar.context.arbitrator.UnifiedRanker", _make_fake_ranker(target)),
+            patch(
+                "sidecar.context.arbitrator.CodeResolver.resolve",
+                return_value=("def process_payment(): pass", False),
+            ),
+        ):
             ctx = arbitrator.get_context_for_symbol("process_payment", token_budget=4000)
 
         assert isinstance(ctx, PromptContext)
@@ -51,37 +99,30 @@ class TestContextArbitratorBFS:
 
     def test_expand_for_symbol_not_found(self, arbitrator, mock_db):
         """Test that a non-existent symbol returns an error string."""
-        mock_session = MagicMock()
-        mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
-
-        mock_session.run.return_value.single.return_value = None
-
-        result = arbitrator.get_context_for_symbol("nonexistent_symbol")
+        with patch("sidecar.context.arbitrator.UnifiedRanker", _make_fake_ranker(None)):
+            result = arbitrator.get_context_for_symbol("nonexistent_symbol")
 
         assert isinstance(result, str)
         assert "Error:" in result
         assert "not found" in result
 
     def test_budget_too_small(self, arbitrator, mock_db):
-        """Test that oversized target raises BudgetTooSmall error."""
-        target_node = {
-            "uid": "huge",
-            "name": "huge_function",
-            "range": [1, 500],
-            "token_estimate": 4500,
-        }
-
-        mock_session = MagicMock()
-        mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
-
-        mock_session.run.return_value.single.return_value = {
-            "s": target_node,
-            "file_path": "/test.py",
-        }
-
-        result = arbitrator.get_context_for_symbol("huge_function", token_budget=4000)
+        """Budget smaller than signature-only estimate (>500 tokens) returns an error string."""
+        # token_estimate=6000 → signature cap = min(500, 600) = 500
+        # PREAMBLE_TOKENS=100, so reserved = 600 > budget=400 → error
+        target = SubgraphNode(
+            uid="huge",
+            name="huge_function",
+            file_path="/test.py",
+            range=[1, 500],
+            token_estimate=6000,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+        )
+        with patch("sidecar.context.arbitrator.UnifiedRanker", _make_fake_ranker(target)):
+            result = arbitrator.get_context_for_symbol("huge_function", token_budget=400)
 
         assert isinstance(result, str)
         assert "Error:" in result
@@ -89,23 +130,24 @@ class TestContextArbitratorBFS:
 
     def test_subgraph_has_budget_info(self, arbitrator, mock_db):
         """Test that returned context includes budget tracking."""
-        target_node = {
-            "uid": "t1",
-            "name": "target",
-            "range": [1, 5],
-            "token_estimate": 40,
-        }
-
-        mock_session = MagicMock()
-        mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
-
-        mock_session.run.return_value.single.return_value = {
-            "s": target_node,
-            "file_path": "/app/target.py",
-        }
-
-        with patch("builtins.open", create=True):
+        target = SubgraphNode(
+            uid="t1",
+            name="target",
+            file_path="/app/target.py",
+            range=[1, 5],
+            token_estimate=40,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+        )
+        with (
+            patch("sidecar.context.arbitrator.UnifiedRanker", _make_fake_ranker(target)),
+            patch(
+                "sidecar.context.arbitrator.CodeResolver.resolve",
+                return_value=("def target(): pass", False),
+            ),
+        ):
             ctx = arbitrator.get_context_for_symbol("target", token_budget=1000)
 
         assert isinstance(ctx, PromptContext)
@@ -157,7 +199,7 @@ class TestContextArbitratorBFS:
             def get_target(self, *args, **kwargs):
                 return subgraph.primary, {"strategy": "unique_match", "ambiguous": False}
 
-            def rank(self, target, query, intent, budget):
+            def rank(self, target, query, intent, budget, **_kw):
                 docs = self.vector_searcher.search_docs(query, limit=3)
                 self._docs = docs
                 return (
@@ -215,23 +257,24 @@ class TestContextArbitratorBFS:
 
     def test_subgraph_node_has_depth_direction_score(self, arbitrator, mock_db):
         """Test that SymbolContext includes depth, direction, and relevance_score."""
-        target_node = {
-            "uid": "t1",
-            "name": "target",
-            "range": [1, 5],
-            "token_estimate": 40,
-        }
-
-        mock_session = MagicMock()
-        mock_db.driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
-        mock_db.driver.session.return_value.__exit__ = MagicMock(return_value=None)
-
-        mock_session.run.return_value.single.return_value = {
-            "s": target_node,
-            "file_path": "/app/target.py",
-        }
-
-        with patch("builtins.open", create=True):
+        target = SubgraphNode(
+            uid="t1",
+            name="target",
+            file_path="/app/target.py",
+            range=[1, 5],
+            token_estimate=40,
+            relation="target",
+            direction="primary",
+            depth=0,
+            relevance_score=1.0,
+        )
+        with (
+            patch("sidecar.context.arbitrator.UnifiedRanker", _make_fake_ranker(target)),
+            patch(
+                "sidecar.context.arbitrator.CodeResolver.resolve",
+                return_value=("def target(): pass", False),
+            ),
+        ):
             ctx = arbitrator.get_context_for_symbol("target")
 
         primary = ctx.primary_source
@@ -322,7 +365,7 @@ class TestContextArbitratorBFS:
                     },
                 )
 
-            def rank(self, target, query, intent, budget):
+            def rank(self, target, query, intent, budget, **_kw):
                 return (
                     [],
                     {"limit": budget, "spent": 220, "reserved": 100, "pool_size": 7},
@@ -406,6 +449,86 @@ class TestContextArbitratorBFS:
         assert payload["intent_details"]["primary"] == "exploration"
         assert payload["pruned"][0]["name"] == "Audit.log"
 
+    def test_unified_signature_only_uses_effective_range_for_payload_and_cache(self, mock_db):
+        """Massive targets should expose/cache the resolved head range, not the full span."""
+
+        class FakeRanker:
+            PREAMBLE_TOKENS = 100
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_target(self, *args, **kwargs):
+                return (
+                    SubgraphNode(
+                        uid="large-class",
+                        name="LargeClass",
+                        file_path="/repo/large.py",
+                        range=[10, 500],
+                        token_estimate=5000,
+                        relation="target",
+                        direction="primary",
+                        depth=0,
+                        relevance_score=1.0,
+                        file_hash="hash-large",
+                    ),
+                    {"strategy": "unique_match", "ambiguous": False},
+                )
+
+            def rank(self, target, query, intent, budget, **_kw):
+                return (
+                    [],
+                    {"limit": budget, "spent": 600, "reserved": 100, "pool_size": 0},
+                    "role_complete",
+                    [],
+                    [],
+                )
+
+            def candidates_to_subgraph(
+                self, target, candidates, budget_info, stopped_reason, pruned_details
+            ):
+                return (
+                    Subgraph(
+                        primary=target,
+                        nodes=[],
+                        budget=budget_info,
+                        stopped_reason=stopped_reason,
+                        pruned_details=pruned_details,
+                    ),
+                    [],
+                )
+
+            def _determine_mechanism(self, target, query=""):
+                return "generic"
+
+            def _get_required_roles(self, mechanism):
+                return ["api_surface"]
+
+        arbitrator = ContextArbitrator(mock_db, vector_db=Mock())
+        with (
+            patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker),
+            patch(
+                "sidecar.context.arbitrator.CodeResolver.resolve",
+                return_value=('class LargeClass:\n    """head only"""\n', False),
+            ) as resolve,
+        ):
+            ctx = arbitrator.get_context_for_symbol(
+                "LargeClass",
+                question="How does this class work?",
+                token_budget=4000,
+            )
+
+        assert isinstance(ctx, PromptContext)
+        resolve.assert_called_once_with("/repo/large.py", 10, 25)
+        assert ctx.primary_source.range == [10, 25]
+        assert ctx.primary_source.render_mode == "signature_only"
+        payload = ctx.to_dict()["primary_source"]
+        assert payload["range"] == [10, 25]
+        assert payload["render_mode"] == "signature_only"
+        cached = arbitrator.cache.get_body("/repo/large.py", (10, 25), "hash-large")
+        assert cached is not None
+        assert arbitrator.cache.get_body("/repo/large.py", (10, 500), "hash-large") is None
+
     def test_explain_behavior_missing_symbol_uses_concept_anchor_fallback(self, mock_db):
         """Missing conceptual symbols can resolve to anchor symbols for explain-style prompts."""
         arbitrator = ContextArbitrator(mock_db, vector_db=Mock())
@@ -427,6 +550,9 @@ class TestContextArbitratorBFS:
             def __init__(self, db, vector_searcher, workspace_id=None, weights=None):
                 pass
 
+            def concept_anchor_candidates(self, symbol_name, query=""):
+                return ["use"] if symbol_name == "middleware" else []
+
             def get_target(self, symbol_name, query="", intent=None, with_metadata=False):
                 if symbol_name == "middleware":
                     return (None, {"strategy": "not_found"}) if with_metadata else None
@@ -435,7 +561,7 @@ class TestContextArbitratorBFS:
                     return (target, meta) if with_metadata else target
                 return (None, {"strategy": "not_found"}) if with_metadata else None
 
-            def rank(self, target, query, intent, budget):
+            def rank(self, target, query, intent, budget, **_kw):
                 return (
                     [],
                     {"limit": budget, "spent": 140, "reserved": 100, "pool_size": 0},
@@ -510,6 +636,9 @@ class TestContextArbitratorBFS:
             def __init__(self, db, vector_searcher, workspace_id=None, weights=None):
                 pass
 
+            def concept_anchor_candidates(self, symbol_name, query=""):
+                return ["createApplication"] if symbol_name == "app" else []
+
             def get_target(self, symbol_name, query="", intent=None, with_metadata=False):
                 if symbol_name == "app":
                     meta = {
@@ -523,7 +652,7 @@ class TestContextArbitratorBFS:
                     return (anchor_target, meta) if with_metadata else anchor_target
                 return (None, {"strategy": "not_found"}) if with_metadata else None
 
-            def rank(self, target, query, intent, budget):
+            def rank(self, target, query, intent, budget, **_kw):
                 return (
                     [],
                     {"limit": budget, "spent": 180, "reserved": 100, "pool_size": 0},

@@ -1,13 +1,14 @@
 import json
+import logging
 import os
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from pathlib import Path
 from typing import cast
 
 import lancedb
 import pyarrow as pa
-from sentence_transformers import SentenceTransformer
 
 from sidecar.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
 from sidecar.database.embedding_registry import (
@@ -37,8 +38,46 @@ EMBED_LOW_PRIORITY = os.getenv("EMBED_LOW_PRIORITY", "false").lower() in {
 }
 EMBED_LOW_PRIORITY_THROTTLE_MS = int(os.getenv("EMBED_LOW_PRIORITY_THROTTLE_MS", "25"))
 LANCEDB_DELETE_BATCH_SIZE = int(os.getenv("LANCEDB_DELETE_BATCH_SIZE", "256"))
+# Bulk-replace workspace symbols when upserting this many rows and the batch
+# covers most of the workspace (cold/full reindex). Delta updates stay per-uid.
+LANCEDB_SYMBOL_BULK_REPLACE_MIN = int(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_MIN", "512"))
+LANCEDB_SYMBOL_BULK_REPLACE_RATIO = float(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_RATIO", "0.85"))
 DOCS_TABLE = "docs"
 SYMBOLS_TABLE = "symbols"
+
+_log = logging.getLogger(__name__)
+
+
+def _resolve_embed_device() -> str:
+    """Pick a device SentenceTransformer can actually run on.
+
+    Recent PyTorch wheels target sm_75+; GPUs like GTX 1050 Ti (sm_61) probe as
+    CUDA-available but fail at encode with cudaErrorNoKernelImageForDevice.
+    """
+    explicit = os.getenv("EMBED_DEVICE", "").strip().lower()
+    if explicit in {"cpu", "cuda", "mps"}:
+        return explicit
+    if os.getenv("CUDA_VISIBLE_DEVICES", "unset") == "":
+        return "cpu"
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return "cpu"
+        major, _minor = torch.cuda.get_device_capability(0)
+        if major < 7:
+            name = torch.cuda.get_device_name(0)
+            _log.warning(
+                "GPU %s (CC %s.%s) is below PyTorch sm_75 support; using CPU for embeddings. "
+                "Set EMBED_DEVICE=cuda to force (will fail) or CUDA_VISIBLE_DEVICES= for CPU.",
+                name,
+                major,
+                _minor,
+            )
+            return "cpu"
+        return "cuda"
+    except Exception:
+        return "cpu"
 
 
 def _l2_to_score(distance: float) -> float:
@@ -87,7 +126,7 @@ SYMBOLS_SCHEMA = pa.schema(
 class LanceDBClient:
     def __init__(self):
         self._db = lancedb.connect(DB_PATH)
-        self._model = SentenceTransformer(EMBED_MODEL)
+        self._model = None
         self._model_metadata = get_model_metadata(EMBED_MODEL)
         if self._model_metadata is None:
             raise ValueError(f"Unknown embedding model: {EMBED_MODEL}")
@@ -124,9 +163,64 @@ class LanceDBClient:
         self._db.drop_table(name)
         return self._db.create_table(name, schema=schema)
 
+    def _embedding_model(self):
+        """Load the transformer lazily so delete-only paths avoid import + model init."""
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            device = _resolve_embed_device()
+            self._model = SentenceTransformer(EMBED_MODEL, device=device)
+            if device == "cpu":
+                _log.info("Embedding model %s on device=cpu", EMBED_MODEL)
+        return self._model
+
     @staticmethod
     def _quote_delete_value(value: str) -> str:
         return value.replace("'", "''")
+
+    def _scan_table_by_workspace(
+        self,
+        table,
+        workspace_id: str,
+        *,
+        columns: list[str] | None = None,
+        extra_predicate: str | None = None,
+    ) -> list[dict]:
+        """Read rows for one workspace via Lance filter (no full-table pandas)."""
+        ws = self._quote_delete_value(workspace_id)
+        predicate = f"workspace_id = '{ws}'"
+        if extra_predicate:
+            predicate = f"{predicate} AND ({extra_predicate})"
+        try:
+            query = table.search().where(predicate, prefilter=True).limit(0)
+            if columns:
+                query = query.select(columns)
+            return cast(list[dict], query.to_list())
+        except Exception:
+            df = table.to_pandas()
+            rows = [
+                row.to_dict() for _, row in df.iterrows() if row.get("workspace_id") == workspace_id
+            ]
+            if columns:
+                rows = [{key: row.get(key) for key in columns} for row in rows]
+            return rows
+
+    def scan_docs_workspace(self, workspace_id: str) -> list[dict]:
+        """All doc chunks for a workspace (used by DocAnchor linking)."""
+        return self._scan_table_by_workspace(self._table, workspace_id)
+
+    def scan_symbols_workspace(
+        self,
+        workspace_id: str,
+        *,
+        columns: list[str] | None = None,
+    ) -> list[dict]:
+        """Symbol embedding rows for a workspace (local semantic index for doc linking)."""
+        return self._scan_table_by_workspace(
+            self._sym_table,
+            workspace_id,
+            columns=columns or ["uid", "name", "file_path", "vector"],
+        )
 
     def _delete_doc_rows(
         self,
@@ -239,7 +333,9 @@ class LanceDBClient:
             )
         for start in range(0, len(missing_items), self._embed_batch_size):
             batch = missing_items[start : start + self._embed_batch_size]
-            encoded = self._model.encode([text for _, text in batch], show_progress_bar=False)
+            encoded = self._embedding_model().encode(
+                [text for _, text in batch], show_progress_bar=False
+            )
             for (content_hash, _), row in zip(batch, encoded, strict=False):
                 vector = [float(value) for value in row]
                 encoded_by_hash[content_hash] = vector
@@ -366,29 +462,13 @@ class LanceDBClient:
 
     def _scan_pending(self, *, columns: list[str] | None, workspace_id: str) -> list[dict]:
         """Lance-native filtered scan for chunks with pending identifiers."""
-        try:
-            query = (
-                self._table.search()
-                .where(
-                    "workspace_id = "
-                    f"'{self._quote_delete_value(workspace_id)}' AND array_length(pending) > 0",
-                    prefilter=True,
-                )
-                .limit(0)
-            )
-            if columns:
-                query = query.select(columns)
-            return cast(list[dict], query.to_list())
-        except Exception:
-            # Fallback for older Lance / test fakes that don't support
-            # filter-only search. Pay the to_pandas cost only on the slow
-            # path; the production path stays fast.
-            df = self._table.to_pandas()
-            return [
-                row.to_dict()
-                for _, row in df.iterrows()
-                if row.get("workspace_id") == workspace_id and len(row["pending"]) > 0
-            ]
+        rows = self._scan_table_by_workspace(
+            self._table,
+            workspace_id,
+            columns=columns,
+            extra_predicate="array_length(pending) > 0",
+        )
+        return [row for row in rows if len(row.get("pending") or []) > 0]
 
     def _set_pending_row(self, row: dict, pending: list[str]):
         chunk_id = row["id"]
@@ -594,17 +674,112 @@ class LanceDBClient:
                 }
             )
         uids = [s["uid"] for s in symbols]
-        if progress_callback:
-            progress_callback(f"delete existing rows: {len(uids)}")
+        existing = self.count_symbols_workspace(workspace_id)
+        bulk_replace = (
+            existing > 0
+            and len(uids) >= LANCEDB_SYMBOL_BULK_REPLACE_MIN
+            and (len(uids) >= int(existing * LANCEDB_SYMBOL_BULK_REPLACE_RATIO))
+        )
         t0 = time.perf_counter()
-        self._delete_symbol_rows(uids, workspace_id, progress_callback=progress_callback)
-        if progress_callback:
-            progress_callback(f"delete done in {time.perf_counter() - t0:.2f}s")
-            progress_callback(f"add rows: {len(rows)}")
+        if existing == 0:
+            if progress_callback:
+                progress_callback(
+                    f"insert symbol vectors: {len(rows)} (new workspace, skip delete)"
+                )
+        elif bulk_replace:
+            if progress_callback:
+                progress_callback(
+                    f"replace symbol vectors: {len(rows)} "
+                    f"(bulk clear {existing} existing, full reindex)"
+                )
+            self.delete_symbols_workspace(workspace_id)
+        else:
+            if progress_callback:
+                progress_callback(
+                    f"patch symbol vectors: {len(rows)} "
+                    f"({len(uids)} uid deletes, {existing} already indexed)"
+                )
+            self._delete_symbol_rows(uids, workspace_id, progress_callback=progress_callback)
+        if progress_callback and existing > 0:
+            progress_callback(f"clear/delete done in {time.perf_counter() - t0:.2f}s")
         t0 = time.perf_counter()
         self._sym_table.add(rows)
         if progress_callback:
-            progress_callback(f"add done in {time.perf_counter() - t0:.2f}s")
+            progress_callback(f"insert done in {time.perf_counter() - t0:.2f}s")
+
+    def count_symbols_workspace(self, workspace_id: str) -> int:
+        """Row count for one workspace in the symbols table."""
+        ws = self._quote_delete_value(workspace_id)
+        try:
+            return int(self._sym_table.count_rows(f"workspace_id = '{ws}'"))
+        except Exception:
+            return len(
+                self._scan_table_by_workspace(self._sym_table, workspace_id, columns=["uid"])
+            )
+
+    def delete_symbols_workspace(
+        self,
+        workspace_id: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Drop all symbol embedding rows for a workspace (docs table untouched)."""
+        ws = self._quote_delete_value(workspace_id)
+        predicate = f"workspace_id = '{ws}'"
+        if progress_callback:
+            progress_callback(f"clear symbol vectors for {workspace_id}")
+        try:
+            self._sym_table.delete(predicate)
+        except Exception:
+            pass
+
+    def delete_workspace(
+        self,
+        workspace_id: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Drop all doc/symbol embedding rows for a workspace (fast reset path)."""
+        ws = self._quote_delete_value(workspace_id)
+        predicate = f"workspace_id = '{ws}'"
+        if progress_callback:
+            progress_callback(f"delete docs workspace={workspace_id}")
+        try:
+            self._table.delete(predicate)
+        except Exception:
+            pass
+        self.delete_symbols_workspace(workspace_id, progress_callback=progress_callback)
+
+    def delete_path_prefixes(
+        self,
+        workspace_id: str,
+        prefixes: list[str],
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Delete rows whose file_path equals or lives under any prefix (no full-table scan)."""
+        if not prefixes:
+            return
+        ws = self._quote_delete_value(workspace_id)
+        path_clauses: list[str] = []
+        for prefix in prefixes:
+            escaped = self._quote_delete_value(str(Path(prefix).resolve()))
+            path_clauses.append(f"file_path = '{escaped}'")
+            path_clauses.append(f"file_path LIKE '{escaped}/%'")
+        path_predicate = " OR ".join(path_clauses)
+        predicate = f"workspace_id = '{ws}' AND ({path_predicate})"
+        if progress_callback:
+            progress_callback(f"delete docs paths={len(prefixes)}")
+        try:
+            self._table.delete(predicate)
+        except Exception:
+            pass
+        if progress_callback:
+            progress_callback(f"delete symbols paths={len(prefixes)}")
+        try:
+            self._sym_table.delete(predicate)
+        except Exception:
+            pass
 
     def delete_symbol_embeddings(
         self,

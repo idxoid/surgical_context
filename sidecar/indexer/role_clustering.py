@@ -744,7 +744,7 @@ def _query_call_edges(db, workspace_id: str) -> list[tuple[str, str]]:
     with db.driver.session() as session:
         result = session.run(
             """
-            MATCH (caller:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(callee:Symbol)
+            MATCH (caller:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DECORATED_BY]->(callee:Symbol)
             WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
             RETURN caller.uid AS caller_uid, callee.uid AS callee_uid
             """,

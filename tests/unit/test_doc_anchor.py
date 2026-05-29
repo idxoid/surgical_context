@@ -144,16 +144,13 @@ def test_link_docs_to_symbols_skips_semantic_search_when_identifier_matches_are_
                 }
             ]
 
-    class FakeTable:
-        @staticmethod
-        def to_pandas():
-            return FakeRows()
-
     class FakeLance:
         def __init__(self):
-            self._table = FakeTable()
             self.search_called = False
             self.pending_updates = []
+
+        def scan_docs_workspace(self, workspace_id):
+            return FakeRows.to_dict("records")
 
         def search_symbols(self, query, limit=5, threshold=1.5):
             self.search_called = True
@@ -200,17 +197,14 @@ def test_link_docs_to_symbols_uses_precomputed_vector_for_semantic_fallback(monk
                 }
             ]
 
-    class FakeTable:
-        @staticmethod
-        def to_pandas():
-            return FakeRows()
-
     class FakeLance:
         def __init__(self):
-            self._table = FakeTable()
             self.vector_queries: list[list[float]] = []
             self.text_search_called = False
             self.pending_updates = []
+
+        def scan_docs_workspace(self, workspace_id):
+            return FakeRows.to_dict("records")
 
         def search_symbols_by_vector(self, vector, limit=5, threshold=1.5):
             self.vector_queries.append(vector)
@@ -270,15 +264,12 @@ def test_link_docs_to_symbols_normalizes_array_like_pending(monkeypatch):
                 }
             ]
 
-    class FakeTable:
-        @staticmethod
-        def to_pandas():
-            return FakeRows()
-
     class FakeLance:
         def __init__(self):
-            self._table = FakeTable()
             self.pending_updates = []
+
+        def scan_docs_workspace(self, workspace_id):
+            return FakeRows.to_dict("records")
 
         @staticmethod
         def search_symbols_by_vector(vector, limit=5, threshold=1.5):
@@ -324,38 +315,25 @@ def test_link_docs_to_symbols_uses_local_symbol_index_when_available(monkeypatch
                 }
             ]
 
-    class FakeDocTable:
-        @staticmethod
-        def to_pandas():
-            return FakeRows()
+    class FakeLance:
+        def __init__(self):
+            self._sym_table = object()
+            self.vector_queries: list[list[float]] = []
+            self.text_search_called = False
+            self.pending_updates = []
 
-    class FakeSymbolDataFrame:
-        empty = False
+        def scan_docs_workspace(self, workspace_id):
+            return FakeRows.to_dict("records")
 
-        @staticmethod
-        def iterrows():
-            yield (
-                0,
+        def scan_symbols_workspace(self, workspace_id, columns=None):
+            return [
                 {
                     "uid": "uid-hit",
                     "name": "Hit",
                     "file_path": "/repo/hit.py",
                     "vector": [0.0, 0.0],
-                },
-            )
-
-    class FakeSymTable:
-        @staticmethod
-        def to_pandas():
-            return FakeSymbolDataFrame()
-
-    class FakeLance:
-        def __init__(self):
-            self._table = FakeDocTable()
-            self._sym_table = FakeSymTable()
-            self.vector_queries: list[list[float]] = []
-            self.text_search_called = False
-            self.pending_updates = []
+                }
+            ]
 
         def search_symbols_by_vector(self, vector, limit=5, threshold=1.5):
             self.vector_queries.append(vector)

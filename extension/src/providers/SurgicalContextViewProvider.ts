@@ -192,6 +192,20 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         }
         break;
 
+      case 'request.selected':
+        stateManager.setState({
+          lastContext: message.context,
+          lastRequest: {
+            requestId: message.requestId,
+            symbol: message.symbol,
+            question: message.question,
+            timestamp: Date.now(),
+            context: message.context,
+            answer: message.answer || '',
+          },
+        });
+        break;
+
       case 'action.openInspector':
         this.showInspector();
         break;
@@ -253,6 +267,21 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
           vscode.window.showTextDocument(uri, opts);
         }
         break;
+
+      case 'impact.openFiles':
+        await this.openImpactFiles(message.filePaths);
+        break;
+    }
+  }
+
+  private async openImpactFiles(filePaths: string[]): Promise<void> {
+    const uniquePaths = Array.from(new Set(filePaths.filter(Boolean))).slice(0, 12);
+    for (const filePath of uniquePaths) {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+      await vscode.window.showTextDocument(document, {
+        preview: false,
+        preserveFocus: true,
+      });
     }
   }
 
@@ -303,6 +332,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         if (context) {
           stateManager.setState({
             lastRequest: {
+              requestId,
               symbol: targetSymbol,
               question: prompt,
               timestamp: Date.now(),

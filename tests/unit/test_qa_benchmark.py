@@ -10,8 +10,10 @@ from QA.qa_benchmark import (
     _compute_symbol_metrics,
     _empty_indexing_summary,
     _expected_file_matches,
+    _head_dependency_diagnostics,
     _normalize_cleanup_prefixes,
     _path_matches_prefix,
+    _score_ordered_graph_symbols,
     append_snapshot_manifest,
     build_snapshot_manifest_row,
     default_repo_checkout_path,
@@ -57,9 +59,43 @@ def test_load_question_pack_reads_real_repo_metadata():
 
     assert pack["kind"] == "real_repo"
     repo_ids = {repo["id"] for repo in pack["repositories"]}
-    assert {"fastapi", "pydantic", "redux_toolkit"}.issubset(repo_ids)
-    assert len(pack["repositories"]) >= 3
-    assert len(pack["questions"]) >= 24
+    assert {"fastapi", "pydantic", "redux_toolkit", "click", "celery"}.issubset(repo_ids)
+    assert len(pack["repositories"]) >= 13
+    assert len(pack["questions"]) >= 75
+
+
+def test_load_celery_question_pack_standalone():
+    pack_path = Path(__file__).parent.parent / "fixtures" / "celery_questions.yaml"
+
+    pack = load_question_pack(str(pack_path))
+    questions = load_questions(str(pack_path), repo="celery")
+
+    assert pack["kind"] == "real_repo"
+    assert len(questions) == 5
+    assert questions[0]["id"] == "celery_q01"
+    assert questions[1]["required_roles_canonical"] == [
+        "api_surface",
+        "serializer_handle",
+        "integration_surface",
+        "orchestrator",
+    ]
+
+
+def test_load_click_question_pack_standalone():
+    pack_path = Path(__file__).parent.parent / "fixtures" / "click_questions.yaml"
+
+    pack = load_question_pack(str(pack_path))
+    questions = load_questions(str(pack_path), repo="click")
+
+    assert pack["kind"] == "real_repo"
+    assert len(questions) == 5
+    assert questions[0]["id"] == "click_q01"
+    assert questions[0]["required_roles_canonical"] == [
+        "api_surface",
+        "factory_surface",
+        "representation_surface",
+        "runtime_surface",
+    ]
 
 
 def test_load_questions_filters_real_repo_core12_subset():
@@ -440,3 +476,45 @@ def test_compute_symbol_metrics_separates_top_k_from_full_context():
     assert metrics["context_precision"] == pytest.approx(2 / 7)
     assert metrics["retrieved_count"] == 7
     assert metrics["hits_top_k"] == 2
+
+
+def test_prompt_and_score_order_diagnostics():
+    deps = [
+        SimpleNamespace(symbol="low", blended_score=0.1, depth=1),
+        SimpleNamespace(symbol="high", blended_score=0.9, depth=2),
+        SimpleNamespace(symbol="mid", blended_score=0.5, depth=1),
+    ]
+
+    assert _score_ordered_graph_symbols(deps) == ["high", "mid", "low"]
+
+
+def test_head_dependency_diagnostics_counts_backfill_and_duplicates():
+    deps = [
+        SimpleNamespace(
+            symbol="A",
+            relation="ROLE_BACKFILL",
+            provenance=["role-backfill:api_surface"],
+            file_path="/repo/src/a.py",
+        ),
+        SimpleNamespace(
+            symbol="A",
+            relation="CALLS_DIRECT",
+            provenance=["graph:CALLS_DIRECT"],
+            file_path="/repo/src/a.py",
+        ),
+        SimpleNamespace(
+            symbol="B",
+            relation="DOC_BRIDGE",
+            provenance=["doc-bridge:h1"],
+            file_path="/repo/tests/test_b.py",
+        ),
+    ]
+
+    diagnostics = _head_dependency_diagnostics(deps, k=3)
+
+    assert diagnostics["raw_dependency_symbols"] == ["A", "A", "B"]
+    assert diagnostics["unique_dependency_symbols"] == ["A", "B"]
+    assert diagnostics["duplicate_symbol_count"] == 1
+    assert diagnostics["role_backfill_count"] == 1
+    assert diagnostics["bridge_count"] == 2
+    assert diagnostics["test_path_count"] == 1

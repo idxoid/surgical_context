@@ -42,6 +42,16 @@ class InheritanceEdge:
     is_interface: bool
 
 
+@dataclass(frozen=True)
+class ClassApiEdge:
+    """Public method exposed on a class API surface (direct or inherited)."""
+
+    class_uid: str
+    method_uid: str
+    edge_type: str  # HAS_API | INHERITED_API
+    originating_class: str = ""
+
+
 class LanguageAdapter(ABC):
     """Plugin interface for language-specific parsing."""
 

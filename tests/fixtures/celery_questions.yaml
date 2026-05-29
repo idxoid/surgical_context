@@ -1,0 +1,98 @@
+# Celery distributed task queue — merged into real_repo_question_pack.yaml via `includes`.
+#
+# Run standalone:
+#   PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py \
+#     --questions tests/fixtures/celery_questions.yaml --repo celery --no-index
+
+repositories:
+  - id: celery
+    name: Celery
+    clone_url: https://github.com/celery/celery.git
+    repo_url: https://github.com/celery/celery
+    docs_url: https://docs.celeryq.dev/
+    language: python
+    rationale: "Task queue with app registry, broker publish/consume, and result backends—good for async dispatch, worker, and impact benchmarks."
+
+questions:
+  - id: celery_q01
+    repo: celery
+    core12: false
+    symbol: task
+    question: "How does the @app.task decorator register a function into the Celery worker's task registry?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: celery_task_registration
+    required_roles_canonical:
+      - api_surface
+      - factory_surface
+      - config_surface
+      - runtime_surface
+    expected_symbols: [task, Task, _task_from_fun, TaskRegistry, register]
+    expected_files: [celery/app/base.py, celery/app/task.py, celery/app/registry.py]
+
+  - id: celery_q02
+    repo: celery
+    core12: false
+    symbol: Task.apply_async
+    question: "When a user calls task.delay() and it delegates to apply_async(), how is the task message constructed and sent to the broker?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: celery_task_publish
+    required_roles_canonical:
+      - api_surface
+      - serializer_handle
+      - integration_surface
+      - orchestrator
+    expected_symbols: [Task, delay, apply_async, send_task, create_task_message, send_task_message, Producer]
+    expected_files: [celery/app/task.py, celery/app/amqp.py, celery/app/base.py]
+
+  - id: celery_q03
+    repo: celery
+    core12: false
+    symbol: Consumer
+    question: "How does the Celery worker receive a message from the broker and execute the underlying task function?"
+    difficulty: hard
+    intent: trace_dependency
+    expected_mode: symbol
+    mechanism: celery_worker_consume
+    required_roles_canonical:
+      - integration_surface
+      - orchestrator
+      - executor
+      - runtime_surface
+    expected_symbols: [Consumer, on_task_request, TaskPool, Strategy, execute]
+    expected_files: [celery/worker/consumer/consumer.py, celery/worker/request.py, celery/worker/strategy.py]
+
+  - id: celery_q04
+    repo: celery
+    core12: false
+    symbol: AsyncResult
+    question: "How does AsyncResult check the state of a task and retrieve its return value from the backend?"
+    difficulty: medium
+    intent: explain_behavior
+    expected_mode: symbol
+    mechanism: celery_async_result_backend
+    required_roles_canonical:
+      - api_surface
+      - integration_surface
+      - serializer_handle
+    expected_symbols: [AsyncResult, get, backend, result]
+    expected_files: [celery/result.py, celery/backends]
+
+  - id: celery_q05
+    repo: celery
+    core12: false
+    symbol: Task.apply_async
+    question: "If I modify the signature or default routing options in apply_async, what publisher components and tests are affected?"
+    difficulty: hard
+    intent: impact_analysis
+    expected_mode: symbol
+    mechanism: celery_apply_async_impact
+    required_roles_canonical:
+      - impact_runtime
+      - impact_public_api
+      - impact_test_surface
+    expected_symbols: [Task, apply_async, send_task, Router, Publisher]
+    expected_files: [celery/app/task.py, celery/app/amqp.py, t]

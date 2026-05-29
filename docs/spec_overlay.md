@@ -4,6 +4,8 @@
 
 `sidecar/overlay.py` — holds unsaved file content in memory and re-parses symbols on demand. Enables the arbitrator to answer questions about code the user is currently editing, before it hits disk.
 
+`POST /overlay` and `DELETE /overlay` validate `file_path` under the workspace project root before touching overlay state (see [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)).
+
 ---
 
 ## Class: InMemoryOverlay

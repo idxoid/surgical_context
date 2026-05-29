@@ -10,7 +10,7 @@ Primary surfaces:
 
 1. **Chat Panel** — ask questions about the current symbol and read streaming answers.
 2. **Context Inspector** — inspect primary source, graph context, docs, prompt JSON, and token allocation.
-3. **Impact Explorer** — inspect calls, reverse dependencies, docs covering a symbol, and likely blast radius.
+3. **Impact Explorer** — inspect bounded reverse reachability for a symbol, affected files, and prompt-context impact.
 4. **Dashboard** — inspect health, indexing status, token savings, and recent system activity. fileciteturn0file0L20-L31 fileciteturn0file0L54-L67
 
 ## Design
@@ -123,15 +123,15 @@ A developer asks a question in the Chat Panel, then opens the inspector to verif
 
 ### 3. Impact Explorer
 
-The Impact Explorer visualizes likely change impact for the selected symbol.
+The Impact Explorer visualizes likely change impact for the selected symbol. The current product scope is intentionally shallow: it uses the sidecar's bounded `AFFECTS` graph plus the selected ask's prompt context. It is not a full framework-aware blast-radius engine across codegen, templates, runtime dispatch, and tests.
 
 #### Sections
 
-- `Calls`
-- `Called By`
-- `Depends On`
-- `Docs Covering`
 - `Affects`
+- `Files`
+- Summary metrics: affected symbols, affected files, max traversal depth, source (`live graph` or `prompt context`)
+
+Current implementation note: `Affects` maps to materialized `AFFECTS` edges. The prompt-context source is derived from the selected ask's `graph_context` and documentation files, so Inspect and Impact stay attached to the same request. First-class `CALLS_*`, `DEPENDS_ON`, `FROM`, and `COVERS` Impact groups are a later iteration, not the current UI contract.
 
 These sections map directly to the underlying graph model and retrieval strategy. The backend already models `CALLS_*`, `DEPENDS_ON`, `AFFECTS`, `FROM`, and `COVERS` relationships. fileciteturn0file0L180-L197
 
@@ -169,6 +169,7 @@ The extension UI should use four state domains.
 | Field | Type | Purpose |
 |---|---|---|
 | `conversationId` | `string` | Current thread identity inside the panel |
+| `selectedRequestId` | `string \| null` | Completed ask selected as the source for Inspector and prompt-context Impact |
 | `selectedSymbol` | `SymbolRef \| null` | Active symbol for ask/inspect/impact actions |
 | `expandedGroups` | `Record<string, boolean>` | Accordion open state |
 | `pinnedItems` | `PinnedContextItem[]` | Manually pinned symbols or docs |
@@ -196,6 +197,7 @@ The extension UI should use four state domains.
 | Field | Type | Purpose |
 |---|---|---|
 | `status` | `'idle' \| 'collecting' \| 'streaming' \| 'done' \| 'error'` | Request lifecycle |
+| `lastRequest` | `LastRequest \| null` | Host-side selected/completed request: request id, symbol, question, answer, and prompt context |
 | `mode` | `'surgical' \| 'standard'` | Ask mode |
 | `intent` | `string \| null` | Request intent classification |
 | `contextSummary` | `ContextSummary \| null` | Compact display data for accordions |
@@ -213,8 +215,10 @@ The UI has two boundaries:
 export type WebviewToExtensionMessage =
   | { type: 'chat.ask'; prompt: string }
   | { type: 'chat.retry'; messageId: string }
+  | { type: 'request.selected'; requestId: string; symbol?: string; question?: string; answer?: string; context: PromptContextDto }
   | { type: 'context.openInspector' }
   | { type: 'impact.open'; symbol?: string }
+  | { type: 'impact.openFiles'; filePaths: string[] }
   | { type: 'accordion.toggle'; group: 'environment' | 'contextSummary' | 'advancedInfo'; expanded: boolean }
   | { type: 'composer.resize'; height: number }
   | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down' };
@@ -270,16 +274,17 @@ These endpoints are already implemented or planned in the architecture document.
 
 1. The user clicks `Inspect Context`.
 2. The webview switches to the inspector view.
-3. The inspector reads the cached `PromptContext` from the most recent completed ask.
+3. The inspector reads the selected request's `PromptContext`; if no request is selected, it falls back to the most recent completed ask.
 4. The UI renders tabs for primary source, graph context, documentation, and token breakdown.
 5. The user can open a selected symbol in the editor.
 
 ### Flow 3: Show impact
 
 1. The user clicks `Impact` from the action row or an inline CodeLens action.
-2. The extension host calls `GET /impact` for the selected symbol.
-3. The UI renders grouped sections for `Calls`, `Called By`, `Depends On`, `Docs Covering`, and `Affects`.
-4. The user opens a follow-up ask or related file from the result set.
+2. If the user came from a selected ask, the tab first renders prompt-context impact from that request.
+3. If live graph impact is requested, the extension host calls `GET /impact` for the selected symbol.
+4. The UI renders `Affects`, `Files`, summary counts, and depth/source metadata.
+5. The user opens a related file, opens up to 12 related files, starts a follow-up ask, or creates a refactor-plan prompt.
 
 ## Layout Rules
 

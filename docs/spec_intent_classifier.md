@@ -200,23 +200,29 @@ This prevents a single over-eager tier from starving others. Example: in debuggi
 
 **Input:** User query (text)
 
-**Current process:** deterministic keyword matching.
+**Current process:** deterministic keyword matching with phrase override pass.
 
-- Lowercase the query.
-- Match standalone keywords with word boundaries and phrase keywords by substring.
-- Score each matching intent by keyword specificity: multi-word phrases score higher than short generic words.
-- Choose the primary intent by fixed precedence among intents that matched at least one keyword.
-- Compute a normalized distribution across all matched intents.
-- Mark `ambiguous=true` when the second-best score is close to the strongest score.
-- Default to `exploration` with confidence `0.0` when no keyword matches.
+1. Lowercase the query.
+2. **Token pass** — match standalone keywords with word boundaries and phrase keywords by substring. Score each matching intent by keyword specificity: multi-word phrases score higher (1.5+) than long tokens (1.2) than short words (1.0).
+3. **Phrase override pass** — scan `_PHRASE_OVERRIDES`, a list of `(phrase, intent, weight)` tuples. When a phrase matches the lowercased query, its weight is added directly to that intent's score regardless of token matches. Phrases cover cross-intent contexts where an action verb (add/remove) is instrumental rather than declarative, e.g. `"to understand why"` (+2.0 DEBUGGING), `"to fix"` (+1.5 DEBUGGING). Phrase weights are calibrated to beat single-token ambiguity.
+4. The primary intent is the highest scorer. Ties are broken by the fixed precedence order.
+5. Compute a normalized distribution across all matched intents.
+6. Mark `ambiguous=true` when the second-best score is within 35% of the winner.
+7. Default to `exploration` with confidence `0.0` when no keyword or phrase matches.
 
-**Primary intent precedence:**
+**Primary intent precedence (tie-breaker only):**
 
 ```
 debugging → impact_analysis → refactor → new_feature → design_question → navigation → exploration
 ```
 
-This precedence is intentional but imperfect. For example, a query that includes both "why" and "where" routes as debugging; a query that includes "add" and "best way" routes as new_feature before design_question. The distribution/ambiguous metadata exists so these mixed cases are visible even before full multi-label routing.
+**Cross-intent false positive examples and their phrase fixes:**
+
+| Query | Naive result | Phrase fix | Correct result |
+|---|---|---|---|
+| "add logging to understand why the function fails" | `exploration` (understand=1.2) | `"to understand why"` +2.0 DEBUGGING | `debugging` |
+| "remove the old config to understand why startup is slow" | `exploration` | `"to understand why"` +2.0 DEBUGGING | `debugging` |
+| "add caching to fix the slow query" | `new_feature` | `"to fix"` +1.5 DEBUGGING | `debugging` (ambiguous) |
 
 **Deferred alternatives:**
 - Lightweight LLM classification for ambiguous queries.

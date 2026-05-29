@@ -23,7 +23,21 @@
         <span>${escapeHtml(symbolInfo.filePath)}</span>
         <code>${escapeHtml(symbolInfo.uid)}</code>
       </div>
+      <div class="impact-metrics" aria-label="Impact summary">
+        ${renderMetric("Symbols", symbolInfo.affectedCount)}
+        ${renderMetric("Files", symbolInfo.fileCount)}
+        ${renderMetric("Depth", symbolInfo.maxDepth)}
+        ${symbolInfo.sourceLabel ? `<span class="impact-source-chip">${escapeHtml(symbolInfo.sourceLabel)}</span>` : ""}
+      </div>
     </div>
+  `;
+  }
+  function renderMetric(label, value) {
+    return `
+    <span class="impact-metric">
+      <strong>${Number.isFinite(value) ? value : 0}</strong>
+      <span>${escapeHtml(label)}</span>
+    </span>
   `;
   }
   function renderAffectsGroup(affectedSymbols, title = "Affects", expanded = true) {
@@ -44,15 +58,24 @@
       const isDirty = sym.is_dirty;
       const relation = sym.relation || sym.direction || "related";
       const depth = typeof sym.depth === "number" ? `d${sym.depth}` : "";
+      const line = lineFromSymbol(sym);
+      const depthClass = typeof sym.depth === "number" && sym.depth <= 1 ? "direct" : "indirect";
       return `
-        <div class="impact-row" data-file-path="${escapeHtml(filePath)}">
+        <button
+          type="button"
+          class="impact-row"
+          data-action="openFile"
+          data-file-path="${escapeHtml(filePath)}"
+          data-line="${line}"
+          title="Open ${escapeHtml(symbolName)}"
+        >
           <span class="impact-chevron" aria-hidden="true">\u203A</span>
           <span class="impact-symbol">${escapeHtml(symbolName)}</span>
           <span class="impact-file">${escapeHtml(filePath)}</span>
-          <span class="impact-tag direct">${escapeHtml(depth || relation)}</span>
+          <span class="impact-tag ${depthClass}">${escapeHtml(depth || relation)}</span>
           ${score ? `<span class="impact-tag indirect">${(score * 100).toFixed(0)}%</span>` : ""}
           ${isDirty ? '<span class="impact-tag conditional">dirty</span>' : ""}
-        </div>
+        </button>
       `;
     }).join("");
     return `
@@ -68,30 +91,46 @@
     </div>
   `;
   }
-  function renderPlaceholderGroup(title, message, count, expanded = false) {
+  function lineFromSymbol(sym) {
+    const explicit = sym.line || sym.start_line || sym.lineno;
+    if (typeof explicit === "number" && Number.isFinite(explicit)) {
+      return Math.max(1, explicit);
+    }
+    const range = sym.range;
+    if (Array.isArray(range) && typeof range[0] === "number") {
+      return Math.max(1, range[0]);
+    }
+    return 1;
+  }
+  function renderFilesGroup(filePaths, expanded = false) {
+    const uniquePaths = Array.from(new Set(filePaths.filter(Boolean)));
+    if (uniquePaths.length === 0) {
+      return renderAffectsGroup([], "Files", expanded);
+    }
+    const rows = uniquePaths.map((filePath) => `
+      <button
+        type="button"
+        class="impact-row impact-file-row"
+        data-action="openFile"
+        data-file-path="${escapeHtml(filePath)}"
+        data-line="1"
+        title="Open ${escapeHtml(filePath)}"
+      >
+        <span class="impact-chevron" aria-hidden="true">\u203A</span>
+        <span class="impact-symbol">File</span>
+        <span class="impact-file">${escapeHtml(filePath)}</span>
+        <span class="impact-tag indirect">related</span>
+      </button>
+    `).join("");
     return `
     <div class="impact-group ${expanded ? "expanded" : ""}">
       <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
         <span aria-hidden="true">\u203A</span>
-        <strong>${escapeHtml(title)}</strong>
-        ${count !== void 0 ? `<span>(${count})</span>` : ""}
+        <strong>Files</strong>
+        <span>(${uniquePaths.length})</span>
       </button>
-      <div class="group-content placeholder" ${expanded ? "" : "hidden"}>
-        <p>${escapeHtml(message)}</p>
-        ${expanded ? `
-              <div class="impact-row static">
-                <span class="impact-chevron" aria-hidden="true">\u203A</span>
-                <span class="impact-symbol">SymbolResolver.resolve()</span>
-                <span class="impact-file">packages/core/src/symbolResolver.ts:87</span>
-                <span class="impact-tag direct">direct</span>
-              </div>
-              <div class="impact-row static">
-                <span class="impact-chevron" aria-hidden="true">\u203A</span>
-                <span class="impact-symbol">Graph.getNeighbors()</span>
-                <span class="impact-file">packages/core/src/graphBuilder.ts:142</span>
-                <span class="impact-tag direct">direct</span>
-              </div>
-            ` : ""}
+      <div class="group-content" ${expanded ? "" : "hidden"}>
+        ${rows}
       </div>
     </div>
   `;
@@ -202,25 +241,23 @@
       const summaryCard = renderSymbolSummaryCard({
         symbol: this.currentSymbol,
         filePath: this.currentImpact.file_path || "unknown",
-        uid: this.currentImpact.symbol_uid || this.currentSymbol
+        uid: this.currentImpact.symbol_uid || this.currentSymbol,
+        affectedCount: this.currentImpact.affected_count || this.currentImpact.affected_symbols?.length || 0,
+        fileCount: this.currentImpact.affected_file_count || this.currentImpact.affected_files?.length || 0,
+        maxDepth: this.currentImpact.max_depth || 0,
+        sourceLabel: "live graph"
       });
       const affectsGroup = renderAffectsGroup(this.currentImpact.affected_symbols || []);
-      const callsGroup = renderPlaceholderGroup("Calls", "Calls are coming in Phase 6");
-      const calledByGroup = renderPlaceholderGroup("Called By", "Called By information is coming in Phase 6");
-      const dependsOnGroup = renderPlaceholderGroup("Depends On", "Dependency analysis is coming in Phase 6");
-      const docsCoveringGroup = renderPlaceholderGroup("Docs Covering", "Documentation linking is coming in Phase 6");
+      const filesGroup = renderFilesGroup(this.currentImpact.affected_files || [], false);
       const actionButtons = renderActionButtonRow();
       root.innerHTML = `
       <div class="impact-container">
         ${summaryCard}
+        ${actionButtons}
         <div class="impact-groups">
           ${affectsGroup}
-          ${callsGroup}
-          ${calledByGroup}
-          ${dependsOnGroup}
-          ${docsCoveringGroup}
+          ${filesGroup}
         </div>
-        ${actionButtons}
       </div>
     `;
       this.attachEventListeners();
@@ -244,6 +281,15 @@
           vscode.postMessage({
             type: "action.openChat",
             prefillSymbol: this.currentSymbol
+          });
+        });
+      }
+      const openFilesBtn = document.querySelector('[data-action="open-related-files"]');
+      if (openFilesBtn && this.currentImpact?.affected_files?.length) {
+        openFilesBtn.addEventListener("click", () => {
+          vscode.postMessage({
+            type: "impact.openFiles",
+            filePaths: this.currentImpact?.affected_files || []
           });
         });
       }

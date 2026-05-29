@@ -94,6 +94,7 @@ class MainSurface {
             this.currentImpact = this.impactFromContext(message.state.lastContext);
             this.currentImpactSymbol = message.state.lastContext.primary_source.symbol;
             this.currentImpactSource = 'prompt';
+            this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
           }
           this.render();
           break;
@@ -441,6 +442,10 @@ class MainSurface {
           symbol,
           filePath: this.currentImpact.file_path || 'unknown',
           uid: this.currentImpact.symbol_uid || symbol,
+          affectedCount: this.currentImpact.affected_count || this.currentImpact.affected_symbols?.length || 0,
+          fileCount: this.currentImpact.affected_file_count || this.currentImpact.affected_files?.length || 0,
+          maxDepth: this.currentImpact.max_depth || 0,
+          sourceLabel: this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph',
         })}
         ${renderActionButtonRow()}
         <div class="impact-groups">
@@ -664,7 +669,7 @@ class MainSurface {
         );
         break;
       case 'open-related-files':
-        this.showToast('Related file opener is coming soon.', 'info');
+        this.openRelatedImpactFiles();
         break;
       case 'openFile':
         this.openFileFromImpact(target);
@@ -748,6 +753,21 @@ class MainSurface {
       type: 'action.showImpact',
       symbol: selectedSymbol,
     });
+  }
+
+  private openRelatedImpactFiles(): void {
+    const filePaths = Array.from(new Set(this.currentImpact?.affected_files || []))
+      .filter(Boolean)
+      .slice(0, 12);
+    if (filePaths.length === 0) {
+      this.showToast('No related files to open.', 'info');
+      return;
+    }
+    this.postMessage({
+      type: 'impact.openFiles',
+      filePaths,
+    });
+    this.showToast(`Opening ${filePaths.length} related file${filePaths.length === 1 ? '' : 's'}.`, 'info');
   }
 
   private askAboutSymbol(): void {
@@ -1121,6 +1141,32 @@ class MainSurface {
     this.currentImpactSymbol = context.primary_source.symbol;
     this.currentImpactSource = 'prompt';
     this.impactError = null;
+    this.syncSelectedRequestToHost(requestId, context);
+  }
+
+  private syncSelectedRequestToHost(requestId: string, context: PromptContextPayload): void {
+    const assistantMessage = this.messages.get(requestId);
+    this.postMessage({
+      type: 'request.selected',
+      requestId,
+      symbol: context.primary_source.symbol,
+      question: this.selectedPromptText() || undefined,
+      answer: assistantMessage?.content || undefined,
+      context,
+    });
+  }
+
+  private findRequestIdForContext(context: PromptContextPayload): string | null {
+    const traceId = context.metadata?.assembly?.trace_id;
+    const entries = Array.from(this.messages.values()).filter(message => message.context);
+    if (traceId) {
+      const exact = entries.find(message => message.context?.metadata?.assembly?.trace_id === traceId);
+      if (exact?.requestId) return exact.requestId;
+    }
+    const bySymbol = entries
+      .filter(message => message.context?.primary_source.symbol === context.primary_source.symbol)
+      .sort((left, right) => right.timestamp - left.timestamp);
+    return bySymbol[0]?.requestId || null;
   }
 
   private summaryFromContext(context: PromptContextPayload): ContextSummaryDto {
@@ -1151,6 +1197,11 @@ class MainSurface {
       file_path: context.primary_source.file_path,
       affected_symbols: affectedSymbols,
       affected_files: affectedFiles,
+      affected_count: affectedSymbols.length,
+      affected_file_count: affectedFiles.length,
+      max_depth: affectedSymbols.reduce((max, symbol) => (
+        typeof symbol.depth === 'number' ? Math.max(max, symbol.depth) : max
+      ), 0),
     };
   }
 

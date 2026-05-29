@@ -20,23 +20,44 @@ So the document's main lesson still stands:
 
 ### Latest Real-Repo Run
 
-Last local run: 2026-05-24, full real-repo pack from
+Last local run: **2026-05-26**, full real-repo pack from
 `tests/fixtures/real_repo_question_pack.yaml`, using `--no-index` against the
-current local indexes.
+current local indexes (~2.8 min wall time for all 11 repos).
 
-| Repo | Questions | Pass | Notes |
+| Repo | Q | Pass | P@5 fill | P@5 prompt | P@5 score | R@5 | Role | File | Ctx prec | Tokens | BF | Bridge | Dup |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| fastapi | 8 | 8/8 | 0.23 | 0.18 | 0.20 | 0.32 | 1.00 | 0.81 | 0.08 | 16,965 | 0.62 | 2.25 | 0.00 |
+| pydantic | 8 | 8/8 | 0.18 | 0.18 | 0.18 | 0.42 | 1.00 | 0.81 | 0.05 | 26,196 | 1.62 | 2.25 | 0.25 |
+| redux_toolkit | 8 | 8/8 | 0.20 | 0.18 | 0.20 | 0.62 | 1.00 | 0.78 | 0.06 | 22,614 | 1.75 | 2.12 | 0.00 |
+| django | 5 | 5/5 | 0.24 | 0.24 | 0.24 | 0.35 | 1.00 | 0.80 | 0.08 | 17,711 | 1.40 | 1.40 | 0.40 |
+| flask | 5 | 5/5 | 0.20 | 0.16 | 0.20 | 0.28 | 1.00 | 1.00 | 0.05 | 14,714 | 0.60 | 0.60 | 0.20 |
+| express | 4 | 4/4 | 0.30 | 0.30 | 0.30 | 0.42 | 1.00 | 1.00 | 0.08 | 7,796 | 2.25 | 2.25 | 0.00 |
+| nestjs | 4 | 4/4 | 0.25 | 0.40 | 0.40 | 0.31 | 1.00 | 0.88 | 0.20 | 5,198 | 1.25 | 1.25 | 0.00 |
+| sqlalchemy | 4 | 4/4 | 0.20 | 0.23 | 0.20 | 0.27 | 1.00 | 0.88 | 0.08 | 14,935 | 0.50 | 0.50 | 0.25 |
+| vue | 4 | 4/4 | 0.25 | 0.25 | 0.30 | 0.35 | 1.00 | 1.00 | 0.03 | 27,433 | 1.75 | 1.75 | 0.00 |
+| surgical_context | 7 | 7/7 | 0.29 | 0.29 | 0.31 | 0.37 | 1.00 | 0.79 | 0.12 | 24,091 | 2.14 | 3.29 | 0.00 |
+| dathund | 8 | 8/8 | 0.25 | 0.28 | 0.30 | 0.34 | 1.00 | 0.83 | 0.14 | 24,112 | 2.50 | 2.75 | 0.75 |
+| **Total** | **65** | **65/65** | **0.23** | **0.24** | **0.26** | **0.37** | **1.00** | **0.87** | **0.09** | **201,765** | **1.49** | **1.86** | **0.17** |
+
+**BF** = avg `ROLE_BACKFILL` symbols in top-5 deps; **Bridge** = avg bridge-class symbols in top-5; **Dup** = avg duplicate symbol names in top-5.
+
+**Changes since 2026-05-24 snapshot:** three-way P@5 reporting; trace head-bridge cap; CamelCase↔snake `api_surface` for module exports; express routing `composition_surface` recovery; identity/engine `executor`/`orchestrator` role assignment; builtin `surgical_context_ranker_fusion` + `factory_surface` backfill for `rank`/`_fuse`/`BudgetPruner` (`surgical_context_q02` → role 1.00).
+
+**Role recall:** saturated at **1.00** across all repos (no per-question tails in this run). Reports: `/tmp/qa_bench_full_20260526_162342/*.json`.
+
+| Repo | Questions | Pass | Notes (legacy row, pre-2026-05-26) |
 |---|---:|---:|---|
 | FastAPI | 8 | 8/8 | green; trace_dependency questions already 1.0/1.0 — no regression from gate relax |
 | Pydantic | 8 | 8/8 | green |
-| Redux Toolkit | 8 | 8/8 | `rtk_q07` (monorepo packages vs docs/examples) now passes via workspace-mode relax (role=1.00, file=0.25) |
+| Redux Toolkit | 8 | 8/8 | `rtk_q07` workspace-mode relax |
 | Django | 5 | 5/5 | green |
 | Flask | 5 | 5/5 | green |
 | Express | 4 | 4/4 | green |
 | NestJS | 4 | 4/4 | green |
 | SQLAlchemy | 4 | 4/4 | green |
 | Vue | 4 | 4/4 | green |
-| surgical_context | 7 | 7/7 | `surgical_context_q07` passes after TS `object_api` indexing + `object_api` call-resolution + `role_taxonomy` fixes; `surgical_context_q01` now passes via query-topic recovery for explicit pipeline stages (`ranking`, `PromptContext`) |
-| dathund | 8 | 8/8 | `q04` / `q06` pass after broadening trace-mode recovery to identity/principal resolution and time/clock-window flows |
+| surgical_context | 7 | 7/7 | ranker-fusion backfill; role 1.00 |
+| dathund | 8 | 8/8 | identity trace roles |
 | **Total** | **65** | **65/65 (100.0%)** | — |
 
 Gate-relax history that produced this snapshot:

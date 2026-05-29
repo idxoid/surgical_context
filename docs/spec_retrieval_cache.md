@@ -1,6 +1,6 @@
 # Spec — Retrieval Cache (Phase 10)
 
-> **Status:** Proposed. Three-layer cache between parser / graph / LLM. Not critical for MVP — becomes mandatory once repo size or user count grows past a single-instance Neo4j's comfort zone.
+> **Status:** Implemented (`sidecar/cache/layered.py`). L1 (body) and L3 (response) are in production. L2 (subgraph) is implemented but only used by the now-removed graph-only path — it remains available for future use. L3 invalidation via file index is implemented and wired to the indexer.
 
 ## 1. Problem
 
@@ -38,14 +38,16 @@ Reasoning: source code is already hashed; cache key is free correctness. No stal
 
 ### 2.3 Layer 3 — Prompt/Response Cache
 
-**Key:** `sha256(system_prompt || user_question)` — bound to the exact text the model sees.
-**Value:** assistant response (full text + metadata).
+**Key:** `(workspace_id, sha256(system_prompt || user_question))` — bound to the exact text the model sees plus workspace scope.
+**Value:** `CachedResponse(answer, metadata, expires_at)`.
 **TTL:** 24 hours default, configurable.
-**Backend:** Redis with TTL, or disk-backed SQLite for local mode.
+**Backend:** in-process LRU (`InMemoryResponseCache`, capacity 1 000). Redis/SQLite backends can swap in later.
 
 Distinct from Anthropic's ephemeral prompt caching — that layer is provider-side and short-lived. L3 is our own observable, replayable cache.
 
-**Honesty guard:** L3 entries carry the intent and mode used to build the prompt. Cross-user sharing is only safe when `workspace_id` matches — embed it in the key.
+**File index for targeted invalidation:** `put_response` accepts an optional `file_paths: list[str]`. A secondary `_file_index: dict[str, set[tuple]]` maps each file path to the set of L3 keys that reference it. When the indexer re-indexes a file, `LayeredCache.invalidate_files(paths, workspace_id)` drops both L1 body entries (keyed by path prefix) and all L3 entries tagged to those paths. This prevents stale answers after code changes without flushing the entire cache.
+
+**Consistency:** both `/ask` and `/ask/stream` read and write L3. A cache hit in stream mode emits the full cached answer as a single `chunk` SSE event, matching the non-streaming behavior semantically.
 
 ### 2.4 Hit / Miss Semantics
 
@@ -104,12 +106,14 @@ Backend abstraction lets dev run in-memory, prod run Redis.
 
 | Event | L1 action | L2 action | L3 action |
 |---|---|---|---|
-| File re-indexed (hash change) | Invalidate entries for that path | — | — |
-| Symbol body edited (overlay) | Key is overlay-path; separate LRU namespace | — | — |
-| Graph mutation (any node/edge) | — | Bump `graph_version` | — |
+| File re-indexed (hash change) | `invalidate_file(path)` clears all `(path, *, *)` entries | — | `invalidate_files([path])` drops all keys in the file index for that path |
+| Symbol body edited (overlay) | Overlay-dirty flag bypasses L1 read; entry remains but is skipped | — | — |
+| Graph mutation (any node/edge) | — | Bump `graph_version` (key goes stale, LRU collects it) | — |
 | Ranker weights changed | — | Bump a global `ranker_version` in keys | Invalidate all |
 | Time passes | LRU evict | LRU evict | TTL expire |
 | Workspace deleted | Flush entries with that `workspace_id` | Flush | Flush |
+
+`LayeredCache.invalidate_files(file_paths, workspace_id)` is the unified call: it fires L1 invalidation for each path and L3 file-index invalidation in one shot. Called by `_index_file_now` (hot path) and `_process_index_batch` (batch path) in `sidecar/main.py`.
 
 ## 5. Examples
 

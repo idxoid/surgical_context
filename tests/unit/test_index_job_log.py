@@ -1,7 +1,7 @@
 """Unit tests for durable indexing job log."""
 
-from concurrent.futures import ThreadPoolExecutor
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 

@@ -109,3 +109,18 @@ class MyClass:
 
         lines2 = overlay.read_lines("file2.py", 1, 1)
         assert "bar" in lines2
+
+    def test_users_in_same_workspace_do_not_share_overlay_buffers(self, overlay):
+        """Unsaved buffers are isolated per (workspace_id, user_id, file_path)."""
+        ws = "acme/repo@main"
+        overlay.update("test.py", "alice draft\n", workspace_id=ws, user_id="alice")
+        overlay.update("test.py", "bob draft\n", workspace_id=ws, user_id="bob")
+
+        assert (
+            overlay.read_lines("test.py", 1, 1, workspace_id=ws, user_id="alice") == "alice draft\n"
+        )
+        assert overlay.read_lines("test.py", 1, 1, workspace_id=ws, user_id="bob") == "bob draft\n"
+
+        overlay.clear("test.py", workspace_id=ws, user_id="alice")
+        assert not overlay.has("test.py", workspace_id=ws, user_id="alice")
+        assert overlay.has("test.py", workspace_id=ws, user_id="bob")

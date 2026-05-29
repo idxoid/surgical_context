@@ -34,19 +34,36 @@ class RankerScoring:
         return float(positive * c.noise_factor - w.epsilon * c.token_cost / 100)
 
     def normalize(self, pool: list[Candidate]) -> None:
-        g_vals = [c.graph_score for c in pool if c.graph_score > 0]
-        s_vals = [c.semantic_score for c in pool if c.semantic_score > 0]
+        g_vals = sorted(c.graph_score for c in pool if c.graph_score > 0)
+        s_vals = sorted(c.semantic_score for c in pool if c.semantic_score > 0)
 
-        g_min, g_max = (min(g_vals), max(g_vals)) if g_vals else (0.0, 1.0)
-        s_min, s_max = (min(s_vals), max(s_vals)) if s_vals else (0.0, 1.0)
-        g_range = (g_max - g_min) or 1.0
-        s_range = (s_max - s_min) or 1.0
+        def _bounds(vals: list[float]) -> tuple[float, float]:
+            if not vals:
+                return 0.0, 1.0
+            if len(vals) < 10:
+                # Small pool: clip to [p10, p90] to prevent score collapse when
+                # all candidates cluster at the same raw value.
+                lo = vals[max(0, len(vals) // 10)]
+                hi = vals[min(len(vals) - 1, (9 * len(vals)) // 10)]
+                if hi <= lo:
+                    hi = vals[-1]
+                    lo = vals[0]
+            else:
+                p10 = vals[len(vals) // 10]
+                p90 = vals[(9 * len(vals)) // 10]
+                lo, hi = p10, p90
+            return lo, hi
+
+        g_lo, g_hi = _bounds(g_vals)
+        s_lo, s_hi = _bounds(s_vals)
+        g_range = (g_hi - g_lo) or 1.0
+        s_range = (s_hi - s_lo) or 1.0
 
         for c in pool:
             if c.graph_score > 0:
-                c.graph_score = (c.graph_score - g_min) / g_range
+                c.graph_score = max(0.0, min(1.0, (c.graph_score - g_lo) / g_range))
             if c.semantic_score > 0:
-                c.semantic_score = (c.semantic_score - s_min) / s_range
+                c.semantic_score = max(0.0, min(1.0, (c.semantic_score - s_lo) / s_range))
 
     def intent_priors(self, intent: Intent) -> dict[str, float]:
         if intent in (Intent.DEBUGGING, Intent.NAVIGATION):
@@ -77,23 +94,18 @@ class RankerScoring:
 
         path_terms = set(self.focus_identifier_terms(path))
         target_path_terms = set(self.focus_identifier_terms(target_path))
-        subsystem_rules = (
-            (
-                {"query"},
-                {"query", "queries", "api", "endpoint", "endpoints", "subscription"},
-            ),
-            ({"listener", "middleware"}, {"listener", "listeners", "side", "effect", "effects"}),
-            ({"entity"}, {"entity", "entities", "adapter", "sort", "sorted"}),
-            ({"entities"}, {"entity", "entities", "adapter", "sort", "sorted"}),
-            ({"scripts"}, {"script", "scripts", "tooling", "triage", "release"}),
-        )
-        for marker_terms, topic_terms in subsystem_rules:
-            if not marker_terms <= path_terms or marker_terms <= target_path_terms:
-                continue
-            if query_terms & topic_terms:
-                return 1.0
-            if not has_explicit_role_backfill:
-                return 0.15 if candidate.kind != "doc" else 0.45
+        # Subsystem isolation: if the candidate lives in a directory subtree that
+        # shares no path-identifier overlap with the target's subtree, and the query
+        # doesn't mention any of the candidate's path terms, it's likely off-topic.
+        # Use at least 2-term overlap as the "same subsystem" threshold so generic
+        # parent dirs (src/, lib/) don't count.
+        candidate_unique_terms = path_terms - target_path_terms
+        if (
+            len(candidate_unique_terms) >= 2
+            and not (candidate_unique_terms & query_terms)
+            and not has_explicit_role_backfill
+        ):
+            return 0.15 if candidate.kind != "doc" else 0.45
 
         required = set(normalize_roles(required_roles)) - {"docs_or_concept"}
         primary_role = self.host.role_fulfilment.role_of(candidate)
@@ -185,6 +197,12 @@ class RankerScoring:
             relation = "IMPORTS"
         elif rel_type == "SEMANTIC_HINT":
             relation = "SEMANTIC_HINT_out" if outgoing else "SEMANTIC_HINT_in"
+        elif rel_type == "HAS_API":
+            relation = "HAS_API_out" if outgoing else "HAS_API_in"
+        elif rel_type == "INHERITED_API":
+            relation = "INHERITED_API_out" if outgoing else "INHERITED_API_in"
+        elif rel_type == "DECORATED_BY":
+            relation = "DECORATED_BY_out" if outgoing else "DECORATED_BY_in"
         else:
             relation = "DEPENDS_ON"
 
@@ -226,7 +244,26 @@ class RankerScoring:
         q = (query or "").lower()
         if "depend" in m or "trace_dependency" in m:
             return True
+        if m.endswith("_publish") or m.endswith("_consume"):
+            return True
+        if "publish" in m or "consume" in m:
+            return True
+        if "routing" in m or "dispatch" in m:
+            return True
         if "hook" in m or "lifecycle" in m:
+            return True
+        if any(term in q for term in ("router", "routing", "middleware")) and any(
+            term in q
+            for term in (
+                "delegate",
+                "delegates",
+                "handling",
+                "handler",
+                "request",
+                "dispatch",
+                "create",
+            )
+        ):
             return True
         if "dependency injection" in q:
             return True
@@ -252,6 +289,12 @@ class RankerScoring:
             return True
         if any(term in q for term in ("compile", "compiler", "template")) and any(
             term in q for term in ("render", "runtime", "update")
+        ):
+            return True
+        # Message-publish / task-dispatch trace: "sent to broker", "publish message",
+        # "constructed and sent", "enqueue", etc.
+        if any(term in q for term in ("broker", "publish", "enqueue", "dispatch")) and any(
+            term in q for term in ("sent", "send", "message", "constructed", "task")
         ):
             return True
         return False

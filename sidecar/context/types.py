@@ -21,6 +21,7 @@ class SymbolContext:
     semantic_score: float = 0.0
     blended_score: float = 0.0
     intent_weight: float = 0.0
+    render_mode: str = "full"
     is_dirty: bool = False
     code: str = ""
     provenance: list[str] = field(default_factory=list)
@@ -76,21 +77,82 @@ class PromptContext:
     index_manifest_id: str = ""
     index_manifest_schema_version: int | None = None
 
+    # Relations that are callers of the target (explain *why* / *who uses* it).
+    _CALLER_RELATIONS = frozenset(
+        {
+            "caller",
+            "CALLS_DIRECT_in",
+            "CALLS_SCOPED_in",
+            "CALLS_DYNAMIC_in",
+            "CALLS_INFERRED_in",
+            "CALLS_GUESS_in",
+            "CALLS_in",
+        }
+    )
+
+    def _dep_sort_key(self, dep: "SymbolContext") -> tuple:
+        """Callers first (depth 1), then other graph neighbours, then deep."""
+        is_caller = dep.direction == "caller" or dep.relation in self._CALLER_RELATIONS
+        return (0 if is_caller else 1, dep.depth, -(dep.blended_score or dep.relevance_score))
+
+    def ordered_graph_context(self, *, include_empty_code: bool = False) -> list[SymbolContext]:
+        """Return graph deps in the same order used for prompt rendering."""
+        ordered = sorted(self.graph_context, key=self._dep_sort_key)
+        if include_empty_code:
+            return ordered
+        return [dep for dep in ordered if dep.code and dep.code.strip()]
+
+    @staticmethod
+    def _dep_annotation(dep: "SymbolContext") -> str:
+        parts = [dep.relation]
+        if dep.depth:
+            parts.append(f"depth={dep.depth}")
+        if dep.blended_score:
+            parts.append(f"score={dep.blended_score:.2f}")
+        return ", ".join(parts)
+
     def to_system_prompt(self) -> str:
         """Render to the flat text format the LLM receives."""
-        blocks = [
-            f"--- TARGET SYMBOL: {self.primary_source.symbol} ---",
-            self.primary_source.code,
-        ]
+        # Incompleteness disclaimer when the LLM would otherwise see partial context.
+        header_lines: list[str] = []
+        if self.missing_roles:
+            roles_str = ", ".join(self.missing_roles)
+            header_lines.append(f"# Context note: partial — missing roles: [{roles_str}].")
+        if self.stopped_reason in (
+            "budget_exhausted",
+            "expansion_no_progress",
+            "floor_unfilled_sparse_target",
+        ):
+            spent = self.budget.get("spent", 0)
+            limit = self.budget.get("limit", 0)
+            header_lines.append(
+                f"# Context note: budget limit reached ({spent}/{limit} tokens). Some neighbours omitted."
+            )
+
+        blocks: list[str] = []
+        if header_lines:
+            blocks.extend(header_lines)
+
+        blocks.append(f"--- TARGET SYMBOL: {self.primary_source.symbol} ---")
+        blocks.append(self.primary_source.code)
+
+        # #3: sort callers before callees before deep neighbours.
+        # #1: annotate each dependency with role, depth, and score.
+        # #9: skip entries with no code.
         if self.graph_context:
-            blocks.append("\n--- DEPENDENCIES ---")
-            for dep in self.graph_context:
-                blocks.append(f"\n# From {dep.symbol} [{dep.relation}]:")
-                blocks.append(dep.code)
+            non_empty = self.ordered_graph_context()
+            if non_empty:
+                blocks.append("\n--- DEPENDENCIES ---")
+                for dep in non_empty:
+                    annotation = self._dep_annotation(dep)
+                    blocks.append(f"\n# {dep.symbol} [{annotation}]:")
+                    blocks.append(dep.code)
+
         if self.documentation:
             blocks.append("\n--- DOCUMENTATION ---")
             for doc in self.documentation:
                 blocks.append(f"[{doc.source_file}]\n{doc.content}")
+
         return "\n".join(blocks)
 
     def to_dict(self) -> dict:
@@ -200,6 +262,7 @@ class PromptContext:
                 "intent_weight": symbol.intent_weight,
             },
             "provenance": symbol.provenance or ["graph", "code_resolver"],
+            "render_mode": symbol.render_mode,
             "is_dirty": symbol.is_dirty,
             "code": symbol.code,
         }

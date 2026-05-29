@@ -240,6 +240,172 @@ def _apply_graph(
     reporter.stage_end("graph")
 
 
+def _degree_seeds_snapshot(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+) -> tuple[set[str], set[str]]:
+    """Capture (changed_or_refreshed uids, their pre-mutation neighbors) before relink.
+
+    Neighbors must be read before ``_apply_graph`` deletes anything, since a removed
+    symbol's neighbor becomes unreachable once detached but still needs its degree
+    corrected. Returns (seed_uids, removed_uids) so the recompute can drop the
+    now-deleted symbols from the final seed set.
+    """
+    seed_uids: set[str] = set()
+    removed_uids: set[str] = set()
+    for diff in diffs:
+        seed_uids.update(diff.edge_refresh_uids)
+        seed_uids.update(diff.removed_uids)
+        removed_uids.update(diff.removed_uids)
+    neighbor_fn = getattr(db, "degree_neighbor_uids", None)
+    if callable(neighbor_fn) and seed_uids:
+        seed_uids.update(neighbor_fn(sorted(seed_uids), workspace_id=workspace_id))
+    return seed_uids, removed_uids
+
+
+def _degree_phase(
+    seed_uids: set[str],
+    removed_uids: set[str],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Recompute materialized Symbol degree over the affected closure.
+
+    Runs after every edge-creating phase (calls, imports, inheritance, MRO API,
+    SEMANTIC_HINT, TS HTTP route hints) so all degree-counted edge types are
+    present before counting.
+    """
+    recompute = getattr(db, "recompute_degree_for_closure", None)
+    reporter.stage_start("degree", total=1)
+    final_seeds = sorted(seed_uids - removed_uids)
+    if callable(recompute) and final_seeds:
+        recompute(final_seeds, workspace_id=workspace_id)
+    reporter.step("degree")
+    reporter.stage_end("degree")
+    return len(final_seeds)
+
+
+def _proxy_binding_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Create ProxyBinding nodes + PROXY_OF edges for lazy-proxy module vars.
+
+    Runs after `_apply_graph` so the target types (e.g. FlaskProxy) already exist.
+    Proxy detection is per-file in the adapter; we gather across all diffs here.
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+
+    link_proxy = getattr(db, "link_proxy_bindings", None)
+    reporter.stage_start("proxy_bindings", total=1)
+    bindings: list[dict] = []
+    if callable(link_proxy):
+        adapter = PythonAdapter()
+        for diff in diffs:
+            ex = diff.extracted
+            if not ex.path.endswith((".py", ".pyi")):
+                continue
+            try:
+                bindings.extend(adapter.extract_proxy_bindings(ex.source, ex.path))
+            except Exception:
+                continue
+        if bindings:
+            link_proxy(bindings, workspace_id=workspace_id)
+    reporter.step("proxy_bindings")
+    reporter.stage_end("proxy_bindings")
+    return {str(b["proxy_uid"]) for b in bindings if b.get("proxy_uid")}
+
+
+def _proxy_call_resolution_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Forward calls on a proxy var THROUGH PROXY_OF to the real type's method.
+
+    The proxy call-site (`current_app.ensure_sync`) is dropped at normal link time
+    (no node matches the proxy-var qualified name), so we re-resolve from the parsed
+    call facts here: match `callee_qualified_name` against ProxyBinding qns, then wire
+    `caller -[CALLS_DYNAMIC {via_proxy}]-> target.method` (direct or via INHERITED_API).
+    """
+    resolve = getattr(db, "resolve_proxy_calls", None)
+    reporter.stage_start("proxy_calls", total=1)
+    created = 0
+    if callable(resolve):
+        proxy_calls = [
+            {
+                "caller_uid": c.get("caller_uid"),
+                "callee_qualified_name": c.get("callee_qualified_name"),
+                "call_site_line": c.get("call_site_line"),
+            }
+            for diff in diffs
+            for c in diff.extracted.calls
+            if c.get("callee_qualified_name")
+        ]
+        if proxy_calls:
+            created = resolve(proxy_calls, workspace_id=workspace_id)
+    reporter.step("proxy_calls")
+    reporter.stage_end("proxy_calls")
+    return created
+
+
+def _decorator_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create DECORATED_BY edges (decorated_symbol -> decorator).
+
+    Runs after `_apply_graph` so the decorator symbols (possibly cross-file) exist.
+    The decoration is a syntactic fact extracted per-file; gathered across diffs.
+    Must run under the same project_root_scope as symbol extraction so the decorated
+    symbol's uid matches the stored node (uid derives from the project-relative
+    qualified name).
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    link_deco = getattr(db, "link_decorators", None)
+    reporter.stage_start("decorators", total=1)
+    decorators: list[dict] = []
+    if callable(link_deco):
+        adapter = PythonAdapter()
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    decorators.extend(adapter.extract_decorators(ex.source, ex.path))
+                except Exception:
+                    continue
+        if decorators:
+            link_deco(decorators, workspace_id=workspace_id)
+    reporter.step("decorators")
+    reporter.stage_end("decorators")
+    return len(decorators)
+
+
+def _mro_api_bridge_phase(
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    from sidecar.indexer.mro_api_bridge import MroApiBridgeIndexer
+
+    reporter.stage_start("mro_api_bridge", total=1)
+    created = MroApiBridgeIndexer(db).apply(workspace_id)
+    reporter.stage_end("mro_api_bridge")
+    return created
+
+
 def _framework_hints_phase(
     diffs: list[FileDiff],
     db: Neo4jClient,
@@ -607,10 +773,16 @@ def run_fast_indexing(
         stats["parsed"] = len(diffs)
         stats["timings_sec"]["parse"] = round(time.perf_counter() - t_stage, 3)
 
-        # Stage 4: graph writes
+        # Stage 4: graph writes. Snapshot the degree-affected closure first, while
+        # pre-mutation edges are still present (deleted symbols' neighbors included).
+        degree_seeds, degree_removed = _degree_seeds_snapshot(diffs, db, workspace_id)
         t_stage = time.perf_counter()
         _apply_graph(diffs, db, workspace_id, reporter)
         stats["timings_sec"]["graph"] = round(time.perf_counter() - t_stage, 3)
+
+        t_stage = time.perf_counter()
+        stats["mro_api_edges"] = _mro_api_bridge_phase(db, workspace_id, reporter)
+        stats["timings_sec"]["mro_api_bridge"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.5: framework hints
         t_stage = time.perf_counter()
@@ -626,6 +798,38 @@ def run_fast_indexing(
             reporter,
         )
         stats["timings_sec"]["ts_http_route_hints"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.6: lazy-proxy resolution. Create ProxyBinding nodes + PROXY_OF
+        # edges, then forward proxy-var calls (current_app.x) through to the real
+        # type. Must precede degree so the forwarded edges are counted.
+        t_stage = time.perf_counter()
+        proxy_uids = _proxy_binding_phase(diffs, db, workspace_id, reporter)
+        stats["proxy_bindings"] = len(proxy_uids)
+        stats["proxy_calls_resolved"] = _proxy_call_resolution_phase(
+            diffs, db, workspace_id, reporter
+        )
+        stats["timings_sec"]["proxy"] = round(time.perf_counter() - t_stage, 3)
+        # Proxy nodes/edges are created after the degree snapshot, so fold the new
+        # proxy nodes into the seed set; the closure recompute then covers them and
+        # their PROXY_OF / via_proxy neighbors.
+        degree_seeds |= proxy_uids
+
+        # Stage 4.65: DECORATED_BY edges. Not counted into materialized degree
+        # (kept out of _DEGREE_REL_PATTERN to avoid a global degree shift), so it
+        # need not precede the degree phase for counting.
+        t_stage = time.perf_counter()
+        stats["decorators_linked"] = _decorator_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.7: recompute materialized degree now that all edge-creating
+        # phases (calls, imports, inheritance, MRO API, hints, proxy) have run.
+        t_stage = time.perf_counter()
+        stats["degree_recomputed"] = _degree_phase(
+            degree_seeds, degree_removed, db, workspace_id, reporter
+        )
+        stats["timings_sec"]["degree"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 5: global embedding batch
         t_stage = time.perf_counter()

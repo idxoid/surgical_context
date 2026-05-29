@@ -22,6 +22,9 @@ class BudgetPruner:
         mechanism: str,
         required_roles: list[str],
         budget: int,
+        *,
+        floor_override: int | None = None,
+        doc_first: bool = False,
     ) -> tuple[list[Candidate], dict, str, list[dict], list[str]]:
         chosen: list[Candidate] = []
         spent = self.host.PREAMBLE_TOKENS + target.token_estimate
@@ -41,28 +44,87 @@ class BudgetPruner:
         trace_mode = RankerScoring.trace_dependency_gain_mode(mechanism, query)
 
         stopped_reason = "pool_exhausted"
-        min_floor = self.host._INTENT_FLOORS.get(intent, 1200)
-        min_gain = 0.12  # Threshold for stopping
+        min_floor = floor_override or self.host._INTENT_FLOORS.get(intent, 1200)
+        # Per-intent thresholds: NAVIGATION stops early (tight scope), DEBUGGING
+        # and IMPACT_ANALYSIS expand wider (need more evidence).
+        _INTENT_MIN_GAIN = {
+            Intent.NAVIGATION: 0.20,
+            Intent.EXPLORATION: 0.12,
+            Intent.DEBUGGING: 0.08,
+            Intent.NEW_FEATURE: 0.10,
+            Intent.REFACTORING: 0.12,
+            Intent.DESIGN_QUESTION: 0.10,
+            Intent.IMPACT_ANALYSIS: 0.08,
+        }
+        _INTENT_STALL_LIMIT = {
+            Intent.NAVIGATION: 4,
+            Intent.EXPLORATION: 8,
+            Intent.DEBUGGING: 12,
+            Intent.NEW_FEATURE: 10,
+            Intent.REFACTORING: 8,
+            Intent.DESIGN_QUESTION: 10,
+            Intent.IMPACT_ANALYSIS: 12,
+        }
+        min_gain = _INTENT_MIN_GAIN.get(intent, 0.12)
         low_gain_floor = 0.02  # Protect against pure junk
         useful_candidates_seen = 0
         no_progress_streak = 0
-        expansion_stall_limit = 8
+        expansion_stall_limit = _INTENT_STALL_LIMIT.get(intent, 8)
         # For DI/trace questions, role sets can be "complete" while file-level
         # evidence still lives in other modules; do not take marginal-gain early
         # exit until the context spans enough distinct code files.
         min_trace_code_file_breadth = 3
 
-        # Doc-tier deferral: when symbols still owe coverage breadth, hold docs
-        # back so they don't crowd out role-filling code. A doc may "claim" a
-        # role via supporting_roles and starve real graph candidates that would
-        # bring in additional expected files from runtime/supporting modules.
-        # IMPACT_ANALYSIS is exempt — its tier prior already favors docs.
-        defer_docs = intent != Intent.IMPACT_ANALYSIS
+        # Doc-tier deferral: hold docs back until code coverage is established,
+        # so they don't crowd out role-filling graph symbols.
+        # Intents where docs ARE the primary signal (design, new feature) should
+        # NOT defer — they need docs early to fill concept/architecture roles.
+        # IMPACT_ANALYSIS is also exempt (tier prior already favors docs/tests).
+        _DOC_FIRST_INTENTS = (Intent.DESIGN_QUESTION, Intent.NEW_FEATURE, Intent.IMPACT_ANALYSIS)
+        defer_docs = intent not in _DOC_FIRST_INTENTS and not doc_first
         min_code_files_before_docs = 3
         deferred_docs: list[Candidate] = []
+        # P@5 treats the target + first four graph symbols as the "head".
+        # Bridge candidates are useful for role recall, but several bridges in
+        # that head tend to crowd out concrete call/depends chains. Defer extras
+        # until the head has one bridge and enough structural symbols.
+        head_symbol_slots = 4
+        head_bridge_cap = 1
+        deferred_head_bridges: list[Candidate] = []
+        head_bridge_deferred = 0
+        head_bridge_replayed = 0
+        head_backfill_deferred = 0
+        head_backfill_replayed = 0
+        defer_head_bridges = trace_mode
 
         def _is_code_file(c: Candidate) -> bool:
             return c.kind != "doc"
+
+        def _selected_symbol_count() -> int:
+            return sum(1 for c in chosen if c.kind != "doc")
+
+        def _is_role_backfill(c: Candidate) -> bool:
+            return c.kind != "doc" and (
+                c.relation == "ROLE_BACKFILL" or self.host._has_role_backfill(c)
+            )
+
+        def _is_head_bridge(c: Candidate) -> bool:
+            provenance = "".join(str(step) for step in c.provenance)
+            return c.kind != "doc" and (
+                c.relation in ("DOC_BRIDGE", "SEMANTIC_HINT", "ROLE_BACKFILL")
+                or self.host._has_role_backfill(c)
+                or "doc-bridge" in provenance
+            )
+
+        def _chosen_head_bridge_count() -> int:
+            head_symbols: list[Candidate] = []
+            for selected in chosen:
+                if selected.kind == "doc":
+                    continue
+                head_symbols.append(selected)
+                if len(head_symbols) >= head_symbol_slots:
+                    break
+            return sum(1 for selected in head_symbols if _is_head_bridge(selected))
 
         def _adds_trace_file_breadth(c: Candidate) -> bool:
             return (
@@ -175,7 +237,7 @@ class BudgetPruner:
                         candidate_roles=candidate_roles,
                     )
                     return "budget_balance_debit_limit"
-                if not closes_missing_role and gain < min_gain:
+                if not closes_missing_role and gain < min_gain and c.relation != "MANDATORY_CALLEE":
                     _record_pruned(
                         c,
                         "expansion_low_gain",
@@ -186,7 +248,7 @@ class BudgetPruner:
                     return "expansion_low_gain"
                 budget_balance = projected_balance
 
-            if c.depth >= 2 and gain < 0.25:
+            if c.depth >= 2 and gain < 0.25 and c.relation != "MANDATORY_CALLEE":
                 c.render_mode = "signature_only"
                 c.token_cost = potential_cost
 
@@ -202,8 +264,80 @@ class BudgetPruner:
                 )
             return None
 
+        def _replay_deferred_head_bridges(*, force: bool = False) -> bool:
+            """Seat deferred bridges after the symbol head, preserving recall."""
+            nonlocal head_bridge_replayed, head_backfill_replayed
+            if not deferred_head_bridges:
+                return False
+            if not force and _selected_symbol_count() < head_symbol_slots:
+                return False
+
+            replaying = list(deferred_head_bridges)
+            deferred_head_bridges.clear()
+            selected_any = False
+            chosen_uids = {c.uid for c in chosen}
+            for c in replaying:
+                if c.uid in chosen_uids:
+                    continue
+                candidate_roles = self.host.role_fulfilment.selection_roles(
+                    c,
+                    target,
+                    query=query,
+                    mechanism=mechanism,
+                    intent=intent,
+                    required_roles=required_roles,
+                )
+                gain = self.host._calculate_marginal_gain(
+                    c,
+                    chosen,
+                    target,
+                    intent=intent,
+                    mechanism=mechanism,
+                    query=query,
+                    required_roles=required_roles,
+                    candidate_roles=candidate_roles,
+                )
+                fills_role = any(
+                    role in required_roles and role not in fulfilled_roles
+                    for role in candidate_roles
+                )
+                adds_new_trace_file = _adds_trace_file_breadth(c)
+                fills_role_or_trace = fills_role or adds_new_trace_file
+                is_useful = (
+                    fills_role
+                    or adds_new_trace_file
+                    or _is_head_bridge(c)
+                    or (self.host.scoring.blended(c) > 0.15)
+                )
+                if gain < min_gain:
+                    if not is_useful:
+                        _record_pruned(
+                            c,
+                            "deferred_head_bridge_low_utility",
+                            gain=gain,
+                            candidate_roles=candidate_roles,
+                        )
+                        continue
+                    if gain < low_gain_floor and not fills_role_or_trace:
+                        _record_pruned(
+                            c,
+                            "deferred_head_bridge_low_gain_floor",
+                            gain=gain,
+                            candidate_roles=candidate_roles,
+                        )
+                        continue
+
+                if _try_select(c, gain, candidate_roles) is None:
+                    chosen_uids.add(c.uid)
+                    head_bridge_replayed += 1
+                    if _is_role_backfill(c):
+                        head_backfill_replayed += 1
+                    selected_any = True
+            return selected_any
+
         stop_index: int | None = None
         for idx, c in enumerate(pool):
+            _replay_deferred_head_bridges()
             # Selection Gating Logic: Mechanism-Aware
             missing_roles = set(required_roles) - fulfilled_roles
             candidate_roles = self.host.role_fulfilment.selection_roles(
@@ -234,12 +368,17 @@ class BudgetPruner:
                 "SEMANTIC_HINT",
                 "ROLE_BACKFILL",
             ) or self.host._has_role_backfill(c)
-            is_strong_relation = c.relation in (
-                "CALLS_DIRECT",
-                "CALLS_SCOPED",
-                "DEPENDS_ON",
-                "IMPLEMENTS",
-                "OVERRIDES",
+            is_mandatory_callee = c.relation == "MANDATORY_CALLEE"
+            is_strong_relation = (
+                c.relation
+                in (
+                    "CALLS_DIRECT",
+                    "CALLS_SCOPED",
+                    "DEPENDS_ON",
+                    "IMPLEMENTS",
+                    "OVERRIDES",
+                )
+                or is_mandatory_callee
             )
 
             # Determine if this candidate provides any unique reasoning signal
@@ -248,6 +387,7 @@ class BudgetPruner:
                 or adds_new_trace_file
                 or is_bridge
                 or is_strong_relation
+                or is_mandatory_callee
                 or (self.host.scoring.blended(c) > 0.15)
             )
 
@@ -263,9 +403,23 @@ class BudgetPruner:
                 and intent != Intent.IMPACT_ANALYSIS
                 and not fills_role_or_trace
             )
+            # Redundant symbols from a file already selected do not represent
+            # failed expansion — they are duplicates from the same module.
+            # Counting them inflates the stall and fires expansion_no_progress
+            # before trace-topic-anchors from new files are reached.
+            is_redundant_same_file = (
+                c.kind != "doc"
+                and bool(c.file_path)
+                and c.file_path in chosen_files
+                and not fills_role_or_trace
+            )
             if fills_role_or_trace:
                 no_progress_streak = 0
-            elif (trace_mode and c.kind == "doc") or skips_noise_without_trace_role:
+            elif (
+                (trace_mode and c.kind == "doc")
+                or skips_noise_without_trace_role
+                or is_redundant_same_file
+            ):
                 pass
             else:
                 no_progress_streak += 1
@@ -275,6 +429,23 @@ class BudgetPruner:
                 and no_progress_streak >= expansion_stall_limit
                 and not fills_role_or_trace
             ):
+                deferred_fills_missing = any(
+                    any(
+                        role in required_roles and role not in fulfilled_roles
+                        for role in self.host.role_fulfilment.selection_roles(
+                            deferred,
+                            target,
+                            query=query,
+                            mechanism=mechanism,
+                            intent=intent,
+                            required_roles=required_roles,
+                        )
+                    )
+                    for deferred in deferred_head_bridges
+                )
+                if deferred_fills_missing and _replay_deferred_head_bridges(force=True):
+                    no_progress_streak = 0
+                    continue
                 stopped_reason = "expansion_no_progress"
                 _record_pruned(
                     c,
@@ -291,7 +462,7 @@ class BudgetPruner:
             # Let them through only when they fill a required role; otherwise
             # production code and focused docs should own the budget.
             is_noisy_code = c.kind != "doc" and c.noise_factor < 1.0
-            if is_noisy_code:
+            if is_noisy_code and not is_mandatory_callee:
                 if intent == Intent.IMPACT_ANALYSIS:
                     if not fills_role:
                         _record_pruned(
@@ -336,11 +507,7 @@ class BudgetPruner:
                 stop_index = idx
                 break
 
-            if (
-                intent != Intent.IMPACT_ANALYSIS
-                and not missing_roles
-                and spent >= min_floor
-            ):
+            if intent != Intent.IMPACT_ANALYSIS and not missing_roles and spent >= min_floor:
                 distinct_code_files = len({x.file_path for x in chosen if _is_code_file(x)})
                 trace_breadth_ok = (
                     not trace_mode or distinct_code_files >= min_trace_code_file_breadth
@@ -399,7 +566,7 @@ class BudgetPruner:
                 # critical evidence. A large/weak symbol with negative blended
                 # score (e.g. fastapi `openapi` in applications.py: 256 tokens
                 # of largely-static config logic) still earns its seat here.
-                if gain < low_gain_floor and not fills_role_or_trace:
+                if gain < low_gain_floor and not fills_role_or_trace and not is_mandatory_callee:
                     _record_pruned(
                         c,
                         "low_gain_floor",
@@ -408,13 +575,49 @@ class BudgetPruner:
                     )
                     continue
 
-            _try_select(c, gain, candidate_roles)
+            if (
+                defer_head_bridges
+                and _is_head_bridge(c)
+                and _selected_symbol_count() < head_symbol_slots
+                and _chosen_head_bridge_count() >= head_bridge_cap
+            ):
+                deferred_head_bridges.append(c)
+                head_bridge_deferred += 1
+                if _is_role_backfill(c):
+                    head_backfill_deferred += 1
+                continue
+
+            selected_reason = _try_select(c, gain, candidate_roles)
+            if selected_reason is None:
+                _replay_deferred_head_bridges()
+
+        if stop_index is None and deferred_head_bridges:
+            _replay_deferred_head_bridges(force=True)
 
         if stop_index is not None:
+            if deferred_head_bridges:
+                deferred_fills_missing = any(
+                    any(
+                        role in required_roles and role not in fulfilled_roles
+                        for role in self.host.role_fulfilment.selection_roles(
+                            deferred,
+                            target,
+                            query=query,
+                            mechanism=mechanism,
+                            intent=intent,
+                            required_roles=required_roles,
+                        )
+                    )
+                    for deferred in deferred_head_bridges
+                )
+                if deferred_fills_missing:
+                    _replay_deferred_head_bridges(force=True)
             for c in pool[stop_index + 1 :]:
                 _record_pruned(c, "not_considered_after_threshold")
             for c in deferred_docs:
                 _record_pruned(c, "deferred_doc_not_replayed_after_threshold")
+            for c in deferred_head_bridges:
+                _record_pruned(c, "deferred_head_bridge_not_replayed_after_threshold")
 
         # Second pass: deferred docs, now that code-file breadth is established
         # (or the main pass exhausted the pool). Re-evaluate gain against the
@@ -518,5 +721,9 @@ class BudgetPruner:
             "reserved": self.host.PREAMBLE_TOKENS,
             "pool_size": len(pool),
             "pruned": len(pruned_details),
+            "head_bridge_deferred": head_bridge_deferred,
+            "head_bridge_replayed": head_bridge_replayed,
+            "head_backfill_deferred": head_backfill_deferred,
+            "head_backfill_replayed": head_backfill_replayed,
         }
         return chosen, budget_info, stopped_reason, pruned_details, missing_roles_list

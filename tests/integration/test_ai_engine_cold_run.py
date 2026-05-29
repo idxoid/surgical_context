@@ -111,7 +111,7 @@ def sample_questions():
 class TestAIEngineColdRun:
     """Test AIEngine with prepared contexts (no live services)."""
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     @patch("sidecar.ai.engine.Anthropic")
     def test_chat_with_claude_prepared_context(
         self, mock_anthropic_class, sample_system_prompt, sample_questions
@@ -156,7 +156,7 @@ class TestAIEngineColdRun:
         assert "analysis" in answer.lower() or "payment" in answer.lower()
         mock_ollama.chat.assert_called_once()
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     @patch("sidecar.ai.engine.Anthropic")
     @patch("sidecar.ai.engine.ollama")
     def test_auto_routing_large_context_uses_claude(
@@ -181,7 +181,7 @@ class TestAIEngineColdRun:
         mock_client.messages.create.assert_called_once()
         mock_ollama.chat.assert_not_called()
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     @patch("sidecar.ai.engine.Anthropic")
     @patch("sidecar.ai.engine.ollama")
     def test_auto_routing_small_simple_uses_ollama(
@@ -202,7 +202,7 @@ class TestAIEngineColdRun:
         mock_ollama.chat.assert_called_once()
         mock_anthropic_class.return_value.messages.create.assert_not_called()
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     @patch("sidecar.ai.engine.Anthropic")
     @patch("sidecar.ai.engine.ollama")
     def test_auto_routing_design_question_uses_claude(
@@ -227,7 +227,7 @@ class TestAIEngineColdRun:
         mock_client.messages.create.assert_called_once()
         mock_ollama.chat.assert_not_called()
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     @patch("sidecar.ai.engine.Anthropic")
     @patch("sidecar.ai.engine.ollama")
     def test_claude_fallback_to_ollama_on_error(
@@ -278,7 +278,7 @@ class TestAIEngineColdRun:
         assert len(chunks) == 3
         assert "".join(chunks) == "First chunk of response"
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     @patch("sidecar.ai.engine.Anthropic")
     def test_stream_chat_with_claude(
         self, mock_anthropic_class, sample_system_prompt, sample_questions
@@ -308,7 +308,7 @@ class TestAIEngineColdRun:
         assert len(chunks) == 4
         assert "".join(chunks) == "Stream of Claude response"
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
     @patch("sidecar.ai.engine.Anthropic")
     def test_prompt_caching_enabled_on_graph_context(
         self, mock_anthropic_class, sample_system_prompt, sample_questions

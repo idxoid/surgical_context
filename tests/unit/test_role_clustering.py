@@ -6,7 +6,6 @@ separate them using only structural features — no name patterns, no
 file paths.
 """
 
-import json
 
 from sidecar.indexer.role_clustering import (
     RoleCluster,
@@ -497,29 +496,32 @@ def test_role_catalog_resolves_canonical_roles_to_cluster_preferences():
     )
 
 
-def test_role_catalog_payload_includes_preloaded_mechanism_profiles(monkeypatch):
-    from pathlib import Path
-
-    from sidecar.context.mechanism_registry import (
-        ROLE_CATALOG_MECHANISM_BACKFILL_KEY,
-        ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY,
-        merge_preloaded_mechanisms_into_role_catalog,
-    )
-
-    pack = (
-        Path(__file__).resolve().parents[2]
-        / "sidecar/context/mechanism_packs/bundled/flask_registration.yaml"
-    )
-    monkeypatch.setenv("MECHANISM_PACK_PATH", str(pack))
-
-    taxonomy, _ = cluster_symbols([], seed=0)
-    catalog = build_role_catalog(taxonomy)
-    merged = merge_preloaded_mechanisms_into_role_catalog(catalog.to_dict())
-
-    assert merged["schema_version"] == catalog.schema_version
-    assert ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY in merged
-    assert ROLE_CATALOG_MECHANISM_BACKFILL_KEY in merged
-    assert merged[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY] == {}
-    assert merged[ROLE_CATALOG_MECHANISM_BACKFILL_KEY].get("auto:registration_flow")
-
-    json.dumps(merged, sort_keys=True)
+# Example (inactive): same flask_registration.yaml template as test_mechanism_registry.
+# Uncomment together with the pack YAML when activating Flask auto:registration_flow.
+#
+# def test_role_catalog_payload_includes_preloaded_mechanism_profiles(monkeypatch):
+#     from pathlib import Path
+#
+#     from sidecar.context.mechanism_registry import (
+#         ROLE_CATALOG_MECHANISM_BACKFILL_KEY,
+#         ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY,
+#         merge_preloaded_mechanisms_into_role_catalog,
+#     )
+#
+#     pack = (
+#         Path(__file__).resolve().parents[2]
+#         / "sidecar/context/mechanism_packs/bundled/flask_registration.yaml"
+#     )
+#     monkeypatch.setenv("MECHANISM_PACK_PATH", str(pack))
+#
+#     taxonomy, _ = cluster_symbols([], seed=0)
+#     catalog = build_role_catalog(taxonomy)
+#     merged = merge_preloaded_mechanisms_into_role_catalog(catalog.to_dict())
+#
+#     assert merged["schema_version"] == catalog.schema_version
+#     assert ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY in merged
+#     assert ROLE_CATALOG_MECHANISM_BACKFILL_KEY in merged
+#     assert merged[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY] == {}
+#     assert merged[ROLE_CATALOG_MECHANISM_BACKFILL_KEY].get("auto:registration_flow")
+#
+#     json.dumps(merged, sort_keys=True)

@@ -86,11 +86,7 @@ def collect_files(project_path: str) -> list[str]:
             rel_prefix = "" if rel_root in (".", "") else rel_root.replace(os.sep, "/")
             kept_dirs: list[str] = []
             for directory in dirs:
-                rel_dir = (
-                    f"{rel_prefix}/{directory}/"
-                    if rel_prefix
-                    else f"{directory}/"
-                )
+                rel_dir = f"{rel_prefix}/{directory}/" if rel_prefix else f"{directory}/"
                 if not spec.match_file(rel_dir):
                     kept_dirs.append(directory)
             dirs[:] = kept_dirs

@@ -27,8 +27,6 @@ ROLE_CATALOG_MECHANISM_BACKFILL_KEY = "mechanism_role_backfill"
 
 _REQUIRED_ROLES: dict[str, tuple[str, ...]] = {}
 
-# Built-in code backfill is empty — framework-specific hints live in opt-in YAML packs
-# (e.g. ``mechanism_packs/bundled/flask_registration.yaml`` via ``MECHANISM_PACK_PATH``).
 _ROLE_BACKFILL_SPECS: dict[str, dict[str, list[dict[str, str | float]]]] = {}
 
 
@@ -111,9 +109,12 @@ def required_roles_for_mechanism(
 def determine_preloaded_mechanism(target: SubgraphNode, query: str = "") -> str:
     """Return the best preloaded mechanism for a target, if one matches.
 
-    Stubbed: no bundled name/query rules; always ``""``.
+    Product-local rules only (no third-party framework literals). Framework-shaped
+    dispatch stays in opt-in YAML packs.
     """
-    _ = (target, query)
+    _name = (target.name or "").lower()
+    _path = (target.file_path or "").replace("\\", "/").lower()
+    _query = (query or "").lower()
     return ""
 
 

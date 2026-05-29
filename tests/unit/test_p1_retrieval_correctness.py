@@ -15,6 +15,13 @@ def test_normalize_signature_strips_names_and_defaults():
     assert normalize_signature(raw, "python") == "process_payment(int,float,*,str)->Receipt"
 
 
+def test_normalize_signature_handles_multiline_parameters():
+    raw = """apply_async(self, args=None, kwargs=None,
+                    task_id=None, producer=None,
+                    **options)"""
+    assert normalize_signature(raw, "python") == "apply_async(_,_,_,_,_,**kwargs)->_"
+
+
 def test_compute_uid_uses_signature_to_disambiguate_overloads():
     uid_a = compute_uid("parser.parse", "parse(x: str)->AST", "python")
     uid_b = compute_uid("parser.parse", "parse(x: bytes)->AST", "python")
@@ -52,6 +59,35 @@ def run():
     assert "app.run" in qualified["run"]
     assert qualified["inner"] == ["app.run.<locals>.inner"]
     assert len({symbol.uid for symbol in symbols}) == len(symbols)
+
+
+def test_python_qualified_names_survive_unicode_before_decorated_class():
+    source = '''
+"""Queue note — broker sends café payloads."""
+
+@abstract.CallableTask.register
+class Task:
+    def delay(self, *args, **kwargs):
+        return self.apply_async(args, kwargs)
+
+    def apply_async(self, args=None, kwargs=None):
+        return None
+'''
+    adapter = PythonAdapter()
+    symbols = adapter.extract_symbols(source, "/repo/task.py")
+    qualified = {symbol.name: symbol.qualified_name for symbol in symbols}
+
+    assert qualified["Task"] == "task.Task"
+    assert qualified["delay"] == "task.Task.delay"
+    assert qualified["apply_async"] == "task.Task.apply_async"
+
+    calls = adapter.extract_calls_from_source(source, "/repo/task.py")
+    apply_call = next(call for call in calls if call["callee_name"] == "apply_async")
+    assert apply_call["callee_uid"] == qualified_uid(symbols, "apply_async")
+
+
+def qualified_uid(symbols, name: str) -> str:
+    return next(symbol.uid for symbol in symbols if symbol.name == name)
 
 
 def test_python_call_resolver_links_same_file_helper_by_uid():

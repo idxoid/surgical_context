@@ -29,9 +29,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
     _EXPORTED_TYPE_FALLBACK_RE = re.compile(
         r"(?m)^export\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)\b"
     )
-    _EXPORTED_OBJECT_API_RE = re.compile(
-        r"(?m)^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*\{"
-    )
+    _EXPORTED_OBJECT_API_RE = re.compile(r"(?m)^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*\{")
 
     @property
     def language_name(self) -> str:
@@ -449,7 +447,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         return calls
 
-    def _extract_import_bindings(self, source_code: str, file_path: str) -> tuple[dict[str, str], set[str]]:
+    def _extract_import_bindings(
+        self, source_code: str, file_path: str
+    ) -> tuple[dict[str, str], set[str]]:
         bindings: dict[str, str] = {}
         module_aliases: set[str] = set()
         for match in re.finditer(

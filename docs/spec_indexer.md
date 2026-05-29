@@ -7,7 +7,7 @@
 Entry points:
 - CLI: `python sidecar/indexer/code.py [path]` (defaults to repo root)
 - Programmatic: `run_indexing(path)`, `index_file(path, db, lance, extractor)`
-- API: `POST /index` via `sidecar/main.py`
+- API: `POST /index` via `sidecar/main.py` — registers `project_path` immediately (including `queue=true` via `register_workspace_project_root()` in `sidecar/retrieval/manifest.py`) before batch workers run; see path sandboxing in [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)
 
 ---
 
@@ -141,17 +141,32 @@ resolve_pending_anchors(db, lance)
 
 Checks LanceDB `docs.pending` against symbols now present in Neo4j. Creates `[:COVERS]` edges for any identifiers that have become resolvable since the last doc index run.
 
-### Phase 5 — AFFECTS index rebuild (per changed symbol, Phase 5+)
+### Phase 5 — AFFECTS index rebuild (once per batch, Phase 5+)
 
 ```python
 from sidecar.indexer.affects import AFFECTSIndexer
 indexer = AFFECTSIndexer(db)
-indexer.rebuild_affects(changed_uids)
+indexer.rebuild_affects(all_changed_uids)  # single call after all files processed
 ```
 
-After all symbols for a file are upserted, delete stale `AFFECTS` edges and recompute reverse-dependency paths (depth ≤ 4). Enables cascade-aware incremental reindexing.
+Deletes stale `AFFECTS` edges and recomputes reverse-dependency paths (depth ≤ 4). Called **once per batch**, not per file, to avoid O(N) `_load_reverse_adjacency` scans.
 
-Called synchronously at end of `index_file()` — blocks until AFFECTS edges are rebuilt. Future: batch across files.
+**`index_file` signature:**
+
+```python
+def index_file(
+    file_path, db, lance, extractor,
+    workspace_id=DEFAULT_WORKSPACE_ID,
+    *,
+    skip_affects: bool = False,
+) -> list[str]:
+```
+
+- Returns the list of changed symbol UIDs so batch callers can collect them.
+- `skip_affects=True` defers the AFFECTS rebuild to the batch caller.
+- When `skip_affects=False` (default, hot path via `/index/file`), AFFECTS is rebuilt synchronously for that file — preserving the on-save latency contract.
+
+Batch callers (`_process_index_batch` in `main.py`, `run_fast_indexing`) collect all changed UIDs across files and call `rebuild_affects` once after the loop, then call `LayeredCache.invalidate_files` for the full set of indexed paths.
 
 ### Phase 6 — Repository readiness profile (project pass)
 
@@ -203,7 +218,7 @@ Features are log-transformed and standardized (zero mean, unit variance) before 
 
 Canonical roles resolve through archetype preferences instead of direct cluster equality. For example, `runtime_surface` resolves to `active_entrypoint`, `runtime_handle`, and `executor`; `api_surface` resolves to `passive_api_surface` and `active_entrypoint`. Passive/config surfaces use typed doc-anchor weight, not raw doc count, so definition/reference anchors can lift public API clusters while example-heavy or weak anchors contribute less. Consumers should treat the result as a scoring preference, not a hard filter.
 
-**Mechanism profiles in the catalog.** On each persist, the indexer merges `mechanism_required_roles` and `mechanism_role_backfill` keys into `role_catalog_json` from `mechanism_registry.preloaded_mechanism_catalog_extensions()` (currently **empty objects** — no bundled framework tables). Populate those maps via workspace-specific pipelines or future mining; `UnifiedRanker` still reads them when present. Extra keys are ignored by `resolve_role_clusters`, which only reads `schema_version`, `archetypes`, and `role_to_archetypes`.
+**Mechanism profiles in the catalog.** On each persist, the indexer merges `mechanism_required_roles` and `mechanism_role_backfill` into `role_catalog_json` from `mechanism_registry.preloaded_mechanism_catalog_extensions()`. Built-in Python tables are intentionally empty; **ad-hoc per-repo tuning** uses optional YAML **mechanism packs** loaded only when `MECHANISM_PACK_PATH` points at one or more files (bundled templates such as `sidecar/context/mechanism_packs/bundled/flask_registration.yaml` are **not** loaded implicitly). The merged overlay is persisted on the `Workspace` and consumed at retrieval time by `UnifiedRanker._role_backfill_candidates()`. Extra keys are ignored by `resolve_role_clusters`, which only reads `schema_version`, `archetypes`, and `role_to_archetypes`. Operational workflow for benchmark-driven tuning: [spec_eval_harness.md §4.6](spec_eval_harness.md).
 
 **Persistence.** Pass 1 writes the taxonomy and role catalog onto the Neo4j `Workspace`, then writes the cluster id onto every `Symbol`:
 
@@ -226,12 +241,16 @@ Canonical roles resolve through archetype preferences instead of direct cluster 
 
 ### Fast pipeline — semantic hint phases
 
-After per-file symbol/call linking, the fast project indexer (`sidecar/indexer/fast/pipeline.py`) runs two graph-enrichment passes before the embedding batch:
+After per-file symbol/call linking, the fast project indexer (`sidecar/indexer/fast/pipeline.py`) runs graph-enrichment passes before the embedding batch, in this order:
 
 1. **`framework_hints`** — applies shared typed rules from `semantic_hints.yaml` via `FrameworkHintsIndexer`; creates `SEMANTIC_HINT` edges for framework patterns already present in the indexed graph.
 2. **`ts_http_route_hints`** — implemented in `sidecar/indexer/ts_http_route_hints.py`. Scans Python FastAPI route decorators (`@app.post("/ask")`, etc.) and TypeScript HTTP client surfaces (`export const SidecarClient = { ... post('/ask') ... }`). Creates `SEMANTIC_HINT` edges from TS `object_api` symbols to Python handler symbols when paths match. Skips test/QA Python files and prefers `main.py` / `sidecar/` entrypoints when duplicate routes exist.
+3. **`proxy` (ProxySurface)** — `_proxy_binding_phase` creates `ProxyBinding` nodes + `PROXY_OF` edges for annotated lazy proxies (`current_app: FlaskProxy = LocalProxy(...)`); `_proxy_call_resolution_phase` forwards calls on those proxy vars through `PROXY_OF` to the real type's method, wiring `CALLS_DYNAMIC {via_proxy}`. See [spec_call_resolution_pipeline.md §5.1](spec_call_resolution_pipeline.md). Runs before degree so forwarded edges are counted.
+4. **`degree` (materialized centrality)** — `_degree_phase` recomputes `Symbol.in_degree` / `Symbol.out_degree` so the ranker reads degree as a node property instead of a `count(DISTINCT)` subquery per query (see below).
 
-Stats keys: `framework_hints_applied`, `ts_http_route_hints_applied`. Re-index after changing either pass; `--no-index` benchmark runs assume the graph already contains these edges.
+Stats keys: `framework_hints_applied`, `ts_http_route_hints_applied`, `proxy_bindings`, `proxy_calls_resolved`, `degree_recomputed`. Re-index after changing any pass; `--no-index` benchmark runs assume the graph already contains these edges.
+
+**Materialized degree (`in_degree` / `out_degree`).** Degree over the call/dep/ref/hint edge set is static topology, so it is computed once at index time and stored on each `Symbol`. The ranker's recovery queries read `coalesce(s.in_degree, 0)` instead of re-aggregating edges per query. The edge-type set counted is fixed in `Neo4jClient._DEGREE_REL_PATTERN` and **must** match what the ranker reads. To stay accurate under incremental `update`, degree is recomputed only over the **affected closure** (changed symbols ∪ their 1-hop neighbors, captured before mutation so a removed symbol's neighbor is still corrected), never globally. Newly created `ProxyBinding` nodes are folded into the closure seed set. Verified on click/flask/celery: 100% coverage, zero mismatch vs. a live recompute.
 
 **Trade-offs.**
 - Cluster boundaries may not align with human intuition. A derived cluster can group two data-carrier surfaces while separating nearby builder functions if their fan-in/fan-out differs. That is fine for ranking but means the benchmark cannot match by mechanism string equality across repos.

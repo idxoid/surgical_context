@@ -25,7 +25,7 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 
 ### 1.4. Design Principles
 - **Ownership over Hype:** robust data infrastructure, not an API wrapper.
-- **Security by Design:** source code never enters graph storage; vector/history persistence follows explicit storage policy and defaults local.
+- **Security by Design:** source code never enters graph storage; vector/history persistence follows explicit storage policy and defaults local. Filesystem access from the sidecar is limited to paths under the workspace **project root** registered at index time (see §2.3.1).
 - **Transparency:** user always sees what context was collected and what it cost.
 
 ### 1.5. Product Layers
@@ -71,6 +71,7 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 | POST | `/index/file` | ✅ |
 | POST | `/index/files` | ✅ |
 | GET | `/index/queue` | ✅ |
+| GET | `/index/manifest` | ✅ |
 | POST | `/ask` | ✅ |
 | POST | `/ask/stream` | ✅ |
 | POST | `/search` | ✅ |
@@ -78,12 +79,41 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 | POST | `/overlay` | ✅ |
 | DELETE | `/overlay` | ✅ |
 | POST | `/feedback` | ✅ |
+| POST | `/history/ask` | ✅ |
+| GET | `/history/conversations` | ✅ |
+| GET | `/history/conversations/{conversation_id}` | ✅ |
+| GET | `/history/conversations/{conversation_id}/requests/{request_id}` | ✅ |
 | GET | `/impact` | ✅ |
 | POST | `/auth/token` | ✅ |
 | GET | `/auth/users` | ✅ |
 | GET | `/status/cloud` | ✅ |
 | GET | `/audit/actions` | ✅ |
 | GET | `/metrics` | ✅ |
+
+### 2.3.1. Filesystem path sandboxing ✅
+
+Local development often runs with `AUTH_REQUIRED=false`. Without path checks, any process on the machine could ask the sidecar to read or index arbitrary readable files.
+
+**Rules** (implemented in `sidecar/workspace_paths.py`, enforced in `sidecar/main.py`):
+
+| Step | Behavior |
+|---|---|
+| Register root | `POST /index` resolves `project_path` and writes it to the index manifest immediately (including `queue=true`, via `register_workspace_project_root` before enqueue). |
+| Resolve paths | `/ask` (`file_path`), `/index/file`, `/index/files`, `/index/docs`, and `/overlay` normalize relative paths under that root; absolute paths must still lie inside it (`Path.resolve()` + `relative_to`). |
+| Reject | No manifest yet → HTTP `400`. Path escapes root → HTTP `403`. |
+
+`CodeResolver` and `UnifiedRanker` apply the same root check to **graph-resolved** `file_path` values before disk reads. Stale outside-root nodes are skipped at read time; manifest persist also best-effort **prunes** outside-root `File` nodes from Neo4j. Caller-supplied paths: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
+
+### 2.3.2. API request bounds ✅
+
+Public request models enforce bounded resource use (local DoS and cloud cost protection):
+
+| Parameter | Typical use | Server range |
+|---|---|---|
+| `limit` | `/search`, `/search/unified` | 1–50 |
+| `token_budget` | `/ask`, unified search graph leg | 400–32 000 |
+
+Out-of-range values return HTTP 422 before vector search or context assembly runs.
 
 ---
 
@@ -204,7 +234,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 - **Workspace:** File nodes, CONTAINS edges, call edges, AFFECTS edges, and graph reads are scoped by `workspace_id`.
 - **Current caveat:** changed files are handled by deleting their workspace-local file edges and re-upserting extracted symbols; symbol-level diffing is still deferred.
 - **VectorProvider:** delete-then-insert per file on re-index. LanceDB is the current default implementation.
-- **HistoryProvider (planned):** append-only conversations, messages, ask snapshots, inspector snapshots, and impact snapshots. SQLite local is the planned default.
+- **HistoryProvider:** append-only conversations, messages, ask snapshots, inspector snapshots, and impact snapshots. SQLite local is the default; `ephemeral` and `disabled` modes are available for local product policy.
 - **Recovery:** `/index/file` writes an indexing job record before mutating stores, then marks success, failed, or dead-letter state so partial graph/vector failures are visible and retryable.
 
 ### 3.4. Dirty State Handling ✅ Implemented
@@ -225,7 +255,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ## Section 4: Core Workflows
 
 ### 4.1. Prompt Lifecycle
-1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`.
+1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`. When `file_path` is present, it is resolved under the workspace project root before any disk read.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
 3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking (Phase 6 + Phase 4 enhancements).
 4. **Mechanism determination** (Phase 4): if intent = `impact_analysis`, classify the code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`) → informs role backfill strategy and impact-analysis precision controls.
@@ -233,7 +263,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 6. **Unified graph + semantic ranking** (`UnifiedRanker` — Phase 9.1): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Mechanism-aware role backfill, query-sensitive mechanism routing, duplicate-target disambiguation, package/module fallback targets, and canonical role normalization run inside this layer. Thin wrapper APIs can also satisfy capability roles from their own implementation body when nested helpers are not indexed as standalone symbols. Selection is constrained by token budget + intent-aware noise filtering and returns candidates with graph, semantic, blended scores, and anchor confidence (Phase 9.3).
 7. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
 8. **Subgraph/doc split** (`UnifiedRanker.candidates_to_subgraph(...)`): convert the chosen ranked candidates back into `SubgraphNode` plus `DocChunk` objects for prompt compilation.
-9. **Deduplication** (`ContextDeduplicator` on the graph-only path): remove redundant symbols and overlapping doc chunks when the unified ranker is not active.
+9. **Deduplication** (in `PromptCompiler` + `BudgetPruner` redundancy penalties): collapse duplicate symbol bodies and overlapping doc chunks during compile; marginal-gain selection in `UnifiedRanker` avoids redundant candidates earlier.
 10. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol. Signature-only resolution for distant neighbors and massive targets.
 11. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas → tenant API context), fill budget in order.
 12. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
@@ -257,10 +287,11 @@ Scenario: user edits `process_payment`, hasn't saved.
 4. LLM sees current work-in-progress surrounded by stable project structure.
 
 ### 4.4. Model Routing
-- Pre-score intent + context token count.
-- Small context + simple question → Ollama.
-- Large context or complex intent → Claude when `ANTHROPIC_API_KEY` is configured.
-- Fallback: Claude failures fall back to Ollama.
+- Default: **Ollama** (`MODEL_PREFERENCE=ollama`, `ALLOW_CLOUD_LLM=false`) — assembled context stays on the machine.
+- **Cloud opt-in:** Anthropic runs only when `ALLOW_CLOUD_LLM=true`, `ANTHROPIC_API_KEY` is set, and `MODEL_PREFERENCE` is `auto` or `claude`. A key alone does not enable cloud.
+- `AIEngine` (`sidecar/ai/engine.py`) scores intent + token count: large/complex contexts and design/exploration/refactor intents prefer Claude when cloud is allowed; otherwise Ollama.
+- Default Anthropic model: **`claude-sonnet-4-6`** (`ANTHROPIC_MODEL` env). Retired `claude-sonnet-4-20250514` must not be used after 2026-06-15.
+- Fallback: Claude failures fall back to Ollama; unreachable LLM → degraded `/ask` and `/ask/stream` still return `context`.
 
 ---
 
@@ -546,11 +577,11 @@ The benchmark now displays per-question:
 Current local snapshot (May 2026, `--no-index` on current indexes):
 
 ```text
-surgical_context  7/7 pass  | role=0.96 | file=0.90
-dathund           8/8 pass  | role=0.97 | file=0.81
-fastapi           green     | role=1.00 on trace_dependency questions (strict gate already satisfied)
+surgical_context  7/7 pass  | role=1.00 | file=0.79
+dathund           8/8 pass  | role=1.00 | file=0.83
+fastapi           8/8 pass  | role=1.00 | file=0.81
 ```
 
-Framework repos (FastAPI, Pydantic, Django, etc.) remain saturated on `role_recall`; `surgical_context` and `dathund` are now green on the current local indexes, with remaining work shifting back to precision and token economy rather than pass-rate recovery.
+All 65 real-repo questions pass with `--no-index`; `role_recall` is saturated at **1.00**. Remaining work is precision@5 and file-recall tails, not mechanism role coverage.
 
 This makes it clear which mechanism-intent combinations are working well vs. needing tuning.

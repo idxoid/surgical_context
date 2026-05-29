@@ -10,6 +10,11 @@
 # - `expected_symbols` and `expected_files` are seed hypotheses, not final labels.
 #   They should be corrected after the first human-reviewed benchmark pass.
 # - This file is intentionally separate from tests/fixtures/sample_project/questions.yaml.
+# - Satellite packs (e.g. click_questions.yaml) are merged via `includes`.
+
+includes:
+  - click_questions.yaml
+  - celery_questions.yaml
 
 repositories:
   - id: fastapi
@@ -522,7 +527,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: flask_request_hooks
-    required_roles: [public_entrypoint, hook_registry, request_processor, handler_or_lifecycle]
+    required_roles: [public_entrypoint, hook_registry, handler_or_lifecycle, runtime_surface]
     expected_symbols: [before_request, after_request, preprocess_request, do_teardown_request]
     expected_files: [src/flask/app.py]
 

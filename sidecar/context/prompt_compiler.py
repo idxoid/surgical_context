@@ -35,6 +35,7 @@ class PromptCompiler:
                 semantic_score=getattr(node, "semantic_score", 0.0),
                 blended_score=getattr(node, "blended_score", node.relevance_score),
                 intent_weight=getattr(node, "intent_weight", 0.0),
+                render_mode=getattr(node, "render_mode", "full"),
                 is_dirty=is_dirty,
                 code=code,
                 provenance=getattr(node, "provenance", None) or ["graph", "code_resolver"],
@@ -57,6 +58,8 @@ class PromptCompiler:
         code_map: dict[str, tuple[str, bool]],
         docs: list[DocChunk],
         intent: Intent,
+        *,
+        tier_priority: list[str] | tuple[str, ...] | None = None,
     ) -> PromptContext:
         """Assemble PromptContext with tier-based budget filling per intent."""
 
@@ -76,6 +79,7 @@ class PromptCompiler:
                 semantic_score=getattr(node, "semantic_score", 0.0),
                 blended_score=getattr(node, "blended_score", node.relevance_score),
                 intent_weight=getattr(node, "intent_weight", 0.0),
+                render_mode=getattr(node, "render_mode", "full"),
                 is_dirty=is_dirty,
                 code=code,
                 provenance=getattr(node, "provenance", None) or ["graph", "code_resolver"],
@@ -129,7 +133,7 @@ class PromptCompiler:
         # Get tier priority for this intent
         from sidecar.context.intent_classifier import IntentConfig
 
-        tier_priority = IntentConfig.PRIORITY[intent]
+        tier_priority = list(tier_priority or IntentConfig.PRIORITY[intent])
 
         # Determine mode and fill docs tier-aware
         selected_docs = []

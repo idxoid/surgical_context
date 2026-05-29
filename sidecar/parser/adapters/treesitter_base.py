@@ -186,7 +186,7 @@ class TreeSitterAdapter(LanguageAdapter):
         calls = []
         for node, tag in captures:
             if tag == "call.name":
-                call_name = source_code[node.start_byte : node.end_byte]
+                call_name = _node_text(node)
                 parent = node.parent
                 while parent and parent.type not in self.parent_types:
                     parent = parent.parent

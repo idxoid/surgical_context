@@ -84,6 +84,26 @@ such as `acme/surgical_context@review-branch`. Leaving it blank avoids the old
 `local/default@main` mismatch and keeps extension requests aligned with the
 sidecar's workspace model.
 
+### Project root and path sandboxing
+
+The sidecar only reads or indexes files **under the registered project root** for
+that workspace. The root is set when you run `POST /index` (manifest field
+`project_path`). Until then, `/index/file` and `/ask` with `file_path` return
+`400` (“no registered project root”).
+
+| Situation | HTTP |
+|---|---|
+| Path outside the indexed project tree | `403` |
+| Incremental index / file fallback before first full index | `400` |
+
+Relative paths in API requests are resolved under the project root. The smoke
+test and `local_dev.py` index `sidecar/context` (or the full repo in
+`--full-repo` mode) so the default workspace has a registered root.
+
+With `AUTH_REQUIRED=false` (local default), this prevents other local processes
+from using the sidecar as a generic file reader. See
+[spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
+
 History controls are environment-driven for the local sidecar:
 
 ```dotenv
@@ -179,18 +199,24 @@ Inside VS Code, use:
 
 ## Optional Model Configuration
 
-Local default:
+Local default (prompts stay on Ollama; `ANTHROPIC_API_KEY` alone does not enable cloud):
 
 ```dotenv
-MODEL_PREFERENCE=auto
+MODEL_PREFERENCE=ollama
 OLLAMA_MODEL=llama3
+ALLOW_CLOUD_LLM=false
 ```
 
-Optional cloud model routing:
+Optional cloud model routing (explicit opt-in):
 
 ```dotenv
-ANTHROPIC_API_KEY=
+ALLOW_CLOUD_LLM=true
+MODEL_PREFERENCE=auto
+ANTHROPIC_API_KEY=sk-ant-...
+# Optional; default is claude-sonnet-4-6 (do not use retired claude-sonnet-4-20250514)
 ANTHROPIC_MODEL=
 ```
 
-Cloud keys are not required for the local product. If no cloud key is configured, the sidecar should stay on the local/Ollama path or degrade clearly.
+With `ALLOW_CLOUD_LLM=false`, `MODEL_PREFERENCE=auto` never sends assembled context to Anthropic even when a key is present. Set `MODEL_PREFERENCE=claude` only together with `ALLOW_CLOUD_LLM=true`.
+
+**Safety defaults (sidecar):** after `POST /index`, path sandboxing applies to API and graph reads. Search `limit` is capped at 50; `/ask` `token_budget` at 32 000. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing) and [spec_sidecar_api.md](spec_sidecar_api.md#request-validation-bounds).

@@ -1,6 +1,8 @@
 # Spec — ContextDeduplicator (Phase 4)
 
-> **Status:** Proposed. Addresses uniform 883-token baseline observed in Phase 3.5 eval harness. Expected gain: 15–40% token reduction on real repos.
+> **Status:** Implemented in sidecar (`sidecar/context/deduplicator.py`, `tests/unit/test_context_deduplicator.py`). Production path uses `UnifiedRanker` budget pruning + `PromptCompiler._dedupe_graph_context` instead of a separate pipeline stage.
+>
+> **External reference:** [context-deduplicator](https://github.com/idxoid/context-deduplicator) was an early standalone prototype; it is **not** a git submodule of this repo and is not imported by the sidecar.
 
 ## 1. Problem
 

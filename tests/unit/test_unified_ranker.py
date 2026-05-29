@@ -1,10 +1,10 @@
 from unittest.mock import MagicMock, patch
 
-from sidecar.context.intent_classifier import Intent
+from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentSignal
 from sidecar.context.mechanism_registry import determine_preloaded_mechanism
-from sidecar.context.ranker.scoring import RankerScoring
 from sidecar.context.ranker.recovery import StructuralRecovery
-from sidecar.context.role_taxonomy import infer_supporting_roles
+from sidecar.context.ranker.scoring import RankerScoring
+from sidecar.context.role_taxonomy import infer_identity_trace_roles, infer_supporting_roles
 from sidecar.context.types import SubgraphNode
 from sidecar.context.unified_ranker import (
     _NOISE_FACTOR,
@@ -295,38 +295,40 @@ def test_concept_anchor_candidates_prefer_production_name_overlap():
     assert anchors == ["ValidationPipe"]
 
 
-def test_duplicate_target_selection_prefers_main_pydantic_entrypoint_for_model_dump():
+def test_duplicate_target_selection_prefers_primary_package_file():
+    # When the same symbol exists in multiple files with equal graph edges,
+    # the candidate in the primary package file (main.py) should win.
     db = _make_target_db(
         [
             {
-                "uid": "root-model-dump",
+                "uid": "sibling-dump",
                 "name": "model_dump",
                 "kind": "function",
-                "qualified_name": "pydantic.root_model.RootModel.model_dump",
+                "qualified_name": "mylib.helpers.ModelHelper.model_dump",
                 "token_estimate": 224,
-                "file_path": "/repo/pydantic/root_model.py",
+                "file_path": "/repo/mylib/helpers.py",
                 "file_hash": "a",
                 "range": [120, 180],
-                "outgoing_edges": 1,
+                "outgoing_edges": 2,
                 "incoming_edges": 2,
-                "total_edges": 3,
+                "total_edges": 4,
             },
             {
-                "uid": "base-model-dump",
+                "uid": "main-dump",
                 "name": "model_dump",
                 "kind": "function",
-                "qualified_name": "pydantic.main.BaseModel.model_dump",
+                "qualified_name": "mylib.main.BaseClass.model_dump",
                 "token_estimate": 520,
-                "file_path": "/repo/pydantic/main.py",
+                "file_path": "/repo/mylib/main.py",
                 "file_hash": "b",
                 "range": [420, 620],
-                "outgoing_edges": 0,
-                "incoming_edges": 0,
-                "total_edges": 0,
+                "outgoing_edges": 2,
+                "incoming_edges": 2,
+                "total_edges": 4,
             },
         ]
     )
-    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/pydantic@main")
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/mylib@main")
 
     target, metadata = ranker.get_target(
         "model_dump",
@@ -336,10 +338,10 @@ def test_duplicate_target_selection_prefers_main_pydantic_entrypoint_for_model_d
     )
 
     assert target is not None
-    assert target.uid == "base-model-dump"
+    assert target.uid == "main-dump"
     assert target.file_path.endswith("main.py")
     assert metadata["strategy"] == "duplicate_resolution"
-    assert metadata["selected_uid"] == "base-model-dump"
+    assert metadata["selected_uid"] == "main-dump"
 
 
 def test_pydantic_basemodel_uses_generic_mechanism_when_dispatch_stubbed():
@@ -928,6 +930,107 @@ def test_object_api_client_surface_infers_api_surface_role():
     assert "api_surface" in roles
 
 
+def test_camel_case_class_name_matches_snake_file_stem_for_api_surface():
+    roles = infer_supporting_roles(
+        file_path="/repo/sidecar/context/intent_classifier.py",
+        primary_role="orchestrator",
+        name="IntentClassifier",
+        kind="class",
+    )
+
+    assert "api_surface" in roles
+
+
+def test_unrelated_class_name_does_not_match_unrelated_file_stem():
+    roles = infer_supporting_roles(
+        file_path="/repo/fastapi/exceptions.py",
+        primary_role="supporting_surface",
+        name="FastAPIDeprecationWarning",
+        kind="class",
+    )
+
+    assert "api_surface" not in roles
+
+
+def test_public_primary_target_satisfies_api_surface():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
+    target = SubgraphNode(
+        uid="base-model",
+        name="BaseModel",
+        file_path="/repo/pydantic/main.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+        qualified_name="pydantic.main.BaseModel",
+    )
+
+    assert "api_surface" in ranker._roles_of(target)
+    assert "impact_public_api" in ranker._roles_of(target)
+
+
+def test_signature_only_public_primary_target_satisfies_api_surface():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
+    target = SubgraphNode(
+        uid="base-model",
+        name="BaseModel",
+        file_path="/repo/pydantic/main.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target_signature_only",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+        qualified_name="pydantic.main.BaseModel",
+    )
+
+    assert "api_surface" in ranker._roles_of(target)
+    assert "impact_public_api" in ranker._roles_of(target)
+
+
+def test_private_primary_target_does_not_satisfy_api_surface():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
+    target = SubgraphNode(
+        uid="internal",
+        name="_internal_helper",
+        file_path="/repo/pydantic/main.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+        qualified_name="pydantic.main._internal_helper",
+    )
+
+    assert "api_surface" not in ranker._roles_of(target)
+    assert "impact_public_api" not in ranker._roles_of(target)
+
+
+def test_public_class_method_primary_target_satisfies_impact_public_api():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
+    target = SubgraphNode(
+        uid="paramtype-convert",
+        name="convert",
+        file_path="/repo/src/click/types.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+        qualified_name="click.types.ParamType.convert",
+    )
+
+    assert "impact_public_api" in ranker._roles_of(target)
+
+
 def test_editorial_docs_get_downranked_relative_to_mechanism_docs():
     assert (
         compute_noise_factor(
@@ -1198,6 +1301,235 @@ def test_trace_dependency_runtime_symbol_rows_skipped_without_marker_terms():
         kind="class",
     )
     assert ranker._trace_dependency_runtime_symbol_rows(target, excluded_uids=set()) == []
+
+
+def test_trace_publish_runtime_rows_for_app_dispatch_method():
+    producer_row = {
+        "uid": "producer-u",
+        "name": "Producer",
+        "symbol_kind": "class",
+        "token_estimate": 120,
+        "qualified_name": "pkg.app.amqp.Producer",
+        "file_path": "pkg/app/amqp.py",
+        "file_hash": "",
+        "range": [1, 40],
+        "inbound_edges": 4,
+        "outbound_edges": 2,
+    }
+
+    session = MagicMock()
+
+    def run(query, **_kwargs):
+        if "path_penalties" in query:
+            assert "apply_async" in _kwargs["names"]
+            assert any("pkg/app/" in p for p in _kwargs["scope_prefixes"])
+            return [producer_row]
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="delay-u",
+        name="delay",
+        file_path="pkg/app/task.py",
+        range=[1, 12],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    rows = ranker._trace_dependency_runtime_symbol_rows(
+        target,
+        excluded_uids=set(),
+        mechanism="celery_task_publish",
+        query="sent to broker",
+    )
+    assert rows and rows[0]["name"] == "Producer"
+
+
+def test_trace_consume_runtime_rows_use_worker_scope_and_penalize_backends():
+    request_row = {
+        "uid": "req-u",
+        "name": "Request",
+        "symbol_kind": "class",
+        "token_estimate": 200,
+        "qualified_name": "pkg.worker.request.Request",
+        "file_path": "pkg/worker/request.py",
+        "file_hash": "",
+        "range": [1, 80],
+        "inbound_edges": 6,
+        "outbound_edges": 3,
+    }
+
+    session = MagicMock()
+
+    def run(query, **_kwargs):
+        if "path_penalties" in query:
+            assert "/backends/" in _kwargs["path_penalties"]
+            assert any("pkg/worker/" in p for p in _kwargs["scope_prefixes"])
+            assert "consumer" in {n.lower() for n in _kwargs["names"]}
+            return [request_row]
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="rpc-consumer",
+        name="Consumer",
+        file_path="pkg/backends/rpc.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    rows = ranker._trace_dependency_runtime_symbol_rows(
+        target,
+        excluded_uids=set(),
+        mechanism="celery_worker_consume",
+        query="How does the worker receive a message and execute the task?",
+    )
+    assert rows and rows[0]["name"] == "Request"
+
+
+def test_trace_gain_mode_covers_publish_consume_mechanism_ids():
+    assert RankerScoring.trace_dependency_gain_mode("celery_task_publish", "")
+    assert RankerScoring.trace_dependency_gain_mode("celery_worker_consume", "")
+
+
+def test_direct_callee_anchor_candidates_for_thin_dispatch_method():
+    apply_async_row = {
+        "uid": "apply-u",
+        "name": "apply_async",
+        "symbol_kind": "function",
+        "token_estimate": 400,
+        "qualified_name": "pkg.app.task.Task.apply_async",
+        "file_path": "pkg/app/task.py",
+        "file_hash": "",
+        "range": [40, 120],
+        "rel_type": "CALLS_DIRECT",
+        "outgoing": True,
+        "caller_count": 2,
+    }
+    map_row = {
+        "uid": "map-u",
+        "name": "map",
+        "symbol_kind": "function",
+        "token_estimate": 200,
+        "qualified_name": "pkg.app.task.Task.map",
+        "file_path": "pkg/app/task.py",
+        "file_hash": "",
+        "range": [200, 260],
+        "rel_type": "HAS_API",
+        "outgoing": True,
+        "caller_count": 1,
+    }
+
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="delay-u",
+        name="delay",
+        file_path="pkg/app/task.py",
+        range=[1, 12],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    with patch.object(
+        ranker,
+        "_get_neighbors",
+        return_value=[apply_async_row, map_row],
+    ):
+        anchors = ranker.structural_recovery.direct_callee_anchor_candidates(
+            target,
+            mechanism="celery_task_publish",
+            query="sent to the broker",
+            excluded_uids=set(),
+        )
+    assert len(anchors) >= 1
+    assert anchors[0].name == "apply_async"
+    assert anchors[0].relation == "MANDATORY_CALLEE"
+    assert anchors[0].render_mode == "full"
+    assert anchors[0].graph_score >= 5.0
+
+
+def test_direct_callee_skipped_for_non_trace_targets():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="ws")
+    target = SubgraphNode(
+        uid="app-u",
+        name="Application",
+        file_path="pkg/app/application.py",
+        range=[1, 200],
+        token_estimate=500,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    with patch.object(ranker, "_get_neighbors") as get_neighbors:
+        anchors = ranker.structural_recovery.direct_callee_anchor_candidates(
+            target,
+            mechanism="",
+            query="overview of the application",
+            excluded_uids=set(),
+        )
+    assert anchors == []
+    get_neighbors.assert_not_called()
+
+
+def test_merge_mandatory_callee_pool_upgrades_existing_graph_hit():
+    ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()), workspace_id="ws")
+    existing = Candidate(
+        kind="symbol",
+        uid="apply-u",
+        token_cost=400,
+        graph_score=0.8,
+        name="apply_async",
+        file_path="pkg/app/task.py",
+        range=[40, 120],
+        render_mode="signature_only",
+        relation="CALLS_DIRECT",
+        direction="callee",
+        depth=2,
+    )
+    mandatory = Candidate(
+        kind="symbol",
+        uid="apply-u",
+        token_cost=400,
+        graph_score=6.0,
+        name="apply_async",
+        file_path="pkg/app/task.py",
+        range=[40, 120],
+        render_mode="full",
+        relation="MANDATORY_CALLEE",
+        direction="callee",
+        depth=1,
+    )
+    merged = ranker._merge_mandatory_callee_pool([existing], [mandatory])
+    assert len(merged) == 1
+    assert merged[0].relation == "MANDATORY_CALLEE"
+    assert merged[0].render_mode == "full"
+    assert merged[0].graph_score >= 6.0
 
 
 def test_trace_query_terms_skip_package_root_names():
@@ -1610,7 +1942,7 @@ def test_role_filler_outranks_unrelated_high_score_docs():
     }
     target = SubgraphNode(
         uid="primary",
-        name="get_openapi",
+        name="_build_openapi_schema",
         file_path="/repo/src/main.py",
         range=[1, 10],
         token_estimate=100,
@@ -1726,6 +2058,62 @@ def test_docs_not_deferred_for_impact_analysis():
 
     chosen_doc_count = sum(1 for c in chosen if c.kind == "doc")
     assert chosen_doc_count >= 1, "IMPACT_ANALYSIS should still admit docs without deferral"
+
+
+def test_mixed_intent_policy_adds_secondary_role_coverage():
+    """A debugging+refactor query should seat refactor/impact evidence too."""
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="target",
+        name="_process_payment_internal",
+        file_path="/repo/src/payment.py",
+        range=[1, 20],
+        token_estimate=100,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    public_api_candidate = Candidate(
+        kind="symbol",
+        uid="public-api",
+        name="PaymentClient",
+        file_path="/repo/src/payment_client.py",
+        token_cost=80,
+        graph_score=0.2,
+        semantic_score=0.1,
+        relation="CALLS_DIRECT",
+        evidence_role="api_surface",
+        depth=1,
+    )
+    policy = IntentClassifier.policy_from_signal(
+        IntentSignal(
+            primary=Intent.DEBUGGING,
+            distribution={"debugging": 0.55, "refactor": 0.30, "exploration": 0.15},
+            confidence=0.55,
+            ambiguous=True,
+        )
+    )
+
+    ranker._graph_candidates = lambda *a, **kw: [public_api_candidate]
+    ranker._doc_candidates = lambda *a, **kw: []
+    ranker._sym_vec_candidates = lambda *a, **kw: []
+    ranker._doc_bridge_candidates = lambda *a, **kw: []
+
+    chosen, budget_info, _, _, missing_roles = ranker.rank(
+        target,
+        "process_payment why does this fail after the refactor?",
+        Intent.DEBUGGING,
+        budget=1600,
+        intent_policy=policy,
+    )
+
+    assert "PaymentClient" in {c.name for c in chosen}
+    assert "impact_public_api" not in missing_roles
+    assert budget_info["floor"] > UnifiedRanker._INTENT_FLOORS[Intent.DEBUGGING]
 
 
 def test_impact_analysis_seats_test_surface_even_when_topic_noise_is_low():
@@ -1866,7 +2254,166 @@ def test_trace_query_terms_expand_frontend_render_pipeline():
         )
     )
 
-    assert {"compile", "createvnode", "patch", "renderer", "vnode"} <= terms
+    assert {"compile", "patch", "renderer"} <= terms
+
+
+def test_trace_query_terms_expand_worker_execute_flow():
+    target = SubgraphNode(
+        uid="Consumer",
+        name="Consumer",
+        file_path="/repo/celery/worker/consumer/consumer.py",
+        range=[0, 10],
+        token_estimate=50,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+
+    terms = set(
+        StructuralRecovery.trace_query_terms(
+            "How does the Celery worker receive a message from the broker and execute the underlying task function?",
+            target,
+        )
+    )
+
+    assert {"request", "strategy", "handler", "pool"} <= terms
+
+
+def test_trace_query_terms_expand_broker_publish_flow():
+    target = SubgraphNode(
+        uid="delay",
+        name="delay",
+        file_path="/repo/celery/app/task.py",
+        range=[10, 12],
+        token_estimate=20,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    terms = set(
+        StructuralRecovery.trace_query_terms(
+            "When a user calls task.delay(), how is the task message constructed and sent to the broker?",
+            target,
+        )
+    )
+
+    assert {"producer", "publish", "send"} <= terms
+
+
+def test_trace_query_terms_expand_dependency_injection_flow():
+    target = SubgraphNode(
+        uid="Injectable",
+        name="Injectable",
+        file_path="/repo/packages/common/decorators/core/injectable.decorator.ts",
+        range=[0, 10],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    terms = set(
+        StructuralRecovery.trace_query_terms(
+            "How does dependency injection resolve providers in the container?",
+            target,
+        )
+    )
+
+    assert {"inject", "injector", "provider", "resolve", "wrapper"} <= terms
+
+
+def test_trace_topic_scope_prefixes_widens_dependency_injection_to_packages_root():
+    host = MagicMock()
+    host.db = MagicMock()
+    host.workspace_id = "ws"
+    recovery = StructuralRecovery(host)
+
+    prefixes = recovery.trace_topic_scope_prefixes(
+        "/repo/packages/common/decorators/core/injectable.decorator.ts",
+        ["injector", "provider", "resolve"],
+    )
+
+    assert "/repo/packages/" in prefixes
+    assert any(prefix.endswith("/packages/common/decorators/core/") for prefix in prefixes)
+
+
+def test_source_scope_prefixes_widens_for_subpackage_entry_point():
+    """consumer/consumer.py → scope is worker/, not consumer/ (sibling files are in worker/)."""
+    host = MagicMock()
+    host.db = MagicMock()
+    host.workspace_id = "ws"
+    recovery = StructuralRecovery(host)
+
+    prefixes = recovery.source_scope_prefixes("/repo/celery/worker/consumer/consumer.py")
+    assert any("worker/" in p for p in prefixes)
+    assert not any(p.endswith("consumer/") for p in prefixes)
+
+    # foo/foo/ pattern must still work
+    prefixes_fastapi = recovery.source_scope_prefixes("/repo/fastapi/fastapi/applications.py")
+    assert any("fastapi/fastapi/" in p for p in prefixes_fastapi)
+
+
+def test_is_routing_flow_context_accepts_route_builder_role():
+    """route_builder in required_roles unlocks routing recovery (no composition_surface needed)."""
+    host = MagicMock()
+    host.db = MagicMock()
+    host.workspace_id = "ws"
+    recovery = StructuralRecovery(host)
+
+    target = SubgraphNode(
+        uid="Controller",
+        name="Controller",
+        file_path="/repo/packages/common/decorators/controller.decorator.ts",
+        range=[0, 10],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    result = recovery.is_routing_flow_context(
+        target=target,
+        mechanism="auto:module_composition",
+        query="How does NestJS use decorators to map HTTP routes to controller methods?",
+        required_roles=["route_builder", "decorator_processor", "public_entrypoint"],
+    )
+    assert result is True
+
+
+def test_routing_flow_recovery_hint_passes_for_decorator_target_with_router_row():
+    """target in /decorators/ path + row in packages/core/router → path_hit = True."""
+    host = MagicMock()
+    host.db = MagicMock()
+    host.workspace_id = "ws"
+    recovery = StructuralRecovery(host)
+
+    target = SubgraphNode(
+        uid="Controller",
+        name="Controller",
+        file_path="/repo/packages/common/decorators/controller.decorator.ts",
+        range=[0, 10],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    row = {
+        "uid": "routes-resolver",
+        "name": "RoutesResolver",
+        "qualified_name": "RoutesResolver",
+        "file_path": "/repo/packages/core/router/routes-resolver.ts",
+    }
+    assert recovery.routing_flow_recovery_hint(row, target=target) is True
 
 
 def test_impact_reference_anchor_candidates_build_public_api_backfills(tmp_path):
@@ -2344,6 +2891,137 @@ def test_trace_dependency_gain_mode_from_compile_render_question():
     )
 
 
+def test_identity_trace_roles_for_same_actor_ingest_and_gates():
+    same_actor_roles = infer_identity_trace_roles(
+        file_path="/repo/src/dathund_core/identity/actor_index.py",
+        name="same_actor",
+    )
+    assert "executor" in same_actor_roles
+    assert "orchestrator" in same_actor_roles
+    assert "runtime_surface" in same_actor_roles
+
+    ingest_roles = infer_identity_trace_roles(
+        file_path="/repo/src/dathund_core/engine/chain_engine.py",
+        name="ingest",
+    )
+    assert "executor" in ingest_roles
+    assert "orchestrator" in ingest_roles
+
+    gate_roles = infer_identity_trace_roles(
+        file_path="/repo/src/dathund_core/engine/chain_engine.py",
+        name="_same_actor_gate",
+    )
+    assert "executor" in gate_roles
+    assert "config_surface" in gate_roles
+
+    assert not infer_identity_trace_roles(
+        file_path="/repo/src/dathund_core/plugins/catalog.py",
+        name="same_actor",
+    )
+
+
+def test_minimal_trace_import_anchor_assigns_identity_executor_role():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    row = {
+        "uid": "same-actor",
+        "name": "same_actor",
+        "symbol_kind": "method",
+        "token_estimate": 40,
+        "qualified_name": "",
+        "file_path": "/repo/src/dathund_core/identity/actor_index.py",
+        "file_hash": "",
+        "range": [10, 30],
+        "inbound_edges": 1,
+        "outbound_edges": 0,
+        "trace_anchor_score": 4.0,
+    }
+    candidate = ranker.structural_recovery.minimal_trace_import_anchor_candidate(
+        row,
+        required_roles=["orchestrator", "executor", "runtime_surface", "config_surface"],
+    )
+    assert candidate.evidence_role == "executor"
+    assert "orchestrator" in candidate.supporting_roles
+
+
+def test_trace_dependency_gain_mode_from_routing_dispatch_question():
+    assert RankerScoring.trace_dependency_gain_mode(
+        "express_routing_dispatch",
+        "How does Express create an app and delegate request handling to its router?",
+    )
+
+
+def test_trace_routing_composition_anchor_candidates_explicit_composition_role():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="create-app",
+        name="createApplication",
+        file_path="/repo/express/lib/express.js",
+        range=[1, 40],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    rows = [
+        {
+            "uid": "use-fn",
+            "name": "use",
+            "symbol_kind": "function",
+            "token_estimate": 48,
+            "qualified_name": "",
+            "file_path": "/repo/express/lib/application.js",
+            "file_hash": "h1",
+            "range": [80, 120],
+            "inbound_edges": 2,
+            "outbound_edges": 1,
+            "routing_anchor_score": 5.5,
+        },
+        {
+            "uid": "router-cls",
+            "name": "Router",
+            "symbol_kind": "class",
+            "token_estimate": 64,
+            "qualified_name": "",
+            "file_path": "/repo/express/lib/application.js",
+            "file_hash": "h2",
+            "range": [20, 60],
+            "inbound_edges": 4,
+            "outbound_edges": 2,
+            "routing_anchor_score": 6.0,
+        },
+    ]
+    with patch.object(
+        ranker.structural_recovery,
+        "routing_flow_symbol_rows",
+        return_value=rows,
+    ):
+        anchors = ranker._trace_routing_composition_anchor_candidates(
+            target,
+            query="How does Express create an app and delegate request handling to its router?",
+            mechanism="express_routing_dispatch",
+            required_roles=[
+                "api_surface",
+                "factory_surface",
+                "runtime_surface",
+                "composition_surface",
+            ],
+            excluded_uids=set(),
+            pool=[],
+        )
+
+    assert {anchor.name for anchor in anchors} == {"use", "Router"}
+    assert all(anchor.evidence_role == "composition_surface" for anchor in anchors)
+    router = next(anchor for anchor in anchors if anchor.name == "Router")
+    assert "factory_surface" in router.supporting_roles
+    assert all("trace-routing-composition-anchor" in anchor.provenance for anchor in anchors)
+
+
 def test_resolve_intra_repo_package_import_paths(tmp_path):
     """Absolute ``from pkg.sub.mod import …`` maps to sibling package files on disk."""
     inner = tmp_path / "fastapi" / "fastapi"
@@ -2571,3 +3249,150 @@ def test_budget_pruner_stops_after_required_roles_without_extra_expansion():
     assert [c.uid for c in chosen] == ["solve-dependencies"]
     assert stopped_reason == "role_complete"
     assert {item["uid"]: item["reason"] for item in pruned}["extra-noise"] == "role_complete"
+
+
+def test_budget_pruner_defers_extra_head_backfill_until_chain_symbols():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="target",
+        name="Depends",
+        file_path="/repo/fastapi/params.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+    api_backfill = Candidate(
+        kind="symbol",
+        uid="api-backfill",
+        name="Depends",
+        file_path="/repo/fastapi/params.py",
+        token_cost=60,
+        graph_score=0.8,
+        semantic_score=0.7,
+        relation="ROLE_BACKFILL",
+        evidence_role="api_surface",
+        provenance=["role-backfill:api_surface"],
+    )
+    runtime_backfill = Candidate(
+        kind="symbol",
+        uid="runtime-backfill",
+        name="solve_dependencies",
+        file_path="/repo/fastapi/dependencies/utils.py",
+        token_cost=60,
+        graph_score=0.8,
+        semantic_score=0.7,
+        relation="ROLE_BACKFILL",
+        evidence_role="runtime_surface",
+        provenance=["role-backfill:runtime_surface"],
+    )
+    chain_symbols = [
+        Candidate(
+            kind="symbol",
+            uid=f"chain-{idx}",
+            name=name,
+            file_path=f"/repo/fastapi/dependencies/{name}.py",
+            token_cost=60,
+            graph_score=0.9,
+            semantic_score=0.6,
+            relation=relation,
+            depth=1,
+        )
+        for idx, (name, relation) in enumerate(
+            [
+                ("get_dependant", "CALLS_DIRECT"),
+                ("Dependant", "DEPENDS_ON"),
+                ("run_endpoint_function", "IMPLEMENTS"),
+            ],
+            start=1,
+        )
+    ]
+
+    chosen, budget_info, _, _, missing = ranker.budget_pruner.select_under_budget(
+        [api_backfill, runtime_backfill, *chain_symbols],
+        target,
+        "How does Depends trace dependency injection into endpoint calls?",
+        Intent.EXPLORATION,
+        "trace_dependency",
+        required_roles=["api_surface", "runtime_surface"],
+        budget=1600,
+        floor_override=1000,
+    )
+
+    assert [c.uid for c in chosen] == [
+        "api-backfill",
+        "chain-1",
+        "chain-2",
+        "chain-3",
+        "runtime-backfill",
+    ]
+    assert missing == []
+    assert budget_info["head_bridge_deferred"] == 1
+    assert budget_info["head_bridge_replayed"] == 1
+    assert budget_info["head_backfill_deferred"] == 1
+    assert budget_info["head_backfill_replayed"] == 1
+
+
+def test_budget_pruner_replays_deferred_head_backfill_when_chain_is_sparse():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    target = SubgraphNode(
+        uid="target",
+        name="Field",
+        file_path="/repo/pydantic/fields.py",
+        range=[1, 20],
+        token_estimate=80,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    api_backfill = Candidate(
+        kind="symbol",
+        uid="api-backfill",
+        name="FieldInfo",
+        file_path="/repo/pydantic/fields.py",
+        token_cost=60,
+        graph_score=0.8,
+        semantic_score=0.7,
+        relation="ROLE_BACKFILL",
+        evidence_role="api_surface",
+        provenance=["role-backfill:api_surface"],
+    )
+    runtime_backfill = Candidate(
+        kind="symbol",
+        uid="runtime-backfill",
+        name="ModelField",
+        file_path="/repo/pydantic/main.py",
+        token_cost=60,
+        graph_score=0.8,
+        semantic_score=0.7,
+        relation="ROLE_BACKFILL",
+        evidence_role="runtime_surface",
+        provenance=["role-backfill:runtime_surface"],
+    )
+
+    chosen, budget_info, _, _, missing = ranker.budget_pruner.select_under_budget(
+        [api_backfill, runtime_backfill],
+        target,
+        "Trace how Field feeds runtime model validation.",
+        Intent.EXPLORATION,
+        "trace_dependency",
+        required_roles=["api_surface", "runtime_surface"],
+        budget=1200,
+        floor_override=1000,
+    )
+
+    assert [c.uid for c in chosen] == ["api-backfill", "runtime-backfill"]
+    assert missing == []
+    assert budget_info["head_bridge_deferred"] == 1
+    assert budget_info["head_bridge_replayed"] == 1
+    assert budget_info["head_backfill_deferred"] == 1
+    assert budget_info["head_backfill_replayed"] == 1

@@ -2,12 +2,13 @@
 
 ## Overview
 
-The current implementation uses two concrete storage clients:
+The current implementation uses three local-default storage clients:
 
 - `Neo4jClient` for graph topology and metadata.
 - `LanceDBClient` for vector retrieval over docs and symbol bodies.
+- `SQLiteHistoryProvider` for local conversations and sanitized request snapshots.
 
-These are now treated as default provider implementations behind the planned storage connector layer. See [spec_storage_connectors.md](spec_storage_connectors.md).
+These are treated as default provider implementations behind the staged storage connector layer. Retrieval-facing provider protocols and test fakes exist for vector/workspace/graph-driver seams; full graph/vector connector wrappers are still in progress. See [spec_storage_connectors.md](spec_storage_connectors.md).
 
 Neither graph storage nor tenant API graph storage may store raw source code content (ADR-001). Vector and history storage are governed by storage policy because they may contain text snippets, embeddings, prompts, answers, or prompt-context snapshots.
 
@@ -17,7 +18,7 @@ Neither graph storage nor tenant API graph storage may store raw source code con
 |---|---|---|
 | `GraphProvider` | Neo4j | Topology: files, symbols, edges, workspaces, DocAnchors, tenant API links |
 | `VectorProvider` | LanceDB | Semantic indexes: docs, symbol embeddings, embedding metadata |
-| `HistoryProvider` | Planned SQLite | User dialogs, ask snapshots, inspector/impact snapshots, retention policy |
+| `HistoryProvider` | SQLite local | User dialogs, ask snapshots, inspector/impact snapshots, retention policy |
 
 ---
 
@@ -132,25 +133,49 @@ Delete-then-insert for the target `(workspace_id, chunk_id)` row. LanceDB `updat
 
 ---
 
+## HistoryProvider Default: SQLiteHistoryProvider (`sidecar/history/sqlite_provider.py`)
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `HISTORY_MODE` | `local` | `local`, `ephemeral`, or `disabled` |
+| `HISTORY_DB_PATH` | `./data/history/surgical_context.sqlite3` | SQLite file for local mode |
+| `HISTORY_RETENTION_DAYS` | unset | Optional non-negative retention window |
+
+### Stored Data
+
+History is metadata-first. The provider persists conversations, messages, selected request ids, ask snapshots, inspector snapshots, and impact snapshots, but sanitizes raw prompts, answers, code bodies, source snippets, free-text comments, and `raw_*` fields before writing JSON payloads.
+
+### Methods
+
+- `create_conversation(...)`, `get_conversation(...)`, `list_conversations(...)`
+- `append_message(...)`, `list_messages(...)`, `set_selected_request(...)`
+- `save_ask_snapshot(...)`, `save_inspector_snapshot(...)`, `save_impact_snapshot(...)`
+- `get_conversation_bundle(...)`, `get_request_bundle(...)`
+
+`DisabledHistoryProvider` returns empty/no-op results. `EphemeralSQLiteHistoryProvider` uses a temporary SQLite database for the current sidecar process.
+
+---
+
 ## Limitations (current)
 
-- LanceDB doc/vector search is not yet strongly workspace-filtered; graph reads and code bodies are workspace-scoped.
+- LanceDB doc/vector search is workspace-filtered, but filters are still string predicates rather than a provider-neutral query API.
 - No transaction batching in `_upsert_nodes` — N symbols = N round-trips to Neo4j.
 - `set_pending` is delete-then-insert — concurrent writes to the same chunk_id would lose data (not an issue in current single-process design).
-- LanceDB delete filter uses string interpolation — values with single quotes in file paths would break the filter.
-- No `HistoryProvider` exists yet; dialog history and prompt/impact/inspector snapshots are currently webview/session state rather than durable local product state.
-- Neo4j and LanceDB are concrete clients, not yet replaceable through provider interfaces.
+- LanceDB delete/search filters are manually quoted string predicates; keep special-character handling covered by tests before broadening path support.
+- History storage is local SQLite only; encrypted SQLite, Postgres, and enterprise audit stores are future connector work.
+- Neo4j and LanceDB are still concrete defaults for most write/read paths; retrieval-facing protocols exist, but full graph/vector provider wrappers are not complete.
 
 ---
 
 ## Planned Extensions
 
-- Introduce provider protocols from [spec_storage_connectors.md](spec_storage_connectors.md): `GraphProvider`, `VectorProvider`, and `HistoryProvider`
-- Add SQLite-backed `HistoryProvider` for local conversations, messages, ask snapshots, inspector snapshots, and impact snapshots
-- Add storage policy enforcement before history/vector persistence of raw text, code snippets, prompt text, or response text
-- Add local provider configuration modes first: `local`, `local_docker`, `ephemeral`, and `disabled`
+- Finish provider protocols/wrappers from [spec_storage_connectors.md](spec_storage_connectors.md): full `GraphProvider` and `VectorProvider` boundaries around the default clients
+- Extend storage policy enforcement beyond current history sanitization to vector persistence and any future shared/audit connector
+- Add local provider configuration modes for graph/vector defaults first: `local`, `local_docker`, `ephemeral`, and `disabled`
 - Defer `customer_managed`, `dedicated_managed`, and `enterprise_audit` provider modes until local defaults and conformance tests are stable
 - Batch `_upsert_nodes` into a single parameterized Cypher `UNWIND` call
-- Strong workspace filters in LanceDB doc/vector tables
+- Provider-neutral/typed LanceDB filters for doc/vector tables
 - Parameterized LanceDB delete filter to handle paths with special characters
 - Tenant API contract graph labels and relationships from [spec_tenant_api_graph.md](spec_tenant_api_graph.md): `Service`, `ApiEndpoint`, `ApiSchema`, `EventTopic`, `ContractManifest`, and published metadata-only cross-project links

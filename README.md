@@ -35,7 +35,7 @@ This folder contains the current product and technical documentation for the `co
 
 **APIs & Infrastructure:**
 - **[spec_sidecar_api.md](docs/spec_sidecar_api.md)** — FastAPI endpoints
-- **[spec_storage.md](docs/spec_storage.md)** — current Neo4j/LanceDB storage behavior
+- **[spec_storage.md](docs/spec_storage.md)** — current Neo4j/LanceDB/SQLite storage behavior
 - **[spec_storage_connectors.md](docs/spec_storage_connectors.md)** — planned Graph/Vector/History provider connector layer
 - **[spec_language_adapter.md](docs/spec_language_adapter.md)** — plugin architecture (ADR-005)
 - **[spec_overlay.md](docs/spec_overlay.md)** — in-memory dirty state
@@ -43,6 +43,9 @@ This folder contains the current product and technical documentation for the `co
 
 **Advanced Topics:**
 - **[spec_eval_harness.md](docs/spec_eval_harness.md)** — real-repo benchmark harness, token metrics, and report schema
+- **[benchmark_all_repos_context_comparison.md](docs/benchmark_all_repos_context_comparison.md)** — index to all-repo benchmark snapshots
+- **[benchmark_mechanism_coverage.md](docs/benchmark_mechanism_coverage.md)** — harness metrics and mechanism-coverage analysis
+- **[benchmark_path1_vs_path2.md](docs/benchmark_path1_vs_path2.md)** — LLM Judgment: Surgical Context vs first-time repo read
 - **[spec_embedding_versioning.md](docs/spec_embedding_versioning.md)** — managing embedding model versions
 - **[spec_affects_index.md](docs/spec_affects_index.md)** — reverse dependency index
 
@@ -66,9 +69,11 @@ The product is now described more narrowly than before:
 
 The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/context modules, a workspace-scoped unified ranker, canonical role taxonomy normalization, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
 
-Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, package/module fallback targets for workspace-level questions such as `pydantic.v1`, trace-dependency recovery hardening for sparse import topology (runtime symbol seeding + sibling-directory expansion with explicit recovery provenance), TypeScript `object_api` indexing with cross-language `SEMANTIC_HINT` HTTP route hints (`ts_http_route_hints`), and a relaxed `trace_dependency` benchmark gate for near-perfect single-axis recall.
+Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, package/module fallback targets for workspace-level questions such as `pydantic.v1`, trace-dependency recovery hardening for sparse import topology (runtime symbol seeding + sibling-directory expansion with explicit recovery provenance), TypeScript `object_api` indexing with cross-language `SEMANTIC_HINT` HTTP route hints (`ts_http_route_hints`), a relaxed `trace_dependency` benchmark gate for near-perfect single-axis recall, **workspace path sandboxing** (API + graph-resolved reads under indexed `project_path`; queued `/index` registers root immediately), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_sidecar_api.md](docs/spec_sidecar_api.md) and [road_map.md](docs/road_map.md).
 
 The local setup and smoke-test path live in **[local_development.md](docs/local_development.md)** and `scripts/local_dev.py`. The most important open gaps are broader real-repo benchmark coverage beyond the current FastAPI, Redux Toolkit, and Pydantic baselines, continued precision work on broad/doc-heavy retrieval paths, doc-anchor confidence/type scoring, consistent workspace/branch metadata in the prompt contract, and extension synchronization/accessibility polish. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](docs/road_map.md)** for the canonical backlog in this branch.
+
+**Related experiments (external repos, not submodules):** [context-deduplicator](https://github.com/idxoid/context-deduplicator) and [marginal-utility-selector](https://github.com/idxoid/marginal-utility-selector) were early standalone prototypes. Production logic lives in `sidecar/context/` (`PromptCompiler`, `BudgetPruner`, `sidecar/context/deduplicator.py`).
 
 ---
 

@@ -11,6 +11,7 @@ from sidecar.context.mechanism_registry import (
     required_roles_for_mechanism,
     role_backfill_specs_for_mechanism,
 )
+from sidecar.context.role_taxonomy import infer_ranker_fusion_roles
 from sidecar.context.types import SubgraphNode
 
 
@@ -53,9 +54,47 @@ def test_preloaded_dispatch_stub_returns_empty_for_framework_like_symbols():
     )
 
 
-def test_builtin_required_roles_and_known_mechanisms_are_empty():
+def test_unknown_mechanism_has_no_builtin_roles():
     assert required_roles_for_mechanism("generated_api_schema") == []
-    assert known_mechanisms() == ()
+
+
+def test_builtin_ranker_fusion_mechanism_no_longer_hardcoded():
+    # surgical_context_ranker_fusion is no longer a builtin — all preloaded dispatch removed.
+    assert "surgical_context_ranker_fusion" not in known_mechanisms()
+    assert required_roles_for_mechanism("surgical_context_ranker_fusion") == []
+    assert role_backfill_specs_for_mechanism("surgical_context_ranker_fusion") == {}
+
+
+def test_preloaded_mechanism_always_empty():
+    # determine_preloaded_mechanism is intentionally inert — no hardcoded dispatch for any repo.
+    assert (
+        determine_preloaded_mechanism(_target("v1", "/repo/pydantic/v1/__init__.py"), "compat")
+        == ""
+    )
+    assert (
+        determine_preloaded_mechanism(
+            _target("Controller", "/repo/nestjs/controller.decorator.ts"), "route"
+        )
+        == ""
+    )
+    assert (
+        determine_preloaded_mechanism(
+            _target("UnifiedRanker", "/repo/sidecar/context/unified_ranker.py"), "rank"
+        )
+        == ""
+    )
+
+
+def test_infer_ranker_fusion_roles_marks_factory_surface():
+    assert "factory_surface" in infer_ranker_fusion_roles(
+        file_path="/repo/sidecar/context/unified_ranker.py",
+        name="rank",
+    )
+    assert "factory_surface" in infer_ranker_fusion_roles(
+        file_path="/repo/sidecar/context/ranker/pruning.py",
+        name="BudgetPruner",
+    )
+    assert infer_ranker_fusion_roles(file_path="/repo/other.py", name="foo") == []
 
 
 def test_known_mechanisms_includes_catalog_overlay_keys():
@@ -63,7 +102,10 @@ def test_known_mechanisms_includes_catalog_overlay_keys():
         ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY: {"custom_mech": ["api_surface"]},
         ROLE_CATALOG_MECHANISM_BACKFILL_KEY: {"other_mech": {}},
     }
-    assert set(known_mechanisms(role_catalog=catalog)) == {"custom_mech", "other_mech"}
+    assert set(known_mechanisms(role_catalog=catalog)) == {
+        "custom_mech",
+        "other_mech",
+    }
 
 
 def test_preloaded_registry_returns_empty_for_unknown_codebase():
@@ -116,25 +158,57 @@ def test_role_catalog_overrides_backfill_specs():
 
 def test_builtin_backfill_specs_empty_without_optional_pack():
     assert role_backfill_specs_for_mechanism("auto:registration_flow") == {}
+    assert role_backfill_specs_for_mechanism("unknown_mech") == {}
 
 
-def test_flask_registration_pack_provides_auto_registration_flow(monkeypatch):
-    from pathlib import Path
+# Example (inactive): mirrors sidecar/context/mechanism_packs/bundled/celery_publish_consume.yaml.
+# Uncomment the YAML pack and this test together when tuning celery publish/consume.
+#
+# def test_celery_publish_consume_pack_matches_question_mechanisms(monkeypatch):
+#     from pathlib import Path
+#
+#     pack = (
+#         Path(__file__).resolve().parents[2]
+#         / "sidecar/context/mechanism_packs/bundled/celery_publish_consume.yaml"
+#     )
+#     monkeypatch.setenv("MECHANISM_PACK_PATH", str(pack))
+#     ext = preloaded_mechanism_catalog_extensions()
+#     publish = role_backfill_specs_for_mechanism(
+#         "celery_task_publish",
+#         role_catalog=ext,
+#     )
+#     assert "orchestrator" in publish
+#     assert any(row["name"] == "apply_async" for row in publish["orchestrator"])
+#     assert any(row["name"] == "Producer" for row in publish["integration_surface"])
+#     assert any(row["name"] == "send_task_message" for row in publish["orchestrator"])
+#     consume = role_backfill_specs_for_mechanism(
+#         "celery_worker_consume",
+#         role_catalog=ext,
+#     )
+#     assert any(row["name"] == "Request" for row in consume["runtime_surface"])
+#     assert any(row["name"] == "Strategy" for row in consume["executor"])
 
-    pack = (
-        Path(__file__).resolve().parents[2]
-        / "sidecar/context/mechanism_packs/bundled/flask_registration.yaml"
-    )
-    monkeypatch.setenv("MECHANISM_PACK_PATH", str(pack))
-    ext = preloaded_mechanism_catalog_extensions()
-    specs = role_backfill_specs_for_mechanism(
-        "auto:registration_flow",
-        role_catalog=ext,
-    )
-    assert "factory_surface" in specs
-    assert any(row["name"] == "register_blueprint" for row in specs["factory_surface"])
-    assert "runtime_surface" in specs
-    assert any(row["name"] == "wsgi_app" for row in specs["runtime_surface"])
+
+# Example (inactive): mirrors sidecar/context/mechanism_packs/bundled/flask_registration.yaml.
+# Uncomment the YAML pack and this test together when tuning Flask registration_flow.
+#
+# def test_flask_registration_pack_provides_auto_registration_flow(monkeypatch):
+#     from pathlib import Path
+#
+#     pack = (
+#         Path(__file__).resolve().parents[2]
+#         / "sidecar/context/mechanism_packs/bundled/flask_registration.yaml"
+#     )
+#     monkeypatch.setenv("MECHANISM_PACK_PATH", str(pack))
+#     ext = preloaded_mechanism_catalog_extensions()
+#     specs = role_backfill_specs_for_mechanism(
+#         "auto:registration_flow",
+#         role_catalog=ext,
+#     )
+#     assert "factory_surface" in specs
+#     assert any(row["name"] == "register_blueprint" for row in specs["factory_surface"])
+#     assert "runtime_surface" in specs
+#     assert any(row["name"] == "wsgi_app" for row in specs["runtime_surface"])
 
 
 def test_pick_mechanism_by_role_overlap_requires_two_distinct_roles():
