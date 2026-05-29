@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from QA.qa_benchmark import (
     default_repo_checkout_path,
+    ensure_repo_checkout,
     load_repository_meta,
     reset_index_state,
 )
@@ -47,11 +48,14 @@ def resolve_reset_target(
         if repo_meta is None:
             raise ValueError(f"Repository '{repo}' is not defined in {questions_path}")
 
-    resolved_project_path = (
-        Path(project_path).resolve()
-        if project_path
-        else default_repo_checkout_path(repo, repos_root=repos_root).resolve()
-    )
+    if project_path:
+        resolved_project_path = Path(project_path).resolve()
+    elif repo:
+        resolved_project_path = Path(
+            ensure_repo_checkout(questions_path, repo, repos_root=repos_root)
+        ).resolve()
+    else:
+        raise ValueError("Pass --repo, --project-path, or --fixture.")
     if not resolved_project_path.exists():
         raise FileNotFoundError(
             f"Checkout not found at {resolved_project_path}. "
@@ -108,7 +112,12 @@ def resolve_default_targets(
         repo_id = repo_meta.get("id")
         if not repo_id:
             continue
-        checkout = default_repo_checkout_path(repo_id, repos_root=repos_root).resolve()
+        meta_path = repo_meta.get("project_path")
+        checkout = (
+            Path(meta_path).resolve()
+            if meta_path
+            else default_repo_checkout_path(repo_id, repos_root=repos_root).resolve()
+        )
         if not checkout.exists():
             continue
         targets.append(
