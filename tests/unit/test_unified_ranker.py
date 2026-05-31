@@ -906,6 +906,43 @@ def test_pass1_supporting_roles_surface_co_located_labels():
     assert "runtime_surface" in roles
 
 
+def test_adaptive_role_plan_includes_pass1_supporting_roles_on_target():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker.role_catalog = {
+        "schema_version": 3,
+        "present_roles": {
+            "config_surface": 10,
+            "representation_surface": 10,
+            "api_surface": 5,
+            "factory_surface": 3,
+        },
+    }
+    ranker._derived_primary_role_by_uid = {"fastapi-u": "config_surface"}
+    ranker._derived_supporting_roles_by_uid = {
+        "fastapi-u": ["representation_surface", "api_surface"],
+    }
+    target = SubgraphNode(
+        uid="fastapi-u",
+        name="FastAPI",
+        file_path="/repo/fastapi/applications.py",
+        range=[1, 200],
+        token_estimate=400,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+
+    required = ranker._get_required_roles("generic", target=target)
+
+    assert required[0] == "config_surface"
+    assert "api_surface" in required
+    assert "representation_surface" in required
+    assert "docs_or_concept" in required
+
+
 def test_private_primary_target_does_not_satisfy_api_surface():
     ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
     target = SubgraphNode(

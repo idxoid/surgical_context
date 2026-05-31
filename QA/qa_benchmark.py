@@ -125,6 +125,40 @@ def _missing_expected_roles(
     return [role for role in required if role in missing]
 
 
+def _indexed_roles_for_symbol_uid(db, workspace_id: str, uid: str) -> list[str]:
+    """Primary + supporting roles persisted on a symbol at index time (Pass-1 output)."""
+    if not uid or not workspace_id:
+        return []
+    try:
+        with db.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: $uid})
+                RETURN s.derived_primary_role AS primary,
+                       s.derived_supporting_roles_json AS supporting
+                """,
+                workspace_id=workspace_id,
+                uid=uid,
+            ).single()
+    except Exception:
+        return []
+    if not row:
+        return []
+    roles: list[str] = []
+    primary = row.get("primary")
+    if primary:
+        roles.append(str(primary))
+    payload = row.get("supporting")
+    if payload:
+        try:
+            parsed = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, list):
+            roles.extend(str(role) for role in parsed if role)
+    return normalize_roles(roles)
+
+
 def _compute_file_recall(expected_files: set[str], retrieved_files: set[str]) -> float:
     """Fraction of expected_files for which at least one retrieved path matches."""
     if not expected_files:
@@ -1127,7 +1161,7 @@ def run_benchmark(
         intent = q.get("intent", "unknown")
         expected_mode = q.get("expected_mode", "symbol")
         mechanism = q.get("mechanism", "")
-        required_roles = q.get("required_roles") or q.get("required_roles_canonical") or []
+        required_roles_yaml = q.get("required_roles") or q.get("required_roles_canonical") or []
         expected_files = set(q.get("expected_files", []))
 
         # Measure assembly time
@@ -1166,8 +1200,10 @@ def run_benchmark(
                     "error": ctx,
                     "assembly_ms": assembly_ms,
                     "mechanism": mechanism,
-                    "expected_roles": normalize_roles(required_roles),
-                    "missing_expected_roles": normalize_roles(required_roles),
+                    "expected_roles": normalize_roles(required_roles_yaml),
+                    "required_roles_yaml": normalize_roles(required_roles_yaml),
+                    "indexed_roles": [],
+                    "missing_expected_roles": normalize_roles(required_roles_yaml),
                     "role_recall": 1.0 if is_correct_rejection else 0.0,
                     "precision": 0.0,
                     "ready_context": None,
@@ -1189,7 +1225,13 @@ def run_benchmark(
             if file_path
         }
 
-        required_roles_canonical = normalize_roles(required_roles)
+        indexed_roles = _indexed_roles_for_symbol_uid(
+            db,
+            active_workspace_id or DEFAULT_WORKSPACE_ID,
+            getattr(ctx.primary_source, "uid", "") or "",
+        )
+        required_roles_canonical = normalize_roles(required_roles_yaml)
+        indexed_roles_canonical = normalize_roles(indexed_roles)
         missing_roles_canonical = normalize_roles(ctx.missing_roles)
         ranker_required_roles = normalize_roles(
             getattr(ctx, "ranker_state", {}).get("required_roles", [])
@@ -1299,6 +1341,7 @@ def run_benchmark(
             f" ctx={context_precision:.2f}"
             f" | role={role_recall:.2f} | file={file_recall:.2f} | {tokens_surgical}t"
             f" | expected_roles={_format_roles_for_column(required_roles_canonical)}"
+            f" | indexed_roles={_format_roles_for_column(indexed_roles_canonical)}"
             f" | missing_roles={_format_roles_for_column(missing_expected_roles)}"
             f"{reasoning_info}"
         )
@@ -1353,7 +1396,10 @@ def run_benchmark(
                 "ranker_omitted_expected_roles": ranker_omitted_expected_roles,
                 "mechanism": mechanism,
                 "expected_roles": required_roles_canonical,
-                "required_roles": required_roles,
+                "required_roles": required_roles_canonical,
+                "required_roles_yaml": required_roles_canonical,
+                "required_roles_yaml_raw": list(required_roles_yaml),
+                "indexed_roles": indexed_roles_canonical,
                 "required_roles_canonical": required_roles_canonical,
                 "ranker_required_roles": ranker_required_roles,
                 "selected_strategy": strategy_profile.get("selected_strategy", ""),

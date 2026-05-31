@@ -242,7 +242,7 @@ class ContextArbitrator:
                 )
 
         mechanism = ranker._determine_mechanism(target, query=question)
-        required_roles = ranker._get_required_roles(mechanism)
+        required_roles = ranker._get_required_roles(mechanism, target=target)
         if intent == Intent.IMPACT_ANALYSIS:
             required_roles = [
                 "impact_runtime",

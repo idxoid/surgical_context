@@ -106,6 +106,15 @@ class RoleFulfilment:
     def canonical_role_for_symbol_uid(self, uid: str) -> str:
         return self.host._derived_primary_role_by_uid.get(uid, "")
 
+    def pass1_roles_for_symbol_uid(self, uid: str) -> list[str]:
+        """Primary + Pass-1 supporting roles persisted on the symbol."""
+        if not uid:
+            return []
+        primary = self.host._derived_primary_role_by_uid.get(uid, "")
+        supporting = self.host._derived_supporting_roles_by_uid.get(uid, [])
+        roles = ([primary, *supporting] if primary else list(supporting))
+        return normalize_roles(roles)
+
     def one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
         query = """
         MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(n:Symbol)
@@ -140,9 +149,7 @@ class RoleFulfilment:
         neighbors = self.host._one_hop_connected_symbol_uids(uid, limit=48)
         roles_observed: list[str] = []
         for sym_uid in [uid, *neighbors]:
-            role = self.canonical_role_for_symbol_uid(sym_uid)
-            if role:
-                roles_observed.append(role)
+            roles_observed.extend(self.pass1_roles_for_symbol_uid(sym_uid))
         target_role = self.canonical_role_for_symbol_uid(uid)
         return pick_mechanism_by_role_overlap(
             roles_observed,
@@ -181,9 +188,9 @@ class RoleFulfilment:
         counts: Counter[str] = Counter()
         if not self.host._derived_primary_role_by_uid:
             return counts
-        for role in self.host._derived_primary_role_by_uid.values():
-            if role:
-                counts[role] += 1
+        for uid, role in self.host._derived_primary_role_by_uid.items():
+            for observed in self.pass1_roles_for_symbol_uid(uid):
+                counts[observed] += 1
         return counts
 
     def filter_roles_by_workspace_supply(self, roles: list[str]) -> list[str]:
@@ -199,9 +206,7 @@ class RoleFulfilment:
         roles_observed: list[str] = []
         neighbors = self.host._one_hop_connected_symbol_uids(target.uid, limit=48)
         for sym_uid in [target.uid, *neighbors]:
-            role = self.canonical_role_for_symbol_uid(sym_uid)
-            if role:
-                roles_observed.append(role)
+            roles_observed.extend(self.pass1_roles_for_symbol_uid(sym_uid))
         counts.update(roles_observed)
         return counts
 
@@ -213,6 +218,10 @@ class RoleFulfilment:
 
     def adaptive_role_plan(self, *, target=None) -> list[str]:
         selected: list[str] = []
+        target_roles: list[str] = []
+        if target is not None and getattr(target, "uid", ""):
+            target_roles = self.pass1_roles_for_symbol_uid(target.uid)
+            selected.extend(target_roles)
 
         target_supply = self.target_role_supply_counts(target)
         if target_supply:
@@ -235,6 +244,7 @@ class RoleFulfilment:
                 selected.extend(list(present.keys())[:6])
 
         selected = normalize_roles(selected)
-        if selected:
-            return selected[:5]
-        return ["supporting_surface"]
+        if not selected:
+            return ["supporting_surface"]
+        rest = [role for role in selected if role not in set(target_roles)]
+        return normalize_roles([*target_roles, *rest])[:5]

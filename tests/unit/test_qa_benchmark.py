@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,7 @@ from QA.qa_benchmark import (
     _expected_file_matches,
     _head_dependency_diagnostics,
     _missing_expected_roles,
+    _indexed_roles_for_symbol_uid,
     _normalize_cleanup_prefixes,
     _path_matches_prefix,
     _score_ordered_graph_symbols,
@@ -54,6 +55,18 @@ def test_missing_expected_roles_include_ranker_omissions():
         ["public_entrypoint", "intermediate_model", "dependency_solver"],
         missing,
     ) == pytest.approx(2 / 3)
+
+
+def test_indexed_roles_for_symbol_uid_reads_primary_and_supporting():
+    db = MagicMock()
+    db.driver.session.return_value.__enter__.return_value.run.return_value.single.return_value = {
+        "primary": "core_runtime",
+        "supporting": '["executor", "runtime_surface"]',
+    }
+
+    roles = _indexed_roles_for_symbol_uid(db, "local/fastapi@master", "sym-u")
+
+    assert roles == ["core_runtime", "executor", "runtime_surface"]
 
 
 def test_expected_file_matches_extensionless_source_file_hints():
@@ -419,11 +432,16 @@ def test_run_benchmark_report_includes_precision_and_ready_context():
 
     class _FakeContext:
         def __init__(self):
-            self.primary_source = SimpleNamespace(symbol="Target", file_path="/tmp/repo/target.py")
+            self.primary_source = SimpleNamespace(
+                symbol="Target",
+                file_path="/tmp/repo/target.py",
+                uid="target-u",
+            )
             self.graph_context = [SimpleNamespace(symbol="Helper", file_path="/tmp/repo/helper.py")]
             self.documentation = [SimpleNamespace(source_file="/tmp/repo/docs.md")]
             self.missing_roles = []
             self.stopped_reason = "pool_exhausted"
+            self.ranker_state = {"required_roles": ["api_surface", "docs_or_concept"]}
 
         def token_count(self):
             return 321
@@ -443,7 +461,11 @@ def test_run_benchmark_report_includes_precision_and_ready_context():
 
     class _FakeNeo4jClient:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self.driver = MagicMock()
+            self.driver.session.return_value.__enter__.return_value.run.return_value.single.return_value = {
+                "primary": "orchestrator",
+                "supporting": '["runtime_surface"]',
+            }
 
         def close(self):
             pass
@@ -466,9 +488,13 @@ def test_run_benchmark_report_includes_precision_and_ready_context():
         metrics = run_benchmark(
             questions_path="ignored.yaml",
             no_index=True,
+            workspace_id="local/test@main",
         )
 
     result = metrics["results"][0]
+    assert result["required_roles_yaml"] == ["api_surface"]
+    assert result["indexed_roles"] == ["orchestrator", "runtime_surface"]
+    assert result["expected_roles"] == ["api_surface"]
     assert result["precision"] == pytest.approx(1.0)
     assert result["precision_at_k"] == pytest.approx(1.0)
     assert result["ready_context"]["token_count"] == 321
