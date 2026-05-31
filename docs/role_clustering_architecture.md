@@ -199,9 +199,9 @@ first and better serves the second.
 | M2 | intent multi-label | — | unchanged; better matched |
 | M3 | multi-label risks | 🟡 | threshold + tie-break + cap |
 
-**Critical path (remaining):** fix public-surface gaps (F12/F13 where still open) →
-naming fixes (F5/F6) → honest dataflow holes (F1 `request_router`). Re-validate with
-`QA/prototype_role_cascade.py` after each structural edge change.
+**Critical path (remaining):** naming fixes (F5/F6) → honest dataflow holes (P5
+`add_api_route → factory_surface`). Re-validate with `QA/prototype_role_cascade.py`
+after re-index.
 
 ## Related
 - [role_catalog.md](role_catalog.md) — role vocabulary and discriminators.

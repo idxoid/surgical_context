@@ -168,6 +168,21 @@ def test_assemble_symbol_rows_tracks_handle_fan_out_on_decorator():
     assert rows["u:handler"].handle_fan_in == 1.0
 
 
+def test_assemble_symbol_rows_depth_from_public_uses_full_graph_f13():
+    """Reachability through excluded callers must not collapse depth to zero."""
+    symbols = [
+        ("u:framework", "function", "/repo/fastapi/app.py"),
+        ("u:internal", "function", "/repo/fastapi/routing.py"),
+    ]
+    edges = [
+        ("u:test_entry", "u:framework", "CALLS_DIRECT", 1.0, ""),
+        ("u:framework", "u:internal", "CALLS_DIRECT", 1.0, ""),
+    ]
+    rows = {row.uid: row for row in assemble_symbol_rows(symbols, edges, {})}
+    assert rows["u:framework"].depth_from_public == 1
+    assert rows["u:internal"].depth_from_public == 2
+
+
 def test_role_catalog_roles_lists_cascade_vocabulary():
     roles = role_catalog_roles()
     assert "orchestrator" in roles

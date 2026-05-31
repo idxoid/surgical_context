@@ -181,7 +181,7 @@ Implemented in `sidecar/indexer/role_clustering.py` + `sidecar/indexer/role_casc
 
 **Pipeline order.** The fast pipeline runs Pass 1 between Phase 4 (DocAnchor resolution) and Phase 6 (repository readiness profile), so the pass sees CALLS-family edges, COVERS, INJECTS, HANDLES, DECORATED_BY, INSTANTIATES, USES_TYPE (with `kind`), and RE_EXPORTS-derived features. The single-file hot path does not run Pass 1.
 
-**Per-symbol structural features.** For every Pass-1 symbol the indexer assembles weighted fan profiles: call/type/api/inject/depend/handle/decorated/construct fans (including USES_TYPE kind-split and F13 partial credit from full-graph consumers outside the test-free symbol set), plus `depth_from_public`, cross-package counts, doc-anchor signals, `reexport_in`, and proxy-binding flags.
+**Per-symbol structural features.** For every Pass-1 symbol the indexer assembles weighted fan profiles: call/type/api/inject/depend/handle/decorated/construct fans (including USES_TYPE kind-split and F13 partial credit from full-graph consumers outside the test-free symbol set), plus `depth_from_public` (BFS from full-graph public roots, F13), cross-package counts, doc-anchor signals, `reexport_in`, and proxy-binding flags.
 
 **Assignment (schema v3).** No k-means, no cluster ids, no Pass-1 archetype tier:
 

@@ -109,6 +109,7 @@ class SymbolRow:
     depend_fan_out: float = 0.0
     handle_fan_in: float = 0.0
     handle_fan_out: float = 0.0
+    handler_call_fan_out: float = 0.0
     decorated_in: float = 0.0
     decorated_out: float = 0.0
     construct_fan_out: float = 0.0
@@ -318,7 +319,7 @@ def assemble_symbol_rows(
     for caller, callee, rel_type, conf, kind in _iter_structural_edges(call_edges):
         caller_in = caller in info
         callee_in = callee in info
-        # F13: credit Pass-1 endpoints from full-graph consumers outside the
+        # F13: credit Pass-1 endpoints from full-graph edges outside the
         # clustered symbol set (tests/docs user code calling framework APIs).
         if not caller_in and not callee_in:
             continue
@@ -371,9 +372,14 @@ def assemble_symbol_rows(
             if caller_in:
                 construct_fan_out[caller] += conf
 
-    public_uids = {uid for uid in info if call_fan_in[uid] <= _EPS and call_out[uid]}
-    depths = _bfs_depths(call_out, public_uids)
-    unreachable_depth = max(depths.values()) + 1 if depths else 0
+    handler_call_fan_out: dict[str, float] = defaultdict(float)
+    for caller, callee, rel_type, conf, _kind in _iter_structural_edges(call_edges):
+        if rel_type not in CALL_REL_TYPES or caller not in info or callee not in info:
+            continue
+        if handle_fan_in[callee] > _EPS:
+            handler_call_fan_out[caller] += conf
+
+    depth_by_uid = _depth_from_public_full_graph(call_edges, set(info))
 
     rows: list[SymbolRow] = []
     for uid, meta in info.items():
@@ -391,7 +397,7 @@ def assemble_symbol_rows(
                 fan_out=len(callees),
                 cross_package_in=cross_in,
                 cross_package_out=cross_out,
-                depth_from_public=depths.get(uid, unreachable_depth),
+                depth_from_public=depth_by_uid[uid],
                 doc_anchor_count=int(doc_counts.get(uid, 0)),
                 import_in=int(import_in_per_uid.get(uid, 0)),
                 doc_definition_weight=float(doc_signal.get("definition", 0.0)),
@@ -412,6 +418,7 @@ def assemble_symbol_rows(
                 depend_fan_out=depend_fan_out[uid],
                 handle_fan_in=handle_fan_in[uid],
                 handle_fan_out=handle_fan_out[uid],
+                handler_call_fan_out=handler_call_fan_out[uid],
                 decorated_in=decorated_in[uid],
                 decorated_out=decorated_out[uid],
                 construct_fan_out=construct_fan_out[uid],
@@ -437,6 +444,34 @@ def _bfs_depths(
                 depths[v] = depths[u] + 1
                 queue.append(v)
     return depths
+
+
+def _depth_from_public_full_graph(
+    call_edges: Sequence[tuple[str, ...]],
+    pass1_uids: set[str],
+) -> dict[str, int]:
+    """BFS distance from public call-graph roots on the full workspace graph (F13).
+
+    Pass-1 keeps test/doc paths out of role assignment, but entrypoint reachability
+    must traverse those callers so ``depth_from_public`` is not collapsed to zero.
+    """
+    full_call_out: dict[str, set[str]] = defaultdict(set)
+    full_call_fan_in: dict[str, float] = defaultdict(float)
+    for caller, callee, rel_type, conf, _kind in _iter_structural_edges(call_edges):
+        if caller == callee or rel_type not in CALL_REL_TYPES:
+            continue
+        full_call_out[caller].add(callee)
+        full_call_fan_in[callee] += conf
+
+    graph_nodes = set(full_call_fan_in) | set(full_call_out)
+    public_uids = {
+        uid
+        for uid in graph_nodes
+        if full_call_fan_in[uid] <= _EPS and full_call_out[uid]
+    }
+    depths = _bfs_depths(full_call_out, public_uids)
+    unreachable_depth = max(depths.values()) + 1 if depths else 0
+    return {uid: depths.get(uid, unreachable_depth) for uid in pass1_uids}
 
 
 def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:

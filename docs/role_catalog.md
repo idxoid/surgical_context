@@ -25,6 +25,7 @@ The signatures are written in the feature vocabulary Pass-1 assembles per symbol
 | `depend_fan_in/out` | DEPENDS_ON — **also carries class→class inheritance** (`subclass -[DEPENDS_ON]-> superclass`), so a base class shows high `depend_fan_in` |
 | `handle_fan_in` | HANDLES incoming — this symbol is a dispatched handler |
 | `handle_fan_out` | HANDLES outgoing — this symbol dispatches to handlers (dispatcher/registry) |
+| `handler_call_fan_out` | CALLS* fan-out onto symbols with `handle_fan_in > 0` (resolved dispatch to registered handlers) |
 | `decorated` | DECORATED_BY outgoing — this symbol → the decorator applied to it |
 | `decorated_in` | DECORATED_BY incoming — how many symbols decorate *with* this (a widely-applied decorator/interceptor) |
 | `proxy_of` | node is a `proxy_binding` (PROXY_OF edge) |
@@ -115,9 +116,10 @@ Constructs and returns an artifact object.
 The dispatcher side that registers handlers and later invokes them.
 - **признаки:** **`handle_fan_out > 0`** (HANDLES → the handlers it dispatches);
   mutates/holds a registry; called from `public_entrypoint`.
-- **discriminator:** `handle_fan_out > 0` (the inverse of `executor`'s
-  `handle_fan_in`). The decorator that registers (`@app.route`, `@app.task`) is
-  the registry; its `decorated` consumers are the executors.
+- **discriminator:** `handle_fan_out > 0` only (F1 — no setup/runtime split; that
+  was a phantom collision with `request_router`). The decorator that registers
+  (`@app.route`, `@app.task`) is the registry; its `decorated` consumers are the
+  executors.
 - **examples:** `app.route`/`add_url_rule` (flask); `@app.task` (celery);
   `add_api_route` registering into `app.router` (fastapi).
 
@@ -205,19 +207,10 @@ Attribute access triggers a runtime side-effect (load/query).
 Selects and invokes the handler for an incoming request.
 - **признаки (desired):** on the runtime request path; calls the *registered
   handlers* (the symbols with `handle_fan_in`) by lookup.
-- **discriminator:** ⚠️ **structurally near-invisible today, and it does NOT share
-  `handle_fan_out` with `registration_step`.** `handle_fan_out` comes only from
-  decoration (`deco -[HANDLES]-> decorated`), so it lives on the *decorator* =
-  `registration_step`. A runtime router (`dispatch_request`) is not a decorator →
-  has **no** `handle_fan_out`; and it invokes the handler via a **dynamic
-  dict-lookup** (`view_functions[endpoint](...)`) → **no resolved call edge** to
-  the handler either. So it has neither signal. Its only honest discriminator —
-  "high `call_fan_out` **onto `handle_fan_in` targets**" — requires resolving the
-  dynamic dispatch (points-to from the lookup table to the handlers), which the
-  graph does not do.
-- **feasibility:** 🟠 needs dynamic-dispatch resolution (lookup-table → handlers)
-  or a new signal; the depth/`call_fan_in` heuristic from earlier drafts is dropped
-  (it was solving a non-existent `handle_fan_out` collision).
+- **discriminator:** partial on current edges: `handler_call_fan_out > 0` (resolved
+  CALLS* onto HANDLES targets) **and** no `handle_fan_out` / `handle_fan_in`.
+  Dynamic dict-lookup dispatch (`view_functions[endpoint](…)`) still has **no**
+  resolved call edge → honest gap until points-to on the lookup table.
 - **examples:** `dispatch_request`/`full_dispatch_request` (flask); express
   `Router.handle`; django `URLResolver.resolve`.
 
@@ -525,7 +518,7 @@ exception type` (except clause).
   On fastapi: 51 edges; `FastAPI reexport_in=1` (+ APIRouter/Body/Depends/…).
 - **unblocks:** the **orthogonal** "I am the package public surface" axis —
   independent of `type_fan_in` (under which `FastAPI` is also consumed as a type)
-  and of `depth`/`api_fan_in` (unreliable under F13). The `api_surface` L2 predicate
+  and of pre-F13 `depth`/`api_fan_in` (now full-graph in indexer). The `api_surface` L2 predicate
   fires on `is_class and reexport_in > 0 and api_fan_out > 0`, recovering
   `FastAPI → api_surface` (qa_ok) without a magnitude threshold.
 - **examples:** `fastapi/__init__.py` re-exporting the public API; a TS barrel

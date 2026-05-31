@@ -31,6 +31,7 @@ class FanProfile(Protocol):
     depend_fan_out: float
     handle_fan_in: float
     handle_fan_out: float
+    handler_call_fan_out: float
     decorated_in: float
     decorated_out: float
     construct_fan_out: float
@@ -60,7 +61,6 @@ class FanProfile(Protocol):
 
 
 _EPS = 0.05
-_SETUP_DEPTH_MAX = 2
 _RUNTIME_CALL_IN_MIN = 1.0
 
 
@@ -106,20 +106,10 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         85,
     ),
     RolePredicate(
-        "request_router",
-        "routing_wrap",
-        lambda r: r.handle_fan_out > _EPS
-        and r.depth_from_public <= 4
-        and r.call_fan_in >= _RUNTIME_CALL_IN_MIN,
-        80,
-    ),
-    RolePredicate(
         "registration_step",
         "routing_wrap",
-        lambda r: r.handle_fan_out > _EPS
-        and r.depth_from_public <= _SETUP_DEPTH_MAX
-        and r.call_fan_in < _RUNTIME_CALL_IN_MIN,
-        75,
+        lambda r: r.handle_fan_out > _EPS,
+        85,
     ),
     RolePredicate(
         "executor",
@@ -132,6 +122,15 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         "control_flow",
         lambda r: r.type_fan_in_isinstance > _EPS or r.inject_fan_in > _EPS,
         80,
+    ),
+    RolePredicate(
+        "request_router",
+        "control_flow",
+        lambda r: r.handle_fan_out <= _EPS
+        and r.handle_fan_in <= _EPS
+        and r.call_fan_in >= _RUNTIME_CALL_IN_MIN
+        and r.handler_call_fan_out > _EPS,
+        78,
     ),
     RolePredicate(
         "composition_surface",
@@ -199,6 +198,15 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         "compute_leaf",
         lambda r: r.handle_fan_in > _EPS,
         85,
+    ),
+    RolePredicate(
+        "request_router",
+        "compute_leaf",
+        lambda r: r.handle_fan_out <= _EPS
+        and r.handle_fan_in <= _EPS
+        and r.call_fan_in >= _RUNTIME_CALL_IN_MIN
+        and r.handler_call_fan_out > _EPS,
+        78,
     ),
     RolePredicate(
         "validator_handle",
