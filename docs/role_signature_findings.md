@@ -264,6 +264,151 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   `dependency_solver` (isinstance-dispatch on `analyze_param`, not
   `solve_dependencies`) and `Param → config_surface` (F4 kind-split) also remain.
 
+### F14 — arbiter (`ROLE_ALIASES`) desynced from the cascade vocabulary 🔴
+- **what:** `normalize_roles` (`sidecar/context/role_taxonomy.py`) is applied to **both**
+  the YAML `required_roles` *and* the engine's `indexed_roles` and the ranker's role
+  plan. A miss is manufactured whenever a concept and the engine's emitted role for the
+  same symbol normalize to **different** canonicals. It also feeds the ranker's plan, so
+  the desync depresses `role_recall` **and** skews retrieval (the ranker hunts roles the
+  engine never emits → omits the symbol).
+- **how (three classes):**
+  1. **Arbiter defect (fixable in the map):** the cascade now emits
+     `registration_step`, `dependency_solver`, `request_router`, `proxy_mechanism` as
+     distinct catalog-correct discriminators, but `ROLE_ALIASES` collapses them
+     (`→factory_surface` / `→orchestrator` / `→representation_surface` / `→binding_surface`).
+     The map is also **non-idempotent**: `registration_step` is both a source (`→factory_surface`)
+     and a target (`*_registry → registration_step`), so the engine's `registration_step`
+     output canonicalizes to `factory_surface` while the expectation stays
+     `registration_step` → mismatch. The collapse is also **falsely lenient** (any
+     `orchestrator` matches a `dependency_solver` expectation).
+  2. **Engine gaps (not arbiter):** `runtime_surface` (35 slots), `error_surface`,
+     `serializer_handle`, `integration_surface`, `binding_surface` are catalog-correct
+     expectations with **no discriminator**. Notably `handler_or_lifecycle → runtime_surface`
+     is correct — the catalog separates the request handler (`runtime_surface`) from hot
+     internal machinery (`core_runtime`, e.g. `lenient_issubclass`); the engine conflates
+     them into `core_runtime`. A real engine gap (needs a runtime-reachability discriminator),
+     **not** an alias bug.
+  3. **Eval concepts, not roles:** `docs_or_concept`, `negative_lookup`,
+     `nearest_real_mechanism` — never structurally producible; should not score as
+     role-recall misses.
+- **why:** ~39% of expected-role slots were structurally unreachable as a discriminator;
+  the prior `role_recall=0.41` is measured against a partly-invalid reference. We were at
+  risk of bending the engine to satisfy a buggy answer-key (inverse of P1/P2).
+- **fix (this session):** Fix-1 — identity-map the four now-distinct cascade roles in
+  `ROLE_ALIASES` (idempotent + stricter; **may lower** the number by removing false
+  matches — that is the honest baseline). Class 2 stays as documented engine gaps (P5);
+  class 3 to be excluded from role accounting. Re-measure before any further engine work.
+
+### F15 — the question pack (gold) is materially stale/misaligned 🔴
+- **what:** auditing `tests/fixtures/real_repo_question_pack.yaml` against the indexed
+  repos, **42/65 questions** have an `expected_symbol` or `expected_file` that does not
+  exist in the indexed graph. Source-grep confirms three distinct root causes:
+  1. **Version-stale gold** — the symbol was removed/renamed in the checked-out
+     version: flask `_request_ctx_stack` (0 source files; removed Flask ≥2.3), vue
+     `Watcher` (0 files; Vue 2 concept, Vue 3 uses `ReactiveEffect`).
+  2. **Wrong name/case** — sqlalchemy `SessionMaker` (0) vs `sessionmaker` (3 files).
+  3. **Indexing gap, not pack** — rtk `combineReducers` exists in 3 source files but
+     was **not extracted** as a Symbol (TS/JS extraction gap).
+  Plus: 5 `required_roles` use vocab absent from `ROLE_ALIASES`
+  (`migration_loader`, `context_manager`, `deferred_registration`, `import_system`,
+  `cleanup_handler`); the 7 `surgical_context` self-questions failed workspace
+  resolution (self-index issue, separate). Some file-only "misses" are partly the
+  audit's stricter matcher vs `_expected_file_matches`.
+- **why:** `recall_at_5` / `file_recall` / `role_recall` are partly measured against a
+  gold that no longer matches the code. Optimizing the engine to it is the P1/P7 trap
+  (chasing stale answers). The sweep would produce a misleading baseline.
+- **decision:** **refresh the pack against the indexed repo versions before sweeping**
+  — fix version-stale + wrong-case symbols, drop/realias unmapped role vocab, fix the
+  self-repo workspace. Track the TS/JS extraction gaps (combineReducers, …) separately
+  as **engine** issues, not pack fixes. Hold the full sweep until the gold is validated.
+- **done (grounded rewrite, all repos except surgical_context):** fixed the genuinely
+  stale/fork-specific symbols — fastapi (`routes`→`get_openapi_path`,
+  `response_model`→`_serialize_data`), flask (custom-fork proxies:
+  `RequestContext`→`from_environ`, `deferred_functions`→`BlueprintSetupState`,
+  `LocalProxy`→`RequestProxy`, `_request_ctx_stack`→`_get_current_object`,
+  `url_map`→`create_url_adapter`, `Map`→`dispatch_request`), vue
+  (`Watcher`→`doWatch`, Vue3), sqlalchemy (`SessionMaker`→`sessionmaker`), nestjs
+  (file paths), celery (`Publisher`→`_create_task_sender`), click
+  (`_make_command`→`get_command`).
+- **dominant residual = INDEXER GAPS, not stale pack:** after the rewrite, **14/15**
+  remaining symbol misses are symbols that **exist in source but were not extracted**
+  → an engine (symbol-extraction) debt, not a pack fix. Three classes:
+  (a) **TS/JS extraction** — rtk `getDefaultMiddleware`/`combineReducers`, express
+  `router`/`next`/`mount`, vue `patch` (const/arrow/middleware exports the TS adapter
+  misses); (b) **Python class dunders / instance attributes** — pydantic
+  `__pydantic_validator__`/`__pydantic_serializer__`, django `_view_middleware`, celery
+  `on_task_request`; (c) **module / external-import names** — pydantic `v1` (submodule),
+  celery `Producer` (kombu). The one non-gap residual, dathund `require_lineage_path`,
+  is flagged for owner confirmation (its own question text embeds the renamed symbol).
+  **So the pack was mostly correct; the real debt these questions expose is
+  symbol-extraction coverage.**
+
+### F16 — intent→roles table (`_SECONDARY_INTENT_ROLES`) names unreachable roles 🟡
+- **what:** `IntentClassifier._SECONDARY_INTENT_ROLES` (`sidecar/context/intent_classifier.py`)
+  maps a query intent to supplemental role-types the ranker should prioritize. It is a
+  query-side *strategy* hint (not graph/role authoring — not a P1/P2 violation), but it
+  names roles the engine cannot produce: `runtime_surface`, `error_surface` (DEBUGGING),
+  `integration_surface` (REFACTORING), `docs_or_concept` (NEW_FEATURE / DESIGN_QUESTION).
+- **how:** these flow into `IntentPolicy.supplemental_roles` → the ranker plan. None has
+  a discriminator, so the supplemental-role guidance is **inert** for DEBUGGING /
+  REFACTORING / NEW_FEATURE / DESIGN — the same vocab desync as F14, second location.
+  (IMPACT_ANALYSIS's `impact_*` are fine — path-derived.)
+- **decision:** align the table to emittable/structural roles (e.g. DEBUGGING →
+  `executor` + `core_runtime`; drop `docs_or_concept`), or add the missing
+  discriminators (`error_surface`=RAISES/CATCHES) before naming them. Until then the
+  unreachable entries are dead weight.
+
+### F17 — symbol-extraction coverage for attributes fails alone (needs a connecting edge) 🔴
+- **what:** the dominant "indexer-gap" residual (F15) was tested by extracting Python
+  class-body attributes as symbols (`module.Class.attr`, all annotated+plain). It
+  **failed empirical validation** and was reverted.
+- **how (measured):** fastapi reindex showed the cascade stayed stable (attrs are
+  structurally disconnected → the `structurally_connected` filter drops them from
+  Pass-1; `orphan` only 23→27 despite attrs = 20% of symbols; targets unchanged, Param
+  even improved). But pydantic showed the payoff is **negative**: `__pydantic_validator__`
+  / `__pydantic_serializer__` became symbols yet were **not retrieved**
+  (`retrieved=NO`), and recall@5 **dropped** 0.458→0.417 (+20% symbols diluted top-k).
+- **why:** an attribute symbol has **no incoming edges** — its annotation's `USES_TYPE`
+  is attributed to the enclosing class, and attribute *access* (`self.attr`) is not a
+  call edge. The same disconnection that protects the cascade makes the attribute
+  unreachable by the ranker. **Symbol extraction without connectivity is dead weight.**
+- **decision:** revert (done). Attribute-level answer symbols are retrievable only with
+  a **connecting edge** — `READS_FIELD`/`WRITES_FIELD` (§10/§11 Family C, 🟡): a method
+  that reads/writes an attribute, plus attributing the annotation `USES_TYPE` to the
+  attribute. That is a separate, larger investment. The cheaper alternative is to accept
+  that such gold (pydantic `__pydantic_validator__`, django `_view_middleware`) **over-
+  specifies attributes** and retarget those questions to the enclosing class/method that
+  is actually retrievable. The TS residuals (`getDefaultMiddleware` nested-local,
+  `combineReducers` redux re-export) are likewise not clean extraction holes.
+
+### F18 — facade reachability + dynamic delegation-following role plan 🟢
+- **what (q01 root cause, fully traced):** "FastAPI registers a route" needs
+  `registration_step`, which lives on `APIRouter.api_route/get/post` — reached only
+  through the FastAPI→APIRouter **facade delegation** (`self.router.get(...)`). Two
+  defects compounded:
+  1. **Reachability:** `_build_attr_type_table` did not resolve instance attributes
+     from `__init__` with a qualified annotation (`self.router: routing.APIRouter`) or
+     `self.x = mod.Class(...)`. So `self.router.<m>(...)` produced no edge — the entire
+     public facade was structurally detached from `APIRouter`. Fixed (annotation via
+     `_type_ref_targets` keeps the module; plus attribute-callee instantiation). Edges
+     now land: `FastAPI.get -CALLS_DYNAMIC-> APIRouter.get [registration_step]`.
+  2. **Plan depth:** `target_role_supply_counts` sampled a fixed 1 hop, so it saw the
+     thin delegator (`FastAPI.get = orchestrator`) but not the role behind it. Now it
+     follows CALLS-out delegation with **dynamic depth bounded by role-closure** (keep
+     expanding only while new role *types* appear; hard cap 3). registration_step now
+     enters the plan → the ranker surfaces its carrier.
+- **measured (fastapi):** pass_rate 0.25→**0.50**, role_recall 0.477→**0.581**; q01
+  0.50→0.75 (registration_step closed; only `runtime_surface` left — no discriminator),
+  q03 0.0→0.5, q07 0.67→1.0. q05 0.25→0.0 is **noise** (a coincidental
+  representation_surface match dropped; its expected roles are unreachable by either
+  plan — a real engine gap, not a delegation regression).
+- **why:** facade/delegation is a general pattern (express/django/sqlalchemy delegate to
+  a composed object the same way); fixing it at the type-table + plan-depth level is
+  structural (P4), not a fastapi special-case.
+- **deferred:** weight the role supply by a symbol's role-strength (not just
+  presence/frequency). Skipped for now — it requires the selection margin to return
+  candidates to the pool. Tracked as a refinement.
+
 ---
 
 ## Decision summary

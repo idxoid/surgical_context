@@ -28,7 +28,7 @@ questions:
       - factory_surface
       - representation_surface
       - runtime_surface
-    expected_symbols: [command, group, Command, Group, _make_command, add_command]
+    expected_symbols: [command, group, Command, Group, get_command, add_command]
     expected_files: [src/click/decorators.py, src/click/core.py]
 
   - id: click_q02

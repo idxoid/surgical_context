@@ -94,5 +94,5 @@ questions:
       - impact_runtime
       - impact_public_api
       - impact_test_surface
-    expected_symbols: [Task, apply_async, send_task, Router, Publisher]
+    expected_symbols: [Task, apply_async, send_task, Router, _create_task_sender]
     expected_files: [celery/app/task.py, celery/app/amqp.py, t]

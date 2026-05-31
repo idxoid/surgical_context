@@ -29,7 +29,9 @@ ROLE_ALIASES: dict[str, str] = {
     "endpoint_definition": "api_surface",
     "api_surface": "api_surface",
     # Builders / factories / registration / composition
-    "registration_step": "factory_surface",
+    # registration_step is a distinct cascade discriminator (decorator handle_fan_out);
+    # keep it canonical so the engine's output matches and the map stays idempotent (F14).
+    "registration_step": "registration_step",
     "route_builder": "factory_surface",
     "route_matcher": "factory_surface",
     "field_generator": "factory_surface",
@@ -63,7 +65,8 @@ ROLE_ALIASES: dict[str, str] = {
     # Representations / structured artifacts
     "route_object": "representation_surface",
     "intermediate_model": "representation_surface",
-    "request_router": "representation_surface",
+    # request_router is a distinct cascade discriminator (dynamic dispatch); canonical (F14).
+    "request_router": "request_router",
     "reactive_system": "representation_surface",
     "reactive_proxy": "representation_surface",
     "vnode_builder": "representation_surface",
@@ -81,11 +84,14 @@ ROLE_ALIASES: dict[str, str] = {
     "body_argument_mapper": "binding_surface",
     "model_introspection": "binding_surface",
     "context_accessor": "binding_surface",
-    "proxy_mechanism": "binding_surface",
+    # proxy_mechanism is a distinct cascade discriminator (PROXY_OF); canonical (F14).
+    "proxy_mechanism": "proxy_mechanism",
     "fk_resolver": "binding_surface",
     "binding_surface": "binding_surface",
     # Runtime flow / execution
-    "dependency_solver": "orchestrator",
+    # dependency_solver is a distinct cascade discriminator (isinstance/inject dispatch);
+    # canonical so it is not falsely satisfied by any orchestrator (F14).
+    "dependency_solver": "dependency_solver",
     "di_container": "orchestrator",
     "instance_resolver": "orchestrator",
     "decorator_processor": "orchestrator",
@@ -140,6 +146,15 @@ ROLE_ALIASES: dict[str, str] = {
     # Fallback / internal legacy spelling
     "related_implementation": "supporting_surface",
 }
+
+
+# Eval-harness concepts, not structural roles the engine can derive (F14 class 3).
+# negative_lookup / nearest_real_mechanism mark negative questions; docs_or_concept
+# marks a documentation answer. Excluded from role-recall scoring so they don't count
+# as misses the engine could never fulfill.
+NON_STRUCTURAL_ROLES: frozenset[str] = frozenset(
+    {"docs_or_concept", "negative_lookup", "nearest_real_mechanism"}
+)
 
 
 def normalize_role(role: str) -> str:

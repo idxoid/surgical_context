@@ -67,6 +67,23 @@ the result — including regressions — is reported honestly.
 Prefer removing a dead framework-specific branch over preserving it to keep a
 benchmark number. ("сноси и не заморачивайся на покрытие бенчмарка.")
 
+## P9 — Roles are assigned by discriminators, not by clustering
+Pass-1 role assignment is a **discriminator-first cascade** (L1 topology buckets →
+ordered L2 structural predicates → multi-label primary + supporting, presence-gated)
+— not unsupervised clustering. Clustering (k-means / HDBSCAN / Agglomerative) yields
+*unlabeled* groups that need a lossy cluster→role mapping, which manufactures phantom
+roles (k-means matched 20 catalog roles on fastapi, ~12 phantoms vs the cascade's 11
+present), can't express multi-label/presence, and is unmovable by a single new edge.
+The cascade's named predicates are exactly P3/P4: each role has a structural
+definition, and a new edge (RE_EXPORTS, INSTANTIATES, …) sharpens a *specific* role
+visibly.
+- **k-means** stays only as the phantom-comparison **baseline** (proves the cascade).
+- **HDBSCAN** is allowed **offline only**, as a *discovery* aid: a dense group matching
+  no existing discriminator is a candidate for a new catalogued role (a human names it
+  and writes the predicate) — clustering surfaces structure, the discriminator authors
+  the role. **Agglomerative: no** (a linkage dendrogram re-introduces opacity; the
+  L1/L2 hierarchy is rule-based on interpretable topology).
+
 ---
 
 ## How to add a signal correctly (the recipe)

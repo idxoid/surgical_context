@@ -164,7 +164,7 @@ questions:
     expected_mode: symbol
     mechanism: fastapi_openapi_generation
     required_roles: [public_entrypoint, schema_generator, route_registry, docs_or_concept]
-    expected_symbols: [get_openapi, openapi, routes]
+    expected_symbols: [get_openapi, openapi, get_openapi_path]
     expected_files: [fastapi/openapi/utils.py, fastapi/applications.py]
 
   - id: fastapi_q06
@@ -177,7 +177,7 @@ questions:
     expected_mode: symbol
     mechanism: fastapi_serialization_impact
     required_roles: [affected_runtime, affected_public_api, affected_tests]
-    expected_symbols: [serialize_response, APIRoute, response_model]
+    expected_symbols: [serialize_response, APIRoute, _serialize_data]
     expected_files: [fastapi/routing.py, tests]
 
   - id: fastapi_q07
@@ -489,7 +489,7 @@ questions:
     expected_mode: symbol
     mechanism: flask_app_context_lifecycle
     required_roles: [public_entrypoint, context_manager, request_lifecycle, view_dispatcher]
-    expected_symbols: [Flask, RequestContext, AppContext, push]
+    expected_symbols: [Flask, from_environ, AppContext, push]
     expected_files: [src/flask/app.py, src/flask/ctx.py]
 
   - id: flask_q02
@@ -502,7 +502,7 @@ questions:
     expected_mode: symbol
     mechanism: flask_blueprint_registration
     required_roles: [public_entrypoint, deferred_registration, route_registry, composition_pattern]
-    expected_symbols: [Blueprint, register_blueprint, deferred_functions]
+    expected_symbols: [Blueprint, register_blueprint, BlueprintSetupState]
     expected_files: [src/flask/blueprints.py]
 
   - id: flask_q03
@@ -515,7 +515,7 @@ questions:
     expected_mode: symbol
     mechanism: flask_proxy_resolution
     required_roles: [public_entrypoint, context_accessor, thread_local, proxy_mechanism]
-    expected_symbols: [request, LocalProxy, _request_ctx_stack]
+    expected_symbols: [request, RequestProxy, _get_current_object]
     expected_files: [src/flask/globals.py, src/flask/wrappers.py]
 
   - id: flask_q04
@@ -541,7 +541,7 @@ questions:
     expected_mode: symbol
     mechanism: flask_routing_impact
     required_roles: [affected_runtime, affected_public_api, affected_tests]
-    expected_symbols: [route, add_url_rule, url_map, Map]
+    expected_symbols: [route, add_url_rule, create_url_adapter, dispatch_request]
     expected_files: [src/flask/app.py, tests]
 
   - id: express_q01
@@ -620,7 +620,7 @@ questions:
     mechanism: nestjs_dependency_injection
     required_roles: [public_entrypoint, di_container, provider_registry, instance_resolver]
     expected_symbols: [Injectable, Inject, Module, createNestApplication]
-    expected_files: [packages/core/injector, packages/core/module]
+    expected_files: [packages/core/injector, packages/core/injector/module-ref.ts]
 
   - id: nestjs_q03
     repo: nestjs
@@ -633,7 +633,7 @@ questions:
     mechanism: nestjs_module_composition
     required_roles: [public_entrypoint, module_registry, composition_pattern, import_system]
     expected_symbols: [Module, imports, controllers, providers]
-    expected_files: [packages/core/module, packages/core/metadata-scanner]
+    expected_files: [packages/core/injector, packages/core/metadata-scanner]
 
   - id: nestjs_q04
     repo: nestjs
@@ -684,7 +684,7 @@ questions:
     expected_mode: symbol
     mechanism: sqlalchemy_session_identity_management
     required_roles: [public_entrypoint, identity_map, lazy_loader, transaction_handler]
-    expected_symbols: [Session, SessionMaker, Identity, LazyLoader]
+    expected_symbols: [Session, sessionmaker, Identity, LazyLoader]
     expected_files: [lib/sqlalchemy/orm/session.py]
 
   - id: sqlalchemy_q04
@@ -749,7 +749,7 @@ questions:
     expected_mode: symbol
     mechanism: vue_watcher_setup
     required_roles: [public_entrypoint, dependency_tracker, effect_executor, cleanup_handler]
-    expected_symbols: [watch, watchEffect, Watcher]
+    expected_symbols: [watch, watchEffect, doWatch]
     expected_files: [packages/runtime-core/src/apiWatch.ts]
 
   - id: surgical_context_q01

@@ -959,20 +959,44 @@ class PythonAdapter(TreeSitterAdapter):
                         continue
                     left = assign.child_by_field_name("left")
                     right = assign.child_by_field_name("right")
-                    if left is None or left.type != "attribute" or right is None:
+                    typ = assign.child_by_field_name("type")
+                    if left is None or left.type != "attribute":
                         continue
                     obj = left.child_by_field_name("object")
                     attr = left.child_by_field_name("attribute")
                     if obj is None or _node_text(obj) != "self" or attr is None:
                         continue
-                    if right.type != "call":
+                    aname = _node_text(attr)
+                    # (a) explicit annotation: ``self.x: Type = ...`` — the developer
+                    # declared the attribute's type. Use the type-ref resolver so a
+                    # qualified annotation (``routing.APIRouter``) keeps its module
+                    # (``fastapi.routing.APIRouter``), not the current one.
+                    if typ is not None:
+                        targets = self._type_ref_targets(typ, import_bindings, module)
+                        if targets:
+                            attrs.setdefault(aname, targets[0][1])
+                            continue
+                    # (b) instantiation: ``self.x = Class(...)`` or ``self.x = mod.Class(...)``.
+                    if right is None or right.type != "call":
                         continue
                     callee = right.child_by_field_name("function")
-                    if callee is not None and callee.type == "identifier":
+                    if callee is None:
+                        continue
+                    if callee.type == "identifier":
                         attrs.setdefault(
-                            _node_text(attr),
+                            aname,
                             self._resolve_type_name(_node_text(callee), import_bindings, module),
                         )
+                    elif callee.type == "attribute":
+                        head = callee.child_by_field_name("object")
+                        final = callee.child_by_field_name("attribute")
+                        if (
+                            head is not None
+                            and head.type == "identifier"
+                            and final is not None
+                        ):
+                            base = import_bindings.get(_node_text(head), _node_text(head))
+                            attrs.setdefault(aname, f"{base}.{_node_text(final)}")
             if attrs:
                 table.setdefault(cname, {}).update(attrs)
         return table

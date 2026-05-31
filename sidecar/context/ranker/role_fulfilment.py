@@ -134,6 +134,31 @@ class RoleFulfilment:
         except Exception:
             return []
 
+    def delegation_callee_uids(self, caller_uid: str, *, limit: int = 48) -> list[str]:
+        """Directed CALLS-out callees — what a symbol *delegates to*.
+
+        Used to follow a facade through its delegation (``FastAPI.get`` →
+        ``APIRouter.get``) so the role behind a thin delegator is observed.
+        Excludes CALLS_GUESS to keep the hop precise.
+        """
+        query = """
+        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED]->(n:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id AND n.uid <> $uid
+        RETURN DISTINCT n.uid AS uid
+        LIMIT $limit
+        """
+        try:
+            with self.host.db.driver.session() as session:
+                rows = session.run(
+                    query,
+                    uid=caller_uid,
+                    workspace_id=self.host.workspace_id,
+                    limit=limit,
+                )
+                return [str(r["uid"]) for r in rows if r.get("uid")]
+        except Exception:
+            return []
+
     def determine_mechanism_structural(self, target) -> str:
         if not self.host._derived_primary_role_by_uid:
             return ""
@@ -188,7 +213,7 @@ class RoleFulfilment:
         counts: Counter[str] = Counter()
         if not self.host._derived_primary_role_by_uid:
             return counts
-        for uid, role in self.host._derived_primary_role_by_uid.items():
+        for uid in self.host._derived_primary_role_by_uid:
             for observed in self.pass1_roles_for_symbol_uid(uid):
                 counts[observed] += 1
         return counts
@@ -199,15 +224,45 @@ class RoleFulfilment:
             return normalize_roles(roles)
         return normalize_roles([role for role in roles if role_supply.get(role, 0) > 0])
 
-    def target_role_supply_counts(self, target) -> Counter[str]:
+    def target_role_supply_counts(
+        self, target, *, max_depth: int = 3, limit: int = 48
+    ) -> Counter[str]:
+        """Roles around the target, following delegation with **dynamic depth**.
+
+        Level 1 is the broad 1-hop neighborhood. Then we follow CALLS-out
+        delegation (a facade method → what it delegates to, e.g. ``FastAPI.get`` →
+        ``APIRouter.get``) and keep expanding **only while new role types keep
+        closing** — depth is bounded by role-closure (plus a hard cap), not a fixed
+        hop count. This surfaces a role that lives behind a thin delegator (the
+        registration_step behind ``FastAPI.get``) without flooding with full N-hop
+        neighborhoods. Counts are role presence/frequency; weighting by a symbol's
+        role-strength is a deferred refinement (it would require the selection
+        margin to return candidates to the pool).
+        """
         counts: Counter[str] = Counter()
         if target is None or not target.uid:
             return counts
-        roles_observed: list[str] = []
-        neighbors = self.host._one_hop_connected_symbol_uids(target.uid, limit=48)
-        for sym_uid in [target.uid, *neighbors]:
-            roles_observed.extend(self.pass1_roles_for_symbol_uid(sym_uid))
-        counts.update(roles_observed)
+        seen: set[str] = {target.uid}
+        frontier = self.host._one_hop_connected_symbol_uids(target.uid, limit=limit)
+        for sym_uid in [target.uid, *frontier]:
+            seen.add(sym_uid)
+            counts.update(self.pass1_roles_for_symbol_uid(sym_uid))
+        depth = 1
+        prev_role_set = set(counts)
+        while depth < max_depth and frontier:
+            next_frontier: list[str] = []
+            for uid in frontier:
+                for callee in self.delegation_callee_uids(uid, limit=limit):
+                    if callee in seen:
+                        continue
+                    seen.add(callee)
+                    next_frontier.append(callee)
+                    counts.update(self.pass1_roles_for_symbol_uid(callee))
+            if set(counts) == prev_role_set:  # role closure — no new role types added
+                break
+            prev_role_set = set(counts)
+            frontier = next_frontier
+            depth += 1
         return counts
 
     def filter_roles_by_target_supply(self, roles: list[str], target) -> list[str]:

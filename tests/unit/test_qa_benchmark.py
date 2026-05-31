@@ -44,17 +44,22 @@ def test_compute_role_recall_normalizes_legacy_roles_to_canonical_taxonomy():
 
 
 def test_missing_expected_roles_include_ranker_omissions():
+    # dependency_solver is now a distinct cascade discriminator (F14): it is no
+    # longer falsely satisfied by an `orchestrator` in the plan. With the ranker
+    # plan [api_surface, orchestrator], public_entrypoint→api_surface is fulfilled,
+    # while intermediate_model→representation_surface and dependency_solver are both
+    # omitted.
     missing = _missing_expected_roles(
         ["public_entrypoint", "intermediate_model", "dependency_solver"],
         [],
         ["api_surface", "orchestrator"],
     )
 
-    assert missing == ["representation_surface"]
+    assert missing == ["representation_surface", "dependency_solver"]
     assert _compute_role_recall(
         ["public_entrypoint", "intermediate_model", "dependency_solver"],
         missing,
-    ) == pytest.approx(2 / 3)
+    ) == pytest.approx(1 / 3)
 
 
 def test_indexed_roles_for_symbol_uid_reads_primary_and_supporting():
