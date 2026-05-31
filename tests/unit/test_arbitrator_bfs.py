@@ -51,7 +51,7 @@ def _make_fake_ranker(target_node: SubgraphNode | None, budget_override: int | N
         def _determine_mechanism(self, target, query=""):
             return "generic"
 
-        def _get_required_roles(self, mechanism):
+        def _get_required_roles(self, mechanism, *, target=None):
             return ["api_surface", "executor"]
 
     return FakeRanker
@@ -239,7 +239,7 @@ class TestContextArbitratorBFS:
             def _determine_mechanism(self, target, query=""):
                 return "generic"
 
-            def _get_required_roles(self, mechanism):
+            def _get_required_roles(self, mechanism, *, target=None):
                 return ["api_surface", "executor", "runtime_surface", "docs_or_concept"]
 
         with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker):
@@ -410,7 +410,7 @@ class TestContextArbitratorBFS:
             def _determine_mechanism(self, target, query=""):
                 return "fastapi_dependency_injection"
 
-            def _get_required_roles(self, mechanism):
+            def _get_required_roles(self, mechanism, *, target=None):
                 return [
                     "api_surface",
                     "config_surface",
@@ -501,7 +501,7 @@ class TestContextArbitratorBFS:
             def _determine_mechanism(self, target, query=""):
                 return "generic"
 
-            def _get_required_roles(self, mechanism):
+            def _get_required_roles(self, mechanism, *, target=None):
                 return ["api_surface"]
 
         arbitrator = ContextArbitrator(mock_db, vector_db=Mock())
@@ -587,7 +587,7 @@ class TestContextArbitratorBFS:
             def _determine_mechanism(self, target, query=""):
                 return "generic"
 
-            def _get_required_roles(self, mechanism):
+            def _get_required_roles(self, mechanism, *, target=None):
                 return []
 
         with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker):
@@ -678,7 +678,7 @@ class TestContextArbitratorBFS:
             def _determine_mechanism(self, target, query=""):
                 return "generic"
 
-            def _get_required_roles(self, mechanism):
+            def _get_required_roles(self, mechanism, *, target=None):
                 return []
 
         with patch("sidecar.context.arbitrator.UnifiedRanker", FakeRanker):

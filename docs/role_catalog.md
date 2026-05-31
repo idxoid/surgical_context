@@ -495,11 +495,16 @@ exception type` (except clause).
   Cascade feature `construct_fan_out` feeds `factory_surface`. On fastapi: 1268
   edges; `factory_surface` present 28→60, grounded in real construction
   (`get_dependant→Dependant`).
-- **scope:** literal `X(...)` (local class def / import) + `v(...)` where `v` is a
-  local *directly* annotated `type[X]`/`Type[X]`. **Out of scope (P5):** construction
-  through a reassigned/disjunction local — `add_api_route` does
-  `route_class = route_class_override or self.route_class; route_class(...)`, which
-  needs dataflow; it stays unresolved by design, not faked.
+- **scope:** literal `X(...)` (local class def / import); `v(...)` where `v` is a
+  local *directly* annotated `type[X]`/`Type[X]`; and (P5) `v(...)` where `v`
+  receives a class object via intra-procedural copy propagation — a plain
+  `v = <expr>` that copies / disjoins (`a or b`) / selects (`a if c else b`) an
+  already-known class value. `add_api_route` does
+  `route_class = route_class_override or self.route_class; route_class(...)` →
+  now resolves to `APIRoute` through the `type[APIRoute]`-typed parameter operand
+  (flow-insensitive union, bounded fixpoint). **Still out of scope:** an operand
+  sourced only from `self.<attr>` (no instance-attribute typing) — contributes
+  nothing rather than being faked.
 - **unblocks:** `factory_surface` (explicit construction sites) vs a plain caller —
   no longer only the `type_fan_out(return)` heuristic.
 

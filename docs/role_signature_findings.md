@@ -251,10 +251,13 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 - **`INSTANTIATES`** (`instantiate-v1`): `caller -[INSTANTIATES]-> class`, feature
   `construct_fan_out` → `factory_surface`. Grounds factory in real construction
   (present 28→60; `get_dependant→Dependant`). fastapi: 1268 edges.
-- **Still open (honest):** `add_api_route → factory_surface` is **not** fixed —
-  it constructs via `route_class = route_class_override or self.route_class;
-  route_class(...)` (disjunction local), which needs dataflow and is scoped out per
-  P5. `dependency_solver` (isinstance-dispatch on `analyze_param`, not
+- **P5 done:** `add_api_route → factory_surface` now resolves — intra-procedural
+  class-object copy propagation in `extract_instantiations` follows
+  `route_class = route_class_override or self.route_class; route_class(...)` through
+  the `type[APIRoute]`-typed parameter operand to emit `INSTANTIATES → APIRoute`.
+  Flow-insensitive union, bounded fixpoint; copy / `or`-`and` / ternary only.
+  Honest residual: an operand sourced only from `self.<attr>` stays unresolved.
+  `dependency_solver` (isinstance-dispatch on `analyze_param`, not
   `solve_dependencies`) and `Param → config_surface` (F4 kind-split) also remain.
 
 ---
@@ -277,8 +280,10 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 | F12 | L1 noise sink captures public entrypoints | 🟢 fixed | guard noise sink + `api_surface` on `reexport_in` / `api_fan_out` (`role_cascade.py`); `FastAPI` recovered |
 | F13 | Pass-1 test-exclusion strips entrypoint edges | 🟢 fixed | full-graph `api_fan_in` + `depth_from_public` |
 
-**Critical path:** naming fixes (F5/F6) → honest dataflow holes (F1 `request_router`).
-Re-validate with `QA/prototype_role_cascade.py` after re-index (fastapi only).
+**Critical path:** naming fixes (F5/F6). Remaining honest dataflow holes:
+`request_router` dynamic dict-lookup dispatch (F1) and `self.<attr>`-only
+construction (P5 residual). Re-validate with `QA/prototype_role_cascade.py` after
+re-index (fastapi only).
 
 ## Related
 - [role_catalog.md](role_catalog.md) — the role vocabulary and per-role signatures.

@@ -423,15 +423,22 @@ class PythonAdapter(TreeSitterAdapter):
     ) -> list[dict]:
         """INSTANTIATES edges: caller symbol -> the project class it constructs.
 
-        Two static construction forms (a refinement of a call where the callee is a
+        Static construction forms (a refinement of a call where the callee is a
         class, distinct from an ordinary call):
           * literal ``X(...)`` where ``X`` names a class (local class def / import);
           * ``v(...)`` where ``v`` is a local directly annotated ``type[X]`` /
-            ``Type[X]`` — the held value is the class object ``X``.
-        Resolution to an in-graph class happens at link time (kind=class), so names
-        that resolve to no project class produce no edge — precision over recall.
-        Construction via reassigned / disjunction locals (``v = a or b; v(...)``)
-        needs dataflow and is intentionally out of scope.
+            ``Type[X]`` — the held value is the class object ``X``;
+          * ``v(...)`` where ``v`` receives a class object through intra-procedural
+            copy propagation — a plain ``v = <expr>`` whose ``<expr>`` copies,
+            disjoins (``a or b``), or selects (``a if c else b``) an already-known
+            class value (P5). E.g. ``route_class = route_class_override or
+            self.route_class; route_class(...)`` constructs ``APIRoute`` via the
+            ``type[APIRoute]``-typed parameter operand.
+        Propagation is flow-insensitive (union of reachable class values) and only
+        follows value-carrying operands; a call result, subscript, or unresolved
+        ``self.<attr>`` carries no class identity. Resolution to an in-graph class
+        happens at link time (kind=class), so names that resolve to no project class
+        produce no edge — precision over recall.
         """
         if tree is None:
             tree = self._parse(source_code)
@@ -443,6 +450,7 @@ class PythonAdapter(TreeSitterAdapter):
         out: list[dict] = []
         seen: set[tuple[str, str]] = set()
         typed_local_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
+        value_local_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
 
         def emit(caller_node, type_name: str, type_qn: str) -> None:
             if caller_node is None or not type_qn:
@@ -495,6 +503,94 @@ class PythonAdapter(TreeSitterAdapter):
             typed_local_cache[func_node.id] = mapping
             return mapping
 
+        def _unwrap(node):
+            while node is not None and node.type == "parenthesized_expression":
+                inner = node.named_children[0] if node.named_children else None
+                if inner is None:
+                    break
+                node = inner
+            return node
+
+        def resolve_class_value(node, mapping) -> list[tuple[str, str]]:
+            """Class objects an expression may evaluate to (copy / or-and / ternary).
+
+            Only value-carrying forms propagate a class object: a name already known
+            to hold a class, a local class / imported name, or a disjunction/ternary
+            of such. A call result, subscript, or attribute access is an instance or
+            structurally unknown — it carries no class identity (precision over recall).
+            """
+            node = _unwrap(node)
+            if node is None:
+                return []
+            if node.type == "identifier":
+                nm = _node_text(node)
+                if nm in mapping:
+                    return list(mapping[nm])
+                if nm in local_classes:
+                    return [(nm, local_classes[nm].qualified_name)]
+                if nm in import_bindings:
+                    return [(nm, import_bindings[nm])]
+                return []
+            if node.type == "boolean_operator":
+                return resolve_class_value(
+                    node.child_by_field_name("left"), mapping
+                ) + resolve_class_value(node.child_by_field_name("right"), mapping)
+            if node.type == "conditional_expression":
+                kids = node.named_children
+                if len(kids) >= 3:
+                    return resolve_class_value(kids[0], mapping) + resolve_class_value(
+                        kids[2], mapping
+                    )
+            return []
+
+        def class_value_locals(func_node) -> dict[str, list[tuple[str, str]]]:
+            """``class_typed_locals`` plus intra-procedural class-object propagation (P5).
+
+            Seeds from ``type[X]``-annotated names, then propagates the class a local
+            holds through plain ``x = <expr>`` assignments whose RHS copies / disjoins
+            / selects already-known class values. Flow-insensitive union over a bounded
+            fixpoint; ``self.<attr>`` stays unresolved (no instance-attribute typing),
+            so only resolvable operands contribute.
+            """
+            if func_node is None:
+                return {}
+            cached = value_local_cache.get(func_node.id)
+            if cached is not None:
+                return cached
+            mapping = {k: list(v) for k, v in class_typed_locals(func_node).items()}
+
+            assignments: list[tuple[str, object]] = []
+            for n in self._iter_nodes(func_node):
+                if n.type != "assignment":
+                    continue
+                lhs = n.child_by_field_name("left")
+                rhs = n.child_by_field_name("right")
+                if lhs is None or rhs is None or lhs.type != "identifier":
+                    continue
+                assignments.append((_node_text(lhs), rhs))
+
+            def merge(name: str, classes: list[tuple[str, str]]) -> bool:
+                if not classes:
+                    return False
+                bucket = mapping.setdefault(name, [])
+                changed = False
+                for item in classes:
+                    if item not in bucket:
+                        bucket.append(item)
+                        changed = True
+                return changed
+
+            for _ in range(len(assignments) + 1):
+                changed = False
+                for name, rhs in assignments:
+                    if merge(name, resolve_class_value(rhs, mapping)):
+                        changed = True
+                if not changed:
+                    break
+
+            value_local_cache[func_node.id] = mapping
+            return mapping
+
         for node in self._iter_nodes(tree.root_node):
             if node.type != "call":
                 continue
@@ -505,7 +601,7 @@ class PythonAdapter(TreeSitterAdapter):
             caller = self._enclosing_def_node(node)
             if caller is None:
                 continue
-            locals_map = class_typed_locals(caller)
+            locals_map = class_value_locals(caller)
             if name in locals_map:
                 for cname, cqn in locals_map[name]:
                     emit(caller, cname, cqn)
@@ -536,7 +632,7 @@ class PythonAdapter(TreeSitterAdapter):
             ):
                 continue
             for sub in n.named_children:
-                if sub is value:
+                if sub.id == value.id:
                     continue
                 out.extend(self._type_ref_targets(sub, import_bindings, module))
         return out

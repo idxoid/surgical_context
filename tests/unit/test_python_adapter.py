@@ -276,3 +276,101 @@ async def read_items(q: str = Depends(get_query)):
         pairs = {(r["owner_name"], r["provider_name"]) for r in rows}
         # Structural: the wrapped provider symbol, not the marker name.
         assert ("read_items", "get_query") in pairs
+
+
+class TestInstantiations:
+    @pytest.fixture
+    def adapter(self):
+        return PythonAdapter()
+
+    def _targets(self, adapter, source, path):
+        return {d["type_name"] for d in adapter.extract_instantiations(source, path)}
+
+    def test_literal_construction(self, adapter):
+        source = """
+class Foo:
+    pass
+
+def g():
+    return Foo(1)
+"""
+        assert self._targets(adapter, source, "pkg/e.py") == {"Foo"}
+
+    def test_typed_param_direct_call(self, adapter):
+        # `v: type[X]` called directly constructs X (instantiate-v1).
+        source = """
+from pkg.routing import APIRoute
+
+def build(cls: type[APIRoute]):
+    return cls(1)
+"""
+        assert self._targets(adapter, source, "pkg/a.py") == {"APIRoute"}
+
+    def test_p5_disjunction_of_typed_param_and_self_attr(self, adapter):
+        # P5: `route_class = route_class_override or self.route_class; route_class(...)`
+        # resolves via the type[APIRoute] param operand; self.route_class is unresolved.
+        source = """
+from pkg.routing import APIRoute
+
+class APIRouter:
+    def add_api_route(self, path, route_class_override: type[APIRoute] | None = None):
+        route_class = route_class_override or self.route_class
+        route = route_class(path)
+        return route
+"""
+        assert self._targets(adapter, source, "pkg/routing.py") == {"APIRoute"}
+
+    def test_p5_ternary_unions_both_class_branches(self, adapter):
+        source = """
+from pkg.b import Other
+
+class Local:
+    pass
+
+def build(flag):
+    cls = Local if flag else Other
+    return cls(1)
+"""
+        assert self._targets(adapter, source, "pkg/a.py") == {"Local", "Other"}
+
+    def test_p5_copy_propagation_chain(self, adapter):
+        source = """
+class Widget:
+    pass
+
+def build():
+    a = Widget
+    b = a
+    return b()
+"""
+        assert self._targets(adapter, source, "pkg/w.py") == {"Widget"}
+
+    def test_p5_call_result_is_not_a_class(self, adapter):
+        # Precision: a call result is an instance, never a class object.
+        source = """
+def make():
+    x = factory()
+    y = x()
+    return y
+"""
+        assert self._targets(adapter, source, "pkg/c.py") == set()
+
+    def test_p5_unresolved_self_attr_emits_nothing(self, adapter):
+        # Precision: no instance-attribute typing -> no fabricated construction.
+        source = """
+def f(self):
+    cls = self.something
+    return cls()
+"""
+        assert self._targets(adapter, source, "pkg/d.py") == set()
+
+    def test_type_token_is_not_emitted_as_a_class(self, adapter):
+        # The `type` token inside `type[X]` must not leak as a candidate class.
+        source = """
+from pkg.routing import APIRoute
+
+def build(cls: type[APIRoute]):
+    return cls(1)
+"""
+        names = {d["type_name"] for d in adapter.extract_instantiations(source, "pkg/a.py")}
+        assert "type" not in names

@@ -44,9 +44,12 @@ constant to pass one case, and do **not** add a per-framework branch.
 
 ## P5 — Derived edges are precision-over-recall AST facts
 A derived edge resolves to an in-graph symbol or it is **not created** (stdlib /
-external / unresolved → no edge). If a genuine signal requires dataflow (e.g.
-construction through a reassigned/disjunction local, `v = a or b; v(...)`), **scope
-it out honestly** and record it as a gap — never fake it with a guessing heuristic.
+external / unresolved → no edge). When a signal needs dataflow, prefer a *bounded,
+honest* analysis over a guess: `INSTANTIATES` now does intra-procedural class-object
+copy propagation (`v = a or b; v(...)` resolves through a `type[X]`-typed operand),
+but an operand sourced only from `self.<attr>` stays **unresolved** (no
+instance-attribute typing) and contributes nothing — scoped out as a gap, never
+faked with a name/heuristic guess.
 
 ## P6 — Mechanism role plans are adaptive, not preset
 Mechanism **detection** is structural (Pass-1 neighborhood role overlap against
