@@ -418,6 +418,129 @@ class PythonAdapter(TreeSitterAdapter):
                         )
         return out
 
+    def extract_instantiations(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """INSTANTIATES edges: caller symbol -> the project class it constructs.
+
+        Two static construction forms (a refinement of a call where the callee is a
+        class, distinct from an ordinary call):
+          * literal ``X(...)`` where ``X`` names a class (local class def / import);
+          * ``v(...)`` where ``v`` is a local directly annotated ``type[X]`` /
+            ``Type[X]`` — the held value is the class object ``X``.
+        Resolution to an in-graph class happens at link time (kind=class), so names
+        that resolve to no project class produce no edge — precision over recall.
+        Construction via reassigned / disjunction locals (``v = a or b; v(...)``)
+        needs dataflow and is intentionally out of scope.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+        symbols = self.extract_symbols(source_code, file_path, tree=tree)
+        local_classes = {s.name: s for s in symbols if s.kind == "class"}
+
+        out: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        typed_local_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
+
+        def emit(caller_node, type_name: str, type_qn: str) -> None:
+            if caller_node is None or not type_qn:
+                return
+            caller_uid = self._uid_for_node(caller_node, source_code, file_path)
+            key = (caller_uid, type_qn)
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(
+                {
+                    "caller_uid": caller_uid,
+                    "type_name": type_name,
+                    "type_qualified_name": type_qn,
+                    "file_path": file_path,
+                }
+            )
+
+        def class_typed_locals(func_node) -> dict[str, list[tuple[str, str]]]:
+            """name -> [(class_name, class_qn)] for locals annotated ``type[X]``."""
+            if func_node is None:
+                return {}
+            cached = typed_local_cache.get(func_node.id)
+            if cached is not None:
+                return cached
+            mapping: dict[str, list[tuple[str, str]]] = {}
+
+            def add(name_node, type_node) -> None:
+                if name_node is None or type_node is None:
+                    return
+                if name_node.type != "identifier":
+                    return
+                classes = self._class_object_targets(type_node, import_bindings, module)
+                if classes:
+                    mapping.setdefault(_node_text(name_node), []).extend(classes)
+
+            params = func_node.child_by_field_name("parameters")
+            if params is not None:
+                for p in params.named_children:
+                    if p.type == "typed_parameter":
+                        ident = next(
+                            (c for c in p.named_children if c.type == "identifier"), None
+                        )
+                        add(ident, p.child_by_field_name("type"))
+                    elif p.type == "typed_default_parameter":
+                        add(p.child_by_field_name("name"), p.child_by_field_name("type"))
+            for n in self._iter_nodes(func_node):
+                if n.type == "assignment" and n.child_by_field_name("type") is not None:
+                    add(n.child_by_field_name("left"), n.child_by_field_name("type"))
+            typed_local_cache[func_node.id] = mapping
+            return mapping
+
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "call":
+                continue
+            fn = node.child_by_field_name("function")
+            if fn is None or fn.type != "identifier":
+                continue
+            name = _node_text(fn)
+            caller = self._enclosing_def_node(node)
+            if caller is None:
+                continue
+            locals_map = class_typed_locals(caller)
+            if name in locals_map:
+                for cname, cqn in locals_map[name]:
+                    emit(caller, cname, cqn)
+            elif name in local_classes:
+                emit(caller, name, local_classes[name].qualified_name)
+            elif name in import_bindings:
+                emit(caller, name, import_bindings[name])
+        return out
+
+    def _class_object_targets(
+        self, type_node, import_bindings: dict[str, str], module: str
+    ) -> list[tuple[str, str]]:
+        """Classes ``X`` named inside a ``type[X]`` / ``Type[X]`` annotation.
+
+        Only ``type``/``Type`` subscripts qualify: the annotated value is a class
+        object, so calling it constructs ``X``. Other annotation shapes yield
+        nothing — calling a non-``type``-annotated variable is not a construction.
+        """
+        out: list[tuple[str, str]] = []
+        for n in self._iter_nodes(type_node):
+            if n.type != "subscript":
+                continue
+            value = n.child_by_field_name("value")
+            if (
+                value is None
+                or value.type != "identifier"
+                or _node_text(value) not in ("type", "Type")
+            ):
+                continue
+            for sub in n.named_children:
+                if sub is value:
+                    continue
+                out.extend(self._type_ref_targets(sub, import_bindings, module))
+        return out
+
     @staticmethod
     def _enclosing_def_node(node):
         """Nearest enclosing function/class definition node, or None."""
@@ -1087,6 +1210,32 @@ class PythonAdapter(TreeSitterAdapter):
             if f".{class_name}.{method_name}" in candidate.qualified_name:
                 return str(candidate.uid)
         return str(candidates[0].uid) if len(candidates) == 1 else None
+
+    def extract_reexports(self, source_code: str, file_path: str) -> list[dict]:
+        """Re-export edges: a package ``__init__`` surfacing a symbol from a submodule.
+
+        ``from .submodule import Name`` (optionally ``as Name``) in an ``__init__``
+        brings ``Name`` into the package's public namespace — a re-export, distinct
+        from an ordinary import inside a regular module. Only ``__init__`` files are
+        treated as package surface. The target is matched to a project symbol during
+        linking; names resolving to nothing in-graph (stdlib/external) produce no
+        edge — precision over recall, like USES_TYPE.
+
+        Returns dicts with ``init_file``, ``export_name`` (the surfaced local name),
+        and ``export_qualified_name`` (best-effort target qn, relative imports
+        resolved).
+        """
+        if Path(file_path).name not in ("__init__.py", "__init__.pyi"):
+            return []
+        bindings = self._extract_import_bindings(source_code, file_path)
+        return [
+            {
+                "init_file": file_path,
+                "export_name": local_name,
+                "export_qualified_name": qualified_name,
+            }
+            for local_name, qualified_name in bindings.items()
+        ]
 
     def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
         """Return local import alias -> best-effort target qualified name."""

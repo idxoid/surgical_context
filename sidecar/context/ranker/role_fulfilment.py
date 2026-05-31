@@ -14,29 +14,6 @@ from sidecar.context.role_taxonomy import infer_supporting_roles, normalize_role
 
 from .candidate_pool import Candidate
 
-_GENERIC_AUTO_ROLE_PLANS: dict[str, tuple[str, ...]] = {
-    "module_composition": (
-        "api_surface",
-        "composition_surface",
-        "integration_surface",
-        "runtime_surface",
-    ),
-    "validation_pipeline": (
-        "api_surface",
-        "composition_surface",
-        "executor",
-        "validator_handle",
-        "core_runtime",
-        "runtime_surface",
-    ),
-    "worker_execution": (
-        "integration_surface",
-        "orchestrator",
-        "executor",
-        "runtime_surface",
-    ),
-}
-
 
 class RoleFulfilment:
     def __init__(self, host):
@@ -56,6 +33,19 @@ class RoleFulfilment:
             name=getattr(c, "name", "") or "",
             kind=getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "",
         )
+        uid = getattr(c, "uid", "") or ""
+        primary = self.role_of(c)
+        cluster_id = self.host._derived_role_by_uid.get(uid)
+        if cluster_id is not None:
+            for role in self.host._cluster_role_membership.get(cluster_id, []):
+                if role != primary:
+                    inferred.append(role)
+        # executor = a HANDLES dispatch target: a registered handler the framework
+        # invokes (per role_catalog). This is the distinctive edge signal, not a
+        # generic leaf+fan_in degree profile (which also catches utilities/data).
+        profile = getattr(self.host, "_structural_fan_by_uid", {}).get(uid)
+        if profile and float(profile.get("handle_fan_in", 0.0)) > 0.0:
+            inferred.append("executor")
         if self._is_public_primary_target(c):
             inferred.extend(["api_surface", "impact_public_api"])
         return normalize_roles([*explicit, *inferred])
@@ -107,6 +97,7 @@ class RoleFulfilment:
                 if role:
                     return str(role)
         return "supporting_surface"
+
 
     def _is_public_primary_target(self, c: Candidate | object) -> bool:
         """A directly requested public symbol is itself an API surface."""
@@ -188,7 +179,10 @@ class RoleFulfilment:
     def get_required_roles(self, mechanism: str, *, target=None) -> list[str]:
         roles = []
         if mechanism.startswith("auto:"):
-            roles = self.roles_for_auto_mechanism(mechanism.removeprefix("auto:"))
+            # Archetype DETECTION stays structural; the role PLAN is derived from the
+            # roles actually observed around the target (adaptive), never a preset
+            # archetype->roles table.
+            roles = self.adaptive_role_plan(target=target)
         else:
             roles = required_roles_for_mechanism(
                 mechanism,
@@ -265,14 +259,6 @@ class RoleFulfilment:
         if selected:
             return selected[:5]
         return ["supporting_surface"]
-
-    def roles_for_auto_mechanism(self, archetype: str) -> list[str]:
-        for item in (self.host.strategy_profile or {}).get("mechanism_archetypes") or []:
-            if item.get("type") == archetype:
-                return normalize_roles(item.get("role_plan") or [])
-        if archetype in _GENERIC_AUTO_ROLE_PLANS:
-            return normalize_roles(_GENERIC_AUTO_ROLE_PLANS[archetype])
-        return self.strategy_role_plan()
 
     def auto_mechanism_from_strategy(self, target, query: str = "") -> str:
         archetypes = (self.host.strategy_profile or {}).get("mechanism_archetypes") or []

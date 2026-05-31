@@ -985,6 +985,142 @@ class Neo4jClient:
                 workspace_id=workspace_id,
             )
 
+    def link_reexports(
+        self,
+        reexports: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create RE_EXPORTS edges: a package ``__init__`` file -> the project symbol
+        it surfaces.
+
+        A re-export (``from .submodule import Name`` in an ``__init__``) is a static
+        AST fact, so this is a derived edge. The surfaced symbol is matched in-graph
+        by qualified name (exact, else trailing-name segment, shortest-qn wins).
+        Names resolving to no in-graph symbol (stdlib/external) produce no edge —
+        project symbols only, precision over recall. The source is the ``File`` node
+        (an ``__init__`` has no Symbol of its own), giving the re-exported symbol a
+        ``reexport_in`` signal independent of call/type fan-in.
+        """
+        if not reexports:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_reexport_relations, reexports, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_reexport_relations(tx, reexports, workspace_id):
+        if not reexports:
+            return
+        tx.run(
+            """
+            UNWIND $reexports AS d
+            MATCH (initfile:File {path: d.init_file, workspace_id: $workspace_id})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(sym:Symbol)
+            WHERE (sym.qualified_name = d.export_qualified_name OR sym.name = d.export_name)
+            WITH initfile, d, sym
+            ORDER BY
+              CASE WHEN sym.qualified_name = d.export_qualified_name THEN 0 ELSE 1 END,
+              size(sym.qualified_name) ASC
+            WITH initfile, d, collect(sym)[0] AS sym
+            WHERE sym IS NOT NULL
+            MERGE (initfile)-[r:RE_EXPORTS {workspace_id: $workspace_id}]->(sym)
+            SET r.resolver = 'reexport-v1',
+                r.export_name = d.export_name
+            """,
+            reexports=reexports,
+            workspace_id=workspace_id,
+        )
+
+    def delete_reexports_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear RE_EXPORTS edges from a package __init__ before relinking."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[r:RE_EXPORTS]->(:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
+    def link_instantiations(
+        self,
+        instantiations: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create INSTANTIATES edges: caller symbol -> the project class it constructs.
+
+        A construction (literal ``X(...)`` or ``v(...)`` for a ``type[X]``-typed
+        local) is a static AST fact, so this is a derived edge — a refinement of a
+        call where the callee is a class. The class is matched in-graph by qualified
+        name (exact, else trailing-name segment, shortest-qn wins) and **must be a
+        class** (kind filter); names resolving to a function or to no in-graph symbol
+        produce no edge. Gives ``factory_surface`` an explicit construction signal
+        distinct from a plain caller / the ``type_fan_out(return)`` heuristic.
+        """
+        if not instantiations:
+            return
+        with self.driver.session() as session:
+            session.execute_write(
+                self._create_instantiation_relations, instantiations, workspace_id
+            )
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_instantiation_relations(tx, instantiations, workspace_id):
+        if not instantiations:
+            return
+        tx.run(
+            """
+            UNWIND $instantiations AS d
+            MATCH (caller:Symbol {uid: d.caller_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(cls:Symbol)
+            WHERE (cls.qualified_name = d.type_qualified_name OR cls.name = d.type_name)
+              AND cls.kind IN ['class', 'interface', 'struct', 'enum']
+            WITH caller, d, cls
+            ORDER BY
+              CASE WHEN cls.qualified_name = d.type_qualified_name THEN 0 ELSE 1 END,
+              size(cls.qualified_name) ASC
+            WITH caller, d, collect(cls)[0] AS cls
+            WHERE cls IS NOT NULL AND caller <> cls
+            MERGE (caller)-[r:INSTANTIATES {workspace_id: $workspace_id}]->(cls)
+            SET r.resolver = 'instantiate-v1',
+                r.type_name = d.type_name
+            """,
+            instantiations=instantiations,
+            workspace_id=workspace_id,
+        )
+
+    def delete_instantiations_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear INSTANTIATES edges from a file's symbols before relinking."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:INSTANTIATES]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
     def link_injections(
         self,
         injections: list[dict],

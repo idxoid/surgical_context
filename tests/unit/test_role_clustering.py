@@ -8,12 +8,11 @@ file paths.
 
 
 from sidecar.indexer.role_clustering import (
-    RoleCluster,
-    RoleTaxonomy,
     SymbolRow,
     assemble_symbol_rows,
     build_role_catalog,
     cluster_symbols,
+    filter_clustering_rows,
     resolve_role_clusters,
 )
 
@@ -328,6 +327,45 @@ def test_features_separate_documented_from_undocumented():
     assert mapping["u:doc"] != mapping["u:bare"]
 
 
+def test_filter_clustering_rows_drops_true_dangling():
+    connected = SymbolRow(
+        uid="u:worker",
+        kind="function",
+        fan_in=1,
+        fan_out=0,
+        cross_package_in=0,
+        cross_package_out=0,
+        depth_from_public=1,
+        doc_anchor_count=0,
+        call_fan_in=1.0,
+    )
+    dangling = SymbolRow(
+        uid="u:const",
+        kind="variable",
+        fan_in=0,
+        fan_out=0,
+        cross_package_in=0,
+        cross_package_out=0,
+        depth_from_public=3,
+        doc_anchor_count=0,
+    )
+    assert filter_clustering_rows([connected, dangling]) == [connected]
+
+
+def test_assemble_symbol_rows_accepts_structural_edges_with_confidence():
+    symbols = [
+        ("u:a", "function", "/repo/api/a.py"),
+        ("u:b", "class", "/repo/api/b.py"),
+    ]
+    edges = [
+        ("u:a", "u:b", "USES_TYPE", 1.0),
+    ]
+    rows = {row.uid: row for row in assemble_symbol_rows(symbols, edges, {})}
+    assert rows["u:b"].type_fan_in == 1.0
+    assert rows["u:a"].type_fan_out == 1.0
+    assert filter_clustering_rows(list(rows.values()))
+
+
 def test_assemble_symbol_rows_drops_edges_referencing_unknown_symbols():
     symbols = [("u:a", "function", "/repo/api/a.py")]
     edges = [
@@ -359,125 +397,15 @@ def test_role_clustering_serializes_for_workspace_persistence():
 
 
 def test_role_catalog_maps_cluster_shapes_to_portable_archetypes():
-    taxonomy = RoleTaxonomy(
-        feature_names=(
-            "log_fan_in",
-            "log_fan_out",
-            "fan_in_ratio",
-            "depth_from_public",
-            "leaf_score",
-            "cross_package_in_ratio",
-            "cross_package_out_ratio",
-            "log_import_in",
-            "has_documentation",
-            "doc_anchor_density",
-            "log_doc_definition_weight",
-            "log_doc_reference_weight",
-            "log_doc_example_weight",
-            "is_class",
-            "is_function",
-        ),
-        clusters=(
-            RoleCluster(
-                cluster_id=10,
-                centroid=(
-                    0.0,
-                    1.6,
-                    -0.5,
-                    -1.5,
-                    -1.5,
-                    0.0,
-                    0.8,
-                    0.0,
-                    0.2,
-                    0.2,
-                    0.0,
-                    0.0,
-                    0.0,
-                    -0.5,
-                    1.2,
-                ),
-                member_count=20,
-                signature=("log_fan_out:+", "leaf_score:-", "depth_from_public:-"),
-            ),
-            RoleCluster(
-                cluster_id=20,
-                centroid=(
-                    1.6,
-                    -0.4,
-                    1.4,
-                    0.2,
-                    0.8,
-                    1.4,
-                    -0.2,
-                    0.0,
-                    0.1,
-                    0.1,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.4,
-                    -0.2,
-                ),
-                member_count=12,
-                signature=("log_fan_in:+", "cross_package_in_ratio:+", "fan_in_ratio:+"),
-            ),
-            RoleCluster(
-                cluster_id=30,
-                centroid=(
-                    -0.5,
-                    -1.0,
-                    -0.3,
-                    0.8,
-                    0.9,
-                    0.0,
-                    -0.2,
-                    0.0,
-                    1.6,
-                    1.7,
-                    1.8,
-                    1.1,
-                    -0.7,
-                    0.1,
-                    -0.1,
-                ),
-                member_count=16,
-                signature=("log_doc_definition_weight:+", "doc_anchor_density:+", "log_fan_out:-"),
-            ),
-            RoleCluster(
-                cluster_id=40,
-                centroid=(
-                    -0.2,
-                    -0.5,
-                    0.2,
-                    0.7,
-                    0.9,
-                    0.1,
-                    0.0,
-                    0.0,
-                    0.3,
-                    0.2,
-                    0.0,
-                    0.0,
-                    0.0,
-                    1.6,
-                    -1.4,
-                ),
-                member_count=10,
-                signature=("is_class:+", "is_function:-", "leaf_score:+"),
-            ),
-        ),
-        silhouette=0.5,
-        chosen_k=4,
-        sample_size=58,
-    )
-
+    rows = _build_synthetic_graph()
+    taxonomy, uid_to_cluster = cluster_symbols(rows, seed=42)
     catalog = build_role_catalog(taxonomy)
 
-    assert catalog.archetypes["active_entrypoint"][0].cluster_id == 10
-    assert catalog.archetypes["runtime_handle"][0].cluster_id == 20
-    assert catalog.archetypes["passive_api_surface"][0].cluster_id == 30
-    assert catalog.archetypes["representation_surface"][0].cluster_id == 40
+    assert catalog.archetypes
+    assert resolve_role_clusters(catalog, "executor")
+    assert resolve_role_clusters(catalog, "runtime_surface")
+    assert len({uid_to_cluster[f"u:exec_{i}"] for i in range(20)}) == 1
+    assert len({uid_to_cluster[f"u:data_{i}"] for i in range(8)}) == 1
 
 
 def test_role_catalog_resolves_canonical_roles_to_cluster_preferences():

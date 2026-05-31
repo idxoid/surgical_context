@@ -653,10 +653,13 @@ def test_auto_strategy_profile_supplies_mechanism_and_roles_for_unknown_repo():
         query="How does Express middleware execution call next handlers?",
     )
 
+    # Archetype detection stays structural (auto:middleware_pipeline), but the role
+    # PLAN is now adaptive: derived from roles observed around the target, falling back
+    # to the strategy_profile role_plan (here, no graph) — not the archetype's preset
+    # role_plan (which carried factory_surface).
     assert mechanism == "auto:middleware_pipeline"
-    assert ranker._get_required_roles(mechanism) == [
+    assert ranker._get_required_roles(mechanism, target=target) == [
         "api_surface",
-        "factory_surface",
         "composition_surface",
         "runtime_surface",
         "docs_or_concept",
@@ -893,6 +896,46 @@ def test_signature_only_public_primary_target_satisfies_api_surface():
 
     assert "api_surface" in ranker._roles_of(target)
     assert "impact_public_api" in ranker._roles_of(target)
+
+
+def test_cluster_membership_adds_co_located_roles():
+    """Secondary roles for a cluster are visible even when another role wins primary."""
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker.role_catalog = {
+        "schema_version": 2,
+        "role_to_archetypes": {
+            "core_runtime": ["runtime_handle"],
+            "executor": ["executor"],
+            "runtime_surface": ["active_entrypoint", "runtime_handle"],
+        },
+        "archetypes": {
+            "runtime_handle": [{"cluster_id": 4, "confidence": 0.58, "evidence": []}],
+            "executor": [{"cluster_id": 4, "confidence": 0.42, "evidence": []}],
+            "active_entrypoint": [{"cluster_id": 5, "confidence": 0.80, "evidence": []}],
+        },
+    }
+    ranker._derived_role_by_uid = {"worker-u": 4}
+    ranker._cluster_to_role = {4: "core_runtime", 5: "api_surface"}
+    ranker._cluster_role_membership = ranker._build_cluster_role_membership()
+    worker = SubgraphNode(
+        uid="worker-u",
+        name="run_worker",
+        file_path="/repo/pkg/routing.py",
+        range=[1, 10],
+        token_estimate=40,
+        relation="caller",
+        direction="outgoing",
+        depth=1,
+        relevance_score=0.8,
+        kind="function",
+    )
+
+    roles = ranker._roles_of(worker)
+
+    assert "core_runtime" in roles
+    assert "executor" in roles
+    assert "runtime_surface" in roles
 
 
 def test_private_primary_target_does_not_satisfy_api_surface():

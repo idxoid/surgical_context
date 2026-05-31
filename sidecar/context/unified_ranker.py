@@ -218,7 +218,9 @@ class UnifiedRanker:
         self.strategy_profile = self.repository_profile.get("strategy_profile", {})
         self.role_catalog = self._load_role_catalog()
         self._derived_role_by_uid = self._load_derived_role_map()
+        self._structural_fan_by_uid = self._load_structural_fan_map()
         self._cluster_to_role = self._build_cluster_to_role_map()
+        self._cluster_role_membership = self._build_cluster_role_membership()
         self.role_fulfilment = RoleFulfilment(self)
         self.scoring = RankerScoring(self)
         self.budget_pruner = BudgetPruner(self)
@@ -652,19 +654,12 @@ class UnifiedRanker:
                 qualified_name=row.get("qualified_name", ""),
             )
         )
-        query_bonus = self._target_query_bonus(
-            query=query,
-            kind=kind,
-            role=role,
-            file_path=file_path,
-            qualified_name=row.get("qualified_name", ""),
-            intent=intent,
-        )
+        # Target selection is structural only: path / role / edges / kind / size.
+        # The query-keyword x role bonus was removed (benchmark-tuned query classifier).
         components = {
             "path": self._target_path_bonus(file_path),
             "role": self._target_role_bonus(role),
             "edges": min(1.4, 0.22 * outgoing_edges + 0.08 * incoming_edges + 0.05 * total_edges),
-            "query": query_bonus,
             "kind": self._target_kind_bonus(kind, intent=intent),
             "size_penalty": -min(0.6, token_estimate / 6000.0),
         }
@@ -719,81 +714,6 @@ class UnifiedRanker:
         if kind == "class":
             return 0.1 if intent != Intent.EXPLORATION else 0.0
         return 0.0
-
-    def _target_query_bonus(
-        self,
-        *,
-        query: str,
-        kind: str,
-        role: str,
-        file_path: str,
-        qualified_name: str,
-        intent: Intent | None = None,
-    ) -> float:
-        if not query:
-            return 0.0
-        query_lower = query.lower()
-        bonus = 0.0
-        if kind == "function" and any(
-            phrase in query_lower
-            for phrase in ("how does", "before", "called", "register", "run", "resolved")
-        ):
-            bonus += 0.5
-        if kind == "class" and any(
-            phrase in query_lower
-            for phrase in ("class", "type", "parameter", "config", "marker", "annotation")
-        ):
-            bonus += 0.35
-        if role == "api_surface" and any(
-            phrase in query_lower for phrase in ("how does", "resolved", "before", "called")
-        ):
-            bonus += 0.35
-        if role == "config_surface" and any(
-            phrase in query_lower for phrase in ("parameter", "annotation", "config", "marker")
-        ):
-            bonus += 0.25
-        if role == "runtime_surface" and any(
-            phrase in query_lower for phrase in ("endpoint", "request", "handler", "lifecycle")
-        ) and any(
-            phrase in query_lower for phrase in ("before", "called", "resolved", "run")
-        ):
-            bonus += 0.35
-        if role == "orchestrator" and any(
-            phrase in query_lower for phrase in ("depend", "dependency", "injection", "resolved")
-        ):
-            bonus += 0.25
-        if role == "schema_builder" and any(
-            term in query_lower for term in ("schema", "openapi", "swagger")
-        ):
-            bonus += 0.25
-        if role in ("validator_handle", "core_runtime") and any(
-            phrase in query_lower for phrase in ("validate", "validation", "validated", "core")
-        ):
-            bonus += 0.2
-        if role == "serializer_handle" and any(
-            phrase in query_lower for phrase in ("dump", "serialize", "serialization", "json")
-        ):
-            bonus += 0.2
-        if "high-level api" in query_lower or "high level api" in query_lower:
-            bonus += 0.25
-        # Suppress api_surface siblings not mentioned in the query: if the query
-        # names a specific class via a query term overlap, penalise other top-level
-        # classes in the same role whose name does not appear in the query at all.
-        if role == "api_surface" and kind == "class" and qualified_name:
-            name_lc = qualified_name.lower().rsplit(".", 1)[-1]
-            if name_lc and name_lc not in query_lower and len(name_lc) >= 5:
-                query_terms_set = set(self._query_terms(query))
-                if query_terms_set and not any(t in name_lc for t in query_terms_set):
-                    bonus -= 0.35
-
-        query_terms = self._query_terms(query)
-        haystack = f"{file_path.lower()} {qualified_name.lower()}"
-        overlap = sum(1 for term in query_terms if term in haystack)
-        bonus += min(0.4, 0.1 * overlap)
-
-        if intent == Intent.NAVIGATION and kind == "class":
-            bonus += 0.1
-        return bonus
 
     @staticmethod
     def _query_terms(query: str) -> list[str]:
@@ -1976,9 +1896,6 @@ class UnifiedRanker:
     def _adaptive_role_plan(self, *, target=None) -> list[str]:
         return self.role_fulfilment.adaptive_role_plan(target=target)
 
-    def _roles_for_auto_mechanism(self, archetype: str) -> list[str]:
-        return self.role_fulfilment.roles_for_auto_mechanism(archetype)
-
     def _auto_mechanism_from_strategy(self, target: SubgraphNode, query: str = "") -> str:
         return self.role_fulfilment.auto_mechanism_from_strategy(target, query=query)
 
@@ -2107,6 +2024,40 @@ class UnifiedRanker:
         except Exception:
             return {}
 
+    def _load_structural_fan_map(self) -> dict[str, dict[str, float]]:
+        """Read Pass-1 structural fan profiles persisted on Symbol nodes."""
+        if not self.role_catalog:
+            return {}
+        try:
+            with self.db.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                    WHERE s.call_fan_in IS NOT NULL OR s.call_fan_out IS NOT NULL
+                    OPTIONAL MATCH (s)<-[h:HANDLES]-(:Symbol)
+                    WHERE coalesce(h.workspace_id, $workspace_id) = $workspace_id
+                    WITH s, count(h) AS handle_fan_in
+                    RETURN s.uid AS uid,
+                           coalesce(s.call_fan_in, 0.0) AS call_fan_in,
+                           coalesce(s.call_fan_out, 0.0) AS call_fan_out,
+                           coalesce(s.type_fan_in, 0.0) AS type_fan_in,
+                           handle_fan_in AS handle_fan_in
+                    """,
+                    workspace_id=self.workspace_id,
+                )
+                return {
+                    r["uid"]: {
+                        "call_fan_in": float(r["call_fan_in"] or 0.0),
+                        "call_fan_out": float(r["call_fan_out"] or 0.0),
+                        "type_fan_in": float(r["type_fan_in"] or 0.0),
+                        "handle_fan_in": float(r["handle_fan_in"] or 0.0),
+                    }
+                    for r in rows
+                    if r["uid"]
+                }
+        except Exception:
+            return {}
+
     def _build_cluster_to_role_map(self) -> dict[int, str]:
         """Pick a single primary canonical role per cluster.
 
@@ -2134,6 +2085,20 @@ class UnifiedRanker:
             claims.sort(key=lambda item: item[1], reverse=True)
             result[cid] = claims[0][0]
         return result
+
+    def _build_cluster_role_membership(self) -> dict[int, list[str]]:
+        """Map each cluster id to every role whose resolved cluster set includes it."""
+        if not self.role_catalog:
+            return {}
+        from collections import defaultdict
+
+        from sidecar.indexer.role_clustering import resolve_role_clusters
+
+        membership: dict[int, set[str]] = defaultdict(set)
+        for role in self.role_catalog.get("role_to_archetypes") or {}:
+            for match in resolve_role_clusters(self.role_catalog, role):
+                membership[int(match["cluster_id"])].add(str(role))
+        return {cid: normalize_roles(list(roles)) for cid, roles in membership.items()}
 
     # Neo4j helpers
     # ------------------------------------------------------------------

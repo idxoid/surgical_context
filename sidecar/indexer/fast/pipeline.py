@@ -430,6 +430,86 @@ def _type_reference_phase(
     return len(references)
 
 
+def _reexport_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create RE_EXPORTS edges (package __init__ file -> the project symbol it surfaces).
+
+    A re-export (``from .submodule import Name`` in an ``__init__``) is a syntactic
+    fact, like a type reference. Runs after `_apply_graph` so the surfaced symbols
+    exist, and under the same project_root_scope so target uids match stored nodes.
+    Gives public surface symbols a ``reexport_in`` signal orthogonal to call/type
+    fan-in (whose callers live in user code excluded from clustering).
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    link_reexports = getattr(db, "link_reexports", None)
+    reporter.stage_start("reexports", total=1)
+    reexports: list[dict] = []
+    if callable(link_reexports):
+        adapter = PythonAdapter()
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    reexports.extend(adapter.extract_reexports(ex.source, ex.path))
+                except Exception:
+                    continue
+        if reexports:
+            link_reexports(reexports, workspace_id=workspace_id)
+    reporter.step("reexports")
+    reporter.stage_end("reexports")
+    return len(reexports)
+
+
+def _instantiation_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create INSTANTIATES edges (caller -> the project class it constructs).
+
+    A construction (literal ``X(...)`` or ``v(...)`` for a ``type[X]``-typed local)
+    is a syntactic fact, like a type reference. Runs after `_apply_graph` so the
+    constructed class symbols exist, and under the same project_root_scope so caller
+    uids match stored nodes. Feeds the factory_surface role an explicit construction
+    signal distinct from a plain caller.
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    link_inst = getattr(db, "link_instantiations", None)
+    reporter.stage_start("instantiations", total=1)
+    instantiations: list[dict] = []
+    if callable(link_inst):
+        adapter = PythonAdapter()
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    instantiations.extend(
+                        adapter.extract_instantiations(ex.source, ex.path)
+                    )
+                except Exception:
+                    continue
+        if instantiations:
+            link_inst(instantiations, workspace_id=workspace_id)
+    reporter.step("instantiations")
+    reporter.stage_end("instantiations")
+    return len(instantiations)
+
+
 def _injection_phase(
     diffs: list[FileDiff],
     db: Neo4jClient,
@@ -904,6 +984,22 @@ def run_fast_indexing(
             diffs, db, workspace_id, reporter, project_path
         )
         stats["timings_sec"]["type_refs"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.665: RE_EXPORTS edges (package __init__ -> surfaced symbol). Like
+        # USES_TYPE, a low-weight derived relation, not in materialized degree.
+        t_stage = time.perf_counter()
+        stats["reexports_linked"] = _reexport_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["reexports"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.668: INSTANTIATES edges (caller -> constructed class). Like
+        # USES_TYPE, a low-weight derived relation, not in materialized degree.
+        t_stage = time.perf_counter()
+        stats["instantiations_linked"] = _instantiation_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["instantiations"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.67: INJECTS edges (DI bindings). Like USES_TYPE, not in degree.
         t_stage = time.perf_counter()
