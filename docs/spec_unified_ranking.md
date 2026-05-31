@@ -53,9 +53,14 @@ Current candidates are symbols and docs. A future phase adds tenant API contract
 
 The ranker reads `repository_profile.strategy_profile` from the Neo4j `Workspace`. Bundled name/query dispatch in `sidecar/context/mechanism_registry.py` is **stubbed** (no preloaded framework rules); optional `mechanism_required_roles` / `mechanism_role_backfill` on `role_catalog_json` supply templates when present. With Pass 1 roles loaded, `_determine_mechanism_structural` can match a mechanism by overlap between neighborhood roles and those templates.
 
-When no structural match applies, the ranker uses auto-detected mechanism archetypes from the strategy profile (`middleware_pipeline`, `decorator_declares_handler`, etc.) or falls back to `generic` with an adaptive role plan derived from target-local/workspace role supply plus `docs_or_concept`.
+When no structural mechanism match applies, the ranker falls back to **`generic`**
+with an adaptive role plan from target-local / workspace Pass-1 role supply plus
+`docs_or_concept`.
 
-Structural roles come from Pass 1 (`derived_role_id`, `role_catalog_json` cluster mapping). `repository_profile` no longer detects framework families by repo/package names or benchmark dataset identity; it emits only generic archetype signals such as registries, decorators, dependency/provider usage, declarative modeling, middleware, templates, and generated APIs. Python import extraction similarly infers external packages generically while preserving same-workspace packages that happen to share installed dependency names.
+Structural roles come from Pass 1 (`derived_primary_role`,
+`derived_supporting_roles_json`, `present_roles` in `role_catalog_json`).
+`repository_profile` declares indexability and capability boundaries only — it
+does not infer framework families or mechanism types from repo text.
 
 ```python
 @dataclass

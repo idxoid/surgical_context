@@ -27,25 +27,17 @@ class RoleFulfilment:
 
     def supporting_roles_of(self, c: Candidate | object) -> list[str]:
         explicit = normalize_roles(getattr(c, "supporting_roles", []) or [])
+        uid = getattr(c, "uid", "") or ""
+        primary = self.role_of(c)
         inferred = infer_supporting_roles(
             file_path=getattr(c, "file_path", "") or "",
-            primary_role=self.role_of(c),
+            primary_role=primary,
             name=getattr(c, "name", "") or "",
             kind=getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "",
         )
-        uid = getattr(c, "uid", "") or ""
-        primary = self.role_of(c)
-        cluster_id = self.host._derived_role_by_uid.get(uid)
-        if cluster_id is not None:
-            for role in self.host._cluster_role_membership.get(cluster_id, []):
-                if role != primary:
-                    inferred.append(role)
-        # executor = a HANDLES dispatch target: a registered handler the framework
-        # invokes (per role_catalog). This is the distinctive edge signal, not a
-        # generic leaf+fan_in degree profile (which also catches utilities/data).
-        profile = getattr(self.host, "_structural_fan_by_uid", {}).get(uid)
-        if profile and float(profile.get("handle_fan_in", 0.0)) > 0.0:
-            inferred.append("executor")
+        for role in self.host._derived_supporting_roles_by_uid.get(uid, []):
+            if role != primary:
+                inferred.append(role)
         if self._is_public_primary_target(c):
             inferred.extend(["api_surface", "impact_public_api"])
         return normalize_roles([*explicit, *inferred])
@@ -89,13 +81,10 @@ class RoleFulfilment:
         if getattr(c, "kind", "") == "doc":
             return "docs_or_concept"
 
-        if self.host._cluster_to_role:
-            uid = getattr(c, "uid", "") or ""
-            cluster_id = self.host._derived_role_by_uid.get(uid)
-            if cluster_id is not None:
-                role = self.host._cluster_to_role.get(cluster_id)
-                if role:
-                    return str(role)
+        uid = getattr(c, "uid", "") or ""
+        primary = self.host._derived_primary_role_by_uid.get(uid)
+        if primary:
+            return normalize_role(primary)
         return "supporting_surface"
 
 
@@ -115,10 +104,7 @@ class RoleFulfilment:
         return True
 
     def canonical_role_for_symbol_uid(self, uid: str) -> str:
-        cid = self.host._derived_role_by_uid.get(uid)
-        if cid is None:
-            return ""
-        return self.host._cluster_to_role.get(cid) or ""
+        return self.host._derived_primary_role_by_uid.get(uid, "")
 
     def one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
         query = """
@@ -140,7 +126,7 @@ class RoleFulfilment:
             return []
 
     def determine_mechanism_structural(self, target) -> str:
-        if not self.host._cluster_to_role or not self.host._derived_role_by_uid:
+        if not self.host._derived_primary_role_by_uid:
             return ""
         uid = getattr(target, "uid", "") or ""
         if not uid:
@@ -171,17 +157,11 @@ class RoleFulfilment:
         structural = self.determine_mechanism_structural(target)
         if structural:
             return structural
-        auto_mechanism = self.auto_mechanism_from_strategy(target, query=query)
-        if auto_mechanism:
-            return auto_mechanism
         return "generic"
 
     def get_required_roles(self, mechanism: str, *, target=None) -> list[str]:
         roles = []
         if mechanism.startswith("auto:"):
-            # Archetype DETECTION stays structural; the role PLAN is derived from the
-            # roles actually observed around the target (adaptive), never a preset
-            # archetype->roles table.
             roles = self.adaptive_role_plan(target=target)
         else:
             roles = required_roles_for_mechanism(
@@ -199,10 +179,9 @@ class RoleFulfilment:
 
     def role_supply_counts(self) -> Counter[str]:
         counts: Counter[str] = Counter()
-        if not self.host._cluster_to_role or not self.host._derived_role_by_uid:
+        if not self.host._derived_primary_role_by_uid:
             return counts
-        for cluster_id in self.host._derived_role_by_uid.values():
-            role = self.host._cluster_to_role.get(cluster_id)
+        for role in self.host._derived_primary_role_by_uid.values():
             if role:
                 counts[role] += 1
         return counts
@@ -251,32 +230,11 @@ class RoleFulfilment:
             selected.extend(role for role, _ in role_supply.most_common(6))
 
         if not selected and self.host.role_catalog:
-            selected.extend(
-                list((self.host.role_catalog.get("role_to_archetypes") or {}).keys())[:6]
-            )
+            present = self.host.role_catalog.get("present_roles") or {}
+            if isinstance(present, dict) and present:
+                selected.extend(list(present.keys())[:6])
 
         selected = normalize_roles(selected)
         if selected:
             return selected[:5]
         return ["supporting_surface"]
-
-    def auto_mechanism_from_strategy(self, target, query: str = "") -> str:
-        archetypes = (self.host.strategy_profile or {}).get("mechanism_archetypes") or []
-        if not archetypes and not self.strategy_role_plan():
-            return ""
-        haystack = " ".join(
-            part.lower()
-            for part in (target.name or "", target.file_path or "", query or "")
-            if part
-        )
-        if not archetypes:
-            return ""
-        for item in archetypes:
-            archetype = item.get("type", "")
-            evidence = " ".join(str(piece).lower() for piece in item.get("evidence") or [])
-            terms = set(self.host.scoring.focus_query_terms(archetype.replace("_", " ")))
-            terms.update(self.host.scoring.focus_query_terms(evidence))
-            if terms and any(term in haystack for term in terms):
-                return f"auto:{archetype}"
-        top = archetypes[0].get("type", "")
-        return f"auto:{top}" if top else ""

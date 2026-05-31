@@ -612,26 +612,12 @@ def test_redux_style_symbols_use_generic_mechanism_when_dispatch_stubbed():
     )
 
 
-def test_auto_strategy_profile_supplies_mechanism_and_roles_for_unknown_repo():
+def test_strategy_profile_does_not_infer_mechanism_from_repo_keywords():
     db = _make_db()
     db.get_repository_profile.return_value = {
         "strategy_profile": {
             "selected_strategy": "middleware_pipeline_trace",
             "role_plan": ["api_surface", "composition_surface", "runtime_surface"],
-            "mechanism_archetypes": [
-                {
-                    "type": "middleware_pipeline",
-                    "strategy": "middleware_pipeline_trace",
-                    "confidence": 0.78,
-                    "role_plan": [
-                        "api_surface",
-                        "factory_surface",
-                        "composition_surface",
-                        "runtime_surface",
-                    ],
-                    "evidence": ["express", "Router(", "app.use"],
-                }
-            ],
         }
     }
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/express@main")
@@ -653,17 +639,7 @@ def test_auto_strategy_profile_supplies_mechanism_and_roles_for_unknown_repo():
         query="How does Express middleware execution call next handlers?",
     )
 
-    # Archetype detection stays structural (auto:middleware_pipeline), but the role
-    # PLAN is now adaptive: derived from roles observed around the target, falling back
-    # to the strategy_profile role_plan (here, no graph) — not the archetype's preset
-    # role_plan (which carried factory_surface).
-    assert mechanism == "auto:middleware_pipeline"
-    assert ranker._get_required_roles(mechanism, target=target) == [
-        "api_surface",
-        "composition_surface",
-        "runtime_surface",
-        "docs_or_concept",
-    ]
+    assert mechanism == "generic"
 
 
 def test_topic_focus_downranks_unrelated_query_subsystem_candidates():
@@ -898,26 +874,18 @@ def test_signature_only_public_primary_target_satisfies_api_surface():
     assert "impact_public_api" in ranker._roles_of(target)
 
 
-def test_cluster_membership_adds_co_located_roles():
-    """Secondary roles for a cluster are visible even when another role wins primary."""
+def test_pass1_supporting_roles_surface_co_located_labels():
+    """Secondary roles from Pass 1 are visible alongside the primary role."""
     db = _make_db()
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
     ranker.role_catalog = {
-        "schema_version": 2,
-        "role_to_archetypes": {
-            "core_runtime": ["runtime_handle"],
-            "executor": ["executor"],
-            "runtime_surface": ["active_entrypoint", "runtime_handle"],
-        },
-        "archetypes": {
-            "runtime_handle": [{"cluster_id": 4, "confidence": 0.58, "evidence": []}],
-            "executor": [{"cluster_id": 4, "confidence": 0.42, "evidence": []}],
-            "active_entrypoint": [{"cluster_id": 5, "confidence": 0.80, "evidence": []}],
-        },
+        "schema_version": 3,
+        "present_roles": {"core_runtime": 4, "executor": 4, "runtime_surface": 2},
     }
-    ranker._derived_role_by_uid = {"worker-u": 4}
-    ranker._cluster_to_role = {4: "core_runtime", 5: "api_surface"}
-    ranker._cluster_role_membership = ranker._build_cluster_role_membership()
+    ranker._derived_primary_role_by_uid = {"worker-u": "core_runtime"}
+    ranker._derived_supporting_roles_by_uid = {
+        "worker-u": ["executor", "runtime_surface"],
+    }
     worker = SubgraphNode(
         uid="worker-u",
         name="run_worker",
@@ -1211,8 +1179,7 @@ def test_structural_mechanism_dispatch_when_preloaded_rules_miss():
             "fastapi_endpoint_execution": ["executor", "runtime_surface"],
         },
     }
-    ranker._cluster_to_role = {0: "executor", 1: "runtime_surface"}
-    ranker._derived_role_by_uid = {"target-u": 0, "n1": 1}
+    ranker._derived_primary_role_by_uid = {"target-u": "executor", "n1": "runtime_surface"}
     target = SubgraphNode(
         uid="target-u",
         name="Router",
@@ -1244,8 +1211,11 @@ def test_required_roles_preserve_role_catalog_contract_when_supply_is_sparse():
             ]
         },
     }
-    ranker._cluster_to_role = {0: "api_surface", 1: "runtime_surface"}
-    ranker._derived_role_by_uid = {"u1": 0, "u2": 1, "u3": 0}
+    ranker._derived_primary_role_by_uid = {
+        "u1": "api_surface",
+        "u2": "runtime_surface",
+        "u3": "api_surface",
+    }
 
     required = ranker._get_required_roles("fastapi_endpoint_execution")
 
@@ -1270,15 +1240,10 @@ def test_required_roles_do_not_shrink_to_target_local_supply():
             ]
         },
     }
-    ranker._cluster_to_role = {
-        0: "api_surface",
-        1: "runtime_surface",
-        2: "factory_surface",
-    }
-    ranker._derived_role_by_uid = {
-        "target-u": 0,
-        "n1": 1,
-        "remote-factory": 2,  # Exists globally but not in target neighborhood.
+    ranker._derived_primary_role_by_uid = {
+        "target-u": "api_surface",
+        "n1": "runtime_surface",
+        "remote-factory": "factory_surface",
     }
     target = SubgraphNode(
         uid="target-u",
@@ -1306,18 +1271,12 @@ def test_required_roles_do_not_shrink_to_target_local_supply():
 def test_adaptive_generic_roles_follow_workspace_role_supply():
     db = _make_db()
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
-    ranker._cluster_to_role = {
-        0: "api_surface",
-        1: "runtime_surface",
-        2: "runtime_surface",
-        3: "composition_surface",
-    }
-    ranker._derived_role_by_uid = {
-        "a": 0,
-        "b": 1,
-        "c": 2,
-        "d": 3,
-        "e": 3,
+    ranker._derived_primary_role_by_uid = {
+        "a": "api_surface",
+        "b": "runtime_surface",
+        "c": "runtime_surface",
+        "d": "composition_surface",
+        "e": "composition_surface",
     }
 
     required = ranker._get_required_roles("generic")
@@ -1407,7 +1366,6 @@ def test_role_filler_outranks_unrelated_high_score_docs():
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
     ranker.strategy_profile = {
         "role_plan": ["api_surface", "runtime_surface"],
-        "mechanism_archetypes": [],
     }
     target = SubgraphNode(
         uid="primary",

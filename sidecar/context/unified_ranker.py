@@ -16,6 +16,7 @@ so raw BFS values (~1.2) don't dominate cosine similarities (~0.8).
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from heapq import heappop, heappush
@@ -217,10 +218,9 @@ class UnifiedRanker:
         self.repository_profile = self._load_repository_profile()
         self.strategy_profile = self.repository_profile.get("strategy_profile", {})
         self.role_catalog = self._load_role_catalog()
-        self._derived_role_by_uid = self._load_derived_role_map()
+        self._derived_primary_role_by_uid = self._load_derived_primary_role_map()
+        self._derived_supporting_roles_by_uid = self._load_derived_supporting_roles_map()
         self._structural_fan_by_uid = self._load_structural_fan_map()
-        self._cluster_to_role = self._build_cluster_to_role_map()
-        self._cluster_role_membership = self._build_cluster_role_membership()
         self.role_fulfilment = RoleFulfilment(self)
         self.scoring = RankerScoring(self)
         self.budget_pruner = BudgetPruner(self)
@@ -1896,9 +1896,6 @@ class UnifiedRanker:
     def _adaptive_role_plan(self, *, target=None) -> list[str]:
         return self.role_fulfilment.adaptive_role_plan(target=target)
 
-    def _auto_mechanism_from_strategy(self, target: SubgraphNode, query: str = "") -> str:
-        return self.role_fulfilment.auto_mechanism_from_strategy(target, query=query)
-
     def _canonical_role_for_symbol_uid(self, uid: str) -> str:
         return self.role_fulfilment.canonical_role_for_symbol_uid(uid)
 
@@ -2006,8 +2003,8 @@ class UnifiedRanker:
             return {}
         return catalog if isinstance(catalog, dict) else {}
 
-    def _load_derived_role_map(self) -> dict[str, int]:
-        """Read every Symbol's `derived_role_id` for this workspace."""
+    def _load_derived_primary_role_map(self) -> dict[str, str]:
+        """Read Pass-1 primary roles persisted on Symbol nodes."""
         if not self.role_catalog:
             return {}
         try:
@@ -2015,12 +2012,43 @@ class UnifiedRanker:
                 rows = session.run(
                     """
                     MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
-                    WHERE s.derived_role_id IS NOT NULL
-                    RETURN s.uid AS uid, s.derived_role_id AS cid
+                    WHERE s.derived_primary_role IS NOT NULL
+                      AND s.derived_primary_role <> ''
+                    RETURN s.uid AS uid, s.derived_primary_role AS role
                     """,
                     workspace_id=self.workspace_id,
                 )
-                return {r["uid"]: int(r["cid"]) for r in rows if r["uid"] is not None}
+                return {r["uid"]: str(r["role"]) for r in rows if r.get("uid") and r.get("role")}
+        except Exception:
+            return {}
+
+    def _load_derived_supporting_roles_map(self) -> dict[str, list[str]]:
+        """Read Pass-1 supporting roles persisted on Symbol nodes."""
+        if not self.role_catalog:
+            return {}
+        try:
+            with self.db.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                    WHERE s.derived_supporting_roles_json IS NOT NULL
+                    RETURN s.uid AS uid, s.derived_supporting_roles_json AS payload
+                    """,
+                    workspace_id=self.workspace_id,
+                )
+                result: dict[str, list[str]] = {}
+                for row in rows:
+                    uid = row.get("uid")
+                    payload = row.get("payload")
+                    if not uid or not payload:
+                        continue
+                    try:
+                        parsed = json.loads(payload)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(parsed, list):
+                        result[str(uid)] = [str(item) for item in parsed if item]
+                return result
         except Exception:
             return {}
 
@@ -2057,48 +2085,6 @@ class UnifiedRanker:
                 }
         except Exception:
             return {}
-
-    def _build_cluster_to_role_map(self) -> dict[int, str]:
-        """Pick a single primary canonical role per cluster.
-
-        For every canonical role in the catalog, take its top resolved
-        cluster (`resolve_role_clusters` already preserves archetype
-        preference order). When multiple roles claim the same cluster as
-        their top match, the role with the highest confidence wins;
-        sort is stable so ties break on catalog iteration order.
-        """
-        if not self.role_catalog:
-            return {}
-        from sidecar.indexer.role_clustering import resolve_role_clusters
-
-        cluster_claims: dict[int, list[tuple[str, float]]] = {}
-        for role in self.role_catalog.get("role_to_archetypes") or []:
-            matches = resolve_role_clusters(self.role_catalog, role)
-            if not matches:
-                continue
-            top = matches[0]
-            cluster_claims.setdefault(int(top["cluster_id"]), []).append(
-                (role, float(top["confidence"]))
-            )
-        result: dict[int, str] = {}
-        for cid, claims in cluster_claims.items():
-            claims.sort(key=lambda item: item[1], reverse=True)
-            result[cid] = claims[0][0]
-        return result
-
-    def _build_cluster_role_membership(self) -> dict[int, list[str]]:
-        """Map each cluster id to every role whose resolved cluster set includes it."""
-        if not self.role_catalog:
-            return {}
-        from collections import defaultdict
-
-        from sidecar.indexer.role_clustering import resolve_role_clusters
-
-        membership: dict[int, set[str]] = defaultdict(set)
-        for role in self.role_catalog.get("role_to_archetypes") or {}:
-            for match in resolve_role_clusters(self.role_catalog, role):
-                membership[int(match["cluster_id"])].add(str(role))
-        return {cid: normalize_roles(list(roles)) for cid, roles in membership.items()}
 
     # Neo4j helpers
     # ------------------------------------------------------------------

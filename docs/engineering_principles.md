@@ -34,7 +34,7 @@ a file stem.
   name-token role tests, keyword/name-pattern branches in role inference.
 - **Allowed:** path patterns (`NOISE_PATH_PATTERNS`) **only** for impact
   partitioning (test-surface vs runtime-surface) and for excluding test fixtures
-  from Pass-1 clustering — never to decide a semantic role.
+  from Pass-1 assignment — never to decide a semantic role.
 
 ## P4 — Fix the engine, not the symptom
 When a role/retrieval is wrong, add the **missing structural signal**, not a patch:
@@ -48,16 +48,17 @@ external / unresolved → no edge). If a genuine signal requires dataflow (e.g.
 construction through a reassigned/disjunction local, `v = a or b; v(...)`), **scope
 it out honestly** and record it as a gap — never fake it with a guessing heuristic.
 
-## P6 — Archetypes describe shape; they do not author roles
-Archetype/template detection stays structural. Role **plans** are *adaptive* —
-derived from the roles actually observed around the target
-(`target_role_supply_counts`) — not preset per-framework tables.
+## P6 — Mechanism role plans are adaptive, not preset
+Mechanism **detection** is structural (Pass-1 neighborhood role overlap against
+catalog templates) or explicit preloaded packs — not keyword tables in
+`repository_profile`. Role **plans** for `generic` are adaptive from observed roles
+around the target (`target_role_supply_counts`, workspace `present_roles`) — not
+preset per-framework tables.
 
 ## P7 — Validate empirically, never a-priori
-New role/ranking logic is proven against the **indexed benchmark** (e.g. the
-discriminator-first cascade vs the k-means baseline, `file_recall` deltas), and the
-result — including regressions — is reported honestly. A claim like "L1/L2 beats
-k-means" is only valid with the prototype numbers behind it.
+New role/ranking logic is proven against the **indexed benchmark** (e.g.
+`file_recall` / QA target-symbol checks via `QA/prototype_role_cascade.py`), and
+the result — including regressions — is reported honestly.
 
 ## P8 — Don't special-case for benchmark coverage
 Prefer removing a dead framework-specific branch over preserving it to keep a

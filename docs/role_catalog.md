@@ -9,10 +9,10 @@ sqlalchemy, express, nestjs, pydantic, redux_toolkit, vue, click).
 > **Companion analysis:** [role_signature_findings.md](role_signature_findings.md)
 > records feature-duplication / discriminator collisions in this vocabulary, and
 > [role_clustering_architecture.md](role_clustering_architecture.md) records the
-> decision to move from flat k-means to a discriminator-first L1/L2 pipeline.
+> Pass-1 pipeline (discriminator-first L1/L2; k-means retired).
 
-The signatures are written in the feature vocabulary the Pass-1 clusterer
-already computes per symbol (`_FEATURE_NAMES`), now that derived edges feed it:
+The signatures are written in the feature vocabulary Pass-1 assembles per symbol
+(`SymbolRow` / cascade predicates in `role_cascade.py`), fed by derived edges:
 
 | feature | meaning |
 |---|---|
@@ -340,7 +340,7 @@ A deterministic, side-effect-free transformation. Today mapped onto
 
 ## 10. Shadow elements (graph blind spots)
 
-Symbols that are real in the AST but easy to mis-cluster or lose because their
+Symbols that are real in the AST but easy to mis-assign or lose because their
 *structural* footprint is unusual: a contract with no callers, a value-only
 lexicon, test scaffolding, or an orphan with edges going only one way. Same
 feasibility tiers as §9.
@@ -369,7 +369,7 @@ dropped as a quiet leaf.
 ### 🔴 `domain_lexicon` / `enum` / `magic_value`
 Enums and module-level constants used as *values* in branching — the domain's
 vocabulary, not framework configuration. Today **invisible**: not merely
-mis-clustered.
+mis-assigned.
 - **признаки:** high `import_in`; referenced inside `if/==/match` branches; no
   complex internal structure.
 - **discriminator (separates from `config_surface`):** a value-reference signal.
@@ -377,23 +377,21 @@ mis-clustered.
   lexicon is consumed *as a value* — which currently produces **no edge at all**.
 - **feasibility:** 🔴 two problems compound. (1) There is no `USES_VALUE` edge, so
   value references are unrepresented. (2) A value-only constant has no edge in any
-  family, so `filter_clustering_rows` (drops rows where `structurally_connected`
-  is false — and `import_in` is **not** counted there) removes it before
-  clustering. Needs a `USES_VALUE` edge *and* either folding `import_in` into the
-  connectivity test or a dedicated lexicon pass. Hardest; defer with
-  `pure_transformer`.
+  family, so `filter_clustering_rows` drops it before Pass-1 assignment. Needs a
+  `USES_VALUE` edge *and* either folding `import_in` into the connectivity test or
+  a dedicated lexicon pass. Hardest; defer with `pure_transformer`.
 - **examples:** an `Enum` of order states matched in a `match` statement; a
   module of HTTP status / error-code constants; redux action-type string consts.
 
 ### 🟢 `test_scaffold` / `fixture` / `mock` (already handled by path exclusion)
 Fixtures and mocks have high `call_fan_in` bounded to a test subtree; left in,
-they flood `executor`/`core_runtime` centroids.
+  they flood `executor`/`core_runtime` assignments.
 - **признаки:** path under a test/example/benchmark directory; high `call_fan_in`
   confined to that subtree.
-- **discriminator / handling:** **path-based exclusion at clustering input** —
+- **discriminator / handling:** **path-based exclusion at Pass-1 input** —
   `_query_symbols` filters every `NOISE_PATH_PATTERNS` hit (`/tests/`,
   `/__testfixtures__/`, `/testfixtures/`, `/examples/`, `/benchmarks/`, …) out of
-  the clustering set, so the product taxonomy never sees them. They still get
+  the Pass-1 symbol set, so the product taxonomy never sees them. They still get
   `impact_test_surface` at query time via `infer_supporting_roles`, so impact
   analysis is unaffected.
 - **feasibility:** 🟢 done for in-path scaffolding. 🟡 residual gap: a mock/fixture
@@ -404,17 +402,17 @@ they flood `executor`/`core_runtime` centroids.
 
 ### 🟡 `orphan` / `dead_code` (noise sink)
 Unreachable / obsolete symbols. The fully-isolated case is dropped; the
-"only-outgoing" case is **not**, and it distorts centroids.
+"only-outgoing" case is **not**, and it distorts Pass-1 assignments.
 - **признаки:** zero `call_fan_in`, zero `type_fan_in`, zero `handle_fan_in`,
   zero `depend_fan_in`/`api_fan_in`/`inject_fan_in`; often only *outgoing* calls.
 - **discriminator:** zero in-degree across **all** incoming families. A symbol
   with only outgoing edges still has `effective_call_fan_out > 0`, so
-  `structurally_connected` is true and it competes for a centroid (drifts toward
-  `orchestrator`/`active_entrypoint`: high fan-out, no fan-in).
+  `structurally_connected` is true and it can be mis-assigned as orchestrator-like
+  (high fan-out, no fan-in).
 - **feasibility:** 🟡 the all-zero orphan is already removed by
   `filter_clustering_rows`; the only-outgoing case needs an explicit sink rule
-  ("zero in-degree across every incoming family → route to a dedicated noise
-  cluster instead of clustering normally"). All inputs are already computed — no
+  ("zero in-degree across every incoming family → route to the noise bucket
+  instead of normal L1/L2 assignment"). All inputs are already computed — no
   new edge required, just a routing branch.
 - **examples:** a helper kept after its only caller was deleted; a CLI subcommand
   no longer registered; legacy code reachable from nothing.
@@ -603,10 +601,6 @@ once).
 ## Related analysis
 
 - [role_signature_findings.md](role_signature_findings.md) — duplicate features
-  and discriminator collisions in this catalog (e.g. `handle_fan_out` shared by
-  `registration_step`/`request_router`; the leaf+fan_in blob; features used here
-  but not yet in `_FEATURE_NAMES`), each with a what/how/why + decision.
-- [role_clustering_architecture.md](role_clustering_architecture.md) — why fixed
-  `k=5..8` k-means does not scale across repo composition, and the
-  discriminator-first L1/L2 + presence-gate + multi-label pipeline that replaces
-  it.
+  and discriminator collisions in this catalog, each with a what/how/why + decision.
+- [role_clustering_architecture.md](role_clustering_architecture.md) — Pass-1
+  discriminator-first L1/L2 cascade + presence gate (replaces retired k-means).

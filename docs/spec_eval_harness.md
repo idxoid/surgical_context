@@ -135,7 +135,7 @@ Current local retrieval snapshot after the UnifiedRanker hardening pass:
 | surgical_context | `QA/qa_benchmark.py --repo surgical_context --no-index` when the index is current | **7/7 pass** (May 2026); `surgical_context_q07` (`SidecarClient` ask flow) passes after TS `object_api` indexing + `role_taxonomy` + `Neo4j` `object_api` call-resolution fix; `surgical_context_q01` passes via query-topic recovery for explicit pipeline-stage terms (`ranking`, `PromptContext`) |
 | dathund | `QA/qa_benchmark.py --repo dathund --no-index` when the index is current | **8/8 pass** (May 2026); `dathund_q04` / `dathund_q06` pass after trace recovery mode was broadened to identity/principal resolution and time-authority clock/window flows |
 
-Use `--no-index` only when parser/indexer behavior has not changed. Re-index after changes to import extraction, semantic hints, role clustering, repository profile generation, or graph persistence.
+Use `--no-index` only when parser/indexer behavior has not changed. Re-index after changes to import extraction, semantic hints, Pass-1 role assignment, repository profile generation, or graph persistence.
 
 ### 4.4 Console diagnostics for mechanism-aware runs
 
@@ -187,12 +187,12 @@ When a real-repo question **`warn`s with `missing_roles`** (or the graph is too 
 | Signal | Typical pack fix |
 |---|---|
 | `missing_roles=orchestrator` on a decorator/API target with no graph path to runtime | Backfill `Injector`-class symbols under `path_hint: packages/core/injector` |
-| Registration-flow questions miss `factory_surface` / `runtime_surface` | Copy/adapt `auto:registration_flow` backfill (Flask template) |
-| Benchmark `mechanism:` in YAML does not match ranker’s auto-detected mechanism | Pack can define the same mechanism id + roles; still prefer generic recovery first |
+| Registration-flow questions miss `factory_surface` / `runtime_surface` | Copy/adapt `flask_registration.yaml` backfill template |
+| Benchmark `mechanism:` in YAML does not match ranker's structural detection | Pack defines mechanism id + roles; or fix Pass-1 / graph signals |
 
 **Workflow**
 
-1. Copy a bundled template or author a new YAML (mechanism ids must match question `mechanism:` or `auto:*` strategy archetypes the ranker selects).
+1. Copy a bundled template or author a new YAML (mechanism ids must match question `mechanism:` labels used in benchmark YAML).
 2. Export path before **re-index** (pack is merged at Pass 1 persist, not at `--no-index` time):
 
    ```bash
@@ -215,7 +215,7 @@ When a real-repo question **`warn`s with `missing_roles`** (or the graph is too 
 
 **What it does not replace**
 
-- Pass 1 role clustering (`derived_role_id`, `role_to_archetypes`) — primary role supply.
+- Pass 1 role assignment (`derived_primary_role`, `present_roles` in `role_catalog_json`) — primary role supply.
 - Generic structural recovery in `ranker/recovery.py` — try widening trace scope before adding pack literals.
 - Question-pack labels (`required_roles`, `expected_files`) — packs only help the ranker **fill** roles; evaluation still uses YAML expectations.
 
@@ -261,7 +261,7 @@ Alias during harness-only workflows: `python QA/suggest_mechanism_pack.py --repo
 **Non-goals for v1**
 
 - No automatic commit or CI wiring.
-- No replacement for Pass 1 clustering or generic recovery — only accelerates §4.6.
+- No replacement for Pass 1 role assignment or generic recovery — only accelerates §4.6.
 - No framework literals in core ranker; generated hints stay in YAML under `mechanism_packs/generated/`.
 
 **Success criterion:** running suggest-pack on a repo with known `missing_roles` warns produces a draft that, after ≤5 minutes of human edit + re-index, clears those warns on `--no-index` without changing `qa_benchmark.py` gates.

@@ -5,11 +5,8 @@ from __future__ import annotations
 import os
 import time
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
-
-from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.parser.registry import REGISTRY
 
 PROFILE_SCHEMA_VERSION = 1
@@ -40,54 +37,6 @@ _SKIP_DIRS = {
     "target",
     ".gradle",
 }
-
-_ARCHETYPE_SIGNAL_PATTERNS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    ("decorator_usage", ("@", "decorator"), ("decorator_declares_handler",)),
-    (
-        "registry_usage",
-        ("registry", "register", "router", "route", "routes"),
-        ("route_registration",),
-    ),
-    (
-        "middleware_usage",
-        ("middleware", "pipeline", "handler chain", "next("),
-        ("middleware_pipeline", "request_response_lifecycle"),
-    ),
-    (
-        "dependency_resolution_usage",
-        ("dependency", "dependencies", "inject", "provider", "container"),
-        ("dependency_injection",),
-    ),
-    (
-        "declarative_modeling",
-        ("declarative", "model", "field", "schema", "relationship", "mapper", "table"),
-        ("declarative_mapping", "orm_mapping", "schema_generation"),
-    ),
-    (
-        "validation_or_serialization",
-        ("validate", "validation", "validator", "serialize", "serializer"),
-        ("validation_pipeline", "serialization_pipeline"),
-    ),
-    (
-        "query_builder_usage",
-        ("query", "select", "where", "compile", "session"),
-        ("query_builder",),
-    ),
-    (
-        "factory_generation_usage",
-        ("factory", "builder", "generated", "codegen"),
-        ("factory_api_generation",),
-    ),
-)
-
-_DYNAMIC_SURFACE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("decorators", ("@", "decorator")),
-    ("registries", ("registry", "register", "router", "route", "routes")),
-    ("metaprogramming", ("metaclass", "__getattr__", "__init_subclass__", "DeclarativeMeta")),
-    ("templates", ("<template", "template", "render(")),
-    ("generated_api", ("codegen", "generated")),
-    ("macros_or_c", ("#define", "typedef", "struct ")),
-)
 
 _EXTENSION_LANGUAGE_HINTS: Mapping[str, str] = {
     ".c": "c",
@@ -137,128 +86,6 @@ _NEUTRAL_NON_CODE_EXTENSIONS = {
     ".map",
     "<no_ext>",
 }
-
-_ARCHETYPE_ROLE_PLANS: Mapping[str, tuple[str, ...]] = {
-    "route_registration": (
-        "api_surface",
-        "factory_surface",
-        "representation_surface",
-        "runtime_surface",
-    ),
-    "request_response_lifecycle": (
-        "api_surface",
-        "composition_surface",
-        "runtime_surface",
-        "executor",
-    ),
-    "dependency_injection": (
-        "api_surface",
-        "config_surface",
-        "representation_surface",
-        "orchestrator",
-        "runtime_surface",
-    ),
-    "middleware_pipeline": (
-        "api_surface",
-        "factory_surface",
-        "composition_surface",
-        "runtime_surface",
-    ),
-    "middleware_hooks": ("api_surface", "factory_surface", "orchestrator", "runtime_surface"),
-    "decorator_declares_handler": (
-        "api_surface",
-        "factory_surface",
-        "orchestrator",
-        "runtime_surface",
-    ),
-    "module_composition": (
-        "api_surface",
-        "composition_surface",
-        "integration_surface",
-        "runtime_surface",
-    ),
-    "factory_api_generation": (
-        "api_surface",
-        "factory_surface",
-        "representation_surface",
-        "integration_surface",
-    ),
-    "action_reducer_binding": (
-        "api_surface",
-        "factory_surface",
-        "composition_surface",
-        "runtime_surface",
-    ),
-    "validation_pipeline": ("api_surface", "validator_handle", "core_runtime", "runtime_surface"),
-    "serialization_pipeline": (
-        "api_surface",
-        "serializer_handle",
-        "core_runtime",
-        "runtime_surface",
-    ),
-    "schema_generation": ("api_surface", "schema_builder", "representation_surface", "factory_surface"),
-    "orm_mapping": ("api_surface", "factory_surface", "representation_surface", "core_runtime"),
-    "declarative_mapping": (
-        "api_surface",
-        "factory_surface",
-        "representation_surface",
-        "core_runtime",
-    ),
-    "query_builder": ("api_surface", "composition_surface", "executor", "runtime_surface"),
-    "session_identity_map": (
-        "api_surface",
-        "representation_surface",
-        "runtime_surface",
-        "executor",
-    ),
-    "migration_system": ("api_surface", "factory_surface", "executor", "runtime_surface"),
-    "request_context": ("api_surface", "binding_surface", "runtime_surface"),
-    "request_body_resolution": (
-        "runtime_surface",
-        "schema_builder",
-        "orchestrator",
-        "binding_surface",
-    ),
-    "component_lifecycle": ("api_surface", "factory_surface", "runtime_surface"),
-    "reactivity_graph": (
-        "api_surface",
-        "representation_surface",
-        "orchestrator",
-        "runtime_surface",
-    ),
-    "template_compilation": ("api_surface", "orchestrator", "representation_surface", "executor"),
-    "c_runtime_dispatch": ("api_surface", "executor", "runtime_surface"),
-    "query_planner": ("api_surface", "orchestrator", "representation_surface", "executor"),
-    "storage_engine": ("api_surface", "core_runtime", "runtime_surface"),
-}
-
-_ARCHETYPE_STRATEGIES: Mapping[str, str] = {
-    "route_registration": "registration_flow",
-    "request_response_lifecycle": "runtime_flow_trace",
-    "dependency_injection": "dependency_resolution_trace",
-    "middleware_pipeline": "middleware_pipeline_trace",
-    "middleware_hooks": "lifecycle_hook_trace",
-    "decorator_declares_handler": "decorator_metadata_trace",
-    "module_composition": "module_composition_trace",
-    "factory_api_generation": "factory_generation_trace",
-    "action_reducer_binding": "factory_generation_trace",
-    "validation_pipeline": "validation_flow_trace",
-    "serialization_pipeline": "serialization_flow_trace",
-    "schema_generation": "schema_generation_trace",
-    "orm_mapping": "declarative_mapping_trace",
-    "declarative_mapping": "declarative_mapping_trace",
-    "query_builder": "builder_execution_trace",
-    "session_identity_map": "runtime_state_trace",
-    "migration_system": "operation_execution_trace",
-    "request_context": "context_binding_trace",
-    "component_lifecycle": "lifecycle_trace",
-    "reactivity_graph": "reactive_dependency_trace",
-    "template_compilation": "compiler_pipeline_trace",
-    "c_runtime_dispatch": "unsupported_static_surface_fallback",
-    "query_planner": "unsupported_static_surface_fallback",
-    "storage_engine": "unsupported_static_surface_fallback",
-}
-
 
 @dataclass(frozen=True)
 class RepositoryProfileInputs:
@@ -311,12 +138,8 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
         inputs.calls_indexed / max(1, inputs.symbols_indexed) if inputs.symbols_indexed else 0.0
     )
 
-    sample = "\n".join(inputs.sample_texts or [])
-    path_blob = "\n".join(_relative_paths(inputs.project_path, inputs.collected_files[:500]))
-    signal_blob = f"{path_blob}\n{sample}"
-    archetype_signals = _detect_archetype_signals(signal_blob)
-    dynamic_surfaces = _detect_dynamic_surfaces(signal_blob, unsupported_extensions)
-    strategy_profile = _build_strategy_profile(archetype_signals, dynamic_surfaces)
+    dynamic_surfaces = _detect_dynamic_surfaces(unsupported_extensions)
+    strategy_profile = _build_strategy_profile(dynamic_surfaces)
 
     capability_flags = _capability_flags(
         supported_ratio=supported_ratio,
@@ -334,7 +157,6 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
         supported_ratio=supported_ratio,
         parse_coverage=parse_coverage,
         symbols_indexed=inputs.symbols_indexed,
-        archetype_signals=archetype_signals,
         unsupported_languages=unsupported_languages,
     )
     reasoning_contract = _reasoning_contract(capability_flags, readiness, dynamic_surfaces)
@@ -372,9 +194,7 @@ def build_repository_profile(inputs: RepositoryProfileInputs) -> dict:
         },
         "mechanism_profile": {
             "framework_signals": [],
-            "archetype_signals": archetype_signals,
             "dynamic_surfaces": dynamic_surfaces,
-            "archetypes": strategy_profile["mechanism_archetypes"],
         },
         "strategy_profile": strategy_profile,
         "capabilities": capability_flags,
@@ -422,14 +242,11 @@ def build_empty_repository_profile(
         },
         "mechanism_profile": {
             "framework_signals": [],
-            "archetype_signals": [],
             "dynamic_surfaces": [],
-            "archetypes": [],
         },
         "strategy_profile": {
             "selected_strategy": "unprofiled",
             "role_plan": [],
-            "mechanism_archetypes": [],
             "fallbacks": ["direct_symbol"],
         },
         "capabilities": {
@@ -454,18 +271,13 @@ def summarize_repository_profile(profile: Mapping) -> str:
     top_langs = (
         ", ".join(f"{name}:{count}" for name, count in list(supported.items())[:3]) or "none"
     )
-    mechanism_profile = profile.get("mechanism_profile", {})
-    signals = mechanism_profile.get("archetype_signals") or mechanism_profile.get(
-        "framework_signals", []
-    )
-    top_mechanisms = ", ".join(item.get("name", "") for item in signals[:3]) or "none"
     capabilities = profile.get("capabilities", {})
     strategy = (profile.get("strategy_profile") or {}).get("selected_strategy", "unknown")
     return (
         f"{profile.get('retrieval_readiness', 'unknown')} "
         f"(indexability={profile.get('indexability', 'unknown')}, "
-        f"langs={top_langs}, archetype_signals={top_mechanisms}, "
-        f"strategy={strategy}, impact={capabilities.get('impact_analysis', 'unknown')})"
+        f"langs={top_langs}, strategy={strategy}, "
+        f"impact={capabilities.get('impact_analysis', 'unknown')})"
     )
 
 
@@ -508,47 +320,13 @@ def _unsupported_language_counts(unsupported_extensions: Counter) -> Counter:
     return counts
 
 
-def _relative_paths(project_path: str, paths: Iterable[str]) -> list[str]:
-    rels = []
-    for path in paths:
-        try:
-            rels.append(os.path.relpath(path, project_path))
-        except ValueError:
-            rels.append(path)
-    return rels
-
-
 def _top_counts(counts: Counter, limit: int = 12) -> dict[str, int]:
     return dict(counts.most_common(limit))
 
 
-def _detect_archetype_signals(blob: str) -> list[dict]:
-    lowered = blob.lower()
-    signals = []
-    for name, markers, mechanisms in _ARCHETYPE_SIGNAL_PATTERNS:
-        hits = [marker for marker in markers if marker.lower() in lowered]
-        if not hits:
-            continue
-        confidence = min(0.95, 0.45 + 0.12 * len(hits))
-        signals.append(
-            {
-                "name": name,
-                "family": "generic_archetype",
-                "confidence": round(confidence, 3),
-                "evidence": hits[:5],
-                "mechanisms": list(mechanisms),
-            }
-        )
-    return sorted(signals, key=lambda item: item["confidence"], reverse=True)
-
-
-def _detect_dynamic_surfaces(blob: str, unsupported_extensions: Counter) -> list[str]:
-    lowered = blob.lower()
-    surfaces = {
-        name
-        for name, markers in _DYNAMIC_SURFACE_PATTERNS
-        if any(marker.lower() in lowered for marker in markers)
-    }
+def _detect_dynamic_surfaces(unsupported_extensions: Counter) -> list[str]:
+    """Extension-only hints for unsupported static surfaces (no source-text keyword scan)."""
+    surfaces: set[str] = set()
     if any(ext in unsupported_extensions for ext in (".vue", ".svelte")):
         surfaces.add("templates")
     if any(ext in unsupported_extensions for ext in (".c", ".h", ".cc", ".cpp", ".hpp")):
@@ -556,92 +334,15 @@ def _detect_dynamic_surfaces(blob: str, unsupported_extensions: Counter) -> list
     return sorted(surfaces)
 
 
-def _build_strategy_profile(
-    archetype_signals: list[dict],
-    dynamic_surfaces: list[str],
-) -> dict:
-    archetype_scores: dict[str, dict] = {}
-    for signal in archetype_signals:
-        signal_confidence = float(signal.get("confidence") or 0.0)
-        for mechanism in signal.get("mechanisms") or []:
-            _merge_archetype(
-                archetype_scores,
-                mechanism,
-                confidence=signal_confidence,
-                evidence=[signal.get("name", ""), *(signal.get("evidence") or [])],
-            )
-
-    surface_to_archetype = {
-        "decorators": "decorator_declares_handler",
-        "registries": "route_registration",
-        "metaprogramming": "declarative_mapping",
-        "templates": "template_compilation",
-        "generated_api": "factory_api_generation",
-        "macros_or_c": "c_runtime_dispatch",
-    }
-    for surface in dynamic_surfaces:
-        archetype = surface_to_archetype.get(surface)
-        if archetype:
-            _merge_archetype(
-                archetype_scores,
-                archetype,
-                confidence=0.55,
-                evidence=[surface],
-            )
-
-    archetypes = sorted(
-        archetype_scores.values(),
-        key=lambda item: item["confidence"],
-        reverse=True,
-    )
-    role_plan: list[str] = []
-    for archetype_info in archetypes[:4]:
-        role_plan.extend(cast(list[str], archetype_info["role_plan"]))
-    role_plan = normalize_roles([*role_plan, "docs_or_concept"])
-    selected_strategy = (
-        cast(str, archetypes[0]["strategy"]) if archetypes else "generic_symbol_context"
-    )
+def _build_strategy_profile(dynamic_surfaces: list[str]) -> dict:
     fallbacks = ["direct_symbol", "semantic_docs"]
-    if any(item["type"] in {"route_registration", "factory_api_generation"} for item in archetypes):
-        fallbacks.append("concept_to_symbol")
-    if any(
-        item["type"] in {"c_runtime_dispatch", "query_planner", "storage_engine"}
-        for item in archetypes
-    ):
+    if "macros_or_c" in dynamic_surfaces:
         fallbacks.append("docs_files_fallback")
-
     return {
-        "selected_strategy": selected_strategy,
-        "role_plan": role_plan,
-        "mechanism_archetypes": archetypes,
+        "selected_strategy": "generic_symbol_context",
+        "role_plan": ["docs_or_concept"],
         "fallbacks": fallbacks,
     }
-
-
-def _merge_archetype(
-    archetypes: dict[str, dict],
-    archetype: str,
-    *,
-    confidence: float,
-    evidence: list[str],
-) -> None:
-    role_plan = normalize_roles(_ARCHETYPE_ROLE_PLANS.get(archetype, ()))
-    if not role_plan:
-        return
-    current = archetypes.get(archetype)
-    if current is None:
-        archetypes[archetype] = {
-            "type": archetype,
-            "strategy": _ARCHETYPE_STRATEGIES.get(archetype, "mechanism_trace"),
-            "confidence": round(confidence, 3),
-            "role_plan": role_plan,
-            "evidence": [item for item in evidence if item][:6],
-        }
-        return
-    current["confidence"] = round(max(float(current["confidence"]), confidence), 3)
-    current["role_plan"] = normalize_roles([*current["role_plan"], *role_plan])
-    merged_evidence = [*current["evidence"], *[item for item in evidence if item]]
-    current["evidence"] = list(dict.fromkeys(merged_evidence))[:6]
 
 
 def _capability_flags(
@@ -677,18 +378,14 @@ def _capability_flags(
     else:
         impact = "shallow_partial"
 
-    decorator_semantics = "medium" if "decorators" in dynamic_surfaces else "low"
-    runtime_registry = "medium" if "registries" in dynamic_surfaces else "low"
     template_semantics = "low" if "templates" in dynamic_surfaces else "none"
-    macro_semantics = "none" if "macros_or_c" in dynamic_surfaces else "unknown"
+    macro_semantics = "low" if "macros_or_c" in dynamic_surfaces else "none"
 
     return {
         "code_navigation": code_navigation,
         "static_call_reasoning": static_calls,
         "import_reasoning": imports,
         "inheritance_reasoning": inheritance,
-        "decorator_semantics": decorator_semantics,
-        "runtime_registry_semantics": runtime_registry,
         "template_semantics": template_semantics,
         "macro_semantics": macro_semantics,
         "doc_code_bridge": doc_code_bridge,
@@ -701,7 +398,6 @@ def _retrieval_readiness(
     supported_ratio: float,
     parse_coverage: float,
     symbols_indexed: int,
-    archetype_signals: list[dict],
     unsupported_languages: Counter,
 ) -> dict:
     warnings: list[str] = []
@@ -717,8 +413,6 @@ def _retrieval_readiness(
         warnings.append("large_unsupported_language_surface")
     if parse_coverage < 0.5:
         warnings.append("low_parse_coverage")
-    if archetype_signals:
-        warnings.append("archetype_mechanisms_need_validation")
 
     if supported_ratio >= 0.75 and parse_coverage >= 0.75:
         indexability = "high"
@@ -727,9 +421,7 @@ def _retrieval_readiness(
     else:
         indexability = "low"
 
-    if indexability == "high" and archetype_signals:
-        retrieval = "modeled_or_modelable"
-    elif indexability in {"high", "medium"}:
+    if indexability in {"high", "medium"}:
         retrieval = "partial"
     else:
         retrieval = "limited"

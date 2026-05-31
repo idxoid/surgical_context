@@ -1,39 +1,32 @@
-"""Pass 1: derive a per-repository role taxonomy from call-graph topology.
+"""Pass 1: derive per-repository roles from call-graph topology via L1/L2 cascade.
 
-This module is the universal replacement for the hand-curated role naming
-that currently lives in three places: ``mechanism_registry``,
-``repository_profile`` generic archetype plans, and ``unified_ranker._infer_role``.
-A symbol's role comes from its position in the call graph — fan-in/out, depth
-from public exports, cross-package edges, doc-anchor density, kind — never from
-framework names or benchmark fixture strings.
+Replaces flat k-means clustering with discriminator-first assignment
+(``sidecar.indexer.role_cascade``). Output:
 
-Output:
-- per-symbol cluster id
-- a workspace-level ``RoleTaxonomy`` describing each cluster (centroid,
-  member count, structural signature)
-- a workspace-level ``RoleCatalog`` mapping unstable cluster ids to portable
-  structural archetypes such as active entrypoint and runtime handle
-
-Consumers (mechanism mining, ranker, repository_profile) can read the catalog
-without hard-coding framework families. The current pass persists taxonomy/catalog
-metadata but does not yet cut every query-time fallback over to these derived roles.
+- per-symbol primary + supporting roles (persisted on Symbol nodes)
+- workspace ``RoleCatalog`` with presence-gated ``present_roles``
+- workspace ``RoleAssignmentSummary`` metadata
 """
 
 from __future__ import annotations
 
 import json
-import math
 import os
-import random
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sidecar.context.mechanism_registry import merge_preloaded_mechanisms_into_role_catalog
 from sidecar.context.ranker.signal_constants import NOISE_PATH_PATTERNS
+from sidecar.indexer.role_cascade import (
+    SymbolRoleAssignment,
+    assign_all,
+    detect_present_roles,
+    role_catalog_roles,
+)
 
-ROLE_TAXONOMY_SCHEMA_VERSION = 2
-ROLE_CATALOG_SCHEMA_VERSION = 2  # v2: mechanism_required_roles + mechanism_role_backfill in JSON
+ROLE_TAXONOMY_SCHEMA_VERSION = 3
+ROLE_CATALOG_SCHEMA_VERSION = 3
 
 CALL_REL_TYPES = (
     "CALLS",
@@ -53,6 +46,8 @@ STRUCTURAL_REL_TYPES = (
     "USES_TYPE",
     "INJECTS",
     "HANDLES",
+    "DECORATED_BY",
+    "INSTANTIATES",
 )
 
 DEFAULT_EDGE_CONFIDENCE: dict[str, float] = {
@@ -69,6 +64,8 @@ DEFAULT_EDGE_CONFIDENCE: dict[str, float] = {
     "INJECTS": 0.85,
     "HANDLES": 1.0,
     "USES_TYPE": 1.0,
+    "DECORATED_BY": 1.0,
+    "INSTANTIATES": 1.0,
 }
 
 USES_TYPE_KIND_WEIGHT: dict[str, float] = {
@@ -78,40 +75,12 @@ USES_TYPE_KIND_WEIGHT: dict[str, float] = {
     "isinstance": 0.5,
 }
 
-
-_FEATURE_NAMES: tuple[str, ...] = (
-    "log_call_fan_in",
-    "log_call_fan_out",
-    "call_fan_in_ratio",
-    "call_leaf_score",
-    "log_type_fan_in",
-    "log_type_fan_out",
-    "log_api_fan_in",
-    "log_api_fan_out",
-    "log_inject_fan_in",
-    "log_depend_fan_in",
-    "log_handle_fan_in",
-    "depth_from_public",
-    "cross_package_call_in_ratio",
-    "cross_package_call_out_ratio",
-    "log_import_in",
-    "has_documentation",
-    "doc_anchor_density",
-    "log_doc_definition_weight",
-    "log_doc_reference_weight",
-    "log_doc_example_weight",
-    "is_class",
-    "is_function",
-)
+_EPS = 0.05
 
 
 @dataclass(frozen=True)
 class SymbolRow:
-    """Structural facts about one symbol, gathered from Neo4j.
-
-    Decoupled from the database client so clustering stays pure and the
-    same algorithm can run against synthetic graphs in unit tests.
-    """
+    """Structural facts about one symbol for cascade predicates."""
 
     uid: str
     kind: str
@@ -129,26 +98,69 @@ class SymbolRow:
     call_fan_out: float = 0.0
     type_fan_in: float = 0.0
     type_fan_out: float = 0.0
+    type_fan_in_param: float = 0.0
+    type_fan_in_isinstance: float = 0.0
+    type_fan_in_return: float = 0.0
+    type_fan_out_return: float = 0.0
     api_fan_in: float = 0.0
     api_fan_out: float = 0.0
     inject_fan_in: float = 0.0
     depend_fan_in: float = 0.0
     depend_fan_out: float = 0.0
     handle_fan_in: float = 0.0
+    handle_fan_out: float = 0.0
+    decorated_in: float = 0.0
+    decorated_out: float = 0.0
+    construct_fan_out: float = 0.0
+    reexport_in: int = 0
+    is_proxy_binding: bool = False
 
-    def effective_call_fan_in(self) -> float:
-        return self.call_fan_in if self.call_fan_in > 0.0 else float(self.fan_in)
+    @property
+    def cross_package_call_in(self) -> float:
+        return float(self.cross_package_in)
 
-    def effective_call_fan_out(self) -> float:
-        return self.call_fan_out if self.call_fan_out > 0.0 else float(self.fan_out)
+    @property
+    def cross_package_call_out(self) -> float:
+        return float(self.cross_package_out)
+
+    @property
+    def is_class(self) -> bool:
+        return self.kind in {"class", "interface"}
+
+    @property
+    def is_function(self) -> bool:
+        return self.kind in {"function", "method"}
+
+    @property
+    def has_documentation(self) -> bool:
+        return self.doc_anchor_count > 0 or self.doc_definition_weight > 0
+
+    @property
+    def call_leaf(self) -> bool:
+        return self.call_fan_out <= _EPS
+
+    @property
+    def zero_in_degree(self) -> bool:
+        return all(
+            v <= _EPS
+            for v in (
+                self.call_fan_in,
+                self.type_fan_in,
+                self.api_fan_in,
+                self.inject_fan_in,
+                self.depend_fan_in,
+                self.handle_fan_in,
+                self.decorated_in,
+            )
+        )
 
     @property
     def structurally_connected(self) -> bool:
         return any(
-            v > 0.0
+            v > _EPS
             for v in (
-                self.effective_call_fan_in(),
-                self.effective_call_fan_out(),
+                self.call_fan_in,
+                self.call_fan_out,
                 self.type_fan_in,
                 self.type_fan_out,
                 self.api_fan_in,
@@ -157,157 +169,50 @@ class SymbolRow:
                 self.depend_fan_in,
                 self.depend_fan_out,
                 self.handle_fan_in,
+                self.handle_fan_out,
+                self.decorated_in,
+                self.decorated_out,
+                self.construct_fan_out,
             )
         )
 
+    def effective_call_fan_in(self) -> float:
+        return self.call_fan_in if self.call_fan_in > 0.0 else float(self.fan_in)
 
-@dataclass(frozen=True)
-class RoleCluster:
-    cluster_id: int
-    centroid: tuple[float, ...]
-    member_count: int
-    signature: tuple[str, ...]
-
-    def to_dict(self) -> dict:
-        return {
-            "cluster_id": self.cluster_id,
-            "centroid": [round(v, 4) for v in self.centroid],
-            "member_count": self.member_count,
-            "signature": list(self.signature),
-        }
+    def effective_call_fan_out(self) -> float:
+        return self.call_fan_out if self.call_fan_out > 0.0 else float(self.fan_out)
 
 
 @dataclass(frozen=True)
-class RoleTaxonomy:
-    feature_names: tuple[str, ...]
-    clusters: tuple[RoleCluster, ...]
-    silhouette: float
-    chosen_k: int
+class RoleAssignmentSummary:
+    method: str
     sample_size: int
+    filtered_sample_size: int
+    present_roles: dict[str, int]
+    l1_distribution: dict[str, int]
+    schema_version: int = ROLE_TAXONOMY_SCHEMA_VERSION
 
     def to_dict(self) -> dict:
         return {
-            "feature_names": list(self.feature_names),
-            "clusters": [c.to_dict() for c in self.clusters],
-            "silhouette": round(self.silhouette, 4),
-            "chosen_k": self.chosen_k,
+            "schema_version": self.schema_version,
+            "method": self.method,
             "sample_size": self.sample_size,
-        }
-
-
-@dataclass(frozen=True)
-class RoleArchetypeMatch:
-    archetype: str
-    cluster_id: int
-    confidence: float
-    evidence: tuple[str, ...]
-
-    def to_dict(self) -> dict:
-        return {
-            "archetype": self.archetype,
-            "cluster_id": self.cluster_id,
-            "confidence": round(self.confidence, 4),
-            "evidence": list(self.evidence),
+            "filtered_sample_size": self.filtered_sample_size,
+            "present_roles": dict(self.present_roles),
+            "l1_distribution": dict(self.l1_distribution),
         }
 
 
 @dataclass(frozen=True)
 class RoleCatalog:
-    """Repository-local mapping from structural clusters to portable role shapes."""
-
-    archetypes: dict[str, tuple[RoleArchetypeMatch, ...]]
-    role_to_archetypes: dict[str, tuple[str, ...]]
+    present_roles: dict[str, int]
     schema_version: int = ROLE_CATALOG_SCHEMA_VERSION
 
     def to_dict(self) -> dict:
         return {
             "schema_version": self.schema_version,
-            "archetypes": {
-                name: [match.to_dict() for match in matches]
-                for name, matches in sorted(self.archetypes.items())
-            },
-            "role_to_archetypes": {
-                role: list(archetypes)
-                for role, archetypes in sorted(self.role_to_archetypes.items())
-            },
+            "present_roles": dict(self.present_roles),
         }
-
-
-_ROLE_TO_ARCHETYPES: dict[str, tuple[str, ...]] = {
-    "api_surface": ("passive_api_surface", "active_entrypoint"),
-    "factory_surface": ("active_entrypoint", "orchestrator"),
-    "config_surface": ("config_surface", "passive_api_surface"),
-    "representation_surface": ("representation_surface", "passive_api_surface"),
-    "runtime_surface": ("active_entrypoint", "runtime_handle", "executor"),
-    "executor": ("executor", "runtime_handle"),
-    "orchestrator": ("orchestrator", "active_entrypoint"),
-    "schema_builder": ("orchestrator", "runtime_handle"),
-    "binding_surface": ("active_entrypoint", "orchestrator"),
-    "composition_surface": ("orchestrator", "active_entrypoint"),
-    "integration_surface": ("orchestrator", "active_entrypoint"),
-    "core_runtime": ("runtime_handle", "executor"),
-    "validator_handle": ("runtime_handle",),
-    "serializer_handle": ("runtime_handle",),
-    "compat_bridge": ("passive_api_surface", "representation_surface"),
-    "error_surface": ("representation_surface", "runtime_handle"),
-    "impact_runtime": ("runtime_handle", "executor", "orchestrator"),
-    "impact_public_api": ("passive_api_surface", "active_entrypoint"),
-    "impact_test_surface": ("executor", "passive_api_surface"),
-    "docs_or_concept": ("passive_api_surface",),
-    "supporting_surface": ("executor", "representation_surface"),
-}
-
-
-_ARCHETYPE_TEMPLATES: dict[str, dict[str, float]] = {
-    "active_entrypoint": {
-        "log_call_fan_out": 1.0,
-        "call_leaf_score": -1.0,
-        "depth_from_public": -0.9,
-        "is_function": 0.4,
-    },
-    "passive_api_surface": {
-        "log_doc_definition_weight": 1.0,
-        "log_doc_reference_weight": 0.7,
-        "log_doc_example_weight": -0.4,
-        "log_call_fan_in": 0.4,
-        "has_documentation": 0.5,
-    },
-    "orchestrator": {
-        "log_call_fan_out": 1.0,
-        "call_leaf_score": -1.0,
-        "cross_package_call_out_ratio": 0.6,
-        "call_fan_in_ratio": -0.3,
-    },
-    "runtime_handle": {
-        "log_call_fan_in": 1.0,
-        "call_fan_in_ratio": 0.8,
-        "cross_package_call_in_ratio": 0.8,
-        "call_leaf_score": 0.3,
-    },
-    "representation_surface": {
-        "is_class": 1.0,
-        "log_type_fan_in": 1.0,
-        "call_leaf_score": 0.5,
-        "depth_from_public": 0.4,
-        "is_function": -0.7,
-        "log_call_fan_in": -0.3,
-    },
-    "executor": {
-        "call_leaf_score": 1.0,
-        "log_call_fan_in": 1.0,
-        "is_function": 0.6,
-        "depth_from_public": 0.3,
-        "log_type_fan_in": -0.6,
-        "is_class": -0.5,
-        "has_documentation": -0.3,
-    },
-    "config_surface": {
-        "log_doc_definition_weight": 0.9,
-        "log_doc_reference_weight": 0.6,
-        "call_fan_in_ratio": 0.5,
-        "call_leaf_score": 0.3,
-    },
-}
 
 
 def filter_clustering_rows(rows: Sequence[SymbolRow]) -> list[SymbolRow]:
@@ -315,390 +220,30 @@ def filter_clustering_rows(rows: Sequence[SymbolRow]) -> list[SymbolRow]:
     return [row for row in rows if row.structurally_connected]
 
 
-def cluster_symbols(
+def assign_role_taxonomy(
     rows: Sequence[SymbolRow],
     *,
-    k_min: int = 5,
-    k_max: int = 8,
-    max_iter: int = 50,
-    seed: int = 0,
-    max_silhouette_samples: int = 800,
-) -> tuple[RoleTaxonomy, dict[str, int]]:
-    """Cluster symbols by structural features.
-
-    Returns ``(taxonomy, uid_to_cluster_id)``. For inputs smaller than
-    ``k_min`` the result is a single trivial cluster — the silhouette
-    metric is meaningless at that scale and a real role taxonomy needs
-    enough symbols to differentiate.
-    """
-    if not rows:
-        return _empty_taxonomy(), {}
-
-    feature_vectors = [_features_for(row) for row in rows]
-    standardized = _standardize(feature_vectors)
-
-    if len(rows) < k_min:
-        return _single_cluster_taxonomy(rows, standardized), {row.uid: 0 for row in rows}
-
-    rng = random.Random(seed)
-    best_k = k_min
-    best_score = -math.inf
-    best_assignments: list[int] = []
-    best_centroids: list[list[float]] = []
-
-    for k in range(k_min, k_max + 1):
-        if k > len(rows):
-            break
-        centroids, assignments = _kmeans(standardized, k, max_iter=max_iter, rng=rng)
-        score = _silhouette_score(
-            standardized,
-            assignments,
-            k,
-            max_samples=max_silhouette_samples,
-            seed=seed + k,
-        )
-        if score > best_score:
-            best_score = score
-            best_k = k
-            best_assignments = assignments
-            best_centroids = centroids
-
-    if not best_assignments:
-        return _single_cluster_taxonomy(rows, standardized), {row.uid: 0 for row in rows}
-
-    feature_means = _column_means(standardized)
-    feature_stds = _column_stds(standardized, feature_means)
-    member_counts = [0] * best_k
-    for cid in best_assignments:
-        member_counts[cid] += 1
-
-    clusters = tuple(
-        RoleCluster(
-            cluster_id=cid,
-            centroid=tuple(best_centroids[cid]),
-            member_count=member_counts[cid],
-            signature=_signature_for(best_centroids[cid], feature_means, feature_stds),
-        )
-        for cid in range(best_k)
-    )
-
-    taxonomy = RoleTaxonomy(
-        feature_names=_FEATURE_NAMES,
-        clusters=clusters,
-        silhouette=best_score if best_score > -math.inf else 0.0,
-        chosen_k=best_k,
+    min_support: int | None = None,
+) -> tuple[RoleAssignmentSummary, dict[str, SymbolRoleAssignment], dict[str, int]]:
+    """Run discriminator-first Pass 1 on structural rows."""
+    assign_rows = filter_clustering_rows(rows)
+    assignments = assign_all(assign_rows)
+    kwargs = {} if min_support is None else {"min_support": min_support}
+    present = detect_present_roles(assignments, **kwargs)
+    l1_counts = Counter(asn.l1 for asn in assignments.values())
+    summary = RoleAssignmentSummary(
+        method="discriminator_cascade",
         sample_size=len(rows),
+        filtered_sample_size=len(assign_rows),
+        present_roles=present,
+        l1_distribution=dict(sorted(l1_counts.items())),
     )
-    uid_to_cluster = {row.uid: cid for row, cid in zip(rows, best_assignments, strict=True)}
-    return taxonomy, uid_to_cluster
+    return summary, assignments, present
 
 
-def build_role_catalog(taxonomy: RoleTaxonomy) -> RoleCatalog:
-    """Auto-resolve structural clusters into portable role archetypes.
-
-    Cluster ids are local to a re-index. The durable layer is this confidence
-    mapping from archetype names to clusters by centroid shape.
-    """
-    archetypes: dict[str, tuple[RoleArchetypeMatch, ...]] = {}
-    for archetype, template in _ARCHETYPE_TEMPLATES.items():
-        scored: list[RoleArchetypeMatch] = []
-        for cluster in taxonomy.clusters:
-            confidence, evidence = _score_cluster_for_archetype(
-                taxonomy.feature_names,
-                cluster,
-                template,
-            )
-            if confidence >= 0.35:
-                scored.append(
-                    RoleArchetypeMatch(
-                        archetype=archetype,
-                        cluster_id=cluster.cluster_id,
-                        confidence=confidence,
-                        evidence=evidence,
-                    )
-                )
-        if not scored and taxonomy.clusters:
-            cluster = taxonomy.clusters[0]
-            confidence, evidence = _score_cluster_for_archetype(
-                taxonomy.feature_names,
-                cluster,
-                template,
-            )
-            scored.append(
-                RoleArchetypeMatch(
-                    archetype=archetype,
-                    cluster_id=cluster.cluster_id,
-                    confidence=confidence,
-                    evidence=evidence,
-                )
-            )
-        archetypes[archetype] = tuple(
-            sorted(scored, key=lambda match: match.confidence, reverse=True)[:3]
-        )
-
-    return RoleCatalog(
-        archetypes=archetypes,
-        role_to_archetypes=_ROLE_TO_ARCHETYPES,
-    )
-
-
-def resolve_role_clusters(
-    catalog: RoleCatalog | dict,
-    role: str,
-    *,
-    min_confidence: float = 0.35,
-) -> list[dict]:
-    """Resolve a canonical role to repo-local clusters.
-
-    Preserves the archetype preference order from ``_ROLE_TO_ARCHETYPES``:
-    the first archetype with at least one qualifying match owns the top
-    slots, sorted by confidence within that archetype. Subsequent archetypes
-    contribute fallbacks. Returned cluster ids are preferences, not hard
-    filters — cluster ids can shift after re-index.
-    """
-    data = catalog.to_dict() if isinstance(catalog, RoleCatalog) else catalog
-    archetype_names = (data.get("role_to_archetypes") or {}).get(role, [])
-    archetypes = data.get("archetypes") or {}
-    matches: list[dict] = []
-    seen: set[int] = set()
-    for archetype in archetype_names:
-        local: list[dict] = []
-        for match in archetypes.get(archetype, []):
-            cluster_id = match.get("cluster_id")
-            confidence = float(match.get("confidence", 0.0))
-            if cluster_id in seen or confidence < min_confidence:
-                continue
-            seen.add(cluster_id)
-            local.append(
-                {
-                    "cluster_id": cluster_id,
-                    "confidence": confidence,
-                    "archetype": archetype,
-                    "evidence": list(match.get("evidence") or []),
-                }
-            )
-        local.sort(key=lambda item: item["confidence"], reverse=True)
-        matches.extend(local)
-    return matches
-
-
-def _score_cluster_for_archetype(
-    feature_names: tuple[str, ...],
-    cluster: RoleCluster,
-    template: dict[str, float],
-) -> tuple[float, tuple[str, ...]]:
-    values = dict(zip(feature_names, cluster.centroid, strict=True))
-    weighted = 0.0
-    total = 0.0
-    evidence: list[tuple[str, float]] = []
-    for feature, weight in template.items():
-        value = values.get(feature, 0.0)
-        contribution = _positive(value) if weight >= 0 else _positive(-value)
-        abs_weight = abs(weight)
-        weighted += contribution * abs_weight
-        total += abs_weight
-        if contribution >= 0.25:
-            evidence.append((f"{feature}:{'+' if weight >= 0 else '-'}", contribution))
-    confidence = weighted / total if total else 0.0
-    evidence.sort(key=lambda item: item[1], reverse=True)
-    return round(confidence, 4), tuple(item[0] for item in evidence[:3])
-
-
-def _positive(value: float) -> float:
-    return max(0.0, min(1.0, value / 1.5))
-
-
-def _features_for(row: SymbolRow) -> tuple[float, ...]:
-    call_in = max(0.0, row.effective_call_fan_in())
-    call_out = max(0.0, row.effective_call_fan_out())
-    call_total = max(1.0, call_in + call_out)
-    doc_count = max(0, row.doc_anchor_count)
-    is_class = 1.0 if row.kind in {"class", "interface"} else 0.0
-    is_function = 1.0 if row.kind in {"function", "method"} else 0.0
-
-    return (
-        math.log1p(call_in),
-        math.log1p(call_out),
-        call_in / call_total,
-        1.0 if call_out == 0.0 else 0.0,
-        math.log1p(max(0.0, row.type_fan_in)),
-        math.log1p(max(0.0, row.type_fan_out)),
-        math.log1p(max(0.0, row.api_fan_in)),
-        math.log1p(max(0.0, row.api_fan_out)),
-        math.log1p(max(0.0, row.inject_fan_in)),
-        math.log1p(max(0.0, row.depend_fan_in)),
-        math.log1p(max(0.0, row.handle_fan_in)),
-        float(max(0, row.depth_from_public)),
-        row.cross_package_in / max(1.0, call_in),
-        row.cross_package_out / max(1.0, call_out),
-        math.log1p(max(0, row.import_in)),
-        1.0 if doc_count > 0 else 0.0,
-        math.log1p(doc_count),
-        math.log1p(max(0.0, row.doc_definition_weight)),
-        math.log1p(max(0.0, row.doc_reference_weight)),
-        math.log1p(max(0.0, row.doc_example_weight)),
-        is_class,
-        is_function,
-    )
-
-
-def _standardize(vectors: list[tuple[float, ...]]) -> list[list[float]]:
-    if not vectors:
-        return []
-    n = len(vectors)
-    cols = list(zip(*vectors, strict=True))
-    means = [sum(col) / n for col in cols]
-    stds = [
-        math.sqrt(sum((v - mean) ** 2 for v in col) / n) or 1.0
-        for col, mean in zip(cols, means, strict=True)
-    ]
-    return [
-        [(v - mean) / std for v, mean, std in zip(vec, means, stds, strict=True)] for vec in vectors
-    ]
-
-
-def _kmeans(
-    vectors: list[list[float]],
-    k: int,
-    *,
-    max_iter: int,
-    rng: random.Random,
-) -> tuple[list[list[float]], list[int]]:
-    n = len(vectors)
-    dim = len(vectors[0])
-    init_indices = rng.sample(range(n), k)
-    centroids = [list(vectors[i]) for i in init_indices]
-    assignments = [0] * n
-
-    for _ in range(max_iter):
-        for i, vec in enumerate(vectors):
-            best_dist = math.inf
-            best_cid = 0
-            for cid, centroid in enumerate(centroids):
-                dist = sum((a - b) ** 2 for a, b in zip(vec, centroid, strict=True))
-                if dist < best_dist:
-                    best_dist = dist
-                    best_cid = cid
-            assignments[i] = best_cid
-
-        new_centroids = [[0.0] * dim for _ in range(k)]
-        counts = [0] * k
-        for vec, cid in zip(vectors, assignments, strict=True):
-            for d, val in enumerate(vec):
-                new_centroids[cid][d] += val
-            counts[cid] += 1
-        for cid in range(k):
-            if counts[cid] == 0:
-                new_centroids[cid] = list(vectors[rng.randrange(n)])
-            else:
-                new_centroids[cid] = [v / counts[cid] for v in new_centroids[cid]]
-
-        if _centroids_equal(centroids, new_centroids):
-            centroids = new_centroids
-            break
-        centroids = new_centroids
-
-    return centroids, assignments
-
-
-def _centroids_equal(a: list[list[float]], b: list[list[float]], eps: float = 1e-9) -> bool:
-    return all(
-        all(abs(x - y) < eps for x, y in zip(va, vb, strict=True))
-        for va, vb in zip(a, b, strict=True)
-    )
-
-
-def _silhouette_score(
-    vectors: list[list[float]],
-    assignments: list[int],
-    k: int,
-    *,
-    max_samples: int | None = None,
-    max_intra_cluster_samples: int = 64,
-    max_inter_cluster_samples: int = 64,
-    seed: int = 0,
-) -> float:
-    if k <= 1 or len(vectors) <= k:
-        return -math.inf
-    by_cluster: dict[int, list[int]] = {}
-    for i, cid in enumerate(assignments):
-        by_cluster.setdefault(cid, []).append(i)
-
-    candidate_indices = list(range(len(vectors)))
-    if max_samples and len(candidate_indices) > max_samples:
-        candidate_indices = sorted(random.Random(seed).sample(candidate_indices, max_samples))
-
-    rng = random.Random(seed + 7919)
-    total = 0.0
-    counted = 0
-    for i in candidate_indices:
-        vec = vectors[i]
-        own = assignments[i]
-        own_members = [j for j in by_cluster[own] if j != i]
-        if not own_members:
-            continue
-        if max_intra_cluster_samples > 0 and len(own_members) > max_intra_cluster_samples:
-            own_members = rng.sample(own_members, max_intra_cluster_samples)
-        a = sum(_dist(vec, vectors[j]) for j in own_members) / len(own_members)
-        b = math.inf
-        for cid, members in by_cluster.items():
-            if cid == own or not members:
-                continue
-            compare_members = members
-            if max_inter_cluster_samples > 0 and len(compare_members) > max_inter_cluster_samples:
-                compare_members = rng.sample(compare_members, max_inter_cluster_samples)
-            mean_dist = sum(_dist(vec, vectors[j]) for j in compare_members) / len(compare_members)
-            if mean_dist < b:
-                b = mean_dist
-        if b == math.inf:
-            continue
-        denom = max(a, b)
-        if denom > 0:
-            total += (b - a) / denom
-            counted += 1
-    return total / counted if counted else -math.inf
-
-
-def _dist(a: list[float], b: list[float]) -> float:
-    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b, strict=True)))
-
-
-def _column_means(vectors: list[list[float]]) -> list[float]:
-    if not vectors:
-        return []
-    n = len(vectors)
-    cols = list(zip(*vectors, strict=True))
-    return [sum(col) / n for col in cols]
-
-
-def _column_stds(vectors: list[list[float]], means: list[float]) -> list[float]:
-    if not vectors:
-        return []
-    n = len(vectors)
-    cols = list(zip(*vectors, strict=True))
-    return [
-        math.sqrt(sum((v - mean) ** 2 for v in col) / n) or 1.0
-        for col, mean in zip(cols, means, strict=True)
-    ]
-
-
-def _signature_for(
-    centroid: list[float],
-    feature_means: list[float],
-    feature_stds: list[float],
-) -> tuple[str, ...]:
-    z_scores = [
-        (name, (val - mean) / std)
-        for name, val, mean, std in zip(
-            _FEATURE_NAMES,
-            centroid,
-            feature_means,
-            feature_stds,
-            strict=True,
-        )
-    ]
-    z_scores.sort(key=lambda item: abs(item[1]), reverse=True)
-    return tuple(f"{name}:{'+' if z >= 0 else '-'}" for name, z in z_scores[:3])
+def build_role_catalog(present_roles: dict[str, int]) -> RoleCatalog:
+    """Build workspace catalog from presence-gated roles only."""
+    return RoleCatalog(present_roles=dict(present_roles))
 
 
 def _edge_confidence(rel_type: str, stored: float | None, kind: str = "") -> float:
@@ -711,13 +256,15 @@ def _edge_confidence(rel_type: str, stored: float | None, kind: str = "") -> flo
 
 def _iter_structural_edges(
     edges: Sequence[tuple[str, ...]],
-) -> list[tuple[str, str, str, float]]:
-    normalized: list[tuple[str, str, str, float]] = []
+) -> list[tuple[str, str, str, float, str]]:
+    normalized: list[tuple[str, str, str, float, str]] = []
     for edge in edges:
         if len(edge) == 2:
-            normalized.append((edge[0], edge[1], "CALLS_DIRECT", 1.0))
-        elif len(edge) >= 4:
-            normalized.append((edge[0], edge[1], edge[2], float(edge[3])))
+            normalized.append((edge[0], edge[1], "CALLS_DIRECT", 1.0, ""))
+        elif len(edge) == 4:
+            normalized.append((edge[0], edge[1], edge[2], float(edge[3]), ""))
+        elif len(edge) >= 5:
+            normalized.append((edge[0], edge[1], edge[2], float(edge[3]), edge[4] or ""))
     return normalized
 
 
@@ -727,30 +274,18 @@ def assemble_symbol_rows(
     doc_counts: dict[str, int],
     import_in_per_uid: dict[str, int] | None = None,
     doc_signal_by_uid: dict[str, dict[str, float]] | None = None,
+    proxy_uids: set[str] | None = None,
+    reexport_in_per_uid: dict[str, int] | None = None,
 ) -> list[SymbolRow]:
-    """Combine raw graph extracts into ``SymbolRow``s with structural features.
-
-    Pure function. Inputs are decoupled from Neo4j so the same logic runs
-    against synthetic graphs in tests.
-
-    - ``symbols``: ``(uid, kind, file_path)`` tuples. ``file_path`` may be
-      empty; in that case the symbol's package is the empty string.
-    - ``call_edges``: ``(caller_uid, callee_uid)`` legacy call edges, or
-      ``(caller_uid, callee_uid, rel_type, confidence)`` structural edges.
-      Edges referencing unknown uids are silently dropped.
-    - ``doc_counts``: ``uid -> count`` of incoming ``COVERS`` edges.
-    - ``doc_signal_by_uid``: optional weighted COVERS signals by anchor type.
-
-    Package = directory portion of ``file_path``. ``cross_package_*`` counts
-    call edges whose endpoints sit in different directories.
-    ``depth_from_public`` is BFS distance from call-graph sources following
-    outgoing CALLS-family edges only.
-    """
+    """Combine raw graph extracts into ``SymbolRow``s with cascade features."""
     if not symbols:
         return []
 
     import_in_per_uid = import_in_per_uid or {}
     doc_signal_by_uid = doc_signal_by_uid or {}
+    proxy_uids = proxy_uids or set()
+    reexport_in_per_uid = reexport_in_per_uid or {}
+
     info: dict[str, dict] = {}
     for uid, kind, file_path in symbols:
         info[uid] = {
@@ -765,51 +300,88 @@ def assemble_symbol_rows(
     call_fan_out: dict[str, float] = defaultdict(float)
     type_fan_in: dict[str, float] = defaultdict(float)
     type_fan_out: dict[str, float] = defaultdict(float)
+    type_fan_in_param: dict[str, float] = defaultdict(float)
+    type_fan_in_isinstance: dict[str, float] = defaultdict(float)
+    type_fan_in_return: dict[str, float] = defaultdict(float)
+    type_fan_out_return: dict[str, float] = defaultdict(float)
     api_fan_in: dict[str, float] = defaultdict(float)
     api_fan_out: dict[str, float] = defaultdict(float)
     inject_fan_in: dict[str, float] = defaultdict(float)
     depend_fan_in: dict[str, float] = defaultdict(float)
     depend_fan_out: dict[str, float] = defaultdict(float)
     handle_fan_in: dict[str, float] = defaultdict(float)
+    handle_fan_out: dict[str, float] = defaultdict(float)
+    decorated_in: dict[str, float] = defaultdict(float)
+    decorated_out: dict[str, float] = defaultdict(float)
+    construct_fan_out: dict[str, float] = defaultdict(float)
 
-    for caller, callee, rel_type, conf in _iter_structural_edges(call_edges):
-        if caller not in info or callee not in info or caller == callee:
+    for caller, callee, rel_type, conf, kind in _iter_structural_edges(call_edges):
+        caller_in = caller in info
+        callee_in = callee in info
+        # F13: credit Pass-1 endpoints from full-graph consumers outside the
+        # clustered symbol set (tests/docs user code calling framework APIs).
+        if not caller_in and not callee_in:
+            continue
+        if caller == callee:
             continue
         if rel_type in CALL_REL_TYPES:
-            call_out[caller].add(callee)
-            call_in[callee].add(caller)
-            call_fan_out[caller] += conf
-            call_fan_in[callee] += conf
+            if caller_in:
+                call_out[caller].add(callee)
+                call_fan_out[caller] += conf
+            if callee_in:
+                call_in[callee].add(caller)
+                call_fan_in[callee] += conf
         elif rel_type == "USES_TYPE":
-            type_fan_out[caller] += conf
-            type_fan_in[callee] += conf
+            if caller_in:
+                type_fan_out[caller] += conf
+                if kind == "return":
+                    type_fan_out_return[caller] += conf
+            if callee_in:
+                type_fan_in[callee] += conf
+                if kind in {"param", "annotation"}:
+                    type_fan_in_param[callee] += conf
+                elif kind == "isinstance":
+                    type_fan_in_isinstance[callee] += conf
+                elif kind == "return":
+                    type_fan_in_return[callee] += conf
         elif rel_type in {"HAS_API", "INHERITED_API"}:
-            api_fan_out[caller] += conf
-            api_fan_in[callee] += conf
+            if caller_in:
+                api_fan_out[caller] += conf
+            if callee_in:
+                api_fan_in[callee] += conf
         elif rel_type == "INJECTS":
-            inject_fan_in[callee] += conf
+            if callee_in:
+                inject_fan_in[callee] += conf
         elif rel_type == "DEPENDS_ON":
-            depend_fan_out[caller] += conf
-            depend_fan_in[callee] += conf
+            if caller_in:
+                depend_fan_out[caller] += conf
+            if callee_in:
+                depend_fan_in[callee] += conf
         elif rel_type == "HANDLES":
-            handle_fan_in[callee] += conf
+            if caller_in:
+                handle_fan_out[caller] += conf
+            if callee_in:
+                handle_fan_in[callee] += conf
+        elif rel_type == "DECORATED_BY":
+            if caller_in:
+                decorated_out[caller] += conf
+            if callee_in:
+                decorated_in[callee] += conf
+        elif rel_type == "INSTANTIATES":
+            if caller_in:
+                construct_fan_out[caller] += conf
 
-    public_uids = {
-        uid for uid in info if call_fan_in[uid] == 0.0 and call_out[uid]
-    }
+    public_uids = {uid for uid in info if call_fan_in[uid] <= _EPS and call_out[uid]}
     depths = _bfs_depths(call_out, public_uids)
-    if depths:
-        unreachable_depth = max(depths.values()) + 1
-    else:
-        unreachable_depth = 0
+    unreachable_depth = max(depths.values()) + 1 if depths else 0
 
     rows: list[SymbolRow] = []
     for uid, meta in info.items():
         callers = call_in[uid]
         callees = call_out[uid]
         my_pkg = meta["package"]
-        cross_in = sum(1 for c in callers if info[c]["package"] != my_pkg)
-        cross_out = sum(1 for c in callees if info[c]["package"] != my_pkg)
+        cross_in = sum(1 for c in callers if c in info and info[c]["package"] != my_pkg)
+        cross_out = sum(1 for c in callees if c in info and info[c]["package"] != my_pkg)
         doc_signal = doc_signal_by_uid.get(uid, {})
         rows.append(
             SymbolRow(
@@ -829,12 +401,22 @@ def assemble_symbol_rows(
                 call_fan_out=call_fan_out[uid],
                 type_fan_in=type_fan_in[uid],
                 type_fan_out=type_fan_out[uid],
+                type_fan_in_param=type_fan_in_param[uid],
+                type_fan_in_isinstance=type_fan_in_isinstance[uid],
+                type_fan_in_return=type_fan_in_return[uid],
+                type_fan_out_return=type_fan_out_return[uid],
                 api_fan_in=api_fan_in[uid],
                 api_fan_out=api_fan_out[uid],
                 inject_fan_in=inject_fan_in[uid],
                 depend_fan_in=depend_fan_in[uid],
                 depend_fan_out=depend_fan_out[uid],
                 handle_fan_in=handle_fan_in[uid],
+                handle_fan_out=handle_fan_out[uid],
+                decorated_in=decorated_in[uid],
+                decorated_out=decorated_out[uid],
+                construct_fan_out=construct_fan_out[uid],
+                reexport_in=int(reexport_in_per_uid.get(uid, 0)),
+                is_proxy_binding=uid in proxy_uids,
             )
         )
     return rows
@@ -864,16 +446,20 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
     doc_counts = _query_doc_anchor_counts(db, workspace_id)
     doc_signals = _query_doc_anchor_signals(db, workspace_id)
     import_in = _query_file_import_in_counts(db, workspace_id)
-    return assemble_symbol_rows(symbols, edges, doc_counts, import_in, doc_signals)
+    reexport_in = _query_reexport_in_counts(db, workspace_id)
+    proxy_uids = _query_proxy_binding_uids(db, workspace_id)
+    return assemble_symbol_rows(
+        symbols,
+        edges,
+        doc_counts,
+        import_in,
+        doc_signals,
+        proxy_uids,
+        reexport_in,
+    )
 
 
 def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str]]:
-    # Pass 1 derives the PRODUCT role taxonomy. Test / example / benchmark code is
-    # not part of the product's role structure — clustering it skews the centroids
-    # (e.g. test data classes flood the "executor" leaf+fan_in cluster). Exclude it.
-    # Those symbols still get their role structurally at query time (a /tests/ path
-    # yields impact_test_surface in infer_supporting_roles), so impact analysis is
-    # unaffected — only the clustering input is cleaned.
     with db.driver.session() as session:
         result = session.run(
             """
@@ -889,7 +475,7 @@ def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str]]:
         return [(r["uid"], r["kind"], r["file_path"]) for r in result if r["uid"]]
 
 
-def _query_structural_edges(db, workspace_id: str) -> list[tuple[str, str, str, float]]:
+def _query_structural_edges(db, workspace_id: str) -> list[tuple[str, str, str, float, str]]:
     rel_union = "|".join(STRUCTURAL_REL_TYPES)
     with db.driver.session() as session:
         result = session.run(
@@ -904,7 +490,7 @@ def _query_structural_edges(db, workspace_id: str) -> list[tuple[str, str, str, 
             """,
             workspace_id=workspace_id,
         )
-        rows: list[tuple[str, str, str, float]] = []
+        rows: list[tuple[str, str, str, float, str]] = []
         for record in result:
             caller = record["caller_uid"]
             callee = record["callee_uid"]
@@ -912,28 +498,43 @@ def _query_structural_edges(db, workspace_id: str) -> list[tuple[str, str, str, 
                 continue
             rel_type = record["rel_type"]
             conf = _edge_confidence(rel_type, record["confidence"], record["kind"] or "")
-            rows.append((caller, callee, rel_type, conf))
+            rows.append((caller, callee, rel_type, conf, record["kind"] or ""))
         return rows
 
 
 def _query_call_edges(db, workspace_id: str) -> list[tuple[str, str]]:
-    """Legacy call-only edge query (tests / diagnostics)."""
     return [
         (caller, callee)
-        for caller, callee, rel_type, _conf in _query_structural_edges(db, workspace_id)
+        for caller, callee, rel_type, _conf, _kind in _query_structural_edges(db, workspace_id)
         if rel_type in CALL_REL_TYPES
     ]
 
 
-def _query_file_import_in_counts(db, workspace_id: str) -> dict[str, int]:
-    """Count distinct files that import each symbol's container file.
+def _query_reexport_in_counts(db, workspace_id: str) -> dict[str, int]:
+    with db.driver.session() as session:
+        result = session.run(
+            """
+            MATCH (:File {workspace_id: $workspace_id})-[r:RE_EXPORTS]->(sym:Symbol)
+            RETURN sym.uid AS uid, count(r) AS c
+            """,
+            workspace_id=workspace_id,
+        )
+        return {r["uid"]: int(r["c"]) for r in result if r.get("uid")}
 
-    Applied to every symbol in the file as a popularity-of-container signal.
-    Sparse for re-exported APIs (e.g. ``from fastapi import FastAPI`` does
-    not generate an edge to ``fastapi/applications.py`` because the import
-    resolver targets ``fastapi/__init__.py``); informative where direct
-    file imports exist.
-    """
+
+def _query_proxy_binding_uids(db, workspace_id: str) -> set[str]:
+    with db.driver.session() as session:
+        result = session.run(
+            """
+            MATCH (p:Symbol {workspace_id: $workspace_id, kind: 'proxy_binding'})
+            RETURN p.uid AS uid
+            """,
+            workspace_id=workspace_id,
+        )
+        return {r["uid"] for r in result if r.get("uid")}
+
+
+def _query_file_import_in_counts(db, workspace_id: str) -> dict[str, int]:
     with db.driver.session() as session:
         result = session.run(
             """
@@ -991,15 +592,16 @@ def _query_doc_anchor_signals(db, workspace_id: str) -> dict[str, dict[str, floa
 def persist_role_taxonomy(
     db,
     workspace_id: str,
-    taxonomy: RoleTaxonomy,
-    uid_to_cluster: dict[str, int],
+    summary: RoleAssignmentSummary,
+    assignments: dict[str, SymbolRoleAssignment],
     *,
     structural_rows: Sequence[SymbolRow] | None = None,
+    present_roles: dict[str, int] | None = None,
     batch_size: int = 1000,
 ) -> None:
-    """Save the taxonomy on the Workspace and cluster ids on each Symbol."""
-    payload = json.dumps(taxonomy.to_dict(), sort_keys=True)
-    catalog_dict = build_role_catalog(taxonomy).to_dict()
+    """Save assignment summary + catalog on Workspace and roles on Symbol nodes."""
+    payload = json.dumps(summary.to_dict(), sort_keys=True)
+    catalog_dict = build_role_catalog(present_roles or summary.present_roles).to_dict()
     catalog_dict = merge_preloaded_mechanisms_into_role_catalog(catalog_dict)
     catalog_payload = json.dumps(catalog_dict, sort_keys=True)
     with db.driver.session() as session:
@@ -1019,48 +621,39 @@ def persist_role_taxonomy(
             catalog_schema_version=ROLE_CATALOG_SCHEMA_VERSION,
         )
 
-        if structural_rows:
-            profile_items = [
+        profile_items = []
+        for row in structural_rows or ():
+            asn = assignments.get(row.uid)
+            supporting = list(asn.supporting) if asn else []
+            profile_items.append(
                 {
                     "uid": row.uid,
-                    "cid": uid_to_cluster.get(row.uid),
+                    "primary": asn.primary if asn else "",
+                    "supporting_json": json.dumps(supporting),
                     "call_fan_in": round(row.effective_call_fan_in(), 4),
                     "call_fan_out": round(row.effective_call_fan_out(), 4),
                     "type_fan_in": round(row.type_fan_in, 4),
                 }
-                for row in structural_rows
-            ]
-            for offset in range(0, len(profile_items), batch_size):
-                batch = profile_items[offset : offset + batch_size]
-                session.run(
-                    """
-                    UNWIND $items AS item
-                    MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: item.uid})
-                    SET s.call_fan_in = item.call_fan_in,
-                        s.call_fan_out = item.call_fan_out,
-                        s.type_fan_in = item.type_fan_in,
-                        s.derived_role_id = item.cid
-                    """,
-                    items=batch,
-                    workspace_id=workspace_id,
-                )
-        else:
-            cluster_items = [{"uid": uid, "cid": cid} for uid, cid in uid_to_cluster.items()]
-            for offset in range(0, len(cluster_items), batch_size):
-                batch = cluster_items[offset : offset + batch_size]
-                session.run(
-                    """
-                    UNWIND $items AS item
-                    MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: item.uid})
-                    SET s.derived_role_id = item.cid
-                    """,
-                    items=batch,
-                    workspace_id=workspace_id,
-                )
+            )
+        for offset in range(0, len(profile_items), batch_size):
+            batch = profile_items[offset : offset + batch_size]
+            session.run(
+                """
+                UNWIND $items AS item
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: item.uid})
+                SET s.call_fan_in = item.call_fan_in,
+                    s.call_fan_out = item.call_fan_out,
+                    s.type_fan_in = item.type_fan_in,
+                    s.derived_primary_role = item.primary,
+                    s.derived_supporting_roles_json = item.supporting_json,
+                    s.derived_role_id = null
+                """,
+                items=batch,
+                workspace_id=workspace_id,
+            )
 
 
 def get_role_taxonomy(db, workspace_id: str) -> dict | None:
-    """Load the persisted taxonomy from the Workspace, if any."""
     with db.driver.session() as session:
         row = session.run(
             """
@@ -1079,7 +672,6 @@ def get_role_taxonomy(db, workspace_id: str) -> dict | None:
 
 
 def get_role_catalog(db, workspace_id: str) -> dict | None:
-    """Load the persisted role catalog from the Workspace, if any."""
     with db.driver.session() as session:
         row = session.run(
             """
@@ -1102,47 +694,36 @@ def derive_and_persist_role_taxonomy(
     workspace_id: str,
     *,
     seed: int = 0,
-) -> RoleTaxonomy:
-    """Run Pass 1 end-to-end: extract → cluster → persist. Returns the taxonomy."""
+) -> RoleAssignmentSummary:
+    """Run Pass 1 end-to-end: extract → cascade assign → persist."""
+    del seed  # deterministic cascade; kept for call-site compatibility
     all_rows = extract_symbol_rows(db, workspace_id)
-    cluster_rows = filter_clustering_rows(all_rows)
-    taxonomy, uid_to_cluster = cluster_symbols(cluster_rows, seed=seed)
+    summary, assignments, present = assign_role_taxonomy(all_rows)
     persist_role_taxonomy(
         db,
         workspace_id,
-        taxonomy,
-        uid_to_cluster,
+        summary,
+        assignments,
         structural_rows=all_rows,
+        present_roles=present,
     )
-    return taxonomy
+    return summary
 
 
-def _empty_taxonomy() -> RoleTaxonomy:
-    return RoleTaxonomy(
-        feature_names=_FEATURE_NAMES,
-        clusters=(),
-        silhouette=0.0,
-        chosen_k=0,
-        sample_size=0,
-    )
-
-
-def _single_cluster_taxonomy(
-    rows: Sequence[SymbolRow],
-    standardized: list[list[float]],
-) -> RoleTaxonomy:
-    centroid = tuple(_column_means(standardized))
-    return RoleTaxonomy(
-        feature_names=_FEATURE_NAMES,
-        clusters=(
-            RoleCluster(
-                cluster_id=0,
-                centroid=centroid,
-                member_count=len(rows),
-                signature=("trivial",),
-            ),
-        ),
-        silhouette=0.0,
-        chosen_k=1,
-        sample_size=len(rows),
-    )
+__all__ = [
+    "ROLE_CATALOG_SCHEMA_VERSION",
+    "ROLE_TAXONOMY_SCHEMA_VERSION",
+    "RoleAssignmentSummary",
+    "RoleCatalog",
+    "SymbolRow",
+    "assemble_symbol_rows",
+    "assign_role_taxonomy",
+    "build_role_catalog",
+    "derive_and_persist_role_taxonomy",
+    "extract_symbol_rows",
+    "filter_clustering_rows",
+    "get_role_catalog",
+    "get_role_taxonomy",
+    "persist_role_taxonomy",
+    "role_catalog_roles",
+]

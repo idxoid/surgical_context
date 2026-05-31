@@ -1,10 +1,7 @@
-"""Discriminator-first L1/L2 role assignment prototype.
+"""Discriminator-first L1/L2 role assignment (Pass 1).
 
-Implements the pipeline described in docs/role_clustering_architecture.md:
-L1 macro buckets (rule gates) → L2 role predicates (catalog discriminators) →
-presence gate → per-symbol primary + supporting roles.
-
-Designed for QA/prototype_multidim_fan_clustering.py; no production imports.
+Pipeline: L1 macro buckets → L2 role predicates → presence gate → per-symbol
+primary + supporting roles. See docs/role_clustering_architecture.md.
 """
 
 from __future__ import annotations
@@ -93,10 +90,7 @@ L1_BUCKETS = (
     "unclassified",
 )
 
-# L2 predicates ordered by specificity (highest first) within each L1.
-# See docs/role_catalog.md distinctiveness summary + §9–§10.
 L2_PREDICATES: tuple[RolePredicate, ...] = (
-    # --- routing_wrap ---
     RolePredicate(
         "proxy_mechanism",
         "routing_wrap",
@@ -133,7 +127,6 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         lambda r: r.handle_fan_in > _EPS,
         70,
     ),
-    # --- control_flow ---
     RolePredicate(
         "dependency_solver",
         "control_flow",
@@ -157,9 +150,6 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
     RolePredicate(
         "factory_surface",
         "control_flow",
-        # Constructs objects: either an explicit construction (INSTANTIATES fan-out,
-        # the precise signal) or the return-typed-object heuristic. Both gated on
-        # call_fan_out so a pure data class is not a factory.
         lambda r: (r.construct_fan_out > _EPS or r.type_fan_out_return > _EPS)
         and r.call_fan_out > _EPS,
         65,
@@ -172,7 +162,6 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         and r.type_fan_in_return <= _EPS,
         60,
     ),
-    # --- state_types ---
     RolePredicate(
         "abstract_contract",
         "state_types",
@@ -202,22 +191,9 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
             and r.has_documentation
             and (r.api_fan_in > _EPS or r.doc_definition_weight > 0)
         )
-        # A documented class that exposes more operations (HAS_API fan-out) than it
-        # is consumed as a type is the public operational surface (FastAPI,
-        # APIRouter); depth/api_fan_in are unreliable here because its callers are
-        # user-side and excluded (F12/F13). The `> type_fan_in` guard keeps classes
-        # consumed as types (models, config) in representation/config_surface.
-        # A symbol surfaced on the package public API (RE_EXPORTS in-degree) that
-        # also exposes substantial behavior (HAS_API fan-out) is the operational
-        # api_surface (FastAPI, APIRouter). reexport_in is the orthogonal "I am the
-        # public surface" axis — independent of type_fan_in (under which FastAPI is
-        # also consumed as a type) and of depth/api_fan_in (unreliable under F13).
-        # Re-exported markers/data classes with little behavior (Body, Settings)
-        # keep their config/representation primary.
         or (r.is_class and r.reexport_in > _EPS and r.api_fan_out > _EPS),
         70,
     ),
-    # --- compute_leaf ---
     RolePredicate(
         "executor",
         "compute_leaf",
@@ -275,9 +251,6 @@ RARE_ROLES = frozenset(
 
 
 def assign_l1(row: FanProfile) -> str:
-    # A documented class that exposes an API surface (HAS_API fan-out) is a public
-    # entry, not dead code, even at zero internal in-degree: its callers live in
-    # user code that Pass-1 excludes (F12/F13). Exempt it from the noise sink.
     surface_class = row.is_class and (row.api_fan_out > _EPS or row.has_documentation)
     if row.zero_in_degree and row.call_fan_out <= _EPS and not surface_class:
         return "noise"
@@ -360,7 +333,6 @@ def detect_present_roles(
 
 
 def role_catalog_roles() -> tuple[str, ...]:
-    """All L2 roles the cascade can emit (for phantom-role comparison)."""
     roles = set(L1_FALLBACK_ROLE.values())
     for pred in L2_PREDICATES:
         roles.add(pred.role)

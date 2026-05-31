@@ -1060,25 +1060,23 @@ def run_fast_indexing(
             preloaded_mechanism_catalog_extensions,
         )
         from sidecar.indexer.role_clustering import (
-            build_role_catalog,
             derive_and_persist_role_taxonomy,
         )
 
         reporter.stage_start("role_clustering", total=1)
-        taxonomy = derive_and_persist_role_taxonomy(db, workspace_id)
-        role_catalog = build_role_catalog(taxonomy)
+        summary = derive_and_persist_role_taxonomy(db, workspace_id)
         reporter.step("role_clustering")
         reporter.stage_end("role_clustering")
         stats["timings_sec"]["role_clustering"] = round(time.perf_counter() - t_stage, 3)
         stats["role_taxonomy"] = {
-            "chosen_k": taxonomy.chosen_k,
-            "silhouette": round(taxonomy.silhouette, 4),
-            "sample_size": taxonomy.sample_size,
+            "method": summary.method,
+            "sample_size": summary.sample_size,
+            "filtered_sample_size": summary.filtered_sample_size,
+            "present_role_count": len(summary.present_roles),
         }
         _preloaded_mech = preloaded_mechanism_catalog_extensions()
         stats["role_catalog"] = {
-            "archetypes": len(role_catalog.archetypes),
-            "roles": len(role_catalog.role_to_archetypes),
+            "present_roles": len(summary.present_roles),
             "preloaded_mechanisms": len(_preloaded_mech[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY]),
         }
 

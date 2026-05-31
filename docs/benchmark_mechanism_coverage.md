@@ -8,7 +8,7 @@ What changed since this note was written:
 
 - the benchmark now normalizes legacy `required_roles` into a canonical cross-framework role taxonomy before computing `role_recall`
 - the original framework-shaped fixes have been replaced by generic layers:
-  - repository profiles emit archetype signals, not repo/framework identities
+  - repository profiles report indexability and a generic strategy only, not repo/framework identities
   - Python import extraction infers stdlib/installed-package imports and preserves workspace packages without a hand-maintained framework list
   - semantic hints use shared typed rules (`semantic_hints.yaml`) rather than per-framework hint files
   - trace recovery uses dependency/provider/container/resolve signals and explicit recovery provenance instead of framework-symbol pairs

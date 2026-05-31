@@ -31,7 +31,7 @@ def test_repository_profile_marks_unsupported_symbol_surface(tmp_path: Path):
     assert profile["capabilities"]["impact_analysis"] == "none"
 
 
-def test_repository_profile_detects_generic_archetypes_and_shallow_impact(tmp_path: Path):
+def test_repository_profile_reports_indexability_and_shallow_impact(tmp_path: Path):
     app = tmp_path / "app.py"
     app.write_text(
         "registry = {}\n\n"
@@ -55,58 +55,20 @@ def test_repository_profile_detects_generic_archetypes_and_shallow_impact(tmp_pa
             imports_indexed=2,
             inheritance_indexed=1,
             affects_rebuilt=2,
-            sample_texts=[app.read_text(encoding="utf-8")],
         )
     )
 
     assert profile["indexability"] == "high"
     assert profile["languages"]["supported"]["python"] == 1
     assert profile["mechanism_profile"]["framework_signals"] == []
-    assert {signal["name"] for signal in profile["mechanism_profile"]["archetype_signals"]} >= {
-        "registry_usage",
-        "declarative_modeling",
-    }
-    assert profile["strategy_profile"]["selected_strategy"] == "registration_flow"
-    assert "factory_surface" in profile["strategy_profile"]["role_plan"]
-    assert profile["mechanism_profile"]["archetypes"][0]["type"] == "route_registration"
+    assert profile["strategy_profile"]["selected_strategy"] == "generic_symbol_context"
+    assert profile["strategy_profile"]["role_plan"] == ["docs_or_concept"]
+    assert "mechanism_archetypes" not in profile["strategy_profile"]
     assert profile["capabilities"]["impact_analysis"] == "shallow"
     assert "reachability-based impact candidates" in profile["reasoning_contract"]["allowed"]
     summary = summarize_repository_profile(profile)
-    assert "archetype_signals=" in summary
-    assert "strategy=registration_flow" in summary
-    assert "impact=shallow" in summarize_repository_profile(profile)
-
-
-def test_dependency_injection_archetype_requires_representation_surface(tmp_path: Path):
-    source = tmp_path / "app.py"
-    source.write_text(
-        "class Dependant:\n"
-        "    pass\n\n"
-        "def Depends(provider):\n"
-        "    return provider\n\n"
-        "def solve_dependencies(dependant):\n"
-        "    return dependant\n",
-        encoding="utf-8",
-    )
-
-    profile = build_repository_profile(
-        RepositoryProfileInputs(
-            project_path=str(tmp_path),
-            workspace_id="local/repo@main",
-            collected_files=[str(source)],
-            parsed_files=1,
-            symbols_indexed=3,
-            sample_texts=[source.read_text(encoding="utf-8")],
-        )
-    )
-
-    dependency_archetype = next(
-        item
-        for item in profile["strategy_profile"]["mechanism_archetypes"]
-        if item["type"] == "dependency_injection"
-    )
-
-    assert "representation_surface" in dependency_archetype["role_plan"]
+    assert "strategy=generic_symbol_context" in summary
+    assert "impact=shallow" in summary
 
 
 def test_repository_profile_is_plain_db_storable_payload(tmp_path: Path):
@@ -146,5 +108,4 @@ def test_repository_profile_does_not_infer_from_workspace_or_directory_name(tmp_
     )
 
     assert profile["mechanism_profile"]["framework_signals"] == []
-    assert profile["mechanism_profile"]["archetype_signals"] == []
     assert profile["strategy_profile"]["selected_strategy"] == "generic_symbol_context"

@@ -1358,7 +1358,6 @@ def run_benchmark(
                 "ranker_required_roles": ranker_required_roles,
                 "selected_strategy": strategy_profile.get("selected_strategy", ""),
                 "strategy_role_plan": strategy_profile.get("role_plan", []),
-                "strategy_archetypes": strategy_profile.get("mechanism_archetypes", []),
                 "expected_mode": expected_mode,
                 "tokens_surgical": tokens_surgical,
                 "tokens_carpet_bomb": tokens_carpet_bomb,

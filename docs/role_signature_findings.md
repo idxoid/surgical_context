@@ -4,7 +4,7 @@ Session findings on the role vocabulary in [role_catalog.md](role_catalog.md):
 where a single structural feature serves several roles, where a discriminator is
 weak, and where the catalog text runs ahead of the code. Companion to
 [role_clustering_architecture.md](role_clustering_architecture.md), which records
-the clustering-pipeline decision these findings motivate.
+the Pass-1 cascade decision these findings motivate.
 
 Each finding is **what → how (where in code) → why it matters → decision**.
 Severity: 🔴 hard collision (ambiguous role assignment) · 🟡 soft (resolvable with
@@ -64,18 +64,9 @@ Feature vocabulary and per-role discriminators referenced below live in
 ### F2 — `leaf + high call_fan_in` blob (six roles)
 - **what:** `executor`, `core_runtime`, `validator_handle`,
   `representation_surface`, `stateful_surface`, `abstract_contract` all share the
-  leaf + fan-in degree profile.
-- **how:** catalog "Distinctiveness summary"; each separates on a single edge
-  signal (`handle_fan_in`, `type_fan_in`, `depend_fan_in`, `is_class`, …). In a
-  flat k-means these compete for one centroid (see
-  `sidecar/indexer/role_clustering.py` `_kmeans`).
-- **why:** `core_runtime` vs `validator_handle` is the weakest pair — both are
-  high-in, leaf, no `handle_fan_in`; separated only by "operates-on type" vs
-  "generic hot leaf", a soft signal.
-- **decision:** resolve by hierarchy — this blob is L1 `Compute/Leaf` + `State &
-  Types` by design, then L2 by the single edge signal. Not a catalog bug; a
-  clustering-shape problem documented in
-  [role_clustering_architecture.md](role_clustering_architecture.md).
+  leaf + fan-in degree profile. In the retired k-means path these competed for one
+  centroid; under the L1/L2 cascade they separate via L2 edge signals (see
+  [role_clustering_architecture.md](role_clustering_architecture.md)).
 
 ### F5 — `integration_surface` name used for two different roles
 - **what:** `integration_surface` is an alias of `composition_surface` (§3,
@@ -98,9 +89,9 @@ Feature vocabulary and per-role discriminators referenced below live in
 - **what:** `orchestrator`, `composition_surface`, `dependency_solver`,
   `schema_generator` all key on high `call_fan_out`.
 - **how:** §2/§3/§5/§4 discriminators in [role_catalog.md](role_catalog.md).
-- **why:** secondary signals differ (cross-package *distinct* packages;
-  isinstance-dispatch; fan-out *onto representation_surface*), but flat
-  clustering sees one `call_fan_out` axis.
+- **why:**   secondary signals differ (cross-package *distinct* packages;
+  isinstance-dispatch; fan-out *onto representation_surface*), but a flat
+  feature vector collapses them on one `call_fan_out` axis.
 - **decision:** L1 `Control Flow` parent + L2 cascade on the secondary signal;
   needs target-kind breakdown of `call_fan_out` (onto whom) to be crisp.
 
@@ -150,12 +141,11 @@ Feature vocabulary and per-role discriminators referenced below live in
   (factory + registration_step); `relationship` (factory + lazy_loader);
   `configureStore` (public_entrypoint + composition_surface); celery `Producer`
   (gateway + message-publish); `on_task_request` (executor + message-consume).
-- **why:** flat k-means forces one cluster id per symbol, so the second role is
-  lost or leaks via per-cluster co-membership
-  (`sidecar/context/unified_ranker.py` `_build_cluster_role_membership`).
-- **decision:** model as `primary + supporting[]` (already the shape of
-  `roles_of` in `sidecar/context/ranker/role_fulfilment.py`); see multi-label
-  section of [role_clustering_architecture.md](role_clustering_architecture.md).
+- **why:** under the old k-means path the second role was lost via single cluster id;
+  under cascade, multi-label is modeled as `primary + supporting[]` via
+  `role_cascade.py` predicates.
+- **decision:** `primary + supporting[]` in `role_fulfilment.py` — **implemented**.
+  See M1 in [role_clustering_architecture.md](role_clustering_architecture.md).
 
 ### F9 — Summary table gaps
 - **what:** the "Distinctiveness summary" table omits `request_router`,
@@ -168,64 +158,35 @@ Feature vocabulary and per-role discriminators referenced below live in
   `import_in`, internal); keep `registration_step` as the clean `handle_fan_out`
   owner (no setup-vs-runtime pairing).
 
-### F11 — Roles ↔ archetypes are partly tautological 🟡
-- **what:** the archetype vocabulary (`_ARCHETYPE_TEMPLATES`, 7 entries) overlaps
-  the canonical role vocabulary by name.
-- **how:** in `sidecar/indexer/role_clustering.py`, 4 of 7 archetypes are
-  string-identical to roles — `orchestrator`, `executor`,
-  `representation_surface`, `config_surface`. `_ROLE_TO_ARCHETYPES` then maps each
-  such role onto its own eponymous archetype (e.g. `config_surface →
-  (config_surface, …)`). `config_surface` is the pure case: the archetype is used
-  by exactly one role and adds nothing. The other 3 archetypes
-  (`active_entrypoint`, `passive_api_surface`, `runtime_handle`) do **not** collide
-  with role names and are shared by 7–8 roles each — a genuine coarser layer.
-- **why:** the layer mixes two purposes — a coarse portable topology (the 3 clean
-  shapes ≈ proto-L1 buckets) and a 1:1 alias of 4 L2 roles. The name collision
-  conflates "macro-shape" with "role", and `config_surface` is dead indirection.
-  The 14 roles with no eponymous archetype (e.g. `core_runtime →
-  (runtime_handle, executor)`) are a real decomposition and are *not*
-  tautological — but that blend is itself a surrogate for a missing predicate.
-- **decision:** retire the archetype tier entirely under the new direction — it is
-  scaffolding for unstable k-means cluster ids. The 3 clean archetypes become L1
-  buckets, the 4 colliding ones collapse into their L2 roles. Tracked as **D5** in
-  [role_clustering_architecture.md](role_clustering_architecture.md). Invariant
-  going forward: L1 and L2 name sets are disjoint (the tautology test).
+### F11 — Retired Pass-1 archetype tier *(historical, D5 done)* 🟡
+- **what:** the old k-means `_ARCHETYPE_TEMPLATES` / `_ROLE_TO_ARCHETYPES` layer
+  overlapped canonical role names and existed only to stabilise cluster ids.
+- **decision:** retired — schema v3 uses L1 buckets + L2 roles + `present_roles`
+  only. See [role_clustering_architecture.md](role_clustering_architecture.md) D5.
 
-### F10 — Catalog features not yet in the clusterer
-- **what:** `decorated_in`, `handle_fan_out`, `proxy_of`, and `type_fan_in(kind)`
-  are used as discriminators in the catalog but are not in `_FEATURE_NAMES`.
-- **how:** intro table of [role_catalog.md](role_catalog.md) lists them; the edges
-  exist in Neo4j (`DECORATED_BY`, `HANDLES`, `PROXY_OF`, `USES_TYPE`) — see
-  `sidecar/indexer/fast/pipeline.py` phases — but
-  `sidecar/indexer/role_clustering.py` aggregates only `handle_fan_in` and scalar
-  `type_fan_in/out`; no `handle_fan_out`, `decorated_in`, or `proxy_of` feature.
-- **why:** any L2 discriminator that needs these is blind until the feature is
-  wired, regardless of clustering algorithm.
-- **decision:** wire the inverse/again-aggregations into `extract_symbol_rows`
-  and `_FEATURE_NAMES`: `handle_fan_out`, `decorated_in`, `proxy_of`, and the
-  kind-split type counts (F4). Prerequisite for the 🟢 roles in §9/§10.
+### F10 — Structural features for cascade predicates *(mostly wired)*
+- **what:** `decorated_in`, `handle_fan_out`, kind-split `type_fan_in`, `reexport_in`,
+  `construct_fan_out`, etc. are catalog discriminators consumed by `role_cascade.py`.
+- **status:** wired in `extract_symbol_rows` / `SymbolRow` for Pass-1 assignment.
+  Remaining gaps: honest dataflow holes (F1 `request_router`, factory disjunction)
+  — not missing aggregation.
 
 ---
 
-## Empirical validation — prototype run (`QA/prototype_role_cascade.py`)
+## Empirical validation (`QA/prototype_role_cascade.py`)
 
-The discriminator-first L1/L2 cascade + presence gate, run on indexed `fastapi`
-(tests/examples excluded from Pass-1), compared against the k-means catalog
-baseline and the QA ground-truth hints (`QA_EXPECTED`). This is the evidence the
-"L1/L2 over k-means" decision rests on — not an a-priori claim.
+Inspect Pass-1 on an indexed workspace: L1 distribution, presence-gated
+`present_roles`, QA target symbols (`QA_EXPECTED`), multi-label samples. Uses
+the same code path as the indexer (`extract_symbol_rows` → `assign_role_taxonomy`).
 
-### Headline: the presence gate beats k-means on phantom roles
-- cascade **present** roles: **11**; k-means catalog "matched" roles: **20**.
-- ~12 roles appear in the k-means catalog *only*: `binding_surface`,
-  `compat_bridge`, `docs_or_concept`, `error_surface`, `impact_*`,
-  `integration_surface`, `runtime_surface`, `schema_builder`, `serializer_handle`,
-  `validator_handle`. These are the `cluster[0]` fallback (C2) manufacturing roles
-  the repo does not actually have; the presence gate suppresses them.
-- **This is direct evidence for the discriminator-first + presence-gate design**
-  in [role_clustering_architecture.md](role_clustering_architecture.md): same
-  features, fewer phantoms.
+### Historical note (pre-cascade baseline, removed)
+Early prototype runs compared the cascade against a k-means + archetype catalog.
+The presence gate cut ~12 phantom roles (catalog entries with no structural support
+in the repo). That comparison code was removed; the design decision stands on
+structural grounds (C1/C2/D1–D5 below), validated by re-running the QA script
+after each engine change.
 
-### Per-symbol accuracy is still weak (QA targets)
+### Per-symbol accuracy (ongoing QA targets)
 | symbol | cascade result | qa_missing | cause |
 |---|---|---|---|
 | `FastAPI` | **orphan / noise** | `api_surface` | F12 — noise sink fires before any surface predicate |
@@ -236,13 +197,13 @@ baseline and the QA ground-truth hints (`QA_EXPECTED`). This is the evidence the
 | `APIRoute` | `config_surface` + `representation_surface` | — | qa_ok |
 
 `registration_step`, `request_router`, `dependency_solver`, `proxy_mechanism`,
-`interceptor` were **absent in both** cascade and k-means — decorators are
-user-side (excluded), and the F10 features are not yet decisive in L2.
+`interceptor` — check current run; several depend on F10 edges + F12/F13 fixes
+(documented above).
 
 ### F12 — L1 noise sink captures public entrypoints 🔴
 - **what:** `FastAPI` — the canonical `public_entrypoint`/`api_surface` — lands in
   L1 `noise` → `orphan`.
-- **how:** `assign_l1` (`QA/role_cascade.py:257`) tests
+- **how:** `assign_l1` (`sidecar/indexer/role_cascade.py`) tests
   `zero_in_degree and call_fan_out <= eps` **first**. A framework's public class is
   instantiated by *user* code (`docs_src/`, `tests/`) which Pass-1 excludes, so its
   *internal* in-degree is zero — it hits the noise sink before the `state_types`
@@ -254,7 +215,7 @@ user-side (excluded), and the F10 features are not yet decisive in L2.
 - **fixed (prototype):** a pure reorder is *not* enough — `FastAPI` has
   `depth_from_public=6` (F13 makes depth unreliable) and `api_fan_in=0`, so the
   existing `state_types`/`api_surface` predicates still miss it. Two-part fix in
-  `QA/role_cascade.py`: (1) `assign_l1` exempts a documented class exposing an API
+  `sidecar/indexer/role_cascade.py`: (1) `assign_l1` exempts a documented class exposing an API
   surface (`is_class and (api_fan_out > eps or has_documentation)`) from the noise
   sink and routes it to `state_types` (added `api_fan_out` to the bucket gate);
   (2) `api_surface` L2 predicate now also fires on `is_class and api_fan_out > eps
@@ -266,17 +227,16 @@ user-side (excluded), and the F10 features are not yet decisive in L2.
   is empty — a `USES_TYPE` coverage gap (F4/F10), not a cascade threshold to tune.
 
 ### F13 — Pass-1 test-exclusion strips framework-entrypoint edges (trade-off) ⚠️
-- **what:** excluding `NOISE_PATH_PATTERNS` (tests/examples/docs_src) from Pass-1
-  clustering — which cleaned the executor cluster (no test-fixture-class
-  pollution) — also removes the edges by which **user code exercises framework
-  public surfaces**. `FastAPI`, decorated handlers, etc. lose their only callers.
+- **what:** excluding `NOISE_PATH_PATTERNS` (tests/examples/docs_src) from the Pass-1
+  symbol set — which keeps test-fixture pollution out of role assignment — also
+  removes the edges by which **user code exercises framework public surfaces**.
 - **how:** `_query_pass1_symbols` / `_query_symbols` filter `NOISE_PATH_PATTERNS`
   (`sidecar/indexer/role_clustering.py`); the framework's public API is used in
   `docs_src/`/`tests/`, now invisible to the in-degree/`depth_from_public` signals.
 - **why:** genuine tension — test exclusion is correct for *role-shape* hygiene
-  (don't cluster test fixtures) but wrong for *entrypoint reachability* (a public
-  API's in-degree lives in the excluded callers). Same root cause as F12.
-- **decision:** keep clustering test-free but compute `api_fan_in` /
+  (don't assign roles from test fixtures) but wrong for *entrypoint reachability*
+  (a public API's in-degree lives in the excluded callers). Same root cause as F12.
+- **decision:** keep Pass-1 input test-free but compute `api_fan_in` /
   `depth_from_public` over the **full** graph (incl. tests) so entrypoints retain
   their reachability signal. Fixes the signal at source for `public_entrypoint`
   and `gateway` both; F12's L1 reorder is the cheap interim guard.
@@ -313,20 +273,14 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 | F7 | factory vs lazy_loader return | 🟡 | needs DescriptorSurface; factory primary |
 | F8 | multi-role symbols | 🟢 | primary + supporting model |
 | F9 | summary table gaps | 🟢 | add 3 rows + setup/runtime caveat |
-| F10 | features missing from clusterer | 🔴 | wire `handle_fan_out`/`decorated_in`/`proxy_of`/kind-split |
-| F11 | roles ↔ archetypes tautology | 🟡 | retire archetype tier (D5); L1/L2 name sets disjoint |
-| F12 | L1 noise sink captures public entrypoints | 🟢 fixed | guard noise sink + `api_surface` on `api_fan_out > type_fan_in` (`role_cascade.py`); `FastAPI` recovered |
+| F10 | cascade feature wiring | 🟢 mostly done | SymbolRow + role_cascade predicates |
+| F11 | Pass-1 archetype tier | 🟡 done | retired (D5); L1/L2 + present_roles |
+| F12 | L1 noise sink captures public entrypoints | 🟢 fixed | guard noise sink + `api_surface` on `reexport_in` / `api_fan_out` (`role_cascade.py`); `FastAPI` recovered |
 | F13 | Pass-1 test-exclusion strips entrypoint edges | ⚠️ | compute `api_fan_in`/`depth_from_public` over full graph |
 
-**Critical path:** the prototype run validated the *direction* (presence gate cuts
-~12 phantoms vs k-means) but exposed two structural misses on public surfaces:
-F12 (noise sink fires before the surface predicate) and F13 (test-exclusion hides
-the entrypoint's user-side callers) — these are now the top blockers, ahead of the
-soft collisions. F10 (wire missing features) still unblocks the 🟢 roles and the L2
-cascade. `registration_step` is clean (`handle_fan_out`); the role with no clean
-structural fix today is `request_router` (F1 — dynamic dispatch, unmapped). F5 and
-F6 are pure naming. The clustering-shape findings (F2, F3, F8) are addressed by the
-architecture in [role_clustering_architecture.md](role_clustering_architecture.md).
+**Critical path:** fix remaining public-surface gaps (F12/F13 where still open) →
+naming fixes (F5/F6) → honest dataflow holes (F1 `request_router`). Re-validate
+with `QA/prototype_role_cascade.py` after each structural edge change.
 
 ## Related
 - [role_catalog.md](role_catalog.md) — the role vocabulary and per-role signatures.
