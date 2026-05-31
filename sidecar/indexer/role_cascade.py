@@ -172,7 +172,16 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
     RolePredicate(
         "config_surface",
         "state_types",
-        lambda r: r.type_fan_in_param > max(_EPS, r.call_fan_in),
+        lambda r: r.is_class
+        and (
+            r.type_fan_in_param > max(_EPS, r.call_fan_in)
+            or (
+                r.type_fan_in_param <= _EPS
+                and r.depend_fan_in > _EPS
+                and r.type_fan_in_isinstance > _EPS
+                and r.type_fan_in <= max(1.0, r.call_fan_in)
+            )
+        ),
         80,
     ),
     RolePredicate(

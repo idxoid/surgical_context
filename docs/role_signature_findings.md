@@ -76,9 +76,10 @@ Feature vocabulary and per-role discriminators referenced below live in
 - **why:** one canonical name, two incompatible structural profiles (internal
   cross-package fan-out vs out-degree to *external* nodes). Taxonomy/ranker cannot
   distinguish them.
-- **decision:** rename the §3 sense to `module_composition` (or fold into
-  `composition_surface`); reserve `integration_surface`/`gateway` for §9. Naming
-  fix, not a feature fix.
+- **decision:** rename the §3 sense to `module_composition` (maps to
+  `composition_surface` in `role_taxonomy.py`); reserve `integration_surface` /
+  `gateway` for §9. **Done** — `store_integration → composition_surface`;
+  `module_composition` alias added.
 
 ---
 
@@ -116,7 +117,10 @@ Feature vocabulary and per-role discriminators referenced below live in
   (`provider_registry`, `*_registry → factory_surface`, etc.).
 - **why:** semantic dup — same word, three structural signatures.
 - **decision:** prefix the aliases: `handler_registry`, `provider_registry`,
-  `state_registry`. Documentation/taxonomy hygiene.
+  `state_registry`. **Done** in `role_taxonomy.py` — handler-registration
+  `*_registry` → `registration_step`; DI `provider_registry` → `orchestrator`;
+  module `module_registry` → `composition_surface`; state `state_registry` /
+  `metadata_registry` / `table_registry` → `runtime_surface`.
 
 ### F7 — `factory_surface` vs `lazy_loader` share `type_fan_out(return)`
 - **what:** both declare a return type via USES_TYPE(return).
@@ -268,10 +272,10 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 |---|---|---|---|
 | F1 | `handle_fan_out` = registration (clean); `request_router` via `handler_call_fan_out` | 🟢 / 🟡 | registration_step clean; dynamic dispatch still partial |
 | F2 | leaf+fan_in blob (6 roles) | 🔴 | resolve via L1/L2 hierarchy |
-| F5 | `integration_surface` name reused | 🔴 | rename §3 → `module_composition` |
+| F5 | `integration_surface` name reused | 🟢 fixed | §3 → `module_composition`; §9 keeps `integration_surface`/`gateway` |
 | F3 | `call_fan_out` coordinators (4) | 🟡 | L1 Control + L2 cascade on target-kind |
 | F4 | `type_fan_in` no kind-split | 🟡 | split feature into param/isinstance/return |
-| F6 | `registry` term overloaded | 🟡 | prefix aliases |
+| F6 | `registry` term overloaded | 🟢 fixed | prefixed aliases in `role_taxonomy.py` |
 | F7 | factory vs lazy_loader return | 🟡 | needs DescriptorSurface; factory primary |
 | F8 | multi-role symbols | 🟢 | primary + supporting model |
 | F9 | summary table gaps | 🟢 | add 3 rows + setup/runtime caveat |
@@ -280,10 +284,9 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 | F12 | L1 noise sink captures public entrypoints | 🟢 fixed | guard noise sink + `api_surface` on `reexport_in` / `api_fan_out` (`role_cascade.py`); `FastAPI` recovered |
 | F13 | Pass-1 test-exclusion strips entrypoint edges | 🟢 fixed | full-graph `api_fan_in` + `depth_from_public` |
 
-**Critical path:** naming fixes (F5/F6). Remaining honest dataflow holes:
-`request_router` dynamic dict-lookup dispatch (F1) and `self.<attr>`-only
-construction (P5 residual). Re-validate with `QA/prototype_role_cascade.py` after
-re-index (fastapi only).
+**Critical path:** honest dataflow residuals (`request_router` dynamic dispatch,
+`self.<attr>`-only construction). Re-validate with `QA/prototype_role_cascade.py`
+after engine changes (fastapi only).
 
 ## Related
 - [role_catalog.md](role_catalog.md) — the role vocabulary and per-role signatures.

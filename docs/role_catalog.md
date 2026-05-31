@@ -60,10 +60,13 @@ Declarative marker or configuration object consumed elsewhere by type.
 - **признаки:** high `type_fan_in` with **kind ∈ {param, annotation}** (many
   functions take it as a typed parameter); low `call_fan_in/out`; documented;
   often `is_class` or a thin factory function.
-- **discriminator:** `type_fan_in(param/annotation) ≫ call_fan_in`. Consumed as a
-  *type*, not called.
+- **discriminator:** `type_fan_in(param/annotation) ≫ call_fan_in` for exported
+  markers (`Query`, `Depends`, …). **Marker base classes** (`Param`) where
+  param-use lives on subclasses: `depend_fan_in > 0` (inheritance) +
+  `type_fan_in_isinstance > 0` (runtime type dispatch) with low aggregate
+  `type_fan_in` vs `call_fan_in` — not a representation type hub.
 - **examples:** `Depends`, `Query`, `Path`, `Header` (fastapi/param_functions.py);
-  pydantic `Field`.
+  `Param` (fastapi/params.py — base marker); pydantic `Field`.
 
 ---
 
@@ -120,11 +123,16 @@ The dispatcher side that registers handlers and later invokes them.
   was a phantom collision with `request_router`). The decorator that registers
   (`@app.route`, `@app.task`) is the registry; its `decorated` consumers are the
   executors.
+- **legacy aliases (F6):** `handler_registry`, `route_registry`, `middleware_registry`,
+  `hook_registry` → this role (handler-registration sense). Do not conflate with
+  `provider_registry` (DI) or `state_registry` (mutable singleton).
 - **examples:** `app.route`/`add_url_rule` (flask); `@app.task` (celery);
   `add_api_route` registering into `app.router` (fastapi).
 
-### `composition_surface` / `composition_pattern` / `integration_surface`
-Wires modules / composes behavior from parts.
+### `composition_surface` / `composition_pattern` / `module_composition`
+Wires modules / composes behavior from parts. (Legacy YAML may say
+`composition_pattern`; do **not** alias this role as `integration_surface` — that
+name is reserved for the §9 gateway role.)
 - **признаки:** high `call_fan_out` + high `import_in`/`cross_package_call_out`;
   pulls many providers together; orchestrator-like but at module-composition
   scale.
@@ -280,7 +288,8 @@ smeared into `orchestrator` (decorator_processor, action_interceptor) and
 
 ### 🟠 `integration_surface` / `gateway` / `adapter` / `repository`
 A module at a layer boundary that encapsulates network / FS / external-SDK access.
-(`integration_surface` exists in the taxonomy but was undescribed above.)
+(`integration_surface` is the canonical §9 gateway role — distinct from §3
+`module_composition` / `composition_surface`.)
 - **признаки:** high `cross_package_call_out_ratio` directed at **external**
   targets (boto3, stripe, requests, a driver); thin internal fan-in; often the
   only place an external import is used.

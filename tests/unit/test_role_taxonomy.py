@@ -1,4 +1,20 @@
-from sidecar.context.role_taxonomy import infer_supporting_roles
+from sidecar.context.role_taxonomy import infer_supporting_roles, normalize_role
+
+
+def test_f5_module_composition_maps_to_composition_surface():
+    assert normalize_role("module_composition") == "composition_surface"
+    assert normalize_role("store_integration") == "composition_surface"
+    assert normalize_role("integration_surface") == "integration_surface"
+    assert normalize_role("gateway") == "integration_surface"
+
+
+def test_f6_registry_aliases_disambiguate_by_sense():
+    assert normalize_role("handler_registry") == "registration_step"
+    assert normalize_role("route_registry") == "registration_step"
+    assert normalize_role("provider_registry") == "orchestrator"
+    assert normalize_role("module_registry") == "composition_surface"
+    assert normalize_role("state_registry") == "runtime_surface"
+    assert normalize_role("metadata_registry") == "runtime_surface"
 
 
 def test_no_name_pattern_role_inference():
