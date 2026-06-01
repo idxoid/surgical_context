@@ -954,6 +954,29 @@ class PythonAdapter(TreeSitterAdapter):
                 fn_name = fn.child_by_field_name("name")
                 if fn_name is None or _node_text(fn_name) != "__init__":
                     continue
+                # Map each typed __init__ parameter to its resolved type, so a
+                # constructor-injection assignment ``self.x = param`` (very common DI:
+                # ``def __init__(self, router: APIRouter): self.router = router``)
+                # carries the declared parameter type onto the attribute.
+                param_types: dict[str, str] = {}
+                params_node = fn.child_by_field_name("parameters")
+                if params_node is not None:
+                    for prm in params_node.named_children:
+                        if prm.type not in ("typed_parameter", "typed_default_parameter"):
+                            continue
+                        if prm.type == "typed_parameter":
+                            ident = next(
+                                (c for c in prm.named_children if c.type == "identifier"),
+                                None,
+                            )
+                        else:
+                            ident = prm.child_by_field_name("name")
+                        ptype = prm.child_by_field_name("type")
+                        if ident is None or ptype is None:
+                            continue
+                        targets = self._type_ref_targets(ptype, import_bindings, module)
+                        if targets:
+                            param_types[_node_text(ident)] = targets[0][1]
                 for assign in self._iter_nodes(fn):
                     if assign.type != "assignment":
                         continue
@@ -976,6 +999,16 @@ class PythonAdapter(TreeSitterAdapter):
                         if targets:
                             attrs.setdefault(aname, targets[0][1])
                             continue
+                    # (c) constructor injection: ``self.x = param`` where ``param`` is a
+                    # type-annotated __init__ parameter. The declared parameter type is
+                    # a real static fact; precision over recall (disjunctions like
+                    # ``param or self.app.backend`` whose RHS is not a bare typed param
+                    # are skipped — that is the F24 dynamic-backend gap, left honest).
+                    if right is not None and right.type == "identifier":
+                        rname = _node_text(right)
+                        if rname in param_types:
+                            attrs.setdefault(aname, param_types[rname])
+                        continue
                     # (b) instantiation: ``self.x = Class(...)`` or ``self.x = mod.Class(...)``.
                     if right is None or right.type != "call":
                         continue
