@@ -42,6 +42,8 @@ from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.indexer.fast.collector import collect_files
 from sidecar.indexer.fast.extractor import ExtractedFile, FastExtractor, hash_file
 from sidecar.indexer.fast.schema import ensure_fast_indexes
+from sidecar.indexer.external_boundary import build_project_boundary
+from sidecar.indexer.external_facts import apply_external_boundary_for_file
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.repository_profile import (
     RepositoryProfileInputs,
@@ -238,6 +240,39 @@ def _apply_graph(
 
         reporter.step("graph")
     reporter.stage_end("graph")
+
+
+def _external_boundary_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    project_path: str,
+    indexed_files: list[str],
+    reporter: ProgressReporter,
+) -> tuple[int, int]:
+    """Materialize ``ExternalPkg`` nodes and ``*_EXTERNAL`` edges (C1)."""
+    link_boundary = getattr(db, "link_external_boundary", None)
+    if not callable(link_boundary):
+        return 0, 0
+    boundary = build_project_boundary(project_path, file_paths=tuple(indexed_files))
+    calls_created = 0
+    imports_created = 0
+    reporter.stage_start("external_boundary", total=len(diffs))
+    for diff in diffs:
+        ex = diff.extracted
+        created_calls, created_imports = apply_external_boundary_for_file(
+            db,
+            file_path=ex.path,
+            source_code=ex.source,
+            calls=ex.calls,
+            boundary=boundary,
+            workspace_id=workspace_id,
+        )
+        calls_created += created_calls
+        imports_created += created_imports
+        reporter.step("external_boundary")
+    reporter.stage_end("external_boundary")
+    return calls_created, imports_created
 
 
 def _degree_seeds_snapshot(
@@ -932,6 +967,19 @@ def run_fast_indexing(
         t_stage = time.perf_counter()
         _apply_graph(diffs, db, workspace_id, reporter)
         stats["timings_sec"]["graph"] = round(time.perf_counter() - t_stage, 3)
+
+        t_stage = time.perf_counter()
+        ext_calls, ext_imports = _external_boundary_phase(
+            diffs,
+            db,
+            workspace_id,
+            project_path,
+            files,
+            reporter,
+        )
+        stats["external_calls_linked"] = ext_calls
+        stats["external_imports_linked"] = ext_imports
+        stats["timings_sec"]["external_boundary"] = round(time.perf_counter() - t_stage, 3)
 
         t_stage = time.perf_counter()
         stats["mro_api_edges"] = _mro_api_bridge_phase(db, workspace_id, reporter)

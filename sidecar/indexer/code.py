@@ -1,6 +1,7 @@
 import hashlib
 import os
 import sys
+from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -158,6 +159,20 @@ def index_file(
         delete_imports(file_path, workspace_id=workspace_id)
     if imports:
         db.link_imports(imports, workspace_id=workspace_id)
+
+    from sidecar.indexer.external_boundary import build_project_boundary
+    from sidecar.indexer.external_facts import apply_external_boundary_for_file
+
+    project_root = getattr(extractor, "project_root", None) or str(Path(file_path).resolve().parent)
+    boundary = build_project_boundary(project_root, file_paths=(file_path,))
+    apply_external_boundary_for_file(
+        db,
+        file_path=file_path,
+        source_code=source,
+        calls=calls,
+        boundary=boundary,
+        workspace_id=workspace_id,
+    )
 
     inheritance = extractor.extract_inheritance(file_path)
     if inheritance and edge_refresh_uids:

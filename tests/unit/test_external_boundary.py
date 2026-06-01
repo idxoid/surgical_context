@@ -1,0 +1,80 @@
+from sidecar.indexer.external_boundary import (
+    build_project_boundary,
+    classify_external_root,
+    external_pkg_uid,
+    external_root_from_qualified_name,
+)
+from sidecar.indexer.external_facts import (
+    collect_external_call_links,
+    collect_external_import_links,
+    external_call_link_rows,
+)
+from sidecar.indexer.role_clustering import assemble_symbol_rows
+
+
+def test_external_root_from_qualified_name_truncates_to_root():
+    assert external_root_from_qualified_name("httpx._client.Client.get") == "httpx"
+    assert external_root_from_qualified_name("sqlalchemy") == "sqlalchemy"
+
+
+def test_classify_external_root_respects_project_boundary(tmp_path):
+    project = tmp_path / "pkg"
+    (project / "app").mkdir(parents=True)
+    (project / "app" / "__init__.py").write_text("")
+    boundary = build_project_boundary(project, file_paths=("app/routes.py",))
+    assert classify_external_root("app", boundary) == "internal"
+    assert classify_external_root("typing", boundary) == "external"
+    assert classify_external_root("local_vendor", boundary) == "skip"
+
+
+def test_collect_external_call_links_skips_in_project_targets():
+    boundary = frozenset({"fastapi"})
+    calls = [
+        {
+            "caller_uid": "c1",
+            "callee_qualified_name": "fastapi.routing.APIRouter",
+            "call_site_line": 10,
+        },
+        {
+            "caller_uid": "c2",
+            "callee_qualified_name": "json.dumps",
+            "call_site_line": 3,
+        },
+    ]
+    links = collect_external_call_links(calls, boundary=boundary)
+    assert len(links) == 1
+    assert links[0].external_root == "json"
+    assert links[0].callee_member == "dumps"
+
+
+def test_collect_external_import_links_from_source():
+    boundary = frozenset({"myapp"})
+    source = "import json\nfrom myapp import routes\nimport typing\n"
+    links = collect_external_import_links(source, "svc/main.py", boundary=boundary)
+    roots = {link.external_root for link in links}
+    assert roots == {"json", "typing"}
+
+
+def test_external_call_link_rows_use_stable_uids():
+    from sidecar.indexer.external_facts import ExternalCallLink
+
+    link = ExternalCallLink("caller", "json", "dumps", 1, 0.9)
+    rows = external_call_link_rows([link], "ws/test")
+    assert rows[0]["external_uid"] == external_pkg_uid("ws/test", "json")
+
+
+def test_assemble_symbol_rows_includes_external_features():
+    symbols = [("s1", "function", "svc/gateway.py")]
+    rows = assemble_symbol_rows(
+        symbols,
+        [],
+        {},
+        external_call_fan_out_per_uid={"s1": 2.5},
+        external_root_count_per_uid={"s1": 2},
+        external_import_fan_out_by_file={"svc/gateway.py": 3.0},
+    )
+    row = rows[0]
+    assert row.external_call_fan_out == 2.5
+    assert row.external_root_count == 2
+    assert row.external_import_fan_out == 3.0
+    assert row.external_call_out_ratio == 2.5 / 0.05

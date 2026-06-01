@@ -305,7 +305,7 @@ class Neo4jClient:
         with self.driver.session() as session:
             session.run(
                 """
-                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|HAS_API|INHERITED_API]->(:Symbol)
+                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|CALLS_EXTERNAL|DEPENDS_ON|IMPLEMENTS|OVERRIDES|HAS_API|INHERITED_API]->()
                 WHERE s.uid IN $symbol_uids
                   AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 WITH collect(r) AS edges
@@ -589,6 +589,129 @@ class Neo4jClient:
             imports=[_import_row(imp) for imp in imports],
             workspace_id=workspace_id,
         )
+
+    def delete_external_imports_for_file(
+        self,
+        file_path: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[r:IMPORTS_EXTERNAL]->(:ExternalPkg)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                WITH collect(r) AS edges
+                FOREACH (edge IN edges | DELETE edge)
+                WITH size(edges) AS deleted_edges
+                MATCH (w:Workspace {id: $workspace_id})
+                WHERE deleted_edges > 0
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
+    def link_external_boundary(
+        self,
+        call_links: list[dict],
+        import_links: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> tuple[int, int]:
+        """Materialize ``(:ExternalPkg)`` targets and ``*_EXTERNAL`` edges (C1)."""
+        with self.driver.session() as session:
+            calls_created, imports_created = session.execute_write(
+                self._create_external_boundary_relations,
+                call_links,
+                import_links,
+                workspace_id,
+            )
+            if calls_created or imports_created:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
+            session.run(
+                """
+                MATCH (e:ExternalPkg {workspace_id: $workspace_id})
+                WHERE NOT (e)<-[:CALLS_EXTERNAL|IMPORTS_EXTERNAL {workspace_id: $workspace_id}]-()
+                DETACH DELETE e
+                """,
+                workspace_id=workspace_id,
+            )
+        return calls_created, imports_created
+
+    @staticmethod
+    def _create_external_boundary_relations(tx, call_links, import_links, workspace_id):
+        from sidecar.indexer.external_boundary import external_pkg_uid
+
+        roots = sorted(
+            {
+                *(str(row.get("external_root") or "") for row in call_links),
+                *(str(row.get("external_root") or "") for row in import_links),
+            }
+            - {""}
+        )
+        if roots:
+            tx.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                UNWIND $roots AS root
+                MERGE (e:ExternalPkg {uid: root.uid, workspace_id: $workspace_id})
+                SET e.name = root.name,
+                    e.root = root.name,
+                    e.qualified_name = root.name,
+                    e.is_external = true
+                MERGE (e)-[:IN_WORKSPACE]->(w)
+                """,
+                workspace_id=workspace_id,
+                roots=[
+                    {
+                        "name": root,
+                        "uid": external_pkg_uid(workspace_id, root),
+                    }
+                    for root in roots
+                ],
+            )
+        calls_created = 0
+        if call_links:
+            rec = tx.run(
+                """
+                UNWIND $rows AS row
+                MATCH (caller:Symbol {uid: row.caller_uid})
+                MATCH (e:ExternalPkg {uid: row.external_uid, workspace_id: $workspace_id})
+                MERGE (caller)-[r:CALLS_EXTERNAL {
+                    workspace_id: $workspace_id,
+                    call_site_line: row.call_site_line
+                }]->(e)
+                SET r.confidence = row.confidence,
+                    r.resolver = 'external-boundary-v1',
+                    r.callee_member = row.callee_member
+                RETURN count(r) AS c
+                """,
+                rows=call_links,
+                workspace_id=workspace_id,
+            ).single()
+            calls_created = int(rec["c"]) if rec else 0
+        imports_created = 0
+        if import_links:
+            rec = tx.run(
+                """
+                UNWIND $rows AS row
+                MATCH (f:File {path: row.file_path, workspace_id: $workspace_id})
+                MATCH (e:ExternalPkg {uid: row.external_uid, workspace_id: $workspace_id})
+                MERGE (f)-[r:IMPORTS_EXTERNAL {workspace_id: $workspace_id}]->(e)
+                SET r.confidence = 1.0,
+                    r.resolver = 'external-boundary-v1'
+                RETURN count(r) AS c
+                """,
+                rows=import_links,
+                workspace_id=workspace_id,
+            ).single()
+            imports_created = int(rec["c"]) if rec else 0
+        return calls_created, imports_created
 
     def link_class_api(
         self,

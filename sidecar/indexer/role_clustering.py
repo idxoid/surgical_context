@@ -115,6 +115,14 @@ class SymbolRow:
     construct_fan_out: float = 0.0
     reexport_in: int = 0
     is_proxy_binding: bool = False
+    external_call_fan_out: float = 0.0
+    external_import_fan_out: float = 0.0
+    external_root_count: int = 0
+
+    @property
+    def external_call_out_ratio(self) -> float:
+        denom = self.call_fan_out + _EPS
+        return self.external_call_fan_out / denom
 
     @property
     def cross_package_call_in(self) -> float:
@@ -277,6 +285,9 @@ def assemble_symbol_rows(
     doc_signal_by_uid: dict[str, dict[str, float]] | None = None,
     proxy_uids: set[str] | None = None,
     reexport_in_per_uid: dict[str, int] | None = None,
+    external_call_fan_out_per_uid: dict[str, float] | None = None,
+    external_root_count_per_uid: dict[str, int] | None = None,
+    external_import_fan_out_by_file: dict[str, float] | None = None,
 ) -> list[SymbolRow]:
     """Combine raw graph extracts into ``SymbolRow``s with cascade features."""
     if not symbols:
@@ -286,12 +297,16 @@ def assemble_symbol_rows(
     doc_signal_by_uid = doc_signal_by_uid or {}
     proxy_uids = proxy_uids or set()
     reexport_in_per_uid = reexport_in_per_uid or {}
+    external_call_fan_out_per_uid = external_call_fan_out_per_uid or {}
+    external_root_count_per_uid = external_root_count_per_uid or {}
+    external_import_fan_out_by_file = external_import_fan_out_by_file or {}
 
     info: dict[str, dict] = {}
     for uid, kind, file_path in symbols:
         info[uid] = {
             "uid": uid,
             "kind": kind or "",
+            "file_path": file_path or "",
             "package": os.path.dirname(file_path or ""),
         }
 
@@ -424,6 +439,11 @@ def assemble_symbol_rows(
                 construct_fan_out=construct_fan_out[uid],
                 reexport_in=int(reexport_in_per_uid.get(uid, 0)),
                 is_proxy_binding=uid in proxy_uids,
+                external_call_fan_out=float(external_call_fan_out_per_uid.get(uid, 0.0)),
+                external_import_fan_out=float(
+                    external_import_fan_out_by_file.get(meta["file_path"], 0.0)
+                ),
+                external_root_count=int(external_root_count_per_uid.get(uid, 0)),
             )
         )
     return rows
@@ -483,6 +503,8 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
     import_in = _query_file_import_in_counts(db, workspace_id)
     reexport_in = _query_reexport_in_counts(db, workspace_id)
     proxy_uids = _query_proxy_binding_uids(db, workspace_id)
+    external_call_fan, external_root_count = _query_external_call_fan(db, workspace_id)
+    external_import_by_file = _query_external_import_fan_by_file(db, workspace_id)
     return assemble_symbol_rows(
         symbols,
         edges,
@@ -491,6 +513,9 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
         doc_signals,
         proxy_uids,
         reexport_in,
+        external_call_fan,
+        external_root_count,
+        external_import_by_file,
     )
 
 
@@ -567,6 +592,46 @@ def _query_proxy_binding_uids(db, workspace_id: str) -> set[str]:
             workspace_id=workspace_id,
         )
         return {r["uid"] for r in result if r.get("uid")}
+
+
+def _query_external_call_fan(db, workspace_id: str) -> tuple[dict[str, float], dict[str, int]]:
+    with db.driver.session() as session:
+        result = session.run(
+            """
+            MATCH (s:Symbol)-[r:CALLS_EXTERNAL]->(e:ExternalPkg)
+            WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+            RETURN s.uid AS uid,
+                   sum(coalesce(r.confidence, 1.0)) AS fan,
+                   count(DISTINCT e) AS roots
+            """,
+            workspace_id=workspace_id,
+        )
+        fan: dict[str, float] = {}
+        roots: dict[str, int] = {}
+        for record in result:
+            uid = record.get("uid")
+            if not uid:
+                continue
+            fan[uid] = float(record.get("fan") or 0.0)
+            roots[uid] = int(record.get("roots") or 0)
+        return fan, roots
+
+
+def _query_external_import_fan_by_file(db, workspace_id: str) -> dict[str, float]:
+    with db.driver.session() as session:
+        result = session.run(
+            """
+            MATCH (f:File {workspace_id: $workspace_id})-[r:IMPORTS_EXTERNAL]->(:ExternalPkg)
+            WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+            RETURN f.path AS path, count(DISTINCT r) AS fan
+            """,
+            workspace_id=workspace_id,
+        )
+        return {
+            str(record["path"]): float(record.get("fan") or 0.0)
+            for record in result
+            if record.get("path")
+        }
 
 
 def _query_file_import_in_counts(db, workspace_id: str) -> dict[str, int]:

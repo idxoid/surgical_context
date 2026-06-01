@@ -268,19 +268,36 @@ RARE_ROLES = frozenset(
 
 
 def assign_l1(row: FanProfile) -> str:
+    # 1. noise — dead code / orphans, but never a documented or API-exposing class
+    #    (a public surface has zero *internal* in-degree by design).
     surface_class = row.is_class and (row.api_fan_out > _EPS or row.has_documentation)
     if row.zero_in_degree and row.call_fan_out <= _EPS and not surface_class:
         return "noise"
-    if row.is_proxy_binding:
-        return "routing_wrap"
+    # 2. dispatch_and_wrap — any dispatch/decoration marker (HANDLES in/out, proxy,
+    #    decorated). The most specific topology in the graph; a symbol wired into the
+    #    dispatch system is caught here whole (proxy_mechanism, interceptor,
+    #    registration_step, executor, request_router all live in this bucket — Trap-3:
+    #    a single logical role must not be split across L1 buckets).
     if (
-        row.handle_fan_in > _EPS
+        row.is_proxy_binding
+        or row.handle_fan_in > _EPS
         or row.handle_fan_out > _EPS
         or row.decorated_in > _EPS
     ):
         return "routing_wrap"
-    if row.call_fan_out > row.call_fan_in and row.call_fan_out > _EPS:
-        return "control_flow"
+    # 3. state_and_types — BEFORE control_flow. A fundamental data type/contract is
+    #    classified by what it *is* (strong type/depend fan-in relative to what it
+    #    calls), not by how many utilities it calls internally. Guards the "fat model"
+    #    trap (a model with call_out > call_in must not leak to control_flow→
+    #    orchestrator). No is_class gate: typing topology is primary, syntax (class vs
+    #    module var / TypedDict / descriptor) secondary — non-class DTOs qualify too.
+    if (
+        row.type_fan_in > max(_EPS, row.call_fan_out)
+        or row.depend_fan_in > max(_EPS, row.call_fan_out)
+    ):
+        return "state_types"
+    # (kept) class with any type/api evidence but weaker than its call_out still reads
+    # as a type surface rather than control flow.
     if row.is_class and (
         row.type_fan_in > _EPS
         or row.depend_fan_in > _EPS
@@ -288,6 +305,13 @@ def assign_l1(row: FanProfile) -> str:
         or row.api_fan_out > _EPS
     ):
         return "state_types"
+    # 4. boundary_integration — deferred: needs an unresolved/external-out ratio
+    #    feature (cross_package_call is intra-project modularity, not an external
+    #    boundary). integration_surface / binding_surface / compat_bridge stay gaps.
+    # 5. control_flow — orchestration/factories: calls many, is not a data type.
+    if row.call_fan_out > row.call_fan_in and row.call_fan_out > _EPS:
+        return "control_flow"
+    # 6. compute_leaf — heavily reused terminal utilities.
     if row.call_fan_in > _EPS and row.call_leaf:
         return "compute_leaf"
     if row.call_fan_in > _EPS or row.call_fan_out > _EPS:
