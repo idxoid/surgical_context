@@ -562,6 +562,26 @@ after engine changes (fastapi only).
   legacy siblings under the same class) is a broad retrieval change, not a targeted
   structural signal — out of scope for the role pass. Recorded for the retrieval track.
 
+### F24 — integration_surface invisible when the boundary is a dynamic backend attr 🟠
+- **celery q04 (`AsyncResult`)**: misses `integration_surface`.
+- **traced:** the benchmark target resolves to *import instances* of AsyncResult
+  (api_surface/representation), not the class@`result.py` (which is `executor`,
+  in=14/out=1) — a duplicate target-selection issue. More fundamentally, the class's
+  only materialized external edges are to `dateutil`/`collections` (stdlib plumbing,
+  correctly excluded by `_integration_boundary_signal`). Its real integration boundary
+  — `self.backend.get_task_meta(...)` reaching Redis/AMQP — is **invisible**: `backend`
+  is a runtime-injected attribute (Redis vs AMQP vs DB chosen by config), it has no
+  static type, so the external call to the result store is never an edge.
+  `external_integration_call_fan_out = 0` → boundary_integration never fires.
+- **why honest gap:** the integration classifier is fine (`is_integration_external_root`
+  would count redis/kombu); the symbol simply does not *statically call* them. Same
+  class as celery message publish/consume and the dynamic-backend proxy — a
+  runtime/dataflow boundary, not a missing edge (P5). Telling it from a name would be a
+  P3 violation.
+- **decision:** left as a documented dynamic-boundary gap. Reachable only with backend
+  type resolution (the `self.<attr>` typing family, like F18's facade fix but for an
+  injected/config-selected attribute) or a dataflow pass — out of scope here.
+
 ## Related
 - [role_catalog.md](role_catalog.md) — the role vocabulary and per-role signatures.
 - [role_clustering_architecture.md](role_clustering_architecture.md) — pipeline decision.
