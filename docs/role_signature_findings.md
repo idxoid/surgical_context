@@ -517,6 +517,41 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 `self.<attr>`-only construction). Re-validate with `QA/prototype_role_cascade.py`
 after engine changes (fastapi only).
 
+### F22 — schema_builder works for builder *functions*, not for builder *classes* 🟡
+- **pydantic q04 (`model_json_schema`)**: misses `schema_builder`.
+- **traced:** target `model_json_schema`@main.py is a thin delegator
+  (`CALLS_IMPORTED→ model_json_schema`@core, `USES_TYPE→ GenerateJsonSchema`); the real
+  schema machinery is `GenerateJsonSchema` — a class with **87 HAS_API methods**, tfi=9,
+  leaf, out_degree=0 → lands `state_types`/`representation_surface`. The `schema_builder`
+  predicate is in `control_flow` (needs `call_fan_out>0`), so it fires for builder
+  *functions* (164 assignments in pydantic) but never for a builder *class*.
+- **why no clean class discriminator (measured):** separating a schema-builder class
+  from a data model by `api_fan_out / type_fan_in` ratio does not split —
+  GenerateJsonSchema=9.17 vs RootModel=5.51 / BaseModel=4.16 / FieldInfo=4.58 (models),
+  and ModelMetaclass=95 / GenerateJsonSchemaHandler=185 straddle both. "Builds a schema"
+  vs "is a model" is *data semantics*, not api/type topology (same class as F21).
+- **decision:** keep `schema_builder` (live role for builder functions); do **not** add
+  a class-level predicate (a fit to GenerateJsonSchema with false hits on
+  ModelMetaclass/RootModel — P4 violation). The builder-class case is a partial gap
+  needing a return-shape/dataflow signal; left honest, not scored away (the role is
+  reachable, unlike F21's fully-unreachable pair).
+
+### F23 — class HAS_API method ranking: query picks legacy over the relevant method 🟡
+- **pydantic q01 (`BaseModel`, "validation flow in v2")**: misses `core_runtime`; the
+  expected `model_validate` is **not retrieved** though it is a **direct
+  `BaseModel -HAS_API-> model_validate`** (1 hop). BFS surfaced the legacy v1 surface
+  instead (`parse_obj`, `from_orm`, `validate`, `update_forward_refs`) and stopped on
+  `role_complete`.
+- **two roots:** (1) `core_runtime` on BaseModel is **over-specified gold** — BaseModel
+  is `abstract_contract`+[config/representation/api_surface] (in=518, a data contract /
+  public surface), not hot internal runtime machinery; (2) the real miss is **method
+  ranking among a class's 50+ HAS_API methods** — the query asks for *v2*, the ranker
+  ranked v1/legacy methods higher. This is query-semantics vs symbol-set selection, not
+  a 1-hop reachability or plan-depth issue.
+- **decision:** leave q01. A method-ranking fix (prefer the query-relevant method over
+  legacy siblings under the same class) is a broad retrieval change, not a targeted
+  structural signal — out of scope for the role pass. Recorded for the retrieval track.
+
 ## Related
 - [role_catalog.md](role_catalog.md) — the role vocabulary and per-role signatures.
 - [role_clustering_architecture.md](role_clustering_architecture.md) — pipeline decision.
