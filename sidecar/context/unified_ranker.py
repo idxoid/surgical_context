@@ -687,23 +687,43 @@ class UnifiedRanker:
         return 0.35
 
     def _target_role_bonus(self, role: str) -> float:
+        # Roles below must cover every role the cascade can emit (see role_cascade.py:
+        # L2_PREDICATES + L1_FALLBACK_ROLE). When the cascade gained new discriminators
+        # (proxy_mechanism / registration_step / dependency_solver / request_router /
+        # interceptor / composition_surface / abstract_contract / integration_surface)
+        # they were not added here, so every duplicate-target with one of these roles
+        # silently got the default 0.35 — losing to a same-name function with role
+        # supporting_surface (also 0.40 default). Keep this table aligned to the
+        # cascade vocabulary; an entry missing here is a target-selection regression.
         role_weights = {
+            # entry / dispatch surfaces — strong target signals
             "api_surface": 1.2,
             "executor": 1.0,
             "orchestrator": 0.95,
+            "request_router": 1.0,
+            "registration_step": 0.95,
+            "proxy_mechanism": 1.0,
+            "interceptor": 0.95,
+            "dependency_solver": 0.95,
+            # builders / construction / handlers
             "construction_surface": 0.9,
             "validator_handle": 0.95,
             "serializer_handle": 0.9,
             "binding_surface": 0.9,
-            "runtime_surface": 0.85,
             "factory_surface": 0.8,
             "schema_builder": 0.75,
+            "composition_surface": 0.8,
+            # runtime / errors / contracts
+            "runtime_surface": 0.85,
             "error_surface": 0.75,
+            "integration_surface": 0.85,
+            "abstract_contract": 0.65,
             "representation_surface": 0.6,
             "core_runtime": 0.55,
             "config_surface": 0.3,
             "compat_bridge": 0.45,
             "supporting_surface": 0.4,
+            "orphan": -0.4,
             "docs_or_concept": -0.4,
         }
         return role_weights.get(role, 0.35)
@@ -713,6 +733,11 @@ class UnifiedRanker:
             return 0.35 if intent != Intent.DESIGN_QUESTION else 0.2
         if kind == "class":
             return 0.1 if intent != Intent.EXPLORATION else 0.0
+        # A proxy_binding node is only materialized for a recognized lazy-proxy
+        # pattern (`x = LocalProxy(...)`); it always carries proxy_mechanism and is
+        # the *whole* point of disambiguating against a same-name getter function.
+        if kind == "proxy_binding":
+            return 0.35
         return 0.0
 
     @staticmethod
