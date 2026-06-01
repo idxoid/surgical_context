@@ -407,9 +407,16 @@ RARE_ROLES = frozenset(
 
 def assign_l1(row: FanProfile) -> str:
     # 1. noise — dead code / orphans, but never a documented or API-exposing class
-    #    (a public surface has zero *internal* in-degree by design).
+    #    (a public surface has zero *internal* in-degree by design), and never a
+    #    proxy_binding (its only edge is PROXY_OF, which is not counted as in-degree
+    #    but is the very signal that routes it to dispatch_and_wrap below).
     surface_class = row.is_class and (row.api_fan_out > _EPS or row.has_documentation)
-    if row.zero_in_degree and row.call_fan_out <= _EPS and not surface_class:
+    if (
+        row.zero_in_degree
+        and row.call_fan_out <= _EPS
+        and not surface_class
+        and not row.is_proxy_binding
+    ):
         return "noise"
     # 2. dispatch_and_wrap — any dispatch/decoration marker (HANDLES in/out, proxy,
     #    decorated). The most specific topology in the graph; a symbol wired into the

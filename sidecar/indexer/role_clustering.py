@@ -176,6 +176,12 @@ class SymbolRow:
 
     @property
     def structurally_connected(self) -> bool:
+        # A proxy_binding's only edge is PROXY_OF, which is not aggregated into any
+        # fan metric; without this exemption it would be dropped from Pass-1 even
+        # though it is a fully-defined structural node and the proxy_mechanism L2
+        # predicate is keyed on is_proxy_binding.
+        if self.is_proxy_binding:
+            return True
         return any(
             v > _EPS
             for v in (
@@ -629,9 +635,13 @@ def _query_reexport_in_counts(db, workspace_id: str) -> dict[str, int]:
 
 def _query_proxy_binding_uids(db, workspace_id: str) -> set[str]:
     with db.driver.session() as session:
+        # Workspace is scoped via File-[:CONTAINS]->Symbol; Symbol nodes have no
+        # workspace_id property of their own, so matching {workspace_id: ...} on
+        # Symbol returned nothing — every proxy_binding lost its is_proxy_binding
+        # flag and dropped out of the cascade. Match through the file.
         result = session.run(
             """
-            MATCH (p:Symbol {workspace_id: $workspace_id, kind: 'proxy_binding'})
+            MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(p:Symbol {kind: 'proxy_binding'})
             RETURN p.uid AS uid
             """,
             workspace_id=workspace_id,
