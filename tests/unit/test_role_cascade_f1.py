@@ -99,3 +99,89 @@ def test_get_openapi_like_flow_collects_schema_and_registration_supporting_roles
     assert "schema_builder" in asn.hits
     assert "registration_step" in asn.hits
     assert "schema_builder" in asn.supporting
+
+
+def test_runtime_surface_state_types_for_runtime_class():
+    row = _row(
+        uid="u:runtime_class",
+        kind="class",
+        call_fan_in=0.4,
+        type_fan_in=41.2,
+        type_fan_in_param=40.0,
+        reexport_in=1,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "state_types"
+    assert "runtime_surface" in asn.hits
+
+
+def test_registration_step_state_types_for_framework_entry_class():
+    row = _row(
+        uid="u:framework_entry",
+        kind="class",
+        call_fan_in=0.4,
+        type_fan_in=41.2,
+        type_fan_in_param=40.0,
+        api_fan_out=1.0,
+        reexport_in=1,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "state_types"
+    assert "registration_step" in asn.hits
+    assert asn.primary != "config_surface"
+
+
+def test_runtime_surface_compute_leaf_for_non_leaf_runtime_executor():
+    row = _row(
+        uid="u:runtime_leaflike",
+        call_fan_in=0.9,
+        call_fan_out=0.7,
+        depth_from_public=1,
+        import_in=13,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "compute_leaf"
+    assert "runtime_surface" in asn.hits
+
+
+def test_runtime_surface_control_flow_for_public_runtime_orchestrator():
+    row = _row(
+        uid="u:runtime_flow",
+        call_fan_in=0.9,
+        call_fan_out=5.7,
+        depth_from_public=2,
+        import_in=101,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "control_flow"
+    assert "runtime_surface" in asn.hits
+
+
+def test_dependency_solver_state_types_for_depends_like_function():
+    row = _row(
+        uid="u:depends_like",
+        depend_fan_in=0.9,
+        call_fan_out=0.7,
+        depth_from_public=0,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "state_types"
+    assert "dependency_solver" in asn.hits
+    assert "api_surface" in asn.hits
+
+
+def test_binding_and_schema_surface_for_type_heavy_public_control_flow():
+    row = _row(
+        uid="u:request_body_like",
+        call_fan_in=0.9,
+        call_fan_out=5.7,
+        type_fan_out=2.0,
+        cross_package_out=3,
+        import_in=101,
+        depth_from_public=2,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "control_flow"
+    assert "binding_surface" in asn.hits
+    assert "schema_builder" in asn.hits
+    assert "dependency_solver" in asn.hits

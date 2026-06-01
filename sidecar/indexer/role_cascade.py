@@ -147,8 +147,15 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
     RolePredicate(
         "dependency_solver",
         "control_flow",
-        lambda r: r.type_fan_in_isinstance > _EPS or r.inject_fan_in > _EPS,
-        80,
+        lambda r: r.type_fan_in_isinstance > _EPS
+        or r.inject_fan_in > _EPS
+        or (
+            r.type_fan_out > _EPS
+            and r.cross_package_call_out >= 2.0
+            and r.import_in >= 20
+            and r.depth_from_public >= 2
+        ),
+        72,
     ),
     RolePredicate(
         "request_router",
@@ -185,7 +192,7 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         lambda r: r.call_fan_out > r.call_fan_in
         and r.cross_package_call_out >= 1.0
         and r.import_in >= 2,
-        75,
+        66,
     ),
     RolePredicate(
         "orchestrator",
@@ -207,7 +214,27 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         and (
             (r.type_fan_in > _EPS and r.type_fan_in_return <= _EPS)
             or (r.construct_fan_out > _EPS and r.depth_from_public <= 1)
+            or (r.type_fan_out > _EPS and r.call_fan_out > r.call_fan_in and r.import_in >= 20)
         ),
+        71,
+    ),
+    RolePredicate(
+        "binding_surface",
+        "control_flow",
+        lambda r: r.call_fan_out > r.call_fan_in
+        and r.type_fan_out > _EPS
+        and r.cross_package_call_out >= 1.0
+        and r.import_in >= 20
+        and r.depth_from_public >= 2,
+        73,
+    ),
+    RolePredicate(
+        "runtime_surface",
+        "control_flow",
+        lambda r: r.call_fan_in > _EPS
+        and r.call_fan_out > _EPS
+        and r.depth_from_public <= 2
+        and r.import_in >= 10,
         71,
     ),
     RolePredicate(
@@ -232,6 +259,7 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         "config_surface",
         "state_types",
         lambda r: r.is_class
+        and not (r.reexport_in > _EPS and r.api_fan_out > _EPS and r.call_fan_in > _EPS)
         and (
             r.type_fan_in_param > max(_EPS, r.call_fan_in)
             or (
@@ -258,8 +286,37 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
             and r.has_documentation
             and (r.api_fan_in > _EPS or r.doc_definition_weight > 0)
         )
+        or (
+            r.is_function
+            and r.depth_from_public <= 1
+            and r.depend_fan_in > _EPS
+            and r.call_fan_out > _EPS
+        )
         or (r.is_class and r.reexport_in > _EPS and r.api_fan_out > _EPS),
         70,
+    ),
+    RolePredicate(
+        "registration_step",
+        "state_types",
+        lambda r: r.is_class
+        and r.reexport_in > _EPS
+        and r.api_fan_out > _EPS
+        and r.call_fan_in > _EPS,
+        68,
+    ),
+    RolePredicate(
+        "dependency_solver",
+        "state_types",
+        lambda r: r.is_function and r.depend_fan_in > _EPS and r.depth_from_public <= 1,
+        67,
+    ),
+    RolePredicate(
+        "runtime_surface",
+        "state_types",
+        lambda r: r.is_class
+        and r.call_fan_in > _EPS
+        and (r.type_fan_in_param > _EPS or r.reexport_in > _EPS),
+        69,
     ),
     RolePredicate(
         "executor",
@@ -292,6 +349,15 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         and r.handle_fan_in <= _EPS
         and r.type_fan_in <= max(1.0, r.call_fan_in),
         75,
+    ),
+    RolePredicate(
+        "runtime_surface",
+        "compute_leaf",
+        lambda r: r.call_fan_in > _EPS
+        and not r.call_leaf
+        and r.depth_from_public <= 2
+        and r.import_in >= 8,
+        72,
     ),
     RolePredicate(
         "executor",
