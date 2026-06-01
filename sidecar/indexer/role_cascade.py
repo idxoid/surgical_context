@@ -49,6 +49,7 @@ class FanProfile(Protocol):
     external_integration_call_fan_out: float
     external_integration_import_fan_out: float
     external_integration_root_count: int
+    inherits_builtin_exception: bool
 
     @property
     def external_call_out_ratio(self) -> float: ...
@@ -248,6 +249,16 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         80,
     ),
     RolePredicate(
+        "error_surface",
+        "state_types",
+        # A class inheriting a builtin exception (ValueError/Exception/...) is an
+        # error type. The base is a builtin (not an in-graph node), so this comes
+        # from the `inherits_builtin_exception` marker set at link time — a real AST
+        # fact (`class X(..., ValueError)`), not a name match.
+        lambda r: r.inherits_builtin_exception,
+        88,
+    ),
+    RolePredicate(
         "abstract_contract",
         "state_types",
         lambda r: r.is_class
@@ -418,8 +429,11 @@ def assign_l1(row: FanProfile) -> str:
     #    trap (a model with call_out > call_in must not leak to control_flow→
     #    orchestrator). No is_class gate: typing topology is primary, syntax (class vs
     #    module var / TypedDict / descriptor) secondary — non-class DTOs qualify too.
+    #    An exception type is a data contract too (error_surface), even when its only
+    #    in-graph signal is the builtin-exception inheritance marker.
     if (
-        row.type_fan_in > max(_EPS, row.call_fan_out)
+        row.inherits_builtin_exception
+        or row.type_fan_in > max(_EPS, row.call_fan_out)
         or row.depend_fan_in > max(_EPS, row.call_fan_out)
     ):
         return "state_types"

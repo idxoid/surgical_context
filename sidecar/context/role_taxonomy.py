@@ -156,6 +156,21 @@ NON_STRUCTURAL_ROLES: frozenset[str] = frozenset(
     {"docs_or_concept", "negative_lookup", "nearest_real_mechanism"}
 )
 
+# Real roles with no structural discriminator today: the topology cannot separate
+# them from a neighbour role (F21). serializer_handle vs validator_handle vs
+# core_runtime are byte-identical in the graph (hot leaf, high call_fan_in, zero
+# type fan) — telling "serializes to json" from "validates into a type" needs the
+# data shape a method returns/accepts (dataflow), not a call/type edge. Excluded
+# from role-recall scoring until a return-shape/dataflow pass exists; NOT faked from
+# the method name (P3). Distinct from NON_STRUCTURAL_ROLES (eval concepts): these are
+# genuine roles, just structurally unreachable.
+STRUCTURALLY_UNREACHABLE_ROLES: frozenset[str] = frozenset(
+    {"serializer_handle", "validator_handle"}
+)
+
+# Roles excluded from role-recall scoring (the engine cannot produce them today).
+UNSCORED_ROLES: frozenset[str] = NON_STRUCTURAL_ROLES | STRUCTURALLY_UNREACHABLE_ROLES
+
 
 def normalize_role(role: str) -> str:
     """Map a legacy/framework-specific role name to the canonical taxonomy."""

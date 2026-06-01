@@ -825,6 +825,24 @@ class Neo4jClient:
             inheritance_edges=[_inheritance_row(edge) for edge in inheritance_edges],
             workspace_id=workspace_id,
         )
+        # Builtin-exception inheritance: the base is not an in-graph symbol, so no
+        # DEPENDS_ON edge is created above. Mark the subclass so the cascade can
+        # derive `error_surface` from this real AST fact (P5: a structural signal,
+        # not a name/keyword match — driven by the standard exception hierarchy).
+        exc_rows = [
+            {"subclass_uid": edge.subclass_uid}
+            for edge in inheritance_edges
+            if edge.superclass_name.rsplit(".", 1)[-1] in _BUILTIN_EXCEPTION_BASES
+        ]
+        if exc_rows:
+            tx.run(
+                """
+                UNWIND $rows AS row
+                MATCH (s:Symbol {uid: row.subclass_uid})
+                SET s.inherits_builtin_exception = true
+                """,
+                rows=exc_rows,
+            )
 
     def link_proxy_bindings(
         self,
@@ -1514,6 +1532,32 @@ def _monorepo_package_import_paths(module_name: str) -> list[str]:
             ]
         )
     return candidates
+
+
+# Python builtin exception hierarchy. A class inheriting one of these is an error
+# type, but the base is a builtin (not an in-graph symbol), so the inheritance edge
+# is never materialized — leaving the error-ness structurally invisible. This is the
+# standard library's own taxonomy, not a project/benchmark fixture: it lets the
+# cascade derive `error_surface` from a real AST fact (`class X(..., ValueError)`).
+_BUILTIN_EXCEPTION_BASES: frozenset[str] = frozenset(
+    {
+        "BaseException", "Exception", "ArithmeticError", "AssertionError",
+        "AttributeError", "BufferError", "EOFError", "ImportError",
+        "ModuleNotFoundError", "LookupError", "IndexError", "KeyError",
+        "MemoryError", "NameError", "UnboundLocalError", "OSError", "IOError",
+        "FileNotFoundError", "FileExistsError", "PermissionError",
+        "NotADirectoryError", "IsADirectoryError", "InterruptedError",
+        "ConnectionError", "BrokenPipeError", "ConnectionResetError",
+        "ConnectionAbortedError", "ConnectionRefusedError", "TimeoutError",
+        "ReferenceError", "RuntimeError", "NotImplementedError", "RecursionError",
+        "StopIteration", "StopAsyncIteration", "SyntaxError", "IndentationError",
+        "TabError", "SystemError", "TypeError", "ValueError", "UnicodeError",
+        "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeTranslateError",
+        "Warning", "DeprecationWarning", "UserWarning", "RuntimeWarning",
+        "FloatingPointError", "OverflowError", "ZeroDivisionError",
+        "EnvironmentError", "GeneratorExit", "KeyboardInterrupt", "SystemExit",
+    }
+)
 
 
 def _inheritance_row(edge: InheritanceEdge) -> dict[str, object]:

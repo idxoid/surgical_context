@@ -409,9 +409,93 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   presence/frequency). Skipped for now — it requires the selection margin to return
   candidates to the pool. Tracked as a refinement.
 
----
+### F19 — DI resolver is reachable but low-ranked; the marker→resolver link is dynamic 🟠
+- **q02 (`Depends`, trace_dependency)**: role_recall=1.0 but recall@5=0.25, file_recall=0.0
+  — the answer chain (`get_dependant`, `solve_dependencies`, `Dependant` in
+  `dependencies/utils.py`/`models.py`) is missed.
+- **traced (empirically, several false roots ruled out):**
+  - *Not stop-policy alone:* a chain-depth gate on `role_complete` did nothing —
+    `total pruned=0`, the solver was never even a candidate. Reverted.
+  - *Not isolation:* `get_dependant` in_deg=4/out_deg=7, `solve_dependencies`
+    in_deg=2/out_deg=11 — they are called (`routing.py:784 self.dependant =
+    get_dependant(...)`), edges extracted.
+  - *Not an INJECTS extraction bug:* INJECTS works (147 edges in fastapi, e.g.
+    `api_route INJECTS generate_unique_id`), but `get_dependant`/`solve_dependencies`
+    have **no INJECTS either direction**, and `extract_injections(utils.py)=0`.
+    **Why:** INJECTS captures the *declaration* of DI (`def f(x = Depends(provider))`
+    — provider in a parameter default), but the resolver does not declare deps in its
+    signature; it **iterates `Dependant.dependencies` at runtime**. The marker→resolver
+    link is *dynamic execution*, not a declarative AST fact — out of INJECTS' reach
+    (P5: needs dataflow, not an edge).
+  - *Real reachability:* from target `Depends` (a marker class with almost no
+    outgoing CALLS) the resolver is 2-3 hops away, via `Security -DEPENDS_ON→ Depends`
+    + `Security -USES_TYPE→ get_dependant`, or via `APIRoute` (routing.py) calling
+    `get_dependant`. EXPLORATION is already a chain-pursuit intent, but chain-pursuit
+    deepens along the *target's outgoing CALLS*; a marker target has none, so the BFS
+    ranks the resolver below the marker's 1-hop neighbours and `role_complete` stops
+    before it surfaces.
+- **decision (not yet implemented):** the structural fix is a *marker→consumer*
+  chain-pursuit — for a config/marker target (low outgoing CALLS, high USES_TYPE
+  in-degree) follow USES_TYPE consumers that are themselves resolver-like (high
+  out_deg), mirroring the existing HAS_API→CALLS registration chain. Must be guarded
+  against the marker's many user-code consumers (endpoints) — filter to resolver-like
+  out-degree, not every consumer. Confirm the pattern on q04 / sqlalchemy_q02 before
+  touching the dominant EXPLORATION BFS path.
 
-## Decision summary
+### F20 — `error_surface` has no structural signal: exception inheritance is to builtins 🟠
+- **pydantic_q07 (`ValidationError`, trace_dependency)**: recall@5=1.0, file_recall=1.0,
+  target retrieved — a **pure role miss** (`core_runtime`, `error_surface`), no
+  retrieval problem.
+- **traced:**
+  - *Symbol ambiguity:* two `ValidationError` — v2 (`pydantic-core/..._pydantic_core.pyi`)
+    and v1 (`v1/error_wrappers.py`, `class ValidationError(Representation, ValueError)`).
+    Both index as `representation_surface` (class with type_fan_in); neither carries an
+    error role.
+  - *Why no `error_surface`:* the catalog's intended discriminator was
+    "inherits-from-exception", but a Python exception inherits a **builtin**
+    (`ValueError`/`Exception`), and builtins are not in-graph symbols — so the
+    inheritance `DEPENDS_ON` edge to the exception base is never materialized
+    (v1 ValidationError only has `DEPENDS_ON→ Representation`, the builtin base is
+    invisible). Measured: **28 of 124** `*Error`/`*Exception` classes have **zero
+    in-graph bases** — their is-exception signal is structurally empty.
+  - *`core_runtime`* is likely **over-specified gold**: ValidationError is an error
+    *contract* (representation_surface is structurally right), not hot internal
+    runtime machinery.
+- **fixed (implemented):** chose the cheaper option — `inherits_builtin_exception`
+  marker. `link_inheritance` (`neo4j_client.py`) sets `s.inherits_builtin_exception=true`
+  when a class's base is in `_BUILTIN_EXCEPTION_BASES` (the standard exception
+  hierarchy, not a fixture — the base is a real AST token, just a builtin so no
+  DEPENDS_ON edge forms). Threaded through `_query_symbols` → `SymbolRow` →
+  `FanProfile`; added an `error_surface` L2 predicate (state_types, spec 88) plus an
+  L1 guard so an exception with near-zero type_fan_in still routes to state_types.
+- **measured (pydantic reindex):** 25 classes marked; both `ValidationError`
+  instances + `SchemaError`/`PydanticCustomError`/… now `primary=error_surface`.
+  pydantic pass_rate 0.375→**0.500**, role_recall 0.531→**0.615**, q07 0.33→**1.00**
+  (miss=[]), zero regressions. One structural marker gave `error_surface` to the
+  whole exception family at once (P4).
+
+### F21 — serializer_handle vs validator_handle is not structurally discriminable 🔴
+- **pydantic q01 (validator) / q03 (serializer)**: miss `validator_handle` /
+  `serializer_handle`.
+- **measured:** `model_dump` (serializer), `model_validate` (validator),
+  `model_dump_json`, `to_python` all share an **identical structural profile** —
+  `call_leaf=True`, high `call_fan_in` (model_validate=121, to_python=595), and
+  `type_fan_in = type_fan_in_return = type_fan_out_return = 0`. They are
+  topologically indistinguishable hot leaves → all read as `core_runtime`. There is
+  **no edge/feature** that separates "serializes an object to dict/json" from
+  "validates raw input into a typed object": that distinction is the *semantics of
+  what the method does with data* (the shape it returns vs accepts), not a call/type
+  topology fact.
+- **why no cheap fix (unlike error_surface):** error_surface had a real structural
+  anchor (builtin-exception inheritance). Serializer/validator have none — `model_dump`
+  and `model_validate` are byte-for-byte the same in the graph. The only hooks are
+  `__pydantic_serializer__`/`__pydantic_validator__` class-attrs (the F17 attr-gap,
+  reverted — not retrievable) or a `RETURNS_SERIALIZED`/dataflow edge (analysis, not an
+  edge — 🔴, P5). Inferring from the method name would be a P3 violation.
+- **decision:** honest gap — do **not** fake it. Treat `serializer_handle` /
+  `validator_handle` as structurally unreachable and exclude them from role-recall
+  scoring (same spirit as F15 / pre-fix F20), so they are not counted as engine misses
+  the topology cannot produce. Revisit only if a dataflow/return-shape pass is built.
 
 | # | Finding | Severity | Decision |
 |---|---|---|---|

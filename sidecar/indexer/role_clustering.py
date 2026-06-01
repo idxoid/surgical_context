@@ -122,6 +122,7 @@ class SymbolRow:
     external_integration_call_fan_out: float = 0.0
     external_integration_import_fan_out: float = 0.0
     external_integration_root_count: int = 0
+    inherits_builtin_exception: bool = False
 
     @property
     def external_call_out_ratio(self) -> float:
@@ -318,12 +319,15 @@ def assemble_symbol_rows(
     external_integration_import_fan_out_by_file = external_integration_import_fan_out_by_file or {}
 
     info: dict[str, dict] = {}
-    for uid, kind, file_path in symbols:
+    for sym in symbols:
+        uid, kind, file_path = sym[0], sym[1], sym[2]
+        inherits_exc = bool(sym[3]) if len(sym) > 3 else False
         info[uid] = {
             "uid": uid,
             "kind": kind or "",
             "file_path": file_path or "",
             "package": os.path.dirname(file_path or ""),
+            "inherits_builtin_exception": inherits_exc,
         }
 
     call_out: dict[str, set[str]] = {uid: set() for uid in info}
@@ -469,6 +473,7 @@ def assemble_symbol_rows(
                 external_integration_root_count=int(
                     external_integration_root_count_per_uid.get(uid, 0)
                 ),
+                inherits_builtin_exception=bool(meta.get("inherits_builtin_exception")),
             )
         )
     return rows
@@ -562,12 +567,17 @@ def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str]]:
             WHERE NOT any(noise IN $noise_patterns WHERE f.path CONTAINS noise)
             RETURN s.uid AS uid,
                    coalesce(s.kind, '') AS kind,
-                   coalesce(f.path, '') AS file_path
+                   coalesce(f.path, '') AS file_path,
+                   coalesce(s.inherits_builtin_exception, false) AS inherits_builtin_exception
             """,
             workspace_id=workspace_id,
             noise_patterns=list(NOISE_PATH_PATTERNS),
         )
-        return [(r["uid"], r["kind"], r["file_path"]) for r in result if r["uid"]]
+        return [
+            (r["uid"], r["kind"], r["file_path"], bool(r["inherits_builtin_exception"]))
+            for r in result
+            if r["uid"]
+        ]
 
 
 def _query_structural_edges(db, workspace_id: str) -> list[tuple[str, str, str, float, str]]:

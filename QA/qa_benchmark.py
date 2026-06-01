@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import tiktoken
 import yaml
 
-from sidecar.context.role_taxonomy import NON_STRUCTURAL_ROLES, normalize_roles
+from sidecar.context.role_taxonomy import UNSCORED_ROLES, normalize_roles
 
 _PASS_GATES = {
     "explain_behavior": {"role_recall": 0.70, "file_recall": 0.50},
@@ -1233,7 +1233,7 @@ def run_benchmark(
         required_roles_canonical = [
             r
             for r in normalize_roles(required_roles_yaml)
-            if r not in NON_STRUCTURAL_ROLES
+            if r not in UNSCORED_ROLES
         ]
         indexed_roles_canonical = normalize_roles(indexed_roles)
         missing_roles_canonical = normalize_roles(ctx.missing_roles)

@@ -191,9 +191,12 @@ class IntentClassifier:
             "most likely to be affected",
             "likely to break",
             "would break",
-            "which parts",
+            # "which parts" / "what parts" alone are NOT impact — they equally fit an
+            # explanatory "which parts ARE X" (e.g. "which parts rely on pydantic-core").
+            # Genuine impact questions still match via the breakage/change phrases
+            # above ("would break", "likely to break", "if i change"). Keep only the
+            # breakage-bearing variants.
             "what would break",
-            "what parts",
             "what breaks",
             "are most likely",
         },
