@@ -843,6 +843,22 @@ class Neo4jClient:
                 """,
                 rows=exc_rows,
             )
+        # Transitive propagation: a class inheriting an *in-graph* exception
+        # (UsageError -> ClickException -> Exception) is also an error type. Mark any
+        # subclass on a DEPENDS_ON inheritance chain that reaches a builtin-exception
+        # base. Idempotent and order-independent: it walks the full inheritance graph,
+        # so it converges regardless of which file linked first.
+        tx.run(
+            """
+            MATCH (bf:File {workspace_id: $workspace_id})-[:CONTAINS]->(base:Symbol)
+            WHERE base.inherits_builtin_exception = true
+            MATCH (sf:File {workspace_id: $workspace_id})-[:CONTAINS]->(sub:Symbol)
+            WHERE coalesce(sub.inherits_builtin_exception, false) = false
+              AND (sub)-[:DEPENDS_ON*1..6]->(base)
+            SET sub.inherits_builtin_exception = true
+            """,
+            workspace_id=workspace_id,
+        )
 
     def link_proxy_bindings(
         self,

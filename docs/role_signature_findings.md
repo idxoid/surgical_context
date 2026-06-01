@@ -473,6 +473,16 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   pydantic pass_rate 0.375→**0.500**, role_recall 0.531→**0.615**, q07 0.33→**1.00**
   (miss=[]), zero regressions. One structural marker gave `error_surface` to the
   whole exception family at once (P4).
+- **transitive fix (click):** a subclass of an *in-graph* exception
+  (`UsageError → ClickException → Exception`) inherited the error-ness only one level
+  deep — `ClickException` was marked but `UsageError`/`FileError` were not. Added a
+  transitive propagation in `link_inheritance`: mark any class reaching a marked base
+  along a `DEPENDS_ON*` inheritance chain. **Bug found while wiring it:** Symbol nodes
+  carry no `workspace_id` property (workspace is scoped via `File-[:CONTAINS]->Symbol`),
+  so the first `MATCH (base:Symbol {workspace_id:$w})` matched nothing — fixed to match
+  the base/sub through their File. click: marked 3→12, `UsageError` → `error_surface`,
+  q05 `error_surface` miss closed (residual `representation_surface` is a supporting-slot
+  contention, MAX_SUPPORTING=3, not an error_surface failure).
 
 ### F21 — serializer_handle vs validator_handle is not structurally discriminable 🔴
 - **pydantic q01 (validator) / q03 (serializer)**: miss `validator_handle` /
