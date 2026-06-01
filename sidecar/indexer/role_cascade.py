@@ -43,6 +43,18 @@ class FanProfile(Protocol):
     doc_anchor_count: int
     doc_definition_weight: float
     is_proxy_binding: bool
+    external_call_fan_out: float
+    external_import_fan_out: float
+    external_root_count: int
+    external_integration_call_fan_out: float
+    external_integration_import_fan_out: float
+    external_integration_root_count: int
+
+    @property
+    def external_call_out_ratio(self) -> float: ...
+
+    @property
+    def external_integration_out_ratio(self) -> float: ...
 
     @property
     def is_class(self) -> bool: ...
@@ -62,6 +74,20 @@ class FanProfile(Protocol):
 
 _EPS = 0.05
 _RUNTIME_CALL_IN_MIN = 1.0
+_INTEGRATION_CALL_RATIO_MIN = 0.35
+_INTEGRATION_IMPORT_MIN = 2.0
+
+
+def _integration_boundary_signal(row: FanProfile) -> bool:
+    """True when external topology reads as a layer gateway (C2), not plumbing."""
+    ext_call = row.external_integration_call_fan_out
+    if ext_call <= _EPS:
+        return False
+    if row.type_fan_in > max(_EPS, row.call_fan_out * 2.0):
+        return False
+    if row.call_fan_out <= row.call_fan_in:
+        return False
+    return row.external_integration_out_ratio >= _INTEGRATION_CALL_RATIO_MIN
 
 
 @dataclass(frozen=True)
@@ -86,6 +112,7 @@ L1_BUCKETS = (
     "routing_wrap",
     "control_flow",
     "state_types",
+    "boundary_integration",
     "compute_leaf",
     "unclassified",
 )
@@ -133,6 +160,26 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         78,
     ),
     RolePredicate(
+        "api_surface",
+        "control_flow",
+        lambda r: r.depth_from_public <= 1
+        and r.call_fan_out > r.call_fan_in
+        and (
+            (r.has_documentation and (r.api_fan_in > _EPS or r.doc_definition_weight > 0))
+            or r.import_in >= 10
+        ),
+        77,
+    ),
+    RolePredicate(
+        "registration_step",
+        "control_flow",
+        lambda r: r.depth_from_public <= 1
+        and r.call_fan_out > r.call_fan_in
+        and r.construct_fan_out > _EPS
+        and r.import_in >= 10,
+        74,
+    ),
+    RolePredicate(
         "composition_surface",
         "control_flow",
         lambda r: r.call_fan_out > r.call_fan_in
@@ -157,9 +204,21 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         "schema_builder",
         "control_flow",
         lambda r: r.call_fan_out > _EPS
-        and r.type_fan_in > _EPS
-        and r.type_fan_in_return <= _EPS,
-        60,
+        and (
+            (r.type_fan_in > _EPS and r.type_fan_in_return <= _EPS)
+            or (r.construct_fan_out > _EPS and r.depth_from_public <= 1)
+        ),
+        71,
+    ),
+    RolePredicate(
+        "integration_surface",
+        "boundary_integration",
+        lambda r: r.external_integration_call_fan_out > _EPS
+        or (
+            r.external_integration_import_fan_out >= _INTEGRATION_IMPORT_MIN
+            and r.external_integration_call_fan_out > _EPS
+        ),
+        80,
     ),
     RolePredicate(
         "abstract_contract",
@@ -246,6 +305,7 @@ L1_FALLBACK_ROLE: dict[str, str] = {
     "routing_wrap": "runtime_surface",
     "control_flow": "orchestrator",
     "state_types": "representation_surface",
+    "boundary_integration": "integration_surface",
     "compute_leaf": "core_runtime",
     "noise": "orphan",
     "unclassified": "supporting_surface",
@@ -263,6 +323,7 @@ RARE_ROLES = frozenset(
         "request_router",
         "dependency_solver",
         "schema_builder",
+        "integration_surface",
     }
 )
 
@@ -305,9 +366,10 @@ def assign_l1(row: FanProfile) -> str:
         or row.api_fan_out > _EPS
     ):
         return "state_types"
-    # 4. boundary_integration — deferred: needs an unresolved/external-out ratio
-    #    feature (cross_package_call is intra-project modularity, not an external
-    #    boundary). integration_surface / binding_surface / compat_bridge stay gaps.
+    # 4. boundary_integration — external call/import topology (C2). Uses filtered
+    #    integration fan (stdlib/test/doc plumbing excluded). Must not steal type hubs.
+    if _integration_boundary_signal(row):
+        return "boundary_integration"
     # 5. control_flow — orchestration/factories: calls many, is not a data type.
     if row.call_fan_out > row.call_fan_in and row.call_fan_out > _EPS:
         return "control_flow"

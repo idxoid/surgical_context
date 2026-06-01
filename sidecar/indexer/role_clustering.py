@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from sidecar.context.mechanism_registry import merge_preloaded_mechanisms_into_role_catalog
 from sidecar.context.ranker.signal_constants import NOISE_PATH_PATTERNS
+from sidecar.indexer.external_boundary import EXTERNAL_INTEGRATION_PLUMBING_ROOTS
 from sidecar.indexer.role_cascade import (
     SymbolRoleAssignment,
     assign_all,
@@ -118,11 +119,20 @@ class SymbolRow:
     external_call_fan_out: float = 0.0
     external_import_fan_out: float = 0.0
     external_root_count: int = 0
+    external_integration_call_fan_out: float = 0.0
+    external_integration_import_fan_out: float = 0.0
+    external_integration_root_count: int = 0
 
     @property
     def external_call_out_ratio(self) -> float:
-        denom = self.call_fan_out + _EPS
+        denom = self.call_fan_out + self.external_call_fan_out + _EPS
         return self.external_call_fan_out / denom
+
+    @property
+    def external_integration_out_ratio(self) -> float:
+        ext = self.external_integration_call_fan_out
+        denom = self.call_fan_out + ext + _EPS
+        return ext / denom
 
     @property
     def cross_package_call_in(self) -> float:
@@ -288,6 +298,9 @@ def assemble_symbol_rows(
     external_call_fan_out_per_uid: dict[str, float] | None = None,
     external_root_count_per_uid: dict[str, int] | None = None,
     external_import_fan_out_by_file: dict[str, float] | None = None,
+    external_integration_call_fan_out_per_uid: dict[str, float] | None = None,
+    external_integration_root_count_per_uid: dict[str, int] | None = None,
+    external_integration_import_fan_out_by_file: dict[str, float] | None = None,
 ) -> list[SymbolRow]:
     """Combine raw graph extracts into ``SymbolRow``s with cascade features."""
     if not symbols:
@@ -300,6 +313,9 @@ def assemble_symbol_rows(
     external_call_fan_out_per_uid = external_call_fan_out_per_uid or {}
     external_root_count_per_uid = external_root_count_per_uid or {}
     external_import_fan_out_by_file = external_import_fan_out_by_file or {}
+    external_integration_call_fan_out_per_uid = external_integration_call_fan_out_per_uid or {}
+    external_integration_root_count_per_uid = external_integration_root_count_per_uid or {}
+    external_integration_import_fan_out_by_file = external_integration_import_fan_out_by_file or {}
 
     info: dict[str, dict] = {}
     for uid, kind, file_path in symbols:
@@ -444,6 +460,15 @@ def assemble_symbol_rows(
                     external_import_fan_out_by_file.get(meta["file_path"], 0.0)
                 ),
                 external_root_count=int(external_root_count_per_uid.get(uid, 0)),
+                external_integration_call_fan_out=float(
+                    external_integration_call_fan_out_per_uid.get(uid, 0.0)
+                ),
+                external_integration_import_fan_out=float(
+                    external_integration_import_fan_out_by_file.get(meta["file_path"], 0.0)
+                ),
+                external_integration_root_count=int(
+                    external_integration_root_count_per_uid.get(uid, 0)
+                ),
             )
         )
     return rows
@@ -505,6 +530,13 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
     proxy_uids = _query_proxy_binding_uids(db, workspace_id)
     external_call_fan, external_root_count = _query_external_call_fan(db, workspace_id)
     external_import_by_file = _query_external_import_fan_by_file(db, workspace_id)
+    (
+        external_integration_call_fan,
+        external_integration_root_count,
+    ) = _query_external_integration_call_fan(db, workspace_id)
+    external_integration_import_by_file = _query_external_integration_import_fan_by_file(
+        db, workspace_id
+    )
     return assemble_symbol_rows(
         symbols,
         edges,
@@ -516,6 +548,9 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
         external_call_fan,
         external_root_count,
         external_import_by_file,
+        external_integration_call_fan,
+        external_integration_root_count,
+        external_integration_import_by_file,
     )
 
 
@@ -626,6 +661,52 @@ def _query_external_import_fan_by_file(db, workspace_id: str) -> dict[str, float
             RETURN f.path AS path, count(DISTINCT r) AS fan
             """,
             workspace_id=workspace_id,
+        )
+        return {
+            str(record["path"]): float(record.get("fan") or 0.0)
+            for record in result
+            if record.get("path")
+        }
+
+
+def _query_external_integration_call_fan(
+    db, workspace_id: str
+) -> tuple[dict[str, float], dict[str, int]]:
+    with db.driver.session() as session:
+        result = session.run(
+            """
+            MATCH (s:Symbol)-[r:CALLS_EXTERNAL]->(e:ExternalPkg)
+            WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+              AND NOT e.root IN $plumbing
+            RETURN s.uid AS uid,
+                   sum(coalesce(r.confidence, 1.0)) AS fan,
+                   count(DISTINCT e) AS roots
+            """,
+            workspace_id=workspace_id,
+            plumbing=list(EXTERNAL_INTEGRATION_PLUMBING_ROOTS),
+        )
+        fan: dict[str, float] = {}
+        roots: dict[str, int] = {}
+        for record in result:
+            uid = record.get("uid")
+            if not uid:
+                continue
+            fan[uid] = float(record.get("fan") or 0.0)
+            roots[uid] = int(record.get("roots") or 0)
+        return fan, roots
+
+
+def _query_external_integration_import_fan_by_file(db, workspace_id: str) -> dict[str, float]:
+    with db.driver.session() as session:
+        result = session.run(
+            """
+            MATCH (f:File {workspace_id: $workspace_id})-[r:IMPORTS_EXTERNAL]->(e:ExternalPkg)
+            WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+              AND NOT e.root IN $plumbing
+            RETURN f.path AS path, count(DISTINCT e) AS fan
+            """,
+            workspace_id=workspace_id,
+            plumbing=list(EXTERNAL_INTEGRATION_PLUMBING_ROOTS),
         )
         return {
             str(record["path"]): float(record.get("fan") or 0.0)

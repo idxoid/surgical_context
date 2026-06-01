@@ -58,3 +58,44 @@ def test_assemble_symbol_rows_counts_handler_call_fan_out():
     rows = {row.uid: row for row in assemble_symbol_rows(symbols, edges, {})}
     assert rows["u:router"].handler_call_fan_out == 1.0
     assert rows["u:deco"].handler_call_fan_out == 0.0
+
+
+def test_api_surface_cross_bucket_for_documented_control_flow():
+    row = _row(
+        uid="u:get_openapi",
+        call_fan_out=5.6,
+        call_fan_in=1.7,
+        depth_from_public=1,
+        doc_anchor_count=0,
+        doc_definition_weight=0.0,
+        import_in=20,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "control_flow"
+    assert asn.primary == "api_surface"
+
+
+def test_orchestrator_when_control_flow_not_documented_api_surface():
+    row = _row(uid="u:orchestrator", call_fan_out=4.0, call_fan_in=1.0)
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "control_flow"
+    assert asn.primary == "orchestrator"
+
+
+def test_get_openapi_like_flow_collects_schema_and_registration_supporting_roles():
+    row = _row(
+        uid="u:get_openapi_like",
+        call_fan_out=5.6,
+        call_fan_in=1.7,
+        depth_from_public=1,
+        doc_anchor_count=0,
+        doc_definition_weight=0.0,
+        construct_fan_out=1.0,
+        import_in=20,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "control_flow"
+    assert asn.primary == "api_surface"
+    assert "schema_builder" in asn.hits
+    assert "registration_step" in asn.hits
+    assert "schema_builder" in asn.supporting

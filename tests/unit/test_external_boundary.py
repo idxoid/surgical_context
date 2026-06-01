@@ -77,4 +77,4 @@ def test_assemble_symbol_rows_includes_external_features():
     assert row.external_call_fan_out == 2.5
     assert row.external_root_count == 2
     assert row.external_import_fan_out == 3.0
-    assert row.external_call_out_ratio == 2.5 / 0.05
+    assert row.external_call_out_ratio == 2.5 / (2.5 + 0.05)

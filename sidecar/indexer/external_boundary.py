@@ -93,6 +93,53 @@ def build_project_boundary(
     return frozenset(roots)
 
 
+# Stdlib/typing plumbing and test/doc tooling — materialized as ExternalPkg (C1) but
+# excluded from integration-boundary cascade signals (C2).
+EXTERNAL_INTEGRATION_PLUMBING_ROOTS: frozenset[str] = frozenset(
+    {
+        "abc",
+        "asyncio",
+        "builtins",
+        "collections",
+        "contextlib",
+        "copy",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "functools",
+        "importlib",
+        "inspect",
+        "io",
+        "itertools",
+        "json",
+        "logging",
+        "operator",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "sys",
+        "threading",
+        "types",
+        "typing",
+        "typing_extensions",
+        "warnings",
+        "weakref",
+        "annotated_doc",
+        "doctest",
+        "pytest",
+        "rich",
+        "typer",
+        "unittest",
+    }
+)
+
+
+def is_integration_external_root(root: str) -> bool:
+    """True when ``root`` counts toward gateway/integration topology (not plumbing)."""
+    return bool(root) and root not in EXTERNAL_INTEGRATION_PLUMBING_ROOTS
+
+
 def classify_external_root(root: str, project_boundary: frozenset[str]) -> str:
     """Classify a module root for external materialization.
 
