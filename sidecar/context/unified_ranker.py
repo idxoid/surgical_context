@@ -780,6 +780,8 @@ class UnifiedRanker:
             target=target,
             query=query,
         )
+        self._mark_api_relay_candidates(graph_pool)
+        self._mark_query_api_callees(graph_pool, query)
 
         # 2. Collect vector candidates for docs and symbols
         doc_pool = self._doc_candidates(query, limit=vector_limit)
@@ -895,23 +897,25 @@ class UnifiedRanker:
         def _sort_key(c: Candidate) -> tuple:
             base = self._blended(c)
             roles = set(self._roles_of(c))
+            api_behavior_rank = self._api_behavior_sort_rank(c)
+            query_focus_rank = self._query_api_focus_rank(c, query)
             is_subsystem_isolated = c.noise_factor < 0.2 and c.kind != "doc"
             if c.relation == "MANDATORY_CALLEE":
                 is_contract_anchor = any(
                     (str(step).startswith("mandatory-") and str(step).endswith("-contract"))
                     for step in c.provenance
                 )
-                return (4 if is_contract_anchor else 3, base)
+                return (4 if is_contract_anchor else 3, query_focus_rank, api_behavior_rank, base)
             # Tier 0 (best): candidates that fill a missing required role the
             # target itself doesn't cover. These must beat raw doc-relevance
             # so a large/weak role-filler still seats before unrelated docs.
             if roles & unfilled_required:
                 if is_subsystem_isolated:
-                    return (0.5, base)
-                return (2, base)
+                    return (0.5, query_focus_rank, api_behavior_rank, base)
+                return (2, query_focus_rank, api_behavior_rank, base)
             if roles & non_trivial_required:
-                return (1, base)
-            return (0, base)
+                return (1, query_focus_rank, api_behavior_rank, base)
+            return (0, query_focus_rank, api_behavior_rank, base)
 
         pool.sort(key=_sort_key, reverse=True)
 
@@ -930,6 +934,164 @@ class UnifiedRanker:
             floor_override=policy_floor,
             doc_first=doc_first,
         )
+
+    @staticmethod
+    def _has_api_behavior_provenance(c: Candidate) -> bool:
+        return any(str(step).startswith("api-behavior:") for step in c.provenance)
+
+    @staticmethod
+    def _has_call_graph_provenance(c: Candidate) -> bool:
+        return any(str(step).startswith("graph:CALLS") for step in c.provenance)
+
+    @staticmethod
+    def _has_api_relay_provenance(c: Candidate) -> bool:
+        return any(str(step).startswith("api-relay:") for step in c.provenance)
+
+    @staticmethod
+    def _api_relay_score(c: Candidate) -> int:
+        for step in c.provenance:
+            match = re.match(r"api-relay:in=(\d+),out=(\d+)", str(step))
+            if match:
+                return int(match.group(1)) * int(match.group(2))
+        return 0
+
+    def _query_mentions_candidate_name(self, c: Candidate, query: str) -> bool:
+        name = (c.name or "").strip()
+        if not name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            return False
+        if len(name) < 4 and c.relation not in self._API_ENTRY_RELATIONS:
+            return False
+        return re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(name.lower())}(?![A-Za-z0-9_])",
+            (query or "").lower(),
+        ) is not None
+
+    @staticmethod
+    def _has_query_api_callee_provenance(c: Candidate) -> bool:
+        return any(str(step).startswith("query-api-callee:") for step in c.provenance)
+
+    def _query_api_focus_rank(self, c: Candidate, query: str) -> int:
+        if self._query_mentions_candidate_name(c, query):
+            return 2
+        if self._has_query_api_callee_provenance(c):
+            return 1
+        return 0
+
+    def _mark_api_relay_candidates(self, pool: list[Candidate]) -> None:
+        api_candidates = [
+            c for c in pool if c.kind == "symbol" and c.relation in self._API_ENTRY_RELATIONS
+        ]
+        if not api_candidates:
+            return
+        query_text = """
+        UNWIND $uids AS uid
+        MATCH (n:Symbol {uid: uid})
+        CALL {
+            WITH n
+            OPTIONAL MATCH (api_owner:Symbol)-[:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(n)
+            OPTIONAL MATCH (api_owner)-[:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(api_caller:Symbol)
+                          -[api_in:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)
+            WHERE coalesce(api_in.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT api_in) AS api_sibling_call_in_count
+        }
+        CALL {
+            WITH n
+            OPTIONAL MATCH (api_owner:Symbol)-[:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(n)
+            OPTIONAL MATCH (api_owner)-[:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(api_callee:Symbol)
+                          <-[api_out:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]-(n)
+            WHERE coalesce(api_out.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT api_out) AS api_sibling_call_out_count
+        }
+        RETURN n.uid AS uid,
+               api_sibling_call_in_count,
+               api_sibling_call_out_count
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = list(
+                    session.run(
+                        query_text,
+                        uids=[c.uid for c in api_candidates],
+                        workspace_id=self.workspace_id,
+                    )
+                )
+        except Exception:
+            return
+        relay_counts = {
+            str(row["uid"]): (
+                int(row["api_sibling_call_in_count"] or 0),
+                int(row["api_sibling_call_out_count"] or 0),
+            )
+            for row in rows
+            if row.get("uid")
+        }
+        for candidate in api_candidates:
+            in_count, out_count = relay_counts.get(candidate.uid, (0, 0))
+            if in_count <= 0 or out_count <= 0:
+                continue
+            behavior_step = f"api-behavior:outcalls={out_count}"
+            if not self._has_api_behavior_provenance(candidate):
+                candidate.provenance.append(behavior_step)
+            relay_step = f"api-relay:in={in_count},out={out_count}"
+            if relay_step not in candidate.provenance:
+                candidate.provenance.append(relay_step)
+
+    def _mark_query_api_callees(self, pool: list[Candidate], query: str) -> None:
+        caller_uids = [
+            c.uid
+            for c in pool
+            if c.relation in self._API_ENTRY_RELATIONS
+            and self._query_mentions_candidate_name(c, query)
+        ]
+        if not caller_uids:
+            return
+        for candidate in pool:
+            if candidate.uid in caller_uids and "query-api-seed" not in candidate.provenance:
+                candidate.provenance.append("query-api-seed")
+        query_text = """
+        MATCH (caller:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(callee:Symbol)
+        WHERE caller.uid IN $caller_uids
+          AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        RETURN callee.uid AS uid, count(DISTINCT caller) AS caller_count
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = list(
+                    session.run(
+                        query_text,
+                        caller_uids=caller_uids,
+                        workspace_id=self.workspace_id,
+                    )
+                )
+        except Exception:
+            return
+        callee_counts = {
+            str(row["uid"]): int(row["caller_count"] or 0)
+            for row in rows
+            if row.get("uid")
+        }
+        if not callee_counts:
+            return
+        for candidate in pool:
+            caller_count = callee_counts.get(candidate.uid)
+            if not caller_count:
+                continue
+            step = f"query-api-callee:callers={caller_count}"
+            if step not in candidate.provenance:
+                candidate.provenance.append(step)
+
+    def _api_behavior_sort_rank(self, c: Candidate) -> int:
+        if c.kind != "symbol" or c.relation not in self._API_ENTRY_RELATIONS:
+            return 0
+        relay_score = self._api_relay_score(c)
+        if relay_score > 0:
+            return min(99, 3 + relay_score)
+        rank = 0
+        if self._has_api_behavior_provenance(c):
+            rank += 1
+        if self._has_call_graph_provenance(c):
+            rank += 1
+        return rank
 
     def candidates_to_subgraph(
         self,
@@ -1078,11 +1240,41 @@ class UnifiedRanker:
         chain_pursuit = intent in self._CHAIN_PURSUIT_INTENTS if intent else False
         visited = {target_uid}
         candidates: list[Candidate] = []
+        pending_provenance: dict[str, list[str]] = {}
         # Tuple shape:
         # (-score, push_seq, uid, neighbor_dict, rel_type, outgoing, distance,
         #  reg_chain, marker_chain)
         frontier: list[tuple[float, int, str, dict, str, bool, int, bool, bool]] = []
         push_seq = 0
+
+        def _provenance_steps(
+            neighbor: dict,
+            rel_type: str,
+            outgoing: bool,
+            distance: int,
+            reg_chain: bool,
+            marker_chain: bool,
+        ) -> list[str]:
+            chain_tag = ""
+            if marker_chain:
+                chain_tag = ",marker_chain"
+            elif chain_pursuit and self._is_outgoing_call(rel_type, outgoing):
+                chain_tag = ",chain"
+            elif reg_chain:
+                chain_tag = ",reg_chain"
+            steps = [f"graph:{rel_type},depth={distance}{chain_tag}"]
+            if (
+                rel_type in self._API_ENTRY_RELATIONS
+                and int(neighbor.get("outgoing_call_count") or 0) > 0
+            ):
+                steps.append(f"api-behavior:outcalls={int(neighbor['outgoing_call_count'])}")
+            return steps
+
+        def _remember_provenance(uid: str, steps: list[str]) -> None:
+            remembered = pending_provenance.setdefault(uid, [])
+            for step in steps:
+                if step not in remembered:
+                    remembered.append(step)
 
         for n in self._get_neighbors(target_uid, visited, distance=1):
             reg_chain = chain_pursuit and self._is_api_entry_edge(n["rel_type"], n["outgoing"])
@@ -1096,6 +1288,10 @@ class UnifiedRanker:
                 distance=1,
                 chain_pursuit=chain_pursuit,
                 registration_chain=reg_chain or marker_chain,
+            )
+            _remember_provenance(
+                n["uid"],
+                _provenance_steps(n, n["rel_type"], n["outgoing"], 1, reg_chain, marker_chain),
             )
             heappush(
                 frontier,
@@ -1133,14 +1329,14 @@ class UnifiedRanker:
             token_cost = neighbor.get("token_estimate", 0) or self._estimate_tokens_range(
                 neighbor.get("range", [0, 0])
             )
-            chain_tag = ""
-            if marker_chain:
-                chain_tag = ",marker_chain"
-            elif chain_pursuit and self._is_outgoing_call(rel_type, outgoing):
-                chain_tag = ",chain"
-            elif reg_chain:
-                chain_tag = ",reg_chain"
-            provenance = [f"graph:{rel_type},depth={distance}{chain_tag}"]
+            provenance = pending_provenance.pop(uid, None) or _provenance_steps(
+                neighbor,
+                rel_type,
+                outgoing,
+                distance,
+                reg_chain,
+                marker_chain,
+            )
             c = Candidate(
                 kind="symbol",
                 uid=uid,
@@ -1178,6 +1374,17 @@ class UnifiedRanker:
                     distance=distance + 1,
                     chain_pursuit=chain_pursuit,
                     registration_chain=child_reg_chain or child_marker_chain,
+                )
+                _remember_provenance(
+                    nn["uid"],
+                    _provenance_steps(
+                        nn,
+                        nn["rel_type"],
+                        nn["outgoing"],
+                        distance + 1,
+                        child_reg_chain,
+                        child_marker_chain,
+                    ),
                 )
                 heappush(
                     frontier,
@@ -2190,7 +2397,10 @@ class UnifiedRanker:
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)
         WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH (fn:File {workspace_id: $workspace_id})-[c:CONTAINS]->(n)
-        WITH n, fn, c, r, startNode(r) = s AS outgoing, count(cr) AS caller_count
+        WITH n, fn, c, r, startNode(r) = s AS outgoing, count(DISTINCT cr) AS caller_count
+        OPTIONAL MATCH (n)-[out_call:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(:Symbol)
+        WHERE coalesce(out_call.workspace_id, $workspace_id) = $workspace_id
+        WITH n, fn, c, r, outgoing, caller_count, count(DISTINCT out_call) AS outgoing_call_count
         RETURN n.uid AS uid,
                n.name AS name,
                coalesce(n.kind, '') AS symbol_kind,
@@ -2201,7 +2411,8 @@ class UnifiedRanker:
                type(r) AS rel_type,
                coalesce(r.kind, '') AS rel_kind,
                outgoing,
-               caller_count
+               caller_count,
+               outgoing_call_count
         """
         try:
             with self.db.driver.session() as session:
@@ -2224,6 +2435,7 @@ class UnifiedRanker:
                         "rel_kind": r["rel_kind"],
                         "outgoing": r["outgoing"],
                         "caller_count": r["caller_count"],
+                        "outgoing_call_count": r["outgoing_call_count"],
                     }
                     for r in result
                 ]

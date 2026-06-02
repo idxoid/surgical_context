@@ -171,6 +171,7 @@ class RankerScoring:
         rel_type = neighbor["rel_type"]
         outgoing = neighbor["outgoing"]
         caller_count = neighbor["caller_count"]
+        outgoing_call_count = neighbor.get("outgoing_call_count", 0)
         token_estimate = neighbor.get("token_estimate", 0)
 
         if rel_type in (
@@ -243,7 +244,17 @@ class RankerScoring:
         ):
             token_penalty *= 0.25
 
-        return float(r + 0.3 * math.log1p(caller_count) - token_penalty - distance_penalty)
+        api_behavior_bonus = 0.0
+        if rel_type in ("HAS_API", "INHERITED_API") and outgoing_call_count > 0:
+            api_behavior_bonus = min(0.35, 0.16 * math.log1p(outgoing_call_count))
+
+        return float(
+            r
+            + 0.3 * math.log1p(caller_count)
+            + api_behavior_bonus
+            - token_penalty
+            - distance_penalty
+        )
 
     def direction(self, rel_type: str, outgoing: bool) -> str:
         if rel_type in (

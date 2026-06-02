@@ -93,7 +93,20 @@ class PromptContext:
     def _dep_sort_key(self, dep: "SymbolContext") -> tuple:
         """Callers first (depth 1), then other graph neighbours, then deep."""
         is_caller = dep.direction == "caller" or dep.relation in self._CALLER_RELATIONS
-        return (0 if is_caller else 1, dep.depth, -(dep.blended_score or dep.relevance_score))
+        provenance = dep.provenance or []
+        is_query_api_seed = any(str(step) == "query-api-seed" for step in provenance)
+        is_query_api_callee = any(
+            str(step).startswith("query-api-callee:") for step in provenance
+        )
+        prompt_priority = 2 if is_query_api_seed else 1 if is_query_api_callee else 0
+        if prompt_priority:
+            return (0 if is_caller else 1, dep.depth, -prompt_priority, 0)
+        return (
+            0 if is_caller else 1,
+            dep.depth,
+            0,
+            -(dep.blended_score or dep.relevance_score),
+        )
 
     def ordered_graph_context(self, *, include_empty_code: bool = False) -> list[SymbolContext]:
         """Return graph deps in the same order used for prompt rendering."""

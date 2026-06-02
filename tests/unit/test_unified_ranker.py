@@ -2004,6 +2004,187 @@ def test_registration_chain_softens_uses_type_score_for_large_artifact_classes()
     assert chained > 0.0
 
 
+def test_has_api_score_rewards_behavioral_sibling_methods():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    passive_leaf = {
+        "rel_type": "HAS_API",
+        "outgoing": True,
+        "caller_count": 5,
+        "outgoing_call_count": 0,
+        "token_estimate": 80,
+        "rel_kind": "",
+    }
+    behavioral_method = {
+        **passive_leaf,
+        "caller_count": 2,
+        "outgoing_call_count": 6,
+    }
+
+    passive_score = ranker.scoring.raw_graph_score(passive_leaf, distance=1)
+    behavioral_score = ranker.scoring.raw_graph_score(behavioral_method, distance=1)
+
+    assert behavioral_score > passive_score
+
+
+def test_graph_candidates_preserve_api_behavioral_callee_provenance():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+
+    neighbors_by_uid = {
+        "owner": [
+            {
+                "uid": "central",
+                "name": "send",
+                "file_path": "/repo/response.js",
+                "file_hash": "",
+                "token_estimate": 752,
+                "range": [1, 120],
+                "rel_type": "HAS_API",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 0,
+                "outgoing_call_count": 2,
+            },
+            {
+                "uid": "caller",
+                "name": "json",
+                "file_path": "/repo/response.js",
+                "file_hash": "",
+                "token_estimate": 40,
+                "range": [130, 150],
+                "rel_type": "HAS_API",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 0,
+                "outgoing_call_count": 1,
+            },
+        ],
+        "caller": [
+            {
+                "uid": "central",
+                "name": "send",
+                "file_path": "/repo/response.js",
+                "file_hash": "",
+                "token_estimate": 752,
+                "range": [1, 120],
+                "rel_type": "CALLS_DYNAMIC",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 0,
+                "outgoing_call_count": 2,
+            }
+        ],
+    }
+
+    ranker._get_neighbors = lambda uid, visited, distance: [
+        n for n in neighbors_by_uid.get(uid, []) if n["uid"] not in visited
+    ]
+
+    pool = ranker._graph_candidates("owner", pool_size=10, intent=Intent.EXPLORATION)
+    central = next(c for c in pool if c.uid == "central")
+
+    assert any(step.startswith("graph:HAS_API") for step in central.provenance)
+    assert any(step.startswith("graph:CALLS_DYNAMIC") for step in central.provenance)
+    assert any(step.startswith("api-behavior:") for step in central.provenance)
+    assert ranker._api_behavior_sort_rank(central) == 2
+
+
+def test_pruner_keeps_api_behavioral_callee_full_body_despite_low_gain():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="owner",
+        name="response",
+        file_path="/repo/express.js",
+        range=[1, 1],
+        token_estimate=8,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+    )
+    behavioral_callee = Candidate(
+        kind="symbol",
+        uid="send",
+        name="send",
+        file_path="/repo/response.js",
+        token_cost=752,
+        graph_score=0.1,
+        semantic_score=0.0,
+        intent_weight=0.4,
+        relation="HAS_API",
+        depth=2,
+        evidence_role="orchestrator",
+        provenance=[
+            "graph:HAS_API,depth=2",
+            "api-behavior:outcalls=4",
+            "api-relay:in=3,out=4",
+            "graph:CALLS_DYNAMIC,depth=3,chain",
+        ],
+    )
+
+    chosen, _, _, pruned, _ = ranker.budget_pruner.select_under_budget(
+        [behavioral_callee],
+        target,
+        "How is the response body sent?",
+        Intent.EXPLORATION,
+        "generic",
+        required_roles=[],
+        budget=4000,
+        floor_override=1200,
+    )
+
+    assert [c.uid for c in chosen] == ["send"]
+    assert chosen[0].render_mode == "full"
+    assert chosen[0].token_cost == 752
+    assert not any(item["uid"] == "send" for item in pruned)
+
+
+def test_query_api_callee_marker_uses_structural_call_edges():
+    session = MagicMock()
+
+    def run(query, **params):
+        if "caller.uid IN $caller_uids" in query:
+            assert params["caller_uids"] == ["json"]
+            return [{"uid": "set", "caller_count": 1}]
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    json_method = Candidate(
+        kind="symbol",
+        uid="json",
+        name="json",
+        file_path="/repo/response.js",
+        token_cost=120,
+        relation="HAS_API",
+    )
+    set_method = Candidate(
+        kind="symbol",
+        uid="set",
+        name="set",
+        file_path="/repo/response.js",
+        token_cost=8,
+        relation="HAS_API",
+    )
+
+    ranker._mark_query_api_callees(
+        [json_method, set_method],
+        "How is json() implemented and chained?",
+    )
+
+    assert "query-api-seed" in json_method.provenance
+    assert any(step.startswith("query-api-callee:") for step in set_method.provenance)
+    assert ranker._query_api_focus_rank(json_method, "How is json() implemented?") == 2
+    assert ranker._query_api_focus_rank(set_method, "How is json() implemented?") == 1
+
+
 def test_graph_candidates_follow_has_api_registration_chain():
     db = _make_db()
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")

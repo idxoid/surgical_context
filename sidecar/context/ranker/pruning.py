@@ -119,6 +119,13 @@ class BudgetPruner:
                 required_roles,
             )
 
+        def _is_api_behavioral_callee(c: Candidate) -> bool:
+            return (
+                c.kind != "doc"
+                and c.relation in self.host._API_ENTRY_RELATIONS
+                and self.host._has_api_relay_provenance(c)
+            )
+
         def _chosen_head_bridge_count() -> int:
             head_symbols: list[Candidate] = []
             for selected in chosen:
@@ -181,7 +188,8 @@ class BudgetPruner:
             """Attempt to seat ``c``. Returns None on success, or a skip reason."""
             nonlocal spent, budget_balance
             potential_cost = c.token_cost
-            if c.depth >= 2 and gain < 0.25:
+            is_api_behavioral_callee = _is_api_behavioral_callee(c)
+            if c.depth >= 2 and gain < 0.25 and not is_api_behavioral_callee:
                 potential_cost = min(c.token_cost, 80)
             if potential_cost > int(base_budget * 1.1):
                 _record_pruned(
@@ -229,7 +237,12 @@ class BudgetPruner:
                         candidate_roles=candidate_roles,
                     )
                     return "budget_balance_debit_limit"
-                if not closes_missing_role and gain < min_gain and c.relation != "MANDATORY_CALLEE":
+                if (
+                    not closes_missing_role
+                    and gain < min_gain
+                    and c.relation != "MANDATORY_CALLEE"
+                    and not is_api_behavioral_callee
+                ):
                     _record_pruned(
                         c,
                         "expansion_low_gain",
@@ -240,7 +253,12 @@ class BudgetPruner:
                     return "expansion_low_gain"
                 budget_balance = projected_balance
 
-            if c.depth >= 2 and gain < 0.25 and c.relation != "MANDATORY_CALLEE":
+            if (
+                c.depth >= 2
+                and gain < 0.25
+                and c.relation != "MANDATORY_CALLEE"
+                and not is_api_behavioral_callee
+            ):
                 c.render_mode = "signature_only"
                 c.token_cost = potential_cost
 
@@ -371,6 +389,7 @@ class BudgetPruner:
                 "ROLE_BACKFILL",
             ) or self.host._has_role_backfill(c)
             is_mandatory_callee = c.relation == "MANDATORY_CALLEE"
+            is_api_behavioral_callee = _is_api_behavioral_callee(c)
             is_strong_relation = (
                 c.relation
                 in (
@@ -389,6 +408,7 @@ class BudgetPruner:
                 or is_bridge
                 or is_strong_relation
                 or is_mandatory_callee
+                or is_api_behavioral_callee
                 or _is_relevant_marker_chain(c)
                 or (self.host.scoring.blended(c) > 0.15)
             )
@@ -552,7 +572,12 @@ class BudgetPruner:
                 # critical evidence. A large/weak symbol with negative blended
                 # score (e.g. fastapi `openapi` in applications.py: 256 tokens
                 # of largely-static config logic) still earns its seat here.
-                if gain < low_gain_floor and not fills_role and not is_mandatory_callee:
+                if (
+                    gain < low_gain_floor
+                    and not fills_role
+                    and not is_mandatory_callee
+                    and not is_api_behavioral_callee
+                ):
                     _record_pruned(
                         c,
                         "low_gain_floor",
