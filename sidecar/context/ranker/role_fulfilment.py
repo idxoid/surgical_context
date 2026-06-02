@@ -14,6 +14,14 @@ from sidecar.context.role_taxonomy import infer_supporting_roles, normalize_role
 
 from .candidate_pool import Candidate
 
+_ROLE_PLAN_EXCLUDED_TARGET_ROLES = {
+    "docs_or_concept",
+    "impact_runtime",
+    "impact_public_api",
+    "impact_test_surface",
+    "orphan",
+}
+
 
 class RoleFulfilment:
     def __init__(self, host):
@@ -40,6 +48,7 @@ class RoleFulfilment:
                 inferred.append(role)
         if self._is_public_primary_target(c):
             inferred.extend(["api_surface", "impact_public_api"])
+            inferred.extend(self._public_target_surface_roles(c))
         return normalize_roles([*explicit, *inferred])
 
     def roles_of(self, c: Candidate | object) -> list[str]:
@@ -62,12 +71,28 @@ class RoleFulfilment:
             or intent == Intent.IMPACT_ANALYSIS
             or mechanism == "workspace_structure"
             or self.host._has_role_backfill(c)
+            or self.marker_chain_roles_are_relevant(c, required_roles)
             or self.host.scoring.candidate_matches_query_topic(c, target, query=query)
         ):
             return roles
 
         required = set(normalize_roles(required_roles))
         return [role for role in roles if role not in required]
+
+    def marker_chain_roles_are_relevant(
+        self,
+        c: Candidate | object,
+        required_roles: list[str],
+    ) -> bool:
+        if not self.host._has_marker_chain(c):
+            return False
+        required = set(normalize_roles(required_roles)) - {"docs_or_concept"}
+        if not required:
+            return False
+        roles = set(self.roles_of(c))
+        if "dependency_solver" in required and "dependency_solver" in roles:
+            return True
+        return len(roles & required) >= 2
 
     def candidate_matches_any_role(
         self,
@@ -96,12 +121,34 @@ class RoleFulfilment:
         if not name or name.startswith("_"):
             return False
         kind = (getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "").lower()
-        if kind not in {"class", "function", "method", "object_api", "module"}:
+        if kind not in {"class", "function", "method", "object_api", "module", "variable"}:
             return False
         path = (getattr(c, "file_path", "") or "").replace("\\", "/").lower()
         if any(marker in path for marker in ("/tests/", "/test_", "/docs/", "/examples/")):
             return False
         return True
+
+    def _public_target_surface_roles(self, c: Candidate | object) -> list[str]:
+        uid = getattr(c, "uid", "") or ""
+        fan = self.host._structural_fan_by_uid.get(uid, {}) if uid else {}
+        call_fan_out = float(fan.get("call_fan_out", 0.0) or 0.0)
+        call_fan_in = float(fan.get("call_fan_in", 0.0) or 0.0)
+        type_fan_in = float(fan.get("type_fan_in", 0.0) or 0.0)
+        handle_fan_in = float(fan.get("handle_fan_in", 0.0) or 0.0)
+        if call_fan_out <= 0.0 and type_fan_in <= 0.0 and handle_fan_in <= 0.0:
+            return []
+
+        kind = (getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "").lower()
+        roles: list[str] = []
+        if call_fan_out > 0.0:
+            roles.append("composition_surface")
+            if call_fan_out >= call_fan_in:
+                roles.append("factory_surface")
+        if kind in {"variable", "object_api"} and (call_fan_in > 0.0 or type_fan_in > 0.0):
+            roles.append("representation_surface")
+        if handle_fan_in > 0.0:
+            roles.append("executor")
+        return normalize_roles(roles)
 
     def canonical_role_for_symbol_uid(self, uid: str) -> str:
         return self.host._derived_primary_role_by_uid.get(uid, "")
@@ -117,7 +164,7 @@ class RoleFulfilment:
 
     def one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
         query = """
-        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]-(n:Symbol)
+        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|HANDLES]-(n:Symbol)
         WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
         RETURN DISTINCT n.uid AS uid
         LIMIT $limit
@@ -192,6 +239,7 @@ class RoleFulfilment:
         return "generic"
 
     def get_required_roles(self, mechanism: str, *, target=None) -> list[str]:
+        target_roles = self.target_role_plan_roles(target)
         roles = []
         if mechanism.startswith("auto:"):
             roles = self.adaptive_role_plan(target=target)
@@ -203,6 +251,7 @@ class RoleFulfilment:
             if not roles:
                 roles = self.adaptive_role_plan(target=target)
 
+        roles = normalize_roles([*target_roles, *roles])
         roles.append("docs_or_concept")
         return normalize_roles(roles)
 
@@ -271,16 +320,21 @@ class RoleFulfilment:
             return []
         return normalize_roles([role for role in roles if role_supply.get(role, 0) > 0])
 
+    def plan_candidate_roles(self, roles) -> list[str]:
+        return normalize_roles(
+            role for role in roles if role not in _ROLE_PLAN_EXCLUDED_TARGET_ROLES
+        )
+
     def adaptive_role_plan(self, *, target=None) -> list[str]:
         selected: list[str] = []
         target_roles: list[str] = []
         if target is not None and getattr(target, "uid", ""):
-            target_roles = self.pass1_roles_for_symbol_uid(target.uid)
+            target_roles = self.target_role_plan_roles(target)
             selected.extend(target_roles)
 
         target_supply = self.target_role_supply_counts(target)
         if target_supply:
-            selected.extend(role for role, _ in target_supply.most_common(6))
+            selected.extend(role for role, _ in target_supply.most_common(10))
 
         strategy_roles = self.strategy_role_plan()
         if strategy_roles:
@@ -291,15 +345,27 @@ class RoleFulfilment:
 
         role_supply = self.role_supply_counts()
         if role_supply:
-            selected.extend(role for role, _ in role_supply.most_common(6))
+            selected.extend(role for role, _ in role_supply.most_common(12))
 
         if not selected and self.host.role_catalog:
             present = self.host.role_catalog.get("present_roles") or {}
             if isinstance(present, dict) and present:
                 selected.extend(list(present.keys())[:6])
 
-        selected = normalize_roles(selected)
+        selected = self.plan_candidate_roles(selected)
         if not selected:
             return ["supporting_surface"]
         rest = [role for role in selected if role not in set(target_roles)]
-        return normalize_roles([*target_roles, *rest])[:5]
+        max_roles = 5
+        if target_roles:
+            max_roles = min(10, max(max_roles, len(target_roles) + 6))
+        return normalize_roles([*target_roles, *rest])[:max_roles]
+
+    def target_role_plan_roles(self, target) -> list[str]:
+        if target is None or not getattr(target, "uid", ""):
+            return []
+        roles = [
+            *self.pass1_roles_for_symbol_uid(target.uid),
+            *self.roles_of(target),
+        ]
+        return self.plan_candidate_roles(roles)

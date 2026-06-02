@@ -6,7 +6,7 @@ from pathlib import Path
 from tree_sitter import Query
 
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
-from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
+from sidecar.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.parser.uid import (
     compute_uid,
     module_name_from_path,
@@ -35,6 +35,23 @@ class JavaScriptAdapter(TreeSitterAdapter):
     _PROPERTY_ARROW_FALLBACK_RE = re.compile(
         r"(?m)^[ \t]*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
     )
+    _PROPERTY_FUNC_API_RE = re.compile(
+        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
+    )
+    _PROPERTY_ARROW_API_RE = re.compile(
+        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
+    )
+    _CHAINED_PROPERTY_FUNC_API_RE = re.compile(
+        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
+    )
+    _COMMONJS_REQUIRE_DEFAULT_RE = re.compile(
+        r"(?m)^[ \t]*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)"
+    )
+    _COMMONJS_EXPORT_ALIAS_RE = re.compile(
+        r"(?m)^[ \t]*(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)"
+    )
+    _IDENTIFIER_TEXT_RE = re.compile(r"^[A-Za-z_$][\w$]*$")
+    _MEMBER_TEXT_RE = re.compile(r"^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$")
 
     @property
     def language_name(self) -> str:
@@ -66,7 +83,13 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
     @property
     def parent_types(self) -> set[str]:
-        return {"function_declaration", "method_definition", "class_declaration"}
+        return {
+            "function_declaration",
+            "function_expression",
+            "arrow_function",
+            "method_definition",
+            "class_declaration",
+        }
 
     @property
     def import_query(self) -> str:
@@ -83,6 +106,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
         """Extract JS symbols with a fallback for exported lexical APIs and module.exports."""
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
         existing_names = {symbol.name for symbol in symbols}
+        existing_uids = {symbol.uid for symbol in symbols}
 
         for match in self._EXPORTED_FUNC_FALLBACK_RE.finditer(source_code):
             name = match.group(1) or match.group(2)
@@ -112,6 +136,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 )
             )
             existing_names.add(name)
+            existing_uids.add(symbols[-1].uid)
 
         for match in self._MODULE_EXPORT_FUNC_FALLBACK_RE.finditer(source_code):
             name = match.group(1)
@@ -141,16 +166,19 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 )
             )
             existing_names.add(name)
-        for match in self._PROPERTY_FUNC_FALLBACK_RE.finditer(source_code):
-            name = (match.group(2) or match.group(1) or "").strip()
-            if not name or name in existing_names:
+            existing_uids.add(symbols[-1].uid)
+        for match in self._CHAINED_PROPERTY_FUNC_API_RE.finditer(source_code):
+            owner = (match.group(1) or "").strip()
+            name = (match.group(2) or "").strip()
+            qualified_name = self._property_method_qualified_name(file_path, owner, name)
+            uid = compute_uid(qualified_name, f"{name}()->_", self.language_name)
+            if not name or not owner or uid in existing_uids:
                 continue
             start_line, end_line, content = self._fallback_symbol_span(source_code, match.start())
             signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
             symbols.append(
                 SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    uid=uid,
                     name=name,
                     kind="function",
                     start_line=start_line,
@@ -165,16 +193,19 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 )
             )
             existing_names.add(name)
-        for match in self._PROPERTY_ARROW_FALLBACK_RE.finditer(source_code):
-            name = (match.group(1) or "").strip()
-            if not name or name in existing_names:
+            existing_uids.add(uid)
+        for match in self._PROPERTY_FUNC_API_RE.finditer(source_code):
+            owner = (match.group(1) or "").strip()
+            name = (match.group(3) or match.group(2) or "").strip()
+            qualified_name = self._property_method_qualified_name(file_path, owner, name)
+            uid = compute_uid(qualified_name, f"{name}()->_", self.language_name)
+            if not name or not owner or uid in existing_uids:
                 continue
             start_line, end_line, content = self._fallback_symbol_span(source_code, match.start())
             signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
             symbols.append(
                 SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    uid=uid,
                     name=name,
                     kind="function",
                     start_line=start_line,
@@ -189,6 +220,34 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 )
             )
             existing_names.add(name)
+            existing_uids.add(uid)
+        for match in self._PROPERTY_ARROW_API_RE.finditer(source_code):
+            owner = (match.group(1) or "").strip()
+            name = (match.group(2) or "").strip()
+            qualified_name = self._property_method_qualified_name(file_path, owner, name)
+            uid = compute_uid(qualified_name, f"{name}()->_", self.language_name)
+            if not name or not owner or uid in existing_uids:
+                continue
+            start_line, end_line, content = self._fallback_symbol_span(source_code, match.start())
+            signature = normalize_signature(f"{name}()->_", self.language_name)
+            symbols.append(
+                SymbolMetadata(
+                    uid=uid,
+                    name=name,
+                    kind="function",
+                    start_line=start_line,
+                    end_line=end_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="fallback_export",
+                    language=self.language_name,
+                )
+            )
+            existing_names.add(name)
+            existing_uids.add(uid)
 
         for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
             name = match.group(1) or match.group(2)
@@ -218,6 +277,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 )
             )
             existing_names.add(name)
+            existing_uids.add(symbols[-1].uid)
         for name, start_offset in self._module_export_object_keys(source_code):
             if not name or name in existing_names:
                 continue
@@ -241,6 +301,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 )
             )
             existing_names.add(name)
+            existing_uids.add(symbols[-1].uid)
         return symbols
 
     def should_include_variable_symbol(
@@ -318,6 +379,129 @@ class JavaScriptAdapter(TreeSitterAdapter):
             add_import(match.group(1))
 
         return imports
+
+    def extract_property_api_edges(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[ClassApiEdge]:
+        """Extract owner-symbol API edges from static property function assignments."""
+        edges: list[ClassApiEdge] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add(owner: str, prop: str, method_name: str) -> None:
+            owner = owner.strip()
+            method_name = (method_name or prop).strip()
+            if not owner or not method_name or owner in {"exports", "module"}:
+                return
+            key = (owner, method_name)
+            if key in seen:
+                return
+            seen.add(key)
+            edges.append(
+                ClassApiEdge(
+                    class_uid=self._uid(file_path, owner),
+                    method_uid=self._property_method_uid(file_path, owner, method_name),
+                    edge_type="HAS_API",
+                )
+            )
+
+        for match in self._CHAINED_PROPERTY_FUNC_API_RE.finditer(source_code):
+            add(match.group(1), match.group(2), match.group(2))
+            add(match.group(3), match.group(4), match.group(5) or match.group(4))
+        for match in self._PROPERTY_FUNC_API_RE.finditer(source_code):
+            add(match.group(1), match.group(2), match.group(3) or match.group(2))
+        for match in self._PROPERTY_ARROW_API_RE.finditer(source_code):
+            add(match.group(1), match.group(2), match.group(2))
+        return edges
+
+    def extract_symbol_aliases(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """Extract static symbol-level aliases from CommonJS export surfaces."""
+        module_name = module_name_from_path(file_path)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+        aliases: list[dict] = []
+        seen: set[tuple[str, str, str, str]] = set()
+
+        def add_alias(
+            source_name: str,
+            target_name: str,
+            target_qualified_name: str,
+            *,
+            kind: str,
+            start_offset: int,
+            match_by_name: bool,
+            confidence: float,
+        ) -> None:
+            source_name = source_name.strip()
+            target_name = target_name.strip()
+            target_qualified_name = target_qualified_name.strip()
+            if not source_name or not target_name:
+                return
+            key = (source_name, target_name, target_qualified_name, kind)
+            if key in seen:
+                return
+            seen.add(key)
+            aliases.append(
+                {
+                    "source_uid": self._uid(file_path, source_name),
+                    "source_name": source_name,
+                    "target_name": target_name,
+                    "target_qualified_name": target_qualified_name,
+                    "file_path": file_path,
+                    "kind": kind,
+                    "confidence": confidence,
+                    "line": source_code.count("\n", 0, start_offset) + 1,
+                    "match_by_name": match_by_name,
+                }
+            )
+
+        for match in self._COMMONJS_REQUIRE_DEFAULT_RE.finditer(source_code):
+            alias = match.group(1).strip()
+            source = self._normalize_import_source(file_path, match.group(2).strip())
+            if not alias or not source:
+                continue
+            add_alias(
+                alias,
+                alias,
+                f"{source}.{alias}",
+                kind="commonjs_require_default",
+                start_offset=match.start(),
+                match_by_name=False,
+                confidence=0.8,
+            )
+
+        for match in self._COMMONJS_EXPORT_ALIAS_RE.finditer(source_code):
+            export_name = match.group(1).strip()
+            rhs = self._strip_commonjs_alias_rhs(match.group(2))
+            target_name, target_qualified_name = self._commonjs_alias_target(
+                rhs,
+                module_name,
+                import_bindings,
+            )
+            if not target_name:
+                continue
+            add_alias(
+                export_name,
+                target_name,
+                target_qualified_name,
+                kind="commonjs_export_alias",
+                start_offset=match.start(),
+                match_by_name=export_name != target_name,
+                confidence=0.85,
+            )
+
+        for name, start_offset in self._module_export_object_keys(source_code):
+            add_alias(
+                name,
+                name,
+                f"{module_name}.{name}",
+                kind="commonjs_export_object",
+                start_offset=start_offset,
+                match_by_name=False,
+                confidence=0.75,
+            )
+
+        return aliases
 
     def extract_inheritance(
         self, source_code: str, file_path: str, *, tree=None
@@ -402,7 +586,12 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 tier = "dynamic"
                 confidence = 0.7
                 if receiver_text == "this":
-                    callee_uid = self._resolve_method_uid(parent, call_name, by_name)
+                    callee_uid = self._resolve_method_uid(
+                        parent,
+                        call_name,
+                        by_name,
+                        source_code=source_code,
+                    )
                 elif receiver_text in import_bindings:
                     rel_type = "CALLS_IMPORTED"
                     tier = "imported"
@@ -516,6 +705,41 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 return module_name_from_path(str(candidate))
         return source.lstrip("./").replace("/", ".")
 
+    @classmethod
+    def _strip_commonjs_alias_rhs(cls, rhs: str) -> str:
+        rhs = rhs.strip()
+        rhs = re.sub(r"//.*$", "", rhs).strip()
+        if rhs.startswith("(") and rhs.endswith(")"):
+            rhs = rhs[1:-1].strip()
+        return rhs
+
+    @classmethod
+    def _commonjs_alias_target(
+        cls,
+        rhs: str,
+        module_name: str,
+        import_bindings: dict[str, str],
+    ) -> tuple[str, str]:
+        if not rhs or rhs.startswith("require("):
+            return "", ""
+        identifier = cls._IDENTIFIER_TEXT_RE.match(rhs)
+        if identifier:
+            target_name = identifier.group(0)
+            imported = import_bindings.get(target_name, "")
+            if imported:
+                return target_name, f"{imported}.{target_name}"
+            return target_name, f"{module_name}.{target_name}"
+
+        member = cls._MEMBER_TEXT_RE.match(rhs)
+        if member:
+            receiver, prop = member.groups()
+            imported = import_bindings.get(receiver, "")
+            if imported:
+                return prop, f"{imported}.{prop}"
+            return prop, f"{module_name}.{prop}"
+
+        return "", ""
+
     @staticmethod
     def _module_export_object_keys(source_code: str) -> list[tuple[str, int]]:
         out: list[tuple[str, int]] = []
@@ -581,6 +805,13 @@ class JavaScriptAdapter(TreeSitterAdapter):
         qualified_name = f"{module_name_from_path(file_path)}.{name}"
         return compute_uid(qualified_name, f"{name}()->_", self.language_name)
 
+    def _property_method_qualified_name(self, file_path: str, owner: str, name: str) -> str:
+        return f"{module_name_from_path(file_path)}.{owner}.{name}"
+
+    def _property_method_uid(self, file_path: str, owner: str, name: str) -> str:
+        qualified_name = self._property_method_qualified_name(file_path, owner, name)
+        return compute_uid(qualified_name, f"{name}()->_", self.language_name)
+
     def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
         qualified_name = qualified_name_for(node, source_code, file_path)
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
@@ -605,7 +836,54 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 return None
             name = source_code[name_node.start_byte : name_node.end_byte]
             return self._uid(file_path, name)
+        if node.type in {"function_expression", "arrow_function"}:
+            assignment = self._property_assignment_for_value_node(node, source_code)
+            if assignment:
+                owner, method_name = assignment
+                return self._property_method_uid(file_path, owner, method_name)
         return self._uid_for_node(node, source_code, file_path)
+
+    def _property_assignment_for_value_node(self, node, source_code: str) -> tuple[str, str] | None:
+        parent = node.parent
+        while parent:
+            if parent.type == "assignment_expression":
+                named_children = [child for child in parent.children if child.is_named]
+                rhs = named_children[-1] if named_children else None
+                if (
+                    len(named_children) >= 2
+                    and rhs is not None
+                    and rhs.start_byte == node.start_byte
+                    and rhs.end_byte == node.end_byte
+                    and rhs.type == node.type
+                ):
+                    lhs = named_children[0]
+                    member = self._member_expression_parts(lhs, source_code)
+                    if member:
+                        owner, prop = member
+                        name_node = node.child_by_field_name("name")
+                        method_name = prop
+                        if name_node is not None:
+                            method_name = source_code[name_node.start_byte : name_node.end_byte]
+                        return owner, method_name
+            if parent.type in {"function_declaration", "class_declaration", "method_definition"}:
+                return None
+            parent = parent.parent
+        return None
+
+    @staticmethod
+    def _member_expression_parts(node, source_code: str) -> tuple[str, str] | None:
+        if node is None or node.type != "member_expression":
+            return None
+        named_children = [child for child in node.children if child.is_named]
+        if len(named_children) < 2:
+            return None
+        receiver_node = named_children[0]
+        property_node = named_children[-1]
+        receiver = source_code[receiver_node.start_byte : receiver_node.end_byte]
+        prop = source_code[property_node.start_byte : property_node.end_byte]
+        if not receiver or not prop:
+            return None
+        return receiver, prop
 
     @staticmethod
     def _is_top_level_variable_declarator(node) -> bool:
@@ -619,7 +897,12 @@ class JavaScriptAdapter(TreeSitterAdapter):
         return False
 
     def _resolve_method_uid(
-        self, caller_node, method_name: str, by_name: dict[str, list]
+        self,
+        caller_node,
+        method_name: str,
+        by_name: dict[str, list],
+        *,
+        source_code: str = "",
     ) -> str | None:
         candidates = by_name.get(method_name, [])
         if not candidates:
@@ -629,6 +912,13 @@ class JavaScriptAdapter(TreeSitterAdapter):
         while class_node and class_node.type != "class_declaration":
             class_node = class_node.parent
         if not class_node:
+            if source_code and caller_node.type in {"function_expression", "arrow_function"}:
+                assignment = self._property_assignment_for_value_node(caller_node, source_code)
+                if assignment:
+                    owner, _method = assignment
+                    for candidate in candidates:
+                        if f".{owner}.{method_name}" in candidate.qualified_name:
+                            return str(candidate.uid)
             return str(candidates[0].uid) if len(candidates) == 1 else None
 
         class_name_node = class_node.child_by_field_name("name")

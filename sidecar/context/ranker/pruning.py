@@ -110,6 +110,15 @@ class BudgetPruner:
                 or "doc-bridge" in provenance
             )
 
+        def _is_marker_chain(c: Candidate) -> bool:
+            return c.kind != "doc" and self.host._has_marker_chain(c)
+
+        def _is_relevant_marker_chain(c: Candidate) -> bool:
+            return c.kind != "doc" and self.host.role_fulfilment.marker_chain_roles_are_relevant(
+                c,
+                required_roles,
+            )
+
         def _chosen_head_bridge_count() -> int:
             head_symbols: list[Candidate] = []
             for selected in chosen:
@@ -247,6 +256,21 @@ class BudgetPruner:
                 )
             return None
 
+        target_roles_for_marker_chain = set(self.host.role_fulfilment.roles_of(target))
+        required_role_set = set(required_roles)
+        marker_chain_required = (
+            "dependency_solver" in required_role_set
+            and bool(target_roles_for_marker_chain & {"api_surface", "config_surface"})
+            and any(_is_relevant_marker_chain(candidate) for candidate in pool)
+        )
+
+        def _marker_chain_pending_from(idx: int) -> bool:
+            if not marker_chain_required:
+                return False
+            if any(_is_relevant_marker_chain(selected) for selected in chosen):
+                return False
+            return any(_is_relevant_marker_chain(candidate) for candidate in pool[idx:])
+
         def _replay_deferred_head_bridges(*, force: bool = False) -> bool:
             """Seat deferred bridges after the symbol head, preserving recall."""
             nonlocal head_bridge_replayed, head_backfill_replayed
@@ -365,6 +389,7 @@ class BudgetPruner:
                 or is_bridge
                 or is_strong_relation
                 or is_mandatory_callee
+                or _is_relevant_marker_chain(c)
                 or (self.host.scoring.blended(c) > 0.15)
             )
 
@@ -440,7 +465,7 @@ class BudgetPruner:
                             candidate_roles=candidate_roles,
                         )
                         continue
-                if not fills_role:
+                if not fills_role and not _is_relevant_marker_chain(c):
                     _record_pruned(
                         c,
                         "noise_penalty",
@@ -477,28 +502,34 @@ class BudgetPruner:
 
             if intent != Intent.IMPACT_ANALYSIS and not missing_roles and spent >= min_floor:
                 if not fills_role:
-                    stopped_reason = "role_complete"
-                    _record_pruned(
-                        c,
-                        "role_complete",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    stop_index = idx
-                    break
+                    if _marker_chain_pending_from(idx):
+                        pass
+                    else:
+                        stopped_reason = "role_complete"
+                        _record_pruned(
+                            c,
+                            "role_complete",
+                            gain=gain,
+                            candidate_roles=candidate_roles,
+                        )
+                        stop_index = idx
+                        break
 
             if gain < min_gain:
                 # Only break if floor is met AND no required roles are missing
                 if spent >= min_floor and not missing_roles:
-                    stopped_reason = "marginal_gain_threshold"
-                    _record_pruned(
-                        c,
-                        "marginal_gain_threshold",
-                        gain=gain,
-                        candidate_roles=candidate_roles,
-                    )
-                    stop_index = idx
-                    break
+                    if _marker_chain_pending_from(idx):
+                        pass
+                    else:
+                        stopped_reason = "marginal_gain_threshold"
+                        _record_pruned(
+                            c,
+                            "marginal_gain_threshold",
+                            gain=gain,
+                            candidate_roles=candidate_roles,
+                        )
+                        stop_index = idx
+                        break
 
                 if not is_useful:
                     _record_pruned(

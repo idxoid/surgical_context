@@ -1,3 +1,4 @@
+from collections import Counter
 from unittest.mock import MagicMock, patch
 
 from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentSignal
@@ -943,6 +944,45 @@ def test_adaptive_role_plan_includes_pass1_supporting_roles_on_target():
     assert "docs_or_concept" in required
 
 
+def test_adaptive_role_plan_keeps_neighborhood_runtime_for_multilabel_target():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._derived_primary_role_by_uid = {
+        "target-u": "config_surface",
+        "core-u": "core_runtime",
+        "executor-u": "executor",
+        "orchestrator-u": "orchestrator",
+        "factory-u": "factory_surface",
+        "runtime-u": "runtime_surface",
+    }
+    ranker._derived_supporting_roles_by_uid = {
+        "target-u": ["representation_surface", "api_surface"],
+    }
+    target = SubgraphNode(
+        uid="target-u",
+        name="PublicFrameworkClass",
+        file_path="/repo/pkg/app.py",
+        range=[1, 200],
+        token_estimate=400,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="class",
+    )
+
+    with patch.object(
+        ranker,
+        "_one_hop_connected_symbol_uids",
+        return_value=["core-u", "executor-u", "orchestrator-u", "factory-u", "runtime-u"],
+    ):
+        required = ranker._get_required_roles("generic", target=target)
+
+    assert required[:3] == ["config_surface", "representation_surface", "api_surface"]
+    assert "runtime_surface" in required
+    assert "docs_or_concept" in required
+
+
 def test_private_primary_target_does_not_satisfy_api_surface():
     ranker = UnifiedRanker(_make_db(), VectorSearcher(_FakeVector()))
     target = SubgraphNode(
@@ -1302,6 +1342,109 @@ def test_required_roles_do_not_shrink_to_target_local_supply():
     assert "runtime_surface" in required
     assert "factory_surface" in required
     assert "representation_surface" in required
+    assert "docs_or_concept" in required
+
+
+def test_required_roles_anchor_public_variable_call_surface_roles():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._structural_fan_by_uid = {
+        "target-u": {
+            "call_fan_in": 0.0,
+            "call_fan_out": 1.0,
+            "type_fan_in": 0.0,
+            "handle_fan_in": 0.0,
+        }
+    }
+    ranker._derived_primary_role_by_uid = {}
+    target = SubgraphNode(
+        uid="target-u",
+        name="createThing",
+        file_path="/repo/src/api.ts",
+        range=[1, 1],
+        token_estimate=30,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="variable",
+    )
+
+    required = ranker._get_required_roles("generic", target=target)
+
+    assert "api_surface" in required
+    assert "factory_surface" in required
+    assert "composition_surface" in required
+    assert "impact_public_api" not in required
+    assert "docs_or_concept" in required
+
+
+def test_adaptive_role_plan_keeps_workspace_support_when_target_roles_expand():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._derived_primary_role_by_uid = {"target-u": "orchestrator"}
+    ranker._derived_supporting_roles_by_uid = {"target-u": ["factory_surface"]}
+    ranker._structural_fan_by_uid = {
+        "target-u": {
+            "call_fan_in": 0.0,
+            "call_fan_out": 4.0,
+            "type_fan_in": 0.0,
+            "handle_fan_in": 0.0,
+        }
+    }
+    target = SubgraphNode(
+        uid="target-u",
+        name="configureThing",
+        file_path="/repo/src/configureThing.ts",
+        range=[1, 80],
+        token_estimate=120,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    with (
+        patch.object(
+            ranker.role_fulfilment,
+            "target_role_supply_counts",
+            return_value=Counter(
+                {
+                    "core_runtime": 12,
+                    "orchestrator": 7,
+                    "executor": 7,
+                    "representation_surface": 6,
+                    "config_surface": 5,
+                    "factory_surface": 1,
+                    "runtime_surface": 1,
+                    "composition_surface": 1,
+                }
+            ),
+        ),
+        patch.object(
+            ranker.role_fulfilment,
+            "role_supply_counts",
+            return_value=Counter(
+                {
+                    "representation_surface": 390,
+                    "config_surface": 377,
+                    "core_runtime": 163,
+                    "orchestrator": 156,
+                    "executor": 116,
+                    "orphan": 102,
+                    "composition_surface": 41,
+                    "factory_surface": 25,
+                    "runtime_surface": 16,
+                    "supporting_surface": 10,
+                }
+            ),
+        ),
+    ):
+        required = ranker._get_required_roles("generic", target=target)
+
+    assert "supporting_surface" in required
+    assert "orphan" not in required
     assert "docs_or_concept" in required
 
 
@@ -1769,6 +1912,75 @@ def test_budget_pruner_stops_after_required_roles_without_extra_expansion():
     assert {item["uid"]: item["reason"] for item in pruned}["extra-noise"] == "role_complete"
 
 
+def test_budget_pruner_waits_for_marker_chain_on_dependency_solver_surfaces():
+    ranker = UnifiedRanker(
+        _make_db(), VectorSearcher(_FakeVector()), workspace_id="local/test@main"
+    )
+    ranker._derived_primary_role_by_uid = {
+        "target": "api_surface",
+        "solver": "dependency_solver",
+    }
+    ranker._derived_supporting_roles_by_uid = {
+        "target": ["config_surface", "dependency_solver"],
+        "solver": ["runtime_surface"],
+    }
+    target = SubgraphNode(
+        uid="target",
+        name="DependencyMarker",
+        file_path="/repo/pkg/api.py",
+        range=[1, 20],
+        token_estimate=40,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    surface_neighbor = Candidate(
+        kind="symbol",
+        uid="surface-neighbor",
+        name="DependencyMarkerConfig",
+        file_path="/repo/pkg/params.py",
+        token_cost=40,
+        graph_score=0.35,
+        semantic_score=0.0,
+        intent_weight=0.5,
+        noise_factor=1.0,
+        relation="DEPENDS_ON",
+        depth=1,
+    )
+    marker_consumer = Candidate(
+        kind="symbol",
+        uid="solver",
+        name="resolve_dependency",
+        file_path="/repo/pkg/dependencies.py",
+        token_cost=60,
+        graph_score=0.05,
+        semantic_score=0.0,
+        intent_weight=0.5,
+        noise_factor=1.0,
+        relation="CALLS_SCOPED",
+        depth=2,
+        provenance=["graph:CALLS_SCOPED,depth=2,marker_chain"],
+    )
+
+    chosen, _, stopped_reason, pruned, missing = ranker.budget_pruner.select_under_budget(
+        [surface_neighbor, marker_consumer],
+        target,
+        "How does the dependency get resolved before the handler is called?",
+        Intent.EXPLORATION,
+        "generic",
+        required_roles=["api_surface", "config_surface", "dependency_solver"],
+        budget=4000,
+        floor_override=100,
+    )
+
+    assert missing == []
+    assert "solver" in [c.uid for c in chosen]
+    assert stopped_reason == "pool_exhausted"
+    assert "solver" not in {item["uid"] for item in pruned}
+
+
 def test_registration_chain_softens_uses_type_score_for_large_artifact_classes():
     db = _make_db()
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
@@ -1889,3 +2101,97 @@ def test_graph_candidates_skip_registration_chain_without_chain_pursuit_intent()
         assert not any("reg_chain" in step for step in by_name["APIRoute"].provenance)
         assert by_name["APIRoute"].graph_score < 0.0
 
+
+def test_graph_candidates_follow_marker_consumer_chain_from_config_surface():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._derived_primary_role_by_uid = {
+        "depends-class": "config_surface",
+        "parameterless": "dependency_solver",
+        "get-dependant": "dependency_solver",
+        "dependant-model": "representation_surface",
+    }
+    ranker._derived_supporting_roles_by_uid = {
+        "depends-class": ["representation_surface"],
+        "parameterless": ["runtime_surface"],
+        "get-dependant": ["runtime_surface"],
+    }
+    ranker._structural_fan_by_uid = {
+        "depends-class": {
+            "call_fan_in": 0.0,
+            "call_fan_out": 0.0,
+            "type_fan_in": 4.0,
+            "handle_fan_in": 0.0,
+        }
+    }
+
+    neighbors_by_uid = {
+        "depends-fn": [
+            {
+                "uid": "depends-class",
+                "name": "Depends",
+                "file_path": "/repo/pkg/params.py",
+                "file_hash": "",
+                "token_estimate": 80,
+                "range": [1, 40],
+                "rel_type": "DEPENDS_ON",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 1,
+            }
+        ],
+        "depends-class": [
+            {
+                "uid": "parameterless",
+                "name": "get_parameterless_sub_dependant",
+                "file_path": "/repo/pkg/dependencies.py",
+                "file_hash": "",
+                "token_estimate": 80,
+                "range": [41, 80],
+                "rel_type": "USES_TYPE",
+                "rel_kind": "",
+                "outgoing": False,
+                "caller_count": 1,
+            }
+        ],
+        "parameterless": [
+            {
+                "uid": "get-dependant",
+                "name": "get_dependant",
+                "file_path": "/repo/pkg/dependencies.py",
+                "file_hash": "",
+                "token_estimate": 140,
+                "range": [81, 130],
+                "rel_type": "CALLS_SCOPED",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 3,
+            },
+            {
+                "uid": "dependant-model",
+                "name": "Dependant",
+                "file_path": "/repo/pkg/models.py",
+                "file_hash": "",
+                "token_estimate": 100,
+                "range": [1, 30],
+                "rel_type": "USES_TYPE",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 2,
+            },
+        ],
+    }
+
+    ranker._get_neighbors = lambda uid, visited, distance: [
+        n for n in neighbors_by_uid.get(uid, []) if n["uid"] not in visited
+    ]
+
+    pool = ranker._graph_candidates("depends-fn", pool_size=10, intent=Intent.EXPLORATION)
+    by_name = {c.name: c for c in pool}
+
+    assert "get_parameterless_sub_dependant" in by_name
+    assert "get_dependant" in by_name
+    assert "Dependant" in by_name
+    assert any("marker_chain" in step for step in by_name["get_parameterless_sub_dependant"].provenance)
+    assert any("marker_chain" in step for step in by_name["get_dependant"].provenance)
+    assert any("marker_chain" in step for step in by_name["Dependant"].provenance)

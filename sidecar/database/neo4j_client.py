@@ -274,7 +274,8 @@ class Neo4jClient:
                 WHERE r IS NULL OR (
                     type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
                                 'CALLS_DYNAMIC', 'CALLS_INFERRED', 'CALLS_GUESS', 'DEPENDS_ON',
-                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS', 'HAS_API', 'INHERITED_API']
+                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS', 'HAS_API', 'INHERITED_API',
+                                'REFERENCES', 'REFERENCES_EXTERNAL']
                     AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 )
                 DELETE r, c
@@ -305,7 +306,7 @@ class Neo4jClient:
         with self.driver.session() as session:
             session.run(
                 """
-                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|CALLS_EXTERNAL|DEPENDS_ON|IMPLEMENTS|OVERRIDES|HAS_API|INHERITED_API]->()
+                MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|CALLS_EXTERNAL|DEPENDS_ON|IMPLEMENTS|OVERRIDES|HAS_API|INHERITED_API|REFERENCES|REFERENCES_EXTERNAL]->()
                 WHERE s.uid IN $symbol_uids
                   AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 WITH collect(r) AS edges
@@ -412,7 +413,8 @@ class Neo4jClient:
                 WHERE r IS NULL OR (
                     type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
                                 'CALLS_DYNAMIC', 'CALLS_INFERRED', 'CALLS_GUESS', 'DEPENDS_ON',
-                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS', 'HAS_API', 'INHERITED_API']
+                                'IMPLEMENTS', 'OVERRIDES', 'AFFECTS', 'HAS_API', 'INHERITED_API',
+                                'REFERENCES', 'REFERENCES_EXTERNAL']
                     AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 )
                 DELETE r, c
@@ -636,7 +638,7 @@ class Neo4jClient:
             session.run(
                 """
                 MATCH (e:ExternalPkg {workspace_id: $workspace_id})
-                WHERE NOT (e)<-[:CALLS_EXTERNAL|IMPORTS_EXTERNAL {workspace_id: $workspace_id}]-()
+                WHERE NOT (e)<-[:CALLS_EXTERNAL|IMPORTS_EXTERNAL|REFERENCES_EXTERNAL {workspace_id: $workspace_id}]-()
                 DETACH DELETE e
                 """,
                 workspace_id=workspace_id,
@@ -734,6 +736,7 @@ class Neo4jClient:
             session.run(
                 """
                 MATCH (:Symbol)-[r:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(:Symbol)
+                WHERE coalesce(r.resolver, 'mro-v1') = 'mro-v1'
                 WITH collect(r) AS edges
                 FOREACH (edge IN edges | DELETE edge)
                 WITH size(edges) AS deleted_edges
@@ -743,6 +746,63 @@ class Neo4jClient:
                 """,
                 workspace_id=workspace_id,
             )
+
+    def link_symbol_api_edges(
+        self,
+        edges: list[ClassApiEdge],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> tuple[int, set[str]]:
+        """Create HAS_API edges from non-class property-owner surfaces."""
+        if not edges:
+            return 0, set()
+        with self.driver.session() as session:
+            created, touched = session.execute_write(
+                self._create_symbol_api_relations,
+                edges,
+                workspace_id,
+            )
+            if created:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
+            return created, touched
+
+    @staticmethod
+    def _create_symbol_api_relations(tx, edges: list[ClassApiEdge], workspace_id: str):
+        rows = [
+            {"owner_uid": edge.class_uid, "method_uid": edge.method_uid}
+            for edge in edges
+            if edge.edge_type == "HAS_API"
+        ]
+        if not rows:
+            return 0, set()
+        rec = tx.run(
+            """
+            UNWIND $edges AS edge
+            MATCH (owner:Symbol {uid: edge.owner_uid})
+            MATCH (method:Symbol {uid: edge.method_uid})
+            WHERE owner <> method
+            MERGE (owner)-[r:HAS_API {
+                workspace_id: $workspace_id,
+                resolver: 'property-api-v1'
+            }]->(method)
+            SET r.confidence = 0.9,
+                r.tier = 'scoped'
+            RETURN count(r) AS created,
+                   collect(DISTINCT owner.uid) + collect(DISTINCT method.uid) AS touched
+            """,
+            edges=rows,
+            workspace_id=workspace_id,
+        ).single()
+        if not rec:
+            return 0, set()
+        return int(rec["created"] or 0), {
+            str(uid) for uid in (rec["touched"] or []) if uid
+        }
 
     @staticmethod
     def _create_class_api_relations(tx, edges: list[ClassApiEdge], workspace_id: str):
@@ -1141,6 +1201,115 @@ class Neo4jClient:
                 path=file_path,
                 workspace_id=workspace_id,
             )
+
+    def link_symbol_references(
+        self,
+        references: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> tuple[int, set[str]]:
+        """Create REFERENCES edges from static symbol alias facts.
+
+        Alias facts are matched to in-graph project symbols. Exact qualified-name
+        matches win; optional name fallback is intentionally per-row so broad
+        CommonJS defaults do not bind to unrelated same-named symbols.
+        """
+        if not references:
+            return 0, set()
+        with self.driver.session() as session:
+            created, touched = session.execute_write(
+                self._create_symbol_reference_relations,
+                references,
+                workspace_id,
+            )
+            if created:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
+            return created, touched
+
+    @staticmethod
+    def _create_symbol_reference_relations(tx, references, workspace_id):
+        if not references:
+            return 0, set()
+        project_rec = tx.run(
+            """
+            UNWIND range(0, size($references) - 1) AS idx
+            WITH idx, $references[idx] AS d
+            MATCH (source_file:File {path: d.file_path, workspace_id: $workspace_id})-[:CONTAINS]->(source:Symbol {uid: d.source_uid})
+            MATCH (target_file:File {workspace_id: $workspace_id})-[:CONTAINS]->(target:Symbol)
+            WHERE source <> target
+              AND (
+                (coalesce(d.target_qualified_name, '') <> ''
+                 AND target.qualified_name = d.target_qualified_name)
+                OR (
+                  coalesce(d.match_by_name, true) = true
+                  AND target.name = d.target_name
+                )
+              )
+            WITH idx, d, source, target, target_file
+            ORDER BY
+              idx,
+              CASE WHEN target.qualified_name = d.target_qualified_name THEN 0
+                   WHEN target_file.path = d.file_path THEN 1
+                   ELSE 2 END,
+              size(coalesce(target.qualified_name, '')) ASC
+            WITH idx, d, source, collect(target)[0] AS target
+            WHERE target IS NOT NULL AND source <> target
+            MERGE (source)-[r:REFERENCES {
+                workspace_id: $workspace_id,
+                alias_kind: d.kind
+            }]->(target)
+            SET r.resolver = 'symbol-alias-v1',
+                r.confidence = coalesce(d.confidence, 0.75),
+                r.tier = 'alias',
+                r.target_name = d.target_name,
+                r.call_site_line = coalesce(d.line, 0)
+            RETURN count(r) AS created,
+                   collect(DISTINCT source.uid) + collect(DISTINCT target.uid) AS touched
+            """,
+            references=references,
+            workspace_id=workspace_id,
+        ).single()
+        external_rec = tx.run(
+            """
+            UNWIND $references AS d
+            WITH d,
+                 CASE
+                   WHEN coalesce(d.target_qualified_name, '') CONTAINS '.'
+                   THEN split(d.target_qualified_name, '.')[0]
+                   ELSE coalesce(d.target_qualified_name, '')
+                 END AS root
+            MATCH (source_file:File {path: d.file_path, workspace_id: $workspace_id})-[:CONTAINS]->(source:Symbol {uid: d.source_uid})
+            MATCH (external:ExternalPkg {workspace_id: $workspace_id, root: root})
+            WHERE root <> ''
+            MERGE (source)-[r:REFERENCES_EXTERNAL {
+                workspace_id: $workspace_id,
+                alias_kind: d.kind
+            }]->(external)
+            SET r.resolver = 'symbol-alias-v1',
+                r.confidence = coalesce(d.confidence, 0.75),
+                r.tier = 'external_alias',
+                r.target_name = d.target_name,
+                r.target_qualified_name = d.target_qualified_name,
+                r.call_site_line = coalesce(d.line, 0)
+            RETURN count(r) AS created,
+                   collect(DISTINCT source.uid) AS touched
+            """,
+            references=references,
+            workspace_id=workspace_id,
+        ).single()
+        project_created = int(project_rec["created"] or 0) if project_rec else 0
+        external_created = int(external_rec["created"] or 0) if external_rec else 0
+        touched_values = []
+        if project_rec:
+            touched_values.extend(project_rec["touched"] or [])
+        if external_rec:
+            touched_values.extend(external_rec["touched"] or [])
+        return project_created + external_created, {str(uid) for uid in touched_values if uid}
 
     def link_reexports(
         self,

@@ -8,6 +8,7 @@ unresolved links are parser/index debt (BrokenLink), not external boundary signa
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -46,6 +47,32 @@ def is_published_external_root(root: str) -> bool:
     if root in sys.stdlib_module_names:
         return True
     return root in installed_top_level_packages()
+
+
+def package_manifest_external_roots(project_root: str | Path) -> frozenset[str]:
+    """Dependency roots declared by JS package manifests in the indexed project."""
+    root = Path(project_root)
+    manifest = root / "package.json"
+    if not manifest.exists():
+        return frozenset()
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return frozenset()
+    roots: set[str] = set()
+    for section in (
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ):
+        deps = data.get(section)
+        if not isinstance(deps, dict):
+            continue
+        for name in deps:
+            if isinstance(name, str) and name:
+                roots.add(name)
+    return frozenset(roots)
 
 
 def _layout_roots(project_root: Path) -> set[str]:
@@ -140,7 +167,11 @@ def is_integration_external_root(root: str) -> bool:
     return bool(root) and root not in EXTERNAL_INTEGRATION_PLUMBING_ROOTS
 
 
-def classify_external_root(root: str, project_boundary: frozenset[str]) -> str:
+def classify_external_root(
+    root: str,
+    project_boundary: frozenset[str],
+    project_external_roots: frozenset[str] = frozenset(),
+) -> str:
     """Classify a module root for external materialization.
 
     Returns:
@@ -152,6 +183,8 @@ def classify_external_root(root: str, project_boundary: frozenset[str]) -> str:
         return "skip"
     if root in project_boundary:
         return "internal"
+    if root in project_external_roots:
+        return "external"
     if is_published_external_root(root):
         return "external"
     return "skip"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from sidecar.indexer.external_boundary import (
@@ -26,31 +27,61 @@ class ExternalImportLink:
     external_root: str
 
 
-def _import_roots_from_source(source_code: str, file_path: str, boundary: frozenset[str]) -> list[str]:
-    """Scan ``import`` / ``from … import`` lines for published external roots."""
+def _module_root(module: str) -> str:
+    module = (module or "").strip()
+    if not module or module.startswith("."):
+        return ""
+    if module.startswith("@"):
+        parts = module.split("/")
+        return "/".join(parts[:2]) if len(parts) >= 2 else module
+    return re.split(r"[/.]", module, maxsplit=1)[0]
+
+
+def _import_roots_from_source(
+    source_code: str,
+    file_path: str,
+    boundary: frozenset[str],
+    project_external_roots: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Scan Python/JS import syntaxes for external package roots."""
     roots: list[str] = []
     seen: set[str] = set()
+
+    def add_module(module: str) -> None:
+        root = _module_root(module)
+        if (
+            not root
+            or root in seen
+            or classify_external_root(root, boundary, project_external_roots) != "external"
+        ):
+            return
+        seen.add(root)
+        roots.append(root)
+
     for line in source_code.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
         module = ""
         if stripped.startswith("import "):
-            module = stripped[7:].split(",")[0].strip().split(" as ")[0].strip()
+            match = re.search(r"\bfrom\s+['\"]([^'\"]+)['\"]", stripped)
+            if match:
+                module = match.group(1).strip()
+            else:
+                side_effect = re.match(r"import\s+['\"]([^'\"]+)['\"]", stripped)
+                if side_effect:
+                    module = side_effect.group(1).strip()
+                else:
+                    module = stripped[7:].split(",")[0].strip().split(" as ")[0].strip()
         elif stripped.startswith("from "):
             parts = stripped[5:].split(" import ", 1)
             if len(parts) != 2:
                 continue
             module = parts[0].strip()
-            if module == "." or module.startswith("."):
-                continue
-        if not module:
-            continue
-        root = external_root_from_qualified_name(module)
-        if classify_external_root(root, boundary) != "external" or root in seen:
-            continue
-        seen.add(root)
-        roots.append(root)
+        add_module(module)
+
+    for match in re.finditer(r"\brequire\(\s*['\"]([^'\"]+)['\"]\s*\)", source_code):
+        add_module(match.group(1))
     return roots
 
 
@@ -58,6 +89,7 @@ def collect_external_call_links(
     calls: list[dict],
     *,
     boundary: frozenset[str],
+    project_external_roots: frozenset[str] = frozenset(),
 ) -> list[ExternalCallLink]:
     """Turn unresolved static external ``callee_qualified_name`` facts into link rows."""
     out: list[ExternalCallLink] = []
@@ -68,7 +100,7 @@ def collect_external_call_links(
         if not caller_uid or not qn or call.get("callee_uid"):
             continue
         root = external_root_from_qualified_name(qn)
-        if classify_external_root(root, boundary) != "external":
+        if classify_external_root(root, boundary, project_external_roots) != "external":
             continue
         member = qn[len(root) + 1 :] if qn.startswith(f"{root}.") and len(qn) > len(root) + 1 else ""
         line = int(call.get("call_site_line") or 0)
@@ -93,8 +125,14 @@ def collect_external_import_links(
     file_path: str,
     *,
     boundary: frozenset[str],
+    project_external_roots: frozenset[str] = frozenset(),
 ) -> list[ExternalImportLink]:
-    roots = _import_roots_from_source(source_code, file_path, boundary)
+    roots = _import_roots_from_source(
+        source_code,
+        file_path,
+        boundary,
+        project_external_roots,
+    )
     return [ExternalImportLink(file_path=file_path, external_root=root) for root in roots]
 
 
@@ -137,6 +175,7 @@ def apply_external_boundary_for_file(
     calls: list[dict],
     boundary: frozenset[str],
     workspace_id: str,
+    project_external_roots: frozenset[str] = frozenset(),
 ) -> tuple[int, int]:
     """Refresh ``IMPORTS_EXTERNAL`` / ``CALLS_EXTERNAL`` for one indexed file."""
     delete_imports = getattr(db, "delete_external_imports_for_file", None)
@@ -145,8 +184,17 @@ def apply_external_boundary_for_file(
         return 0, 0
     if callable(delete_imports):
         delete_imports(file_path, workspace_id=workspace_id)
-    call_links = collect_external_call_links(calls, boundary=boundary)
-    import_links = collect_external_import_links(source_code, file_path, boundary=boundary)
+    call_links = collect_external_call_links(
+        calls,
+        boundary=boundary,
+        project_external_roots=project_external_roots,
+    )
+    import_links = collect_external_import_links(
+        source_code,
+        file_path,
+        boundary=boundary,
+        project_external_roots=project_external_roots,
+    )
     return link_boundary(
         external_call_link_rows(call_links, workspace_id),
         external_import_link_rows(import_links, workspace_id),

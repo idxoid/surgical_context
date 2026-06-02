@@ -39,11 +39,14 @@ sys.path.append(
 from sidecar.context.framework_hints import FrameworkHintsIndexer
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
+from sidecar.indexer.external_boundary import (
+    build_project_boundary,
+    package_manifest_external_roots,
+)
+from sidecar.indexer.external_facts import apply_external_boundary_for_file
 from sidecar.indexer.fast.collector import collect_files
 from sidecar.indexer.fast.extractor import ExtractedFile, FastExtractor, hash_file
 from sidecar.indexer.fast.schema import ensure_fast_indexes
-from sidecar.indexer.external_boundary import build_project_boundary
-from sidecar.indexer.external_facts import apply_external_boundary_for_file
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.repository_profile import (
     RepositoryProfileInputs,
@@ -255,6 +258,7 @@ def _external_boundary_phase(
     if not callable(link_boundary):
         return 0, 0
     boundary = build_project_boundary(project_path, file_paths=tuple(indexed_files))
+    project_external_roots = package_manifest_external_roots(project_path)
     calls_created = 0
     imports_created = 0
     reporter.stage_start("external_boundary", total=len(diffs))
@@ -267,6 +271,7 @@ def _external_boundary_phase(
             calls=ex.calls,
             boundary=boundary,
             workspace_id=workspace_id,
+            project_external_roots=project_external_roots,
         )
         calls_created += created_calls
         imports_created += created_imports
@@ -441,21 +446,26 @@ def _type_reference_phase(
     decoration. Runs after `_apply_graph` so the referenced class symbols exist,
     and under the same project_root_scope so referrer uids match stored nodes.
     """
-    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.registry import REGISTRY
     from sidecar.parser.uid import project_root_scope
 
     link_types = getattr(db, "link_type_references", None)
     reporter.stage_start("type_refs", total=1)
     references: list[dict] = []
     if callable(link_types):
-        adapter = PythonAdapter()
         with project_root_scope(project_path or None):
             for diff in diffs:
                 ex = diff.extracted
-                if not ex.path.endswith((".py", ".pyi")):
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_refs = getattr(adapter, "extract_type_references", None)
+                if not callable(extract_refs):
                     continue
                 try:
-                    references.extend(adapter.extract_type_references(ex.source, ex.path))
+                    references.extend(extract_refs(ex.source, ex.path))
                 except Exception:
                     continue
         if references:
@@ -463,6 +473,60 @@ def _type_reference_phase(
     reporter.step("type_refs")
     reporter.stage_end("type_refs")
     return len(references)
+
+
+def _symbol_alias_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> tuple[int, set[str]]:
+    """Create REFERENCES edges for static symbol aliases.
+
+    CommonJS export/require aliases are syntactic topology: one project symbol is
+    surfaced as another. Runs after `_apply_graph` so both endpoints exist, and
+    before degree recompute because REFERENCES participates in degree.
+    """
+    from sidecar.parser.registry import REGISTRY
+    from sidecar.parser.uid import project_root_scope
+
+    link_aliases = getattr(db, "link_symbol_references", None)
+    reporter.stage_start("symbol_aliases", total=1)
+    aliases: list[dict] = []
+    linked = 0
+    touched: set[str] = set()
+    if callable(link_aliases):
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_aliases = getattr(adapter, "extract_symbol_aliases", None)
+                if not callable(extract_aliases):
+                    continue
+                try:
+                    aliases.extend(extract_aliases(ex.source, ex.path))
+                except Exception:
+                    continue
+        if aliases:
+            result = link_aliases(aliases, workspace_id=workspace_id)
+            if isinstance(result, tuple):
+                linked = int(result[0] or 0)
+                touched = {str(uid) for uid in (result[1] or set()) if uid}
+            elif isinstance(result, set):
+                touched = {str(uid) for uid in result if uid}
+                linked = len(aliases)
+            elif isinstance(result, int):
+                linked = result
+            else:
+                linked = len(aliases)
+    reporter.step("symbol_aliases")
+    reporter.stage_end("symbol_aliases")
+    return linked, touched
 
 
 def _reexport_phase(
@@ -592,6 +656,55 @@ def _mro_api_bridge_phase(
     created = MroApiBridgeIndexer(db).apply(workspace_id)
     reporter.stage_end("mro_api_bridge")
     return created
+
+
+def _property_api_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> tuple[int, set[str]]:
+    """Create HAS_API edges from property-owner API assignments."""
+    from sidecar.parser.registry import REGISTRY
+    from sidecar.parser.uid import project_root_scope
+
+    link_api = getattr(db, "link_symbol_api_edges", None)
+    reporter.stage_start("property_api", total=1)
+    edges = []
+    linked = 0
+    touched: set[str] = set()
+    if callable(link_api):
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_edges = getattr(adapter, "extract_property_api_edges", None)
+                if not callable(extract_edges):
+                    continue
+                try:
+                    edges.extend(extract_edges(ex.source, ex.path))
+                except Exception:
+                    continue
+        if edges:
+            result = link_api(edges, workspace_id=workspace_id)
+            if isinstance(result, tuple):
+                linked = int(result[0] or 0)
+                touched = {str(uid) for uid in (result[1] or set()) if uid}
+            elif isinstance(result, set):
+                touched = {str(uid) for uid in result if uid}
+                linked = len(edges)
+            elif isinstance(result, int):
+                linked = result
+            else:
+                linked = len(edges)
+    reporter.step("property_api")
+    reporter.stage_end("property_api")
+    return linked, touched
 
 
 def _framework_hints_phase(
@@ -985,6 +1098,21 @@ def run_fast_indexing(
         stats["mro_api_edges"] = _mro_api_bridge_phase(db, workspace_id, reporter)
         stats["timings_sec"]["mro_api_bridge"] = round(time.perf_counter() - t_stage, 3)
 
+        # Stage 4.42: JS/TS property-owner API surfaces. Runs after MRO because
+        # the MRO bridge refreshes its own class HAS_API edges, and before degree
+        # because HAS_API participates in materialized degree.
+        t_stage = time.perf_counter()
+        property_api_count, property_api_uids = _property_api_phase(
+            diffs,
+            db,
+            workspace_id,
+            reporter,
+            project_path,
+        )
+        stats["property_api_edges"] = property_api_count
+        stats["timings_sec"]["property_api"] = round(time.perf_counter() - t_stage, 3)
+        degree_seeds |= property_api_uids
+
         # Stage 4.5: framework hints
         t_stage = time.perf_counter()
         stats["framework_hints_applied"] = _framework_hints_phase(diffs, db, workspace_id, reporter)
@@ -1032,6 +1160,17 @@ def run_fast_indexing(
             diffs, db, workspace_id, reporter, project_path
         )
         stats["timings_sec"]["type_refs"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.664: Symbol-level aliases (CommonJS export/require surfaces).
+        # REFERENCES is counted into materialized degree, so new endpoints join
+        # the degree seed set before recompute.
+        t_stage = time.perf_counter()
+        alias_count, alias_uids = _symbol_alias_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["symbol_aliases_linked"] = alias_count
+        stats["timings_sec"]["symbol_aliases"] = round(time.perf_counter() - t_stage, 3)
+        degree_seeds |= alias_uids
 
         # Stage 4.665: RE_EXPORTS edges (package __init__ -> surfaced symbol). Like
         # USES_TYPE, a low-weight derived relation, not in materialized degree.

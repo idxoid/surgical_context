@@ -6,7 +6,14 @@ from unittest.mock import MagicMock, patch
 from sidecar.database.neo4j_client import Neo4jClient, _import_row
 from sidecar.indexer.code import index_file
 from sidecar.indexer.fast.extractor import ExtractedFile
-from sidecar.indexer.fast.pipeline import FileDiff, _apply_graph, _NullReporter
+from sidecar.indexer.fast.pipeline import (
+    FileDiff,
+    _apply_graph,
+    _NullReporter,
+    _property_api_phase,
+    _symbol_alias_phase,
+    _type_reference_phase,
+)
 from sidecar.parser.protocol import ImportEdge, SymbolMetadata
 
 
@@ -225,6 +232,136 @@ class TestIncrementalIndexing:
         edge_start = min(i for i, call in enumerate(calls) if call[0] == "clear")
         upsert_end = max(i for i, call in enumerate(calls) if call[0] == "upsert")
         assert upsert_end < edge_start
+
+    def test_type_reference_phase_uses_language_adapter_for_typescript(self):
+        linked = []
+        source = """
+export interface ConfigureStoreOptions<S = unknown> {
+  reducer: Reducer<S>
+}
+
+export type EnhancedStore<S = unknown> = Store<S>
+
+export function configureStore<S>(
+  options: ConfigureStoreOptions<S>,
+): EnhancedStore<S> {
+  return createStore(options.reducer)
+}
+"""
+
+        class FakeDb:
+            def link_type_references(self, references, workspace_id):
+                linked.extend(references)
+
+        diff = FileDiff(
+            extracted=ExtractedFile(
+                "/repo/configureStore.ts",
+                source,
+                "hash",
+                [],
+                [],
+                [],
+                [],
+            ),
+        )
+
+        count = _type_reference_phase(
+            [diff],
+            FakeDb(),
+            "acme/repo@main",
+            _NullReporter(),
+            project_path="/repo",
+        )
+
+        assert count > 0
+        assert {ref["type_name"] for ref in linked} >= {
+            "ConfigureStoreOptions",
+            "EnhancedStore",
+        }
+
+    def test_symbol_alias_phase_uses_javascript_adapter_for_commonjs_exports(self, tmp_path):
+        linked = []
+        lib = tmp_path / "lib"
+        lib.mkdir()
+        (lib / "response.js").write_text("var res = {};\nmodule.exports = res;\n")
+        source = """
+var res = require('./response');
+exports.response = res;
+"""
+
+        class FakeDb:
+            def link_symbol_references(self, references, workspace_id):
+                linked.extend(references)
+                touched = {str(ref["source_uid"]) for ref in references}
+                return len(references), touched
+
+        diff = FileDiff(
+            extracted=ExtractedFile(
+                str(lib / "express.js"),
+                source,
+                "hash",
+                [],
+                [],
+                [],
+                [],
+            ),
+        )
+
+        count, touched = _symbol_alias_phase(
+            [diff],
+            FakeDb(),
+            "acme/repo@main",
+            _NullReporter(),
+            project_path=str(tmp_path),
+        )
+
+        assert count == len(linked)
+        assert touched
+        assert any(
+            ref["source_name"] == "response"
+            and ref["target_name"] == "res"
+            and ref["target_qualified_name"] == "lib.response.res"
+            for ref in linked
+        )
+
+    def test_property_api_phase_links_javascript_property_methods(self, tmp_path):
+        linked = []
+        source = """
+var res = Object.create(proto);
+res.status = function status(code) {
+  return this;
+};
+"""
+
+        class FakeDb:
+            def link_symbol_api_edges(self, edges, workspace_id):
+                linked.extend(edges)
+                touched = {edge.class_uid for edge in edges} | {edge.method_uid for edge in edges}
+                return len(edges), touched
+
+        diff = FileDiff(
+            extracted=ExtractedFile(
+                str(tmp_path / "response.js"),
+                source,
+                "hash",
+                [],
+                [],
+                [],
+                [],
+            ),
+        )
+
+        count, touched = _property_api_phase(
+            [diff],
+            FakeDb(),
+            "acme/repo@main",
+            _NullReporter(),
+            project_path=str(tmp_path),
+        )
+
+        assert count == 1
+        assert touched
+        assert linked[0].edge_type == "HAS_API"
 
     def test_hash_skip_gate_with_unchanged_file(self):
         """Test that unchanged files are correctly identified."""

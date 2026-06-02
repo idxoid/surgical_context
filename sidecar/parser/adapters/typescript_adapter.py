@@ -30,6 +30,50 @@ class TypeScriptAdapter(TreeSitterAdapter):
         r"(?m)^export\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)\b"
     )
     _EXPORTED_OBJECT_API_RE = re.compile(r"(?m)^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*\{")
+    _EXPORTED_CALL_INITIALIZER_RE = re.compile(
+        r"(?m)^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b[^=\n;]*=\s*"
+        r"(?:(?:/\*.*?\*/)\s*)*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\("
+    )
+    _BODY_CALL_FALLBACK_RE = re.compile(
+        r"\b([A-Za-z_$][\w$]*)\s*(?:<[^>\n;{}()]*>)?\s*\("
+    )
+    _BODY_CALL_FALLBACK_SKIP = {
+        "catch",
+        "for",
+        "function",
+        "if",
+        "new",
+        "return",
+        "super",
+        "switch",
+        "throw",
+        "typeof",
+        "while",
+    }
+    _TYPE_OWNER_TYPES = {
+        "function_declaration",
+        "method_definition",
+        "class_declaration",
+        "interface_declaration",
+        "type_alias_declaration",
+        "variable_declarator",
+    }
+    _TYPE_REF_SKIP_NAMES = {
+        "any",
+        "bigint",
+        "boolean",
+        "false",
+        "never",
+        "null",
+        "number",
+        "object",
+        "string",
+        "symbol",
+        "true",
+        "undefined",
+        "unknown",
+        "void",
+    }
 
     @property
     def language_name(self) -> str:
@@ -344,6 +388,86 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         return edges
 
+    def extract_type_references(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """Extract TypeScript ``USES_TYPE`` references from AST-visible type syntax.
+
+        Type annotations, generic constraints/defaults, interface/type bodies, and
+        annotated top-level variables are static facts. Resolution is left to Neo4j,
+        so builtin/external names are naturally dropped unless the project indexes a
+        matching type symbol.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings, _ = self._extract_import_bindings(source_code, file_path)
+        out: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        def emit(owner, type_node, kind: str) -> None:
+            owner_uid = self._owner_uid_for_type_reference(owner, source_code, file_path)
+            owner_name = self._owner_name_for_type_reference(owner, source_code)
+            if not owner_uid or not owner_name:
+                return
+            skip_names = self._type_parameter_names(owner, source_code) | {owner_name}
+            for type_name, type_qn in self._type_ref_targets(
+                type_node,
+                import_bindings,
+                module,
+                skip_names=skip_names,
+            ):
+                key = (owner_uid, type_qn, kind)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "referrer_uid": owner_uid,
+                        "referrer_name": owner_name,
+                        "type_name": type_name,
+                        "type_qualified_name": type_qn,
+                        "kind": kind,
+                        "file_path": file_path,
+                    }
+                )
+
+        for owner in self._iter_nodes(tree.root_node):
+            if owner.type not in self._TYPE_OWNER_TYPES:
+                continue
+            if owner.type == "variable_declarator" and not self._is_top_level_variable_declarator(
+                owner
+            ):
+                continue
+            if owner.type in {"function_declaration", "method_definition"}:
+                params = owner.child_by_field_name("parameters")
+                if params is not None:
+                    for param in params.named_children:
+                        self._emit_ts_type_annotations(param, "param", emit, owner)
+                type_params = next(
+                    (child for child in owner.named_children if child.type == "type_parameters"),
+                    None,
+                )
+                if type_params is not None:
+                    emit(owner, type_params, "annotation")
+                return_type = owner.child_by_field_name("return_type")
+                if return_type is None:
+                    return_type = self._node_field_by_type(owner, "type_annotation")
+                if return_type is not None:
+                    emit(owner, return_type, "return")
+                body = owner.child_by_field_name("body")
+                if body is not None:
+                    for node in self._iter_nodes(body):
+                        if node.type in {"lexical_declaration", "variable_declarator"}:
+                            self._emit_ts_type_annotations(node, "annotation", emit, owner)
+            elif owner.type in {"interface_declaration", "type_alias_declaration"}:
+                emit(owner, owner, "annotation")
+            elif owner.type == "class_declaration":
+                emit(owner, owner, "annotation")
+            elif owner.type == "variable_declarator":
+                self._emit_ts_type_annotations(owner, "annotation", emit, owner)
+        return out
+
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -445,7 +569,144 @@ class TypeScriptAdapter(TreeSitterAdapter):
                                 call["callee_qualified_name"] = f"{base}.{call_name}"
             calls.append(call)
 
+        self._append_exported_initializer_call_fallbacks(
+            calls,
+            source_code,
+            file_path,
+            import_bindings,
+        )
+        self._append_symbol_body_call_fallbacks(
+            calls,
+            source_code,
+            file_path,
+            symbols,
+            import_bindings,
+        )
         return calls
+
+    def _append_exported_initializer_call_fallbacks(
+        self,
+        calls: list[dict],
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+    ) -> None:
+        """Recover ``export const x = call(...)`` edges when TS AST owner recovery fails."""
+        seen = {
+            (
+                call.get("caller_uid"),
+                call.get("callee_name"),
+                call.get("rel_type"),
+                call.get("call_site_line"),
+                call.get("callee_qualified_name", ""),
+            )
+            for call in calls
+        }
+        for match in self._EXPORTED_CALL_INITIALIZER_RE.finditer(source_code):
+            caller_name = match.group(1)
+            callee_name = match.group(2)
+            if not caller_name or not callee_name:
+                continue
+            caller_uid = self._uid(file_path, caller_name)
+            rel_type = "CALLS_IMPORTED" if callee_name in import_bindings else "CALLS_DIRECT"
+            line = source_code.count("\n", 0, match.start(2)) + 1
+            callee_qn = import_bindings.get(callee_name, "") if rel_type == "CALLS_IMPORTED" else ""
+            key = (caller_uid, callee_name, rel_type, line, callee_qn)
+            if key in seen:
+                continue
+            call = {
+                "caller_uid": caller_uid,
+                "callee_name": callee_name,
+                "rel_type": rel_type,
+                "tier": "imported" if rel_type == "CALLS_IMPORTED" else "direct",
+                "confidence": 0.9 if rel_type == "CALLS_IMPORTED" else 1.0,
+                "resolver": "ts-export-initializer-fallback-v1",
+                "call_site_line": line,
+            }
+            if callee_qn:
+                call["callee_qualified_name"] = callee_qn
+            calls.append(call)
+            seen.add(key)
+
+    def _append_symbol_body_call_fallbacks(
+        self,
+        calls: list[dict],
+        source_code: str,
+        file_path: str,
+        symbols: list[SymbolMetadata],
+        import_bindings: dict[str, str],
+    ) -> None:
+        """Recover calls inside large exported TS bodies when tree-sitter loses owners."""
+        known_names = {symbol.name for symbol in symbols} | set(import_bindings)
+        if not known_names:
+            return
+        existing_callers = {str(call.get("caller_uid", "")) for call in calls}
+        seen = {
+            (
+                call.get("caller_uid"),
+                call.get("callee_name"),
+                call.get("rel_type"),
+                call.get("call_site_line"),
+                call.get("callee_qualified_name", ""),
+            )
+            for call in calls
+        }
+        lines = source_code.splitlines(keepends=True)
+        line_offsets: list[int] = []
+        offset = 0
+        for line in lines:
+            line_offsets.append(offset)
+            offset += len(line)
+
+        for symbol in symbols:
+            if symbol.end_line <= symbol.start_line:
+                continue
+            if symbol.signature_status != "fallback_export" and symbol.uid in existing_callers:
+                continue
+            start_idx = max(0, symbol.start_line - 1)
+            end_idx = min(len(lines), symbol.end_line)
+            if start_idx >= end_idx:
+                continue
+            body_start = line_offsets[start_idx]
+            body = "".join(lines[start_idx:end_idx])
+            caller_uid = str(symbol.uid)
+            for match in self._BODY_CALL_FALLBACK_RE.finditer(body):
+                callee_name = match.group(1)
+                if (
+                    not callee_name
+                    or callee_name == symbol.name
+                    or callee_name in self._BODY_CALL_FALLBACK_SKIP
+                    or callee_name not in known_names
+                ):
+                    continue
+                prefix = body[: match.start()]
+                previous = prefix.rstrip()[-1:] if prefix.rstrip() else ""
+                if previous in {".", ":"}:
+                    continue
+                if re.search(r"\bfunction\s+$", prefix[-32:]):
+                    continue
+
+                rel_type = "CALLS_IMPORTED" if callee_name in import_bindings else "CALLS_DIRECT"
+                line = source_code.count("\n", 0, body_start + match.start(1)) + 1
+                callee_qn = (
+                    import_bindings.get(callee_name, "") if rel_type == "CALLS_IMPORTED" else ""
+                )
+                key = (caller_uid, callee_name, rel_type, line, callee_qn)
+                if key in seen:
+                    continue
+                call = {
+                    "caller_uid": caller_uid,
+                    "callee_name": callee_name,
+                    "rel_type": rel_type,
+                    "tier": "imported" if rel_type == "CALLS_IMPORTED" else "direct",
+                    "confidence": 0.75 if rel_type == "CALLS_IMPORTED" else 0.7,
+                    "resolver": "ts-symbol-body-fallback-v1",
+                    "call_site_line": line,
+                }
+                if callee_qn:
+                    call["callee_qualified_name"] = callee_qn
+                calls.append(call)
+                seen.add(key)
 
     def _extract_import_bindings(
         self, source_code: str, file_path: str
@@ -578,6 +839,95 @@ class TypeScriptAdapter(TreeSitterAdapter):
         end_line = source_code.count("\n", 0, end_offset) + 1
         content = source_code[line_start:end_offset]
         return start_line, end_line, content
+
+    def _emit_ts_type_annotations(self, node, kind: str, emit, owner) -> None:
+        for child in self._iter_nodes(node):
+            if child.type == "type_annotation":
+                emit(owner, child, kind)
+
+    def _type_ref_targets(
+        self,
+        type_node,
+        import_bindings: dict[str, str],
+        module: str,
+        *,
+        skip_names: set[str] | None = None,
+    ) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        skip = self._TYPE_REF_SKIP_NAMES | set(skip_names or ())
+        for node in self._iter_nodes(type_node):
+            if node.type != "type_identifier":
+                continue
+            name = self._node_text(node)
+            if not name or name in skip:
+                continue
+            qn = self._resolve_type_name(name, import_bindings, module)
+            if qn in seen:
+                continue
+            seen.add(qn)
+            out.append((name, qn))
+        return out
+
+    @staticmethod
+    def _resolve_type_name(name: str, import_bindings: dict[str, str], module: str) -> str:
+        return import_bindings.get(name, f"{module}.{name}")
+
+    def _owner_uid_for_type_reference(
+        self,
+        owner,
+        source_code: str,
+        file_path: str,
+    ) -> str:
+        if owner.type in {"interface_declaration", "type_alias_declaration", "variable_declarator"}:
+            name = self._owner_name_for_type_reference(owner, source_code)
+            return self._uid(file_path, name) if name else ""
+        return self._uid_for_node(owner, source_code, file_path)
+
+    @staticmethod
+    def _owner_name_for_type_reference(owner, source_code: str) -> str:
+        name_node = owner.child_by_field_name("name")
+        if name_node is None and owner.type == "variable_declarator":
+            name_node = owner.child_by_field_name("name")
+        if name_node is None:
+            return ""
+        return source_code[name_node.start_byte : name_node.end_byte]
+
+    @staticmethod
+    def _node_field_by_type(node, node_type: str):
+        for child in node.named_children:
+            if child.type == node_type:
+                return child
+        return None
+
+    def _type_parameter_names(self, owner, source_code: str) -> set[str]:
+        names: set[str] = set()
+        type_params = next(
+            (child for child in owner.named_children if child.type == "type_parameters"),
+            None,
+        )
+        if type_params is None:
+            return names
+        for node in self._iter_nodes(type_params):
+            if node.type != "type_parameter":
+                continue
+            name_node = next(
+                (child for child in node.named_children if child.type == "type_identifier"),
+                None,
+            )
+            if name_node is not None:
+                names.add(source_code[name_node.start_byte : name_node.end_byte])
+        return names
+
+    @staticmethod
+    def _iter_nodes(node):
+        yield node
+        for child in node.children:
+            yield from TypeScriptAdapter._iter_nodes(child)
+
+    @staticmethod
+    def _node_text(node) -> str:
+        return (node.text or b"").decode("utf-8")
 
     def _uid(self, file_path: str, name: str) -> str:
         qualified_name = f"{module_name_from_path(file_path)}.{name}"

@@ -73,3 +73,6 @@ Thumbs.db
 *.bin
 dist_bin/
 my_test_project/
+QA/baselines/
+QA/baseline_*.json
+QA/baseline_reindex_2026-05-30.json

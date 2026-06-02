@@ -172,6 +172,47 @@ function coreModule() {}
         create_api_uid = adapter._uid("api.ts", "createApi")
         assert all(call["caller_uid"] == create_api_uid for call in calls)
 
+    def test_extract_calls_falls_back_for_pure_exported_const_initializer(self, adapter):
+        source = """
+import { buildCreateSlice } from './builder'
+
+export const createSlice = /* @__PURE__ */ buildCreateSlice()
+"""
+        with patch.object(adapter, "_enclosing_symbol_owner", return_value=None):
+            calls = adapter.extract_calls_from_source(source, "createSlice.ts")
+
+        call = next(call for call in calls if call.get("callee_name") == "buildCreateSlice")
+        assert call["caller_uid"] == adapter._uid("createSlice.ts", "createSlice")
+        assert call["rel_type"] == "CALLS_IMPORTED"
+        assert call["tier"] == "imported"
+        assert call["resolver"] == "ts-export-initializer-fallback-v1"
+        assert call["callee_qualified_name"].endswith("builder.buildCreateSlice")
+
+    def test_extract_calls_falls_back_inside_exported_function_body(self, adapter):
+        source = """
+import { createReducer } from './createReducer'
+
+export function buildCreateSlice() {
+  return function createSlice() {
+    return createReducer()
+  }
+}
+"""
+        with patch.object(adapter, "_enclosing_symbol_owner", return_value=None):
+            calls = adapter.extract_calls_from_source(source, "createSlice.ts")
+
+        build_uid = next(
+            symbol.uid for symbol in adapter.extract_symbols(source, "createSlice.ts")
+            if symbol.name == "buildCreateSlice"
+        )
+        call = next(
+            call for call in calls
+            if call.get("caller_uid") == build_uid and call.get("callee_name") == "createReducer"
+        )
+        assert call["rel_type"] == "CALLS_IMPORTED"
+        assert call["resolver"] == "ts-symbol-body-fallback-v1"
+        assert call["callee_qualified_name"].endswith("createReducer.createReducer")
+
     def test_extract_calls_marks_named_import_call_as_calls_imported(self, adapter):
         source = """
 import { createRouter } from "vue-router";
@@ -229,6 +270,40 @@ export interface Ref<T = unknown> {
         symbols = adapter.extract_symbols(source, "ref.ts")
         names = {symbol.name for symbol in symbols}
         assert "Ref" in names
+
+    def test_extract_type_references_from_function_signature(self, adapter):
+        source = """
+export interface ConfigureStoreOptions<S = unknown> {
+  reducer: Reducer<S>
+}
+
+export type EnhancedStore<S = unknown> = Store<S>
+
+export function configureStore<S>(
+  options: ConfigureStoreOptions<S>,
+): EnhancedStore<S> {
+  return createStore(options.reducer)
+}
+"""
+        symbols = adapter.extract_symbols(source, "configureStore.ts")
+        configure_store = next(symbol for symbol in symbols if symbol.name == "configureStore")
+
+        refs = adapter.extract_type_references(source, "configureStore.ts")
+        signature_refs = [
+            ref for ref in refs if ref["referrer_uid"] == configure_store.uid
+        ]
+
+        assert {ref["type_name"] for ref in signature_refs} >= {
+            "ConfigureStoreOptions",
+            "EnhancedStore",
+        }
+        assert ("ConfigureStoreOptions", "param") in {
+            (ref["type_name"], ref["kind"]) for ref in signature_refs
+        }
+        assert ("EnhancedStore", "return") in {
+            (ref["type_name"], ref["kind"]) for ref in signature_refs
+        }
+        assert "S" not in {ref["type_name"] for ref in signature_refs}
 
     def test_language_name(self, adapter):
         assert adapter.language_name == "typescript"

@@ -1027,6 +1027,8 @@ class UnifiedRanker:
             "HANDLES",
         }
     )
+    _MARKER_CHAIN_RELATIONS = _REGISTRATION_CHAIN_RELATIONS
+
     def _graph_candidates(
         self,
         target_uid: str,
@@ -1077,28 +1079,52 @@ class UnifiedRanker:
         visited = {target_uid}
         candidates: list[Candidate] = []
         # Tuple shape:
-        # (-score, push_seq, uid, neighbor_dict, rel_type, outgoing, distance, reg_chain)
-        frontier: list[tuple[float, int, str, dict, str, bool, int, bool]] = []
+        # (-score, push_seq, uid, neighbor_dict, rel_type, outgoing, distance,
+        #  reg_chain, marker_chain)
+        frontier: list[tuple[float, int, str, dict, str, bool, int, bool, bool]] = []
         push_seq = 0
 
         for n in self._get_neighbors(target_uid, visited, distance=1):
             reg_chain = chain_pursuit and self._is_api_entry_edge(n["rel_type"], n["outgoing"])
+            marker_chain = (
+                chain_pursuit
+                and self._is_marker_surface_uid(target_uid)
+                and self._is_marker_consumer_edge(n["rel_type"], n["outgoing"])
+            )
             score = self._raw_graph_score(
                 n,
                 distance=1,
                 chain_pursuit=chain_pursuit,
-                registration_chain=reg_chain,
+                registration_chain=reg_chain or marker_chain,
             )
             heappush(
                 frontier,
-                (-score, push_seq, n["uid"], n, n["rel_type"], n["outgoing"], 1, reg_chain),
+                (
+                    -score,
+                    push_seq,
+                    n["uid"],
+                    n,
+                    n["rel_type"],
+                    n["outgoing"],
+                    1,
+                    reg_chain,
+                    marker_chain,
+                ),
             )
             push_seq += 1
 
         while frontier and len(candidates) < pool_size:
-            neg_score, _seq, uid, neighbor, rel_type, outgoing, distance, reg_chain = heappop(
-                frontier
-            )
+            (
+                neg_score,
+                _seq,
+                uid,
+                neighbor,
+                rel_type,
+                outgoing,
+                distance,
+                reg_chain,
+                marker_chain,
+            ) = heappop(frontier)
             score = -neg_score
             if uid in visited:
                 continue
@@ -1108,7 +1134,9 @@ class UnifiedRanker:
                 neighbor.get("range", [0, 0])
             )
             chain_tag = ""
-            if chain_pursuit and self._is_outgoing_call(rel_type, outgoing):
+            if marker_chain:
+                chain_tag = ",marker_chain"
+            elif chain_pursuit and self._is_outgoing_call(rel_type, outgoing):
                 chain_tag = ",chain"
             elif reg_chain:
                 chain_tag = ",reg_chain"
@@ -1135,11 +1163,21 @@ class UnifiedRanker:
                     nn["rel_type"],
                     nn["outgoing"],
                 )
+                child_marker_chain = chain_pursuit and (
+                    (
+                        marker_chain
+                        and self._is_marker_chain_edge(nn["rel_type"], nn["outgoing"])
+                    )
+                    or (
+                        self._is_marker_surface_uid(uid)
+                        and self._is_marker_consumer_edge(nn["rel_type"], nn["outgoing"])
+                    )
+                )
                 ns = self._raw_graph_score(
                     nn,
                     distance=distance + 1,
                     chain_pursuit=chain_pursuit,
-                    registration_chain=child_reg_chain,
+                    registration_chain=child_reg_chain or child_marker_chain,
                 )
                 heappush(
                     frontier,
@@ -1152,6 +1190,7 @@ class UnifiedRanker:
                         nn["outgoing"],
                         distance + 1,
                         child_reg_chain,
+                        child_marker_chain,
                     ),
                 )
                 push_seq += 1
@@ -1177,6 +1216,29 @@ class UnifiedRanker:
     @classmethod
     def _is_registration_chain_edge(cls, rel_type: str, outgoing: bool) -> bool:
         return outgoing and rel_type in cls._REGISTRATION_CHAIN_RELATIONS
+
+    @staticmethod
+    def _is_marker_consumer_edge(rel_type: str, outgoing: bool) -> bool:
+        return rel_type == "USES_TYPE" and not outgoing
+
+    @classmethod
+    def _is_marker_chain_edge(cls, rel_type: str, outgoing: bool) -> bool:
+        if rel_type == "USES_TYPE":
+            return outgoing
+        return outgoing and rel_type in cls._MARKER_CHAIN_RELATIONS
+
+    def _is_marker_surface_uid(self, uid: str) -> bool:
+        roles = set(self.role_fulfilment.pass1_roles_for_symbol_uid(uid))
+        if not roles:
+            return False
+        if not roles & {"api_surface", "config_surface", "representation_surface"}:
+            return False
+        fan = self._structural_fan_by_uid.get(uid, {})
+        call_fan_out = float(fan.get("call_fan_out", 0.0) or 0.0)
+        type_fan_in = float(fan.get("type_fan_in", 0.0) or 0.0)
+        return call_fan_out <= 1.5 and (
+            type_fan_in > 0.0 or bool(roles & {"api_surface", "config_surface"})
+        )
 
     def _doc_candidates(self, query: str, limit: int) -> list[Candidate]:
         return cast(list[Candidate], self.vector_candidate_source.doc_candidates(query, limit))
@@ -1605,6 +1667,10 @@ class UnifiedRanker:
             str(step).startswith("role-backfill:") for step in candidate.provenance
         )
 
+    @staticmethod
+    def _has_marker_chain(candidate: Candidate) -> bool:
+        return any("marker_chain" in str(step) for step in candidate.provenance)
+
     def _role_backfill_candidates(
         self,
         mechanism: str,
@@ -1989,6 +2055,8 @@ class UnifiedRanker:
             coverage_bonus += 0.2
         if c.relation == "ROLE_BACKFILL" or self._has_role_backfill(c):
             coverage_bonus += 0.25
+        if self.role_fulfilment.marker_chain_roles_are_relevant(c, required_roles):
+            coverage_bonus += 0.2
         if c.relation in ("IMPLEMENTS", "OVERRIDES"):
             coverage_bonus += 0.15
 

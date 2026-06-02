@@ -310,7 +310,7 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   3. **Indexing gap, not pack** — rtk `combineReducers` exists in 3 source files but
      was **not extracted** as a Symbol (TS/JS extraction gap).
   Plus: 5 `required_roles` use vocab absent from `ROLE_ALIASES`
-  (`migration_loader`, `context_manager`, `deferred_registration`, `import_system`,
+  (`migration_loader`, `deferred_registration`, `import_system`,
   `cleanup_handler`); the 7 `surgical_context` self-questions failed workspace
   resolution (self-index issue, separate). Some file-only "misses" are partly the
   audit's stricter matcher vs `_expected_file_matches`.

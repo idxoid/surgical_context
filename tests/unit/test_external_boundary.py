@@ -3,6 +3,7 @@ from sidecar.indexer.external_boundary import (
     classify_external_root,
     external_pkg_uid,
     external_root_from_qualified_name,
+    package_manifest_external_roots,
 )
 from sidecar.indexer.external_facts import (
     collect_external_call_links,
@@ -25,6 +26,16 @@ def test_classify_external_root_respects_project_boundary(tmp_path):
     assert classify_external_root("app", boundary) == "internal"
     assert classify_external_root("typing", boundary) == "external"
     assert classify_external_root("local_vendor", boundary) == "skip"
+
+
+def test_package_manifest_external_roots_include_js_dependencies(tmp_path):
+    (tmp_path / "package.json").write_text(
+        '{"dependencies":{"router":"^2.2.0"},"devDependencies":{"mocha":"^10.0.0"}}'
+    )
+
+    roots = package_manifest_external_roots(tmp_path)
+
+    assert {"router", "mocha"} <= roots
 
 
 def test_collect_external_call_links_skips_in_project_targets():
@@ -53,6 +64,19 @@ def test_collect_external_import_links_from_source():
     links = collect_external_import_links(source, "svc/main.py", boundary=boundary)
     roots = {link.external_root for link in links}
     assert roots == {"json", "typing"}
+
+
+def test_collect_external_import_links_from_js_require_manifest_roots():
+    boundary = frozenset({"express"})
+    source = "var Router = require('router');\nimport bodyParser from 'body-parser';\n"
+    links = collect_external_import_links(
+        source,
+        "lib/express.js",
+        boundary=boundary,
+        project_external_roots=frozenset({"router", "body-parser"}),
+    )
+    roots = {link.external_root for link in links}
+    assert roots == {"router", "body-parser"}
 
 
 def test_external_call_link_rows_use_stable_uids():
