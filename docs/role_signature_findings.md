@@ -556,6 +556,21 @@ after engine changes (fastapi only).
   ModelMetaclass/RootModel — P4 violation). The builder-class case is a partial gap
   needing a return-shape/dataflow signal; left honest, not scored away (the role is
   reachable, unlike F21's fully-unreachable pair).
+- **same family on django q03 (`ModelForm`, trace_dependency):** misses
+  `factory_surface` on `fields_for_model`. Empirically tested the hypothesis "extend
+  `factory_surface` to module-level functions with `type_fan_out_return > 0`": django
+  has **0 functions** with `type_fan_out_return > 0` (the codebase barely uses return
+  annotations), so the extension would do nothing. Falling back to
+  `construct_fan_out > 0` is non-starter (1140 candidates in django alone — would
+  flip a thousand `core_runtime` / `runtime_surface` leaves to `factory_surface`,
+  same class as F22's class-level false-hits). `fields_for_model` itself is
+  structurally a leaf (`call_fan_in=2.1, call_fan_out=1.3, tfo_ret=0, construct=0`):
+  it builds a dict by iterating `model._meta.concrete_fields` and calling
+  `f.formfield()` where `f` is a parameter with no static type — INSTANTIATES /
+  USES_TYPE can't see the construction (the same dynamic-attr family as F18/F24).
+  Conclusion: q03 needs either return-shape analysis (a dict whose values are calls)
+  or instance-attribute type inference for iteration locals — both 🔴 dataflow.
+  The role miss stays honest; not faked from a name.
 
 ### F23 — class HAS_API method ranking: query picks legacy over the relevant method 🟡
 - **pydantic q01 (`BaseModel`, "validation flow in v2")**: misses `core_runtime`; the
