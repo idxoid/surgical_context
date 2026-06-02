@@ -409,7 +409,7 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   presence/frequency). Skipped for now — it requires the selection margin to return
   candidates to the pool. Tracked as a refinement.
 
-### F19 — DI resolver is reachable but low-ranked; the marker→resolver link is dynamic 🟠
+### F19 — DI resolver is reachable but low-ranked; the marker→resolver link is dynamic 🟢 fixed (9c20e38)
 - **q02 (`Depends`, trace_dependency)**: role_recall=1.0 but recall@5=0.25, file_recall=0.0
   — the answer chain (`get_dependant`, `solve_dependencies`, `Dependant` in
   `dependencies/utils.py`/`models.py`) is missed.
@@ -434,13 +434,24 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
     deepens along the *target's outgoing CALLS*; a marker target has none, so the BFS
     ranks the resolver below the marker's 1-hop neighbours and `role_complete` stops
     before it surfaces.
-- **decision (not yet implemented):** the structural fix is a *marker→consumer*
-  chain-pursuit — for a config/marker target (low outgoing CALLS, high USES_TYPE
-  in-degree) follow USES_TYPE consumers that are themselves resolver-like (high
-  out_deg), mirroring the existing HAS_API→CALLS registration chain. Must be guarded
-  against the marker's many user-code consumers (endpoints) — filter to resolver-like
-  out-degree, not every consumer. Confirm the pattern on q04 / sqlalchemy_q02 before
-  touching the dominant EXPLORATION BFS path.
+- **fix (implemented, commit `9c20e38`):** a *marker→consumer* chain-pursuit added to
+  `_graph_candidates_impl`, mirroring the existing HAS_API→CALLS registration chain
+  but inverted: from a marker target the BFS follows the inverse `USES_TYPE` edge
+  ("who consumes this marker as a type") and then the consumer's outgoing CALLS /
+  HANDLES. The marker target is identified **structurally** (`_is_marker_surface_uid`:
+  roles ⊇ {api_surface, config_surface, representation_surface} ∧ `call_fan_out ≤ 1.5`)
+  — no name match (P3). Stop-policy guard (`_marker_chain_pending_from`) relaxes
+  `role_complete` / `marginal_gain_threshold` only when `dependency_solver ∈ required_roles`
+  and the pool carries a relevant marker_chain candidate (`marker_chain_roles_are_relevant`:
+  ≥2 required-role overlap or `dependency_solver` match) — narrow gate keeps the
+  relaxation off the dominant EXPLORATION path. Tests `test_budget_pruner_waits_for_
+  marker_chain_on_dependency_solver_surfaces` and `test_graph_candidates_follow_marker
+  _consumer_chain_from_config_surface` lock the contract.
+- **measured (fastapi reindex):** pass_rate **0.875→1.000** (q06 warn→pass), q02
+  `Depends` file_recall **0.0→0.5** (`get_parameterless_sub_dependant` surfaced),
+  zero regressions on q01/q03/q04/q07 (narrow gate). Symbol-recall@5 inside top-5
+  did not shift — that is HAS_API method ranking (F23), a separate retrieval-track
+  concern, not marker-chain.
 
 ### F20 — `error_surface` has no structural signal: exception inheritance is to builtins 🟠
 - **pydantic_q07 (`ValidationError`, trace_dependency)**: recall@5=1.0, file_recall=1.0,

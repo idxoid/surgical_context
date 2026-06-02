@@ -460,13 +460,19 @@ node), and finally 🔴 (`pure_transformer`, which needs effect analysis, not an
 
 Edges the graph does **not** create today, grouped by cost. Existing edges:
 `CALLS*`, `IMPORTS`, `CONTAINS`, `DEPENDS_ON` (+inheritance), `HAS_API`,
-`INHERITED_API`, `USES_TYPE`, `INJECTS`, `HANDLES`, `DECORATED_BY`, `PROXY_OF`,
-`AFFECTS`, `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, `SEMANTIC_HINT`, `COVERS`
-(verified in `sidecar/database/neo4j_client.py`). The §9/§10 gaps
+`INHERITED_API`, `USES_TYPE` (kind: param / annotation / return / isinstance),
+`INJECTS`, `HANDLES`, `DECORATED_BY`, `PROXY_OF`, `RE_EXPORTS`, `INSTANTIATES`,
+`AFFECTS`, `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, `SEMANTIC_HINT`, `COVERS`;
+external-pkg topology (`ExternalPkg` node + `CALLS_EXTERNAL` / `IMPORTS_EXTERNAL`,
+fed by `package.json` / installed-package roots — `external_boundary.py`);
+TS/JS parity (TS `USES_TYPE`, JS property-API + CommonJS alias references via
+`link_symbol_api_edges` / `link_symbol_references`); the
+`inherits_builtin_exception` Symbol marker for the standard exception hierarchy
+(transitively propagated along in-graph `DEPENDS_ON`). All verified in
+`sidecar/database/neo4j_client.py` / `sidecar/indexer/`. The §9/§10 gaps
 (`WRAPS`/`BEFORE_CALL`/`AFTER_CALL`, `MUTATES`/`STORES`,
 `READS`/`WRITES`/`EXTERNAL_CALL`, `PUBLISHES`/`CONSUMES`, `DescriptorSurface`,
-`USES_VALUE`, `HANDLES.phase`, external-node materialization) are not repeated
-here.
+`USES_VALUE`, `HANDLES.phase`) are not repeated here.
 
 Tiers as elsewhere: 🟢 AST-extractable now · 🟡 AST but noisy / partial · 🟠 needs
 an intermediate identity node · 🔴 needs analysis (dataflow), not an edge.
