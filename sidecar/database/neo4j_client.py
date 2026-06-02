@@ -488,80 +488,127 @@ class Neo4jClient:
         )
 
     def link_calls(self, calls: list[dict], workspace_id: str = DEFAULT_WORKSPACE_ID):
+        if not calls:
+            return
+        # Pre-resolve `qualified_name` and `name` modes Python-side, exactly like
+        # link_imports: one round-trip pulls the workspace symbol index, then each
+        # call resolves to a single callee_uid by dict lookup. The Cypher then runs a
+        # single index-friendly uid→uid MERGE. The old per-mode queries did
+        # workspace-wide `MATCH ...{name: callee_name}` + `collect(DISTINCT)` and
+        # `OPTIONAL MATCH ... STARTS WITH surface.qualified_name + '.'` — both
+        # O(rows × symbols), dominating graph time on fastapi/pydantic.
+        resolved = self._resolve_call_callees(calls, workspace_id=workspace_id)
         with self.driver.session() as session:
-            session.execute_write(self._create_call_relations, calls, workspace_id)
-            if calls:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+            session.execute_write(self._create_call_relations, resolved, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    def _resolve_call_callees(
+        self,
+        calls: list[dict],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[dict]:
+        """Attach a `callee_uid` to every resolvable call row Python-side.
+
+        Mirrors the Cypher semantics the old per-mode queries implemented:
+        - ``qualified_name`` exact match wins; on miss, the longest ``object_api``
+          surface whose qualified_name is a prefix of the call's qualified name
+          (matching `STARTS WITH surface.qn + '.'` in the old query).
+        - ``name`` resolves only when exactly one Symbol carries that name
+          workspace-wide (matching `collect(DISTINCT) WHERE size = 1`).
+        Rows whose callee cannot be resolved are dropped — same as the Cypher's
+        `WHERE callee IS NOT NULL`.
+        """
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                RETURN s.uid AS uid,
+                       s.name AS name,
+                       coalesce(s.qualified_name, '') AS qn,
+                       coalesce(s.kind, '') AS kind
+                """,
+                workspace_id=workspace_id,
+            )
+            rows = list(result)
+        by_qn: dict[str, str] = {}
+        by_name: dict[str, list[str]] = {}
+        # Object-API surfaces sorted by qn length DESC, so the longest matching
+        # prefix wins (the old query did the same via ORDER BY size(qn) DESC).
+        object_api: list[tuple[str, str]] = []
+        for r in rows:
+            uid = r["uid"]
+            if not uid:
+                continue
+            qn = r["qn"] or ""
+            if qn:
+                by_qn.setdefault(qn, uid)
+            name = r["name"] or ""
+            if name:
+                by_name.setdefault(name, []).append(uid)
+            if r["kind"] == "object_api" and qn:
+                object_api.append((qn, uid))
+        object_api.sort(key=lambda x: -len(x[0]))
+
+        out: list[dict] = []
+        for call in calls:
+            if call.get("callee_uid"):
+                out.append(call)
+                continue
+            qn = call.get("callee_qualified_name")
+            if qn:
+                hit = by_qn.get(qn)
+                if hit is None:
+                    for surf_qn, surf_uid in object_api:
+                        if qn.startswith(surf_qn + "."):
+                            hit = surf_uid
+                            break
+                if hit and hit != call.get("caller_uid"):
+                    out.append({**call, "callee_uid": hit})
+                continue
+            name = call.get("callee_name")
+            if name:
+                cands = by_name.get(name) or []
+                if len(cands) == 1 and cands[0] != call.get("caller_uid"):
+                    out.append({**call, "callee_uid": cands[0]})
+        return out
 
     @staticmethod
     def _create_call_relations(tx, calls, workspace_id):
         if not calls:
             return
-        for rel_type, mode, rows in _grouped_call_rows(calls):
-            if mode == "uid":
-                tx.run(
-                    f"""
-                    UNWIND $calls AS call
-                    MATCH (caller:Symbol {{uid: call.caller_uid}})
-                    MATCH (callee:Symbol {{uid: call.callee_uid}})
-                    WHERE caller <> callee
-                    MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
-                                                   call_site_line: call.call_site_line}}]->(callee)
-                    SET r.confidence = call.confidence,
-                        r.tier = call.tier,
-                        r.resolver = call.resolver
-                    """,
-                    calls=rows,
-                    workspace_id=workspace_id,
-                )
-            elif mode == "qualified_name":
-                tx.run(
-                    f"""
-                    UNWIND $calls AS call
-                    MATCH (caller:Symbol {{uid: call.caller_uid}})
-                    OPTIONAL MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(exact:Symbol {{qualified_name: call.callee_qualified_name}})
-                    OPTIONAL MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(surface:Symbol {{kind: 'object_api'}})
-                    WHERE exact IS NULL
-                      AND call.callee_qualified_name STARTS WITH surface.qualified_name + '.'
-                    WITH call, caller, exact, surface
-                    ORDER BY call.caller_uid, call.call_site_line, size(coalesce(surface.qualified_name, '')) DESC
-                    WITH call, caller, exact, collect(surface) AS surfaces
-                    WITH call, caller, coalesce(exact, surfaces[0]) AS callee
-                    WHERE callee IS NOT NULL AND caller <> callee
-                    MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
-                                                   call_site_line: call.call_site_line}}]->(callee)
-                    SET r.confidence = call.confidence,
-                        r.tier = call.tier,
-                        r.resolver = call.resolver
-                    """,
-                    calls=rows,
-                    workspace_id=workspace_id,
-                )
-            else:
-                tx.run(
-                    f"""
-                    UNWIND $calls AS call
-                    MATCH (caller:Symbol {{uid: call.caller_uid}})
-                    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(candidate:Symbol {{name: call.callee_name}})
-                    WHERE caller <> candidate
-                    WITH call, caller, collect(DISTINCT candidate) AS candidates
-                    WHERE size(candidates) = 1
-                    WITH call, caller, candidates[0] AS callee
-                    MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
-                                                   call_site_line: call.call_site_line}}]->(callee)
-                    SET r.confidence = call.confidence,
-                        r.tier = call.tier,
-                        r.resolver = call.resolver
-                    """,
-                    calls=rows,
-                    workspace_id=workspace_id,
-                )
+        # All rows are now uid→uid (resolved by link_calls); group by rel_type and
+        # MERGE in one UNWIND per type. The Cypher is an index lookup on both
+        # endpoints — the workspace-wide MATCH/collect of the old name/qn modes is
+        # gone.
+        by_rel: dict[str, list[dict]] = {}
+        for call in calls:
+            rel_type = call.get("rel_type", "CALLS_DIRECT")
+            if rel_type not in _CALL_REL_TYPES:
+                rel_type = "CALLS_GUESS"
+            by_rel.setdefault(rel_type, []).append(_call_row(call, rel_type))
+        for rel_type, rows in by_rel.items():
+            tx.run(
+                f"""
+                UNWIND $calls AS call
+                MATCH (caller:Symbol {{uid: call.caller_uid}})
+                MATCH (callee:Symbol {{uid: call.callee_uid}})
+                WHERE caller <> callee
+                MERGE (caller)-[r:{rel_type} {{workspace_id: $workspace_id,
+                                               call_site_line: call.call_site_line}}]->(callee)
+                SET r.confidence = call.confidence,
+                    r.tier = call.tier,
+                    r.resolver = call.resolver
+                """,
+                calls=rows,
+                workspace_id=workspace_id,
+            )
 
     def link_imports(self, imports: list[ImportEdge], workspace_id: str = DEFAULT_WORKSPACE_ID):
         if not imports:

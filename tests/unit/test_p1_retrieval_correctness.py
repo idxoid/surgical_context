@@ -184,10 +184,22 @@ def test_neo4j_link_calls_batches_same_resolution_mode():
 
 
 def test_neo4j_link_calls_falls_back_to_object_api_surface_for_member_qualified_name():
-    tx = MagicMock()
+    # Call resolution moved from Cypher to Python-side (link_calls / _resolve_call_callees)
+    # so the workspace-wide MATCH+collect that dominated graph time is gone. The
+    # object_api STARTS WITH fallback semantics are preserved: when there is no
+    # exact qualified_name match, the longest object_api surface whose qn is a
+    # strict prefix of the call's qn is chosen as the callee.
+    session = MagicMock()
+    db = MagicMock()
+    db.driver.session.return_value.__enter__.return_value = session
+    session.run.return_value = [
+        {"uid": "surface-uid", "name": "SidecarClient",
+         "qn": "extension.src.sidecarClient.SidecarClient", "kind": "object_api"},
+    ]
 
-    Neo4jClient._create_call_relations(
-        tx,
+    client = Neo4jClient.__new__(Neo4jClient)
+    client.driver = db.driver
+    resolved = client._resolve_call_callees(
         [
             {
                 "caller_uid": "caller",
@@ -200,12 +212,11 @@ def test_neo4j_link_calls_falls_back_to_object_api_surface_for_member_qualified_
                 "call_site_line": 12,
             }
         ],
-        "local/surgical_context@main",
+        workspace_id="local/surgical_context@main",
     )
 
-    query = tx.run.call_args.args[0]
-    assert "object_api" in query
-    assert "STARTS WITH surface.qualified_name" in query
+    assert len(resolved) == 1
+    assert resolved[0]["callee_uid"] == "surface-uid"
 
 
 def test_workspace_resolver_parses_branch_header():
