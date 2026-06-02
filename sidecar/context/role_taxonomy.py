@@ -258,4 +258,25 @@ def infer_supporting_roles(
     if primary == "api_surface" and "/docs/" not in lowered_path:
         inferred.append("impact_public_api")
 
+    # runtime_surface is a *category umbrella* — gold benchmarks treat it as "this
+    # symbol participates in the runtime/handler path", which structurally overlaps
+    # with the more specific roles below. Engine cascade emits the precise role
+    # (proxy_mechanism / registration_step / executor / orchestrator / etc.);
+    # without this inference, gold expectations of runtime_surface scored as miss
+    # even when the symbol's precise role *is* the runtime mechanism (e.g.
+    # flask/request → proxy_mechanism is the runtime accessor; before_request →
+    # registration_step is the runtime hook registrar). Add as supporting,
+    # never overriding the precise primary.
+    if primary in {
+        "proxy_mechanism",
+        "registration_step",
+        "executor",
+        "orchestrator",
+        "core_runtime",
+        "request_router",
+        "dependency_solver",
+        "interceptor",
+    }:
+        inferred.append("runtime_surface")
+
     return normalize_roles(inferred)
