@@ -564,16 +564,57 @@ class Neo4jClient:
                 )
 
     def link_imports(self, imports: list[ImportEdge], workspace_id: str = DEFAULT_WORKSPACE_ID):
+        if not imports:
+            return
+        # Resolve each import's candidate suffix list against the workspace's actual
+        # File.path set Python-side, then issue an exact-match MERGE. The original
+        # query did `target.path ENDS WITH suffix` inside a UNWIND, which is O(N×M)
+        # on (imports × files) — link_imports dominated graph time on fastapi (39s).
+        # With one round-trip for file paths + indexed equality, that work happens in
+        # a Python dict lookup and the Cypher becomes an index-friendly MATCH.
+        file_paths = list(self.list_file_paths(workspace_id=workspace_id))
+        file_path_set = set(file_paths)
+        # Suffix index: every path is registered under each of its trailing 1..4
+        # segments. Imports rarely care beyond 3-4 segments, so this is O(M) build
+        # for O(1) lookup per suffix (vs O(M) scan with str.endswith).
+        suffix_index: dict[str, str] = {}
+        for path in file_paths:
+            parts = path.split("/")
+            for k in range(1, min(5, len(parts)) + 1):
+                key = "/" + "/".join(parts[-k:])
+                # First registrant wins; later collisions keep the earlier (shorter)
+                # path, matching the original "first match" semantics of the loop.
+                suffix_index.setdefault(key, path)
+        resolved: list[dict[str, object]] = []
+        for imp in imports:
+            row = _import_row(imp)
+            target_path: str | None = None
+            for suffix in row["path_suffixes"]:  # type: ignore[index]
+                if suffix in file_path_set:
+                    target_path = suffix  # type: ignore[assignment]
+                    break
+                hit = suffix_index.get(suffix)
+                if hit is not None:
+                    target_path = hit
+                    break
+            if target_path is None or target_path == imp.source_file:
+                continue
+            resolved.append(
+                {
+                    "source_file": imp.source_file,
+                    "target_path": target_path,
+                    "import_type": imp.import_type,
+                }
+            )
         with self.driver.session() as session:
-            session.execute_write(self._create_import_relations, imports, workspace_id)
-            if imports:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+            session.execute_write(self._create_import_relations, resolved, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
 
     @staticmethod
     def _create_import_relations(tx, imports, workspace_id):
@@ -583,12 +624,11 @@ class Neo4jClient:
             """
             UNWIND $imports AS imp
             MATCH (source:File {path: imp.source_file, workspace_id: $workspace_id})
-            MATCH (target:File {workspace_id: $workspace_id})
-            WHERE any(path_suffix IN imp.path_suffixes WHERE target.path ENDS WITH path_suffix)
-              AND source <> target
+            MATCH (target:File {path: imp.target_path, workspace_id: $workspace_id})
+            WHERE source <> target
             MERGE (source)-[:IMPORTS {type: imp.import_type, workspace_id: $workspace_id}]->(target)
             """,
-            imports=[_import_row(imp) for imp in imports],
+            imports=imports,
             workspace_id=workspace_id,
         )
 

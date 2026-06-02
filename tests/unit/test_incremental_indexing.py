@@ -116,14 +116,18 @@ class TestIncrementalIndexing:
         assert params["workspace_id"] == "acme/repo@main"
         assert len(params["symbols"]) == 2
 
-    def test_create_import_relations_batches_rows_with_unwind(self):
+    def test_create_import_relations_batches_resolved_rows_with_unwind(self):
+        # _create_import_relations now expects rows pre-resolved by link_imports
+        # (Python-side suffix lookup against the workspace File.path set) and
+        # matches by exact target_path — the old `ENDS WITH any($suffixes)` scan
+        # was O(imports × files) and dominated graph time on real-repo reindex.
         tx = MagicMock()
 
         Neo4jClient._create_import_relations(
             tx,
             [
-                ImportEdge("/repo/a.py", "pkg.module_a", "direct"),
-                ImportEdge("/repo/a.py", "pkg.module_b", "direct"),
+                {"source_file": "/repo/a.py", "target_path": "/repo/pkg/module_a.py", "import_type": "direct"},
+                {"source_file": "/repo/a.py", "target_path": "/repo/pkg/module_b.py", "import_type": "direct"},
             ],
             "acme/repo@main",
         )
@@ -132,7 +136,8 @@ class TestIncrementalIndexing:
         query = tx.run.call_args.args[0]
         params = tx.run.call_args.kwargs
         assert "UNWIND $imports AS imp" in query
-        assert "path_suffix IN imp.path_suffixes" in query
+        assert "(target:File {path: imp.target_path" in query.replace("\n", " ")
+        assert "ENDS WITH" not in query
         assert params["workspace_id"] == "acme/repo@main"
         assert len(params["imports"]) == 2
 

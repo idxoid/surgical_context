@@ -215,32 +215,46 @@ def _apply_graph(
         db.upsert_file_structure(
             ex.path, ex.file_hash, diff.changed_symbols, workspace_id=workspace_id
         )
-
         if callable(prune_symbols):
             prune_symbols(ex.path, keep_uids=diff.current_uids, workspace_id=workspace_id)
-
         reporter.step("graph")
 
     # Edges are linked only after every changed file has refreshed its
     # File/Symbol nodes. Otherwise imports/calls to files processed later in
     # this same batch are silently missed after a workspace reset or full reindex.
-    for diff in diffs:
-        ex = diff.extracted
+    #
+    # Batch-link across files: every linker is a pure UNWIND on the call/import/
+    # inheritance list, so per-file invocation cost ~N×RTT — collapses to one
+    # round-trip per relation type for the whole diff. clear_outgoing_symbol_edges
+    # already accepts a uid list. delete_imports stays per-file (one query MATCHes
+    # by file path, no list-form available; small fraction of the budget).
+    if callable(clear_edges):
+        all_refresh_uids = [u for diff in diffs for u in diff.edge_refresh_uids]
+        if all_refresh_uids:
+            clear_edges(all_refresh_uids, workspace_id=workspace_id)
 
-        if callable(clear_edges):
-            clear_edges(diff.edge_refresh_uids, workspace_id=workspace_id)
+    all_calls = [c for diff in diffs for c in diff.extracted.calls if diff.edge_refresh_uids]
+    if all_calls:
+        db.link_calls(all_calls, workspace_id=workspace_id)
 
-        if ex.calls and diff.edge_refresh_uids:
-            db.link_calls(ex.calls, workspace_id=workspace_id)
+    if callable(delete_imports):
+        for diff in diffs:
+            delete_imports(diff.extracted.path, workspace_id=workspace_id)
 
-        if callable(delete_imports):
-            delete_imports(ex.path, workspace_id=workspace_id)
-        if ex.imports:
-            db.link_imports(ex.imports, workspace_id=workspace_id)
+    all_imports = [imp for diff in diffs for imp in diff.extracted.imports]
+    if all_imports:
+        db.link_imports(all_imports, workspace_id=workspace_id)
 
-        if ex.inheritance and diff.edge_refresh_uids:
-            db.link_inheritance(ex.inheritance, workspace_id=workspace_id)
+    all_inheritance = [
+        edge
+        for diff in diffs
+        for edge in diff.extracted.inheritance
+        if diff.edge_refresh_uids
+    ]
+    if all_inheritance:
+        db.link_inheritance(all_inheritance, workspace_id=workspace_id)
 
+    for _ in diffs:
         reporter.step("graph")
     reporter.stage_end("graph")
 
