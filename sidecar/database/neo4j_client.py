@@ -474,7 +474,8 @@ class Neo4jClient:
                 s.signature = symbol.signature,
                 s.signature_hash = symbol.signature_hash,
                 s.signature_status = symbol.signature_status,
-                s.language = symbol.language
+                s.language = symbol.language,
+                s.returns_function_expression = symbol.returns_function_expression
             MERGE (s)-[:IN_WORKSPACE]->(w)
             MERGE (f)-[c:CONTAINS {workspace_id: $workspace_id}]->(s)
             SET c.range = [symbol.start, symbol.end],
@@ -1754,6 +1755,7 @@ def _symbol_row(symbol: SymbolMetadata) -> dict[str, object]:
         "signature_hash": symbol.signature_hash,
         "signature_status": symbol.signature_status,
         "language": symbol.language,
+        "returns_function_expression": bool(symbol.returns_function_expression),
     }
 
 

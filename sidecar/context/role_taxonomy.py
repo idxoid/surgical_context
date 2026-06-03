@@ -215,6 +215,13 @@ def infer_supporting_roles(
         "request_router",
         "dependency_solver",
         "interceptor",
+        # A higher-order factory (NestJS `Controller` returning a `ClassDecorator`)
+        # produces a runtime mechanism — the decorator the system applies on each
+        # decorated target. Gold benchmarks that ask for "runtime_surface" on a
+        # decorator entrypoint are right to expect it; without this, the
+        # higher-order-factory predicate (priority 86 in routing_wrap) would
+        # *trade* runtime_surface for factory_surface instead of carrying both.
+        "factory_surface",
     }:
         inferred.append("runtime_surface")
 

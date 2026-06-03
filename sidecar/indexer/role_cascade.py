@@ -52,6 +52,7 @@ class FanProfile(Protocol):
     external_integration_import_fan_out: float
     external_integration_root_count: int
     inherits_builtin_exception: bool
+    returns_function_expression: bool
 
     @property
     def external_call_out_ratio(self) -> float: ...
@@ -159,6 +160,27 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         # alone), and outranks it here for that reason.
         lambda r: r.is_class and r.decorator_arg_ref_count >= 3,
         78,
+    ),
+    RolePredicate(
+        "factory_surface",
+        "routing_wrap",
+        # Higher-order factory: a function whose body returns a function
+        # expression (NestJS `Controller(opts): ClassDecorator { return
+        # (target) => Reflect.defineMetadata(...); }`). It IS a factory in
+        # the structural sense — its return value is a decorator the runtime
+        # then applies. Without this branch the decorator wires it to
+        # `registration_step` (priority 85) via the inverse-HANDLES edge,
+        # which is true but misses the more specific "produces the decorator"
+        # shape that nestjs_q01 asks for. The marker is set at extract time
+        # from a pure AST fact (return arrow_function / function_expression),
+        # so no name or type heuristic is involved.
+        #
+        # Priority 86 sits *just above* registration_step (85): a higher-order
+        # factory that also handles many decoratable targets reads as the
+        # more specific factory signal. Still loses to `interceptor` (85
+        # too, but more specific predicate body) and `proxy_mechanism` (90).
+        lambda r: r.returns_function_expression and r.handle_fan_out > _EPS,
+        86,
     ),
     RolePredicate(
         "dependency_solver",

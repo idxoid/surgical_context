@@ -231,7 +231,80 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 )
             )
             existing_names.add(name)
+        # Parse once for the higher-order-factory walk if the caller didn't
+        # hand us a tree — the base extract_symbols may have parsed internally
+        # without returning the result.
+        if tree is None:
+            tree = self._parse(source_code)
+        higher_order_factory_names = self._higher_order_factory_names(tree)
+        if higher_order_factory_names:
+            for symbol in symbols:
+                if symbol.name in higher_order_factory_names:
+                    symbol.returns_function_expression = True
         return symbols
+
+    def _higher_order_factory_names(self, tree) -> set[str]:
+        """Collect names of functions whose body returns a function expression.
+
+        A higher-order factory has the shape ``def f(...) { ... return (x)=>...
+        }`` — its return value is itself callable. NestJS's ``Controller``,
+        ``Module``, ``Injectable``, and ``RequestMapping`` follow this shape,
+        as does anything that synthesises a decorator. The signal is purely
+        AST-syntactic: the body has a ``return_statement`` whose immediate
+        argument is an ``arrow_function`` or ``function_expression``.
+
+        Two surface forms are recognised: a ``function`` declaration, and a
+        ``variable_declarator`` whose initializer is an arrow function (the
+        common ``export const Foo = (opts) => { return (target) => {...} }``
+        pattern). A variable initialised by a call (``const Get =
+        makeDecorator(...)``) is not detected — its return shape requires
+        cross-function dataflow.
+        """
+        names: set[str] = set()
+        for node in self._iter_nodes(tree.root_node):
+            if node.type == "function_declaration":
+                name = node.child_by_field_name("name")
+                body = node.child_by_field_name("body")
+                if (
+                    name is not None
+                    and body is not None
+                    and self._body_returns_function_expression(body)
+                ):
+                    names.add(self._node_text(name))
+            elif node.type == "variable_declarator":
+                name = node.child_by_field_name("name")
+                value = node.child_by_field_name("value")
+                if name is None or value is None or value.type != "arrow_function":
+                    continue
+                body = value.child_by_field_name("body")
+                if body is not None and self._body_returns_function_expression(body):
+                    names.add(self._node_text(name))
+        return names
+
+    @staticmethod
+    def _body_returns_function_expression(body) -> bool:
+        """A ``return arrow_function``/``return function_expression`` anywhere
+        in this body, *not* descending into nested function definitions."""
+        stack = [body]
+        while stack:
+            node = stack.pop()
+            if node.type == "return_statement":
+                for child in node.named_children:
+                    if child.type in ("arrow_function", "function_expression"):
+                        return True
+                continue
+            # Don't cross into a nested callable's body — only the *current*
+            # function's return shape matters.
+            for child in node.children:
+                if child.type in (
+                    "arrow_function",
+                    "function_expression",
+                    "function_declaration",
+                    "method_definition",
+                ):
+                    continue
+                stack.append(child)
+        return False
 
     def _exported_object_api_ranges(self, source_code: str) -> dict[str, tuple[int, int]]:
         ranges: dict[str, tuple[int, int]] = {}

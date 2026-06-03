@@ -400,6 +400,46 @@ export class AppModule {}
         assert {r["decorator_name"] for r in rows} == {"Module"}
         assert {r["decorated_name"] for r in rows} == {"AppModule"}
 
+    def test_returns_function_expression_marker(self, adapter):
+        """Higher-order factory pattern (function whose body returns an arrow /
+        function expression) is tagged on the SymbolMetadata; plain functions
+        and call-initialised variables stay unmarked. The marker is a pure AST
+        fact (return arrow_function / return function_expression), not a name
+        or type heuristic."""
+        source = """export function Controller(opts): ClassDecorator {
+  const x = 1;
+  return (target) => { Reflect.defineMetadata('x', true, target); };
+}
+
+export const RequestMapping = (meta) => {
+  return (target, key, desc) => desc;
+};
+
+export function plain(): string {
+  const inner = () => 'x';
+  return 'hello';
+}
+
+export const Post = makeDecorator(RequestMethod.POST);
+
+function nested() {
+  function inner() { return () => 1; }
+  return 'x';
+}
+"""
+        symbols = {s.name: s for s in adapter.extract_symbols(source, "src/x.ts")}
+        # Top-level higher-order factories: function decl + arrow var.
+        assert symbols["Controller"].returns_function_expression is True
+        assert symbols["RequestMapping"].returns_function_expression is True
+        # Plain string returner with a local arrow that isn't returned: no marker.
+        assert symbols["plain"].returns_function_expression is False
+        # Call-initialised variable: needs cross-function dataflow to tell, skipped.
+        assert symbols["Post"].returns_function_expression is False
+        # Outer ``nested`` returns a string. The nested ``inner`` *does* return
+        # an arrow expression — and is tagged. Stops the walk at the right boundary.
+        assert symbols["nested"].returns_function_expression is False
+        assert symbols["inner"].returns_function_expression is True
+
     def test_extract_decorator_compositions_ignores_method_decorators(self, adapter):
         """Method/property decorators name request-cycle metadata, not
         composition — they must not produce COMPOSES edges."""

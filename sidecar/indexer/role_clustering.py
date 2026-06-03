@@ -127,6 +127,7 @@ class SymbolRow:
     external_integration_import_fan_out: float = 0.0
     external_integration_root_count: int = 0
     inherits_builtin_exception: bool = False
+    returns_function_expression: bool = False
 
     @property
     def external_call_out_ratio(self) -> float:
@@ -332,12 +333,14 @@ def assemble_symbol_rows(
     for sym in symbols:
         uid, kind, file_path = sym[0], sym[1], sym[2]
         inherits_exc = bool(sym[3]) if len(sym) > 3 else False
+        returns_fn_expr = bool(sym[4]) if len(sym) > 4 else False
         info[uid] = {
             "uid": uid,
             "kind": kind or "",
             "file_path": file_path or "",
             "package": os.path.dirname(file_path or ""),
             "inherits_builtin_exception": inherits_exc,
+            "returns_function_expression": returns_fn_expr,
         }
 
     call_out: dict[str, set[str]] = {uid: set() for uid in info}
@@ -518,6 +521,7 @@ def assemble_symbol_rows(
                     external_integration_root_count_per_uid.get(uid, 0)
                 ),
                 inherits_builtin_exception=bool(meta.get("inherits_builtin_exception")),
+                returns_function_expression=bool(meta.get("returns_function_expression")),
             )
         )
     return rows
@@ -603,7 +607,7 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
     )
 
 
-def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str]]:
+def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str, bool, bool]]:
     with db.driver.session() as session:
         result = session.run(
             """
@@ -612,13 +616,20 @@ def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str]]:
             RETURN s.uid AS uid,
                    coalesce(s.kind, '') AS kind,
                    coalesce(f.path, '') AS file_path,
-                   coalesce(s.inherits_builtin_exception, false) AS inherits_builtin_exception
+                   coalesce(s.inherits_builtin_exception, false) AS inherits_builtin_exception,
+                   coalesce(s.returns_function_expression, false) AS returns_function_expression
             """,
             workspace_id=workspace_id,
             noise_patterns=list(NOISE_PATH_PATTERNS),
         )
         return [
-            (r["uid"], r["kind"], r["file_path"], bool(r["inherits_builtin_exception"]))
+            (
+                r["uid"],
+                r["kind"],
+                r["file_path"],
+                bool(r["inherits_builtin_exception"]),
+                bool(r["returns_function_expression"]),
+            )
             for r in result
             if r["uid"]
         ]

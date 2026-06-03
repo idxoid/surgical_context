@@ -22,6 +22,13 @@ class SymbolMetadata(BaseModel):
     signature_hash: str = ""
     signature_status: str = "unresolved"
     language: str = ""
+    # AST marker: the function body has a ``return <function expression>`` —
+    # arrow function or named function expression. The shape of a higher-order
+    # factory (decorator factory like NestJS ``Controller(opts): ClassDecorator``
+    # whose body returns ``(target) => Reflect.defineMetadata(...)``). Settled
+    # at extraction time so the cascade can read a single typed boolean instead
+    # of re-deriving the same fact from heuristics at link time.
+    returns_function_expression: bool = False
 
 
 @dataclass
