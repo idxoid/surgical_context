@@ -23,9 +23,6 @@ ROLE_ALIASES: dict[str, str] = {
     "supporting_surface": "supporting_surface",
     # Public / entry / wrapper surfaces
     "public_entrypoint": "api_surface",
-    "model_class": "api_surface",
-    "python_wrapper": "api_surface",
-    "ui_renderer": "api_surface",
     "endpoint_definition": "api_surface",
     "api_surface": "api_surface",
     # Builders / factories / registration / composition
@@ -40,13 +37,11 @@ ROLE_ALIASES: dict[str, str] = {
     "action_creator_factory": "factory_surface",
     "reducer_builder": "factory_surface",
     # F6: disambiguate overloaded ``*_registry`` legacy names by structural sense.
-    "handler_registry": "registration_step",
     "route_registry": "registration_step",
     "middleware_registry": "registration_step",
     "hook_registry": "registration_step",
     "provider_registry": "orchestrator",
     "module_registry": "composition_surface",
-    "state_registry": "runtime_surface",
     "metadata_registry": "runtime_surface",
     "table_registry": "runtime_surface",
     "lifecycle_action_creators": "factory_surface",
@@ -57,7 +52,6 @@ ROLE_ALIASES: dict[str, str] = {
     "enhancer_builder": "composition_surface",
     "composition_result": "composition_surface",
     "composition_pattern": "composition_surface",
-    "module_composition": "composition_surface",
     "mounting": "composition_surface",
     "control_flow": "composition_surface",
     "builder_pattern": "composition_surface",
@@ -71,7 +65,6 @@ ROLE_ALIASES: dict[str, str] = {
     "reactive_proxy": "representation_surface",
     "vnode_builder": "representation_surface",
     "mapper": "representation_surface",
-    "schema_module": "representation_surface",
     "generated_api_surface": "representation_surface",
     "representation_surface": "representation_surface",
     # Configuration / schema / binding
@@ -103,9 +96,7 @@ ROLE_ALIASES: dict[str, str] = {
     "action_interceptor": "orchestrator",
     "orchestrator": "orchestrator",
     "handler_or_lifecycle": "runtime_surface",
-    "request_lifecycle": "runtime_surface",
     "lifecycle_handler": "runtime_surface",
-    "view_dispatcher": "runtime_surface",
     "handler_executor": "runtime_surface",
     "thread_local": "runtime_surface",
     "lazy_loader": "runtime_surface",
@@ -115,7 +106,6 @@ ROLE_ALIASES: dict[str, str] = {
     "patch_engine": "runtime_surface",
     "header_handler": "runtime_surface",
     "store_integration": "composition_surface",
-    "gateway": "integration_surface",
     "integration_surface": "integration_surface",
     "runtime_surface": "runtime_surface",
     "runtime_executor": "executor",
@@ -128,14 +118,9 @@ ROLE_ALIASES: dict[str, str] = {
     "concurrency_decision": "executor",
     "executor": "executor",
     # Error / impact roles
-    "response_serializer": "serializer_handle",
     "error_model": "error_surface",
     "error_handling": "error_surface",
     "error_surface": "error_surface",
-    "serializer": "serializer_handle",
-    "validator": "validator_handle",
-    "validator_bridge": "validator_handle",
-    "transformer": "validator_handle",
     "metaprogramming": "core_runtime",
     "affected_runtime": "impact_runtime",
     "affected_public_api": "impact_public_api",
@@ -143,8 +128,6 @@ ROLE_ALIASES: dict[str, str] = {
     "impact_runtime": "impact_runtime",
     "impact_public_api": "impact_public_api",
     "impact_test_surface": "impact_test_surface",
-    # Fallback / internal legacy spelling
-    "related_implementation": "supporting_surface",
 }
 
 
@@ -174,9 +157,9 @@ UNSCORED_ROLES: frozenset[str] = NON_STRUCTURAL_ROLES | STRUCTURALLY_UNREACHABLE
 
 def normalize_role(role: str) -> str:
     """Map a legacy/framework-specific role name to the canonical taxonomy."""
-    if not role:
+    if not role or role not in ROLE_ALIASES:
         return role
-    return ROLE_ALIASES.get(role, role)
+    return ROLE_ALIASES[role]
 
 
 def normalize_roles(roles: Iterable[str], *, dedupe: bool = True) -> list[str]:

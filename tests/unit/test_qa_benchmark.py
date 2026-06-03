@@ -35,8 +35,14 @@ from QA.qa_benchmark import (
 
 
 def test_compute_role_recall_normalizes_legacy_roles_to_canonical_taxonomy():
+    # `schema_module → representation_surface` alias was removed after the pack
+    # was rewritten; `intermediate_model → representation_surface` still works.
+    # public_entrypoint → api_surface (in missing → unfulfilled);
+    # schema_generator → schema_builder (not in missing → fulfilled);
+    # intermediate_model → representation_surface (in missing → unfulfilled).
+    # Recall = 1/3 fulfilled.
     recall = _compute_role_recall(
-        ["public_entrypoint", "schema_generator", "schema_module"],
+        ["public_entrypoint", "schema_generator", "intermediate_model"],
         ["api_surface", "representation_surface"],
     )
 
