@@ -572,7 +572,17 @@ class Neo4jClient:
                             break
                 if hit and hit != call.get("caller_uid"):
                     out.append({**call, "callee_uid": hit})
-                continue
+                    continue
+                # qn miss → fall through to unique-name resolution. The qn was
+                # the extractor's best guess (typically derived from an import
+                # statement), but the in-graph qualified_name can prefix or
+                # otherwise diverge from that guess when the project layout
+                # adds a path segment (e.g. ``src/dathund_core/X`` stores as
+                # ``src.dathund_core.X`` while the import reads
+                # ``dathund_core.X``). The downstream name fallback is already
+                # gated on workspace-wide uniqueness, so this can only
+                # *recover* a call that would otherwise be silently dropped —
+                # it cannot bind to the wrong target.
             name = call.get("callee_name")
             if name:
                 cands = by_name.get(name) or []

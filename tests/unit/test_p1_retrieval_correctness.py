@@ -219,6 +219,88 @@ def test_neo4j_link_calls_falls_back_to_object_api_surface_for_member_qualified_
     assert resolved[0]["callee_uid"] == "surface-uid"
 
 
+def test_neo4j_link_calls_falls_back_to_unique_name_when_qn_misses():
+    """If the extractor sets a callee_qualified_name that doesn't match an
+    in-graph Symbol (project layout adds a path segment the import doesn't —
+    e.g. ``src/dathund_core/X`` stores as ``src.dathund_core.X`` while the
+    import reads ``from dathund_core.X``), the qn lookup misses *and* the
+    object_api prefix fallback misses too. The resolver must then fall
+    through to the unique-name lookup instead of silently dropping the call,
+    so cross-module CALLS_IMPORTED edges survive the layout mismatch.
+    Workspace-wide uniqueness is the safety: a single Symbol with that name
+    is the only candidate, so the recovery cannot bind to a wrong target.
+    """
+    session = MagicMock()
+    db = MagicMock()
+    db.driver.session.return_value.__enter__.return_value = session
+    session.run.return_value = [
+        # The real Symbol lives under `src.X.Y.cb` — the qn the call carries
+        # (`X.Y.cb`) doesn't match, but the name is workspace-unique.
+        {
+            "uid": "callee-uid",
+            "name": "time_authority_for_source",
+            "qn": "src.dathund_core.connectors.time_authority_registry.time_authority_for_source",
+            "kind": "function",
+        },
+    ]
+
+    client = Neo4jClient.__new__(Neo4jClient)
+    client.driver = db.driver
+    resolved = client._resolve_call_callees(
+        [
+            {
+                "caller_uid": "caller",
+                "callee_name": "time_authority_for_source",
+                "callee_qualified_name": (
+                    "dathund_core.connectors.time_authority_registry.time_authority_for_source"
+                ),
+                "rel_type": "CALLS_IMPORTED",
+                "tier": "imported",
+                "confidence": 0.85,
+                "resolver": "py-scope-v1",
+                "call_site_line": 25,
+            }
+        ],
+        workspace_id="local/surgical_context@main",
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0]["callee_uid"] == "callee-uid"
+
+
+def test_neo4j_link_calls_does_not_fall_back_when_qn_misses_and_name_is_ambiguous():
+    """The unique-name fallback only fires when exactly one Symbol carries
+    that name workspace-wide. Two same-name candidates remain ambiguous and
+    the call is dropped — same as for a name-only call with two candidates."""
+    session = MagicMock()
+    db = MagicMock()
+    db.driver.session.return_value.__enter__.return_value = session
+    session.run.return_value = [
+        {"uid": "uid-a", "name": "helper", "qn": "pkg.a.helper", "kind": "function"},
+        {"uid": "uid-b", "name": "helper", "qn": "pkg.b.helper", "kind": "function"},
+    ]
+
+    client = Neo4jClient.__new__(Neo4jClient)
+    client.driver = db.driver
+    resolved = client._resolve_call_callees(
+        [
+            {
+                "caller_uid": "caller",
+                "callee_name": "helper",
+                "callee_qualified_name": "wrong.path.helper",
+                "rel_type": "CALLS_IMPORTED",
+                "tier": "imported",
+                "confidence": 0.85,
+                "resolver": "py-scope-v1",
+                "call_site_line": 1,
+            }
+        ],
+        workspace_id="local/surgical_context@main",
+    )
+
+    assert resolved == []
+
+
 def test_workspace_resolver_parses_branch_header():
     workspace = WorkspaceResolver().from_header("acme/surgical_context@feature/payments")
     assert workspace.id == "acme/surgical_context@feature/payments"
