@@ -39,6 +39,7 @@ class PromptCompiler:
                 is_dirty=is_dirty,
                 code=code,
                 provenance=getattr(node, "provenance", None) or ["graph", "code_resolver"],
+                chain_kind=getattr(node, "chain_kind", ""),
             )
 
         primary = to_symbol_context(subgraph.primary)
@@ -83,6 +84,7 @@ class PromptCompiler:
                 is_dirty=is_dirty,
                 code=code,
                 provenance=getattr(node, "provenance", None) or ["graph", "code_resolver"],
+                chain_kind=getattr(node, "chain_kind", ""),
             )
 
         def estimate_tokens(text: str) -> int:

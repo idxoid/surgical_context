@@ -5,6 +5,26 @@ from typing import Any
 
 RESOLVER_VERSION = "context-arbitrator-v2"
 
+# Chain priority for prompt ordering. The ranker sets ``chain_kind`` on a
+# candidate when it emits a structural-chain signal (mandatory contract anchor,
+# query-API seed, registration / marker chain step, api-relay, …); ``_dep_sort_key``
+# reads it as a single typed value instead of re-parsing provenance strings.
+# Higher number = sorts earlier inside the same caller group.
+CHAIN_PRIORITY: dict[str, int] = {
+    "mandatory":    4,
+    "query_seed":   3,
+    "registration": 2,
+    "api_callee":   2,
+    "relay":        1,
+}
+
+
+def upgrade_chain_kind(current: str, candidate: str) -> str:
+    """Return whichever chain_kind has higher CHAIN_PRIORITY (current wins on tie)."""
+    if not candidate:
+        return current
+    return candidate if CHAIN_PRIORITY.get(candidate, 0) > CHAIN_PRIORITY.get(current, 0) else current
+
 
 @dataclass
 class SymbolContext:
@@ -25,6 +45,7 @@ class SymbolContext:
     is_dirty: bool = False
     code: str = ""
     provenance: list[str] = field(default_factory=list)
+    chain_kind: str = ""
 
 
 @dataclass
@@ -91,20 +112,12 @@ class PromptContext:
     )
 
     def _dep_sort_key(self, dep: "SymbolContext") -> tuple:
-        """Callers first (depth 1), then other graph neighbours, then deep."""
+        """Sort: callers first, then chain priority, then shallower depth, then higher score."""
         is_caller = dep.direction == "caller" or dep.relation in self._CALLER_RELATIONS
-        provenance = dep.provenance or []
-        is_query_api_seed = any(str(step) == "query-api-seed" for step in provenance)
-        is_query_api_callee = any(
-            str(step).startswith("query-api-callee:") for step in provenance
-        )
-        prompt_priority = 2 if is_query_api_seed else 1 if is_query_api_callee else 0
-        if prompt_priority:
-            return (0 if is_caller else 1, dep.depth, -prompt_priority, 0)
         return (
             0 if is_caller else 1,
+            -CHAIN_PRIORITY.get(dep.chain_kind, 0),
             dep.depth,
-            0,
             -(dep.blended_score or dep.relevance_score),
         )
 
@@ -353,6 +366,7 @@ class SubgraphNode:
     semantic_score: float = 0.0
     blended_score: float = 0.0
     intent_weight: float = 0.0
+    chain_kind: str = ""
 
 
 @dataclass

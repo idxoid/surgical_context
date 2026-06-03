@@ -64,7 +64,7 @@ from sidecar.context.ranker.signal_constants import (
     NOISE_PATH_PATTERNS as _NOISE_PATH_PATTERNS,
 )
 from sidecar.context.role_taxonomy import normalize_roles
-from sidecar.context.types import DocChunk, Subgraph, SubgraphNode
+from sidecar.context.types import DocChunk, Subgraph, SubgraphNode, upgrade_chain_kind
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
@@ -1035,6 +1035,7 @@ class UnifiedRanker:
             relay_step = f"api-relay:in={in_count},out={out_count}"
             if relay_step not in candidate.provenance:
                 candidate.provenance.append(relay_step)
+            candidate.chain_kind = upgrade_chain_kind(candidate.chain_kind, "relay")
 
     def _mark_query_api_callees(self, pool: list[Candidate], query: str) -> None:
         caller_uids = [
@@ -1046,8 +1047,10 @@ class UnifiedRanker:
         if not caller_uids:
             return
         for candidate in pool:
-            if candidate.uid in caller_uids and "query-api-seed" not in candidate.provenance:
-                candidate.provenance.append("query-api-seed")
+            if candidate.uid in caller_uids:
+                if "query-api-seed" not in candidate.provenance:
+                    candidate.provenance.append("query-api-seed")
+                candidate.chain_kind = upgrade_chain_kind(candidate.chain_kind, "query_seed")
         query_text = """
         MATCH (caller:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(callee:Symbol)
         WHERE caller.uid IN $caller_uids
@@ -1079,6 +1082,7 @@ class UnifiedRanker:
             step = f"query-api-callee:callers={caller_count}"
             if step not in candidate.provenance:
                 candidate.provenance.append(step)
+            candidate.chain_kind = upgrade_chain_kind(candidate.chain_kind, "api_callee")
 
     def _api_behavior_sort_rank(self, c: Candidate) -> int:
         if c.kind != "symbol" or c.relation not in self._API_ENTRY_RELATIONS:
@@ -1138,6 +1142,7 @@ class UnifiedRanker:
                         semantic_score=c.semantic_score,
                         blended_score=blended,
                         intent_weight=c.intent_weight,
+                        chain_kind=c.chain_kind,
                     )
                 )
             else:
@@ -1351,7 +1356,10 @@ class UnifiedRanker:
                 depth=distance,
                 file_hash=neighbor.get("file_hash", ""),
                 provenance=provenance,
+                chain_kind="registration" if (reg_chain or marker_chain) else "",
             )
+            if c.relation == "MANDATORY_CALLEE":
+                c.chain_kind = upgrade_chain_kind(c.chain_kind, "mandatory")
             candidates.append(c)
 
             for nn in self._get_neighbors(uid, visited, distance=distance + 1):

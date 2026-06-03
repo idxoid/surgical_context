@@ -54,6 +54,7 @@ class Candidate:
     anchor_type: str = ""
     anchor_confidence: float = 0.0
     primary_bias: float = 0.0
+    chain_kind: str = ""
 
     @property
     def overlap(self) -> bool:
