@@ -189,7 +189,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: fastapi_docs_ui_wiring
-    required_roles: [public_entrypoint, ui_renderer, route_registry, docs_or_concept]
+    required_roles: [public_entrypoint, orchestrator, route_registry, docs_or_concept]
     expected_symbols: [FastAPI, swagger_ui_html, redoc_html, setup]
     expected_files: [fastapi/applications.py, fastapi/openapi/docs.py]
 
@@ -215,7 +215,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: pydantic_validation_core_bridge
-    required_roles: [public_entrypoint, model_class, validator_handle, core_runtime]
+    required_roles: [public_entrypoint, representation_surface, validator_handle, core_runtime]
     expected_symbols: [BaseModel, model_validate, __pydantic_validator__]
     expected_files: [pydantic/main.py, pydantic]
 
@@ -228,7 +228,7 @@ questions:
     intent: explain_behavior
     expected_mode: workspace
     mechanism: pydantic_python_core_boundary
-    required_roles: [python_wrapper, core_runtime, serializer_handle, validator_handle]
+    required_roles: [api_surface, core_runtime, serializer_handle, validator_handle]
     expected_symbols: [BaseModel, SchemaValidator, SchemaSerializer]
     expected_files: [pydantic/main.py, pydantic-core]
 
@@ -254,7 +254,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: pydantic_json_schema_generation
-    required_roles: [public_entrypoint, schema_generator, schema_module]
+    required_roles: [public_entrypoint, schema_generator, composition_surface]
     expected_symbols: [model_json_schema, GenerateJsonSchema, json_schema]
     expected_files: [pydantic/json_schema.py, pydantic/main.py]
 
@@ -306,7 +306,7 @@ questions:
     intent: explain_behavior
     expected_mode: workspace
     mechanism: nonexistent_symbol_nearest_mechanism
-    required_roles: [negative_lookup, nearest_real_mechanism, schema_generator, schema_module]
+    required_roles: [negative_lookup, nearest_real_mechanism, schema_generator, composition_surface]
     expected_symbols: [GenerateJsonSchema, model_json_schema, json_schema]
     expected_files: [pydantic/json_schema.py, pydantic/main.py]
 
@@ -449,7 +449,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: django_modelform_field_mapping
-    required_roles: [public_entrypoint, field_generator, model_introspection, validator_bridge]
+    required_roles: [public_entrypoint, field_generator, model_introspection, validator_handle]
     expected_symbols: [ModelForm, fields_for_model, ModelFormOptions]
     expected_files: [django/forms/models.py]
 
@@ -462,7 +462,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: django_migration_execution
-    required_roles: [public_entrypoint, migration_loader, operation_executor, state_tracker]
+    required_roles: [public_entrypoint, orchestrator, operation_executor, state_tracker]
     expected_symbols: [MigrationExecutor, MigrationLoader, Operation]
     expected_files: [django/db/migrations/executor.py, django/db/migrations/loader.py]
 
@@ -488,7 +488,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: flask_app_context_lifecycle
-    required_roles: [public_entrypoint, runtime_surface, request_lifecycle, view_dispatcher]
+    required_roles: [public_entrypoint, runtime_surface, orchestrator, request_router]
     expected_symbols: [Flask, from_environ, AppContext, push]
     expected_files: [src/flask/app.py, src/flask/ctx.py]
 
@@ -501,7 +501,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: flask_blueprint_registration
-    required_roles: [public_entrypoint, deferred_registration, route_registry, composition_pattern]
+    required_roles: [public_entrypoint, representation_surface, route_registry, composition_pattern]
     expected_symbols: [Blueprint, register_blueprint, BlueprintSetupState]
     expected_files: [src/flask/blueprints.py]
 
@@ -592,7 +592,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: express_response_methods
-    required_roles: [public_entrypoint, response_builder, serializer, header_handler]
+    required_roles: [public_entrypoint, response_builder, serializer_handle, header_handler]
     expected_symbols: [send, json, status, set]
     expected_files: [lib/response.js]
 
@@ -631,7 +631,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: nestjs_module_composition
-    required_roles: [public_entrypoint, module_registry, composition_pattern, import_system]
+    required_roles: [public_entrypoint, module_registry, composition_pattern, config_surface]
     expected_symbols: [Module, imports, controllers, providers]
     expected_files: [packages/core/injector, packages/core/metadata-scanner]
 
@@ -644,7 +644,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: nestjs_pipe_validation
-    required_roles: [public_entrypoint, validator, transformer, middleware_pattern]
+    required_roles: [public_entrypoint, validator_handle, middleware_pattern]
     expected_symbols: [Pipe, PipeTransform, ValidationPipe]
     expected_files: [packages/core/pipes, packages/common/pipes]
 
@@ -748,7 +748,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: vue_watcher_setup
-    required_roles: [public_entrypoint, dependency_tracker, effect_executor, cleanup_handler]
+    required_roles: [public_entrypoint, dependency_tracker, effect_executor, runtime_surface]
     expected_symbols: [watch, watchEffect, doWatch]
     expected_files: [packages/runtime-core/src/apiWatch.ts]
 
@@ -943,6 +943,6 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: dathund_lineage_closure_maintenance
-    required_roles: [public_entrypoint, operation_executor, core_runtime, schema_module]
+    required_roles: [public_entrypoint, operation_executor, core_runtime, composition_surface]
     expected_symbols: [extend_closure, merge_closure_entry, ClosureEntry]
     expected_files: [src/dathund_core/lineage/closure_logic.py, src/dathund_core/lineage/pg_store.py]
