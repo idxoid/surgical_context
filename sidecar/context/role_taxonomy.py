@@ -13,22 +13,8 @@ from collections.abc import Iterable
 
 ROLE_ALIASES: dict[str, str] = {
     # Stable / shared roles
-    "docs_or_concept": "docs_or_concept",
-    "negative_lookup": "negative_lookup",
-    "nearest_real_mechanism": "nearest_real_mechanism",
-    "compat_bridge": "compat_bridge",
-    "validator_handle": "validator_handle",
-    "serializer_handle": "serializer_handle",
-    "core_runtime": "core_runtime",
-    "supporting_surface": "supporting_surface",
-    # Public / entry / wrapper surfaces
     "public_entrypoint": "api_surface",
     "endpoint_definition": "api_surface",
-    "api_surface": "api_surface",
-    # Builders / factories / registration / composition
-    # registration_step is a distinct cascade discriminator (decorator handle_fan_out);
-    # keep it canonical so the engine's output matches and the map stays idempotent (F14).
-    "registration_step": "registration_step",
     "route_builder": "factory_surface",
     "route_matcher": "factory_surface",
     "field_generator": "factory_surface",
@@ -45,7 +31,6 @@ ROLE_ALIASES: dict[str, str] = {
     "metadata_registry": "runtime_surface",
     "table_registry": "runtime_surface",
     "lifecycle_action_creators": "factory_surface",
-    "factory_surface": "factory_surface",
     "middleware_builder": "composition_surface",
     "middleware_chain": "composition_surface",
     "middleware_pattern": "composition_surface",
@@ -55,36 +40,21 @@ ROLE_ALIASES: dict[str, str] = {
     "mounting": "composition_surface",
     "control_flow": "composition_surface",
     "builder_pattern": "composition_surface",
-    "composition_surface": "composition_surface",
-    # Representations / structured artifacts
     "route_object": "representation_surface",
     "intermediate_model": "representation_surface",
-    # request_router is a distinct cascade discriminator (dynamic dispatch); canonical (F14).
-    "request_router": "request_router",
     "reactive_system": "representation_surface",
     "reactive_proxy": "representation_surface",
     "vnode_builder": "representation_surface",
     "mapper": "representation_surface",
     "generated_api_surface": "representation_surface",
-    "representation_surface": "representation_surface",
-    # Configuration / schema / binding
     "marker_or_config": "config_surface",
     "devtools_config": "config_surface",
-    "config_surface": "config_surface",
     "schema_generator": "schema_builder",
     "body_field_builder": "schema_builder",
-    "schema_builder": "schema_builder",
     "body_argument_mapper": "binding_surface",
     "model_introspection": "binding_surface",
     "context_accessor": "binding_surface",
-    # proxy_mechanism is a distinct cascade discriminator (PROXY_OF); canonical (F14).
-    "proxy_mechanism": "proxy_mechanism",
     "fk_resolver": "binding_surface",
-    "binding_surface": "binding_surface",
-    # Runtime flow / execution
-    # dependency_solver is a distinct cascade discriminator (isinstance/inject dispatch);
-    # canonical so it is not falsely satisfied by any orchestrator (F14).
-    "dependency_solver": "dependency_solver",
     "di_container": "orchestrator",
     "instance_resolver": "orchestrator",
     "decorator_processor": "orchestrator",
@@ -94,7 +64,6 @@ ROLE_ALIASES: dict[str, str] = {
     "request_processor": "orchestrator",
     "state_tracker": "orchestrator",
     "action_interceptor": "orchestrator",
-    "orchestrator": "orchestrator",
     "handler_or_lifecycle": "runtime_surface",
     "lifecycle_handler": "runtime_surface",
     "handler_executor": "runtime_surface",
@@ -106,8 +75,6 @@ ROLE_ALIASES: dict[str, str] = {
     "patch_engine": "runtime_surface",
     "header_handler": "runtime_surface",
     "store_integration": "composition_surface",
-    "integration_surface": "integration_surface",
-    "runtime_surface": "runtime_surface",
     "runtime_executor": "executor",
     "async_executor": "executor",
     "operation_executor": "executor",
@@ -116,18 +83,12 @@ ROLE_ALIASES: dict[str, str] = {
     "transaction_handler": "executor",
     "side_effect_executor": "executor",
     "concurrency_decision": "executor",
-    "executor": "executor",
-    # Error / impact roles
     "error_model": "error_surface",
     "error_handling": "error_surface",
-    "error_surface": "error_surface",
     "metaprogramming": "core_runtime",
     "affected_runtime": "impact_runtime",
     "affected_public_api": "impact_public_api",
     "affected_tests": "impact_test_surface",
-    "impact_runtime": "impact_runtime",
-    "impact_public_api": "impact_public_api",
-    "impact_test_surface": "impact_test_surface",
 }
 
 
