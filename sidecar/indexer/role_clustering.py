@@ -49,6 +49,7 @@ STRUCTURAL_REL_TYPES = (
     "HANDLES",
     "DECORATED_BY",
     "INSTANTIATES",
+    "COMPOSES",
 )
 
 DEFAULT_EDGE_CONFIDENCE: dict[str, float] = {
@@ -67,6 +68,7 @@ DEFAULT_EDGE_CONFIDENCE: dict[str, float] = {
     "USES_TYPE": 1.0,
     "DECORATED_BY": 1.0,
     "INSTANTIATES": 1.0,
+    "COMPOSES": 1.0,
 }
 
 USES_TYPE_KIND_WEIGHT: dict[str, float] = {
@@ -115,6 +117,7 @@ class SymbolRow:
     decorated_out: float = 0.0
     construct_fan_out: float = 0.0
     fluent_self_return_count: int = 0
+    decorator_arg_ref_count: int = 0
     reexport_in: int = 0
     is_proxy_binding: bool = False
     external_call_fan_out: float = 0.0
@@ -357,6 +360,7 @@ def assemble_symbol_rows(
     decorated_in: dict[str, float] = defaultdict(float)
     decorated_out: dict[str, float] = defaultdict(float)
     construct_fan_out: dict[str, float] = defaultdict(float)
+    decorator_arg_ref_count: dict[str, int] = defaultdict(int)
 
     for caller, callee, rel_type, conf, kind in _iter_structural_edges(call_edges):
         caller_in = caller in info
@@ -413,6 +417,13 @@ def assemble_symbol_rows(
         elif rel_type == "INSTANTIATES":
             if caller_in:
                 construct_fan_out[caller] += conf
+        elif rel_type == "COMPOSES":
+            # Subtype 2: decorator-arg references from a decorated class to the
+            # symbols it composes (NestJS `@Module({imports:[X],...})`). Counted
+            # per-class only; the receiving side is not credited (a composed
+            # service does not gain a role from being composed).
+            if caller_in:
+                decorator_arg_ref_count[caller] += 1
 
     handler_call_fan_out: dict[str, float] = defaultdict(float)
     for caller, callee, rel_type, conf, _kind in _iter_structural_edges(call_edges):
@@ -489,6 +500,7 @@ def assemble_symbol_rows(
                 decorated_out=decorated_out[uid],
                 construct_fan_out=construct_fan_out[uid],
                 fluent_self_return_count=fluent_self_return_count.get(uid, 0),
+                decorator_arg_ref_count=decorator_arg_ref_count.get(uid, 0),
                 reexport_in=int(reexport_in_per_uid.get(uid, 0)),
                 is_proxy_binding=uid in proxy_uids,
                 external_call_fan_out=float(external_call_fan_out_per_uid.get(uid, 0.0)),

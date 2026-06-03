@@ -36,6 +36,7 @@ class FanProfile(Protocol):
     decorated_out: float
     construct_fan_out: float
     fluent_self_return_count: int
+    decorator_arg_ref_count: int
     cross_package_call_in: float
     cross_package_call_out: float
     depth_from_public: int
@@ -145,6 +146,19 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         "routing_wrap",
         lambda r: r.handle_fan_in > _EPS,
         70,
+    ),
+    RolePredicate(
+        "composition_surface",
+        "routing_wrap",
+        # Subtype 2 in the routing_wrap bucket. A class decorated with a call
+        # whose object-literal argument lists >=3 referenced symbols
+        # (`@Module({ imports, providers, controllers })`) is bucketed to
+        # routing_wrap by the inverse-HANDLES edge created from the decorator
+        # — so the state_types twin of this predicate never sees it. The
+        # composer signal is more specific than `executor` (handle_fan_in
+        # alone), and outranks it here for that reason.
+        lambda r: r.is_class and r.decorator_arg_ref_count >= 3,
+        78,
     ),
     RolePredicate(
         "dependency_solver",
@@ -352,21 +366,27 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
     RolePredicate(
         "composition_surface",
         "state_types",
-        # Fluent / chain composition (subtype 3 from docs/role_signature_findings).
-        # A class with >=2 HAS_API'd methods whose typed return is the class itself
-        # is structurally a fluent builder (`QuerySet.filter()` → QuerySet,
-        # `Context.invoke()` → Context). Both signals are edge-only AST facts:
-        # HAS_API plus USES_TYPE(kind=return). Two distinct self-returning methods
-        # rules out single self-method coincidences (e.g. a `clone()` helper
-        # without a chain) — the threshold matches the polymorphic-factory shape
-        # added in 465f90b (>=2 distinct INSTANTIATES targets).
+        # Two structural shapes for composition_surface, both edge-only AST:
+        # - Subtype 2 (declarative metadata): a class is decorated with a call
+        #   whose object-literal argument lists >=3 referenced symbols inline
+        #   (`@Module({ imports: [...], providers: [...], controllers: [...] })`).
+        #   The COMPOSES edges from the decorated class to each reference are
+        #   counted in `decorator_arg_ref_count` (see role_clustering); >=3
+        #   distinct references rule out trivial single-list `@Foo({ key: [X] })`
+        #   decorators.
+        # - Subtype 3 (fluent chain): a class with >=2 HAS_API'd methods whose
+        #   typed return is the class itself is a fluent builder
+        #   (`QuerySet.filter()` → QuerySet, `Context.invoke()` → Context).
         #
-        # Priority 76 sits *just above* representation_surface (75), so a class
-        # that is both a data carrier and a fluent builder reads as the more
-        # specific signal (a builder IS a representation, but its shape is the
-        # chain). It still loses to config_surface (80) / abstract_contract (85)
-        # — those are stronger contract signals than the chain.
-        lambda r: r.is_class and r.fluent_self_return_count >= 2,
+        # Priority 76 sits *just above* representation_surface (75): a class
+        # that is both a data carrier and a composer reads as the more
+        # specific signal. Still loses to config_surface (80) /
+        # abstract_contract (85) — those are stronger contract signals.
+        lambda r: r.is_class
+        and (
+            r.decorator_arg_ref_count >= 3
+            or r.fluent_self_return_count >= 2
+        ),
         76,
     ),
     RolePredicate(

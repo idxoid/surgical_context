@@ -1200,6 +1200,75 @@ class Neo4jClient:
             workspace_id=workspace_id,
         )
 
+    def link_decorator_compositions(
+        self,
+        compositions: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create COMPOSES edges from decorated class → each composed symbol.
+
+        Subtype 2 of composition_surface: a class decorated with
+        ``@Module({ imports, providers, controllers })`` names the components
+        it composes inline. Each name is an AST-visible identifier in an
+        array under the decorator's object-literal argument. Resolution to a
+        Symbol uses the import-resolved qualified name, falling back to a
+        bare-name match to keep external symbols traceable.
+        """
+        if not compositions:
+            return
+        with self.driver.session() as session:
+            session.execute_write(
+                self._create_decorator_composition_relations, compositions, workspace_id
+            )
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_decorator_composition_relations(tx, compositions, workspace_id):
+        if not compositions:
+            return
+        tx.run(
+            """
+            UNWIND $compositions AS c
+            MATCH (decorated:Symbol {uid: c.decorated_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(ref:Symbol)
+            WHERE ref.qualified_name = c.referenced_qualified_name
+               OR ref.name = c.referenced_name
+            WITH decorated, c, ref
+            ORDER BY
+              CASE WHEN ref.qualified_name = c.referenced_qualified_name THEN 0 ELSE 1 END,
+              size(ref.qualified_name) ASC
+            WITH decorated, c, collect(ref)[0] AS ref
+            WHERE ref IS NOT NULL AND decorated <> ref
+            MERGE (decorated)-[r:COMPOSES {workspace_id: $workspace_id}]->(ref)
+            SET r.resolver = 'decorator-compose-v1',
+                r.decorator_name = c.decorator_name,
+                r.decorator_key = c.decorator_key
+            """,
+            compositions=compositions,
+            workspace_id=workspace_id,
+        )
+
+    def delete_decorator_compositions_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear COMPOSES edges originating from symbols in ``file_path``."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:COMPOSES]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
     def delete_decorators_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
         """Clear DECORATED_BY / HANDLES edges for symbols defined in a file."""
         with self.driver.session() as session:

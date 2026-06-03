@@ -529,6 +529,107 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     return self._member_expression_dotted(fn)
         return ""
 
+    def extract_decorator_compositions(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """Decorator-arg composition refs → COMPOSES edges (subtype 2 signal).
+
+        A class decorated with ``@Module({ imports, providers, controllers })``
+        names the components it composes inline as identifiers inside arrays
+        of the object literal. Each such identifier is a static AST reference
+        from the decorated class to a composed symbol — the cleanest possible
+        signal for the "declarative metadata composition" pattern documented
+        in role_signature_findings as subtype 2 of composition_surface.
+
+        Emitted as edges from the decorated class to each referenced symbol,
+        carrying the decorator name and the property key (``imports``,
+        ``providers``, …) for diagnostics. Spread elements (``...providers``)
+        are skipped — the expanded contents are not statically visible.
+
+        Only class-level decorators contribute; method/field decorators name
+        request/lifecycle metadata, not composition.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings, _ = self._extract_import_bindings(source_code, file_path)
+        out: list[dict] = []
+        for deco in self._iter_nodes(tree.root_node):
+            if deco.type != "decorator":
+                continue
+            parent = deco.parent
+            if parent is None:
+                continue
+            if parent.type in self._DECORATABLE_NODE_TYPES:
+                decorated = parent
+            else:
+                decorated = self._decoratable_sibling_after(parent, deco)
+            if decorated is None or decorated.type != "class_declaration":
+                continue
+            decorated_name = self._decoratable_name(decorated)
+            if not decorated_name:
+                continue
+            decorated_uid = self._uid_for_node(decorated, source_code, file_path)
+            if not decorated_uid:
+                continue
+            base = self._decorator_base_name(deco)
+            if not base:
+                continue
+            for key, ref_name in self._decorator_arg_object_refs(deco):
+                qn = self._resolve_type_name(ref_name, import_bindings, module)
+                out.append(
+                    {
+                        "decorated_uid": decorated_uid,
+                        "decorated_name": decorated_name,
+                        "decorator_name": base,
+                        "decorator_key": key,
+                        "referenced_name": ref_name,
+                        "referenced_qualified_name": qn,
+                        "file_path": file_path,
+                    }
+                )
+        return out
+
+    def _decorator_arg_object_refs(self, deco):
+        """Yield ``(property_key, identifier)`` for every identifier inside an
+        object-literal-of-arrays decorator argument.
+
+        Matches the shape: ``@Foo({ key1: [Id, Id], key2: [Id], … })``. Spread
+        elements (``...spread``) are skipped — their expansion is not visible
+        in the AST. Returns nothing for decorators with no args, with non-object
+        args, or with arrays of non-identifier values (strings, calls, …)."""
+        call = next(
+            (c for c in deco.children if c.type == "call_expression"),
+            None,
+        )
+        if call is None:
+            return
+        args = call.child_by_field_name("arguments")
+        if args is None:
+            return
+        # First object argument: ``@Foo({...}, other)`` only the first object counts.
+        obj = next(
+            (c for c in args.named_children if c.type == "object"),
+            None,
+        )
+        if obj is None:
+            return
+        for pair in obj.named_children:
+            if pair.type != "pair":
+                continue
+            key_node = pair.child_by_field_name("key")
+            value_node = pair.child_by_field_name("value")
+            if key_node is None or value_node is None:
+                continue
+            key = self._node_text(key_node) if key_node.type == "property_identifier" else ""
+            if not key:
+                continue
+            if value_node.type != "array":
+                continue
+            for elem in value_node.named_children:
+                if elem.type == "identifier":
+                    yield key, self._node_text(elem)
+
     def _member_expression_dotted(self, node) -> str:
         obj = node.child_by_field_name("object")
         prop = node.child_by_field_name("property")

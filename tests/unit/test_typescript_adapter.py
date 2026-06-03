@@ -368,6 +368,51 @@ class B {}
         source = "export class PlainOldClass {}\nfunction fn() {}\n"
         assert adapter.extract_decorators(source, "src/p.ts") == []
 
+    def test_extract_decorator_compositions_collects_arg_refs(self, adapter):
+        """`@Module({ imports: [...], providers: [...], controllers: [...] })`
+        yields one COMPOSES edge per AST-visible identifier inside an array,
+        carrying the decorator name and the key for diagnostics. Spread
+        elements are skipped (the expansion is not statically visible)."""
+        source = """import { Module } from '@nestjs/common';
+import { DatabaseModule } from './db';
+import { CatsController } from './cats.controller';
+import { CatsService, AuxService } from './cats.service';
+
+@Module({
+  imports: [DatabaseModule],
+  controllers: [CatsController],
+  providers: [CatsService, AuxService, ...spreadProviders],
+  exports: [CatsService],
+})
+export class AppModule {}
+"""
+        rows = adapter.extract_decorator_compositions(source, "src/app.module.ts")
+        assert {(r["decorator_key"], r["referenced_name"]) for r in rows} == {
+            ("imports", "DatabaseModule"),
+            ("controllers", "CatsController"),
+            ("providers", "CatsService"),
+            ("providers", "AuxService"),
+            ("exports", "CatsService"),
+        }
+        # The spread element is skipped — its expansion is not statically visible.
+        assert all(r["referenced_name"] != "spreadProviders" for r in rows)
+        # Every row carries the decorator name and the decorated class name.
+        assert {r["decorator_name"] for r in rows} == {"Module"}
+        assert {r["decorated_name"] for r in rows} == {"AppModule"}
+
+    def test_extract_decorator_compositions_ignores_method_decorators(self, adapter):
+        """Method/property decorators name request-cycle metadata, not
+        composition — they must not produce COMPOSES edges."""
+        source = """import { Controller, Get, Post } from '@nestjs/common';
+
+@Controller('cats')
+export class CatsController {
+  @Get()
+  findAll(): string { return 'all'; }
+}
+"""
+        assert adapter.extract_decorator_compositions(source, "src/cats.ts") == []
+
     def test_exported_object_api_indexes_single_surface(self, adapter):
         source = """
 export const SidecarClient = {

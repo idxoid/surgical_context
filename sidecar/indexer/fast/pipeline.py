@@ -428,8 +428,10 @@ def _decorator_phase(
     from sidecar.parser.uid import project_root_scope
 
     link_deco = getattr(db, "link_decorators", None)
+    link_compose = getattr(db, "link_decorator_compositions", None)
     reporter.stage_start("decorators", total=1)
     decorators: list[dict] = []
+    compositions: list[dict] = []
     if callable(link_deco):
         py_adapter = PythonAdapter()
         ts_adapter = TypeScriptAdapter()
@@ -446,8 +448,20 @@ def _decorator_phase(
                     decorators.extend(adapter.extract_decorators(ex.source, ex.path))
                 except Exception:
                     continue
+                # Subtype 2 composition refs are TS-only today (decorator-arg
+                # object literals with arrays of class references) — the
+                # method is gated on adapter capability so this is safe to
+                # call uniformly when broader language support lands.
+                extract_compose = getattr(adapter, "extract_decorator_compositions", None)
+                if callable(extract_compose):
+                    try:
+                        compositions.extend(extract_compose(ex.source, ex.path))
+                    except Exception:
+                        continue
         if decorators:
             link_deco(decorators, workspace_id=workspace_id)
+        if compositions and callable(link_compose):
+            link_compose(compositions, workspace_id=workspace_id)
     reporter.step("decorators")
     reporter.stage_end("decorators")
     return len(decorators)
