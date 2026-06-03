@@ -318,7 +318,15 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
     RolePredicate(
         "dependency_solver",
         "state_types",
-        lambda r: r.is_function and r.depend_fan_in > _EPS and r.depth_from_public <= 1,
+        # Function-side (existing): a depended-on public function is a solver.
+        # Class-side (added): a class that holds isinstance-dispatch inside its
+        # methods aggregates `type_fan_in_isinstance` at the class level — it IS
+        # the dispatcher. Lands here because rich classes (high type_fan_in) go to
+        # state_types, never reaching the control_flow dependency_solver predicate.
+        lambda r: (
+            r.is_function and r.depend_fan_in > _EPS and r.depth_from_public <= 1
+        )
+        or (r.is_class and r.type_fan_in_isinstance > _EPS),
         67,
     ),
     RolePredicate(
