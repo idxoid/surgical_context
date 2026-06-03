@@ -4,7 +4,7 @@
 
 ## 1. Problem
 
-Current classifier returns one of 6 labels: `navigation | debugging | refactor | exploration | new_feature | design_question`.
+Current classifier returns one of 7 labels: `navigation | debugging | refactor | exploration | new_feature | design_question | impact_analysis`.
 
 Real queries are mixtures:
 
@@ -36,9 +36,13 @@ class IntentDistribution:
 
 Sum-to-1 invariant enforced on construction. Missing labels default to 0.
 
+Current implementation name: `IntentSignal.distribution`. It is paired with
+`primary`, `confidence`, `ambiguous`, and `matched_keywords`.
+
 ### 2.2 Classifier Output
 
-Keyword heuristics v2 produces partial scores per label, then normalizes:
+Keyword heuristics v2 produces partial scores per label, applies phrase
+overrides, then normalizes:
 
 ```python
 def classify(query: str) -> IntentDistribution:
@@ -48,14 +52,14 @@ def classify(query: str) -> IntentDistribution:
         if keyword in query.lower():
             raw[label] += weight
 
-    # smooth: ensure non-zero baseline on exploration (catches unseen queries)
-    raw["exploration"] += 0.1
-
     total = sum(raw.values())
     return IntentDistribution({k: v / total for k, v in raw.items()})
 ```
 
 Single-label queries still concentrate mass (~0.9 on one label). Multi-intent queries spread naturally across the keywords they match.
+
+If nothing matches, the runtime classifier returns `exploration` with confidence
+`0.0` instead of smoothing every query with a non-zero exploration baseline.
 
 ### 2.3 Tier Priority as Weighted Sum
 
@@ -135,13 +139,20 @@ class IntentClassifier:
 
 `IntentConfig` stays as-is — the tier-rank mapping is data the blender reads.
 
+Runtime compatibility note: `PromptCompiler.compile_with_intent()` still accepts
+the primary `Intent`; `ContextArbitrator` passes `IntentPolicy.tier_order` into
+the compiler and stores policy metadata in the prompt contract. The ranker also
+uses the policy for supplemental roles, blended priors, and floor budget.
+
 ## 4. Prompt Contract Impact
 
-`intent` field upgrades from string to object:
+The prompt contract keeps the legacy string `intent` field and adds structured
+metadata under `intent_details`:
 
 ```json
 {
-  "intent": {
+  "intent": "debugging",
+  "intent_details": {
     "primary": "debugging",
     "distribution": {
       "debugging": 0.6,
@@ -153,7 +164,9 @@ class IntentClassifier:
 }
 ```
 
-Back-compat: for clients reading `intent` as string, serialize `intent.primary` under an alias; deprecate after two minor versions.
+`budget.intent_policy` additionally exposes `active_intents`,
+`secondary_intents`, `budget_share`, `tier_order`, `supplemental_roles`, and
+`doc_first`.
 
 ## 5. Examples
 
@@ -168,6 +181,7 @@ d = classifier.classify("why does process_payment fail after refactor?")
 #     "navigation": 0.0,
 #     "new_feature": 0.0,
 #     "design_question": 0.0,
+#     "impact_analysis": 0.0,
 # })
 # d.top() → "debugging"
 # d.is_ambiguous() → False
