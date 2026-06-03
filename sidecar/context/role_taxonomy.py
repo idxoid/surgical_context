@@ -83,8 +83,6 @@ ROLE_ALIASES: dict[str, str] = {
     "transaction_handler": "executor",
     "side_effect_executor": "executor",
     "concurrency_decision": "executor",
-    "error_model": "error_surface",
-    "error_handling": "error_surface",
     "metaprogramming": "core_runtime",
 }
 
