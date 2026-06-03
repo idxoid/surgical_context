@@ -311,6 +311,63 @@ export function configureStore<S>(
     def test_file_extensions(self, adapter):
         assert adapter.file_extensions == {".ts", ".tsx"}
 
+    def test_extract_decorators_class_method_and_args(self, adapter):
+        """Class-, method-, and arg-form decorators all produce DECORATED_BY rows
+        with the same dict shape Python's adapter uses, so the existing linker
+        handles both languages from one feed."""
+        source = """import { Module, Controller, Get, Post, Injectable } from '@nestjs/common';
+import { CatsService } from './cats.service';
+
+@Injectable()
+export class CatsService {}
+
+@Controller('cats')
+export class CatsController {
+  @Get()
+  findAll(): string { return 'all'; }
+
+  @Post()
+  create(): string { return 'created'; }
+}
+
+@Module({
+  controllers: [CatsController],
+  providers: [CatsService],
+})
+export class CatsModule {}
+"""
+        decorators = adapter.extract_decorators(source, "src/cats.ts")
+        pairs = {(d["decorator_name"], d["decorated_name"]) for d in decorators}
+        assert pairs == {
+            ("Injectable", "CatsService"),
+            ("Controller", "CatsController"),
+            ("Get", "findAll"),
+            ("Post", "create"),
+            ("Module", "CatsModule"),
+        }
+        # All five carry the imported source as the qualified prefix.
+        for d in decorators:
+            assert d["decorator_qualified_name"].endswith(d["decorator_name"])
+            assert "@nestjs" in d["decorator_qualified_name"]
+
+    def test_extract_decorators_dotted_and_bare(self, adapter):
+        """``@foo.bar`` resolves to dotted; ``@simple`` to the bare module name."""
+        source = """import * as ns from './ns';
+@ns.deco
+class A {}
+
+@simple
+class B {}
+"""
+        decorators = adapter.extract_decorators(source, "src/x.ts")
+        names = {(d["decorator_name"], d["decorated_name"]) for d in decorators}
+        assert ("ns.deco", "A") in names
+        assert ("simple", "B") in names
+
+    def test_extract_decorators_skips_undecorated_declarations(self, adapter):
+        source = "export class PlainOldClass {}\nfunction fn() {}\n"
+        assert adapter.extract_decorators(source, "src/p.ts") == []
+
     def test_exported_object_api_indexes_single_surface(self, adapter):
         source = """
 export const SidecarClient = {

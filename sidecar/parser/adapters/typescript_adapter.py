@@ -388,6 +388,159 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         return edges
 
+    # Decorated tree-sitter node types that can carry an `@deco` prefix in TS.
+    _DECORATABLE_NODE_TYPES = frozenset(
+        {
+            "class_declaration",
+            "method_definition",
+            "function_declaration",
+            "public_field_definition",
+            "abstract_method_signature",
+            "method_signature",
+            "property_signature",
+            "accessor_signature",
+        }
+    )
+
+    def extract_decorators(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        """TS decorator extraction → DECORATED_BY edges, matching Python's shape.
+
+        The ``@deco`` and ``@deco(args)`` forms are static, AST-visible facts: a
+        ``decorator`` node sits as a sibling immediately *before* the
+        decorated declaration. Tree-sitter places that decorator under one of
+        two parents: ``export_statement`` (class-level: ``@Module export class``)
+        or ``class_body`` (member-level: method, public field, signature). We
+        scan the tree for every ``decorator`` node and pair it with the next
+        decoratable sibling, ignoring intervening ``decorator`` / ``export``
+        tokens — so a class with multiple stacked decorators credits each.
+
+        Resolves the decorator name through the import bindings to a qualified
+        name where possible; bare same-module names fall back to ``module.name``.
+        The dict shape matches ``PythonAdapter.extract_decorators`` so the same
+        ``Neo4jClient.link_decorators`` linker handles both languages.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings, _ = self._extract_import_bindings(source_code, file_path)
+        out: list[dict] = []
+        for deco in self._iter_nodes(tree.root_node):
+            if deco.type != "decorator":
+                continue
+            parent = deco.parent
+            if parent is None:
+                continue
+            # Two tree-sitter placements for a ``@deco`` prefix:
+            #   1. Sibling-before form (export class, class body methods): the
+            #      decorator and the declaration share a parent
+            #      (``export_statement`` or ``class_body``).
+            #   2. Inner-prefix form (bare ``@deco\nclass A {}`` / function /
+            #      method without an enclosing ``export_statement``): tree-sitter
+            #      tucks the decorator *inside* the declaration node itself.
+            # The same scan handles both.
+            if parent.type in self._DECORATABLE_NODE_TYPES:
+                decorated = parent
+            else:
+                decorated = self._decoratable_sibling_after(parent, deco)
+            if decorated is None:
+                continue
+            decorated_name = self._decoratable_name(decorated)
+            if not decorated_name:
+                continue
+            decorated_uid = self._uid_for_node(decorated, source_code, file_path)
+            if not decorated_uid:
+                continue
+            base = self._decorator_base_name(deco)
+            if not base:
+                continue
+            resolved = self._resolve_type_name(base, import_bindings, module)
+            out.append(
+                {
+                    "decorated_uid": decorated_uid,
+                    "decorated_name": decorated_name,
+                    "decorator_name": base,
+                    "decorator_qualified_name": resolved,
+                    "file_path": file_path,
+                }
+            )
+        return out
+
+    @classmethod
+    def _decoratable_sibling_after(cls, parent, deco):
+        """First sibling after ``deco`` that is a decoratable declaration.
+
+        Compares siblings by start_byte rather than identity — tree-sitter
+        Python bindings hand out fresh node wrappers on each access, so
+        ``sib is deco`` never matches.
+        """
+        deco_start = deco.start_byte
+        for sib in parent.children:
+            if sib.start_byte <= deco_start:
+                continue
+            if sib.type == "decorator":
+                continue
+            if sib.type in cls._DECORATABLE_NODE_TYPES:
+                return sib
+            # Skip TS keywords (anonymous tokens) that may appear between
+            # decorators and the declaration (e.g. `export`, `abstract`,
+            # `public`, …). A named sibling that is not decoratable means
+            # the decorator does not attach to a recognised declaration —
+            # give up rather than reach across an unrelated node.
+            if sib.is_named:
+                return None
+        return None
+
+    def _decoratable_name(self, node) -> str:
+        if node.type == "class_declaration":
+            name = node.child_by_field_name("name")
+            return self._node_text(name) if name is not None else ""
+        if node.type in {"function_declaration", "method_definition"}:
+            name = node.child_by_field_name("name")
+            return self._node_text(name) if name is not None else ""
+        if node.type in {
+            "public_field_definition",
+            "abstract_method_signature",
+            "method_signature",
+            "property_signature",
+            "accessor_signature",
+        }:
+            name = node.child_by_field_name("name")
+            return self._node_text(name) if name is not None else ""
+        return ""
+
+    def _decorator_base_name(self, deco) -> str:
+        """Resolve ``@Foo`` / ``@Foo(args)`` / ``@a.b`` / ``@a.b(args)`` to a name.
+
+        For member-expression decorators returns ``a.b`` (dotted), letting the
+        linker fall back to the leaf name when needed via ``decorator_name``.
+        """
+        for child in deco.children:
+            if child.type == "identifier":
+                return self._node_text(child)
+            if child.type == "member_expression":
+                return self._member_expression_dotted(child)
+            if child.type == "call_expression":
+                fn = child.child_by_field_name("function")
+                if fn is None:
+                    continue
+                if fn.type == "identifier":
+                    return self._node_text(fn)
+                if fn.type == "member_expression":
+                    return self._member_expression_dotted(fn)
+        return ""
+
+    def _member_expression_dotted(self, node) -> str:
+        obj = node.child_by_field_name("object")
+        prop = node.child_by_field_name("property")
+        if obj is None or prop is None:
+            return ""
+        if obj.type == "identifier" and prop.type == "property_identifier":
+            return f"{self._node_text(obj)}.{self._node_text(prop)}"
+        # Nested `a.b.c` is rare for decorators; fall back to leaf name.
+        if prop.type == "property_identifier":
+            return self._node_text(prop)
+        return ""
+
     def extract_type_references(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:

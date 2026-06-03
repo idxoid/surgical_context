@@ -424,17 +424,23 @@ def _decorator_phase(
     qualified name).
     """
     from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
     from sidecar.parser.uid import project_root_scope
 
     link_deco = getattr(db, "link_decorators", None)
     reporter.stage_start("decorators", total=1)
     decorators: list[dict] = []
     if callable(link_deco):
-        adapter = PythonAdapter()
+        py_adapter = PythonAdapter()
+        ts_adapter = TypeScriptAdapter()
         with project_root_scope(project_path or None):
             for diff in diffs:
                 ex = diff.extracted
-                if not ex.path.endswith((".py", ".pyi")):
+                if ex.path.endswith((".py", ".pyi")):
+                    adapter: PythonAdapter | TypeScriptAdapter = py_adapter
+                elif ex.path.endswith((".ts", ".tsx")):
+                    adapter = ts_adapter
+                else:
                     continue
                 try:
                     decorators.extend(adapter.extract_decorators(ex.source, ex.path))
