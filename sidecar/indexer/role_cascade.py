@@ -35,6 +35,7 @@ class FanProfile(Protocol):
     decorated_in: float
     decorated_out: float
     construct_fan_out: float
+    fluent_self_return_count: int
     cross_package_call_in: float
     cross_package_call_out: float
     depth_from_public: int
@@ -347,6 +348,20 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         and r.call_fan_in > _EPS
         and (r.type_fan_in_param > _EPS or r.reexport_in > _EPS),
         69,
+    ),
+    RolePredicate(
+        "composition_surface",
+        "state_types",
+        # Fluent / chain composition (subtype 3 from docs/role_signature_findings).
+        # A class with >=2 HAS_API'd methods whose typed return is the class itself
+        # is structurally a fluent builder (`QuerySet.filter()` → QuerySet,
+        # `Context.invoke()` → Context). Both signals are edge-only AST facts:
+        # HAS_API plus USES_TYPE(kind=return). Two distinct self-returning methods
+        # rules out single self-method coincidences (e.g. a `clone()` helper
+        # without a chain) — the threshold matches the polymorphic-factory shape
+        # added in 465f90b (>=2 distinct INSTANTIATES targets).
+        lambda r: r.is_class and r.fluent_self_return_count >= 2,
+        70,
     ),
     RolePredicate(
         "executor",

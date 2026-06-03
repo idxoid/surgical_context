@@ -114,6 +114,7 @@ class SymbolRow:
     decorated_in: float = 0.0
     decorated_out: float = 0.0
     construct_fan_out: float = 0.0
+    fluent_self_return_count: int = 0
     reexport_in: int = 0
     is_proxy_binding: bool = False
     external_call_fan_out: float = 0.0
@@ -420,6 +421,30 @@ def assemble_symbol_rows(
         if handle_fan_in[callee] > _EPS:
             handler_call_fan_out[caller] += conf
 
+    # Fluent self-return: count methods M of class C whose return type is C
+    # itself (a builder/fluent-chain shape — QuerySet.filter()→QuerySet,
+    # Context.invoke()→Context). Cross-references HAS_API (C→M) with the
+    # USES_TYPE(kind=return) edge (M→C) without any name-pattern; both are
+    # AST-visible static facts already stored as edges.
+    api_owner_of: dict[str, set[str]] = defaultdict(set)
+    method_return_type: dict[str, set[str]] = defaultdict(set)
+    for caller, callee, rel_type, _conf, kind in _iter_structural_edges(call_edges):
+        if rel_type in {"HAS_API", "INHERITED_API"} and caller in info and callee in info:
+            api_owner_of[callee].add(caller)
+        elif (
+            rel_type == "USES_TYPE"
+            and kind == "return"
+            and caller in info
+            and callee in info
+        ):
+            method_return_type[caller].add(callee)
+    fluent_self_return_count: dict[str, int] = defaultdict(int)
+    for method_uid, return_types in method_return_type.items():
+        owners = api_owner_of.get(method_uid, set())
+        # Method belongs to (HAS_API'd by) class C AND returns C → fluent on C.
+        for owner_uid in owners & return_types:
+            fluent_self_return_count[owner_uid] += 1
+
     depth_by_uid = _depth_from_public_full_graph(call_edges, set(info))
 
     rows: list[SymbolRow] = []
@@ -463,6 +488,7 @@ def assemble_symbol_rows(
                 decorated_in=decorated_in[uid],
                 decorated_out=decorated_out[uid],
                 construct_fan_out=construct_fan_out[uid],
+                fluent_self_return_count=fluent_self_return_count.get(uid, 0),
                 reexport_in=int(reexport_in_per_uid.get(uid, 0)),
                 is_proxy_binding=uid in proxy_uids,
                 external_call_fan_out=float(external_call_fan_out_per_uid.get(uid, 0.0)),
