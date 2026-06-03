@@ -360,8 +360,14 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         # rules out single self-method coincidences (e.g. a `clone()` helper
         # without a chain) — the threshold matches the polymorphic-factory shape
         # added in 465f90b (>=2 distinct INSTANTIATES targets).
+        #
+        # Priority 76 sits *just above* representation_surface (75), so a class
+        # that is both a data carrier and a fluent builder reads as the more
+        # specific signal (a builder IS a representation, but its shape is the
+        # chain). It still loses to config_surface (80) / abstract_contract (85)
+        # — those are stronger contract signals than the chain.
         lambda r: r.is_class and r.fluent_self_return_count >= 2,
-        70,
+        76,
     ),
     RolePredicate(
         "executor",
