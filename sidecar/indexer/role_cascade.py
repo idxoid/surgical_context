@@ -204,8 +204,19 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
     RolePredicate(
         "factory_surface",
         "control_flow",
-        lambda r: (r.construct_fan_out > _EPS or r.type_fan_out_return > _EPS)
-        and r.call_fan_out > _EPS,
+        # Two factory shapes:
+        # - "mixed": instantiates / typed-return AND also makes its own calls.
+        # - "polymorphic": instantiates >=2 distinct classes with a typed return.
+        #   This branch carries the pure-dispatch factory (`if backend=="X": return
+        #   ClsX()`) that has no other call_fan_out — its INSTANTIATES edges are
+        #   the work. Same shape that escapes the L1 "noise" bucket above.
+        lambda r: (
+            (
+                (r.construct_fan_out > _EPS or r.type_fan_out_return > _EPS)
+                and r.call_fan_out > _EPS
+            )
+            or (r.construct_fan_out >= 2 and r.type_fan_out_return > _EPS)
+        ),
         65,
     ),
     RolePredicate(
@@ -417,13 +428,20 @@ def assign_l1(row: FanProfile) -> str:
     # 1. noise — dead code / orphans, but never a documented or API-exposing class
     #    (a public surface has zero *internal* in-degree by design), and never a
     #    proxy_binding (its only edge is PROXY_OF, which is not counted as in-degree
-    #    but is the very signal that routes it to dispatch_and_wrap below).
+    #    but is the very signal that routes it to dispatch_and_wrap below), and
+    #    never a polymorphic factory (instantiates >=2 distinct classes with a
+    #    typed return — pure-instantiation function with no other call edges
+    #    would otherwise mis-route to noise; its INSTANTIATES edges are the work).
     surface_class = row.is_class and (row.api_fan_out > _EPS or row.has_documentation)
+    is_polymorphic_factory = (
+        row.construct_fan_out >= 2 and row.type_fan_out_return > _EPS
+    )
     if (
         row.zero_in_degree
         and row.call_fan_out <= _EPS
         and not surface_class
         and not row.is_proxy_binding
+        and not is_polymorphic_factory
     ):
         return "noise"
     # 2. dispatch_and_wrap — any dispatch/decoration marker (HANDLES in/out, proxy,
@@ -466,7 +484,13 @@ def assign_l1(row: FanProfile) -> str:
     if _integration_boundary_signal(row):
         return "boundary_integration"
     # 5. control_flow — orchestration/factories: calls many, is not a data type.
-    if row.call_fan_out > row.call_fan_in and row.call_fan_out > _EPS:
+    #    Polymorphic factories also belong here: a function that instantiates
+    #    >=2 distinct classes and returns the abstract base type IS control
+    #    flow (it picks a concrete subtype at runtime), even if it makes no
+    #    other call edges.
+    if (
+        row.call_fan_out > row.call_fan_in and row.call_fan_out > _EPS
+    ) or is_polymorphic_factory:
         return "control_flow"
     # 6. compute_leaf — heavily reused terminal utilities.
     if row.call_fan_in > _EPS and row.call_leaf:
