@@ -254,7 +254,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: pydantic_json_schema_generation
-    required_roles: [public_entrypoint, schema_generator, composition_surface]
+    required_roles: [public_entrypoint, schema_generator, orchestrator]
     expected_symbols: [model_json_schema, GenerateJsonSchema, json_schema]
     expected_files: [pydantic/json_schema.py, pydantic/main.py]
 
@@ -306,7 +306,7 @@ questions:
     intent: explain_behavior
     expected_mode: workspace
     mechanism: nonexistent_symbol_nearest_mechanism
-    required_roles: [negative_lookup, nearest_real_mechanism, schema_generator, composition_surface]
+    required_roles: [negative_lookup, nearest_real_mechanism, schema_generator, orchestrator]
     expected_symbols: [GenerateJsonSchema, model_json_schema, json_schema]
     expected_files: [pydantic/json_schema.py, pydantic/main.py]
 
@@ -423,7 +423,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: django_wsgi_request_pipeline
-    required_roles: [public_entrypoint, middleware_registry, request_router, handler_or_lifecycle]
+    required_roles: [public_entrypoint, middleware_registry, orchestrator, handler_or_lifecycle]
     expected_symbols: [WSGIHandler, get_wsgi_application, load_middleware, _view_middleware]
     expected_files: [django/core/wsgi.py, django/core/handlers, django/core/handlers/wsgi.py]
 
@@ -488,7 +488,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: flask_app_context_lifecycle
-    required_roles: [public_entrypoint, runtime_surface, orchestrator, request_router]
+    required_roles: [public_entrypoint, runtime_surface, orchestrator, representation_surface]
     expected_symbols: [Flask, from_environ, AppContext, push]
     expected_files: [src/flask/app.py, src/flask/ctx.py]
 
@@ -943,6 +943,6 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: dathund_lineage_closure_maintenance
-    required_roles: [public_entrypoint, operation_executor, core_runtime, composition_surface]
+    required_roles: [public_entrypoint, operation_executor, core_runtime, orchestrator]
     expected_symbols: [extend_closure, merge_closure_entry, ClosureEntry]
     expected_files: [src/dathund_core/lineage/closure_logic.py, src/dathund_core/lineage/pg_store.py]

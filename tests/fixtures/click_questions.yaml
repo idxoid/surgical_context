@@ -59,7 +59,7 @@ questions:
     mechanism: click_context_state
     required_roles_canonical:
       - core_runtime
-      - composition_surface
+      - registration_step
       - orchestrator
     expected_symbols: [Context, pass_context, pass_obj, invoke]
     expected_files: [src/click/core.py, src/click/decorators.py]
