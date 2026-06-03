@@ -35,6 +35,211 @@ class IntentConfig:
     }
 
 
+# ----------------------------------------------------------------------------
+# Intent profile dictionary (Phase 0 — data only; no consumer wired yet).
+#
+# Intent shapes context-for-LLM along five dimensions: which roles may
+# participate, which edge types matter, which direction to walk, how deep,
+# and how wide. The legacy tables above (PRIORITY, _SECONDARY_INTENT_ROLES,
+# _DOC_FIRST_INTENTS, _CHAIN_PURSUIT_INTENTS in unified_ranker) each carry
+# one slice. Consolidating them here so the next phases can derive each
+# legacy table from a single source of truth rather than keeping five
+# hand-aligned dictionaries in lockstep.
+# ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TraversalShape:
+    """How far / wide / which way to walk for an intent."""
+
+    direction: tuple[str, ...]   # ("forward",) | ("backward",) | both
+    max_depth: int               # 1-2 shallow / 3-5 medium / 6+ transitive
+    chase_chains: bool           # follow registration/marker chains beyond max_depth
+    breadth: str                 # "focused" | "medium" | "wide"
+
+
+# Roles that *may* participate in answering this intent. Not all of them
+# will exist in every repository — engine should treat the profile as a
+# soft preference (boost candidates that fulfil it), never as a hard
+# requirement. Current _SECONDARY_INTENT_ROLES is a sparse subset of
+# these; expansion lands in a later phase.
+INTENT_ROLE_PROFILE: dict[Intent, tuple[str, ...]] = {
+    Intent.NAVIGATION: (
+        "api_surface",
+        "representation_surface",
+        "registration_step",
+        "core_runtime",
+        "factory_surface",
+    ),
+    Intent.DEBUGGING: (
+        "error_surface",
+        "executor",
+        "runtime_surface",
+        "interceptor",
+        "orchestrator",
+        "core_runtime",
+    ),
+    Intent.REFACTORING: (
+        "impact_runtime",
+        "impact_public_api",
+        "impact_test_surface",
+        "integration_surface",
+        "representation_surface",
+        "api_surface",
+    ),
+    Intent.EXPLORATION: (
+        "core_runtime",
+        "api_surface",
+        "docs_or_concept",
+        "composition_surface",
+        "runtime_surface",
+        "abstract_contract",
+        "orchestrator",
+        "registration_step",
+    ),
+    Intent.NEW_FEATURE: (
+        "docs_or_concept",
+        "api_surface",
+        "composition_surface",
+        "factory_surface",
+        "registration_step",
+    ),
+    Intent.DESIGN_QUESTION: (
+        "docs_or_concept",
+        "abstract_contract",
+        "composition_surface",
+    ),
+    Intent.IMPACT_ANALYSIS: (
+        "impact_runtime",
+        "impact_public_api",
+        "impact_test_surface",
+        "integration_surface",
+    ),
+}
+
+
+# Edge types in priority order for graph expansion. The same edge can carry
+# different evidence weight for different intents — DEBUGGING needs HANDLES
+# (handler→error path) ahead of HAS_API (which carries surface, not flow),
+# while NAVIGATION wants HAS_API early (the surface IS the answer).
+INTENT_EDGE_PRIORITY: dict[Intent, tuple[str, ...]] = {
+    Intent.NAVIGATION: (
+        "HAS_API",
+        "INHERITED_API",
+        "CALLS_DIRECT",
+        "CALLS_SCOPED",
+        "CALLS_IMPORTED",
+        "USES_TYPE",
+        "IMPORTS",
+    ),
+    Intent.DEBUGGING: (
+        "HANDLES",
+        "DECORATED_BY",
+        "CALLS_DIRECT",
+        "CALLS_SCOPED",
+        "USES_TYPE",
+    ),
+    Intent.REFACTORING: (
+        "CALLS_DIRECT",
+        "CALLS_SCOPED",
+        "CALLS_IMPORTED",
+        "USES_TYPE",
+        "INHERITED_API",
+        "DECORATED_BY",
+        "IMPORTS",
+    ),
+    Intent.EXPLORATION: (
+        "CALLS_DIRECT",
+        "CALLS_SCOPED",
+        "HAS_API",
+        "USES_TYPE",
+        "DECORATED_BY",
+        "COMPOSES",
+    ),
+    Intent.NEW_FEATURE: (
+        "HAS_API",
+        "DECORATED_BY",
+        "COMPOSES",
+        "USES_TYPE",
+    ),
+    Intent.DESIGN_QUESTION: (
+        "DEPENDS_ON",
+        "INHERITED_API",
+        "COMPOSES",
+    ),
+    Intent.IMPACT_ANALYSIS: (
+        "AFFECTS",
+        "CALLS_DIRECT",
+        "CALLS_SCOPED",
+        "CALLS_IMPORTED",
+        "USES_TYPE",
+        "INHERITED_API",
+        "DEPENDS_ON",
+    ),
+}
+
+
+# Direction / depth / breadth per intent. ``max_depth`` >= 6 means
+# "transitive — chase as far as budget allows"; the actual depth in the
+# graph expander still has a hard ceiling on tokens to keep the LLM
+# context from exploding.
+INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
+    Intent.NAVIGATION: TraversalShape(
+        direction=("backward",),
+        max_depth=2,
+        chase_chains=False,
+        breadth="focused",
+    ),
+    Intent.DEBUGGING: TraversalShape(
+        direction=("backward", "forward"),
+        max_depth=3,
+        chase_chains=False,  # stay on the failure path, don't survey
+        breadth="medium",
+    ),
+    Intent.REFACTORING: TraversalShape(
+        direction=("backward",),
+        max_depth=10,
+        chase_chains=False,
+        breadth="wide",
+    ),
+    Intent.EXPLORATION: TraversalShape(
+        direction=("forward", "backward"),
+        max_depth=4,
+        chase_chains=True,  # follow registration / marker chains
+        breadth="medium",
+    ),
+    Intent.NEW_FEATURE: TraversalShape(
+        direction=("forward",),
+        max_depth=2,
+        chase_chains=False,
+        breadth="medium",
+    ),
+    Intent.DESIGN_QUESTION: TraversalShape(
+        direction=("forward",),
+        max_depth=2,
+        chase_chains=False,
+        breadth="wide",
+    ),
+    Intent.IMPACT_ANALYSIS: TraversalShape(
+        direction=("backward",),
+        max_depth=10,
+        chase_chains=False,
+        breadth="wide",
+    ),
+}
+
+
+# Pack-intent → engine-intent canonical mapping. Benchmark packs use a
+# three-value vocabulary; engine has seven. The mapping is conceptual,
+# not lexical (`trace_dependency` is shaped like EXPLORATION with the
+# chain-chasing dimension turned on, not a different intent kind):
+PACK_INTENT_TO_ENGINE: dict[str, Intent] = {
+    "explain_behavior": Intent.EXPLORATION,
+    "trace_dependency": Intent.EXPLORATION,  # + chase_chains=True (already default)
+    "impact_analysis": Intent.IMPACT_ANALYSIS,
+}
+
+
 @dataclass(frozen=True)
 class IntentSignal:
     """Intent classification result with lightweight observability metadata."""
