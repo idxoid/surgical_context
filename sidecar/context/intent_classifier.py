@@ -439,17 +439,15 @@ class IntentClassifier:
         Intent.EXPLORATION,
     ]
 
-    _SECONDARY_INTENT_ROLES: dict[Intent, tuple[str, ...]] = {
-        Intent.DEBUGGING: ("runtime_surface", "executor", "error_surface"),
-        Intent.REFACTORING: ("impact_runtime", "impact_public_api", "integration_surface"),
-        Intent.IMPACT_ANALYSIS: (
-            "impact_runtime",
-            "impact_public_api",
-            "impact_test_surface",
-        ),
-        Intent.NEW_FEATURE: ("docs_or_concept", "api_surface", "composition_surface"),
-        Intent.DESIGN_QUESTION: ("docs_or_concept",),
-    }
+    # Phase 1 wire-up: the policy now derives supplemental roles from
+    # ``INTENT_ROLE_PROFILE`` — the single source of truth defined at module
+    # scope alongside the rest of the intent dictionary. Two of the seven
+    # intents (NAVIGATION, EXPLORATION) previously had no entry here at all
+    # and so the engine treated their role plans as a blank slate; the
+    # expanded profile fills those in. Semantics of the field are unchanged
+    # in this commit (still added to required_roles downstream) — the soft
+    # preference vs hard requirement split lands in a later phase.
+    _SECONDARY_INTENT_ROLES: dict[Intent, tuple[str, ...]] = INTENT_ROLE_PROFILE
     _DOC_FIRST_INTENTS = {
         Intent.IMPACT_ANALYSIS,
         Intent.NEW_FEATURE,
