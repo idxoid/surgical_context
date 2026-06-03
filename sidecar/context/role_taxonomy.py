@@ -86,9 +86,6 @@ ROLE_ALIASES: dict[str, str] = {
     "error_model": "error_surface",
     "error_handling": "error_surface",
     "metaprogramming": "core_runtime",
-    "affected_runtime": "impact_runtime",
-    "affected_public_api": "impact_public_api",
-    "affected_tests": "impact_test_surface",
 }
 
 

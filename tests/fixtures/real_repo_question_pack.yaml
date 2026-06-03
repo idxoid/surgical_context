@@ -176,7 +176,7 @@ questions:
     intent: impact_analysis
     expected_mode: symbol
     mechanism: fastapi_serialization_impact
-    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    required_roles: [impact_runtime, impact_public_api, impact_test_surface]
     expected_symbols: [serialize_response, APIRoute, _serialize_data]
     expected_files: [fastapi/routing.py, tests]
 
@@ -280,7 +280,7 @@ questions:
     intent: impact_analysis
     expected_mode: symbol
     mechanism: pydantic_alias_impact
-    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    required_roles: [impact_runtime, impact_public_api, impact_test_surface]
     expected_symbols: [Field, AliasChoices, AliasPath]
     expected_files: [pydantic/fields.py, pydantic]
 
@@ -371,7 +371,7 @@ questions:
     intent: impact_analysis
     expected_mode: symbol
     mechanism: rtk_action_type_impact
-    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    required_roles: [impact_runtime, impact_public_api, impact_test_surface]
     expected_symbols: [createSlice, createAction]
     expected_files: [packages/toolkit/src/createSlice.ts, packages/toolkit/src/createAction.ts, packages/toolkit]
 
@@ -475,7 +475,7 @@ questions:
     intent: impact_analysis
     expected_mode: symbol
     mechanism: django_field_descriptor_impact
-    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    required_roles: [impact_runtime, impact_public_api, impact_test_surface]
     expected_symbols: [Field, Model, DeferredAttribute]
     expected_files: [django/db/models/fields, django/db/models, django/tests]
 
@@ -540,7 +540,7 @@ questions:
     intent: impact_analysis
     expected_mode: symbol
     mechanism: flask_routing_impact
-    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    required_roles: [impact_runtime, impact_public_api, impact_test_surface]
     expected_symbols: [route, add_url_rule, create_url_adapter, dispatch_request]
     expected_files: [src/flask/app.py, tests]
 
@@ -826,7 +826,7 @@ questions:
     intent: impact_analysis
     expected_mode: symbol
     mechanism: surgical_context_ranker_weight_impact
-    required_roles: [affected_runtime, affected_public_api, affected_tests]
+    required_roles: [impact_runtime, impact_public_api, impact_test_surface]
     expected_symbols: [UnifiedRanker, RankerWeights, DEFAULT_WEIGHTS, ContextArbitrator]
     expected_files: [sidecar/context/unified_ranker.py, tests/unit/test_unified_ranker.py, QA/qa_benchmark.py]
 
