@@ -17,34 +17,17 @@ class Intent(Enum):
     IMPACT_ANALYSIS = "impact_analysis"  # "If I change X, what breaks? What's affected?"
 
 
-class IntentConfig:
-    """Maps intent to content tier priority (highest → lowest)."""
-
-    # Tier definitions
-    TIERS = ["code", "cross_refs", "specs", "architecture", "concept", "idea"]
-
-    # Intent → tier priority ordering
-    PRIORITY = {
-        Intent.NAVIGATION: ["code", "cross_refs", "architecture", "specs", "concept", "idea"],
-        Intent.DEBUGGING: ["code", "cross_refs", "specs", "architecture", "concept", "idea"],
-        Intent.REFACTORING: ["cross_refs", "code", "architecture", "specs", "concept", "idea"],
-        Intent.EXPLORATION: ["code", "concept", "architecture", "cross_refs", "specs", "idea"],
-        Intent.NEW_FEATURE: ["idea", "concept", "architecture", "specs", "cross_refs", "code"],
-        Intent.DESIGN_QUESTION: ["concept", "idea", "architecture", "specs", "code", "cross_refs"],
-        Intent.IMPACT_ANALYSIS: ["cross_refs", "code", "specs", "architecture", "concept", "idea"],
-    }
-
-
 # ----------------------------------------------------------------------------
-# Intent profile dictionary (Phase 0 — data only; no consumer wired yet).
-#
-# Intent shapes context-for-LLM along five dimensions: which roles may
-# participate, which edge types matter, which direction to walk, how deep,
-# and how wide. The legacy tables above (PRIORITY, _SECONDARY_INTENT_ROLES,
-# _DOC_FIRST_INTENTS, _CHAIN_PURSUIT_INTENTS in unified_ranker) each carry
-# one slice. Consolidating them here so the next phases can derive each
-# legacy table from a single source of truth rather than keeping five
-# hand-aligned dictionaries in lockstep.
+# Intent profile dictionary. Single source of truth for every per-intent
+# fact a context consumer needs — the legacy `IntentConfig.PRIORITY`,
+# `IntentClassifier._SECONDARY_INTENT_ROLES`, `_DOC_FIRST_INTENTS`, and
+# `unified_ranker._CHAIN_PURSUIT_INTENTS` are now derived from these
+# constants. The four dimensions an intent shapes are:
+#   - role profile     — which roles may participate
+#   - edge priority    — which graph relations carry the most evidence
+#   - traversal shape  — direction / depth / breadth / chain-pursuit /
+#                        doc-first / tier priority
+#   - pack mapping     — benchmark vocab → engine vocab
 # ----------------------------------------------------------------------------
 
 
@@ -63,6 +46,12 @@ class TraversalShape:
     # shape lets the doc-first set derive from a single source while
     # preserving the semantics the prompt compiler already relies on.
     doc_first: bool
+    # Per-intent content tier priority (highest → lowest). Drives both the
+    # prompt compiler's tier-fill order and the policy's tier_scores. Was a
+    # separate `IntentConfig.PRIORITY` mapping until Phase 3b consolidated
+    # it onto the traversal shape so the dictionary owns every per-intent
+    # fact a consumer might need.
+    tier_priority: tuple[str, ...]
 
 
 # Roles that *may* participate in answering this intent. Not all of them
@@ -197,6 +186,7 @@ INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
         chase_chains=False,
         breadth="focused",
         doc_first=False,
+        tier_priority=("code", "cross_refs", "architecture", "specs", "concept", "idea"),
     ),
     Intent.DEBUGGING: TraversalShape(
         direction=("backward", "forward"),
@@ -204,6 +194,7 @@ INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
         chase_chains=False,  # stay on the failure path, don't survey
         breadth="medium",
         doc_first=False,
+        tier_priority=("code", "cross_refs", "specs", "architecture", "concept", "idea"),
     ),
     Intent.REFACTORING: TraversalShape(
         direction=("backward",),
@@ -211,6 +202,7 @@ INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
         chase_chains=False,
         breadth="wide",
         doc_first=False,  # wide on code touchpoints, not docs
+        tier_priority=("cross_refs", "code", "architecture", "specs", "concept", "idea"),
     ),
     Intent.EXPLORATION: TraversalShape(
         direction=("forward", "backward"),
@@ -218,6 +210,7 @@ INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
         chase_chains=True,  # follow registration / marker chains
         breadth="medium",
         doc_first=False,
+        tier_priority=("code", "concept", "architecture", "cross_refs", "specs", "idea"),
     ),
     Intent.NEW_FEATURE: TraversalShape(
         direction=("forward",),
@@ -225,6 +218,7 @@ INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
         chase_chains=False,
         breadth="medium",
         doc_first=True,  # read existing patterns before writing the new one
+        tier_priority=("idea", "concept", "architecture", "specs", "cross_refs", "code"),
     ),
     Intent.DESIGN_QUESTION: TraversalShape(
         direction=("forward",),
@@ -232,6 +226,7 @@ INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
         chase_chains=False,
         breadth="wide",
         doc_first=True,
+        tier_priority=("concept", "idea", "architecture", "specs", "code", "cross_refs"),
     ),
     Intent.IMPACT_ANALYSIS: TraversalShape(
         direction=("backward",),
@@ -239,6 +234,7 @@ INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
         chase_chains=False,
         breadth="wide",
         doc_first=True,
+        tier_priority=("cross_refs", "code", "specs", "architecture", "concept", "idea"),
     ),
 }
 
@@ -252,6 +248,22 @@ PACK_INTENT_TO_ENGINE: dict[str, Intent] = {
     "trace_dependency": Intent.EXPLORATION,  # + chase_chains=True (already default)
     "impact_analysis": Intent.IMPACT_ANALYSIS,
 }
+
+
+class IntentConfig:
+    """Maps intent to content tier priority (highest → lowest).
+
+    Tier priority is owned by `INTENT_TRAVERSAL[i].tier_priority`; the
+    `PRIORITY` dict here is a derived view kept on the same name so the
+    existing call sites in prompt_compiler / policy helpers don't need to
+    move yet. The TIERS constant is the canonical tier list.
+    """
+
+    TIERS = ["code", "cross_refs", "specs", "architecture", "concept", "idea"]
+
+    PRIORITY: dict[Intent, list[str]] = {
+        intent: list(shape.tier_priority) for intent, shape in INTENT_TRAVERSAL.items()
+    }
 
 
 @dataclass(frozen=True)
