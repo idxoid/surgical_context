@@ -84,6 +84,121 @@ class PythonAdapter(TreeSitterAdapter):
             (import_statement name: (identifier) @import.name)
         """
 
+    def extract_symbols(self, source_code: str, file_path: str, *, tree=None):
+        """Patch SymbolMetadata with return-shape AST markers after the base
+        extraction. Each function symbol gains booleans describing the shape
+        of values its top-level ``return`` statements yield — a mapping
+        (``{...}`` / ``dict(...)`` / dict-comp), a sequence (``[...]`` /
+        ``list(...)`` / list-comp / tuple), or a constructed type (``return
+        SomeClass(...)``). These are the foundation for the binding_surface
+        and dependency_solver composite predicates documented in
+        spec_intent_classifier.md.
+        """
+        symbols = super().extract_symbols(source_code, file_path, tree=tree)
+        if tree is None:
+            tree = self._parse(source_code)
+        shapes = self._function_return_shapes(tree)
+        if shapes:
+            for symbol in symbols:
+                shape = shapes.get(symbol.name)
+                if shape is None:
+                    continue
+                if shape.get("mapping"):
+                    symbol.returns_mapping = True
+                if shape.get("sequence"):
+                    symbol.returns_sequence = True
+                if shape.get("constructed"):
+                    symbol.returns_constructed_type = True
+        return symbols
+
+    _MAPPING_CTOR_NAMES = frozenset({"dict", "OrderedDict", "defaultdict", "Counter", "ChainMap"})
+    _SEQUENCE_CTOR_NAMES = frozenset({"list", "tuple", "set", "frozenset"})
+
+    def _function_return_shapes(self, tree) -> dict[str, dict[str, bool]]:
+        """Collect per-function-name return-shape flags.
+
+        A top-level ``return_statement`` (one not nested inside an inner
+        function definition) whose argument is a mapping / sequence /
+        constructed-type expression sets the corresponding flag. Multiple
+        returns OR together — a single mapping-return is enough.
+        """
+        out: dict[str, dict[str, bool]] = {}
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "function_definition":
+                continue
+            name_node = node.child_by_field_name("name")
+            body = node.child_by_field_name("body")
+            if name_node is None or body is None:
+                continue
+            shape = self._collect_return_shape(body)
+            if not any(shape.values()):
+                continue
+            name = _node_text(name_node)
+            existing = out.setdefault(name, {"mapping": False, "sequence": False, "constructed": False})
+            for k, v in shape.items():
+                if v:
+                    existing[k] = True
+        return out
+
+    @classmethod
+    def _collect_return_shape(cls, body) -> dict[str, bool]:
+        """Walk a function body for top-level ``return X`` shape classification.
+
+        Skips nested function / class definitions so an inner helper that
+        returns a dict doesn't paint the outer function as a mapping
+        returner.
+        """
+        shape = {"mapping": False, "sequence": False, "constructed": False}
+        stack = [body]
+        while stack:
+            n = stack.pop()
+            if n.type == "return_statement":
+                expr = n.named_children[0] if n.named_children else None
+                if expr is None:
+                    continue
+                kind = cls._classify_return_expr(expr)
+                if kind:
+                    shape[kind] = True
+                continue
+            if n.type in ("function_definition", "lambda"):
+                continue  # don't descend into a nested callable
+            for child in n.children:
+                stack.append(child)
+        return shape
+
+    @classmethod
+    def _classify_return_expr(cls, expr) -> str:
+        """Return ``"mapping"`` / ``"sequence"`` / ``"constructed"`` / ``""``."""
+        t = expr.type
+        if t in ("dictionary", "dictionary_comprehension"):
+            return "mapping"
+        if t in ("list", "list_comprehension", "tuple", "set", "set_comprehension"):
+            return "sequence"
+        if t == "call":
+            fn = expr.child_by_field_name("function")
+            if fn is None:
+                return ""
+            if fn.type == "identifier":
+                name = _node_text(fn)
+                if name in cls._MAPPING_CTOR_NAMES:
+                    return "mapping"
+                if name in cls._SEQUENCE_CTOR_NAMES:
+                    return "sequence"
+                # ``return SomeType(...)`` — a Capitalised identifier
+                # is heuristically a constructor call. Lower-case
+                # identifiers are functions, not constructed types.
+                if name and name[:1].isupper():
+                    return "constructed"
+            elif fn.type == "attribute":
+                # ``return mod.SomeType(...)`` — same heuristic on the
+                # last segment.
+                attr = fn.child_by_field_name("attribute")
+                if attr is not None and attr.type == "identifier":
+                    name = _node_text(attr)
+                    if name and name[:1].isupper():
+                        return "constructed"
+        return ""
+
     def extract_imports(self, source_code: str, file_path: str, *, tree=None) -> list[ImportEdge]:
         """Extract only intra-project import statements (skips stdlib and third-party).
 

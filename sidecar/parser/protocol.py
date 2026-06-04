@@ -29,6 +29,15 @@ class SymbolMetadata(BaseModel):
     # at extraction time so the cascade can read a single typed boolean instead
     # of re-deriving the same fact from heuristics at link time.
     returns_function_expression: bool = False
+    # Return-shape AST markers — set when a top-level ``return_statement`` in
+    # the function body (not nested into an inner function) yields a value of
+    # the given shape. Compositionally these distinguish a "binder" (reads
+    # attrs, returns a mapping) from a "pure getter" (returns ``self.x``
+    # directly). Each marker is monotone — multiple returns in one function
+    # OR together, the flag stays True once set.
+    returns_mapping: bool = False           # ``return {k: v, …}`` / ``dict(...)`` / dict-comp
+    returns_sequence: bool = False          # ``return [...]`` / ``list(...)`` / list-comp / tuple
+    returns_constructed_type: bool = False  # ``return SomeType(...)`` — a Capitalised call result
 
 
 @dataclass

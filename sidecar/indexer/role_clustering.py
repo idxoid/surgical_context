@@ -128,6 +128,9 @@ class SymbolRow:
     external_integration_root_count: int = 0
     inherits_builtin_exception: bool = False
     returns_function_expression: bool = False
+    returns_mapping: bool = False
+    returns_sequence: bool = False
+    returns_constructed_type: bool = False
 
     @property
     def external_call_out_ratio(self) -> float:
@@ -334,6 +337,9 @@ def assemble_symbol_rows(
         uid, kind, file_path = sym[0], sym[1], sym[2]
         inherits_exc = bool(sym[3]) if len(sym) > 3 else False
         returns_fn_expr = bool(sym[4]) if len(sym) > 4 else False
+        returns_map = bool(sym[5]) if len(sym) > 5 else False
+        returns_seq = bool(sym[6]) if len(sym) > 6 else False
+        returns_ct = bool(sym[7]) if len(sym) > 7 else False
         info[uid] = {
             "uid": uid,
             "kind": kind or "",
@@ -341,6 +347,9 @@ def assemble_symbol_rows(
             "package": os.path.dirname(file_path or ""),
             "inherits_builtin_exception": inherits_exc,
             "returns_function_expression": returns_fn_expr,
+            "returns_mapping": returns_map,
+            "returns_sequence": returns_seq,
+            "returns_constructed_type": returns_ct,
         }
 
     call_out: dict[str, set[str]] = {uid: set() for uid in info}
@@ -522,6 +531,9 @@ def assemble_symbol_rows(
                 ),
                 inherits_builtin_exception=bool(meta.get("inherits_builtin_exception")),
                 returns_function_expression=bool(meta.get("returns_function_expression")),
+                returns_mapping=bool(meta.get("returns_mapping")),
+                returns_sequence=bool(meta.get("returns_sequence")),
+                returns_constructed_type=bool(meta.get("returns_constructed_type")),
             )
         )
     return rows
@@ -607,7 +619,7 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
     )
 
 
-def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str, bool, bool]]:
+def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str, bool, bool, bool, bool, bool]]:
     with db.driver.session() as session:
         result = session.run(
             """
@@ -617,7 +629,10 @@ def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str, bool, boo
                    coalesce(s.kind, '') AS kind,
                    coalesce(f.path, '') AS file_path,
                    coalesce(s.inherits_builtin_exception, false) AS inherits_builtin_exception,
-                   coalesce(s.returns_function_expression, false) AS returns_function_expression
+                   coalesce(s.returns_function_expression, false) AS returns_function_expression,
+                   coalesce(s.returns_mapping, false) AS returns_mapping,
+                   coalesce(s.returns_sequence, false) AS returns_sequence,
+                   coalesce(s.returns_constructed_type, false) AS returns_constructed_type
             """,
             workspace_id=workspace_id,
             noise_patterns=list(NOISE_PATH_PATTERNS),
@@ -629,6 +644,9 @@ def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str, bool, boo
                 r["file_path"],
                 bool(r["inherits_builtin_exception"]),
                 bool(r["returns_function_expression"]),
+                bool(r["returns_mapping"]),
+                bool(r["returns_sequence"]),
+                bool(r["returns_constructed_type"]),
             )
             for r in result
             if r["uid"]

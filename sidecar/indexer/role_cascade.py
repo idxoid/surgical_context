@@ -53,6 +53,9 @@ class FanProfile(Protocol):
     external_integration_root_count: int
     inherits_builtin_exception: bool
     returns_function_expression: bool
+    returns_mapping: bool
+    returns_sequence: bool
+    returns_constructed_type: bool
 
     @property
     def external_call_out_ratio(self) -> float: ...
