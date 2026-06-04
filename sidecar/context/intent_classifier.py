@@ -18,16 +18,28 @@ class Intent(Enum):
 
 
 # ----------------------------------------------------------------------------
-# Intent profile dictionary. Single source of truth for every per-intent
-# fact a context consumer needs — the legacy `IntentConfig.PRIORITY`,
-# `IntentClassifier._SECONDARY_INTENT_ROLES`, `_DOC_FIRST_INTENTS`, and
-# `unified_ranker._CHAIN_PURSUIT_INTENTS` are now derived from these
-# constants. The four dimensions an intent shapes are:
-#   - role profile     — which roles may participate
-#   - edge priority    — which graph relations carry the most evidence
-#   - traversal shape  — direction / depth / breadth / chain-pursuit /
-#                        doc-first / tier priority
-#   - pack mapping     — benchmark vocab → engine vocab
+# Intent dictionary. Single source of truth for every per-intent fact a
+# context consumer reads. Intent shapes the *context the engine builds for
+# the LLM* along four orthogonal dimensions:
+#
+#   role profile      INTENT_ROLE_PROFILE       — which roles may participate
+#   edge priority     INTENT_EDGE_PRIORITY      — which graph relations matter
+#   traversal shape   INTENT_TRAVERSAL          — direction, max_depth,
+#                                                 chase_chains, breadth,
+#                                                 doc_first, tier_priority
+#   pack mapping      PACK_INTENT_TO_ENGINE     — benchmark vocab → engine
+#
+# Legacy consumers derive from these constants:
+#   IntentClassifier._SECONDARY_INTENT_ROLES = INTENT_ROLE_PROFILE
+#   IntentClassifier._DOC_FIRST_INTENTS      ← INTENT_TRAVERSAL[i].doc_first
+#   IntentConfig.PRIORITY                    ← INTENT_TRAVERSAL[i].tier_priority
+#   unified_ranker._CHAIN_PURSUIT_INTENTS    ← INTENT_TRAVERSAL[i].chase_chains
+#
+# Direction / max_depth / edge_priority / pack mapping carry data but have
+# no consumer yet — the graph expander and ranker still walk both
+# directions with hardcoded BFS depths. Adding consumers is incremental
+# (each is one structural change) and lets the dictionary's shape ripple
+# into ranking without flipping behaviour all at once.
 # ----------------------------------------------------------------------------
 
 
@@ -42,23 +54,20 @@ class TraversalShape:
     # ``doc_first`` is intentionally a separate signal from ``breadth``: a
     # REFACTORING is wide on code touchpoints but code-first in rendering;
     # NEW_FEATURE is medium on candidates but doc-first because reading the
-    # existing patterns precedes writing the new one. Encoding it on the
-    # shape lets the doc-first set derive from a single source while
-    # preserving the semantics the prompt compiler already relies on.
+    # existing patterns precedes writing the new one.
     doc_first: bool
     # Per-intent content tier priority (highest → lowest). Drives both the
-    # prompt compiler's tier-fill order and the policy's tier_scores. Was a
-    # separate `IntentConfig.PRIORITY` mapping until Phase 3b consolidated
-    # it onto the traversal shape so the dictionary owns every per-intent
-    # fact a consumer might need.
+    # prompt compiler's tier-fill order and the policy's tier_scores. Owned
+    # here; `IntentConfig.PRIORITY` is a derived view kept on the legacy
+    # name so prompt_compiler / policy helpers don't need to move yet.
     tier_priority: tuple[str, ...]
 
 
 # Roles that *may* participate in answering this intent. Not all of them
-# will exist in every repository — engine should treat the profile as a
-# soft preference (boost candidates that fulfil it), never as a hard
-# requirement. Current _SECONDARY_INTENT_ROLES is a sparse subset of
-# these; expansion lands in a later phase.
+# will exist in every repository; the engine treats the profile as a
+# preference baseline today (added to `required_roles` for ranking via
+# `IntentClassifier._SECONDARY_INTENT_ROLES`). The soft-vs-hard
+# requirement split is a future hop — see spec_intent_classifier.md.
 INTENT_ROLE_PROFILE: dict[Intent, tuple[str, ...]] = {
     Intent.NAVIGATION: (
         "api_surface",

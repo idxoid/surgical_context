@@ -6,6 +6,105 @@
 
 **Current status:** Implemented as a deterministic keyword classifier plus an Intent Resolution Contract in `sidecar/context/intent_classifier.py`. The classifier returns a primary desired intent plus observability metadata (`distribution`, `confidence`, `ambiguous`, `matched_keywords`). The resolver then intersects that desired intent with the `repository_profile` emitted by indexing and records an `effective_mode`, available capabilities, and risks. Initial multi-label routing is implemented through `IntentPolicy`: the primary intent remains the anchor, while strong or ambiguous secondary intents can blend tier order, symbol/doc priors, floor budget, doc-first behavior, and supplemental roles. Hard per-tier token buckets and a richer `IntentPlan` remain deferred.
 
+A second layer — **question-shape modulation** — extracts orthogonal lexical features from the raw query text (entity count, flow vs. state verbs, scope qualifier, direction hint, wh-word, change / failure markers) and `modulate_shape(intent, q)` returns a per-question `TraversalShape` derived from the base. So EXPLORATION dynamically becomes an "explain" or a "trace" shape depending on what the question literally asks for, without splitting the intent vocabulary. The modulator's outputs are data-only today; the consumers (graph expander, unified ranker) still read the static `INTENT_TRAVERSAL` lookup. Wiring the modulated shape through `IntentSignal` is the next hop.
+
+---
+
+## Intent Dictionary (Source of Truth)
+
+`sidecar/context/intent_classifier.py` defines four parallel dictionaries keyed by `Intent`. Together they describe everything a downstream consumer needs to know per intent, and the legacy structures the codebase reads (priority orderings, doc-first set, supplemental roles, chain-pursuit set) are now derived views over them.
+
+### `INTENT_TRAVERSAL: dict[Intent, TraversalShape]`
+
+Per-intent traversal parameters: how far / wide / which way the engine walks from the target symbol. `TraversalShape` is a frozen dataclass with six fields:
+
+| field | type | meaning |
+|---|---|---|
+| `direction` | `tuple[str, ...]` | which side of the target to walk: `("forward",)` (callees), `("backward",)` (callers), `("forward", "backward")` (both), or `("self",)` (definition only) |
+| `max_depth` | `int` | how many BFS hops are softened. 1–2 is shallow; 3–5 is medium; 6+ is "transitive — chase as far as the budget allows" |
+| `chase_chains` | `bool` | follow registration / marker chains beyond `max_depth` (lets the expander reach a registered handler that sits deeper than the configured hop count) |
+| `breadth` | `str` | rendered output character — `focused` / `medium` / `wide` |
+| `doc_first` | `bool` | render docs ahead of code in the prompt context (the user reads patterns before writing code, etc.) |
+| `tier_priority` | `tuple[str, ...]` | tier fill order, highest → lowest (drives `IntentConfig.PRIORITY` and the policy's `tier_scores`) |
+
+`doc_first` is intentionally separate from `breadth` — REFACTORING is wide on code touchpoints but code-first in rendering; NEW_FEATURE is medium on candidates but doc-first because reading existing patterns precedes writing the new one.
+
+### `INTENT_ROLE_PROFILE: dict[Intent, tuple[str, ...]]`
+
+Roles that *may* participate in answering this intent. Not every role exists in every repository — the engine treats the profile as a baseline preference rather than a hard requirement. Today the profile is fed into `IntentClassifier._SECONDARY_INTENT_ROLES`, which the arbitrator still adds to `required_roles`. The soft-vs-hard split is a future hop.
+
+Example (`EXPLORATION`, eight roles): `core_runtime`, `api_surface`, `docs_or_concept`, `composition_surface`, `runtime_surface`, `abstract_contract`, `orchestrator`, `registration_step`.
+
+### `INTENT_EDGE_PRIORITY: dict[Intent, tuple[str, ...]]`
+
+Edge types in priority order. The same edge can carry different evidence weight for different intents — `DEBUGGING` wants `HANDLES` (handler → error path) ahead of `HAS_API` (which carries surface, not flow); `NAVIGATION` wants `HAS_API` early (the surface IS the answer); `IMPACT_ANALYSIS` leads with `AFFECTS` and `DEPENDS_ON`. **Carries data only today — no consumer.** Wiring it into the graph expander's edge weighting is a future hop.
+
+### `PACK_INTENT_TO_ENGINE: dict[str, Intent]`
+
+Benchmark packs use a three-value vocabulary (`explain_behavior`, `trace_dependency`, `impact_analysis`); engine has seven. The mapping is conceptual — `trace_dependency` maps to `EXPLORATION` with `chase_chains=True` (the default for `EXPLORATION` in `INTENT_TRAVERSAL`), not a separate intent kind. Used by future benchmark overrides where the engine accepts a pack-annotated intent verbatim instead of running the text classifier.
+
+### Derivation chain
+
+```
+INTENT_TRAVERSAL[i].chase_chains   →  unified_ranker._CHAIN_PURSUIT_INTENTS
+INTENT_TRAVERSAL[i].doc_first      →  IntentClassifier._DOC_FIRST_INTENTS
+INTENT_TRAVERSAL[i].tier_priority  →  IntentConfig.PRIORITY[i]
+INTENT_ROLE_PROFILE                →  IntentClassifier._SECONDARY_INTENT_ROLES
+```
+
+`direction`, `max_depth`, `INTENT_EDGE_PRIORITY`, and `PACK_INTENT_TO_ENGINE` are data-only today; their consumers land in subsequent phases.
+
+---
+
+## Question-Shape Modulation
+
+The intent enum tells the engine *what kind of question* it is. `QuestionShape` tells the engine *what the question literally asks for*. The base `TraversalShape` from `INTENT_TRAVERSAL` is then modulated by the question's signals so a single intent (EXPLORATION) can produce an "explain" or a "trace" shape on demand.
+
+### `QuestionShape`
+
+Eight orthogonal lexical features extracted from the raw query text. Each is independently checked so a misread of one signal shifts a single dimension downstream, not the whole intent.
+
+| field | meaning | extraction |
+|---|---|---|
+| `entity_count` | distinct CamelCase / snake_case identifier tokens (excluding wh-stopwords) | regex |
+| `has_flow_verb` | `flow` / `resolve` / `dispatch` / `route` / `wire` / `pass` / `propagate` / `forward` / `get from` / `goes through` | token + phrase match |
+| `has_state_verb` | `work` / `behave` / `manage` / `decide` (single-mechanism explain shape) | token match |
+| `scope` | `wide` when the query says `everywhere` / `across the codebase` / `throughout` / etc; `default` otherwise | phrase match |
+| `direction_hint` | `definition` if `defined` / `implemented` / `located`; `usage` if `uses` / `calls` / `called by` / `imports` / `referenced` | phrase match |
+| `has_failure_marker` | `fails` / `broken` / `doesn't work` / `throws` / `raised` / `error` / `wrong` | phrase match |
+| `has_change_marker` | `if I change` / `if I rename` / `what breaks` / `what's affected` / `tests affected` | phrase match |
+| `wh_word` | `where` / `how` / `why` / `what` / `which` | word-boundary regex |
+
+### `modulate_shape(intent, q) -> TraversalShape`
+
+Adjustment rule book — each rule modifies one dimension of the base `TraversalShape`, monotonically (an adjustment can only widen or specialise the base, never flip the intent's character):
+
+| signal | adjustment |
+|---|---|
+| `entity_count >= 2` | `chase_chains = True`; `max_depth = max(base, base+2)` (chain across components) |
+| `has_flow_verb` | `direction = ("forward",)`; `chase_chains = True` (flow verb names where the value goes) |
+| `scope == "wide"` | `max_depth = max(base, 10)` (transitive) |
+| `direction_hint == "definition"` | `direction = ("self",)` (definition only, no walk) |
+| `direction_hint == "usage"` | `direction = ("backward",)` (callers / consumers only) |
+
+`breadth`, `doc_first`, `tier_priority` are not modulated — they belong to the intent kind, not the question's surface form.
+
+### Worked examples
+
+| query | intent (classifier) | question signals | modulated shape (relative to base) |
+|---|---|---|---|
+| "Where is `HttpRouter` defined?" | NAVIGATION | `wh=where`, `direction_hint=definition`, `entity=1` | `direction = ("self",)` |
+| "What uses `CacheManager`?" | NAVIGATION | `wh=what`, `direction_hint=usage`, `entity=1` | `direction = ("backward",)` (already base) |
+| "How does `Context` manage state?" | EXPLORATION | `wh=how`, `state_verb`, `entity=1` | (no change — single-mechanism explain) |
+| "How does dependency injection get resolved before the endpoint runs?" | EXPLORATION | `wh=how`, `flow_verb` (`resolved`), `entity=0` | `direction = ("forward",)`; `chase_chains` stays on |
+| "How does `Controller` turn `DefaultRouter` routes into `HttpResponses`?" | EXPLORATION | `wh=how`, `flow_verb` (`turn`/`into` is not in the list but multi-entity is), `entity=3` | `chase_chains = True`; `max_depth += 2` |
+| "How does `FastAPI` handle errors everywhere in the codebase?" | EXPLORATION | `wh=how`, `scope=wide`, `entity=1` | `max_depth = 10` |
+| "If I change `ParamType`, what tests are affected?" | IMPACT_ANALYSIS | `change_marker`, `entity=1`, `wh=what` | (no change — base shape already backward-transitive) |
+
+### Misread handling
+
+The signal set is orthogonal by design: confusing `flow_verb` with `state_verb` only flips `direction` between `("forward",)` and the base both-ways walk, while leaving `chase_chains` / `max_depth` / `tier_priority` untouched. The earlier vocabulary-split attempt (`TRACE_DEPENDENCY` vs `EXPLAIN_BEHAVIOR` as separate enum values, classified from text) failed because the classifier had to pick one *intent* out of two for the same surface phrase. Modulation avoids that — every signal narrows a single dimension; mistakes degrade gracefully.
+
 ---
 
 ## Intent Types & Priority Orderings
