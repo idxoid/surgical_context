@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sidecar.cache.layered import CachedBody, LayeredCache, default_cache
 from sidecar.context.code_resolver import CodeResolver
 from sidecar.context.intent_classifier import (
+    PACK_INTENT_TO_ENGINE,
     Intent,
     IntentClassifier,
     IntentResolution,
@@ -60,9 +61,19 @@ class ContextArbitrator:
         symbol_name: str,
         question: str = "",
         token_budget: int = 4000,
+        intent_override: str | None = None,
     ) -> PromptContext | str:
-        """Orchestrate the pipeline: rank → resolve → compile (with intent-aware tier selection)."""
-        intent_signal = IntentClassifier.classify_with_metadata(question)
+        """Orchestrate the pipeline: rank → resolve → compile (with intent-aware tier selection).
+
+        When ``intent_override`` is supplied (e.g. a benchmark pack carries an
+        annotated `intent` per question), it bypasses the text classifier.
+        Accepts either an engine-vocab `Intent` value (e.g. ``"exploration"``)
+        or a benchmark-pack value mapped through ``PACK_INTENT_TO_ENGINE``
+        (e.g. ``"trace_dependency"`` → ``EXPLORATION``). Unknown override
+        values fall back to text classification with a warning so a typo in
+        the pack can't silently swap the intent.
+        """
+        intent_signal = self._resolve_intent_signal(question, intent_override)
         intent_policy = IntentClassifier.policy_from_signal(intent_signal)
         intent_resolution = IntentClassifier.resolve_signal_with_profile(
             intent_signal,
@@ -85,6 +96,40 @@ class ContextArbitrator:
             intent_resolution,
             cache_hits,
         )
+
+    def _resolve_intent_signal(
+        self, question: str, override: str | None
+    ) -> IntentSignal:
+        """Run the text classifier unless an explicit intent override is given.
+
+        The override resolves through ``PACK_INTENT_TO_ENGINE`` first (so a
+        benchmark pack can carry its own three-value vocab — explain_behavior
+        / trace_dependency / impact_analysis — without round-tripping through
+        the text classifier), then falls back to an engine-vocab match.
+        Unknown override values log and fall through to text classification
+        so a typo can't silently flip the intent.
+        """
+        if override:
+            mapped = PACK_INTENT_TO_ENGINE.get(override)
+            if mapped is None:
+                # Engine-vocab passthrough — accept any valid Intent value.
+                try:
+                    mapped = Intent(override)
+                except ValueError:
+                    mapped = None
+            if mapped is not None:
+                return IntentSignal(
+                    primary=mapped,
+                    distribution={mapped.value: 1.0},
+                    confidence=1.0,
+                    ambiguous=False,
+                    matched_keywords={"override": [override]},
+                )
+            _log.warning(
+                "Unknown intent_override %r — falling back to text classification",
+                override,
+            )
+        return IntentClassifier.classify_with_metadata(question)
 
     # ------------------------------------------------------------------
     # Unified path (graph BFS + vector search blended)

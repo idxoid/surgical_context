@@ -1173,7 +1173,10 @@ def run_benchmark(
         question_budget = int(q.get("token_budget", 4000))
         start_ms = time.time()
         ctx = arb.get_context_for_symbol(
-            symbol, question=question_text, token_budget=question_budget
+            symbol,
+            question=question_text,
+            token_budget=question_budget,
+            intent_override=q.get("intent") or None,
         )
         end_ms = time.time()
 
