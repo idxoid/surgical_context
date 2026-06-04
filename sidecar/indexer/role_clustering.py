@@ -142,6 +142,8 @@ class SymbolRow:
     returns_mapping: bool = False
     returns_sequence: bool = False
     returns_constructed_type: bool = False
+    iterates_attr_call: bool = False
+    assembles_mapping_in_loop: bool = False
 
     @property
     def external_call_out_ratio(self) -> float:
@@ -351,6 +353,8 @@ def assemble_symbol_rows(
         returns_map = bool(sym[5]) if len(sym) > 5 else False
         returns_seq = bool(sym[6]) if len(sym) > 6 else False
         returns_ct = bool(sym[7]) if len(sym) > 7 else False
+        iter_call = bool(sym[8]) if len(sym) > 8 else False
+        assembles = bool(sym[9]) if len(sym) > 9 else False
         info[uid] = {
             "uid": uid,
             "kind": kind or "",
@@ -361,6 +365,8 @@ def assemble_symbol_rows(
             "returns_mapping": returns_map,
             "returns_sequence": returns_seq,
             "returns_constructed_type": returns_ct,
+            "iterates_attr_call": iter_call,
+            "assembles_mapping_in_loop": assembles,
         }
 
     call_out: dict[str, set[str]] = {uid: set() for uid in info}
@@ -566,6 +572,8 @@ def assemble_symbol_rows(
                 returns_mapping=bool(meta.get("returns_mapping")),
                 returns_sequence=bool(meta.get("returns_sequence")),
                 returns_constructed_type=bool(meta.get("returns_constructed_type")),
+                iterates_attr_call=bool(meta.get("iterates_attr_call")),
+                assembles_mapping_in_loop=bool(meta.get("assembles_mapping_in_loop")),
             )
         )
     return rows
@@ -664,7 +672,9 @@ def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str, bool, boo
                    coalesce(s.returns_function_expression, false) AS returns_function_expression,
                    coalesce(s.returns_mapping, false) AS returns_mapping,
                    coalesce(s.returns_sequence, false) AS returns_sequence,
-                   coalesce(s.returns_constructed_type, false) AS returns_constructed_type
+                   coalesce(s.returns_constructed_type, false) AS returns_constructed_type,
+                   coalesce(s.iterates_attr_call, false) AS iterates_attr_call,
+                   coalesce(s.assembles_mapping_in_loop, false) AS assembles_mapping_in_loop
             """,
             workspace_id=workspace_id,
             noise_patterns=list(NOISE_PATH_PATTERNS),
@@ -679,6 +689,8 @@ def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str, bool, boo
                 bool(r["returns_mapping"]),
                 bool(r["returns_sequence"]),
                 bool(r["returns_constructed_type"]),
+                bool(r["iterates_attr_call"]),
+                bool(r["assembles_mapping_in_loop"]),
             )
             for r in result
             if r["uid"]

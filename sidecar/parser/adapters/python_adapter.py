@@ -98,18 +98,134 @@ class PythonAdapter(TreeSitterAdapter):
         if tree is None:
             tree = self._parse(source_code)
         shapes = self._function_return_shapes(tree)
-        if shapes:
+        iteration = self._function_iteration_shapes(tree)
+        if shapes or iteration:
             for symbol in symbols:
-                shape = shapes.get(symbol.name)
-                if shape is None:
-                    continue
-                if shape.get("mapping"):
-                    symbol.returns_mapping = True
-                if shape.get("sequence"):
-                    symbol.returns_sequence = True
-                if shape.get("constructed"):
-                    symbol.returns_constructed_type = True
+                shape = shapes.get(symbol.name) if shapes else None
+                if shape is not None:
+                    if shape.get("mapping"):
+                        symbol.returns_mapping = True
+                    if shape.get("sequence"):
+                        symbol.returns_sequence = True
+                    if shape.get("constructed"):
+                        symbol.returns_constructed_type = True
+                it = iteration.get(symbol.name) if iteration else None
+                if it is not None:
+                    if it.get("iterates_attr_call"):
+                        symbol.iterates_attr_call = True
+                    if it.get("assembles_mapping_in_loop"):
+                        symbol.assembles_mapping_in_loop = True
         return symbols
+
+    def _function_iteration_shapes(self, tree) -> dict[str, dict[str, bool]]:
+        """Collect per-function iteration-shape booleans.
+
+        A ``for X in obj.attr: …`` loop carries two structural sub-signals:
+          * ``iterates_attr_call``: a method is called on ``X`` (the
+            iteration variable) inside the body, e.g. ``X.method()``.
+          * ``assembles_mapping_in_loop``: a subscript-assignment writes
+            into a local or ``self.attr`` inside the body, e.g. ``result[k]
+            = X.foo()`` — the binding-surface assemble-from-collection
+            shape that the return-shape scan alone cannot see.
+        Nested function / lambda boundaries are honoured: a closure's loop
+        inside a helper credits the helper, not the outer scope.
+        """
+        out: dict[str, dict[str, bool]] = {}
+        for fn in self._iter_nodes(tree.root_node):
+            if fn.type != "function_definition":
+                continue
+            name_node = fn.child_by_field_name("name")
+            body = fn.child_by_field_name("body")
+            if name_node is None or body is None:
+                continue
+            flags = self._collect_iteration_shape(body)
+            if not any(flags.values()):
+                continue
+            out[_node_text(name_node)] = flags
+        return out
+
+    @classmethod
+    def _collect_iteration_shape(cls, body) -> dict[str, bool]:
+        """Per-function iteration-shape booleans.
+
+        ``iterates_attr_call`` is *strict* — only fires when the iteration
+        source is an attribute access (``for x in obj.attr``) AND the body
+        calls a method on the loop variable. This is the precision signal
+        for "iterate over a collection of objects, call something on each".
+
+        ``assembles_mapping_in_loop`` is *permissive* — any ``for`` loop
+        whose body subscript-writes into a local or ``self.attr`` counts.
+        Real-world binders iterate over typed parameters
+        (``for field in body_fields``) or function calls
+        (``for f in sorted(chain(opts.fields, …))``) — both shapes carry
+        the same binder semantics as a bare ``obj.attr`` iteration. The
+        composite predicate (``assembles_mapping_in_loop`` together with
+        ``returns_mapping`` / ``write_subscript`` write fan) keeps the
+        false-positive rate down.
+        """
+        flags = {"iterates_attr_call": False, "assembles_mapping_in_loop": False}
+        stack = [body]
+        while stack:
+            n = stack.pop()
+            if n.type in ("function_definition", "lambda"):
+                continue  # don't descend into a nested callable
+            if n.type == "for_statement":
+                left = n.child_by_field_name("left")
+                right = n.child_by_field_name("right")
+                fbody = n.child_by_field_name("body")
+                if fbody is None:
+                    for child in n.children:
+                        stack.append(child)
+                    continue
+                # Strict attribute-iteration + method-call-on-loop-var.
+                if right is not None and right.type == "attribute":
+                    loop_var = _node_text(left) if (left is not None and left.type == "identifier") else ""
+                    if cls._for_body_calls_on(fbody, loop_var):
+                        flags["iterates_attr_call"] = True
+                # Permissive: any for-loop body that writes a subscript.
+                if cls._for_body_writes_subscript(fbody):
+                    flags["assembles_mapping_in_loop"] = True
+            for child in n.children:
+                stack.append(child)
+        return flags
+
+    @classmethod
+    def _for_body_calls_on(cls, body, loop_var: str) -> bool:
+        """``loop_var.method(...)`` anywhere inside ``body`` (not nested fn)."""
+        if not loop_var:
+            return False
+        stack = [body]
+        while stack:
+            n = stack.pop()
+            if n.type in ("function_definition", "lambda"):
+                continue
+            if n.type == "call":
+                fn = n.child_by_field_name("function")
+                if fn is not None and fn.type == "attribute":
+                    obj = fn.child_by_field_name("object")
+                    if obj is not None and obj.type == "identifier" and _node_text(obj) == loop_var:
+                        return True
+            for child in n.children:
+                stack.append(child)
+        return False
+
+    @classmethod
+    def _for_body_writes_subscript(cls, body) -> bool:
+        """``result[k] = …`` (subscript assignment on local or self.attr)."""
+        stack = [body]
+        while stack:
+            n = stack.pop()
+            if n.type in ("function_definition", "lambda"):
+                continue
+            if n.type == "assignment":
+                left = n.child_by_field_name("left")
+                if left is not None and left.type == "subscript":
+                    base = left.child_by_field_name("value")
+                    if base is not None and base.type in ("identifier", "attribute"):
+                        return True
+            for child in n.children:
+                stack.append(child)
+        return False
 
     _MAPPING_CTOR_NAMES = frozenset({"dict", "OrderedDict", "defaultdict", "Counter", "ChainMap"})
     _SEQUENCE_CTOR_NAMES = frozenset({"list", "tuple", "set", "frozenset"})

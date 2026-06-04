@@ -478,7 +478,9 @@ class Neo4jClient:
                 s.returns_function_expression = symbol.returns_function_expression,
                 s.returns_mapping = symbol.returns_mapping,
                 s.returns_sequence = symbol.returns_sequence,
-                s.returns_constructed_type = symbol.returns_constructed_type
+                s.returns_constructed_type = symbol.returns_constructed_type,
+                s.iterates_attr_call = symbol.iterates_attr_call,
+                s.assembles_mapping_in_loop = symbol.assembles_mapping_in_loop
             MERGE (s)-[:IN_WORKSPACE]->(w)
             MERGE (f)-[c:CONTAINS {workspace_id: $workspace_id}]->(s)
             SET c.range = [symbol.start, symbol.end],
@@ -1855,6 +1857,8 @@ def _symbol_row(symbol: SymbolMetadata) -> dict[str, object]:
         "returns_mapping": bool(symbol.returns_mapping),
         "returns_sequence": bool(symbol.returns_sequence),
         "returns_constructed_type": bool(symbol.returns_constructed_type),
+        "iterates_attr_call": bool(symbol.iterates_attr_call),
+        "assembles_mapping_in_loop": bool(symbol.assembles_mapping_in_loop),
     }
 
 

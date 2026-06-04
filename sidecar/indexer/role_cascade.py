@@ -59,6 +59,8 @@ class FanProfile(Protocol):
     returns_mapping: bool
     returns_sequence: bool
     returns_constructed_type: bool
+    iterates_attr_call: bool
+    assembles_mapping_in_loop: bool
 
     @property
     def external_call_out_ratio(self) -> float: ...

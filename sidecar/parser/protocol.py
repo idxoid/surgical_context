@@ -38,6 +38,12 @@ class SymbolMetadata(BaseModel):
     returns_mapping: bool = False           # ``return {k: v, …}`` / ``dict(...)`` / dict-comp
     returns_sequence: bool = False          # ``return [...]`` / ``list(...)`` / list-comp / tuple
     returns_constructed_type: bool = False  # ``return SomeType(...)`` — a Capitalised call result
+    # Iteration-local shape markers — set when the function body contains
+    # ``for X in <attr_access>:`` (a for-loop iterating over an attribute
+    # expression, not a bare local). Distinguishes the binding-surface
+    # pattern (assemble a mapping per element) from a pure orchestrator.
+    iterates_attr_call: bool = False         # ``for X in obj.attr: … X.method()``
+    assembles_mapping_in_loop: bool = False  # ``for X in obj.attr: … result[K] = …``
 
 
 @dataclass
