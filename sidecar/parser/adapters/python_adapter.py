@@ -260,10 +260,38 @@ class PythonAdapter(TreeSitterAdapter):
     def _collect_return_shape(cls, body) -> dict[str, bool]:
         """Walk a function body for top-level ``return X`` shape classification.
 
+        Two passes:
+         1. Collect ``local_name → shape`` for assignments whose RHS is
+            itself a literal / constructor (``field_dict = {}`` →
+            ``field_dict`` is mapping; ``items = []`` → sequence; etc).
+            Later assignments overwrite, matching real control flow.
+         2. Classify each ``return_statement``. A bare identifier return
+            falls back to the local-assignment map — so ``field_dict =
+            {}; for f in fields: field_dict[f.name] = f.formfield();
+            return field_dict`` correctly registers as a mapping return.
+
         Skips nested function / class definitions so an inner helper that
         returns a dict doesn't paint the outer function as a mapping
         returner.
         """
+        # Pass 1: identifier assignments whose RHS is a recognised shape.
+        local_assigns: dict[str, str] = {}
+        stack = [body]
+        while stack:
+            n = stack.pop()
+            if n.type in ("function_definition", "lambda"):
+                continue
+            if n.type == "assignment":
+                left = n.child_by_field_name("left")
+                right = n.child_by_field_name("right")
+                if left is not None and right is not None and left.type == "identifier":
+                    kind = cls._classify_return_expr(right)
+                    if kind:
+                        local_assigns[_node_text(left)] = kind
+            for child in n.children:
+                stack.append(child)
+
+        # Pass 2: return statements.
         shape = {"mapping": False, "sequence": False, "constructed": False}
         stack = [body]
         while stack:
@@ -273,11 +301,13 @@ class PythonAdapter(TreeSitterAdapter):
                 if expr is None:
                     continue
                 kind = cls._classify_return_expr(expr)
+                if not kind and expr.type == "identifier":
+                    kind = local_assigns.get(_node_text(expr), "")
                 if kind:
                     shape[kind] = True
                 continue
             if n.type in ("function_definition", "lambda"):
-                continue  # don't descend into a nested callable
+                continue
             for child in n.children:
                 stack.append(child)
         return shape

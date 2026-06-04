@@ -307,6 +307,24 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         75,
     ),
     RolePredicate(
+        "binding_surface",
+        "control_flow",
+        # Pattern B composite: a function returns a mapping or a
+        # constructed-type result AND reads >=3 distinct attributes AND
+        # calls helpers. Catches functions that *gather* values from an
+        # input object's attributes and pack them into a single output
+        # — FastAPI ``get_body_field`` (collects from ``Dependant``,
+        # returns ModelField), SQLAlchemy ``RelationshipProperty.init``
+        # style helpers. The higher attr_reads threshold (3 vs Pattern
+        # A's 1) keeps the predicate from claiming pure orchestrators
+        # that happen to return a dict literal.
+        lambda r: r.is_function
+        and (r.returns_mapping or r.returns_constructed_type)
+        and r.attr_reads_fan_out >= 3.0
+        and r.call_fan_out > _EPS,
+        75,
+    ),
+    RolePredicate(
         "runtime_surface",
         "control_flow",
         lambda r: r.call_fan_in > _EPS
