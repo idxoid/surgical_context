@@ -28,7 +28,10 @@ from sidecar.context.intent_classifier import (
     IntentClassifier,
     IntentPolicy,
     IntentSignal,
+    QuestionShape,
+    extract_question_shape,
     intent_edge_boost,
+    modulate_shape,
 )
 from sidecar.context.mechanism_registry import role_backfill_specs_for_mechanism
 from sidecar.context.ranker import (
@@ -1255,8 +1258,19 @@ class UnifiedRanker:
         For sync/async endpoint execution questions, an *execution chain*
         softens distance/token along runtime handler hops (including large
         ``get_request_handler`` reached via ``USES_TYPE`` in the same module).
+
+        ``chase_chains`` is derived per-question from the question shape
+        (see ``modulate_shape``): the base intent's ``chase_chains`` flag is
+        toggled on when the query carries a flow verb (``resolve`` /
+        ``dispatch`` / ``flow``) or names two or more components. So an
+        EXPLORATION question "How does X work?" stays at the base shape
+        (no chain pursuit) while "How does X resolve Y to Z?" turns it on.
         """
-        chain_pursuit = intent in self._CHAIN_PURSUIT_INTENTS if intent else False
+        if intent is None:
+            chain_pursuit = False
+        else:
+            q_shape = extract_question_shape(query) if query else QuestionShape()
+            chain_pursuit = modulate_shape(intent, q_shape).chase_chains
         visited = {target_uid}
         candidates: list[Candidate] = []
         pending_provenance: dict[str, list[str]] = {}
