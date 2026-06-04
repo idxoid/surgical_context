@@ -268,3 +268,104 @@ class TestIntentGetTierPriority:
             priority = IntentClassifier.get_tier_priority(intent)
             expected = IntentConfig.PRIORITY[intent]
             assert priority == expected
+
+
+class TestQuestionShape:
+    """Plain-text question features — high-precision orthogonal signals."""
+
+    def test_definition_hint_narrows_direction_to_self(self):
+        from sidecar.context.intent_classifier import (
+            extract_question_shape,
+            modulate_shape,
+        )
+
+        qs = extract_question_shape("Where is HttpRouter defined?")
+        assert qs.wh_word == "where"
+        assert qs.direction_hint == "definition"
+        assert qs.entity_count == 1
+
+        shape = modulate_shape(Intent.NAVIGATION, qs)
+        assert shape.direction == ("self",)
+
+    def test_usage_hint_keeps_navigation_backward(self):
+        from sidecar.context.intent_classifier import (
+            extract_question_shape,
+            modulate_shape,
+        )
+
+        qs = extract_question_shape("What uses CacheManager?")
+        assert qs.direction_hint == "usage"
+        shape = modulate_shape(Intent.NAVIGATION, qs)
+        assert shape.direction == ("backward",)
+
+    def test_flow_verb_forces_forward_and_chain_chase(self):
+        from sidecar.context.intent_classifier import (
+            INTENT_TRAVERSAL,
+            extract_question_shape,
+            modulate_shape,
+        )
+
+        qs = extract_question_shape(
+            "How does dependency injection get resolved before the endpoint runs?"
+        )
+        assert qs.has_flow_verb is True
+
+        # DEBUGGING has chase_chains=False at base; flow verb turns it on.
+        shape = modulate_shape(Intent.DEBUGGING, qs)
+        assert shape.direction == ("forward",)
+        assert shape.chase_chains is True
+        assert INTENT_TRAVERSAL[Intent.DEBUGGING].chase_chains is False
+
+    def test_state_verb_alone_does_not_modulate(self):
+        from sidecar.context.intent_classifier import (
+            INTENT_TRAVERSAL,
+            extract_question_shape,
+            modulate_shape,
+        )
+
+        qs = extract_question_shape("How does Context manage state?")
+        assert qs.has_state_verb is True
+        assert qs.has_flow_verb is False
+        # Single-mechanism explain — base EXPLORATION shape stays put.
+        shape = modulate_shape(Intent.EXPLORATION, qs)
+        base = INTENT_TRAVERSAL[Intent.EXPLORATION]
+        assert shape.direction == base.direction
+        assert shape.max_depth == base.max_depth
+        assert shape.chase_chains == base.chase_chains
+
+    def test_multiple_entities_widen_depth_and_chain(self):
+        from sidecar.context.intent_classifier import (
+            INTENT_TRAVERSAL,
+            extract_question_shape,
+            modulate_shape,
+        )
+
+        qs = extract_question_shape(
+            "How does Controller turn DefaultRouter routes into HttpResponses?"
+        )
+        assert qs.entity_count >= 2
+        base = INTENT_TRAVERSAL[Intent.EXPLORATION]
+        shape = modulate_shape(Intent.EXPLORATION, qs)
+        assert shape.chase_chains is True
+        assert shape.max_depth >= base.max_depth + 2
+
+    def test_wide_scope_pushes_to_transitive(self):
+        from sidecar.context.intent_classifier import (
+            extract_question_shape,
+            modulate_shape,
+        )
+
+        qs = extract_question_shape(
+            "How does FastAPI handle errors everywhere in the codebase?"
+        )
+        assert qs.scope == "wide"
+        shape = modulate_shape(Intent.EXPLORATION, qs)
+        assert shape.max_depth >= 10
+
+    def test_no_query_yields_blank_shape(self):
+        from sidecar.context.intent_classifier import extract_question_shape
+
+        qs = extract_question_shape("")
+        assert qs.entity_count == 0
+        assert qs.wh_word == ""
+        assert qs.direction_hint == ""

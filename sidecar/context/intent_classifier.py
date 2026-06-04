@@ -250,6 +250,177 @@ PACK_INTENT_TO_ENGINE: dict[str, Intent] = {
 }
 
 
+# ----------------------------------------------------------------------------
+# Question shape — orthogonal structural signals extracted from arbitrary
+# plain-text questions. Used to *modulate* the base intent traversal (depth /
+# direction / chase) without splitting the intent vocabulary. Each signal is
+# extracted by a small, high-precision rule (a verb match, a phrase match, a
+# regex count); misreading any one signal shifts a single dimension, not the
+# whole intent.
+# ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QuestionShape:
+    """Lexical features that further constrain the intent's traversal shape."""
+
+    entity_count: int = 0
+    has_flow_verb: bool = False
+    has_state_verb: bool = False
+    scope: str = "default"        # "default" | "local" | "wide"
+    direction_hint: str = ""      # "" | "definition" | "usage"
+    has_failure_marker: bool = False
+    has_change_marker: bool = False
+    wh_word: str = ""             # "" | "where" | "how" | "why" | "what" | "which"
+
+
+# Tokens recognised as named entities — capitalised identifiers (Class /
+# CamelCase), snake_case helpers, dotted accessors (module.Foo). Excludes
+# common stopwords that happen to start a sentence.
+_ENTITY_TOKEN_RE = re.compile(
+    r"\b("
+    r"[A-Z][A-Za-z0-9]+(?:[._][A-Za-z0-9]+)*"          # CamelCase, Class, Mod.Class
+    r"|[a-z][a-z0-9]+(?:_[a-z0-9]+)+"                  # snake_case
+    r")\b"
+)
+_ENTITY_STOPWORDS = frozenset(
+    {
+        "How", "What", "Why", "Where", "Which", "When", "Who", "I", "If",
+        "Does", "Do", "Is", "Are", "Can", "Could", "Should", "Would",
+        "The", "A", "An", "This", "That", "These", "Those",
+    }
+)
+
+_FLOW_VERBS = frozenset(
+    {
+        "flow", "flows", "pass", "passes", "passed",
+        "resolve", "resolves", "resolved",
+        "dispatch", "dispatches", "dispatched",
+        "route", "routes", "routed",
+        "wire", "wired",
+        "propagate", "propagates", "propagated",
+        "forward", "forwards", "forwarded",
+    }
+)
+_FLOW_PHRASES = ("get from", "gets from", "go through", "goes through")
+
+_STATE_VERBS = frozenset(
+    {"work", "works", "behave", "behaves", "manage", "manages", "decide", "decides"}
+)
+
+_SCOPE_WIDE_PHRASES = (
+    "everywhere", "across the codebase", "throughout", "all of the",
+    "everything that", "every place", "entire codebase",
+)
+
+_FAILURE_PHRASES = (
+    "fails", "failing", "broken", "doesn't work", "does not work",
+    "throws", "raised", "error", "wrong",
+)
+
+_CHANGE_PHRASES = (
+    "if i change", "if i rename", "if we change", "what breaks",
+    "what would break", "what's affected", "would be affected",
+    "tests affected", "if i refactor",
+)
+
+_DIRECTION_HINT_DEFINITION = ("defined", "implemented", "located", "lives in")
+_DIRECTION_HINT_USAGE = (
+    "uses", "use", "calls", "called by", "imports", "references", "used by",
+)
+
+_WH_WORDS = ("where", "how", "why", "what", "which")
+
+
+def extract_question_shape(query: str) -> QuestionShape:
+    """Extract orthogonal lexical features from a plain-text question.
+
+    Each feature is independently checked so a misread of one signal shifts a
+    single dimension downstream rather than flipping the intent. The signals
+    are intentionally narrow — a flow verb is a verb that *literally* names
+    movement (``resolve``, ``dispatch``, ``flow``), not "work"; an entity
+    token is a CamelCase / snake_case identifier, not any noun.
+    """
+    if not query:
+        return QuestionShape()
+
+    raw_tokens = _ENTITY_TOKEN_RE.findall(query)
+    entities = [t for t in raw_tokens if t not in _ENTITY_STOPWORDS]
+    query_lower = query.lower()
+    tokens = set(re.findall(r"[a-z]+", query_lower))
+
+    has_flow_verb = bool(tokens & _FLOW_VERBS) or any(p in query_lower for p in _FLOW_PHRASES)
+    has_state_verb = bool(tokens & _STATE_VERBS)
+    scope = "wide" if any(p in query_lower for p in _SCOPE_WIDE_PHRASES) else "default"
+    has_failure = any(p in query_lower for p in _FAILURE_PHRASES)
+    has_change = any(p in query_lower for p in _CHANGE_PHRASES)
+
+    direction_hint = ""
+    if any(p in query_lower for p in _DIRECTION_HINT_DEFINITION):
+        direction_hint = "definition"
+    elif any(p in query_lower for p in _DIRECTION_HINT_USAGE):
+        direction_hint = "usage"
+
+    wh_word = ""
+    for w in _WH_WORDS:
+        if re.search(rf"\b{w}\b", query_lower):
+            wh_word = w
+            break
+
+    return QuestionShape(
+        entity_count=len(set(entities)),
+        has_flow_verb=has_flow_verb,
+        has_state_verb=has_state_verb,
+        scope=scope,
+        direction_hint=direction_hint,
+        has_failure_marker=has_failure,
+        has_change_marker=has_change,
+        wh_word=wh_word,
+    )
+
+
+def modulate_shape(intent: Intent, q: QuestionShape) -> TraversalShape:
+    """Return a per-question TraversalShape derived from intent's base.
+
+    Adjustments per question signal:
+      - ``entity_count >= 2`` → bump max_depth (+2) and turn on chase_chains
+        (multiple named components implies the answer is a chain across them).
+      - ``has_flow_verb`` → switch direction to forward-only and turn on
+        chase_chains (a flow verb names where the value goes).
+      - ``scope == "wide"`` → bump max_depth to transitive (10).
+      - ``direction_hint == "definition"`` → narrow direction to ("self",).
+      - ``direction_hint == "usage"`` → narrow direction to ("backward",).
+    Each adjustment is monotone — it can only widen / specialise the base
+    shape, never flip an intent's character.
+    """
+    base = INTENT_TRAVERSAL[intent]
+    direction = base.direction
+    max_depth = base.max_depth
+    chase_chains = base.chase_chains
+
+    if q.entity_count >= 2:
+        chase_chains = True
+        max_depth = max(max_depth, base.max_depth + 2)
+    if q.has_flow_verb:
+        chase_chains = True
+        direction = ("forward",)
+    if q.scope == "wide":
+        max_depth = max(max_depth, 10)
+    if q.direction_hint == "definition":
+        direction = ("self",)
+    elif q.direction_hint == "usage":
+        direction = ("backward",)
+
+    return TraversalShape(
+        direction=direction,
+        max_depth=max_depth,
+        chase_chains=chase_chains,
+        breadth=base.breadth,
+        doc_first=base.doc_first,
+        tier_priority=base.tier_priority,
+    )
+
+
 class IntentConfig:
     """Maps intent to content tier priority (highest → lowest).
 
