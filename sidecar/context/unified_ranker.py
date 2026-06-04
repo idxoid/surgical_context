@@ -1407,8 +1407,15 @@ class UnifiedRanker:
             candidates.append(c)
 
             for nn in self._get_neighbors(uid, visited, distance=distance + 1):
-                if not _direction_keeps(nn["outgoing"]):
-                    continue
+                # Direction filter is intentionally applied only at distance 1
+                # (the first hop from the target above). The "environment" of
+                # a symbol — its owner class, siblings via HAS_API, subclasses
+                # via INHERITED_API, the framework dispatcher that registered
+                # it — often sits at the far end of a *forward* hop from an
+                # intermediate container, so a rigid per-edge filter cuts off
+                # exactly the paths an IMPACT_ANALYSIS asks for. Past the
+                # first hop we let BFS walk freely; the first hop's direction
+                # has already set the orientation.
                 child_reg_chain = chain_pursuit and reg_chain and self._is_registration_chain_edge(
                     nn["rel_type"],
                     nn["outgoing"],
