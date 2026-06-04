@@ -286,6 +286,27 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         73,
     ),
     RolePredicate(
+        "binding_surface",
+        "control_flow",
+        # Pattern A composite (AST-derived): a function that assembles a
+        # mapping inside a for-loop AND reads at least one attribute from
+        # somewhere AND calls helpers. The for-loop with a subscript-
+        # assignment is the binder shape — Django ``fields_for_model``,
+        # FastAPI ``request_body_to_args`` / ``solve_dependencies``,
+        # SQLAlchemy `_make_proxy`-style assembly.
+        #
+        # Priority 75 sits above orchestrator (70) / schema_builder (71)
+        # / runtime_surface (71) so the binder signal wins on the
+        # transformer-shape functions those predicates otherwise claim;
+        # it stays below api_surface (77) — a public surface keeps its
+        # surface identity.
+        lambda r: r.is_function
+        and r.assembles_mapping_in_loop
+        and r.attr_reads_fan_out >= 1.0
+        and r.call_fan_out > _EPS,
+        75,
+    ),
+    RolePredicate(
         "runtime_surface",
         "control_flow",
         lambda r: r.call_fan_in > _EPS
