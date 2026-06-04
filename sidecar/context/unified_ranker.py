@@ -22,7 +22,13 @@ import re
 from heapq import heappop, heappush
 from typing import cast
 
-from sidecar.context.intent_classifier import Intent, IntentClassifier, IntentPolicy, IntentSignal
+from sidecar.context.intent_classifier import (
+    INTENT_TRAVERSAL,
+    Intent,
+    IntentClassifier,
+    IntentPolicy,
+    IntentSignal,
+)
 from sidecar.context.mechanism_registry import role_backfill_specs_for_mechanism
 from sidecar.context.ranker import (
     BudgetSelector,
@@ -1178,7 +1184,14 @@ class UnifiedRanker:
     # primary way to answer the question. For these we soften the
     # distance penalty along outgoing CALLS edges so the BFS reaches
     # depth 5-6 instead of decaying around depth 3.
-    _CHAIN_PURSUIT_INTENTS = frozenset({Intent.DESIGN_QUESTION, Intent.EXPLORATION})
+    #
+    # Derived from `INTENT_TRAVERSAL[i].chase_chains` so the dictionary
+    # in intent_classifier.py is the single source of truth — when
+    # `chase_chains` flips for an intent there, the ranker honours it
+    # automatically (no second hand-maintained list to keep in lockstep).
+    _CHAIN_PURSUIT_INTENTS = frozenset(
+        intent for intent, shape in INTENT_TRAVERSAL.items() if shape.chase_chains
+    )
     _API_ENTRY_RELATIONS = frozenset({"HAS_API", "INHERITED_API"})
     _REGISTRATION_CHAIN_RELATIONS = frozenset(
         {
