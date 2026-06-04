@@ -56,6 +56,13 @@ class TraversalShape:
     max_depth: int               # 1-2 shallow / 3-5 medium / 6+ transitive
     chase_chains: bool           # follow registration/marker chains beyond max_depth
     breadth: str                 # "focused" | "medium" | "wide"
+    # ``doc_first`` is intentionally a separate signal from ``breadth``: a
+    # REFACTORING is wide on code touchpoints but code-first in rendering;
+    # NEW_FEATURE is medium on candidates but doc-first because reading the
+    # existing patterns precedes writing the new one. Encoding it on the
+    # shape lets the doc-first set derive from a single source while
+    # preserving the semantics the prompt compiler already relies on.
+    doc_first: bool
 
 
 # Roles that *may* participate in answering this intent. Not all of them
@@ -189,42 +196,49 @@ INTENT_TRAVERSAL: dict[Intent, TraversalShape] = {
         max_depth=2,
         chase_chains=False,
         breadth="focused",
+        doc_first=False,
     ),
     Intent.DEBUGGING: TraversalShape(
         direction=("backward", "forward"),
         max_depth=3,
         chase_chains=False,  # stay on the failure path, don't survey
         breadth="medium",
+        doc_first=False,
     ),
     Intent.REFACTORING: TraversalShape(
         direction=("backward",),
         max_depth=10,
         chase_chains=False,
         breadth="wide",
+        doc_first=False,  # wide on code touchpoints, not docs
     ),
     Intent.EXPLORATION: TraversalShape(
         direction=("forward", "backward"),
         max_depth=4,
         chase_chains=True,  # follow registration / marker chains
         breadth="medium",
+        doc_first=False,
     ),
     Intent.NEW_FEATURE: TraversalShape(
         direction=("forward",),
         max_depth=2,
         chase_chains=False,
         breadth="medium",
+        doc_first=True,  # read existing patterns before writing the new one
     ),
     Intent.DESIGN_QUESTION: TraversalShape(
         direction=("forward",),
         max_depth=2,
         chase_chains=False,
         breadth="wide",
+        doc_first=True,
     ),
     Intent.IMPACT_ANALYSIS: TraversalShape(
         direction=("backward",),
         max_depth=10,
         chase_chains=False,
         breadth="wide",
+        doc_first=True,
     ),
 }
 
@@ -448,11 +462,12 @@ class IntentClassifier:
     # in this commit (still added to required_roles downstream) — the soft
     # preference vs hard requirement split lands in a later phase.
     _SECONDARY_INTENT_ROLES: dict[Intent, tuple[str, ...]] = INTENT_ROLE_PROFILE
-    _DOC_FIRST_INTENTS = {
-        Intent.IMPACT_ANALYSIS,
-        Intent.NEW_FEATURE,
-        Intent.DESIGN_QUESTION,
-    }
+    # Derived from `INTENT_TRAVERSAL[i].doc_first` so the dictionary is the
+    # single source of truth; flipping `doc_first` for an intent there
+    # propagates here automatically.
+    _DOC_FIRST_INTENTS = frozenset(
+        intent for intent, shape in INTENT_TRAVERSAL.items() if shape.doc_first
+    )
     _SECONDARY_WEIGHT_THRESHOLD = 0.25
 
     @staticmethod
