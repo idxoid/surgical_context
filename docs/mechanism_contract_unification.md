@@ -43,6 +43,21 @@ iteration locals, and value-flow from source shape to output shape are not solve
 The same principle holds: add code-derived facts first; consume them as role
 discriminators only after empirical validation.
 
+### Follow-up: `binding_surface` is a composite, not a single predicate
+
+After Phases A–D landed (return-shape markers + READS_ATTR/WRITES_ATTR edges +
+iteration-shape markers + two AST-shape `binding_surface` predicates at priority
+75), an attempt to drop the legacy "topology-only" `binding_surface` predicate
+(`call_fan_out > call_fan_in & type_fan_out > 0 & cross_package_call_out ≥ 1 &
+import_in ≥ 20 & depth_from_public ≥ 2`, priority 73) regressed `django_q02`
+(rr 1.00 → 0.75, binding_surface count 546 → 504). The legacy predicate is
+itself structural — it composes call-graph topology, type fan, import fan, and
+depth from public surface — and catches a complementary 42-symbol set that the
+AST-shape predicates do not. The three predicates were therefore kept as
+complementary composites: AST-shape (Pattern A/B at 75) catches assembled
+mappings; topology+type (legacy at 73) catches heavily-imported internal helpers
+that construct typed objects across package boundaries.
+
 ## What Path 2 (mechanism packs) is today
 
 `_role_backfill_candidates` in [unified_ranker.py](../sidecar/context/unified_ranker.py) remains active as an **opt-in extensibility mechanism**: set `MECHANISM_PACK_PATH` to load a YAML pack (see [celery_publish_consume.yaml](../sidecar/context/mechanism_packs/bundled/celery_publish_consume.yaml) for the schema). It is not loaded by default and does not author graph edges — it only backfills role slots that the derived graph leaves empty.
