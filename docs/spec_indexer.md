@@ -181,7 +181,7 @@ Implemented in `sidecar/indexer/role_clustering.py` + `sidecar/indexer/role_casc
 
 **Pipeline order.** The fast pipeline runs Pass 1 between Phase 4 (DocAnchor resolution) and Phase 6 (repository readiness profile), so the pass sees CALLS-family edges, COVERS, INJECTS, HANDLES, DECORATED_BY, INSTANTIATES, USES_TYPE (with `kind`), and RE_EXPORTS-derived features. The single-file hot path does not run Pass 1.
 
-**Per-symbol structural features.** For every Pass-1 symbol the indexer assembles weighted fan profiles: call/type/api/inject/depend/handle/decorated/construct fans (including USES_TYPE kind-split and F13 partial credit from full-graph consumers outside the test-free symbol set), plus `depth_from_public` (BFS from full-graph public roots, F13), cross-package counts, doc-anchor signals, `reexport_in`, and proxy-binding flags.
+**Per-symbol structural features.** For every Pass-1 symbol the indexer assembles weighted fan profiles: call/type/api/inject/depend/handle/decorated/construct fans (including USES_TYPE kind-split and F13 partial credit from full-graph consumers outside the test-free symbol set), plus `depth_from_public` (BFS from full-graph public roots, F13), cross-package counts, doc-anchor signals, `reexport_in`, proxy-binding flags, and extraction-time return-shape markers (`returns_mapping`, `returns_sequence`, `returns_constructed_type`, `returns_function_expression`).
 
 **Assignment (schema v3).** No k-means, no cluster ids, no Pass-1 archetype tier:
 
@@ -219,6 +219,10 @@ Output:
   call_fan_in,
   call_fan_out,
   type_fan_in,
+  returns_mapping,
+  returns_sequence,
+  returns_constructed_type,
+  returns_function_expression,
   ...
 })
 ```
@@ -230,7 +234,7 @@ Output:
 **Trade-offs.**
 - Predicate thresholds can miss or over-fire on edge cases; fix by adding structural edges/features, not benchmark answer keys (see [engineering_principles.md](engineering_principles.md)).
 - Pass 1 runs on every full project pass, even when changes are small. The "no changed files" branch reuses the existing taxonomy from the Workspace.
-- Some roles remain honestly unmapped until dynamic-dispatch / dataflow gaps are closed (`request_router`, parts of `factory_surface`) — see [role_signature_findings.md](role_signature_findings.md).
+- Some roles remain honestly unmapped until dynamic-dispatch / dataflow gaps are closed (`request_router`, parts of `factory_surface`, and binding/data-shape roles). Phase A return-shape markers are persisted and visible to Pass 1, but they do not yet replace field/iteration/value-flow analysis — see [role_signature_findings.md](role_signature_findings.md).
 
 ### Fast pipeline — semantic hint phases
 

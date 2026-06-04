@@ -201,13 +201,15 @@ first and better serves the second.
 | D6 | facade reachability + delegation-following plan | ✅ done | `_build_attr_type_table` covers `self.x: Type`, `self.x = Class()`, `self.x = typed_param`; `target_role_supply_counts` follows CALLS-out delegation with depth bounded by role-closure (F18) |
 | D7 | marker→consumer chain pursuit | ✅ done | structural marker target (`_is_marker_surface_uid`) → inverse `USES_TYPE` → consumer's outgoing CALLS, with narrow `dependency_solver` gate; relaxes `role_complete` / `marginal_gain_threshold` only when a relevant marker_chain candidate is pending (F19) |
 | D8 | error_surface from inheritance marker | ✅ done | `inherits_builtin_exception` set at link time for direct builtin-Exception bases, then transitively propagated along in-graph `DEPENDS_ON` (F20) |
+| D9 | return-shape AST markers | ✅ foundation | Python functions persist `returns_mapping`, `returns_sequence`, `returns_constructed_type`, and `returns_function_expression`; Pass 1 can read them, but binding/dataflow roles still need field/iteration/value-flow signals before broad predicates are safe |
 
 **Critical path (remaining):** honest dataflow residuals (`request_router` dynamic
 dispatch via dict lookup, dynamic-backend `self.<attr>` typing for injected
-attributes — F24, HAS_API method ranking — F23). Honest data-semantics gaps left
-unscored or partial: `serializer_handle` / `validator_handle` (F21), builder-class
-`schema_builder` (F22). Re-validate with `QA/prototype_role_cascade.py` after
-engine changes.
+attributes — F24, HAS_API method ranking — F23, and binding/data-shape evidence
+beyond Phase A return-shape flags). Honest data-semantics gaps left unscored or
+partial: `serializer_handle` / `validator_handle` (F21), builder-class
+`schema_builder` and parts of `binding_surface` (F22). Re-validate with
+`QA/prototype_role_cascade.py` after engine changes.
 
 ## Related
 - [role_catalog.md](role_catalog.md) — role vocabulary and discriminators.

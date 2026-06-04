@@ -516,7 +516,10 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 - **decision:** honest gap — do **not** fake it. Treat `serializer_handle` /
   `validator_handle` as structurally unreachable and exclude them from role-recall
   scoring (same spirit as F15 / pre-fix F20), so they are not counted as engine misses
-  the topology cannot produce. Revisit only if a dataflow/return-shape pass is built.
+  the topology cannot produce. Phase A return-shape markers are too coarse for this
+  pair because the pydantic handles are hot leaves with no visible typed return shape;
+  revisit only when a real data-shape/dataflow signal can separate accepted input
+  shape from emitted serialized shape.
 
 | # | Finding | Severity | Decision |
 |---|---|---|---|
@@ -535,8 +538,9 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 | F13 | Pass-1 test-exclusion strips entrypoint edges | 🟢 fixed | full-graph `api_fan_in` + `depth_from_public` |
 
 **Critical path:** honest dataflow residuals (`request_router` dynamic dispatch,
-`self.<attr>`-only construction). Re-validate with `QA/prototype_role_cascade.py`
-after engine changes (fastapi only).
+`self.<attr>`-only construction, field/iteration-local binding). Phase A added
+return-shape AST markers as a foundation, but not value-flow. Re-validate with
+`QA/prototype_role_cascade.py` after engine changes (fastapi only).
 
 ### F22 — schema_builder works for builder *functions*, not for builder *classes* 🟡
 - **pydantic q04 (`model_json_schema`)**: misses `schema_builder`.
@@ -553,9 +557,11 @@ after engine changes (fastapi only).
   vs "is a model" is *data semantics*, not api/type topology (same class as F21).
 - **decision:** keep `schema_builder` (live role for builder functions); do **not** add
   a class-level predicate (a fit to GenerateJsonSchema with false hits on
-  ModelMetaclass/RootModel — P4 violation). The builder-class case is a partial gap
-  needing a return-shape/dataflow signal; left honest, not scored away (the role is
-  reachable, unlike F21's fully-unreachable pair).
+  ModelMetaclass/RootModel — P4 violation). Phase A return-shape markers give
+  functions a cheap mapping/sequence/constructed-type signal, but the builder-class
+  case remains a partial gap: a class like `GenerateJsonSchema` needs data-shape or
+  method-level evidence, not a class-level name/topology fit. Left honest, not scored
+  away (the role is reachable, unlike F21's fully-unreachable pair).
 - **same family on django q03 (`ModelForm`, trace_dependency):** misses
   `factory_surface` on `fields_for_model`. Empirically tested the hypothesis "extend
   `factory_surface` to module-level functions with `type_fan_out_return > 0`": django
@@ -568,9 +574,11 @@ after engine changes (fastapi only).
   it builds a dict by iterating `model._meta.concrete_fields` and calling
   `f.formfield()` where `f` is a parameter with no static type — INSTANTIATES /
   USES_TYPE can't see the construction (the same dynamic-attr family as F18/F24).
-  Conclusion: q03 needs either return-shape analysis (a dict whose values are calls)
-  or instance-attribute type inference for iteration locals — both 🔴 dataflow.
-  The role miss stays honest; not faked from a name.
+  Phase A can now mark "this function returns a mapping" when that shape is visible
+  in the AST. That is necessary but not sufficient here: the missing discriminator is
+  still "mapping values derive from field iteration / calls on iteration locals".
+  q03 therefore needs field-read + iteration-local value-flow, not only a return-shape
+  boolean. The role miss stays honest; not faked from a name.
 
 ### F23 — class HAS_API method ranking: query picks legacy over the relevant method 🟡
 - **pydantic q01 (`BaseModel`, "validation flow in v2")**: misses `core_runtime`; the

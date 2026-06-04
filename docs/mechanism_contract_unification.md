@@ -25,6 +25,24 @@ With those edges in the graph, the LLM judge confirmed (q01–q03 pass, role_rec
 
 The `apply_async → send_task` hop crosses Celery's `current_app = Proxy(get_current_app)` runtime thread-local proxy. No annotation, no assignment, name collision with `canvas.apply_async`. This hop is **not bridgeable by static analysis** and is accepted as a permanent hard limit. The LLM judge treats the context as complete up to this boundary.
 
+## Follow-up: return-shape foundation
+
+The committed Phase A change after this deletion added return-shape AST markers
+to `SymbolMetadata` and persisted them on `Symbol` nodes:
+
+- `returns_mapping`
+- `returns_sequence`
+- `returns_constructed_type`
+- `returns_function_expression`
+
+This does **not** revive mechanism contracts and does **not** author links. It is
+the next structural substrate for roles such as `binding_surface` and
+`schema_builder`: the graph can now distinguish "this function returns a mapping"
+from "this function only calls helpers", while still admitting that field reads,
+iteration locals, and value-flow from source shape to output shape are not solved.
+The same principle holds: add code-derived facts first; consume them as role
+discriminators only after empirical validation.
+
 ## What Path 2 (mechanism packs) is today
 
 `_role_backfill_candidates` in [unified_ranker.py](../sidecar/context/unified_ranker.py) remains active as an **opt-in extensibility mechanism**: set `MECHANISM_PACK_PATH` to load a YAML pack (see [celery_publish_consume.yaml](../sidecar/context/mechanism_packs/bundled/celery_publish_consume.yaml) for the schema). It is not loaded by default and does not author graph edges — it only backfills role slots that the derived graph leaves empty.

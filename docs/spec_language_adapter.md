@@ -46,7 +46,10 @@ class LanguageAdapter(ABC):
             file_path: absolute path (used for UID generation)
         
         Returns:
-            List of SymbolMetadata objects with populated uid, name, kind, start_line, end_line, content_hash.
+            List of SymbolMetadata objects with populated uid, name, kind,
+            start_line, end_line, content_hash, signature fields, language, and
+            optional structural AST markers such as returns_mapping /
+            returns_sequence / returns_constructed_type.
         """
         pass
     
@@ -131,6 +134,19 @@ class InheritanceEdge:
     superclass_name: str   # Unresolved name of the superclass/interface
     is_interface: bool     # True if superclass is an interface (TS/Java) vs. a class
 ```
+
+`SymbolMetadata` also carries extraction-time AST markers used by Pass 1:
+
+| Field | Meaning |
+|---|---|
+| `returns_function_expression` | Top-level return yields a function expression; higher-order factory signal |
+| `returns_mapping` | Top-level return yields a mapping shape |
+| `returns_sequence` | Top-level return yields a sequence shape |
+| `returns_constructed_type` | Top-level return yields a capitalized constructed call result |
+
+These markers are monotone booleans: multiple returns OR together. They are
+shape facts, not dataflow; they should not imply that the engine knows where each
+returned value came from.
 
 ## 3. Adapter Registry & Discovery
 

@@ -468,7 +468,9 @@ fed by `package.json` / installed-package roots — `external_boundary.py`);
 TS/JS parity (TS `USES_TYPE`, JS property-API + CommonJS alias references via
 `link_symbol_api_edges` / `link_symbol_references`); the
 `inherits_builtin_exception` Symbol marker for the standard exception hierarchy
-(transitively propagated along in-graph `DEPENDS_ON`). All verified in
+(transitively propagated along in-graph `DEPENDS_ON`); and Python return-shape
+Symbol markers (`returns_mapping`, `returns_sequence`, `returns_constructed_type`,
+`returns_function_expression`) from top-level return statements. All verified in
 `sidecar/database/neo4j_client.py` / `sidecar/indexer/`. The §9/§10 gaps
 (`WRAPS`/`BEFORE_CALL`/`AFTER_CALL`, `MUTATES`/`STORES`,
 `READS`/`WRITES`/`EXTERNAL_CALL`, `PUBLISHES`/`CONSUMES`, `DescriptorSurface`,
@@ -572,6 +574,19 @@ cron / celery beat / periodic task → the task it fires.
 
 ### Family C — field-level / dataflow
 
+#### ✅ Return-shape markers (implemented, Phase A)
+`Symbol.returns_mapping`, `returns_sequence`, and `returns_constructed_type`
+record the outer function body's top-level return shape. These are node facts,
+not edges.
+- **unblocks:** a cheap first discriminator for data-shape roles: mapping/sequence
+  builders can be separated from pure coordinators before adding heavier dataflow.
+- **scope:** AST shape only. `return {}` / `dict(...)` / dict-comprehension,
+  sequence literals/constructors/comprehensions, and capitalized constructed calls.
+- **does not solve:** where the returned values came from. A mapping builder that
+  iterates `model._meta.fields` and calls `f.formfield()` still needs field-read /
+  iteration-local / value-flow analysis before `binding_surface` is structurally
+  complete.
+
 #### 🟡 `READS_FIELD` / `WRITES_FIELD` (attribute access)
 Attribute access on an instance/class — finer granularity than `USES_TYPE`.
 - **unblocks (one edge, three open gaps):** `MUTATES` for `stateful_surface`
@@ -599,6 +614,7 @@ Value flows param → return → another call's argument.
 | `EMITS`/`LISTENS` | B | event-driven (Vue/Django/Node) blind spot | 🟠 |
 | `ROUTES_TO` | B | non-decorator routing | 🟠 |
 | `SCHEDULES` | B | cron / beat | 🟠 |
+| return-shape markers | C | binding/schema foundation | ✅ done (node facts, not dataflow) |
 | `READS`/`WRITES_FIELD` | C | MUTATES + purity + descriptor (3 gaps) | 🟡 |
 | `DATA_FLOW` | C | impact / security | 🔴 |
 
