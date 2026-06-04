@@ -1268,9 +1268,12 @@ class UnifiedRanker:
         """
         if intent is None:
             chain_pursuit = False
+            max_depth: int | None = None
         else:
             q_shape = extract_question_shape(query) if query else QuestionShape()
-            chain_pursuit = modulate_shape(intent, q_shape).chase_chains
+            effective = modulate_shape(intent, q_shape)
+            chain_pursuit = effective.chase_chains
+            max_depth = effective.max_depth
         visited = {target_uid}
         candidates: list[Candidate] = []
         pending_provenance: dict[str, list[str]] = {}
@@ -1405,6 +1408,19 @@ class UnifiedRanker:
                         and self._is_marker_consumer_edge(nn["rel_type"], nn["outgoing"])
                     )
                 )
+                # Per-intent max_depth ceiling. The intent's TraversalShape
+                # declares how far the answer should reasonably reach (2 for
+                # NAVIGATION's surface lookup, 4 for EXPLORATION's mechanism
+                # explain, 10 for IMPACT_ANALYSIS's transitive ripple). A
+                # registration / marker chain edge stays allowed beyond the
+                # ceiling so a deep-but-on-chain step (e.g. a registration
+                # hop reached past the configured depth) can still surface.
+                if (
+                    max_depth is not None
+                    and distance + 1 > max_depth
+                    and not (child_reg_chain or child_marker_chain)
+                ):
+                    continue
                 ns = self._raw_graph_score(
                     nn,
                     distance=distance + 1,
