@@ -467,6 +467,44 @@ def _decorator_phase(
     return len(decorators)
 
 
+def _attr_access_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create READS_ATTR / WRITES_ATTR edges from accessor functions to
+    attribute symbols.
+
+    Runs after `_apply_graph` so the attribute symbols (class members,
+    module-level vars) exist. Same ``project_root_scope`` requirement as
+    decorators / type references — uids must match stored nodes.
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    link_attr = getattr(db, "link_attr_accesses", None)
+    reporter.stage_start("attr_accesses", total=1)
+    accesses: list[dict] = []
+    if callable(link_attr):
+        py_adapter = PythonAdapter()
+        with project_root_scope(project_path or None):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    accesses.extend(py_adapter.extract_attr_accesses(ex.source, ex.path))
+                except Exception:
+                    continue
+        if accesses:
+            link_attr(accesses, workspace_id=workspace_id)
+    reporter.step("attr_accesses")
+    reporter.stage_end("attr_accesses")
+    return len(accesses)
+
+
 def _type_reference_phase(
     diffs: list[FileDiff],
     db: Neo4jClient,
@@ -1185,6 +1223,15 @@ def run_fast_indexing(
             diffs, db, workspace_id, reporter, project_path
         )
         stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.655: READS_ATTR + WRITES_ATTR edges. Same syntactic-fact
+        # pattern as decorators / type references — runs after _apply_graph
+        # so attribute symbols exist. Kept out of degree materialisation.
+        t_stage = time.perf_counter()
+        stats["attr_accesses_linked"] = _attr_access_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["attr_accesses"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.66: USES_TYPE edges. Like DECORATED_BY, kept out of materialized
         # degree (separate, low-weight, filterable relation), so ordering vs the

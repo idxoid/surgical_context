@@ -37,6 +37,9 @@ class FanProfile(Protocol):
     construct_fan_out: float
     fluent_self_return_count: int
     decorator_arg_ref_count: int
+    attr_reads_fan_out: float
+    attr_writes_fan_out: float
+    attr_writes_subscript_fan_out: float
     cross_package_call_in: float
     cross_package_call_out: float
     depth_from_public: int

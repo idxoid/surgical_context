@@ -369,6 +369,186 @@ class PythonAdapter(TreeSitterAdapter):
                 )
         return out
 
+    def extract_attr_accesses(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        """READS_ATTR / WRITES_ATTR edges from a function to attribute Symbols.
+
+        A function reading ``self.x`` or ``local.x`` (where ``local`` has a
+        statically visible type via :meth:`_local_value_types`) emits a
+        READS_ATTR edge to the attribute symbol; an assignment ``self.x =
+        ...`` emits WRITES_ATTR; a subscript assignment ``self.x[k] = v``
+        emits WRITES_ATTR with ``kind="subscript"`` (which is the key
+        binding-surface signal — function building a mapping by writing
+        into an attribute).
+
+        Attribute symbol resolution is best-effort qualified_name first
+        (``ClassName.attr``), with the linker falling back to workspace-
+        unique-name match. Unresolvable attribute names produce no edge.
+
+        Receivers other than ``self`` and known-typed locals (e.g.
+        ``request.method``) emit a name-only target — the linker only
+        binds them when the name is unique workspace-wide.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        module = module_name_from_path(file_path)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+        method_returns, function_returns = self._build_return_type_table(
+            tree, import_bindings, module
+        )
+        attr_type_table = self._build_attr_type_table(
+            tree,
+            import_bindings,
+            module,
+            method_returns=method_returns,
+            function_returns=function_returns,
+        )
+
+        out: list[dict] = []
+        seen: set[tuple[str, str, str, str]] = set()
+
+        def emit(accessor_uid: str, accessor_name: str,
+                 attr_name: str, attr_qn: str, kind: str) -> None:
+            if not accessor_uid or not attr_name:
+                return
+            key = (accessor_uid, attr_name, attr_qn, kind)
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(
+                {
+                    "accessor_uid": accessor_uid,
+                    "accessor_name": accessor_name,
+                    "attr_name": attr_name,
+                    "attr_qualified_name": attr_qn,
+                    "kind": kind,
+                    "file_path": file_path,
+                }
+            )
+
+        # Walk every function definition; for each, scan its body for
+        # attribute reads and writes. We skip nested function bodies via
+        # the same boundary the return-shape scan uses, so a helper closure
+        # inside a method doesn't credit its outer scope.
+        for fn in self._iter_nodes(tree.root_node):
+            if fn.type != "function_definition":
+                continue
+            name_node = fn.child_by_field_name("name")
+            body = fn.child_by_field_name("body")
+            if name_node is None or body is None:
+                continue
+            accessor_uid = self._uid_for_node(fn, source_code, file_path)
+            accessor_name = _node_text(name_node)
+            enclosing_class = self._enclosing_class_name(fn)
+            cls_table = attr_type_table.get(enclosing_class, {})
+            local_types = self._local_value_types(
+                fn,
+                cls_table=cls_table,
+                enclosing_class=enclosing_class,
+                import_bindings=import_bindings,
+                module=module,
+                method_returns=method_returns,
+                function_returns=function_returns,
+            )
+
+            def resolve_receiver(obj_node, *, ec=enclosing_class, ct=cls_table, lt=local_types) -> str:
+                """Best-guess qualified type for the receiver expression.
+
+                Loop-bound locals (``ec`` / ``ct`` / ``lt``) are captured via
+                default-argument binding so each function's closure sees its
+                own snapshot rather than the loop's last iteration value.
+                """
+                if obj_node.type == "identifier":
+                    name = _node_text(obj_node)
+                    if name == "self" and ec:
+                        return ec
+                    return lt.get(name, "")
+                if obj_node.type == "attribute":
+                    inner = obj_node.child_by_field_name("object")
+                    inner_attr = obj_node.child_by_field_name("attribute")
+                    if (
+                        inner is not None
+                        and inner.type == "identifier"
+                        and _node_text(inner) == "self"
+                        and inner_attr is not None
+                        and inner_attr.type == "identifier"
+                    ):
+                        return ct.get(_node_text(inner_attr), "")
+                return ""
+
+            # 1. Attribute reads — every ``obj.attr`` we can resolve a
+            #    receiver type for.
+            for node in self._iter_nodes(body):
+                if node.type == "function_definition":
+                    continue  # nested callable — its accesses belong to it
+                if node.type != "attribute":
+                    continue
+                obj = node.child_by_field_name("object")
+                attr = node.child_by_field_name("attribute")
+                if obj is None or attr is None or attr.type != "identifier":
+                    continue
+                # Skip ``self.x`` on the *write* side; the assignment loop
+                # below handles writes. A read embedded in an assignment
+                # right-hand side still shows up here as a separate node.
+                parent = node.parent
+                if parent is not None and parent.type == "assignment":
+                    lhs = parent.child_by_field_name("left")
+                    if lhs is not None and lhs.start_byte == node.start_byte:
+                        continue
+                attr_name = _node_text(attr)
+                receiver_qn = resolve_receiver(obj)
+                if receiver_qn:
+                    attr_qn = f"{receiver_qn}.{attr_name}"
+                else:
+                    attr_qn = ""
+                emit(accessor_uid, accessor_name, attr_name, attr_qn, "read")
+
+            # 2. Writes — ``self.attr = ...``, ``local.attr = ...``,
+            #    ``self.attr[k] = v`` (subscript) and ``local[k] = v``
+            #    (subscript on a local of known type — building a mapping).
+            for node in self._iter_nodes(body):
+                if node.type == "function_definition":
+                    continue
+                if node.type != "assignment":
+                    continue
+                left = node.child_by_field_name("left")
+                if left is None:
+                    continue
+                if left.type == "attribute":
+                    obj = left.child_by_field_name("object")
+                    attr = left.child_by_field_name("attribute")
+                    if obj is None or attr is None or attr.type != "identifier":
+                        continue
+                    attr_name = _node_text(attr)
+                    receiver_qn = resolve_receiver(obj)
+                    attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
+                    emit(accessor_uid, accessor_name, attr_name, attr_qn, "write")
+                elif left.type == "subscript":
+                    base = left.child_by_field_name("value")
+                    if base is None:
+                        continue
+                    if base.type == "attribute":
+                        # ``self.attr[k] = v`` — write into mapping owned by
+                        # ``self.attr``. The binding signal: function builds a
+                        # mapping by writing into a class attribute.
+                        obj = base.child_by_field_name("object")
+                        attr = base.child_by_field_name("attribute")
+                        if obj is None or attr is None or attr.type != "identifier":
+                            continue
+                        attr_name = _node_text(attr)
+                        receiver_qn = resolve_receiver(obj)
+                        attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
+                        emit(accessor_uid, accessor_name, attr_name, attr_qn, "write_subscript")
+                    elif base.type == "identifier":
+                        # ``local[k] = v`` — only emit when ``local`` has a
+                        # statically known mapping type (otherwise it could be
+                        # anything). For now this leans on existing local-typing.
+                        rname = _node_text(base)
+                        local_type = local_types.get(rname, "")
+                        if local_type:
+                            emit(accessor_uid, accessor_name, rname, local_type,
+                                 "write_subscript_local")
+        return out
+
     def extract_type_references(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:

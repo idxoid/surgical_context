@@ -50,6 +50,8 @@ STRUCTURAL_REL_TYPES = (
     "DECORATED_BY",
     "INSTANTIATES",
     "COMPOSES",
+    "READS_ATTR",
+    "WRITES_ATTR",
 )
 
 DEFAULT_EDGE_CONFIDENCE: dict[str, float] = {
@@ -69,6 +71,8 @@ DEFAULT_EDGE_CONFIDENCE: dict[str, float] = {
     "DECORATED_BY": 1.0,
     "INSTANTIATES": 1.0,
     "COMPOSES": 1.0,
+    "READS_ATTR": 1.0,
+    "WRITES_ATTR": 1.0,
 }
 
 USES_TYPE_KIND_WEIGHT: dict[str, float] = {
@@ -118,6 +122,13 @@ class SymbolRow:
     construct_fan_out: float = 0.0
     fluent_self_return_count: int = 0
     decorator_arg_ref_count: int = 0
+    # Attribute-access fans — outgoing edges count how many distinct
+    # attribute symbols the function reads / writes. ``subscript`` is the
+    # binding-surface signal: a function that writes into the *contents* of
+    # an attribute (``self.cache[k] = v``) is shaping a mapping/sequence.
+    attr_reads_fan_out: float = 0.0
+    attr_writes_fan_out: float = 0.0
+    attr_writes_subscript_fan_out: float = 0.0
     reexport_in: int = 0
     is_proxy_binding: bool = False
     external_call_fan_out: float = 0.0
@@ -373,6 +384,9 @@ def assemble_symbol_rows(
     decorated_out: dict[str, float] = defaultdict(float)
     construct_fan_out: dict[str, float] = defaultdict(float)
     decorator_arg_ref_count: dict[str, int] = defaultdict(int)
+    attr_reads_fan_out: dict[str, float] = defaultdict(float)
+    attr_writes_fan_out: dict[str, float] = defaultdict(float)
+    attr_writes_subscript_fan_out: dict[str, float] = defaultdict(float)
 
     for caller, callee, rel_type, conf, kind in _iter_structural_edges(call_edges):
         caller_in = caller in info
@@ -436,6 +450,21 @@ def assemble_symbol_rows(
             # service does not gain a role from being composed).
             if caller_in:
                 decorator_arg_ref_count[caller] += 1
+        elif rel_type == "READS_ATTR":
+            # Function reads an attribute — counted per-accessor only. The
+            # attribute side is not credited (a frequently-read attribute is
+            # not itself a binder).
+            if caller_in:
+                attr_reads_fan_out[caller] += conf
+        elif rel_type == "WRITES_ATTR":
+            # Functions writes an attribute. ``kind`` distinguishes a direct
+            # write (``self.x = ...``) from a subscript write (``self.x[k]
+            # = v``). The subscript form is the binding-surface signal —
+            # function builds a mapping/sequence inside an attribute.
+            if caller_in:
+                attr_writes_fan_out[caller] += conf
+                if kind in ("write_subscript", "write_subscript_local"):
+                    attr_writes_subscript_fan_out[caller] += conf
 
     handler_call_fan_out: dict[str, float] = defaultdict(float)
     for caller, callee, rel_type, conf, _kind in _iter_structural_edges(call_edges):
@@ -513,6 +542,9 @@ def assemble_symbol_rows(
                 construct_fan_out=construct_fan_out[uid],
                 fluent_self_return_count=fluent_self_return_count.get(uid, 0),
                 decorator_arg_ref_count=decorator_arg_ref_count.get(uid, 0),
+                attr_reads_fan_out=attr_reads_fan_out[uid],
+                attr_writes_fan_out=attr_writes_fan_out[uid],
+                attr_writes_subscript_fan_out=attr_writes_subscript_fan_out[uid],
                 reexport_in=int(reexport_in_per_uid.get(uid, 0)),
                 is_proxy_binding=uid in proxy_uids,
                 external_call_fan_out=float(external_call_fan_out_per_uid.get(uid, 0.0)),

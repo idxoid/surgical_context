@@ -1214,6 +1214,89 @@ class Neo4jClient:
             workspace_id=workspace_id,
         )
 
+    def link_attr_accesses(
+        self,
+        accesses: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create READS_ATTR / WRITES_ATTR edges from the accessor function
+        to an attribute symbol resolved by qualified-name with name-uniqueness
+        fallback.
+
+        Attribute access is the structural backbone of binding-surface
+        signals — a function reading ``self.config`` or writing
+        ``self.fields[k] = v`` carries data-shape evidence that pure call
+        edges miss. The edge ``kind`` carries the specific access form:
+        ``read``, ``write``, ``write_subscript`` (mapping/sequence write
+        into the attribute), or ``write_subscript_local`` (write into a
+        typed local).
+        """
+        if not accesses:
+            return
+        with self.driver.session() as session:
+            session.execute_write(
+                self._create_attr_access_relations, accesses, workspace_id
+            )
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_attr_access_relations(tx, accesses, workspace_id):
+        if not accesses:
+            return
+        # Resolve attribute Symbols workspace-wide by qualified_name first
+        # (the strong match), then by unique name. Mirrors the call
+        # resolver's safety: name fallback fires only when exactly one
+        # Symbol carries that name. Reads and writes are split into two
+        # MERGEs by edge type.
+        reads = [a for a in accesses if a.get("kind") == "read"]
+        writes = [a for a in accesses if a.get("kind") in ("write", "write_subscript", "write_subscript_local")]
+        for rel_type, rows in (("READS_ATTR", reads), ("WRITES_ATTR", writes)):
+            if not rows:
+                continue
+            tx.run(
+                f"""
+                UNWIND $rows AS a
+                MATCH (accessor:Symbol {{uid: a.accessor_uid}})
+                MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(attr:Symbol)
+                WHERE attr.qualified_name = a.attr_qualified_name
+                   OR attr.name = a.attr_name
+                WITH accessor, a, attr
+                ORDER BY
+                  CASE WHEN attr.qualified_name = a.attr_qualified_name THEN 0 ELSE 1 END,
+                  size(attr.qualified_name) ASC
+                WITH accessor, a, collect(attr)[0] AS attr
+                WHERE attr IS NOT NULL AND accessor <> attr
+                MERGE (accessor)-[r:{rel_type} {{workspace_id: $workspace_id}}]->(attr)
+                SET r.resolver = 'attr-access-v1',
+                    r.kind = a.kind
+                """,
+                rows=rows,
+                workspace_id=workspace_id,
+            )
+
+    def delete_attr_accesses_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear READS_ATTR / WRITES_ATTR edges originating in ``file_path``."""
+        with self.driver.session() as session:
+            for rel_type in ("READS_ATTR", "WRITES_ATTR"):
+                session.run(
+                    f"""
+                    MATCH (f:File {{path: $path, workspace_id: $workspace_id}})
+                          -[:CONTAINS]->(s:Symbol)-[r:{rel_type}]->()
+                    WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                    DELETE r
+                    """,
+                    path=file_path,
+                    workspace_id=workspace_id,
+                )
+
     def link_decorator_compositions(
         self,
         compositions: list[dict],
