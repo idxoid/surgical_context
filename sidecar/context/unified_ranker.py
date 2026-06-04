@@ -1269,11 +1269,22 @@ class UnifiedRanker:
         if intent is None:
             chain_pursuit = False
             max_depth: int | None = None
+            direction_filter: tuple[str, ...] | None = None
         else:
             q_shape = extract_question_shape(query) if query else QuestionShape()
             effective = modulate_shape(intent, q_shape)
             chain_pursuit = effective.chase_chains
             max_depth = effective.max_depth
+            direction_filter = effective.direction
+
+        def _direction_keeps(outgoing: bool) -> bool:
+            if direction_filter is None:
+                return True
+            if "self" in direction_filter:
+                return False  # ("self",) — don't walk at all
+            if outgoing and "forward" in direction_filter:
+                return True
+            return not outgoing and "backward" in direction_filter
         visited = {target_uid}
         candidates: list[Candidate] = []
         pending_provenance: dict[str, list[str]] = {}
@@ -1313,6 +1324,8 @@ class UnifiedRanker:
                     remembered.append(step)
 
         for n in self._get_neighbors(target_uid, visited, distance=1):
+            if not _direction_keeps(n["outgoing"]):
+                continue
             reg_chain = chain_pursuit and self._is_api_entry_edge(n["rel_type"], n["outgoing"])
             marker_chain = (
                 chain_pursuit
@@ -1394,6 +1407,8 @@ class UnifiedRanker:
             candidates.append(c)
 
             for nn in self._get_neighbors(uid, visited, distance=distance + 1):
+                if not _direction_keeps(nn["outgoing"]):
+                    continue
                 child_reg_chain = chain_pursuit and reg_chain and self._is_registration_chain_edge(
                     nn["rel_type"],
                     nn["outgoing"],

@@ -334,8 +334,12 @@ _CHANGE_PHRASES = (
 )
 
 _DIRECTION_HINT_DEFINITION = ("defined", "implemented", "located", "lives in")
+# Only unambiguous "I want callers" phrases — passive voice or explicit
+# "callers of". Bare "uses" / "use" / "calls" / "imports" are ambiguous
+# (`X uses Y` is forward; `what uses X` is backward) and previously
+# misfired on questions like "How does NestJS use decorators".
 _DIRECTION_HINT_USAGE = (
-    "uses", "use", "calls", "called by", "imports", "references", "used by",
+    "used by", "called by", "callers of", "references to", "depended on",
 )
 
 _WH_WORDS = ("where", "how", "why", "what", "which")
@@ -440,8 +444,14 @@ def modulate_shape(intent: Intent, q: QuestionShape) -> TraversalShape:
         chase_chains = True
         max_depth = max(max_depth, base.max_depth + 2)
     if q.has_flow_verb:
+        # A flow verb signals chain pursuit, not a direction collapse — the
+        # answer to "How does X flow through Y to Z" needs both the
+        # forward chain (X→Y→Z) and the backward context (what registered
+        # X in the first place). Earlier behaviour cut backward edges
+        # and lost registration_step / factory_surface roles on those
+        # questions; keep the base direction and let chase_chains do the
+        # widening.
         chase_chains = True
-        direction = ("forward",)
     if q.scope == "wide":
         max_depth = max(max_depth, 10)
     if q.direction_hint == "definition":

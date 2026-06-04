@@ -293,12 +293,24 @@ class TestQuestionShape:
             modulate_shape,
         )
 
-        qs = extract_question_shape("What uses CacheManager?")
+        qs = extract_question_shape("Where is CacheManager used by other modules?")
         assert qs.direction_hint == "usage"
         shape = modulate_shape(Intent.NAVIGATION, qs)
         assert shape.direction == ("backward",)
 
-    def test_flow_verb_forces_forward_and_chain_chase(self):
+    def test_bare_uses_no_longer_triggers_usage_hint(self):
+        """Bare `uses` / `use` are ambiguous (``X uses Y`` is forward;
+        ``what uses X`` is backward) — they no longer set the direction
+        hint. Only unambiguous passive-voice phrases (``used by``,
+        ``called by``, ``callers of``) do."""
+        from sidecar.context.intent_classifier import extract_question_shape
+
+        # "use decorators" is `X uses Y`-shape, not a callers query.
+        assert extract_question_shape(
+            "How does NestJS use decorators to map routes?"
+        ).direction_hint == ""
+
+    def test_flow_verb_turns_chase_chains_on_without_narrowing_direction(self):
         from sidecar.context.intent_classifier import (
             INTENT_TRAVERSAL,
             extract_question_shape,
@@ -310,11 +322,15 @@ class TestQuestionShape:
         )
         assert qs.has_flow_verb is True
 
-        # DEBUGGING has chase_chains=False at base; flow verb turns it on.
+        # DEBUGGING has chase_chains=False at base; flow verb turns it on
+        # but keeps the base direction (collapsing to forward-only here
+        # loses the registration / handler chain that gave the question
+        # its meaning, so the modulator stays additive).
+        base = INTENT_TRAVERSAL[Intent.DEBUGGING]
         shape = modulate_shape(Intent.DEBUGGING, qs)
-        assert shape.direction == ("forward",)
         assert shape.chase_chains is True
-        assert INTENT_TRAVERSAL[Intent.DEBUGGING].chase_chains is False
+        assert shape.direction == base.direction
+        assert base.chase_chains is False
 
     def test_state_verb_alone_does_not_modulate(self):
         from sidecar.context.intent_classifier import (
