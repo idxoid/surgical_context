@@ -28,6 +28,7 @@ from sidecar.context.intent_classifier import (
     IntentClassifier,
     IntentPolicy,
     IntentSignal,
+    intent_edge_boost,
 )
 from sidecar.context.mechanism_registry import role_backfill_specs_for_mechanism
 from sidecar.context.ranker import (
@@ -1306,7 +1307,7 @@ class UnifiedRanker:
                 distance=1,
                 chain_pursuit=chain_pursuit,
                 registration_chain=reg_chain or marker_chain,
-            )
+            ) * intent_edge_boost(intent, n["rel_type"])
             _remember_provenance(
                 n["uid"],
                 _provenance_steps(n, n["rel_type"], n["outgoing"], 1, reg_chain, marker_chain),
@@ -1395,7 +1396,7 @@ class UnifiedRanker:
                     distance=distance + 1,
                     chain_pursuit=chain_pursuit,
                     registration_chain=child_reg_chain or child_marker_chain,
-                )
+                ) * intent_edge_boost(intent, nn["rel_type"])
                 _remember_provenance(
                     nn["uid"],
                     _provenance_steps(

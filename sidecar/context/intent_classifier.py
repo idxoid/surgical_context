@@ -388,6 +388,35 @@ def extract_question_shape(query: str) -> QuestionShape:
     )
 
 
+# Maximum boost applied to an edge prior when its relation sits at the head
+# of `INTENT_EDGE_PRIORITY[intent]`. Position-weighted: top edge gets the
+# full bump, last edge in the list gets ``base * 1/n``, anything not in the
+# list keeps the universal `_RELATION_PRIOR` value. 15% chosen
+# conservatively — large enough to rerank close-ties for an intent's
+# preferred edge type, small enough to leave the base relation prior
+# (CALLS_DIRECT_in 1.2 / HAS_API_out 1.45 / etc.) dominant.
+_INTENT_EDGE_BOOST_MAX: float = 0.15
+
+
+def intent_edge_boost(intent: Intent | None, rel_type: str) -> float:
+    """Per-intent multiplier for an edge prior derived from INTENT_EDGE_PRIORITY.
+
+    For an edge type ``rel_type`` that the intent lists in its priority
+    tuple, returns ``1.0 + base * (n - pos) / n`` where ``pos`` is the
+    edge's index in the list and ``n`` is the list length. Edges not in
+    the list keep a neutral ``1.0`` — the boost can only *amplify* the
+    universal `_RELATION_PRIOR`, never penalise an edge.
+    """
+    if intent is None:
+        return 1.0
+    priority = INTENT_EDGE_PRIORITY.get(intent, ())
+    if not priority or rel_type not in priority:
+        return 1.0
+    position = priority.index(rel_type)
+    n = len(priority)
+    return 1.0 + _INTENT_EDGE_BOOST_MAX * (n - position) / n
+
+
 def modulate_shape(intent: Intent, q: QuestionShape) -> TraversalShape:
     """Return a per-question TraversalShape derived from intent's base.
 
