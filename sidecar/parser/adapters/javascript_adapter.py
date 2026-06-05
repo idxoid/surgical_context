@@ -20,6 +20,19 @@ from sidecar.parser.uid import (
 class JavaScriptAdapter(TreeSitterAdapter):
     """JavaScript parser adapter."""
 
+    _PUBLIC_VARIABLE_VALUE_TYPES = frozenset(
+        {
+            "call_expression",
+            "new_expression",
+            "await_expression",
+            "arrow_function",
+            "function_expression",
+            "member_expression",
+            "object",
+            "array",
+        }
+    )
+
     _EXPORTED_VAR_FALLBACK_RE = re.compile(
         r"(?m)^exports\.([A-Za-z_$][\w$]*)\s*=|^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b"
     )
@@ -324,16 +337,19 @@ class JavaScriptAdapter(TreeSitterAdapter):
             value = node.child_by_field_name("value")
             if value is None:
                 return False
-            return value.type in {
-                "call_expression",
-                "new_expression",
-                "await_expression",
-                "arrow_function",
-                "function_expression",
-                "member_expression",
-                "object",
-                "array",
-            }
+            return self._is_public_variable_value(value)
+        return False
+
+    def _is_public_variable_value(self, node) -> bool:
+        if node is None:
+            return False
+        if node.type in self._PUBLIC_VARIABLE_VALUE_TYPES:
+            return True
+        if node.type == "assignment_expression":
+            named_children = [child for child in node.children if child.is_named]
+            if len(named_children) < 2:
+                return False
+            return self._is_public_variable_value(named_children[-1])
         return False
 
     @property
@@ -531,7 +547,13 @@ class JavaScriptAdapter(TreeSitterAdapter):
         """Extract JavaScript calls with direct vs dynamic dispatch classification."""
         if tree is None:
             tree = self._parse(source_code)
-        query = Query(self.language, "(call_expression) @call")
+        query = Query(
+            self.language,
+            """
+            (call_expression) @call
+            (new_expression) @call
+            """,
+        )
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
@@ -544,6 +566,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
         by_name: dict[str, list] = {}
         for symbol in symbols:
             by_name.setdefault(symbol.name, []).append(symbol)
+        symbol_uids = {str(symbol.uid) for symbol in symbols}
 
         import_bindings = self._extract_import_bindings(source_code, file_path)
         calls = []
@@ -552,6 +575,8 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 continue
 
             func_node = node.child_by_field_name("function")
+            if func_node is None and node.type == "new_expression":
+                func_node = node.child_by_field_name("constructor")
             if not func_node:
                 continue
 
@@ -559,7 +584,12 @@ class JavaScriptAdapter(TreeSitterAdapter):
             if not parent:
                 continue
 
-            caller_uid = self._caller_uid_for_owner(parent, source_code, file_path)
+            caller_uid = self._caller_uid_for_indexed_owner(
+                parent,
+                symbol_uids,
+                source_code,
+                file_path,
+            )
             if not caller_uid:
                 continue
             callee_uid = None
@@ -567,6 +597,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
             rel_type = "CALLS_DIRECT"
             tier = "direct"
             confidence = 1.0
+            call_kind = "construct" if node.type == "new_expression" else "call"
 
             if func_node.type == "identifier":
                 call_name = source_code[func_node.start_byte : func_node.end_byte]
@@ -610,6 +641,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 "confidence": confidence,
                 "resolver": "js-scope-v1",
                 "call_site_line": node.start_point[0] + 1,
+                "call_kind": call_kind,
             }
             if callee_uid:
                 call["callee_uid"] = callee_uid
@@ -625,6 +657,27 @@ class JavaScriptAdapter(TreeSitterAdapter):
             calls.append(call)
 
         return calls
+
+    def _caller_uid_for_indexed_owner(
+        self,
+        node,
+        symbol_uids: set[str],
+        source_code: str,
+        file_path: str,
+    ) -> str | None:
+        """Return the nearest enclosing owner that is materialized as a Symbol.
+
+        JavaScript often hides meaningful work inside inline callbacks/getters
+        that are not indexed as first-class symbols. Preserve the call fact by
+        assigning it to the nearest indexed containing API/function symbol.
+        """
+        current = node
+        while current is not None:
+            uid = self._caller_uid_for_owner(current, source_code, file_path)
+            if uid and uid in symbol_uids:
+                return uid
+            current = self._enclosing_symbol_owner(current)
+        return None
 
     def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
         bindings: dict[str, str] = {}

@@ -2234,6 +2234,193 @@ def test_graph_candidates_follow_has_api_registration_chain():
     assert any("reg_chain" in step for step in by_name["APIRoute"].provenance)
 
 
+def test_graph_candidates_follow_commonjs_alias_to_owned_api_children():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+
+    neighbors_by_uid = {
+        "response-export": [
+            {
+                "uid": "res-owner",
+                "name": "res",
+                "file_path": "/repo/express/lib/response.js",
+                "file_hash": "",
+                "token_estimate": 20,
+                "range": [28, 28],
+                "rel_type": "REFERENCES",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 0,
+                "outgoing_call_count": 0,
+            }
+        ],
+        "res-owner": [
+            {
+                "uid": "json-method",
+                "name": "json",
+                "file_path": "/repo/express/lib/response.js",
+                "file_hash": "",
+                "token_estimate": 120,
+                "range": [260, 310],
+                "rel_type": "HAS_API",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 1,
+                "outgoing_call_count": 1,
+            },
+            {
+                "uid": "send-method",
+                "name": "send",
+                "file_path": "/repo/express/lib/response.js",
+                "file_hash": "",
+                "token_estimate": 180,
+                "range": [120, 220],
+                "rel_type": "HAS_API",
+                "rel_kind": "",
+                "outgoing": True,
+                "caller_count": 1,
+                "outgoing_call_count": 2,
+            },
+        ],
+    }
+
+    ranker._get_neighbors = lambda uid, visited, distance: [
+        n for n in neighbors_by_uid.get(uid, []) if n["uid"] not in visited
+    ]
+
+    pool = ranker._graph_candidates(
+        "response-export",
+        pool_size=10,
+        intent=Intent.EXPLORATION,
+        query="How are response methods like send() and json() implemented and chained?",
+    )
+    by_name = {c.name: c for c in pool}
+
+    assert "res" in by_name
+    assert "json" in by_name
+    assert "send" in by_name
+    assert by_name["json"].depth == 2
+    assert by_name["json"].relation == "HAS_API"
+    assert any("reg_chain" in step for step in by_name["json"].provenance)
+
+
+def test_graph_candidates_follow_external_coref_to_local_constructor_user():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+
+    ranker._get_neighbors = lambda uid, visited, distance: []
+    ranker._get_external_coref_neighbors = lambda uid, visited, limit=12: [
+        {
+            "uid": "app-init",
+            "name": "init",
+            "file_path": "/repo/express/lib/application.js",
+            "file_hash": "",
+            "token_estimate": 120,
+            "range": [59, 83],
+            "rel_type": "EXTERNAL_COREF",
+            "rel_kind": "construct",
+            "outgoing": True,
+            "caller_count": 1,
+            "outgoing_call_count": 0,
+        }
+    ]
+
+    pool = ranker._graph_candidates(
+        "router-export",
+        pool_size=10,
+        intent=Intent.EXPLORATION,
+        query="How is this external API exposed and used?",
+    )
+
+    assert [candidate.uid for candidate in pool] == ["app-init"]
+    assert pool[0].relation == "EXTERNAL_COREF"
+    assert any("EXTERNAL_COREF" in step for step in pool[0].provenance)
+
+
+def test_public_alias_to_owned_api_counts_as_factory_runtime_surface():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._structural_fan_by_uid["response-export"] = {
+        "call_fan_in": 0.0,
+        "call_fan_out": 0.0,
+        "type_fan_in": 0.0,
+        "handle_fan_in": 0.0,
+        "alias_api_fan_out": 4.0,
+    }
+    target = Candidate(
+        kind="symbol",
+        uid="response-export",
+        name="response",
+        symbol_kind="variable",
+        file_path="/repo/express/lib/express.js",
+        relation="target",
+        token_cost=8,
+    )
+
+    roles = ranker.role_fulfilment.roles_of(target)
+
+    assert "api_surface" in roles
+    assert "factory_surface" in roles
+    assert "runtime_surface" in roles
+
+
+def test_public_api_owner_target_counts_as_composition_runtime_surface():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._structural_fan_by_uid["app-owner"] = {
+        "call_fan_in": 0.0,
+        "call_fan_out": 0.0,
+        "type_fan_in": 0.0,
+        "handle_fan_in": 0.0,
+        "alias_api_fan_out": 0.0,
+        "api_fan_out": 16.0,
+    }
+    target = Candidate(
+        kind="symbol",
+        uid="app-owner",
+        name="app",
+        symbol_kind="variable",
+        file_path="/repo/express/lib/application.js",
+        relation="target",
+        token_cost=8,
+    )
+
+    roles = ranker.role_fulfilment.roles_of(target)
+
+    assert "api_surface" in roles
+    assert "composition_surface" in roles
+    assert "factory_surface" in roles
+    assert "runtime_surface" in roles
+
+
+def test_public_external_construct_coref_counts_as_factory_surface():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._structural_fan_by_uid["external-router"] = {
+        "call_fan_in": 0.0,
+        "call_fan_out": 0.0,
+        "type_fan_in": 0.0,
+        "handle_fan_in": 0.0,
+        "alias_api_fan_out": 0.0,
+        "api_fan_out": 0.0,
+        "external_construct_coref_fan_out": 1.0,
+    }
+    target = Candidate(
+        kind="symbol",
+        uid="external-router",
+        name="Router",
+        symbol_kind="variable",
+        file_path="/repo/express/lib/express.js",
+        relation="target",
+        token_cost=8,
+    )
+
+    roles = ranker.role_fulfilment.roles_of(target)
+
+    assert "api_surface" in roles
+    assert "factory_surface" in roles
+
+
 def test_graph_candidates_skip_registration_chain_without_chain_pursuit_intent():
     db = _make_db()
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")

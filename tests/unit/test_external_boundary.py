@@ -50,12 +50,14 @@ def test_collect_external_call_links_skips_in_project_targets():
             "caller_uid": "c2",
             "callee_qualified_name": "json.dumps",
             "call_site_line": 3,
+            "call_kind": "construct",
         },
     ]
     links = collect_external_call_links(calls, boundary=boundary)
     assert len(links) == 1
     assert links[0].external_root == "json"
     assert links[0].callee_member == "dumps"
+    assert links[0].kind == "construct"
 
 
 def test_collect_external_import_links_from_source():
@@ -85,6 +87,7 @@ def test_external_call_link_rows_use_stable_uids():
     link = ExternalCallLink("caller", "json", "dumps", 1, 0.9)
     rows = external_call_link_rows([link], "ws/test")
     assert rows[0]["external_uid"] == external_pkg_uid("ws/test", "json")
+    assert rows[0]["kind"] == "call"
 
 
 def test_assemble_symbol_rows_includes_external_features():

@@ -309,6 +309,7 @@ _FLOW_VERBS = frozenset(
         "wire", "wired",
         "propagate", "propagates", "propagated",
         "forward", "forwards", "forwarded",
+        "chain", "chains", "chained",
     }
 )
 _FLOW_PHRASES = ("get from", "gets from", "go through", "goes through")
@@ -454,7 +455,7 @@ def modulate_shape(intent: Intent, q: QuestionShape) -> TraversalShape:
         chase_chains = True
     if q.scope == "wide":
         max_depth = max(max_depth, 10)
-    if q.direction_hint == "definition":
+    if q.direction_hint == "definition" and not q.has_flow_verb:
         direction = ("self",)
     elif q.direction_hint == "usage":
         direction = ("backward",)

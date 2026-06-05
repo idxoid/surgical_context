@@ -1197,6 +1197,7 @@ class UnifiedRanker:
         intent for intent, shape in INTENT_TRAVERSAL.items() if shape.chase_chains
     )
     _API_ENTRY_RELATIONS = frozenset({"HAS_API", "INHERITED_API"})
+    _ALIAS_ENTRY_RELATIONS = frozenset({"REFERENCES"})
     _REGISTRATION_CHAIN_RELATIONS = frozenset(
         {
             "CALLS",
@@ -1209,6 +1210,8 @@ class UnifiedRanker:
             "USES_TYPE",
             "INJECTS",
             "HANDLES",
+            "HAS_API",
+            "INHERITED_API",
         }
     )
     _MARKER_CHAIN_RELATIONS = _REGISTRATION_CHAIN_RELATIONS
@@ -1258,6 +1261,10 @@ class UnifiedRanker:
         For sync/async endpoint execution questions, an *execution chain*
         softens distance/token along runtime handler hops (including large
         ``get_request_handler`` reached via ``USES_TYPE`` in the same module).
+
+        For CommonJS / barrel-style object facades, an outgoing ``REFERENCES``
+        hop can start the same chain: ``exports.response = res`` reaches the
+        real owner object, then outgoing ``HAS_API`` exposes the owner's methods.
 
         ``chase_chains`` is derived per-question from the question shape
         (see ``modulate_shape``): the base intent's ``chase_chains`` flag is
@@ -1323,10 +1330,17 @@ class UnifiedRanker:
                 if step not in remembered:
                     remembered.append(step)
 
-        for n in self._get_neighbors(target_uid, visited, distance=1):
+        initial_neighbors = [
+            *self._get_neighbors(target_uid, visited, distance=1),
+            *self._get_external_coref_neighbors(target_uid, visited, limit=12),
+        ]
+        for n in initial_neighbors:
             if not _direction_keeps(n["outgoing"]):
                 continue
-            reg_chain = chain_pursuit and self._is_api_entry_edge(n["rel_type"], n["outgoing"])
+            reg_chain = chain_pursuit and (
+                self._is_api_entry_edge(n["rel_type"], n["outgoing"])
+                or self._is_alias_entry_edge(n["rel_type"], n["outgoing"])
+            )
             marker_chain = (
                 chain_pursuit
                 and self._is_marker_surface_uid(target_uid)
@@ -1493,6 +1507,10 @@ class UnifiedRanker:
     @classmethod
     def _is_api_entry_edge(cls, rel_type: str, outgoing: bool) -> bool:
         return outgoing and rel_type in cls._API_ENTRY_RELATIONS
+
+    @classmethod
+    def _is_alias_entry_edge(cls, rel_type: str, outgoing: bool) -> bool:
+        return outgoing and rel_type in cls._ALIAS_ENTRY_RELATIONS
 
     @classmethod
     def _is_registration_chain_edge(cls, rel_type: str, outgoing: bool) -> bool:
@@ -2435,15 +2453,48 @@ class UnifiedRanker:
                 rows = session.run(
                     """
                     MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
-                    WHERE s.call_fan_in IS NOT NULL OR s.call_fan_out IS NOT NULL
-                    OPTIONAL MATCH (s)<-[h:HANDLES]-(:Symbol)
-                    WHERE coalesce(h.workspace_id, $workspace_id) = $workspace_id
-                    WITH s, count(h) AS handle_fan_in
+                    CALL {
+                        WITH s
+                        OPTIONAL MATCH (s)<-[h:HANDLES]-(:Symbol)
+                        WHERE coalesce(h.workspace_id, $workspace_id) = $workspace_id
+                        RETURN count(DISTINCT h) AS handle_fan_in
+                    }
+                    CALL {
+                        WITH s
+                        OPTIONAL MATCH (s)-[ref:REFERENCES]->(:Symbol)-[api:HAS_API|INHERITED_API]->(:Symbol)
+                        WHERE coalesce(ref.workspace_id, $workspace_id) = $workspace_id
+                          AND coalesce(api.workspace_id, $workspace_id) = $workspace_id
+                        RETURN count(DISTINCT api) AS alias_api_fan_out
+                    }
+                    CALL {
+                        WITH s
+                        OPTIONAL MATCH (s)-[api_out:HAS_API|INHERITED_API]->(:Symbol)
+                        WHERE coalesce(api_out.workspace_id, $workspace_id) = $workspace_id
+                        RETURN count(DISTINCT api_out) AS api_fan_out
+                    }
+                    CALL {
+                        WITH s
+                        OPTIONAL MATCH (:Symbol)-[api_in:HAS_API|INHERITED_API]->(s)
+                        WHERE coalesce(api_in.workspace_id, $workspace_id) = $workspace_id
+                        RETURN count(DISTINCT api_in) AS api_fan_in
+                    }
+                    CALL {
+                        WITH s
+                        OPTIONAL MATCH (s)-[ref:REFERENCES_EXTERNAL]->(:ExternalPkg)<-[construct:CALLS_EXTERNAL]-(:Symbol)
+                        WHERE coalesce(ref.workspace_id, $workspace_id) = $workspace_id
+                          AND coalesce(construct.workspace_id, $workspace_id) = $workspace_id
+                          AND coalesce(construct.kind, '') = 'construct'
+                        RETURN count(DISTINCT construct) AS external_construct_coref_fan_out
+                    }
                     RETURN s.uid AS uid,
                            coalesce(s.call_fan_in, 0.0) AS call_fan_in,
                            coalesce(s.call_fan_out, 0.0) AS call_fan_out,
                            coalesce(s.type_fan_in, 0.0) AS type_fan_in,
-                           handle_fan_in AS handle_fan_in
+                           handle_fan_in AS handle_fan_in,
+                           alias_api_fan_out AS alias_api_fan_out,
+                           api_fan_out AS api_fan_out,
+                           api_fan_in AS api_fan_in,
+                           external_construct_coref_fan_out AS external_construct_coref_fan_out
                     """,
                     workspace_id=self.workspace_id,
                 )
@@ -2453,6 +2504,12 @@ class UnifiedRanker:
                         "call_fan_out": float(r["call_fan_out"] or 0.0),
                         "type_fan_in": float(r["type_fan_in"] or 0.0),
                         "handle_fan_in": float(r["handle_fan_in"] or 0.0),
+                        "alias_api_fan_out": float(r["alias_api_fan_out"] or 0.0),
+                        "api_fan_out": float(r["api_fan_out"] or 0.0),
+                        "api_fan_in": float(r["api_fan_in"] or 0.0),
+                        "external_construct_coref_fan_out": float(
+                            r["external_construct_coref_fan_out"] or 0.0
+                        ),
                     }
                     for r in rows
                     if r["uid"]
@@ -2495,6 +2552,77 @@ class UnifiedRanker:
                     uid=uid,
                     visited=list(visited),
                     workspace_id=self.workspace_id,
+                )
+                return [
+                    {
+                        "uid": r["uid"],
+                        "name": r["name"],
+                        "symbol_kind": r["symbol_kind"],
+                        "file_path": r["file_path"],
+                        "file_hash": r["file_hash"],
+                        "token_estimate": r["token_estimate"],
+                        "range": r["range"],
+                        "rel_type": r["rel_type"],
+                        "rel_kind": r["rel_kind"],
+                        "outgoing": r["outgoing"],
+                        "caller_count": r["caller_count"],
+                        "outgoing_call_count": r["outgoing_call_count"],
+                    }
+                    for r in result
+                ]
+        except Exception:
+            return []
+
+    def _get_external_coref_neighbors(
+        self,
+        uid: str,
+        visited: set,
+        *,
+        limit: int = 12,
+    ) -> list[dict]:
+        """Symbols coupled to a target through the same external boundary root.
+
+        This is a ranker-only derived hop, not a persisted graph edge: a public
+        alias that references an ``ExternalPkg`` can reach local code that calls
+        or constructs that same package root. It keeps CommonJS external facades
+        connected without inventing framework-specific links.
+        """
+        query = """
+        MATCH (s:Symbol {uid: $uid})-[ref:REFERENCES_EXTERNAL]->(e:ExternalPkg)<-[r:CALLS_EXTERNAL]-(n:Symbol)
+        WHERE NOT n.uid IN $visited
+          AND n.uid <> $uid
+          AND coalesce(ref.workspace_id, $workspace_id) = $workspace_id
+          AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        MATCH (fn:File {workspace_id: $workspace_id})-[c:CONTAINS]->(n)
+        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)
+        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
+        OPTIONAL MATCH (n)-[out_call:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(:Symbol)
+        WHERE coalesce(out_call.workspace_id, $workspace_id) = $workspace_id
+        RETURN n.uid AS uid,
+               n.name AS name,
+               coalesce(n.kind, '') AS symbol_kind,
+               coalesce(fn.path, '<unknown>') AS file_path,
+               coalesce(fn.hash, '') AS file_hash,
+               coalesce(n.token_estimate, 0) AS token_estimate,
+               coalesce(c.range, n.range, [0, 0]) AS range,
+               'EXTERNAL_COREF' AS rel_type,
+               coalesce(r.kind, '') AS rel_kind,
+               true AS outgoing,
+               count(DISTINCT cr) AS caller_count,
+               count(DISTINCT out_call) AS outgoing_call_count
+        ORDER BY
+          CASE WHEN coalesce(r.kind, '') = 'construct' THEN 0 ELSE 1 END,
+          coalesce(n.token_estimate, 0) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                result = session.run(
+                    query,
+                    uid=uid,
+                    visited=list(visited),
+                    workspace_id=self.workspace_id,
+                    limit=limit,
                 )
                 return [
                     {

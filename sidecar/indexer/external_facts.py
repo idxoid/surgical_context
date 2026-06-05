@@ -19,6 +19,7 @@ class ExternalCallLink:
     callee_member: str
     call_site_line: int
     confidence: float
+    kind: str = "call"
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,7 @@ def collect_external_call_links(
                 callee_member=member,
                 call_site_line=line,
                 confidence=float(call.get("confidence") or 0.85),
+                kind=str(call.get("call_kind") or "call"),
             )
         )
     return out
@@ -148,6 +150,7 @@ def external_call_link_rows(
             "callee_member": link.callee_member,
             "call_site_line": link.call_site_line,
             "confidence": link.confidence,
+            "kind": link.kind,
         }
         for link in links
     ]

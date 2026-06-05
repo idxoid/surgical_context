@@ -135,7 +135,19 @@ class RoleFulfilment:
         call_fan_in = float(fan.get("call_fan_in", 0.0) or 0.0)
         type_fan_in = float(fan.get("type_fan_in", 0.0) or 0.0)
         handle_fan_in = float(fan.get("handle_fan_in", 0.0) or 0.0)
-        if call_fan_out <= 0.0 and type_fan_in <= 0.0 and handle_fan_in <= 0.0:
+        alias_api_fan_out = float(fan.get("alias_api_fan_out", 0.0) or 0.0)
+        api_fan_out = float(fan.get("api_fan_out", 0.0) or 0.0)
+        external_construct_coref_fan_out = float(
+            fan.get("external_construct_coref_fan_out", 0.0) or 0.0
+        )
+        if (
+            call_fan_out <= 0.0
+            and type_fan_in <= 0.0
+            and handle_fan_in <= 0.0
+            and alias_api_fan_out <= 0.0
+            and api_fan_out <= 0.0
+            and external_construct_coref_fan_out <= 0.0
+        ):
             return []
 
         kind = (getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "").lower()
@@ -144,6 +156,16 @@ class RoleFulfilment:
             roles.append("composition_surface")
             if call_fan_out >= call_fan_in:
                 roles.append("factory_surface")
+        if kind in {"variable", "object_api", "module"} and alias_api_fan_out > 0.0:
+            roles.append("factory_surface")
+            roles.append("runtime_surface")
+        if kind in {"variable", "object_api", "module"} and api_fan_out > 0.0:
+            roles.append("composition_surface")
+            roles.append("runtime_surface")
+            if api_fan_out >= 2.0:
+                roles.append("factory_surface")
+        if kind in {"variable", "object_api", "module"} and external_construct_coref_fan_out > 0.0:
+            roles.append("factory_surface")
         if kind in {"variable", "object_api"} and (call_fan_in > 0.0 or type_fan_in > 0.0):
             roles.append("representation_surface")
         if handle_fan_in > 0.0:

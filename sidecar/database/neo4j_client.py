@@ -793,7 +793,8 @@ class Neo4jClient:
                 }]->(e)
                 SET r.confidence = row.confidence,
                     r.resolver = 'external-boundary-v1',
-                    r.callee_member = row.callee_member
+                    r.callee_member = row.callee_member,
+                    r.kind = coalesce(row.kind, 'call')
                 RETURN count(r) AS c
                 """,
                 rows=call_links,

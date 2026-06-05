@@ -344,6 +344,31 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         80,
     ),
     RolePredicate(
+        # Cross-bucket supporting signal (l1=None): a symbol with substantial
+        # direct calls into a non-plumbing external integration package
+        # ALSO reads as integration-character regardless of its primary L1
+        # bucket. The boundary_integration L1 gate (_integration_boundary_signal)
+        # requires `external_integration_out_ratio >= 0.35` to claim integration
+        # AS PRIMARY identity — that excludes thick API surfaces like Celery's
+        # `Task.apply_async` (ratio ≈ 0.24) which dispatch through many internal
+        # helpers before reaching kombu. This predicate runs cross-bucket so
+        # such API surfaces still surface `integration_surface` as a supporting
+        # role on top of their primary api_surface / orchestrator identity.
+        # Threshold (1.5) is calibrated to require multiple kombu callsites,
+        # not a single import-side reference. Specificity 68 sits between
+        # orchestrator (70) and composition_surface (66) in control_flow,
+        # so for thick API surfaces like `apply_async` the supporting list
+        # `[runtime_surface(71), orchestrator(70), integration_surface(68)]`
+        # surfaces the integration character while keeping the primary
+        # (api_surface(77)) intact. Always below boundary_integration's
+        # primary integration_surface (80) — that bucket retains first claim
+        # for symbols whose primary identity IS the boundary.
+        "integration_surface",
+        None,
+        lambda r: r.external_integration_call_fan_out > 1.5,
+        68,
+    ),
+    RolePredicate(
         "error_surface",
         "state_types",
         # A class inheriting a builtin exception (ValueError/Exception/...) is an
@@ -391,6 +416,10 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
             r.depth_from_public <= 1
             and r.has_documentation
             and (r.api_fan_in > _EPS or r.doc_definition_weight > 0)
+        )
+        or (
+            r.depth_from_public <= 1
+            and r.api_fan_out > _EPS
         )
         or (
             r.is_function
@@ -451,11 +480,11 @@ L2_PREDICATES: tuple[RolePredicate, ...] = (
         # that is both a data carrier and a composer reads as the more
         # specific signal. Still loses to config_surface (80) /
         # abstract_contract (85) — those are stronger contract signals.
-        lambda r: r.is_class
-        and (
-            r.decorator_arg_ref_count >= 3
-            or r.fluent_self_return_count >= 2
-        ),
+        lambda r: (
+            r.is_class
+            and (r.decorator_arg_ref_count >= 3 or r.fluent_self_return_count >= 2)
+        )
+        or (r.api_fan_out >= 3 and r.api_fan_out > r.type_fan_in),
         76,
     ),
     RolePredicate(
@@ -535,21 +564,21 @@ RARE_ROLES = frozenset(
 
 
 def assign_l1(row: FanProfile) -> str:
-    # 1. noise — dead code / orphans, but never a documented or API-exposing class
+    # 1. noise — dead code / orphans, but never a documented/API-exposing owner
     #    (a public surface has zero *internal* in-degree by design), and never a
     #    proxy_binding (its only edge is PROXY_OF, which is not counted as in-degree
     #    but is the very signal that routes it to dispatch_and_wrap below), and
     #    never a polymorphic factory (instantiates >=2 distinct classes with a
     #    typed return — pure-instantiation function with no other call edges
     #    would otherwise mis-route to noise; its INSTANTIATES edges are the work).
-    surface_class = row.is_class and (row.api_fan_out > _EPS or row.has_documentation)
+    surface_owner = row.api_fan_out > _EPS or (row.is_class and row.has_documentation)
     is_polymorphic_factory = (
         row.construct_fan_out >= 2 and row.type_fan_out_return > _EPS
     )
     if (
         row.zero_in_degree
         and row.call_fan_out <= _EPS
-        and not surface_class
+        and not surface_owner
         and not row.is_proxy_binding
         and not is_polymorphic_factory
     ):
@@ -580,14 +609,20 @@ def assign_l1(row: FanProfile) -> str:
         or row.depend_fan_in > max(_EPS, row.call_fan_out)
     ):
         return "state_types"
-    # (kept) class with any type/api evidence but weaker than its call_out still reads
-    # as a type surface rather than control flow.
-    if row.is_class and (
-        row.type_fan_in > _EPS
-        or row.depend_fan_in > _EPS
-        or row.api_fan_in > _EPS
-        or row.api_fan_out > _EPS
-    ):
+    # (kept) symbols with any type/api-owner evidence but weaker than their
+    # call_out still read as surfaces rather than control flow. JS/CommonJS
+    # prototype objects (`var app = exports = module.exports = {}; app.use = ...`)
+    # are not classes syntactically, but their outgoing HAS_API fan is the same
+    # owner/member topology.
+    if (
+        row.is_class
+        and (
+            row.type_fan_in > _EPS
+            or row.depend_fan_in > _EPS
+            or row.api_fan_in > _EPS
+            or row.api_fan_out > _EPS
+        )
+    ) or row.api_fan_out > _EPS:
         return "state_types"
     # 4. boundary_integration — external call/import topology (C2). Uses filtered
     #    integration fan (stdlib/test/doc plumbing excluded). Must not steal type hubs.

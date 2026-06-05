@@ -115,6 +115,19 @@ def test_runtime_surface_state_types_for_runtime_class():
     assert "runtime_surface" in asn.hits
 
 
+def test_commonjs_api_owner_is_composition_surface_not_orphan():
+    row = _row(
+        uid="u:app_owner",
+        kind="variable",
+        api_fan_out=16.0,
+        depth_from_public=1,
+    )
+    asn = assign_symbol_roles(row)
+    assert asn.l1 == "state_types"
+    assert asn.primary == "composition_surface"
+    assert "api_surface" in asn.hits
+
+
 def test_registration_step_state_types_for_framework_entry_class():
     row = _row(
         uid="u:framework_entry",

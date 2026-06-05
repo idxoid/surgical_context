@@ -38,6 +38,49 @@ function bootstrap() {
         assert call["tier"] == "imported"
         assert call["callee_qualified_name"] == "vue.createApp"
 
+    def test_extract_calls_marks_imported_constructor_as_calls_imported(self, adapter):
+        source = """
+var Router = require('router');
+
+app.init = function init() {
+  this.router = new Router({ strict: true });
+}
+"""
+        calls = adapter.extract_calls_from_source(source, "application.js")
+        call = next(call for call in calls if call.get("callee_name") == "Router")
+
+        assert call["caller_uid"] == adapter._property_method_uid(
+            "application.js", "app", "init"
+        )
+        assert call["rel_type"] == "CALLS_IMPORTED"
+        assert call["tier"] == "imported"
+        assert call["callee_qualified_name"] == "router"
+        assert call["call_kind"] == "construct"
+
+    def test_extract_calls_attributes_unindexed_nested_callback_to_indexed_owner(
+        self, adapter
+    ):
+        source = """
+var Router = require('router');
+
+app.init = function init() {
+  Object.defineProperty(this, 'router', {
+    get: function getrouter() {
+      return new Router();
+    }
+  });
+}
+"""
+        calls = adapter.extract_calls_from_source(source, "application.js")
+        call = next(call for call in calls if call.get("callee_name") == "Router")
+
+        assert call["caller_uid"] == adapter._property_method_uid(
+            "application.js", "app", "init"
+        )
+        assert call["rel_type"] == "CALLS_IMPORTED"
+        assert call["callee_qualified_name"] == "router"
+        assert call["call_kind"] == "construct"
+
     def test_extract_imports_includes_commonjs_require_sources(self, adapter):
         source = """
 var proto = require('./application');
@@ -98,7 +141,15 @@ app.use = function use(fn) {
 """
         symbols = adapter.extract_symbols(source, "application.js")
         names = {symbol.name for symbol in symbols}
+        assert "app" in names
         assert "use" in names
+
+        edges = adapter.extract_property_api_edges(source, "application.js")
+        assert any(
+            edge.class_uid == adapter._uid("application.js", "app")
+            and edge.method_uid == adapter._property_method_uid("application.js", "app", "use")
+            for edge in edges
+        )
 
     def test_extract_symbols_includes_assigned_arrow_function_property(self, adapter):
         source = """

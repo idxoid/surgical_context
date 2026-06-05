@@ -332,6 +332,24 @@ class TestQuestionShape:
         assert shape.direction == base.direction
         assert base.chase_chains is False
 
+    def test_chained_definition_question_keeps_graph_walk(self):
+        from sidecar.context.intent_classifier import (
+            INTENT_TRAVERSAL,
+            extract_question_shape,
+            modulate_shape,
+        )
+
+        qs = extract_question_shape(
+            "How are response methods like send() and json() implemented and chained?"
+        )
+        assert qs.direction_hint == "definition"
+        assert qs.has_flow_verb is True
+
+        shape = modulate_shape(Intent.EXPLORATION, qs)
+        base = INTENT_TRAVERSAL[Intent.EXPLORATION]
+        assert shape.chase_chains is True
+        assert shape.direction == base.direction
+
     def test_state_verb_alone_does_not_modulate(self):
         from sidecar.context.intent_classifier import (
             INTENT_TRAVERSAL,
