@@ -1,24 +1,21 @@
-"""MRO API bridge: expose inherited public methods on class nodes without graph explosion.
+"""MRO API bridge: expose direct public methods on class nodes without graph explosion.
 
-For each indexed Python class, walk the ``DEPENDS_ON`` inheritance chain and link
-public methods as a dynamic API surface:
+For each indexed Python class, link public methods defined directly on that class:
 
-- ``(Class)-[:HAS_API]->(method)`` for methods defined on the class
-- ``(Class)-[:INHERITED_API {originating_class}]->(method)`` for inherited methods
+- ``(Class)-[:HAS_API]->(method)``
 
-This lets ``get_target("Task.apply_async")`` resolve via API edges instead of
-requiring every inherited method to be re-indexed under the subclass name.
+Inherited method lookup is resolved on demand by walking ``DEPENDS_ON`` to an
+ancestor's ``HAS_API`` edge. Materializing every inherited method for every
+subclass explodes on large framework repositories.
 """
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.parser.protocol import ClassApiEdge
 
-_MAX_MRO_DEPTH = 24
 _SKIP_METHOD_PREFIXES = ("_",)
 
 
@@ -35,7 +32,8 @@ class MethodRecord:
     uid: str
     name: str
     qualified_name: str
-    owner_class_name: str
+    owner_class_uid: str = ""
+    owner_class_name: str = ""
 
 
 def parse_class_method_symbol(symbol_name: str) -> tuple[str, str] | None:
@@ -54,7 +52,11 @@ def parse_class_method_symbol(symbol_name: str) -> tuple[str, str] | None:
 
 
 def _is_public_api_method(name: str) -> bool:
-    return bool(name) and not name.startswith(_SKIP_METHOD_PREFIXES)
+    if not name:
+        return False
+    if name == "__init__":
+        return True
+    return not name.startswith(_SKIP_METHOD_PREFIXES)
 
 
 def _owner_class_from_qualified_name(qualified_name: str) -> str | None:
@@ -69,7 +71,11 @@ def index_methods_by_owner(methods: list[MethodRecord]) -> dict[str, list[Method
     for method in methods:
         if not _is_public_api_method(method.name):
             continue
-        owner = method.owner_class_name or _owner_class_from_qualified_name(method.qualified_name)
+        owner = (
+            method.owner_class_uid
+            or method.owner_class_name
+            or _owner_class_from_qualified_name(method.qualified_name)
+        )
         if not owner:
             continue
         grouped.setdefault(owner, []).append(method)
@@ -83,54 +89,29 @@ def build_mro_api_edges(
     *,
     class_by_uid: dict[str, ClassRecord],
 ) -> list[ClassApiEdge]:
-    """Build HAS_API / INHERITED_API edges from inheritance + owner-indexed methods."""
+    """Build direct HAS_API edges from owner-indexed methods.
+
+    ``inheritance`` and ``class_by_uid`` stay in the signature for compatibility
+    with older callers and tests. Inherited API lookup is intentionally not
+    materialized; target resolution walks the inheritance graph on demand.
+    """
     edges: list[ClassApiEdge] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str]] = set()
 
     for cls in classes:
-        chain = _iter_mro(cls.uid, inheritance)
-        for depth, ancestor_uid in enumerate(chain):
-            ancestor = class_by_uid.get(ancestor_uid)
-            if ancestor is None:
+        for method in methods_by_owner_name.get(cls.uid, []):
+            key = (cls.uid, method.uid)
+            if key in seen:
                 continue
-            for method in methods_by_owner_name.get(ancestor.name, []):
-                key = (cls.uid, method.uid, "HAS_API" if depth == 0 else "INHERITED_API")
-                if key in seen:
-                    continue
-                seen.add(key)
-                if depth == 0:
-                    edges.append(
-                        ClassApiEdge(
-                            class_uid=cls.uid,
-                            method_uid=method.uid,
-                            edge_type="HAS_API",
-                        )
-                    )
-                else:
-                    edges.append(
-                        ClassApiEdge(
-                            class_uid=cls.uid,
-                            method_uid=method.uid,
-                            edge_type="INHERITED_API",
-                            originating_class=ancestor.qualified_name or ancestor.name,
-                        )
-                    )
+            seen.add(key)
+            edges.append(
+                ClassApiEdge(
+                    class_uid=cls.uid,
+                    method_uid=method.uid,
+                    edge_type="HAS_API",
+                )
+            )
     return edges
-
-
-def _iter_mro(class_uid: str, inheritance: dict[str, list[str]]) -> list[str]:
-    ordered: list[str] = []
-    seen: set[str] = set()
-    queue: deque[tuple[str, int]] = deque([(class_uid, 0)])
-    while queue:
-        uid, depth = queue.popleft()
-        if uid in seen or depth > _MAX_MRO_DEPTH:
-            continue
-        seen.add(uid)
-        ordered.append(uid)
-        for parent_uid in inheritance.get(uid, []):
-            queue.append((parent_uid, depth + 1))
-    return ordered
 
 
 class MroApiBridgeIndexer:
@@ -146,7 +127,7 @@ class MroApiBridgeIndexer:
             return 0
 
         inheritance = self._load_inheritance(workspace_id)
-        methods = self._load_methods(workspace_id)
+        methods = self._load_methods(workspace_id, classes)
         methods_by_owner = index_methods_by_owner(methods)
         class_by_uid = {cls.uid: cls for cls in classes}
         edges = build_mro_api_edges(
@@ -195,26 +176,54 @@ class MroApiBridgeIndexer:
                 graph.setdefault(sub_uid, []).append(sup_uid)
         return graph
 
-    def _load_methods(self, workspace_id: str) -> list[MethodRecord]:
+    def _load_methods(
+        self, workspace_id: str, classes: list[ClassRecord]
+    ) -> list[MethodRecord]:
+        classes_by_file = _classes_by_file(classes)
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(m:Symbol)
         WHERE coalesce(m.kind, '') IN ['function', 'method']
         RETURN m.uid AS uid,
                m.name AS name,
-               coalesce(m.qualified_name, m.name) AS qualified_name
+               coalesce(m.qualified_name, m.name) AS qualified_name,
+               f.path AS file_path
         """
         with self.db.driver.session() as session:
             rows = list(session.run(query, workspace_id=workspace_id))
         methods: list[MethodRecord] = []
         for row in rows:
             qn = str(row.get("qualified_name") or row.get("name") or "")
-            owner = _owner_class_from_qualified_name(qn) or ""
+            owner = _method_owner_class(qn, str(row.get("file_path") or ""), classes_by_file)
             methods.append(
                 MethodRecord(
                     uid=str(row["uid"]),
                     name=str(row["name"]),
                     qualified_name=qn,
-                    owner_class_name=owner,
+                    owner_class_uid=owner.uid if owner else "",
+                    owner_class_name=owner.name if owner else "",
                 )
             )
         return methods
+
+
+def _classes_by_file(classes: list[ClassRecord]) -> dict[str, list[ClassRecord]]:
+    grouped: dict[str, list[ClassRecord]] = {}
+    for cls in classes:
+        grouped.setdefault(cls.file_path, []).append(cls)
+    for file_classes in grouped.values():
+        file_classes.sort(key=lambda cls: len(cls.qualified_name or cls.name), reverse=True)
+    return grouped
+
+
+def _method_owner_class(
+    method_qualified_name: str,
+    file_path: str,
+    classes_by_file: dict[str, list[ClassRecord]],
+) -> ClassRecord | None:
+    if not method_qualified_name or not file_path:
+        return None
+    for cls in classes_by_file.get(file_path, []):
+        class_qualified_name = cls.qualified_name or cls.name
+        if method_qualified_name.startswith(f"{class_qualified_name}."):
+            return cls
+    return None

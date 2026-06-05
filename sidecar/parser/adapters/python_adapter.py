@@ -420,22 +420,28 @@ class PythonAdapter(TreeSitterAdapter):
     ) -> list[InheritanceEdge]:
         """Extract class inheritance from Python source.
 
-        Line-based scan; ``tree`` is accepted for ``extract_all`` parity.
+        Tree-sitter based so multi-line base lists and generic bases such as
+        ``class C(Base[T], Mixin):`` stay visible. Only the base head is emitted
+        (``Base``), while generic parameters are not treated as superclasses.
         """
-        edges = []
-        lines = source_code.split("\n")
-        for line in lines:
-            line = line.strip()
-            if line.startswith("class "):
-                match = line[6:].split(":")[0].strip()
-                if "(" in match:
-                    class_name = match.split("(")[0].strip()
-                    bases_str = match.split("(")[1].rstrip(")")
-                    for base in bases_str.split(","):
-                        base_name = base.strip()
-                        if base_name:
-                            subclass_uid = self._uid(file_path, class_name)
-                            edges.append(InheritanceEdge(subclass_uid, base_name, False))
+        if tree is None:
+            tree = self._parse(source_code)
+        edges: list[InheritanceEdge] = []
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "class_definition":
+                continue
+            args = node.child_by_field_name("superclasses")
+            if args is None:
+                args = next((c for c in node.children if c.type == "argument_list"), None)
+            if args is None:
+                continue
+            subclass_uid = self._uid_for_node(node, source_code, file_path)
+            for base_node in args.named_children:
+                if base_node.type == "comment":
+                    continue
+                base_name = self._inheritance_base_name(base_node)
+                if base_name:
+                    edges.append(InheritanceEdge(subclass_uid, base_name, False))
         return edges
 
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
@@ -505,16 +511,26 @@ class PythonAdapter(TreeSitterAdapter):
             for deco in node.children:
                 if deco.type != "decorator":
                     continue
-                base = self._decorator_base_name(deco)
+                callable_name = self._decorator_callable_name(deco)
+                base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
                 if not base or base in _BUILTIN_DECORATORS:
                     continue
-                resolved = self._resolve_type_name(base, import_bindings, module)
+                owner_name = callable_name.rsplit(".", 1)[0] if "." in callable_name else ""
+                resolved = self._resolve_dotted_name(callable_name or base, import_bindings, module)
+                owner_resolved = (
+                    self._resolve_dotted_name(owner_name, import_bindings, module)
+                    if owner_name
+                    else ""
+                )
                 out.append(
                     {
                         "decorated_uid": decorated_uid,
                         "decorated_name": decorated_name,
                         "decorator_name": base,
+                        "decorator_callable_name": callable_name,
                         "decorator_qualified_name": resolved,
+                        "decorator_owner_name": owner_name,
+                        "decorator_owner_qualified_name": owner_resolved,
                         "file_path": file_path,
                     }
                 )
@@ -1095,11 +1111,17 @@ class PythonAdapter(TreeSitterAdapter):
 
     @staticmethod
     def _decorator_base_name(decorator_node) -> str:
-        """The decorator's callable identifier: ``@route`` → route, ``@app.route(...)`` → route.
+        """The decorator's leaf callable identifier: ``@app.route(...)`` → route.
 
-        For an attribute chain we take the final attribute (the method being applied);
-        for a bare/called name we take the identifier. Returns '' if not extractable.
+        Kept for compatibility; extraction also records the full dotted callable
+        path via :meth:`_decorator_callable_name`.
         """
+        name = PythonAdapter._decorator_callable_name(decorator_node)
+        return name.rsplit(".", 1)[-1] if name else ""
+
+    @staticmethod
+    def _decorator_callable_name(decorator_node) -> str:
+        """Decorator callable path: ``@x.y.z(...)`` → ``x.y.z``."""
         # The decorator node wraps an expression after '@': identifier | attribute | call.
         expr = None
         for ch in decorator_node.children:
@@ -1115,8 +1137,44 @@ class PythonAdapter(TreeSitterAdapter):
         if expr.type == "identifier":
             return _node_text(expr)
         if expr.type == "attribute":
-            attr = expr.child_by_field_name("attribute")
+            return PythonAdapter._attribute_path(expr)
+        return ""
+
+    @staticmethod
+    def _attribute_path(node) -> str:
+        """Dotted identifier path from a Python ``attribute`` AST node."""
+        if node is None:
+            return ""
+        if node.type == "identifier":
+            return _node_text(node)
+        if node.type != "attribute":
+            return ""
+        obj = node.child_by_field_name("object")
+        attr = node.child_by_field_name("attribute")
+        if attr is None:
+            return ""
+        attr_name = _node_text(attr)
+        prefix = PythonAdapter._attribute_path(obj)
+        return f"{prefix}.{attr_name}" if prefix else attr_name
+
+    @staticmethod
+    def _inheritance_base_name(base_node) -> str:
+        """Superclass head name from ``Base``, ``pkg.Base`` or ``Base[T]``."""
+        if base_node is None:
+            return ""
+        if base_node.type == "identifier":
+            return _node_text(base_node)
+        if base_node.type == "attribute":
+            attr = base_node.child_by_field_name("attribute")
             return _node_text(attr) if attr is not None else ""
+        if base_node.type == "subscript":
+            value = base_node.child_by_field_name("value")
+            if value is None:
+                value = base_node.named_children[0] if base_node.named_children else None
+            return PythonAdapter._inheritance_base_name(value)
+        if base_node.type == "call":
+            fn = base_node.child_by_field_name("function")
+            return PythonAdapter._inheritance_base_name(fn)
         return ""
 
     def _positional_identifier_arguments(
@@ -1360,6 +1418,19 @@ class PythonAdapter(TreeSitterAdapter):
         """Map a bare class name to a qualified name via imports, else same-module."""
         if raw in import_bindings:
             return import_bindings[raw]
+        return f"{module}.{raw}"
+
+    def _resolve_dotted_name(
+        self, raw: str, import_bindings: dict[str, str], module: str
+    ) -> str:
+        """Resolve dotted names through the imported head, preserving the tail."""
+        if not raw:
+            return ""
+        if raw in import_bindings:
+            return import_bindings[raw]
+        head, dot, tail = raw.partition(".")
+        if dot and head in import_bindings:
+            return f"{import_bindings[head]}.{tail}"
         return f"{module}.{raw}"
 
     def _declared_parameter_types(
@@ -2032,7 +2103,10 @@ class PythonAdapter(TreeSitterAdapter):
     def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
         """Return local import alias -> best-effort target qualified name."""
         module = module_name_from_path(file_path)
-        package = module.rsplit(".", 1)[0] if "." in module else ""
+        if Path(file_path).name in ("__init__.py", "__init__.pyi"):
+            package = module
+        else:
+            package = module.rsplit(".", 1)[0] if "." in module else ""
         bindings: dict[str, str] = {}
         for line in source_code.splitlines():
             stripped = line.strip()

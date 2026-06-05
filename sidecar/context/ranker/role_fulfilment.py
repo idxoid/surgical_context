@@ -138,7 +138,11 @@ class RoleFulfilment:
 
     def _public_target_surface_roles(self, c: Candidate | object) -> list[str]:
         uid = getattr(c, "uid", "") or ""
-        fan = self.host._structural_fan_by_uid.get(uid, {}) if uid else {}
+        fan_loader = getattr(self.host, "_structural_fan_for_uid", None)
+        if uid and callable(fan_loader):
+            fan = fan_loader(uid)
+        else:
+            fan = self.host._structural_fan_by_uid.get(uid, {}) if uid else {}
         call_fan_out = float(fan.get("call_fan_out", 0.0) or 0.0)
         call_fan_in = float(fan.get("call_fan_in", 0.0) or 0.0)
         type_fan_in = float(fan.get("type_fan_in", 0.0) or 0.0)
@@ -200,7 +204,7 @@ class RoleFulfilment:
 
     def one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
         query = """
-        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|HANDLES|RESOLVES_ATTR]-(n:Symbol)
+        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|INSTANTIATES|HANDLES|RESOLVES_ATTR]-(n:Symbol)
         WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
         RETURN DISTINCT n.uid AS uid
         LIMIT $limit
@@ -241,6 +245,144 @@ class RoleFulfilment:
                 return [str(r["uid"]) for r in rows if r.get("uid")]
         except Exception:
             return []
+
+    def delegation_callee_uid_map(
+        self, caller_uids: list[str], *, limit: int = 48
+    ) -> dict[str, list[str]]:
+        unique_uids = [uid for uid in dict.fromkeys(caller_uids) if uid]
+        if not unique_uids:
+            return {}
+        if len(unique_uids) == 1:
+            return {
+                unique_uids[0]: self.delegation_callee_uids(
+                    unique_uids[0],
+                    limit=limit,
+                )
+            }
+        query = """
+        UNWIND $uids AS uid
+        MATCH (t:Symbol {uid: uid})
+        CALL {
+            WITH t
+            MATCH (t)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED]->(n:Symbol)
+            WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+              AND n.uid <> t.uid
+            RETURN DISTINCT n.uid AS neighbor_uid
+            LIMIT $limit
+        }
+        RETURN t.uid AS uid, collect(neighbor_uid) AS neighbor_uids
+        """
+        try:
+            with self.host.db.driver.session() as session:
+                rows = session.run(
+                    query,
+                    uids=unique_uids,
+                    workspace_id=self.host.workspace_id,
+                    limit=limit,
+                )
+                return {
+                    str(r["uid"]): [str(uid) for uid in r["neighbor_uids"] if uid]
+                    for r in rows
+                    if r.get("uid")
+                }
+        except Exception:
+            return {
+                uid: self.delegation_callee_uids(uid, limit=limit)
+                for uid in unique_uids
+            }
+
+    def type_contract_neighbor_uids(self, symbol_uid: str, *, limit: int = 24) -> list[str]:
+        """Outgoing USES_TYPE neighbors — type contract surfaces for a symbol."""
+        query = """
+        MATCH (t:Symbol {uid: $uid})-[r:USES_TYPE]->(n:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id AND n.uid <> $uid
+        RETURN DISTINCT n.uid AS uid
+        LIMIT $limit
+        """
+        try:
+            with self.host.db.driver.session() as session:
+                rows = session.run(
+                    query,
+                    uid=symbol_uid,
+                    workspace_id=self.host.workspace_id,
+                    limit=limit,
+                )
+                return [str(r["uid"]) for r in rows if r.get("uid")]
+        except Exception:
+            return []
+
+    def structural_contract_neighbor_uids(
+        self, symbol_uid: str, *, limit: int = 24
+    ) -> list[str]:
+        """Outgoing contract/topology neighbors used for local role closure.
+
+        These relations are all code-derived: construction targets, base/type
+        contracts, registry-owned handlers, and public API members. This keeps
+        adaptive role planning aligned with the same graph facts the ranker can
+        traverse, without introducing semantic name rules.
+        """
+        query = """
+        MATCH (t:Symbol {uid: $uid})-[r:USES_TYPE|INSTANTIATES|DEPENDS_ON|HANDLES|HAS_API|INHERITED_API]->(n:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id AND n.uid <> $uid
+        RETURN DISTINCT n.uid AS uid
+        LIMIT $limit
+        """
+        try:
+            with self.host.db.driver.session() as session:
+                rows = session.run(
+                    query,
+                    uid=symbol_uid,
+                    workspace_id=self.host.workspace_id,
+                    limit=limit,
+                )
+                return [str(r["uid"]) for r in rows if r.get("uid")]
+        except Exception:
+            return []
+
+    def structural_contract_neighbor_uid_map(
+        self, symbol_uids: list[str], *, limit: int = 24
+    ) -> dict[str, list[str]]:
+        unique_uids = [uid for uid in dict.fromkeys(symbol_uids) if uid]
+        if not unique_uids:
+            return {}
+        if len(unique_uids) == 1:
+            return {
+                unique_uids[0]: self.structural_contract_neighbor_uids(
+                    unique_uids[0],
+                    limit=limit,
+                )
+            }
+        query = """
+        UNWIND $uids AS uid
+        MATCH (t:Symbol {uid: uid})
+        CALL {
+            WITH t
+            MATCH (t)-[r:USES_TYPE|INSTANTIATES|DEPENDS_ON|HANDLES|HAS_API|INHERITED_API]->(n:Symbol)
+            WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+              AND n.uid <> t.uid
+            RETURN DISTINCT n.uid AS neighbor_uid
+            LIMIT $limit
+        }
+        RETURN t.uid AS uid, collect(neighbor_uid) AS neighbor_uids
+        """
+        try:
+            with self.host.db.driver.session() as session:
+                rows = session.run(
+                    query,
+                    uids=unique_uids,
+                    workspace_id=self.host.workspace_id,
+                    limit=limit,
+                )
+                return {
+                    str(r["uid"]): [str(uid) for uid in r["neighbor_uids"] if uid]
+                    for r in rows
+                    if r.get("uid")
+                }
+        except Exception:
+            return {
+                uid: self.structural_contract_neighbor_uids(uid, limit=limit)
+                for uid in unique_uids
+            }
 
     def determine_mechanism_structural(self, target) -> str:
         if not self.host._derived_primary_role_by_uid:
@@ -295,12 +437,16 @@ class RoleFulfilment:
         return normalize_roles((self.host.strategy_profile or {}).get("role_plan") or [])
 
     def role_supply_counts(self) -> Counter[str]:
+        cached = getattr(self.host, "_workspace_role_supply_counts_cache", None)
+        if cached is not None:
+            return Counter(cached)
         counts: Counter[str] = Counter()
         if not self.host._derived_primary_role_by_uid:
             return counts
         for uid in self.host._derived_primary_role_by_uid:
             for observed in self.pass1_roles_for_symbol_uid(uid):
                 counts[observed] += 1
+        self.host._workspace_role_supply_counts_cache = Counter(counts)
         return counts
 
     def filter_roles_by_workspace_supply(self, roles: list[str]) -> list[str]:
@@ -310,7 +456,7 @@ class RoleFulfilment:
         return normalize_roles([role for role in roles if role_supply.get(role, 0) > 0])
 
     def target_role_supply_counts(
-        self, target, *, max_depth: int = 3, limit: int = 48
+        self, target, *, max_depth: int = 5, limit: int = 48
     ) -> Counter[str]:
         """Roles around the target, following delegation with **dynamic depth**.
 
@@ -324,11 +470,28 @@ class RoleFulfilment:
         role-strength is a deferred refinement (it would require the selection
         margin to return candidates to the pool).
         """
+        cache_key = (
+            getattr(target, "uid", "") if target is not None else "",
+            max_depth,
+            limit,
+        )
+        cache = getattr(self.host, "_target_role_supply_counts_cache", None)
+        if cache is not None and cache_key in cache:
+            return Counter(cache[cache_key])
+
         counts: Counter[str] = Counter()
         if target is None or not target.uid:
             return counts
         seen: set[str] = {target.uid}
-        frontier = self.host._one_hop_connected_symbol_uids(target.uid, limit=limit)
+        frontier = []
+        for uid in [
+            *self.structural_contract_neighbor_uids(target.uid, limit=limit),
+            *self.delegation_callee_uids(target.uid, limit=limit),
+        ]:
+            if uid not in seen and uid not in frontier:
+                frontier.append(uid)
+        if not frontier:
+            frontier = self.host._one_hop_connected_symbol_uids(target.uid, limit=limit)
         for sym_uid in [target.uid, *frontier]:
             seen.add(sym_uid)
             counts.update(self.pass1_roles_for_symbol_uid(sym_uid))
@@ -336,8 +499,19 @@ class RoleFulfilment:
         prev_role_set = set(counts)
         while depth < max_depth and frontier:
             next_frontier: list[str] = []
+            contract_map = self.structural_contract_neighbor_uid_map(frontier, limit=limit)
+            delegation_map = self.delegation_callee_uid_map(frontier, limit=limit)
             for uid in frontier:
-                for callee in self.delegation_callee_uids(uid, limit=limit):
+                contract_uids = contract_map.get(uid, [])
+                if not contract_uids and len(frontier) == 1:
+                    contract_uids = self.type_contract_neighbor_uids(uid, limit=limit)
+                for contract_uid in contract_uids:
+                    if contract_uid in seen:
+                        continue
+                    seen.add(contract_uid)
+                    next_frontier.append(contract_uid)
+                    counts.update(self.pass1_roles_for_symbol_uid(contract_uid))
+                for callee in delegation_map.get(uid, []):
                     if callee in seen:
                         continue
                     seen.add(callee)
@@ -348,6 +522,8 @@ class RoleFulfilment:
             prev_role_set = set(counts)
             frontier = next_frontier
             depth += 1
+        if cache is not None:
+            cache[cache_key] = Counter(counts)
         return counts
 
     def filter_roles_by_target_supply(self, roles: list[str], target) -> list[str]:
@@ -370,7 +546,7 @@ class RoleFulfilment:
 
         target_supply = self.target_role_supply_counts(target)
         if target_supply:
-            selected.extend(role for role, _ in target_supply.most_common(10))
+            selected.extend(role for role, _ in target_supply.most_common(16))
 
         strategy_roles = self.strategy_role_plan()
         if strategy_roles:
@@ -392,9 +568,9 @@ class RoleFulfilment:
         if not selected:
             return ["supporting_surface"]
         rest = [role for role in selected if role not in set(target_roles)]
-        max_roles = 5
+        max_roles = 8
         if target_roles:
-            max_roles = min(10, max(max_roles, len(target_roles) + 6))
+            max_roles = min(15, max(max_roles, len(target_roles) + 12))
         return normalize_roles([*target_roles, *rest])[:max_roles]
 
     def target_role_plan_roles(self, target) -> list[str]:

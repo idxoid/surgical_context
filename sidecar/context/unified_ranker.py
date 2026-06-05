@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import Counter
 from heapq import heappop, heappush
 from typing import cast
 
@@ -144,6 +145,7 @@ class UnifiedRanker:
     """Merge graph BFS candidates and vector search candidates into one ranked pool."""
 
     PREAMBLE_TOKENS = 100
+    _WORKSPACE_STATE_CACHE: dict[tuple[int, str], dict] = {}
 
     # Per-intent floors: we must not stop based on marginal gain
     # until we hit these minimums to ensure grounding.
@@ -212,6 +214,11 @@ class UnifiedRanker:
         # weighted near a scoped call.
         "INJECTS_out": 1.05,
         "INJECTS_in": 1.15,
+        # caller -[INSTANTIATES]-> constructed class. Outgoing is a strong
+        # factory/contract hop; incoming is weaker because many callers can
+        # construct the same data type.
+        "INSTANTIATES_out": 1.05,
+        "INSTANTIATES_in": 0.65,
         # proxy_binding -[RESOLVES_ATTR]-> context accessor. Strong outgoing hop:
         # it is the binding semantics behind a lazy global proxy.
         "RESOLVES_ATTR_out": 1.25,
@@ -229,12 +236,17 @@ class UnifiedRanker:
         self.vector = vector_searcher
         self.workspace_id = workspace_id
         self.weights = weights
-        self.repository_profile = self._load_repository_profile()
+        workspace_state = self._load_workspace_state()
+        self.repository_profile = workspace_state["repository_profile"]
         self.strategy_profile = self.repository_profile.get("strategy_profile", {})
-        self.role_catalog = self._load_role_catalog()
-        self._derived_primary_role_by_uid = self._load_derived_primary_role_map()
-        self._derived_supporting_roles_by_uid = self._load_derived_supporting_roles_map()
-        self._structural_fan_by_uid = self._load_structural_fan_map()
+        self.role_catalog = workspace_state["role_catalog"]
+        self._derived_primary_role_by_uid = workspace_state["derived_primary_role_by_uid"]
+        self._derived_supporting_roles_by_uid = workspace_state[
+            "derived_supporting_roles_by_uid"
+        ]
+        self._structural_fan_by_uid = workspace_state["structural_fan_by_uid"]
+        self._workspace_role_supply_counts_cache = None
+        self._target_role_supply_counts_cache: dict[tuple[str, int, int], Counter[str]] = {}
         self.role_fulfilment = RoleFulfilment(self)
         self.scoring = RankerScoring(self)
         self.budget_pruner = BudgetPruner(self)
@@ -245,6 +257,25 @@ class UnifiedRanker:
         self.budget_selector = BudgetSelector(self)
         self.subgraph_assembler = SubgraphAssembler(self)
         self._workspace_root = None
+
+    def _load_workspace_state(self) -> dict:
+        cache_key = (id(self.db), self.workspace_id)
+        cached = self._WORKSPACE_STATE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+        repository_profile = self._load_repository_profile()
+        role_catalog = self._load_role_catalog()
+        role_state = self._load_derived_role_state_for_catalog(role_catalog)
+        state = {
+            "repository_profile": repository_profile,
+            "role_catalog": role_catalog,
+            "derived_primary_role_by_uid": role_state["primary"],
+            "derived_supporting_roles_by_uid": role_state["supporting"],
+            "structural_fan_by_uid": role_state["fan"],
+        }
+        self._WORKSPACE_STATE_CACHE[cache_key] = state
+        return state
 
     def _workspace_project_root(self):
         if self._workspace_root is None:
@@ -358,15 +389,26 @@ class UnifiedRanker:
         class_name: str,
         method_name: str,
     ) -> list[dict]:
-        """Resolve ``Class.method`` via MRO API edges or qualified-name tail."""
+        """Resolve ``Class.method`` via direct API, on-demand MRO, or qname tail."""
         qualified_suffix = f".{class_name}.{method_name}"
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {name: $method_name})
-        WHERE EXISTS {
-            MATCH (:Symbol {name: $class_name, kind: 'class'})
-                  -[:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(s)
-        }
-           OR coalesce(s.qualified_name, '') ENDS WITH $qualified_suffix
+        WITH s, f, c,
+             EXISTS {
+               MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->
+                     (:Symbol {name: $class_name, kind: 'class'})
+                     -[:HAS_API {workspace_id: $workspace_id}]->(s)
+             } AS direct_api,
+             EXISTS {
+               MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->
+                     (sub_cls:Symbol {name: $class_name, kind: 'class'})
+               MATCH path=(sub_cls)-[:DEPENDS_ON*1..24]->(:Symbol)
+                          -[:HAS_API {workspace_id: $workspace_id}]->(s)
+               WHERE all(rel IN relationships(path)
+                         WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)
+             } AS inherited_api,
+             coalesce(s.qualified_name, '') ENDS WITH $qualified_suffix AS qualified_tail
+        WHERE direct_api OR inherited_api OR qualified_tail
         CALL {
             WITH s
             OPTIONAL MATCH (s)-[out_r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API]->(:Symbol)
@@ -385,17 +427,11 @@ class UnifiedRanker:
             WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT any_r) AS total_edges
         }
-        WITH s, f, c, outgoing_edges, incoming_edges, total_edges
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges, direct_api, inherited_api
         ORDER BY
           CASE
-            WHEN EXISTS {
-              MATCH (:Symbol {name: $class_name, kind: 'class'})
-                    -[:HAS_API {workspace_id: $workspace_id}]->(s)
-            } THEN 0
-            WHEN EXISTS {
-              MATCH (:Symbol {name: $class_name, kind: 'class'})
-                    -[:INHERITED_API {workspace_id: $workspace_id}]->(s)
-            } THEN 1
+            WHEN direct_api THEN 0
+            WHEN inherited_api THEN 1
             ELSE 2
           END ASC,
           CASE
@@ -786,22 +822,53 @@ class UnifiedRanker:
             ambiguous=ambiguous,
             secondary_intent=secondary_intent,
         )
-        # 1. Collect graph BFS candidates (pool-size-limited, not budget-limited)
+
+        # 1. Mechanism + required roles (drives role-filling tiers in scoring/selection).
+        # Compute this once up front; structural contract candidate sourcing also
+        # needs the role plan, so doing it later would repeat the local role
+        # supply traversal for every request.
+        mechanism = self._determine_mechanism(target, query=query)
+        required_roles = self._get_required_roles(mechanism, target=target)
+        if intent == Intent.IMPACT_ANALYSIS:
+            required_roles = normalize_roles(
+                [
+                    "impact_runtime",
+                    "impact_public_api",
+                    "impact_test_surface",
+                    "docs_or_concept",
+                ]
+            )
+        required_roles = self._apply_intent_policy_roles(required_roles, intent_policy)
+
+        # 2. Collect graph BFS candidates (pool-size-limited, not budget-limited).
+        # Non-impact contexts only seat a small fraction of the raw graph pool
+        # under the token budget; keeping the BFS tail smaller avoids expanding
+        # low-utility neighborhoods that pruning will discard anyway. Impact
+        # analysis keeps the caller-provided wider pool for transitive ripples.
+        effective_graph_pool_size = graph_pool_size
+        if intent != Intent.IMPACT_ANALYSIS:
+            effective_graph_pool_size = min(effective_graph_pool_size, 96)
         graph_pool = self._graph_candidates(
             target.uid,
-            pool_size=graph_pool_size,
+            pool_size=effective_graph_pool_size,
             intent=intent,
             target=target,
             query=query,
         )
+        mandatory_delegates = self._mandatory_delegation_callees(target)
+        graph_pool.extend(mandatory_delegates)
+        graph_pool.extend(self._mandatory_delegation_type_neighbors(mandatory_delegates))
+        graph_pool.extend(
+            self._structural_contract_candidates(target, required_roles=required_roles)
+        )
         self._mark_api_relay_candidates(graph_pool)
         self._mark_query_api_callees(graph_pool, query)
 
-        # 2. Collect vector candidates for docs and symbols
+        # 3. Collect vector candidates for docs and symbols
         doc_pool = self._doc_candidates(query, limit=vector_limit)
         sym_vec_pool = self._sym_vec_candidates(query, limit=vector_limit)
 
-        # 3. Doc-bridge: semantic relationships static graph edges cannot see.
+        # 4. Doc-bridge: semantic relationships static graph edges cannot see.
         # When a marker API and its runtime consumer are co-mentioned in the
         # same DocAnchor, the bridge surfaces the consumer even when no
         # Symbol→Symbol edge connects them. Seeds are the target plus any
@@ -828,10 +895,10 @@ class UnifiedRanker:
         else:
             bridge_pool = bridge_pool_h1
 
-        # 4. Fuse into unified pool, boosting docs linked via COVERS
+        # 5. Fuse into unified pool, boosting docs linked via COVERS
         pool = self._fuse(graph_pool, doc_pool, sym_vec_pool, target.uid, bridge_pool=bridge_pool)
 
-        # 5. Fill missing token costs for vector-only symbols before we
+        # 6. Fill missing token costs for vector-only symbols before we
         # decide whether a role is genuinely selection-ready.
         self._fill_token_costs(pool)
 
@@ -841,23 +908,6 @@ class UnifiedRanker:
             fallback_doc = self._target_concept_fallback_candidate(target, query=query)
             if fallback_doc is not None:
                 pool.append(fallback_doc)
-
-        # 6. Mechanism + required roles (drives role-filling tiers in scoring/selection).
-        # The recovery / anchor-injection layer and the archetype resolver were removed:
-        # the pool is the fused vector + graph-BFS candidates, with no framework-keyed
-        # recovery and no resolver-synthesized anchors.
-        mechanism = self._determine_mechanism(target, query=query)
-        required_roles = self._get_required_roles(mechanism, target=target)
-        if intent == Intent.IMPACT_ANALYSIS:
-            required_roles = normalize_roles(
-                [
-                    "impact_runtime",
-                    "impact_public_api",
-                    "impact_test_surface",
-                    "docs_or_concept",
-                ]
-            )
-        required_roles = self._apply_intent_policy_roles(required_roles, intent_policy)
 
         # 7. Assign intent weights and noise factors
 
@@ -1213,6 +1263,7 @@ class UnifiedRanker:
             "CALLS_GUESS",
             "USES_TYPE",
             "INJECTS",
+            "INSTANTIATES",
             "HANDLES",
             "RESOLVES_ATTR",
             "HAS_API",
@@ -1220,6 +1271,18 @@ class UnifiedRanker:
         }
     )
     _MARKER_CHAIN_RELATIONS = _REGISTRATION_CHAIN_RELATIONS
+    _DELEGATION_CALL_RELATIONS = frozenset(
+        {
+            "CALLS",
+            "CALLS_DIRECT",
+            "CALLS_SCOPED",
+            "CALLS_IMPORTED",
+            "CALLS_DYNAMIC",
+            "CALLS_INFERRED",
+        }
+    )
+    _THIN_DELEGATOR_TOKEN_MAX = 96
+    _THIN_DELEGATOR_MAX_OUT_CALLS = 2
 
     def _graph_candidates(
         self,
@@ -1240,6 +1303,446 @@ class UnifiedRanker:
                 query=query,
             ),
         )
+
+    def _mandatory_delegation_callees(self, target: SubgraphNode) -> list[Candidate]:
+        """Seat implementation callees for tiny facade/delegator targets.
+
+        A short public wrapper can be the correct lookup hit while the actual
+        behavior lives in its direct outgoing callee. The graph edge is already
+        code-derived; this only prevents the large implementation body from
+        being scored as disposable noise.
+        """
+        if not target.uid:
+            return []
+        target_kind = (target.kind or "").lower()
+        if target_kind and target_kind not in {"function", "method"}:
+            return []
+        if not target.token_estimate or target.token_estimate > self._THIN_DELEGATOR_TOKEN_MAX:
+            return []
+
+        query = """
+        MATCH (t:Symbol {uid: $uid})
+        WHERE coalesce(t.token_estimate, 0) <= $max_tokens
+          AND coalesce(t.kind, '') IN ['function', 'method']
+        MATCH (t)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED]->(n:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        WITH collect({rel: r, node: n}) AS rows, count(DISTINCT n) AS out_count
+        WHERE out_count > 0 AND out_count <= $max_out_calls
+        UNWIND rows AS row
+        WITH row.rel AS r, row.node AS n
+        OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(n)
+        RETURN DISTINCT n.uid AS uid,
+               n.name AS name,
+               coalesce(n.kind, '') AS symbol_kind,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(n.token_estimate, 0) AS token_estimate,
+               coalesce(c.range, n.range, [0, 0]) AS range,
+               type(r) AS rel_type
+        LIMIT 8
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = list(
+                    session.run(
+                        query,
+                        uid=target.uid,
+                        workspace_id=self.workspace_id,
+                        max_tokens=self._THIN_DELEGATOR_TOKEN_MAX,
+                        max_out_calls=self._THIN_DELEGATOR_MAX_OUT_CALLS,
+                    )
+                )
+        except Exception:
+            return []
+
+        candidates: list[Candidate] = []
+        for row in rows:
+            uid = row.get("uid")
+            if not uid or uid == target.uid:
+                continue
+            rel_type = str(row.get("rel_type") or "CALLS")
+            if rel_type not in self._DELEGATION_CALL_RELATIONS:
+                continue
+            token_cost = int(row.get("token_estimate") or 0)
+            range_ = row.get("range") or [0, 0]
+            if token_cost <= 0:
+                token_cost = self._estimate_tokens_range(range_)
+            candidates.append(
+                Candidate(
+                    kind="symbol",
+                    uid=str(uid),
+                    token_cost=token_cost,
+                    graph_score=1.25,
+                    name=str(row.get("name") or ""),
+                    symbol_kind=str(row.get("symbol_kind") or ""),
+                    file_path=str(row.get("file_path") or "<unknown>"),
+                    range=range_,
+                    relation="MANDATORY_CALLEE",
+                    direction="callee",
+                    depth=1,
+                    file_hash=str(row.get("file_hash") or ""),
+                    provenance=[
+                        f"graph:{rel_type},depth=1,delegation",
+                        "mandatory-delegation-callee",
+                    ],
+                    chain_kind="mandatory",
+                )
+            )
+        return candidates
+
+    def _mandatory_delegation_type_neighbors(self, delegates: list[Candidate]) -> list[Candidate]:
+        """Surface type-contract neighbors of mandatory delegation callees."""
+        delegate_uids = [c.uid for c in delegates if c.uid]
+        if not delegate_uids:
+            return []
+
+        query = """
+        UNWIND $delegate_uids AS delegate_uid
+        MATCH (delegate:Symbol {uid: delegate_uid})-[r:USES_TYPE]->(n:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+          AND n.uid <> delegate_uid
+        OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(n)
+        RETURN DISTINCT n.uid AS uid,
+               n.name AS name,
+               coalesce(n.kind, '') AS symbol_kind,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(n.token_estimate, 0) AS token_estimate,
+               coalesce(c.range, n.range, [0, 0]) AS range
+        LIMIT 16
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = list(
+                    session.run(
+                        query,
+                        delegate_uids=delegate_uids,
+                        workspace_id=self.workspace_id,
+                    )
+                )
+        except Exception:
+            return []
+
+        candidates: list[Candidate] = []
+        for row in rows:
+            uid = row.get("uid")
+            if not uid:
+                continue
+            token_estimate = int(row.get("token_estimate") or 0)
+            range_ = row.get("range") or [0, 0]
+            if token_estimate <= 0:
+                token_estimate = self._estimate_tokens_range(range_)
+            compact = token_estimate > 512
+            candidates.append(
+                Candidate(
+                    kind="symbol",
+                    uid=str(uid),
+                    token_cost=120 if compact else token_estimate,
+                    graph_score=0.95,
+                    name=str(row.get("name") or ""),
+                    symbol_kind=str(row.get("symbol_kind") or ""),
+                    file_path=str(row.get("file_path") or "<unknown>"),
+                    range=range_,
+                    render_mode="signature_only" if compact else "full",
+                    relation="USES_TYPE",
+                    direction="type",
+                    depth=2,
+                    file_hash=str(row.get("file_hash") or ""),
+                    provenance=["graph:USES_TYPE,depth=2,delegation_surface"],
+                    chain_kind="mandatory",
+                )
+            )
+        return candidates
+
+    def _structural_contract_neighbor_rows(
+        self,
+        uid: str,
+        *,
+        visited: set[str],
+        limit: int = 32,
+    ) -> list[dict]:
+        """Outgoing structural-contract neighbors for role-filler closure.
+
+        This is deliberately narrower than generic graph BFS: only code-derived
+        contract/topology relations, and only outgoing from the current symbol.
+        It gives the selector a compact path to role-bearing collaborators
+        without reopening the high-fan incoming CALLS flood.
+        """
+        query = """
+        MATCH (s:Symbol {uid: $uid})-[r:USES_TYPE|INSTANTIATES|DEPENDS_ON|HANDLES|HAS_API|INHERITED_API]->(n:Symbol)
+        WHERE NOT n.uid IN $visited
+          AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(n)
+        RETURN n.uid AS uid,
+               n.name AS name,
+               coalesce(n.kind, '') AS symbol_kind,
+               coalesce(f.path, '<unknown>') AS file_path,
+               coalesce(f.hash, '') AS file_hash,
+               coalesce(n.token_estimate, 0) AS token_estimate,
+               coalesce(c.range, n.range, [0, 0]) AS range,
+               type(r) AS rel_type,
+               coalesce(n.derived_primary_role, '') AS primary_role,
+               coalesce(n.derived_supporting_roles_json, '') AS supporting_roles_json
+        ORDER BY CASE type(r)
+            WHEN 'USES_TYPE' THEN 0
+            WHEN 'INSTANTIATES' THEN 1
+            WHEN 'HANDLES' THEN 2
+            WHEN 'HAS_API' THEN 3
+            WHEN 'INHERITED_API' THEN 4
+            WHEN 'DEPENDS_ON' THEN 5
+            ELSE 6
+        END,
+        coalesce(n.token_estimate, 0) ASC
+        LIMIT $limit
+        """
+        try:
+            with self.db.driver.session() as session:
+                rows = session.run(
+                    query,
+                    uid=uid,
+                    visited=list(visited),
+                    workspace_id=self.workspace_id,
+                    limit=limit,
+                )
+                return [dict(row) for row in rows]
+        except Exception:
+            return []
+
+    def _structural_contract_neighbor_rows_by_parent(
+        self,
+        uids: list[str],
+        *,
+        visited: set[str],
+        limit: int = 32,
+    ) -> dict[str, list[dict]]:
+        """Batch variant of ``_structural_contract_neighbor_rows``.
+
+        One query per frontier depth keeps contract closure bounded by depth,
+        not by ``frontier_size * per-node-query`` latency. For single-node
+        frontiers we preserve the simpler query path, which also keeps the
+        unit-test fakes compact.
+        """
+        unique_uids = [uid for uid in dict.fromkeys(uids) if uid]
+        if not unique_uids:
+            return {}
+        if len(unique_uids) == 1:
+            return {
+                unique_uids[0]: self._structural_contract_neighbor_rows(
+                    unique_uids[0],
+                    visited=visited,
+                    limit=limit,
+                )
+            }
+
+        query = """
+        UNWIND $uids AS parent_uid
+        MATCH (s:Symbol {uid: parent_uid})
+        CALL {
+            WITH s
+            MATCH (s)-[r:USES_TYPE|INSTANTIATES|DEPENDS_ON|HANDLES|HAS_API|INHERITED_API]->(n:Symbol)
+            WHERE NOT n.uid IN $visited
+              AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+            OPTIONAL MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(n)
+            RETURN n.uid AS neighbor_uid,
+                   n.name AS name,
+                   coalesce(n.kind, '') AS symbol_kind,
+                   coalesce(f.path, '<unknown>') AS file_path,
+                   coalesce(f.hash, '') AS file_hash,
+                   coalesce(n.token_estimate, 0) AS token_estimate,
+                   coalesce(c.range, n.range, [0, 0]) AS range,
+                   type(r) AS rel_type,
+                   coalesce(n.derived_primary_role, '') AS primary_role,
+                   coalesce(n.derived_supporting_roles_json, '') AS supporting_roles_json
+            ORDER BY CASE type(r)
+                WHEN 'USES_TYPE' THEN 0
+                WHEN 'INSTANTIATES' THEN 1
+                WHEN 'HANDLES' THEN 2
+                WHEN 'HAS_API' THEN 3
+                WHEN 'INHERITED_API' THEN 4
+                WHEN 'DEPENDS_ON' THEN 5
+                ELSE 6
+            END,
+            coalesce(n.token_estimate, 0) ASC
+            LIMIT $limit
+        }
+        RETURN s.uid AS parent_uid,
+               neighbor_uid AS uid,
+               name,
+               symbol_kind,
+               file_path,
+               file_hash,
+               token_estimate,
+               range,
+               rel_type,
+               primary_role,
+               supporting_roles_json
+        """
+        grouped: dict[str, list[dict]] = {uid: [] for uid in unique_uids}
+        try:
+            with self.db.driver.session() as session:
+                rows = session.run(
+                    query,
+                    uids=unique_uids,
+                    visited=list(visited),
+                    workspace_id=self.workspace_id,
+                    limit=limit,
+                )
+                for row in rows:
+                    parent_uid = str(row.get("parent_uid") or "")
+                    if parent_uid not in grouped:
+                        continue
+                    grouped[parent_uid].append(dict(row))
+        except Exception:
+            return {
+                uid: self._structural_contract_neighbor_rows(
+                    uid,
+                    visited=visited,
+                    limit=limit,
+                )
+                for uid in unique_uids
+            }
+        return grouped
+
+    def _structural_contract_candidates(
+        self,
+        target: SubgraphNode,
+        *,
+        required_roles: list[str] | None = None,
+        max_depth: int = 5,
+        per_node_limit: int = 32,
+        per_role_limit: int = 2,
+        total_limit: int = 24,
+    ) -> list[Candidate]:
+        """Role-bearing candidates from the target's structural closure.
+
+        Generic BFS is score-limited and can be saturated by high-fan callers
+        before it reaches a local contract path. The adaptive role planner
+        already observes those paths; this source turns the same structural
+        facts into selectable candidates. Selection remains role/topology based:
+        no query text, symbol names, file stems, benchmark IDs, or framework
+        packs author these candidates.
+        """
+        if not target.uid:
+            return []
+
+        target_roles = set(self.role_fulfilment.roles_of(target))
+        role_plan = (
+            normalize_roles(required_roles)
+            if required_roles is not None
+            else self.role_fulfilment.adaptive_role_plan(target=target)
+        )
+        desired_roles = [
+            role
+            for role in role_plan
+            if role not in target_roles
+            and role
+            not in {
+                "docs_or_concept",
+                "impact_runtime",
+                "impact_public_api",
+                "impact_test_surface",
+                "orphan",
+            }
+        ]
+        if not desired_roles:
+            return []
+
+        desired = set(desired_roles)
+        role_order = {role: idx for idx, role in enumerate(desired_roles)}
+        seen: set[str] = {target.uid}
+        frontier: list[str] = [target.uid]
+        rows_by_uid: dict[str, tuple[dict, int, list[str]]] = {}
+
+        for depth in range(1, max_depth + 1):
+            if not frontier:
+                break
+            next_frontier: list[str] = []
+            rows_by_parent = self._structural_contract_neighbor_rows_by_parent(
+                frontier,
+                visited=seen,
+                limit=per_node_limit,
+            )
+            for uid in frontier:
+                for row in rows_by_parent.get(uid, []):
+                    neighbor_uid = str(row.get("uid") or "")
+                    if not neighbor_uid or neighbor_uid in seen:
+                        continue
+                    seen.add(neighbor_uid)
+                    next_frontier.append(neighbor_uid)
+
+                    roles = self.role_fulfilment.pass1_roles_for_symbol_uid(neighbor_uid)
+                    if not roles or not (set(roles) & desired):
+                        continue
+                    file_path = str(row.get("file_path") or "")
+                    if _path_is_noisy(file_path):
+                        continue
+                    rows_by_uid.setdefault(neighbor_uid, (row, depth, roles))
+            frontier = next_frontier
+
+        ranked_rows: list[tuple[tuple, dict, int, list[str], list[str]]] = []
+        for row, depth, roles in rows_by_uid.values():
+            matched = [role for role in desired_roles if role in roles]
+            if not matched:
+                continue
+            primary = normalize_roles([str(row.get("primary_role") or "")])
+            primary_match = bool(primary and primary[0] in matched)
+            token_estimate = int(row.get("token_estimate") or 0)
+            rank_key = (
+                0 if primary_match else 1,
+                min(role_order[role] for role in matched),
+                depth,
+                token_estimate,
+            )
+            ranked_rows.append((rank_key, row, depth, roles, matched))
+
+        ranked_rows.sort(key=lambda item: item[0])
+
+        selected: list[Candidate] = []
+        selected_uids: set[str] = set()
+        role_counts: Counter[str] = Counter()
+        for _, row, depth, _roles, matched in ranked_rows:
+            uid = str(row.get("uid") or "")
+            if not uid or uid in selected_uids:
+                continue
+            if all(role_counts[role] >= per_role_limit for role in matched):
+                continue
+
+            token_cost = int(row.get("token_estimate") or 0)
+            range_ = row.get("range") or [0, 0]
+            if token_cost <= 0:
+                token_cost = self._estimate_tokens_range(range_)
+            compact = token_cost > 512
+            rel_type = str(row.get("rel_type") or "USES_TYPE")
+            graph_score = max(0.45, 1.35 - (0.12 * depth))
+            selected.append(
+                Candidate(
+                    kind="symbol",
+                    uid=uid,
+                    token_cost=120 if compact else token_cost,
+                    graph_score=graph_score,
+                    name=str(row.get("name") or ""),
+                    symbol_kind=str(row.get("symbol_kind") or ""),
+                    file_path=str(row.get("file_path") or "<unknown>"),
+                    range=range_,
+                    render_mode="signature_only" if compact else "full",
+                    relation=rel_type,
+                    direction=self._direction(rel_type, True),
+                    depth=depth,
+                    file_hash=str(row.get("file_hash") or ""),
+                    provenance=[
+                        f"graph:{rel_type},depth={depth},contract_chain",
+                        f"structural-contract:roles={','.join(matched)}",
+                    ],
+                    chain_kind="contract",
+                )
+            )
+            selected_uids.add(uid)
+            for role in matched:
+                role_counts[role] += 1
+            if len(selected) >= total_limit:
+                break
+
+        return selected
 
     def _graph_candidates_impl(
         self,
@@ -1424,6 +1927,13 @@ class UnifiedRanker:
             if c.relation == "MANDATORY_CALLEE":
                 c.chain_kind = upgrade_chain_kind(c.chain_kind, "mandatory")
             candidates.append(c)
+
+            if (
+                intent != Intent.IMPACT_ANALYSIS
+                and _path_is_noisy(c.file_path)
+                and not (reg_chain or marker_chain)
+            ):
+                continue
 
             for nn in self._get_neighbors(uid, visited, distance=distance + 1):
                 # Direction filter is intentionally applied only at distance 1
@@ -2400,9 +2910,59 @@ class UnifiedRanker:
             return {}
         return catalog if isinstance(catalog, dict) else {}
 
+    def _load_derived_role_state_for_catalog(self, role_catalog: dict) -> dict:
+        """Read persisted Pass-1 role/fan state in one workspace scan."""
+        empty = {"primary": {}, "supporting": {}, "fan": {}}
+        if not role_catalog:
+            return empty
+        try:
+            with self.db.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                    RETURN s.uid AS uid,
+                           coalesce(s.derived_primary_role, '') AS primary_role,
+                           coalesce(s.derived_supporting_roles_json, '') AS supporting_roles_json,
+                           coalesce(s.call_fan_in, 0.0) AS call_fan_in,
+                           coalesce(s.call_fan_out, 0.0) AS call_fan_out,
+                           coalesce(s.type_fan_in, 0.0) AS type_fan_in
+                    """,
+                    workspace_id=self.workspace_id,
+                )
+                primary: dict[str, str] = {}
+                supporting: dict[str, list[str]] = {}
+                fan: dict[str, dict[str, float]] = {}
+                for row in rows:
+                    uid = row.get("uid")
+                    if not uid:
+                        continue
+                    uid = str(uid)
+                    primary_role = str(row.get("primary_role") or "")
+                    if primary_role:
+                        primary[uid] = primary_role
+                    payload = row.get("supporting_roles_json") or ""
+                    if payload:
+                        try:
+                            parsed = json.loads(payload)
+                        except (TypeError, json.JSONDecodeError):
+                            parsed = []
+                        if isinstance(parsed, list):
+                            supporting[uid] = [str(item) for item in parsed if item]
+                    fan[uid] = {
+                        "call_fan_in": float(row["call_fan_in"] or 0.0),
+                        "call_fan_out": float(row["call_fan_out"] or 0.0),
+                        "type_fan_in": float(row["type_fan_in"] or 0.0),
+                    }
+                return {"primary": primary, "supporting": supporting, "fan": fan}
+        except Exception:
+            return empty
+
     def _load_derived_primary_role_map(self) -> dict[str, str]:
+        return self._load_derived_primary_role_map_for_catalog(self.role_catalog)
+
+    def _load_derived_primary_role_map_for_catalog(self, role_catalog: dict) -> dict[str, str]:
         """Read Pass-1 primary roles persisted on Symbol nodes."""
-        if not self.role_catalog:
+        if not role_catalog:
             return {}
         try:
             with self.db.driver.session() as session:
@@ -2420,8 +2980,13 @@ class UnifiedRanker:
             return {}
 
     def _load_derived_supporting_roles_map(self) -> dict[str, list[str]]:
+        return self._load_derived_supporting_roles_map_for_catalog(self.role_catalog)
+
+    def _load_derived_supporting_roles_map_for_catalog(
+        self, role_catalog: dict
+    ) -> dict[str, list[str]]:
         """Read Pass-1 supporting roles persisted on Symbol nodes."""
-        if not self.role_catalog:
+        if not role_catalog:
             return {}
         try:
             with self.db.driver.session() as session:
@@ -2450,63 +3015,28 @@ class UnifiedRanker:
             return {}
 
     def _load_structural_fan_map(self) -> dict[str, dict[str, float]]:
-        """Read Pass-1 structural fan profiles persisted on Symbol nodes."""
-        if not self.role_catalog:
+        return self._load_structural_fan_map_for_catalog(self.role_catalog)
+
+    def _load_structural_fan_map_for_catalog(
+        self, role_catalog: dict
+    ) -> dict[str, dict[str, float]]:
+        """Read Pass-1 structural fan profiles persisted on Symbol nodes.
+
+        Keep the workspace-wide load lean. Heavier relation-derived fan values
+        (alias API, proxy attr resolution, etc.) are only needed for the public
+        target surface and are loaded on demand per symbol.
+        """
+        if not role_catalog:
             return {}
         try:
             with self.db.driver.session() as session:
                 rows = session.run(
                     """
                     MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
-                    CALL {
-                        WITH s
-                        OPTIONAL MATCH (s)<-[h:HANDLES]-(:Symbol)
-                        WHERE coalesce(h.workspace_id, $workspace_id) = $workspace_id
-                        RETURN count(DISTINCT h) AS handle_fan_in
-                    }
-                    CALL {
-                        WITH s
-                        OPTIONAL MATCH (s)-[ref:REFERENCES]->(:Symbol)-[api:HAS_API|INHERITED_API]->(:Symbol)
-                        WHERE coalesce(ref.workspace_id, $workspace_id) = $workspace_id
-                          AND coalesce(api.workspace_id, $workspace_id) = $workspace_id
-                        RETURN count(DISTINCT api) AS alias_api_fan_out
-                    }
-                    CALL {
-                        WITH s
-                        OPTIONAL MATCH (s)-[api_out:HAS_API|INHERITED_API]->(:Symbol)
-                        WHERE coalesce(api_out.workspace_id, $workspace_id) = $workspace_id
-                        RETURN count(DISTINCT api_out) AS api_fan_out
-                    }
-                    CALL {
-                        WITH s
-                        OPTIONAL MATCH (:Symbol)-[api_in:HAS_API|INHERITED_API]->(s)
-                        WHERE coalesce(api_in.workspace_id, $workspace_id) = $workspace_id
-                        RETURN count(DISTINCT api_in) AS api_fan_in
-                    }
-                    CALL {
-                        WITH s
-                        OPTIONAL MATCH (s)-[ref:REFERENCES_EXTERNAL]->(:ExternalPkg)<-[construct:CALLS_EXTERNAL]-(:Symbol)
-                        WHERE coalesce(ref.workspace_id, $workspace_id) = $workspace_id
-                          AND coalesce(construct.workspace_id, $workspace_id) = $workspace_id
-                          AND coalesce(construct.kind, '') = 'construct'
-                        RETURN count(DISTINCT construct) AS external_construct_coref_fan_out
-                    }
-                    CALL {
-                        WITH s
-                        OPTIONAL MATCH (s)-[pa:RESOLVES_ATTR]->(:Symbol)
-                        WHERE coalesce(pa.workspace_id, $workspace_id) = $workspace_id
-                        RETURN count(DISTINCT pa) AS proxy_attr_resolve_fan_out
-                    }
                     RETURN s.uid AS uid,
                            coalesce(s.call_fan_in, 0.0) AS call_fan_in,
                            coalesce(s.call_fan_out, 0.0) AS call_fan_out,
-                           coalesce(s.type_fan_in, 0.0) AS type_fan_in,
-                           handle_fan_in AS handle_fan_in,
-                           alias_api_fan_out AS alias_api_fan_out,
-                           api_fan_out AS api_fan_out,
-                           api_fan_in AS api_fan_in,
-                           external_construct_coref_fan_out AS external_construct_coref_fan_out,
-                           proxy_attr_resolve_fan_out AS proxy_attr_resolve_fan_out
+                           coalesce(s.type_fan_in, 0.0) AS type_fan_in
                     """,
                     workspace_id=self.workspace_id,
                 )
@@ -2515,16 +3045,6 @@ class UnifiedRanker:
                         "call_fan_in": float(r["call_fan_in"] or 0.0),
                         "call_fan_out": float(r["call_fan_out"] or 0.0),
                         "type_fan_in": float(r["type_fan_in"] or 0.0),
-                        "handle_fan_in": float(r["handle_fan_in"] or 0.0),
-                        "alias_api_fan_out": float(r["alias_api_fan_out"] or 0.0),
-                        "api_fan_out": float(r["api_fan_out"] or 0.0),
-                        "api_fan_in": float(r["api_fan_in"] or 0.0),
-                        "external_construct_coref_fan_out": float(
-                            r["external_construct_coref_fan_out"] or 0.0
-                        ),
-                        "proxy_attr_resolve_fan_out": float(
-                            r["proxy_attr_resolve_fan_out"] or 0.0
-                        ),
                     }
                     for r in rows
                     if r["uid"]
@@ -2532,21 +3052,101 @@ class UnifiedRanker:
         except Exception:
             return {}
 
+    def _structural_fan_for_uid(self, uid: str) -> dict[str, float]:
+        fan = self._structural_fan_by_uid.setdefault(uid, {})
+        if fan.get("_extended_loaded"):
+            return fan
+        query = """
+        MATCH (s:Symbol {uid: $uid})
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)<-[h:HANDLES]-(:Symbol)
+            WHERE coalesce(h.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT h) AS handle_fan_in
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[ref:REFERENCES]->(:Symbol)-[api:HAS_API|INHERITED_API]->(:Symbol)
+            WHERE coalesce(ref.workspace_id, $workspace_id) = $workspace_id
+              AND coalesce(api.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT api) AS alias_api_fan_out
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[api_out:HAS_API|INHERITED_API]->(:Symbol)
+            WHERE coalesce(api_out.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT api_out) AS api_fan_out
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (:Symbol)-[api_in:HAS_API|INHERITED_API]->(s)
+            WHERE coalesce(api_in.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT api_in) AS api_fan_in
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[ref:REFERENCES_EXTERNAL]->(:ExternalPkg)<-[construct:CALLS_EXTERNAL]-(:Symbol)
+            WHERE coalesce(ref.workspace_id, $workspace_id) = $workspace_id
+              AND coalesce(construct.workspace_id, $workspace_id) = $workspace_id
+              AND coalesce(construct.kind, '') = 'construct'
+            RETURN count(DISTINCT construct) AS external_construct_coref_fan_out
+        }
+        CALL {
+            WITH s
+            OPTIONAL MATCH (s)-[pa:RESOLVES_ATTR]->(:Symbol)
+            WHERE coalesce(pa.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT pa) AS proxy_attr_resolve_fan_out
+        }
+        RETURN coalesce(s.call_fan_in, 0.0) AS call_fan_in,
+               coalesce(s.call_fan_out, 0.0) AS call_fan_out,
+               coalesce(s.type_fan_in, 0.0) AS type_fan_in,
+               handle_fan_in,
+               alias_api_fan_out,
+               api_fan_out,
+               api_fan_in,
+               external_construct_coref_fan_out,
+               proxy_attr_resolve_fan_out
+        """
+        try:
+            with self.db.driver.session() as session:
+                row = session.run(
+                    query,
+                    uid=uid,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            row = None
+        if row:
+            fan.update(
+                {
+                    "call_fan_in": float(row["call_fan_in"] or 0.0),
+                    "call_fan_out": float(row["call_fan_out"] or 0.0),
+                    "type_fan_in": float(row["type_fan_in"] or 0.0),
+                    "handle_fan_in": float(row["handle_fan_in"] or 0.0),
+                    "alias_api_fan_out": float(row["alias_api_fan_out"] or 0.0),
+                    "api_fan_out": float(row["api_fan_out"] or 0.0),
+                    "api_fan_in": float(row["api_fan_in"] or 0.0),
+                    "external_construct_coref_fan_out": float(
+                        row["external_construct_coref_fan_out"] or 0.0
+                    ),
+                    "proxy_attr_resolve_fan_out": float(
+                        row["proxy_attr_resolve_fan_out"] or 0.0
+                    ),
+                }
+            )
+        fan["_extended_loaded"] = 1.0
+        return fan
+
     # Neo4j helpers
     # ------------------------------------------------------------------
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|HANDLES|RESOLVES_ATTR]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|INSTANTIATES|HANDLES|RESOLVES_ATTR]-(n:Symbol)
         WHERE NOT n.uid IN $visited
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
-        OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)
-        WHERE coalesce(cr.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH (fn:File {workspace_id: $workspace_id})-[c:CONTAINS]->(n)
-        WITH n, fn, c, r, startNode(r) = s AS outgoing, count(DISTINCT cr) AS caller_count
-        OPTIONAL MATCH (n)-[out_call:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(:Symbol)
-        WHERE coalesce(out_call.workspace_id, $workspace_id) = $workspace_id
-        WITH n, fn, c, r, outgoing, caller_count, count(DISTINCT out_call) AS outgoing_call_count
+        WITH n, fn, c, r, startNode(r) = s AS outgoing
         RETURN n.uid AS uid,
                n.name AS name,
                coalesce(n.kind, '') AS symbol_kind,
@@ -2557,8 +3157,8 @@ class UnifiedRanker:
                type(r) AS rel_type,
                coalesce(r.kind, '') AS rel_kind,
                outgoing,
-               caller_count,
-               outgoing_call_count
+               coalesce(n.call_fan_in, 0.0) AS caller_count,
+               coalesce(n.call_fan_out, 0.0) AS outgoing_call_count
         """
         try:
             with self.db.driver.session() as session:

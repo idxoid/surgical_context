@@ -85,6 +85,8 @@ class RankerScoring:
     ) -> float:
         if intent == Intent.IMPACT_ANALYSIS or mechanism == "workspace_structure":
             return 1.0
+        if getattr(candidate, "chain_kind", "") == "mandatory":
+            return 1.0
 
         path = (candidate.file_path or "").lower()
         target_path = (target.file_path or "").lower()
@@ -203,6 +205,8 @@ class RankerScoring:
             relation = "HANDLES_out" if outgoing else "HANDLES_in"
         elif rel_type == "INJECTS":
             relation = "INJECTS_out" if outgoing else "INJECTS_in"
+        elif rel_type == "INSTANTIATES":
+            relation = "INSTANTIATES_out" if outgoing else "INSTANTIATES_in"
         elif rel_type == "RESOLVES_ATTR":
             relation = "RESOLVES_ATTR_out" if outgoing else "RESOLVES_ATTR_in"
         elif rel_type == "USES_TYPE":
@@ -277,4 +281,6 @@ class RankerScoring:
             return rel_type.lower()
         if rel_type == "RESOLVES_ATTR":
             return "resolved_attr" if outgoing else "proxy"
+        if rel_type == "INSTANTIATES":
+            return "constructs" if outgoing else "constructed_by"
         return "sibling"

@@ -29,6 +29,8 @@ class GraphExpander:
         "REFERENCES": 0.3,
         "RESOLVES_ATTR_out": 1.25,
         "RESOLVES_ATTR_in": 0.8,
+        "INSTANTIATES_out": 1.05,
+        "INSTANTIATES_in": 0.65,
         "DEPENDS_ON": 0.8,
         "IMPORTS": 0.6,
         "CALLS_out": 1.0,
@@ -186,6 +188,8 @@ class GraphExpander:
             relation = "DEPENDS_ON"
         elif rel_type == "RESOLVES_ATTR":
             relation = "RESOLVES_ATTR_out" if outgoing else "RESOLVES_ATTR_in"
+        elif rel_type == "INSTANTIATES":
+            relation = "INSTANTIATES_out" if outgoing else "INSTANTIATES_in"
         elif rel_type == "IMPORTS":
             relation = "IMPORTS"
         else:
@@ -224,12 +228,14 @@ class GraphExpander:
             return "reference"
         elif rel_type == "RESOLVES_ATTR":
             return "resolved_attr" if outgoing else "proxy"
+        elif rel_type == "INSTANTIATES":
+            return "constructs" if outgoing else "constructed_by"
         return "sibling"
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         """Fetch immediate neighbors of a symbol, returning unvisited only."""
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|RESOLVES_ATTR]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|RESOLVES_ATTR|INSTANTIATES]-(n:Symbol)
         WHERE NOT n.uid IN $visited
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH ()-[caller_rel:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)

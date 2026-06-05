@@ -25,6 +25,16 @@ _DEGREE_REL_PATTERN = (
     "RESOLVES_ATTR"
 )
 
+_CLASS_API_EDGE_WRITE_BATCH_SIZE = 1000
+_CLASS_API_EDGE_DELETE_BATCH_SIZE = 5000
+
+
+def _batched_class_api_edges(
+    edges: list[ClassApiEdge], batch_size: int = _CLASS_API_EDGE_WRITE_BATCH_SIZE
+) -> list[list[ClassApiEdge]]:
+    size = max(1, batch_size)
+    return [edges[start : start + size] for start in range(0, len(edges), size)]
+
 
 class Neo4jClient:
     def __init__(self, uri, user, password):
@@ -825,9 +835,40 @@ class Neo4jClient:
         edges: list[ClassApiEdge],
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ):
+        if not edges:
+            return
         with self.driver.session() as session:
-            session.execute_write(self._create_class_api_relations, edges, workspace_id)
-            if edges:
+            for batch in _batched_class_api_edges(edges):
+                session.execute_write(self._create_class_api_relations, batch, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    def clear_class_api_edges(self, workspace_id: str = DEFAULT_WORKSPACE_ID):
+        with self.driver.session() as session:
+            deleted_total = 0
+            while True:
+                rec = session.run(
+                    """
+                    MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->
+                          (:Symbol)-[r:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(:Symbol)
+                    WHERE coalesce(r.resolver, 'mro-v1') = 'mro-v1'
+                    WITH r LIMIT $limit
+                    DELETE r
+                    RETURN count(*) AS deleted_edges
+                    """,
+                    workspace_id=workspace_id,
+                    limit=_CLASS_API_EDGE_DELETE_BATCH_SIZE,
+                ).single()
+                deleted = int(rec["deleted_edges"] or 0) if rec else 0
+                deleted_total += deleted
+                if deleted < _CLASS_API_EDGE_DELETE_BATCH_SIZE:
+                    break
+            if deleted_total:
                 session.run(
                     """
                     MATCH (w:Workspace {id: $workspace_id})
@@ -835,22 +876,6 @@ class Neo4jClient:
                     """,
                     workspace_id=workspace_id,
                 )
-
-    def clear_class_api_edges(self, workspace_id: str = DEFAULT_WORKSPACE_ID):
-        with self.driver.session() as session:
-            session.run(
-                """
-                MATCH (:Symbol)-[r:HAS_API|INHERITED_API {workspace_id: $workspace_id}]->(:Symbol)
-                WHERE coalesce(r.resolver, 'mro-v1') = 'mro-v1'
-                WITH collect(r) AS edges
-                FOREACH (edge IN edges | DELETE edge)
-                WITH size(edges) AS deleted_edges
-                MATCH (w:Workspace {id: $workspace_id})
-                WHERE deleted_edges > 0
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
 
     def link_symbol_api_edges(
         self,
@@ -1009,21 +1034,25 @@ class Neo4jClient:
                 rows=exc_rows,
             )
         # Transitive propagation: a class inheriting an *in-graph* exception
-        # (UsageError -> ClickException -> Exception) is also an error type. Mark any
-        # subclass on a DEPENDS_ON inheritance chain that reaches a builtin-exception
-        # base. Idempotent and order-independent: it walks the full inheritance graph,
-        # so it converges regardless of which file linked first.
-        tx.run(
-            """
-            MATCH (bf:File {workspace_id: $workspace_id})-[:CONTAINS]->(base:Symbol)
-            WHERE base.inherits_builtin_exception = true
-            MATCH (sf:File {workspace_id: $workspace_id})-[:CONTAINS]->(sub:Symbol)
-            WHERE coalesce(sub.inherits_builtin_exception, false) = false
-              AND (sub)-[:DEPENDS_ON*1..6]->(base)
-            SET sub.inherits_builtin_exception = true
-            """,
-            workspace_id=workspace_id,
-        )
+        # (UsageError -> ClickException -> Exception) is also an error type.
+        # Iterate direct inheritance edges instead of a global variable-length
+        # path search; the latter explodes once the parser sees rich multi-line
+        # generic base lists.
+        for _ in range(6):
+            rec = tx.run(
+                """
+                MATCH (sf:File {workspace_id: $workspace_id})-[:CONTAINS]->(sub:Symbol)
+                      -[r:DEPENDS_ON]->(base:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                  AND coalesce(sub.inherits_builtin_exception, false) = false
+                  AND coalesce(base.inherits_builtin_exception, false) = true
+                SET sub.inherits_builtin_exception = true
+                RETURN count(DISTINCT sub) AS updated
+                """,
+                workspace_id=workspace_id,
+            ).single()
+            if not rec or int(rec["updated"] or 0) == 0:
+                break
 
     def link_proxy_bindings(
         self,
@@ -1238,6 +1267,30 @@ class Neo4jClient:
             MERGE (deco)-[h:HANDLES {workspace_id: $workspace_id}]->(decorated)
             SET h.resolver = 'decorator-v1',
                 h.decorator_name = d.decorator_name
+            """,
+            decorators=decorators,
+            workspace_id=workspace_id,
+        )
+        tx.run(
+            """
+            UNWIND $decorators AS d
+            WITH d
+            WHERE coalesce(d.decorator_owner_qualified_name, '') <> ''
+            MATCH (decorated:Symbol {uid: d.decorated_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(owner:Symbol)
+            WHERE (owner.qualified_name = d.decorator_owner_qualified_name
+               OR owner.name = d.decorator_owner_name)
+              AND coalesce(owner.kind, '') IN ['class', 'interface']
+            WITH decorated, d, owner
+            ORDER BY
+              CASE WHEN owner.qualified_name = d.decorator_owner_qualified_name THEN 0 ELSE 1 END,
+              size(owner.qualified_name) ASC
+            WITH decorated, d, collect(owner)[0] AS owner
+            WHERE owner IS NOT NULL AND decorated <> owner
+            MERGE (owner)-[h:HANDLES {workspace_id: $workspace_id}]->(decorated)
+            SET h.resolver = 'decorator-owner-v1',
+                h.decorator_name = d.decorator_name,
+                h.decorator_owner_name = d.decorator_owner_name
             """,
             decorators=decorators,
             workspace_id=workspace_id,

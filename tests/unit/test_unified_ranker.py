@@ -51,6 +51,18 @@ def _make_target_db(rows):
     return db
 
 
+def test_class_method_target_resolution_walks_mro_on_demand():
+    db = _make_target_db([])
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/celery@main")
+
+    ranker._load_class_method_target_candidates("Task", "apply_async")
+
+    session = db.driver.session.return_value.__enter__.return_value
+    query = session.run.call_args.args[0]
+    assert "DEPENDS_ON*1..24" in query
+    assert "-[:INHERITED_API {workspace_id" not in query
+
+
 def _make_backfill_db(rows):
     session = MagicMock()
 
@@ -2183,6 +2195,363 @@ def test_query_api_callee_marker_uses_structural_call_edges():
     assert any(step.startswith("query-api-callee:") for step in set_method.provenance)
     assert ranker._query_api_focus_rank(json_method, "How is json() implemented?") == 2
     assert ranker._query_api_focus_rank(set_method, "How is json() implemented?") == 1
+
+
+def test_thin_delegator_marks_direct_implementation_callee_mandatory():
+    session = MagicMock()
+
+    def run(query, **params):
+        if "count(DISTINCT n) AS out_count" in query:
+            assert params["uid"] == "wrapper"
+            assert params["max_out_calls"] == 2
+            return [
+                {
+                    "uid": "impl",
+                    "name": "declarative_base",
+                    "symbol_kind": "function",
+                    "file_path": "/repo/lib/sqlalchemy/orm/decl_api.py",
+                    "file_hash": "h",
+                    "token_estimate": 968,
+                    "range": [1039, 1120],
+                    "rel_type": "CALLS_IMPORTED",
+                }
+            ]
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="wrapper",
+        name="declarative_base",
+        file_path="/repo/lib/sqlalchemy/ext/declarative/__init__.py",
+        range=[26, 27],
+        token_estimate=16,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    candidates = ranker._mandatory_delegation_callees(target)
+
+    assert len(candidates) == 1
+    impl = candidates[0]
+    assert impl.uid == "impl"
+    assert impl.relation == "MANDATORY_CALLEE"
+    assert impl.token_cost == 968
+    assert impl.chain_kind == "mandatory"
+    assert "graph:CALLS_IMPORTED,depth=1,delegation" in impl.provenance
+
+
+def test_mandatory_delegation_type_neighbors_are_signature_only():
+    session = MagicMock()
+
+    def run(query, **params):
+        if "MATCH (delegate:Symbol {uid: delegate_uid})-[r:USES_TYPE]->(n:Symbol)" in query:
+            assert params["delegate_uids"] == ["impl"]
+            return [
+                {
+                    "uid": "mapper",
+                    "name": "Mapper",
+                    "symbol_kind": "class",
+                    "file_path": "/repo/lib/sqlalchemy/orm/mapper.py",
+                    "file_hash": "m",
+                    "token_estimate": 31192,
+                    "range": [167, 2600],
+                }
+            ]
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    delegate = Candidate(
+        kind="symbol",
+        uid="impl",
+        name="declarative_base",
+        file_path="/repo/lib/sqlalchemy/orm/decl_api.py",
+        token_cost=968,
+        relation="MANDATORY_CALLEE",
+    )
+
+    candidates = ranker._mandatory_delegation_type_neighbors([delegate])
+
+    assert len(candidates) == 1
+    mapper = candidates[0]
+    assert mapper.uid == "mapper"
+    assert mapper.relation == "USES_TYPE"
+    assert mapper.render_mode == "signature_only"
+    assert mapper.token_cost == 120
+    assert mapper.chain_kind == "mandatory"
+    assert "graph:USES_TYPE,depth=2,delegation_surface" in mapper.provenance
+
+
+def test_mandatory_chain_bypasses_subsystem_topic_isolation():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    target = SubgraphNode(
+        uid="wrapper",
+        name="declarative_base",
+        file_path="/repo/lib/sqlalchemy/ext/declarative/__init__.py",
+        range=[26, 27],
+        token_estimate=16,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+    mapper = Candidate(
+        kind="symbol",
+        uid="mapper",
+        name="Mapper",
+        file_path="/repo/lib/sqlalchemy/orm/mapper.py",
+        token_cost=120,
+        relation="USES_TYPE",
+        chain_kind="mandatory",
+    )
+
+    assert (
+        ranker.scoring.topic_focus_factor(
+            mapper,
+            target,
+            query="How does declarative base map classes to tables?",
+            mechanism="generic",
+            intent=Intent.EXPLORATION,
+            required_roles=["representation_surface"],
+        )
+        == 1.0
+    )
+
+
+def test_role_supply_counts_delegated_type_contract_roles():
+    session = MagicMock()
+
+    def run(query, **params):
+        if "MATCH (t:Symbol {uid: $uid})-[r:USES_TYPE]->(n:Symbol)" in query:
+            if params["uid"] == "impl":
+                return [{"uid": "metadata"}]
+            return []
+        if (
+            "MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|"
+            in query
+            and "USES_TYPE|INJECTS|INSTANTIATES|HANDLES" in query
+        ):
+            if params["uid"] == "wrapper":
+                return [{"uid": "impl"}]
+            return []
+        if (
+            "MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT" in query
+            and "RETURN DISTINCT n.uid AS uid" in query
+        ):
+            return []
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._derived_primary_role_by_uid = {
+        "wrapper": "executor",
+        "impl": "core_runtime",
+        "metadata": "representation_surface",
+    }
+    target = SubgraphNode(
+        uid="wrapper",
+        name="declarative_base",
+        file_path="/repo/lib/sqlalchemy/ext/declarative/__init__.py",
+        range=[26, 27],
+        token_estimate=16,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    counts = ranker.role_fulfilment.target_role_supply_counts(target)
+
+    assert counts["core_runtime"] == 1
+    assert counts["representation_surface"] == 1
+    assert "representation_surface" in ranker.role_fulfilment.adaptive_role_plan(target=target)
+
+
+def test_role_supply_counts_constructor_contract_chain_reaches_binding_surface():
+    session = MagicMock()
+
+    structural_neighbors = {
+        "declared": ["relationship-class"],
+        "relationship-class": ["property-class"],
+        "property-class": ["loader-class"],
+        "loader-class": ["loader-init"],
+    }
+
+    def run(query, **params):
+        if "USES_TYPE|INSTANTIATES|DEPENDS_ON|HANDLES|HAS_API|INHERITED_API" in query:
+            return [{"uid": uid} for uid in structural_neighbors.get(params["uid"], [])]
+        if "MATCH (t:Symbol {uid: $uid})-[r:USES_TYPE]->(n:Symbol)" in query:
+            return []
+        if (
+            "MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|"
+            in query
+            and "USES_TYPE|INJECTS|INSTANTIATES|HANDLES" in query
+        ):
+            if params["uid"] == "relationship":
+                return [{"uid": "declared"}]
+            return []
+        if (
+            "MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT" in query
+            and "RETURN DISTINCT n.uid AS uid" in query
+        ):
+            return []
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._derived_primary_role_by_uid = {
+        "relationship": "schema_builder",
+        "declared": "representation_surface",
+        "relationship-class": "runtime_surface",
+        "property-class": "registration_step",
+        "loader-class": "executor",
+        "loader-init": "binding_surface",
+    }
+    target = SubgraphNode(
+        uid="relationship",
+        name="relationship",
+        file_path="/repo/lib/orm/_constructors.py",
+        range=[1, 20],
+        token_estimate=1600,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    counts = ranker.role_fulfilment.target_role_supply_counts(target)
+
+    assert counts["binding_surface"] == 1
+    assert "binding_surface" in ranker.role_fulfilment.adaptive_role_plan(target=target)
+
+
+def test_structural_contract_candidates_materialize_primary_role_fillers():
+    session = MagicMock()
+
+    def row(uid, name, rel_type, role, file_path, *, token_estimate=64):
+        return {
+            "uid": uid,
+            "name": name,
+            "symbol_kind": "function" if name == "__init__" else "class",
+            "file_path": file_path,
+            "file_hash": "",
+            "token_estimate": token_estimate,
+            "range": [1, 5],
+            "rel_type": rel_type,
+            "primary_role": role,
+            "supporting_roles_json": "[]",
+        }
+
+    structural_rows = {
+        "relationship": [
+            row(
+                "declared",
+                "_RelationshipDeclared",
+                "USES_TYPE",
+                "representation_surface",
+                "/repo/lib/sqlalchemy/orm/relationships.py",
+            )
+        ],
+        "declared": [
+            row(
+                "property",
+                "RelationshipProperty",
+                "USES_TYPE",
+                "registration_step",
+                "/repo/lib/sqlalchemy/orm/relationships.py",
+            )
+        ],
+        "property": [
+            row(
+                "loader",
+                "_LazyLoader",
+                "HANDLES",
+                "executor",
+                "/repo/lib/sqlalchemy/orm/strategies.py",
+            )
+        ],
+        "loader": [
+            row(
+                "loader-init",
+                "__init__",
+                "HAS_API",
+                "binding_surface",
+                "/repo/lib/sqlalchemy/orm/strategies.py",
+                token_estimate=448,
+            )
+        ],
+    }
+
+    def run(query, **params):
+        if "RETURN n.uid AS uid," in query and "primary_role" in query:
+            return structural_rows.get(params["uid"], [])
+        return []
+
+    session.run.side_effect = run
+    driver = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+    driver.session.return_value.__exit__.return_value = None
+    db = MagicMock()
+    db.driver = driver
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker.role_fulfilment.adaptive_role_plan = MagicMock(
+        return_value=["schema_builder", "binding_surface", "runtime_surface"]
+    )
+    ranker._derived_primary_role_by_uid = {
+        "relationship": "schema_builder",
+        "declared": "representation_surface",
+        "property": "registration_step",
+        "loader": "executor",
+        "loader-init": "binding_surface",
+    }
+    target = SubgraphNode(
+        uid="relationship",
+        name="relationship",
+        file_path="/repo/lib/sqlalchemy/orm/_orm_constructors.py",
+        range=[1, 20],
+        token_estimate=1600,
+        relation="target",
+        direction="primary",
+        depth=0,
+        relevance_score=1.0,
+        kind="function",
+    )
+
+    candidates = ranker._structural_contract_candidates(target)
+
+    assert [(c.uid, c.relation, c.chain_kind) for c in candidates] == [
+        ("loader-init", "HAS_API", "contract")
+    ]
+    assert candidates[0].file_path.endswith("/orm/strategies.py")
+    assert "structural-contract:roles=binding_surface" in candidates[0].provenance
 
 
 def test_graph_candidates_follow_has_api_registration_chain():

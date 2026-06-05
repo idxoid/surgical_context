@@ -63,6 +63,25 @@ def route(root):
         assert path_call.get("callee_qualified_name") == "pathlib.Path"
         assert path_call.get("arguments") == ["root"]
 
+    def test_package_init_relative_import_alias_keeps_current_package(self, adapter):
+        source = """
+from ...orm.decl_api import declarative_base as _declarative_base
+
+def declarative_base(*arg, **kw):
+    return _declarative_base(*arg, **kw)
+"""
+        calls = adapter.extract_calls_from_source(
+            source,
+            "QA/repos/sqlalchemy/lib/sqlalchemy/ext/declarative/__init__.py",
+        )
+
+        call = next(c for c in calls if c.get("callee_name") == "_declarative_base")
+        assert call.get("rel_type") == "CALLS_IMPORTED"
+        assert (
+            call.get("callee_qualified_name")
+            == "QA.repos.sqlalchemy.lib.sqlalchemy.orm.decl_api.declarative_base"
+        )
+
     def test_external_module_attribute_sets_qualified_name_and_args(self, adapter):
         source = """
 import pathlib
@@ -252,6 +271,23 @@ def job():
         assert by_decorated["handler"] == "my_decorator"
         assert by_decorated["view"] == "route"
         assert by_decorated["job"] == "register"
+
+    def test_extract_decorators_records_dotted_callable_owner(self, adapter):
+        source = """
+from pkg import registry
+
+@registry.Owner.strategy_for(kind="x")
+class Handler:
+    pass
+"""
+        decos = adapter.extract_decorators(source, "app/handlers.py")
+        deco = decos[0]
+
+        assert deco["decorator_name"] == "strategy_for"
+        assert deco["decorator_callable_name"] == "registry.Owner.strategy_for"
+        assert deco["decorator_qualified_name"] == "pkg.registry.Owner.strategy_for"
+        assert deco["decorator_owner_name"] == "registry.Owner"
+        assert deco["decorator_owner_qualified_name"] == "pkg.registry.Owner"
 
     def test_extract_decorators_skips_builtins(self, adapter):
         # property/staticmethod/functools.wraps are machinery, never DECORATED_BY targets.

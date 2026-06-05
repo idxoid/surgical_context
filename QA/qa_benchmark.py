@@ -36,19 +36,136 @@ _PASS_GATES = {
     "impact_analysis": {"role_recall": 0.60, "file_recall": 0.50},
 }
 
-_WORKSPACE_EDGE_TYPES = [
-    "CALLS",
-    "CALLS_DIRECT",
-    "CALLS_SCOPED",
-    "CALLS_IMPORTED",
-    "CALLS_DYNAMIC",
-    "CALLS_INFERRED",
-    "CALLS_GUESS",
-    "DEPENDS_ON",
-    "IMPLEMENTS",
-    "OVERRIDES",
-    "AFFECTS",
-]
+_RESET_SYMBOL_DELETE_BATCH_SIZE = int(os.getenv("QA_RESET_SYMBOL_DELETE_BATCH_SIZE", "250"))
+_RESET_WORKSPACE_REL_DELETE_BATCH_SIZE = int(
+    os.getenv("QA_RESET_WORKSPACE_REL_DELETE_BATCH_SIZE", "5000")
+)
+_RESET_ORPHAN_REL_DELETE_BATCH_SIZE = int(
+    os.getenv("QA_RESET_ORPHAN_REL_DELETE_BATCH_SIZE", "5000")
+)
+_RESET_GLOBAL_ORPHAN_SWEEP = os.getenv("QA_RESET_GLOBAL_ORPHAN_SWEEP", "0") == "1"
+
+
+def _delete_workspace_symbol_relationships_batched(
+    session,
+    *,
+    workspace_id: str,
+    prefixes: list[str],
+    batch_size: int,
+) -> None:
+    size = max(1, batch_size)
+    while True:
+        rec = session.run(
+            """
+            MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r]-()
+            WHERE type(r) <> 'CONTAINS'
+              AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+              AND any(prefix IN $prefixes
+                  WHERE f.path = prefix OR f.path STARTS WITH prefix + '/')
+            WITH DISTINCT r LIMIT $limit
+            DELETE r
+            RETURN count(*) AS deleted
+            """,
+            workspace_id=workspace_id,
+            prefixes=prefixes,
+            limit=size,
+        ).single()
+        deleted = int(rec["deleted"] or 0) if rec else 0
+        if deleted < size:
+            break
+
+
+def _delete_orphan_symbol_relationships_batched(session, *, batch_size: int) -> None:
+    size = max(1, batch_size)
+    while True:
+        rec = session.run(
+            """
+            MATCH (s:Symbol)
+            WHERE NOT EXISTS { MATCH (:File)-[:CONTAINS]->(s) }
+              AND NOT EXISTS { MATCH (s)-[:IN_WORKSPACE]->(:Workspace) }
+            MATCH (s)-[r]-()
+            WITH DISTINCT r LIMIT $limit
+            DELETE r
+            RETURN count(*) AS deleted
+            """,
+            limit=size,
+        ).single()
+        deleted = int(rec["deleted"] or 0) if rec else 0
+        if deleted < size:
+            break
+
+
+def _delete_uncontained_workspace_symbol_relationships_batched(
+    session,
+    *,
+    workspace_id: str,
+    batch_size: int,
+) -> None:
+    size = max(1, batch_size)
+    while True:
+        rec = session.run(
+            """
+            MATCH (:Workspace {id: $workspace_id})<-[:IN_WORKSPACE]-(s:Symbol)-[r]-()
+            WHERE type(r) <> 'IN_WORKSPACE'
+              AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
+              AND NOT EXISTS {
+                  MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s)
+              }
+            WITH DISTINCT r LIMIT $limit
+            DELETE r
+            RETURN count(*) AS deleted
+            """,
+            workspace_id=workspace_id,
+            limit=size,
+        ).single()
+        deleted = int(rec["deleted"] or 0) if rec else 0
+        if deleted < size:
+            break
+
+
+def _delete_uncontained_workspace_symbols_batched(
+    session,
+    *,
+    workspace_id: str,
+    batch_size: int,
+) -> None:
+    size = max(1, batch_size)
+    while True:
+        rec = session.run(
+            """
+            MATCH (:Workspace {id: $workspace_id})<-[:IN_WORKSPACE]-(s:Symbol)
+            WHERE NOT EXISTS {
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s)
+            }
+            WITH s LIMIT $limit
+            DETACH DELETE s
+            RETURN count(*) AS deleted
+            """,
+            workspace_id=workspace_id,
+            limit=size,
+        ).single()
+        deleted = int(rec["deleted"] or 0) if rec else 0
+        if deleted < size:
+            break
+
+
+def _delete_orphan_symbols_batched(session, *, batch_size: int) -> None:
+    size = max(1, batch_size)
+    while True:
+        rec = session.run(
+            """
+            MATCH (s:Symbol)
+            WHERE NOT EXISTS { MATCH (:File)-[:CONTAINS]->(s) }
+              AND NOT EXISTS { MATCH (s)-[:IN_WORKSPACE]->(:Workspace) }
+            WITH s LIMIT $limit
+            DELETE s
+            RETURN count(*) AS deleted
+            """,
+            limit=size,
+        ).single()
+        deleted = int(rec["deleted"] or 0) if rec else 0
+        if deleted < size:
+            break
 
 
 def _expected_file_matches(expected: str, retrieved_files: set[str]) -> bool:
@@ -554,6 +671,12 @@ def reset_index_state(
 
     db = Neo4jClient(neo4j_uri, neo4j_user, neo4j_password)
     with db.driver.session() as session:
+        _delete_workspace_symbol_relationships_batched(
+            session,
+            workspace_id=workspace_id,
+            prefixes=prefixes,
+            batch_size=_RESET_WORKSPACE_REL_DELETE_BATCH_SIZE,
+        )
         if wipe_workspace:
             session.run(
                 """
@@ -590,26 +713,23 @@ def reset_index_state(
                 """,
                 workspace_id=workspace_id,
             )
-        session.run(
-            """
-            MATCH (w:Workspace {id: $workspace_id})<-[iw:IN_WORKSPACE]-(s:Symbol)
-            WHERE NOT EXISTS { MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s) }
-            OPTIONAL MATCH (s)-[r]-(other:Symbol)
-            WHERE type(r) IN $edge_types
-              AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
-            DELETE iw, r
-            """,
+        _delete_uncontained_workspace_symbol_relationships_batched(
+            session,
             workspace_id=workspace_id,
-            edge_types=_WORKSPACE_EDGE_TYPES,
+            batch_size=_RESET_WORKSPACE_REL_DELETE_BATCH_SIZE,
         )
-        session.run(
-            """
-            MATCH (s:Symbol)
-            WHERE NOT EXISTS { MATCH (:File)-[:CONTAINS]->(s) }
-              AND NOT EXISTS { MATCH (s)-[:IN_WORKSPACE]->(:Workspace) }
-            DETACH DELETE s
-            """
+        _delete_uncontained_workspace_symbols_batched(
+            session,
+            workspace_id=workspace_id,
+            batch_size=_RESET_SYMBOL_DELETE_BATCH_SIZE,
         )
+        if _RESET_GLOBAL_ORPHAN_SWEEP:
+            _delete_orphan_symbol_relationships_batched(
+                session, batch_size=_RESET_ORPHAN_REL_DELETE_BATCH_SIZE
+            )
+            _delete_orphan_symbols_batched(
+                session, batch_size=_RESET_SYMBOL_DELETE_BATCH_SIZE
+            )
         session.run(
             """
             MATCH (w:Workspace {id: $workspace_id})

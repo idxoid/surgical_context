@@ -62,6 +62,17 @@ class TestPythonImports:
         inheritance = adapter.extract_inheritance(source, "test.py")
         assert len(inheritance) >= 1
 
+    def test_extract_multiline_generic_inheritance_heads(self, adapter):
+        source = """
+class Child(
+    Parent[T],
+    pkg.Mixin,
+):
+    pass
+"""
+        inheritance = adapter.extract_inheritance(source, "test.py")
+        assert [edge.superclass_name for edge in inheritance] == ["Parent", "Mixin"]
+
     def test_no_imports_returns_empty(self, adapter):
         source = "x = 1\ny = 2"
         imports = adapter.extract_imports(source, "test.py")
