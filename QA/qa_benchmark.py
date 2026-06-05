@@ -33,7 +33,7 @@ from sidecar.context.role_taxonomy import UNSCORED_ROLES, normalize_roles
 _PASS_GATES = {
     "explain_behavior": {"role_recall": 0.70, "file_recall": 0.50},
     "trace_dependency": {"role_recall": 0.80, "file_recall": 0.70},
-    "impact_analysis": {"role_recall": 0.60, "file_recall": 0.50},
+    "impact_analysis": {"role_recall": 0.60, "file_recall": 0.80},
 }
 
 _RESET_SYMBOL_DELETE_BATCH_SIZE = int(os.getenv("QA_RESET_SYMBOL_DELETE_BATCH_SIZE", "250"))
@@ -1428,7 +1428,11 @@ def run_benchmark(
             rr_ok = role_recall >= gate_cfg["role_recall"]
             fr_ok = file_recall >= gate_cfg["file_recall"]
             if intent == "impact_analysis":
-                status = "pass" if (rr_ok or fr_ok) else "warn"
+                # Impact roles are intentionally generic: the primary API symbol can
+                # close impact_public_api/impact_runtime, and any nearby test file can
+                # close impact_test_surface. Require the file floor too so role-only
+                # matches do not hide that the impacted component/test files were missed.
+                status = "pass" if (rr_ok and fr_ok) else "warn"
             elif intent == "trace_dependency":
                 # One signal at 1.0 + the other above a relaxed floor is enough.
                 # Real-world repos can keep role coverage perfect while expected_files

@@ -761,7 +761,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: surgical_context_unified_context_assembly
-    required_roles: [public_entrypoint, handler_or_lifecycle, dependency_solver, route_object]
+    required_roles: [public_entrypoint, handler_or_lifecycle, orchestrator, route_object]
     expected_symbols: [ContextArbitrator, get_context_for_symbol, UnifiedRanker, PromptCompiler]
     expected_files: [sidecar/context/arbitrator.py, sidecar/context/unified_ranker.py, sidecar/context/prompt_compiler.py]
 
@@ -774,7 +774,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: surgical_context_ranker_fusion
-    required_roles: [public_entrypoint, dependency_solver, registration_step, handler_or_lifecycle]
+    required_roles: [public_entrypoint, orchestrator, composition_surface, handler_or_lifecycle]
     expected_symbols: [UnifiedRanker, rank, _fuse, _graph_candidates, BudgetPruner]
     expected_files: [sidecar/context/unified_ranker.py, sidecar/context/ranker/pruning.py]
 
@@ -852,7 +852,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: dathund_chain_post_match_gates
-    required_roles: [public_entrypoint, dependency_solver, handler_or_lifecycle, runtime_executor]
+    required_roles: [public_entrypoint, orchestrator, handler_or_lifecycle, runtime_executor]
     expected_symbols: [ChainEngine, _passes_gates, _lineage_gate, _same_actor_gate, passes_lifecycle_gate]
     expected_files: [src/dathund_core/engine/chain_engine.py, src/dathund_core/engine/lifecycle_gates.py]
 
@@ -865,7 +865,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: dathund_poller_poll_cycle
-    required_roles: [public_entrypoint, operation_executor, handler_or_lifecycle, dependency_solver]
+    required_roles: [public_entrypoint, operation_executor, handler_or_lifecycle, orchestrator]
     expected_symbols: [AsyncPoller, run_once, RuleEngine, CorrelationEngine, ChainEngine]
     expected_files: [src/dathund_core/collector/poller.py]
 
@@ -891,7 +891,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: dathund_time_authority_chain_clock
-    required_roles: [dependency_solver, runtime_executor, handler_or_lifecycle, marker_or_config]
+    required_roles: [orchestrator, runtime_executor, handler_or_lifecycle, marker_or_config]
     expected_symbols: [effective_event_time_for_chain, effective_chain_window_seconds, extra_skew_seconds_for_events]
     expected_files: [src/dathund_core/engine/time_authority.py, src/dathund_core/engine/chain_engine.py, src/dathund_core/connectors/time_authority_registry.py]
 
@@ -904,7 +904,7 @@ questions:
     intent: explain_behavior
     expected_mode: symbol
     mechanism: dathund_chain_001_exfil_pattern
-    required_roles: [public_entrypoint, marker_or_config, dependency_solver, handler_or_lifecycle]
+    required_roles: [public_entrypoint, marker_or_config, representation_surface, handler_or_lifecycle]
     expected_symbols: [CHAIN_001, CorrelationRule, require_lineage_path]
     expected_files: [src/dathund_core/plugins/chain_rules/catalog.py, src/dathund_core/engine/chain_engine.py]
 
@@ -917,7 +917,7 @@ questions:
     intent: trace_dependency
     expected_mode: symbol
     mechanism: dathund_actor_index_resolution
-    required_roles: [dependency_solver, runtime_executor, handler_or_lifecycle, marker_or_config]
+    required_roles: [orchestrator, runtime_executor, handler_or_lifecycle, representation_surface]
     expected_symbols: [ActorIndex, same_actor, ingest]
     expected_files: [src/dathund_core/identity/actor_index.py, src/dathund_core/engine/chain_engine.py]
 
