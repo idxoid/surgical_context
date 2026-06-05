@@ -344,7 +344,13 @@ class UnifiedRanker:
             WHERE coalesce(any_r.workspace_id, $workspace_id) = $workspace_id
             RETURN count(DISTINCT any_r) AS total_edges
         }
-        WITH s, f, c, outgoing_edges, incoming_edges, total_edges,
+        CALL {
+            WITH f
+            OPTIONAL MATCH (importer:File)-[imp_r:IMPORTS]->(f)
+            WHERE coalesce(imp_r.workspace_id, $workspace_id) = $workspace_id
+            RETURN count(DISTINCT importer) AS file_imports_in
+        }
+        WITH s, f, c, outgoing_edges, incoming_edges, total_edges, file_imports_in,
              CASE WHEN toLower(f.path) CONTAINS ('/' + toLower($name) + '.') THEN 1 ELSE 0 END AS stem_match
         ORDER BY
           CASE
@@ -368,7 +374,8 @@ class UnifiedRanker:
                coalesce(c.range, s.range, [0, 0]) AS range,
                outgoing_edges,
                incoming_edges,
-               total_edges
+               total_edges,
+               file_imports_in
         """
         try:
             with self.db.driver.session() as session:
@@ -704,14 +711,24 @@ class UnifiedRanker:
                 qualified_name=row.get("qualified_name", ""),
             )
         )
-        # Target selection is structural only: path / role / edges / kind / size.
-        # The query-keyword x role bonus was removed (benchmark-tuned query classifier).
+        # Target selection is structural only: path / role / edges / kind / size /
+        # how many other files import the enclosing file. file_imports_in is a
+        # public-API signal independent of role classification: a thin wrapper in
+        # `runtime-core/apiWatch.ts` (imported by 5 files) is structurally the
+        # public watch entry, even when the cascade classified it as core_runtime
+        # (0.55 role bonus) and the heavier implementation `reactivity/watch.ts`
+        # (imported by 1 file) gets orchestrator (0.95). Without this signal the
+        # +0.4 role gap on the implementation wins target selection and the
+        # public wrapper's neighborhood — the file the question actually asks
+        # about — never enters retrieval.
+        file_imports_in = float(row.get("file_imports_in", 0) or 0)
         components = {
             "path": self._target_path_bonus(file_path),
             "role": self._target_role_bonus(role),
             "edges": min(1.4, 0.22 * outgoing_edges + 0.08 * incoming_edges + 0.05 * total_edges),
             "kind": self._target_kind_bonus(kind, intent=intent),
             "size_penalty": -min(0.6, token_estimate / 6000.0),
+            "imports_in": min(0.3, 0.04 * file_imports_in),
         }
         score = sum(components.values())
         return score, {"role": role, "components": components}
