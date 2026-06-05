@@ -212,6 +212,10 @@ class UnifiedRanker:
         # weighted near a scoped call.
         "INJECTS_out": 1.05,
         "INJECTS_in": 1.15,
+        # proxy_binding -[RESOLVES_ATTR]-> context accessor. Strong outgoing hop:
+        # it is the binding semantics behind a lazy global proxy.
+        "RESOLVES_ATTR_out": 1.25,
+        "RESOLVES_ATTR_in": 0.8,
     }
 
     def __init__(
@@ -1210,6 +1214,7 @@ class UnifiedRanker:
             "USES_TYPE",
             "INJECTS",
             "HANDLES",
+            "RESOLVES_ATTR",
             "HAS_API",
             "INHERITED_API",
         }
@@ -2486,6 +2491,12 @@ class UnifiedRanker:
                           AND coalesce(construct.kind, '') = 'construct'
                         RETURN count(DISTINCT construct) AS external_construct_coref_fan_out
                     }
+                    CALL {
+                        WITH s
+                        OPTIONAL MATCH (s)-[pa:RESOLVES_ATTR]->(:Symbol)
+                        WHERE coalesce(pa.workspace_id, $workspace_id) = $workspace_id
+                        RETURN count(DISTINCT pa) AS proxy_attr_resolve_fan_out
+                    }
                     RETURN s.uid AS uid,
                            coalesce(s.call_fan_in, 0.0) AS call_fan_in,
                            coalesce(s.call_fan_out, 0.0) AS call_fan_out,
@@ -2494,7 +2505,8 @@ class UnifiedRanker:
                            alias_api_fan_out AS alias_api_fan_out,
                            api_fan_out AS api_fan_out,
                            api_fan_in AS api_fan_in,
-                           external_construct_coref_fan_out AS external_construct_coref_fan_out
+                           external_construct_coref_fan_out AS external_construct_coref_fan_out,
+                           proxy_attr_resolve_fan_out AS proxy_attr_resolve_fan_out
                     """,
                     workspace_id=self.workspace_id,
                 )
@@ -2510,6 +2522,9 @@ class UnifiedRanker:
                         "external_construct_coref_fan_out": float(
                             r["external_construct_coref_fan_out"] or 0.0
                         ),
+                        "proxy_attr_resolve_fan_out": float(
+                            r["proxy_attr_resolve_fan_out"] or 0.0
+                        ),
                     }
                     for r in rows
                     if r["uid"]
@@ -2522,7 +2537,7 @@ class UnifiedRanker:
 
     def _get_neighbors(self, uid: str, visited: set, distance: int) -> list[dict]:
         query = """
-        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|HANDLES]-(n:Symbol)
+        MATCH (s:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|HANDLES|RESOLVES_ATTR]-(n:Symbol)
         WHERE NOT n.uid IN $visited
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
         OPTIONAL MATCH ()-[cr:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS]->(n)

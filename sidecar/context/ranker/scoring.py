@@ -203,6 +203,8 @@ class RankerScoring:
             relation = "HANDLES_out" if outgoing else "HANDLES_in"
         elif rel_type == "INJECTS":
             relation = "INJECTS_out" if outgoing else "INJECTS_in"
+        elif rel_type == "RESOLVES_ATTR":
+            relation = "RESOLVES_ATTR_out" if outgoing else "RESOLVES_ATTR_in"
         elif rel_type == "USES_TYPE":
             # A dispatcher (`isinstance(x, T)` / `issubclass`) is the code that
             # branches ON the type — the resolution machinery for T. Reaching it
@@ -273,4 +275,6 @@ class RankerScoring:
             return "import"
         if rel_type in ("IMPLEMENTS", "OVERRIDES", "REFERENCES"):
             return rel_type.lower()
+        if rel_type == "RESOLVES_ATTR":
+            return "resolved_attr" if outgoing else "proxy"
         return "sibling"

@@ -52,6 +52,7 @@ STRUCTURAL_REL_TYPES = (
     "COMPOSES",
     "READS_ATTR",
     "WRITES_ATTR",
+    "RESOLVES_ATTR",
 )
 
 DEFAULT_EDGE_CONFIDENCE: dict[str, float] = {
@@ -73,6 +74,7 @@ DEFAULT_EDGE_CONFIDENCE: dict[str, float] = {
     "COMPOSES": 1.0,
     "READS_ATTR": 1.0,
     "WRITES_ATTR": 1.0,
+    "RESOLVES_ATTR": 1.0,
 }
 
 USES_TYPE_KIND_WEIGHT: dict[str, float] = {
@@ -120,6 +122,7 @@ class SymbolRow:
     decorated_in: float = 0.0
     decorated_out: float = 0.0
     construct_fan_out: float = 0.0
+    proxy_context_bind_fan_out: float = 0.0
     fluent_self_return_count: int = 0
     decorator_arg_ref_count: int = 0
     # Attribute-access fans — outgoing edges count how many distinct
@@ -389,6 +392,7 @@ def assemble_symbol_rows(
     decorated_in: dict[str, float] = defaultdict(float)
     decorated_out: dict[str, float] = defaultdict(float)
     construct_fan_out: dict[str, float] = defaultdict(float)
+    proxy_context_bind_fan_out: dict[str, float] = defaultdict(float)
     decorator_arg_ref_count: dict[str, int] = defaultdict(int)
     attr_reads_fan_out: dict[str, float] = defaultdict(float)
     attr_writes_fan_out: dict[str, float] = defaultdict(float)
@@ -449,6 +453,9 @@ def assemble_symbol_rows(
         elif rel_type == "INSTANTIATES":
             if caller_in:
                 construct_fan_out[caller] += conf
+        elif rel_type == "RESOLVES_ATTR":
+            if caller_in:
+                proxy_context_bind_fan_out[caller] += conf
         elif rel_type == "COMPOSES":
             # Subtype 2: decorator-arg references from a decorated class to the
             # symbols it composes (NestJS `@Module({imports:[X],...})`). Counted
@@ -546,6 +553,7 @@ def assemble_symbol_rows(
                 decorated_in=decorated_in[uid],
                 decorated_out=decorated_out[uid],
                 construct_fan_out=construct_fan_out[uid],
+                proxy_context_bind_fan_out=proxy_context_bind_fan_out[uid],
                 fluent_self_return_count=fluent_self_return_count.get(uid, 0),
                 decorator_arg_ref_count=decorator_arg_ref_count.get(uid, 0),
                 attr_reads_fan_out=attr_reads_fan_out[uid],

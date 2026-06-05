@@ -571,7 +571,18 @@ def assign_l1(row: FanProfile) -> str:
     #    never a polymorphic factory (instantiates >=2 distinct classes with a
     #    typed return — pure-instantiation function with no other call edges
     #    would otherwise mis-route to noise; its INSTANTIATES edges are the work).
-    surface_owner = row.api_fan_out > _EPS or (row.is_class and row.has_documentation)
+    #    Re-export is the same structural class of evidence as `api_fan_out > 0`
+    #    or a documented class: a public package intentionally surfaces this
+    #    symbol. SQLAlchemy `decl_api.declarative_base` is re-exported by
+    #    `orm/__init__.py` and is the canonical API entrypoint — without this
+    #    branch the noise gate fires (zero internal callers, chained
+    #    `Class(...).method()` not yet extracted as CALLS — so call_fan_out=0)
+    #    and the symbol misclassifies as orphan.
+    surface_owner = (
+        row.api_fan_out > _EPS
+        or (row.is_class and row.has_documentation)
+        or row.reexport_in > _EPS
+    )
     is_polymorphic_factory = (
         row.construct_fan_out >= 2 and row.type_fan_out_return > _EPS
     )

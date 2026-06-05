@@ -21,7 +21,8 @@ _CALL_REL_TYPES = {
 # materialized degree will not faithfully replace their count(DISTINCT) subquery.
 _DEGREE_REL_PATTERN = (
     "CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|"
-    "CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT"
+    "CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|"
+    "RESOLVES_ATTR"
 )
 
 
@@ -1059,7 +1060,11 @@ class Neo4jClient:
             MERGE (p:Symbol {uid: b.proxy_uid})
             SET p.name = b.proxy_name,
                 p.kind = 'proxy_binding',
-                p.qualified_name = b.proxy_qualified_name
+                p.qualified_name = b.proxy_qualified_name,
+                p.context_var = coalesce(b.context_var, ''),
+                p.context_type = coalesce(b.context_type, ''),
+                p.context_attr = coalesce(b.context_attr, ''),
+                p.binding_source = coalesce(b.binding_source, '')
             MERGE (f)-[:CONTAINS {workspace_id: $workspace_id}]->(p)
             WITH p, b
             MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(target:Symbol)
@@ -1077,6 +1082,27 @@ class Neo4jClient:
                 r.target_source = coalesce(b.target_source, 'annotation'),
                 r.wrapped_callable = b.wrapped_callable,
                 r.confidence = coalesce(b.confidence, 1.0)
+            WITH p, b
+            OPTIONAL MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(accessor:Symbol)
+            WHERE coalesce(b.context_type, '') <> ''
+              AND coalesce(b.context_attr, '') <> ''
+              AND (
+                accessor.qualified_name = b.context_type + '.' + b.context_attr
+                OR accessor.qualified_name ENDS WITH (
+                  '.' + split(b.context_type, '.')[-1] + '.' + b.context_attr
+                )
+              )
+            WITH p, b, accessor
+            ORDER BY size(accessor.qualified_name) ASC
+            WITH p, b, collect(accessor)[0] AS accessor
+            FOREACH (_ IN CASE WHEN accessor IS NULL THEN [] ELSE [1] END |
+              MERGE (p)-[ra:RESOLVES_ATTR {workspace_id: $workspace_id}]->(accessor)
+              SET ra.resolver = 'proxysurface-context-v1',
+                  ra.context_var = b.context_var,
+                  ra.context_type = b.context_type,
+                  ra.context_attr = b.context_attr,
+                  ra.confidence = coalesce(b.confidence, 1.0)
+            )
             """,
             bindings=proxy_bindings,
             workspace_id=workspace_id,

@@ -2393,6 +2393,34 @@ def test_public_api_owner_target_counts_as_composition_runtime_surface():
     assert "runtime_surface" in roles
 
 
+def test_public_proxy_binding_with_resolved_attr_counts_as_api_and_binding_surface():
+    db = _make_db()
+    ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")
+    ranker._structural_fan_by_uid["request-proxy"] = {
+        "call_fan_in": 0.0,
+        "call_fan_out": 0.0,
+        "type_fan_in": 0.0,
+        "handle_fan_in": 0.0,
+        "alias_api_fan_out": 0.0,
+        "api_fan_out": 0.0,
+        "proxy_attr_resolve_fan_out": 1.0,
+    }
+    target = Candidate(
+        kind="symbol",
+        uid="request-proxy",
+        name="request",
+        symbol_kind="proxy_binding",
+        file_path="/repo/flask/src/flask/globals.py",
+        relation="target",
+        token_cost=8,
+    )
+
+    roles = ranker.role_fulfilment.roles_of(target)
+
+    assert "api_surface" in roles
+    assert "binding_surface" in roles
+
+
 def test_public_external_construct_coref_counts_as_factory_surface():
     db = _make_db()
     ranker = UnifiedRanker(db, VectorSearcher(_FakeVector()), workspace_id="local/test@main")

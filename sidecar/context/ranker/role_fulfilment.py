@@ -121,7 +121,15 @@ class RoleFulfilment:
         if not name or name.startswith("_"):
             return False
         kind = (getattr(c, "symbol_kind", "") or getattr(c, "kind", "") or "").lower()
-        if kind not in {"class", "function", "method", "object_api", "module", "variable"}:
+        if kind not in {
+            "class",
+            "function",
+            "method",
+            "object_api",
+            "module",
+            "variable",
+            "proxy_binding",
+        }:
             return False
         path = (getattr(c, "file_path", "") or "").replace("\\", "/").lower()
         if any(marker in path for marker in ("/tests/", "/test_", "/docs/", "/examples/")):
@@ -140,6 +148,9 @@ class RoleFulfilment:
         external_construct_coref_fan_out = float(
             fan.get("external_construct_coref_fan_out", 0.0) or 0.0
         )
+        proxy_attr_resolve_fan_out = float(
+            fan.get("proxy_attr_resolve_fan_out", 0.0) or 0.0
+        )
         if (
             call_fan_out <= 0.0
             and type_fan_in <= 0.0
@@ -147,6 +158,7 @@ class RoleFulfilment:
             and alias_api_fan_out <= 0.0
             and api_fan_out <= 0.0
             and external_construct_coref_fan_out <= 0.0
+            and proxy_attr_resolve_fan_out <= 0.0
         ):
             return []
 
@@ -166,6 +178,8 @@ class RoleFulfilment:
                 roles.append("factory_surface")
         if kind in {"variable", "object_api", "module"} and external_construct_coref_fan_out > 0.0:
             roles.append("factory_surface")
+        if kind == "proxy_binding" and proxy_attr_resolve_fan_out > 0.0:
+            roles.append("binding_surface")
         if kind in {"variable", "object_api"} and (call_fan_in > 0.0 or type_fan_in > 0.0):
             roles.append("representation_surface")
         if handle_fan_in > 0.0:
@@ -186,7 +200,7 @@ class RoleFulfilment:
 
     def one_hop_connected_symbol_uids(self, target_uid: str, *, limit: int = 48) -> list[str]:
         query = """
-        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|HANDLES]-(n:Symbol)
+        MATCH (t:Symbol {uid: $uid})-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|DEPENDS_ON|IMPLEMENTS|OVERRIDES|REFERENCES|SEMANTIC_HINT|HAS_API|INHERITED_API|DECORATED_BY|USES_TYPE|INJECTS|HANDLES|RESOLVES_ATTR]-(n:Symbol)
         WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
         RETURN DISTINCT n.uid AS uid
         LIMIT $limit

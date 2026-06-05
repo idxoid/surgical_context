@@ -1,5 +1,6 @@
 """Python language adapter using tree-sitter."""
 
+import ast
 import importlib.metadata
 import re
 import sys
@@ -466,6 +467,10 @@ class PythonAdapter(TreeSitterAdapter):
                     "target_type": meta["target_type"],
                     "target_source": meta["target_source"],
                     "wrapped_callable": meta.get("wrapped_callable", ""),
+                    "context_var": meta.get("context_var", ""),
+                    "context_type": meta.get("context_type", ""),
+                    "context_attr": meta.get("context_attr", ""),
+                    "binding_source": meta.get("binding_source", ""),
                     "confidence": meta.get("confidence", 1.0),
                     "file_path": file_path,
                 }
@@ -1686,6 +1691,13 @@ class PythonAdapter(TreeSitterAdapter):
         Two sources: the ANNOTATED form names the type directly; the BARE form resolves
         through the wrapped callable's body (the class it imports-and-constructs).
         """
+        context_var_types = self._build_context_var_type_table(
+            tree,
+            source_code,
+            import_bindings,
+            module,
+        )
+
         # name -> function_definition node, and simple ``alias = other`` function aliases.
         func_nodes: dict[str, object] = {}
         func_aliases: dict[str, str] = {}
@@ -1727,6 +1739,11 @@ class PythonAdapter(TreeSitterAdapter):
             if typ is not None:
                 type_ident = self._type_identifier(typ)
                 if type_ident:
+                    context_binding = self._proxy_context_binding(
+                        right,
+                        context_var_types,
+                        source_code,
+                    )
                     table[var_name] = {
                         "target_type": self._resolve_type_name(
                             type_ident, import_bindings, module
@@ -1734,6 +1751,7 @@ class PythonAdapter(TreeSitterAdapter):
                         "target_source": "annotation",
                         "wrapped_callable": "",
                         "confidence": 1.0,
+                        **context_binding,
                     }
                 continue
 
@@ -1755,6 +1773,100 @@ class PythonAdapter(TreeSitterAdapter):
                 "confidence": 0.65,
             }
         return table
+
+    def _build_context_var_type_table(
+        self,
+        tree,
+        source_code: str,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> dict[str, str]:
+        """Map ``ContextVar[T]`` module bindings to their context payload type."""
+        table: dict[str, str] = {}
+        for stmt in self._iter_nodes(tree.root_node):
+            if stmt.type != "assignment":
+                continue
+            left = stmt.child_by_field_name("left")
+            typ = stmt.child_by_field_name("type")
+            if left is None or left.type != "identifier" or typ is None:
+                continue
+            payload = self._context_var_payload_type_identifier(typ)
+            if not payload:
+                continue
+            table[_node_text(left)] = self._resolve_type_name(payload, import_bindings, module)
+        return table
+
+    @staticmethod
+    def _context_var_payload_type_identifier(type_node) -> str:
+        """Return ``T`` for ``ContextVar[T]`` annotations, else ``''``."""
+        for node in PythonAdapter._iter_nodes(type_node):
+            if node.type != "generic_type":
+                continue
+            named = [child for child in node.children if child.is_named]
+            if len(named) < 2:
+                continue
+            base = named[0]
+            if base.type != "identifier" or _node_text(base) != "ContextVar":
+                continue
+            payload = next(
+                (
+                    child
+                    for child in named[1:]
+                    if child.type in {"type", "type_parameter", "identifier"}
+                ),
+                None,
+            )
+            if payload is None:
+                continue
+            if payload.type == "identifier":
+                return _node_text(payload)
+            for child in PythonAdapter._iter_nodes(payload):
+                if child.type == "identifier":
+                    return _node_text(child)
+        return ""
+
+    def _proxy_context_binding(
+        self,
+        call_node,
+        context_var_types: dict[str, str],
+        source_code: str,
+    ) -> dict[str, str]:
+        """Binding metadata for ``Proxy(context_var, "attr")`` forms."""
+        args = call_node.child_by_field_name("arguments")
+        if args is None:
+            return {}
+        positional = [
+            child
+            for child in args.named_children
+            if child.type not in {"keyword_argument", "comment"}
+        ]
+        if len(positional) < 2:
+            return {}
+        context_var_node, attr_node = positional[0], positional[1]
+        if context_var_node.type != "identifier" or attr_node.type != "string":
+            return {}
+        context_var = _node_text(context_var_node)
+        context_type = context_var_types.get(context_var, "")
+        context_attr = self._literal_string_value(attr_node, source_code)
+        if not context_type or not context_attr:
+            return {}
+        return {
+            "context_var": context_var,
+            "context_type": context_type,
+            "context_attr": context_attr,
+            "binding_source": "context_attr",
+        }
+
+    @staticmethod
+    def _literal_string_value(node, source_code: str) -> str:
+        if node is None or node.type != "string":
+            return ""
+        text = source_code[node.start_byte : node.end_byte]
+        try:
+            value = ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            return ""
+        return value if isinstance(value, str) else ""
 
     @staticmethod
     def _first_positional_identifier(call_node):

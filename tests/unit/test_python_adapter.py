@@ -198,6 +198,29 @@ current_app: FlaskProxy = LocalProxy(_cv_app, "app")
         assert b["proxy_qualified_name"] == "pkg.globals.current_app"
         assert b["target_type"] == "pkg.globals.FlaskProxy"
 
+    def test_proxy_binding_extracts_context_attr_binding_for_local_proxy(
+        self, adapter
+    ):
+        source = """
+from contextvars import ContextVar
+from werkzeug.local import LocalProxy
+
+from .ctx import AppContext
+
+_cv_app: ContextVar[AppContext] = ContextVar("flask.app_ctx")
+request: RequestProxy = LocalProxy(  # type: ignore[assignment]
+    _cv_app, "request", unbound_message="missing"
+)
+"""
+        bindings = adapter.extract_proxy_bindings(source, "pkg/globals.py")
+        b = next(b for b in bindings if b["proxy_name"] == "request")
+
+        assert b["target_type"] == "pkg.globals.RequestProxy"
+        assert b["context_var"] == "_cv_app"
+        assert b["context_type"] == "pkg.ctx.AppContext"
+        assert b["context_attr"] == "request"
+        assert b["binding_source"] == "context_attr"
+
     def test_proxy_binding_skips_unannotated_proxy(self, adapter):
         # `current_app = Proxy(get_current_app)` (Celery shape, no annotation): the
         # forwarded type needs the callable's return type (a separate hop), so emit

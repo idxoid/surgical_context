@@ -128,6 +128,33 @@ def test_commonjs_api_owner_is_composition_surface_not_orphan():
     assert "api_surface" in asn.hits
 
 
+def test_proxy_binding_with_context_attr_keeps_proxy_primary_and_binding_support():
+    row = _row(
+        uid="u:request_proxy",
+        kind="proxy_binding",
+        is_proxy_binding=True,
+        proxy_context_bind_fan_out=1.0,
+    )
+    asn = assign_symbol_roles(row)
+
+    assert asn.l1 == "routing_wrap"
+    assert asn.primary == "proxy_mechanism"
+    assert "binding_surface" in asn.supporting
+
+
+def test_assemble_symbol_rows_counts_proxy_context_attr_resolution():
+    symbols = [
+        ("u:request_proxy", "proxy_binding", "/repo/flask/globals.py"),
+        ("u:ctx_request", "function", "/repo/flask/ctx.py"),
+    ]
+    edges = [
+        ("u:request_proxy", "u:ctx_request", "RESOLVES_ATTR", 1.0, ""),
+    ]
+    rows = {row.uid: row for row in assemble_symbol_rows(symbols, edges, {})}
+
+    assert rows["u:request_proxy"].proxy_context_bind_fan_out == 1.0
+
+
 def test_registration_step_state_types_for_framework_entry_class():
     row = _row(
         uid="u:framework_entry",
