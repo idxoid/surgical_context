@@ -841,13 +841,18 @@ class UnifiedRanker:
         required_roles = self._apply_intent_policy_roles(required_roles, intent_policy)
 
         # 2. Collect graph BFS candidates (pool-size-limited, not budget-limited).
-        # Non-impact contexts only seat a small fraction of the raw graph pool
-        # under the token budget; keeping the BFS tail smaller avoids expanding
-        # low-utility neighborhoods that pruning will discard anyway. Impact
-        # analysis keeps the caller-provided wider pool for transitive ripples.
+        # The earlier `min(graph_pool_size, 96)` cap on non-impact intents
+        # was intended to skip "low-utility tail" candidates that pruning
+        # would discard. Empirically it instead clipped cross-package
+        # canonical files: rtk_q01 (factory_surface carried by query
+        # builders one package over) and rtk_q03 lost role_recall; vue_q04
+        # apiWatch.ts in runtime-core became unreachable from the reactivity
+        # seed. Removing the cap recovers those (+0.011 role / +0.019 file
+        # aggregate) at the price of one regression (sqlalchemy_q04 file
+        # 1.00 → 0.50: the wider pool lets a heavier non-canonical file
+        # outscore the expected one in pruning). Net is a clear improvement;
+        # the q04 displacement is a pruning/scoring problem, not a pool one.
         effective_graph_pool_size = graph_pool_size
-        if intent != Intent.IMPACT_ANALYSIS:
-            effective_graph_pool_size = min(effective_graph_pool_size, 96)
         graph_pool = self._graph_candidates(
             target.uid,
             pool_size=effective_graph_pool_size,
@@ -1610,8 +1615,8 @@ class UnifiedRanker:
         required_roles: list[str] | None = None,
         max_depth: int = 5,
         per_node_limit: int = 32,
-        per_role_limit: int = 2,
-        total_limit: int = 24,
+        per_role_limit: int = 4,
+        total_limit: int = 48,
     ) -> list[Candidate]:
         """Role-bearing candidates from the target's structural closure.
 
