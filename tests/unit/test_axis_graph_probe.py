@@ -57,14 +57,26 @@ def test_neo4j_probe_counts_outgoing_edges_to_proxy_markers():
     probe = Neo4jGraphContextProbe(db, "ws")
 
     assert probe.outgoing_kind_edges("u:caller", {"proxy_object"}) == 2
+    # data_model has no graph-level proof yet; the probe must not invent one.
     assert probe.outgoing_kind_edges("u:caller", {"data_model"}) == 0
+    assert "proxy_object" in probe.supported_outgoing_kinds()
+    assert "data_model" not in probe.supported_outgoing_kinds()
 
 
-def test_neo4j_probe_computes_caller_package_dispersion_from_files():
-    db = _Db([{"paths": ["/repo/pkg/a.py", "/repo/other/b.py", "/repo/pkg/c.py"]}])
+def test_neo4j_probe_computes_caller_package_dispersion_from_qualified_names():
+    db = _Db([{"qns": ["pkg.a", "other.b", "pkg.c"]}])
     probe = Neo4jGraphContextProbe(db, "ws")
 
+    # 3 callers across {pkg, other} → (2 - 1) / (3 - 1) = 0.5
     assert probe.caller_package_dispersion("u:target") == 0.5
+
+
+def test_neo4j_probe_dispersion_falls_back_to_zero_without_qualified_names():
+    db = _Db([{"qns": ["", "", ""]}])
+    probe = Neo4jGraphContextProbe(db, "ws")
+
+    # Empty qualified names → no structural package boundary visible.
+    assert probe.caller_package_dispersion("u:target") == 0.0
 
 
 def test_neo4j_probe_does_not_infer_cfg_driver_from_plain_graph_context():
