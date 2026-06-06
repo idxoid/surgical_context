@@ -10,8 +10,9 @@ from pathlib import Path
 from tree_sitter import Query
 
 from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
-from sidecar.parser.protocol import ImportEdge, InheritanceEdge
+from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.parser.uid import (
+    UNRESOLVED_SIGNATURE,
     _node_text,
     compute_uid,
     current_project_root,
@@ -85,6 +86,42 @@ class PythonAdapter(TreeSitterAdapter):
             (import_statement name: (identifier) @import.name)
         """
 
+    @staticmethod
+    def _module_symbol_identity(file_path: str) -> tuple[str, str, str]:
+        """Return ``(module_name, qualified_name, uid)`` for the file's module Symbol.
+
+        Anchors module-level execution (imports, top-level assignments / calls,
+        decorator applications outside any function/class) to a single
+        Symbol of kind ``"module"``. Without this anchor, AST facts whose
+        ``_enclosing_def_node`` is ``None`` had no caller to attach to and
+        were silently dropped — most notably ``app = FastAPI()`` and the like.
+
+        The uid formula matches the axis extractor's module-scope uid so that
+        downstream consumers see the same identity from both paths.
+        """
+        module_name = module_name_from_path(file_path)
+        uid = compute_uid(module_name, UNRESOLVED_SIGNATURE, "python")
+        return module_name, module_name, uid
+
+    @classmethod
+    def _module_symbol(cls, source_code: str, file_path: str) -> SymbolMetadata:
+        module_name, qualified_name, uid = cls._module_symbol_identity(file_path)
+        line_count = source_code.count("\n") + 1
+        return SymbolMetadata(
+            uid=uid,
+            name=module_name,
+            kind="module",
+            start_line=1,
+            end_line=line_count,
+            content_hash="",  # the module symbol is structural, not content-keyed
+            file_path=file_path,
+            qualified_name=qualified_name,
+            signature=UNRESOLVED_SIGNATURE,
+            signature_hash="",
+            signature_status="resolved",
+            language="python",
+        )
+
     def extract_symbols(self, source_code: str, file_path: str, *, tree=None):
         """Patch SymbolMetadata with return-shape AST markers after the base
         extraction. Each function symbol gains booleans describing the shape
@@ -94,8 +131,14 @@ class PythonAdapter(TreeSitterAdapter):
         SomeClass(...)``). These are the foundation for the binding_surface
         and dependency_solver composite predicates documented in
         spec_intent_classifier.md.
+
+        Also synthesizes one module-scope Symbol per file so AST facts whose
+        nearest enclosing definition is the module itself (top-level calls,
+        decorator applications, module-execution-time assignments) have a
+        coherent caller to attach to.
         """
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
+        symbols.insert(0, self._module_symbol(source_code, file_path))
         if tree is None:
             tree = self._parse(source_code)
         shapes = self._function_return_shapes(tree)
@@ -921,11 +964,19 @@ class PythonAdapter(TreeSitterAdapter):
         seen: set[tuple[str, str]] = set()
         typed_local_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
         value_local_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
+        _, _, module_uid = self._module_symbol_identity(file_path)
 
         def emit(caller_node, type_name: str, type_qn: str) -> None:
-            if caller_node is None or not type_qn:
+            if not type_qn:
                 return
-            caller_uid = self._uid_for_node(caller_node, source_code, file_path)
+            if caller_node is None:
+                # Module-level execution: ``app = FastAPI()`` outside any
+                # function/class. The module is its own structural scope
+                # (Axis 3) and a CFG entry executed at import time (Axis 1);
+                # the synthesized module Symbol carries those facts.
+                caller_uid = module_uid
+            else:
+                caller_uid = self._uid_for_node(caller_node, source_code, file_path)
             key = (caller_uid, type_qn)
             if key in seen:
                 return
@@ -1069,9 +1120,12 @@ class PythonAdapter(TreeSitterAdapter):
                 continue
             name = _node_text(fn)
             caller = self._enclosing_def_node(node)
-            if caller is None:
-                continue
-            locals_map = class_value_locals(caller)
+            # Module-level construction: caller is ``None`` here; ``emit``
+            # routes the row to the module Symbol. Per-function class-value
+            # propagation only runs when an actual function scope is present.
+            locals_map = (
+                class_value_locals(caller) if caller is not None else {}
+            )
             if name in locals_map:
                 for cname, cqn in locals_map[name]:
                     emit(caller, cname, cqn)

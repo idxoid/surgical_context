@@ -9,18 +9,26 @@ class TestPythonAdapter:
         return PythonAdapter()
 
     def test_extract_function(self, adapter):
+        # ``extract_symbols`` now also synthesizes one module Symbol per file
+        # so module-scope facts have a coherent caller to attach to.
         source = "def foo(): pass"
         symbols = adapter.extract_symbols(source, "test.py")
-        assert len(symbols) == 1
-        assert symbols[0].name == "foo"
-        assert symbols[0].kind == "function"
+        non_module = [s for s in symbols if s.kind != "module"]
+        assert len(non_module) == 1
+        assert non_module[0].name == "foo"
+        assert non_module[0].kind == "function"
+        # Exactly one module Symbol per file.
+        modules = [s for s in symbols if s.kind == "module"]
+        assert len(modules) == 1
+        assert modules[0].qualified_name == "test"
 
     def test_extract_class(self, adapter):
         source = "class Bar: pass"
         symbols = adapter.extract_symbols(source, "test.py")
-        assert len(symbols) == 1
-        assert symbols[0].name == "Bar"
-        assert symbols[0].kind == "class"
+        non_module = [s for s in symbols if s.kind != "module"]
+        assert len(non_module) == 1
+        assert non_module[0].name == "Bar"
+        assert non_module[0].kind == "class"
 
     def test_extract_multiple_symbols(self, adapter):
         source = """
@@ -32,9 +40,8 @@ class MyClass:
 def func2(): pass
 """
         symbols = adapter.extract_symbols(source, "test.py")
-        assert len(symbols) == 3
-        names = {s.name for s in symbols}
-        assert names == {"func1", "MyClass", "func2"}
+        non_module_names = {s.name for s in symbols if s.kind != "module"}
+        assert non_module_names == {"func1", "MyClass", "func2"}
 
     def test_extract_calls(self, adapter):
         source = """
