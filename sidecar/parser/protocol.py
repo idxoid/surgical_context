@@ -62,6 +62,14 @@ class InheritanceEdge:
     subclass_uid: str
     superclass_name: str
     is_interface: bool
+    # Dotted form of the superclass expression as it appears in source — e.g.
+    # ``routing.Router`` when the source declares ``class C(routing.Router):``.
+    # ``superclass_name`` (the bare head, kept for DEPENDS_ON local matching)
+    # would be ``Router``; ``superclass_path`` is what the EXTENDS_EXTERNAL
+    # resolver needs to recover the upstream qualified name through the file's
+    # ``IMPORTS_EXTERNAL_SYMBOL`` edges. Falls back to ``superclass_name`` for
+    # bare-name bases like ``class C(Starlette):``.
+    superclass_path: str = ""
 
 
 @dataclass(frozen=True)

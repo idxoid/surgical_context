@@ -323,6 +323,29 @@ def _external_boundary_phase(
     return calls_created, imports_created
 
 
+def _extends_external_phase(
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Connect class Symbols to ExternalSymbol nodes they structurally inherit.
+
+    Workspace-wide pass: must run AFTER both ``link_inheritance`` (which writes
+    ``parsed_base_names`` on each subclass) and ``_external_boundary_phase``
+    (which materializes IMPORTS_EXTERNAL_SYMBOL with ``local_alias``). The join
+    on those two pieces is the structural proof that this class inherits from
+    the external symbol — no name-pattern matching at the consumer site.
+    """
+    method = getattr(db, "materialize_extends_external", None)
+    if not callable(method):
+        return 0
+    reporter.stage_start("extends_external", total=1)
+    created = method(workspace_id=workspace_id)
+    reporter.step("extends_external")
+    reporter.stage_end("extends_external")
+    return int(created or 0)
+
+
 def _degree_seeds_snapshot(
     diffs: list[FileDiff],
     db: Neo4jClient,
@@ -1278,6 +1301,16 @@ def run_fast_indexing(
         stats["external_calls_linked"] = ext_calls
         stats["external_imports_linked"] = ext_imports
         stats["timings_sec"]["external_boundary"] = round(time.perf_counter() - t_stage, 3)
+
+        # Right after the external boundary is materialized, resolve external
+        # inheritance: any class whose parsed base name matches an imported
+        # ExternalSymbol's local_alias gets an EXTENDS_EXTERNAL edge. The
+        # library marker probe reads exactly this edge.
+        t_stage = time.perf_counter()
+        stats["extends_external_edges"] = _extends_external_phase(
+            db, workspace_id, reporter
+        )
+        stats["timings_sec"]["extends_external"] = round(time.perf_counter() - t_stage, 3)
 
         # File-level integration coref: pairs of files sharing >=2 non-plumbing
         # external imports get an INTEGRATES_WITH edge so BFS can cross from a

@@ -441,7 +441,15 @@ class PythonAdapter(TreeSitterAdapter):
                     continue
                 base_name = self._inheritance_base_name(base_node)
                 if base_name:
-                    edges.append(InheritanceEdge(subclass_uid, base_name, False))
+                    base_path = self._inheritance_base_path(base_node) or base_name
+                    edges.append(
+                        InheritanceEdge(
+                            subclass_uid=subclass_uid,
+                            superclass_name=base_name,
+                            is_interface=False,
+                            superclass_path=base_path,
+                        )
+                    )
         return edges
 
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
@@ -1175,6 +1183,36 @@ class PythonAdapter(TreeSitterAdapter):
         if base_node.type == "call":
             fn = base_node.child_by_field_name("function")
             return PythonAdapter._inheritance_base_name(fn)
+        return ""
+
+    @staticmethod
+    def _inheritance_base_path(base_node) -> str:
+        """Dotted superclass expression: ``Base``, ``mod.Base``, ``a.b.Base``.
+
+        Unlike ``_inheritance_base_name`` (which returns the head only), this
+        preserves the receiver chain so the EXTENDS_EXTERNAL resolver can
+        reconstruct the upstream qualified name through ``IMPORTS_EXTERNAL_SYMBOL``.
+        """
+        if base_node is None:
+            return ""
+        if base_node.type == "identifier":
+            return _node_text(base_node)
+        if base_node.type == "attribute":
+            attr = base_node.child_by_field_name("attribute")
+            obj = base_node.child_by_field_name("object")
+            attr_text = _node_text(attr) if attr is not None else ""
+            obj_path = PythonAdapter._inheritance_base_path(obj)
+            if obj_path and attr_text:
+                return f"{obj_path}.{attr_text}"
+            return attr_text or obj_path
+        if base_node.type == "subscript":
+            value = base_node.child_by_field_name("value")
+            if value is None:
+                value = base_node.named_children[0] if base_node.named_children else None
+            return PythonAdapter._inheritance_base_path(value)
+        if base_node.type == "call":
+            fn = base_node.child_by_field_name("function")
+            return PythonAdapter._inheritance_base_path(fn)
         return ""
 
     def _positional_identifier_arguments(

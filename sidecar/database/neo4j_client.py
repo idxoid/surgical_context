@@ -924,6 +924,133 @@ class Neo4jClient:
             imports_created = int(rec["c"]) if rec else 0
         return calls_created, imports_created
 
+    def materialize_extends_external(
+        self,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> int:
+        """Connect class Symbols to the ExternalSymbol nodes they inherit from.
+
+        Two structural cases are handled:
+
+        - **bare-name base**: ``class C(Starlette):`` with
+          ``from starlette.applications import Starlette`` —
+          ``parsed_base_names`` carries ``Starlette``, the file imports it as
+          ``Starlette`` (local_alias), and the existing ExternalSymbol's
+          qualified_name is the upstream identity.
+        - **module-attr base**: ``class C(routing.Router):`` with
+          ``from starlette import routing`` — ``parsed_base_paths`` carries
+          ``routing.Router``. The head (``routing``) matches the
+          IMPORTS_EXTERNAL_SYMBOL alias; the upstream qualified_name is the
+          imported module's qualified_name (``starlette.routing``); the
+          actual base's qualified_name is that module plus the tail
+          (``starlette.routing.Router``). We materialise this derived
+          ExternalSymbol on demand so the same edge type fits both cases.
+        """
+        from sidecar.indexer.external_boundary import external_symbol_uid
+
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH ()-[r:EXTENDS_EXTERNAL]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                workspace_id=workspace_id,
+            )
+            bare_rec = session.run(
+                """
+                MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(cls:Symbol)
+                WHERE cls.parsed_base_names IS NOT NULL AND size(cls.parsed_base_names) > 0
+                UNWIND cls.parsed_base_names AS base_name
+                MATCH (f)-[imp:IMPORTS_EXTERNAL_SYMBOL]->(ext:ExternalSymbol)
+                WHERE coalesce(imp.workspace_id, $workspace_id) = $workspace_id
+                  AND imp.local_alias = base_name
+                MERGE (cls)-[r:EXTENDS_EXTERNAL {workspace_id: $workspace_id}]->(ext)
+                SET r.parsed_base_name = base_name,
+                    r.resolver = 'extends-external-v1'
+                RETURN count(r) AS c
+                """,
+                workspace_id=workspace_id,
+            ).single()
+            bare_created = int(bare_rec["c"]) if bare_rec else 0
+
+            # Dotted-path case: query candidates, build derived ExternalSymbol
+            # rows in Python (so the uid stays deterministic via
+            # ``external_symbol_uid``), then merge in one round-trip.
+            dotted_candidates = session.run(
+                """
+                MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(cls:Symbol)
+                WHERE cls.parsed_base_paths IS NOT NULL AND size(cls.parsed_base_paths) > 0
+                UNWIND cls.parsed_base_paths AS path
+                WITH f, cls, path, split(path, '.') AS parts
+                WHERE size(parts) > 1
+                MATCH (f)-[imp:IMPORTS_EXTERNAL_SYMBOL]->(mod:ExternalSymbol)
+                WHERE coalesce(imp.workspace_id, $workspace_id) = $workspace_id
+                  AND imp.local_alias = parts[0]
+                RETURN cls.uid AS cls_uid,
+                       mod.qualified_name AS mod_qn,
+                       mod.root AS mod_root,
+                       parts AS parts,
+                       path AS path
+                """,
+                workspace_id=workspace_id,
+            ).data()
+
+            dotted_rows: list[dict[str, object]] = []
+            for row in dotted_candidates:
+                mod_qn = str(row.get("mod_qn") or "")
+                parts = row.get("parts") or []
+                if not mod_qn or len(parts) < 2:
+                    continue
+                tail = ".".join(str(p) for p in parts[1:])
+                target_qn = f"{mod_qn}.{tail}"
+                dotted_rows.append(
+                    {
+                        "cls_uid": str(row.get("cls_uid") or ""),
+                        "target_qn": target_qn,
+                        "target_uid": external_symbol_uid(workspace_id, target_qn),
+                        "target_module": mod_qn,
+                        "target_name": tail,
+                        "target_root": str(row.get("mod_root") or ""),
+                        "parsed_base_name": str(row.get("path") or ""),
+                    }
+                )
+
+            dotted_created = 0
+            if dotted_rows:
+                rec = session.run(
+                    """
+                    UNWIND $rows AS row
+                    MERGE (e:ExternalSymbol {uid: row.target_uid, workspace_id: $workspace_id})
+                    SET e.qualified_name = row.target_qn,
+                        e.module = row.target_module,
+                        e.name = row.target_name,
+                        e.root = row.target_root,
+                        e.is_external = true,
+                        e.resolver = 'extends-external-v1-derived'
+                    WITH e, row
+                    MATCH (cls:Symbol {uid: row.cls_uid})
+                    MERGE (cls)-[r:EXTENDS_EXTERNAL {workspace_id: $workspace_id}]->(e)
+                    SET r.parsed_base_name = row.parsed_base_name,
+                        r.resolver = 'extends-external-v1-derived'
+                    RETURN count(r) AS c
+                    """,
+                    rows=dotted_rows,
+                    workspace_id=workspace_id,
+                ).single()
+                dotted_created = int(rec["c"]) if rec else 0
+
+            created = bare_created + dotted_created
+            if created:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
+            return created
+
     @staticmethod
     def _create_external_symbol_imports(tx, rows, workspace_id):
         """Create ExternalSymbol nodes + IMPORTS_EXTERNAL_SYMBOL edges in one pass.
@@ -1133,6 +1260,7 @@ class Neo4jClient:
     def _create_inheritance_relations(tx, inheritance_edges, workspace_id):
         if not inheritance_edges:
             return
+        rows = [_inheritance_row(edge) for edge in inheritance_edges]
         tx.run(
             """
             UNWIND $inheritance_edges AS edge
@@ -1144,8 +1272,31 @@ class Neo4jClient:
                 r.tier = 'scoped',
                 r.resolver = 'inheritance-v1'
             """,
-            inheritance_edges=[_inheritance_row(edge) for edge in inheritance_edges],
+            inheritance_edges=rows,
             workspace_id=workspace_id,
+        )
+        # Snapshot every parsed base on the subclass Symbol so the
+        # EXTENDS_EXTERNAL post-pass (which runs after IMPORTS_EXTERNAL_SYMBOL
+        # is materialized) can resolve any base that the local-name match
+        # above could not. Two parallel lists are stored:
+        #   parsed_base_names  — bare head names (``Router``, ``Starlette``);
+        #                        used to match ``IMPORTS_EXTERNAL_SYMBOL``
+        #                        rows where the imported name IS the base.
+        #   parsed_base_paths  — full dotted expressions (``routing.Router``,
+        #                        ``Starlette``); used for the module-attr
+        #                        case where the file imports a module and the
+        #                        base is an attribute on it.
+        tx.run(
+            """
+            UNWIND $inheritance_edges AS edge
+            MATCH (subclass:Symbol {uid: edge.subclass_uid})
+            WITH subclass,
+                 collect(DISTINCT edge.superclass_name) AS names,
+                 collect(DISTINCT edge.superclass_path) AS paths
+            SET subclass.parsed_base_names = names,
+                subclass.parsed_base_paths = paths
+            """,
+            inheritance_edges=rows,
         )
         # Builtin-exception inheritance: the base is not an in-graph symbol, so no
         # DEPENDS_ON edge is created above. Mark the subclass so the cascade can
@@ -2223,4 +2374,5 @@ def _inheritance_row(edge: InheritanceEdge) -> dict[str, object]:
         "subclass_uid": edge.subclass_uid,
         "superclass_name": edge.superclass_name,
         "is_interface": edge.is_interface,
+        "superclass_path": edge.superclass_path or edge.superclass_name,
     }
