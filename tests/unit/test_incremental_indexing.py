@@ -490,6 +490,69 @@ class Settings:
         assert {match["kind"] for match in matches} == {"config_carrier", "data_model"}
         assert all(match["evidence_bits"] for match in matches)
 
+    def test_fast_embed_phase_uses_graph_probe_for_marker_only_container_kind(self, tmp_path):
+        source = "def run():\n    return 1\n"
+        path = tmp_path / "routes.py"
+        path.write_text(source, encoding="utf-8")
+        symbol = SymbolMetadata(
+            uid="run-uid-from-parser",
+            name="run",
+            kind="function",
+            start_line=1,
+            end_line=2,
+            content_hash="hash",
+            file_path=str(path),
+            qualified_name="routes.run",
+            signature="run()->_",
+            signature_hash="sig",
+            signature_status="resolved",
+            language="python",
+        )
+        diff = FileDiff(
+            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
+            current_uids=[symbol.uid],
+            changed_uids=[symbol.uid],
+            changed_symbols=[symbol],
+        )
+
+        class FakeLance:
+            index_profile_name = AXIS_PYTHON_V1_PROFILE
+
+            def __init__(self):
+                self.rows = []
+
+            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+                self.rows = symbols
+
+        class MarkerProbe:
+            def outgoing_kind_edges(self, symbol_uid, kinds):
+                return 0
+
+            def library_marker_kinds(self, symbol_uid):
+                return {"web_route_register"}
+
+            def caller_package_dispersion(self, symbol_uid):
+                return 0.0
+
+            def is_cfg_driver(self, symbol_uid):
+                return False
+
+        lance = FakeLance()
+
+        _embed_phase(
+            [diff],
+            lance,
+            "local/repo@main+axis_python_v1",
+            _NullReporter(),
+            project_path=str(tmp_path),
+            graph_probe=MarkerProbe(),
+        )
+
+        matches = json.loads(lance.rows[0]["axis_container_kinds_json"])
+
+        assert [match["kind"] for match in matches] == ["web_route_register"]
+        assert matches[0]["evidence_probes"] == ["library_marker:web_route_register"]
+
     def test_fast_embed_phase_leaves_legacy_symbol_rows_without_axis_payload(self, tmp_path):
         source = "def run():\n    return 1\n"
         path = tmp_path / "tasks.py"

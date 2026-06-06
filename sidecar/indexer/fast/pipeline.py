@@ -31,7 +31,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -63,6 +63,9 @@ from sidecar.indexer.repository_profile import (
 from sidecar.retrieval.manifest import persist_index_manifest
 from sidecar.silence import install as _silence
 from sidecar.workspace import WorkspaceResolver
+
+if TYPE_CHECKING:
+    from sidecar.axis.container_kind import GraphContextProbe
 
 _silence()
 
@@ -841,6 +844,7 @@ def _embed_phase(
     workspace_id: str,
     reporter: ProgressReporter,
     project_path: str = "",
+    graph_probe: GraphContextProbe | None = None,
 ) -> tuple[int, int]:
     """One global encode+upsert call. Returns (changed_count, removed_count)."""
     symbol_docs: list[dict] = []
@@ -852,7 +856,11 @@ def _embed_phase(
         source_lines = ex.source.splitlines()
         changed_set = {s.uid for s in diff.changed_symbols}
         axis_payloads = (
-            _axis_payloads_for_extracted_file(ex, project_path=project_path)
+            _axis_payloads_for_extracted_file(
+                ex,
+                project_path=project_path,
+                graph_probe=graph_probe,
+            )
             if include_axis_facts and changed_set
             else {}
         )
@@ -896,7 +904,12 @@ def _embed_phase(
     return len(symbol_docs), len(removed_uids)
 
 
-def _axis_payloads_for_extracted_file(ex: ExtractedFile, *, project_path: str = "") -> dict[str, dict]:
+def _axis_payloads_for_extracted_file(
+    ex: ExtractedFile,
+    *,
+    project_path: str = "",
+    graph_probe: GraphContextProbe | None = None,
+) -> dict[str, dict]:
     """Return per-symbol axis payloads keyed by uid and qualified name.
 
     UID generation should line up with parser symbols, but this first isolated
@@ -917,7 +930,11 @@ def _axis_payloads_for_extracted_file(ex: ExtractedFile, *, project_path: str = 
     except SyntaxError:
         return {}
 
-    classifier = ContainerKindClassifier()
+    classifier = (
+        ContainerKindClassifier(probe=graph_probe)
+        if graph_probe is not None
+        else ContainerKindClassifier()
+    )
     payloads: dict[str, dict] = {}
     for profile in extraction.profiles.values():
         container_kinds = classifier.classify(profile)
@@ -1381,7 +1398,19 @@ def run_fast_indexing(
 
         # Stage 5: global embedding batch
         t_stage = time.perf_counter()
-        encoded, removed = _embed_phase(diffs, lance, workspace_id, reporter, project_path)
+        graph_probe = None
+        if profile.name == AXIS_PYTHON_V1_PROFILE:
+            from sidecar.axis.graph_probe import Neo4jGraphContextProbe
+
+            graph_probe = Neo4jGraphContextProbe(db, workspace_id)
+        encoded, removed = _embed_phase(
+            diffs,
+            lance,
+            workspace_id,
+            reporter,
+            project_path,
+            graph_probe=graph_probe,
+        )
         stats["symbols_encoded"] = encoded
         stats["symbols_removed"] = removed
         stats["timings_sec"]["embed"] = round(time.perf_counter() - t_stage, 3)
