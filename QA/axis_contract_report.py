@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -203,9 +204,58 @@ def build_axis_contract_report(
     ]
 
 
+def _sorted_counter_dict(counter: Counter[str]) -> dict[str, int]:
+    return {key: counter[key] for key in sorted(counter)}
+
+
+def summarize_axis_contract_report(rows: list[AxisContractReportRow]) -> dict[str, object]:
+    container_kinds: Counter[str] = Counter()
+    contracts: Counter[str] = Counter()
+    diagnostics: Counter[str] = Counter()
+    persisted_contracts: Counter[str] = Counter()
+    traversal_modes: Counter[str] = Counter()
+    drift: Counter[str] = Counter()
+
+    for row in rows:
+        container_kinds.update(row.container_kinds)
+        persisted_contracts.update(row.persisted_contracts)
+        drift["yes" if row.contract_drift else "no"] += 1
+        for contract in row.contracts:
+            contracts[contract.contract] += 1
+            if contract.traversal_mode:
+                traversal_modes[str(contract.traversal_mode)] += 1
+        for diagnostic in row.diagnostics:
+            contract = str(diagnostic.get("contract") or "")
+            if contract:
+                diagnostics[contract] += 1
+
+    return {
+        "rows": len(rows),
+        "container_kinds": _sorted_counter_dict(container_kinds),
+        "contracts": _sorted_counter_dict(contracts),
+        "persisted_contracts": _sorted_counter_dict(persisted_contracts),
+        "diagnostics": _sorted_counter_dict(diagnostics),
+        "contract_drift": _sorted_counter_dict(drift),
+        "traversal_modes": _sorted_counter_dict(traversal_modes),
+    }
+
+
 def _markdown_table(rows: list[AxisContractReportRow]) -> str:
+    summary = summarize_axis_contract_report(rows)
     lines = [
         "# Axis Contract Report",
+        "",
+        "## Summary",
+        "",
+        f"- rows: {summary['rows']}",
+        f"- container kinds: {json.dumps(summary['container_kinds'], sort_keys=True)}",
+        f"- contracts: {json.dumps(summary['contracts'], sort_keys=True)}",
+        f"- persisted contracts: {json.dumps(summary['persisted_contracts'], sort_keys=True)}",
+        f"- diagnostics: {json.dumps(summary['diagnostics'], sort_keys=True)}",
+        f"- contract drift: {json.dumps(summary['contract_drift'], sort_keys=True)}",
+        f"- traversal modes: {json.dumps(summary['traversal_modes'], sort_keys=True)}",
+        "",
+        "## Rows",
         "",
         "| uid | file | container kinds | contracts | diagnostics | persisted | drift | traversal plans |",
         "|---|---|---|---|---|---|---|---|",
@@ -248,11 +298,16 @@ def write_axis_contract_report(
     out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_dir / "axis_contract_report.jsonl"
     md_path = out_dir / "axis_contract_report.md"
+    summary_path = out_dir / "axis_contract_summary.json"
     jsonl_path.write_text(
         "".join(json.dumps(row.to_dict(), sort_keys=True) + "\n" for row in rows),
         encoding="utf-8",
     )
     md_path.write_text(_markdown_table(rows), encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(summarize_axis_contract_report(rows), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return jsonl_path, md_path
 
 
@@ -298,7 +353,16 @@ def main() -> None:
         out_dir=args.out,
         limit=args.limit,
     )
-    print(f"rows={len(rows)} out={args.out}")
+    summary = summarize_axis_contract_report(rows)
+    print(
+        "rows={rows} drift={drift} contracts={contracts} diagnostics={diagnostics} out={out}".format(
+            rows=summary["rows"],
+            drift=json.dumps(summary["contract_drift"], sort_keys=True),
+            contracts=json.dumps(summary["contracts"], sort_keys=True),
+            diagnostics=json.dumps(summary["diagnostics"], sort_keys=True),
+            out=args.out,
+        )
+    )
 
 
 if __name__ == "__main__":

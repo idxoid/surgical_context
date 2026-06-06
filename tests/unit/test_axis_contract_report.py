@@ -4,6 +4,7 @@ from QA.axis_contract_report import (
     axis_profile_from_lance_row,
     build_axis_contract_report,
     compile_contract_report_row,
+    summarize_axis_contract_report,
     write_axis_contract_report,
 )
 from sidecar.axis.container_kind import ContainerKindMatch
@@ -247,7 +248,80 @@ def test_write_axis_contract_report_outputs_jsonl_and_markdown(tmp_path):
     jsonl_path, md_path = write_axis_contract_report([row], tmp_path)
 
     assert json.loads(jsonl_path.read_text(encoding="utf-8"))["uid"] == "proxy"
+    summary = json.loads((tmp_path / "axis_contract_summary.json").read_text(encoding="utf-8"))
+    assert summary == {
+        "container_kinds": {"proxy_object": 1},
+        "contract_drift": {"no": 1},
+        "contracts": {"proxy_indirection": 1},
+        "diagnostics": {},
+        "persisted_contracts": {},
+        "rows": 1,
+        "traversal_modes": {"deferred_binding_flow": 1},
+    }
     markdown = md_path.read_text(encoding="utf-8")
+    assert "## Summary" in markdown
     assert "proxy_object" in markdown
     assert "proxy_indirection" in markdown
     assert "| proxy | /repo/proxy.py | proxy_object | proxy_indirection | - | - | no |" in markdown
+
+
+def test_summarize_axis_contract_report_counts_rows_and_drift():
+    proxy = compile_contract_report_row(
+        {
+            "uid": "proxy",
+            "name": "proxy",
+            "file_path": "/repo/proxy.py",
+            "cfg_bits": [],
+            "dfg_bits": [],
+            "struct_bits": [],
+            "axis_container_kinds_json": _kind_json(
+                ContainerKindMatch(
+                    kind="proxy_object",
+                    symbol_uid="proxy",
+                    qualified_name="pkg.proxy",
+                    evidence_bits=(),
+                    evidence_probes=("library_marker:proxy_object",),
+                    payload={},
+                )
+            ),
+        },
+        workspace_id="ws",
+    )
+    stale = compile_contract_report_row(
+        {
+            "uid": "registry",
+            "name": "registry",
+            "file_path": "/repo/registry.py",
+            "cfg_bits": [],
+            "dfg_bits": ["keyed_write", "keyed_read"],
+            "struct_bits": ["literal_key"],
+            "axis_contracts_json": "[{\"contract\": \"stale_contract\"}]",
+            "axis_container_kinds_json": _kind_json(
+                ContainerKindMatch(
+                    kind="metadata_carrier",
+                    symbol_uid="registry",
+                    qualified_name="pkg.registry",
+                    evidence_bits=(
+                        ("dfg", "keyed_write"),
+                        ("dfg", "keyed_read"),
+                        ("struct", "literal_key"),
+                    ),
+                    evidence_probes=(),
+                    payload={},
+                )
+            ),
+        },
+        workspace_id="ws",
+    )
+
+    summary = summarize_axis_contract_report([proxy, stale])
+
+    assert summary["rows"] == 2
+    assert summary["container_kinds"] == {"metadata_carrier": 1, "proxy_object": 1}
+    assert summary["contracts"] == {
+        "metadata_key_roundtrip": 1,
+        "proxy_indirection": 1,
+    }
+    assert summary["persisted_contracts"] == {"stale_contract": 1}
+    assert summary["contract_drift"] == {"no": 1, "yes": 1}
+    assert summary["traversal_modes"] == {"deferred_binding_flow": 2}
