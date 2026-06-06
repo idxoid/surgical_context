@@ -84,6 +84,30 @@ def _requirements_from_pairs(
 
 
 @dataclass(frozen=True)
+class AxisContractDiagnostic:
+    """Why a plausible contract candidate was not proven."""
+
+    contract: str
+    symbol_uid: str
+    qualified_name: str
+    container_kind: str | None
+    missing: tuple[str, ...]
+    present_bits: tuple[AxisRequirement, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "contract": self.contract,
+            "symbol_uid": self.symbol_uid,
+            "qualified_name": self.qualified_name,
+            "container_kind": self.container_kind,
+            "missing": list(self.missing),
+            "present_bits": [
+                {"axis": req.axis, "bit": req.bit} for req in self.present_bits
+            ],
+        }
+
+
+@dataclass(frozen=True)
 class AxisContractMatch:
     """One proven structural contract on a symbol."""
 
@@ -314,6 +338,45 @@ class AxisContractCompiler:
     def registered_contracts(self) -> list[str]:
         return sorted(_PREDICATES)
 
+    def diagnose(
+        self,
+        profile: AxisProfile,
+        container_matches: Iterable[ContainerKindMatch],
+    ) -> list[AxisContractDiagnostic]:
+        matches = tuple(container_matches)
+        diagnostics: list[AxisContractDiagnostic] = []
+        middleware = _kind_match(matches, "middleware_chain", "signal_register")
+        if middleware is not None and not any(
+            contract.contract == "callable_container_dispatch"
+            for contract in self.compile(profile, matches)
+        ):
+            requirements = (
+                _req("dfg", "callable_value"),
+                _req("dfg", "container_write_value"),
+                _req("dfg", "iteration_source"),
+                _req("cfg", "value_call"),
+            )
+            missing = [
+                f"{req.axis}:{req.bit}"
+                for req in requirements
+                if not profile.has(req.axis, req.bit)
+            ]
+            if not _shared_write_iteration_container(profile):
+                missing.append("payload_identity:container_write_value.container==iteration_source.iterable")
+            diagnostics.append(
+                AxisContractDiagnostic(
+                    contract="callable_container_dispatch",
+                    symbol_uid=profile.symbol_uid,
+                    qualified_name=profile.qualified_name,
+                    container_kind=middleware.kind,
+                    missing=tuple(missing),
+                    present_bits=tuple(
+                        req for req in requirements if profile.has(req.axis, req.bit)
+                    ),
+                )
+            )
+        return diagnostics
+
 
 def container_kind_matches_from_json(raw: str | list[dict[str, object]]) -> list[ContainerKindMatch]:
     """Parse persisted ``axis_container_kinds_json`` rows back into L2 matches."""
@@ -362,6 +425,7 @@ def container_kind_matches_from_json(raw: str | list[dict[str, object]]) -> list
 
 __all__ = [
     "AxisContractCompiler",
+    "AxisContractDiagnostic",
     "AxisContractMatch",
     "container_kind_matches_from_json",
     "register_contract",

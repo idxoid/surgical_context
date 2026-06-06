@@ -134,6 +134,7 @@ class AxisContractReportRow:
     file_path: str
     container_kinds: tuple[str, ...]
     contracts: tuple[AxisContractMatch, ...]
+    diagnostics: tuple[dict[str, object], ...]
     persisted_contracts: tuple[str, ...]
     contract_drift: bool
     plans: tuple[dict[str, object], ...]
@@ -145,6 +146,7 @@ class AxisContractReportRow:
             "file_path": self.file_path,
             "container_kinds": list(self.container_kinds),
             "contracts": [contract.to_dict() for contract in self.contracts],
+            "diagnostics": list(self.diagnostics),
             "persisted_contracts": list(self.persisted_contracts),
             "contract_drift": self.contract_drift,
             "plans": list(self.plans),
@@ -163,6 +165,7 @@ def compile_contract_report_row(
     )
     compiler = compiler or AxisContractCompiler()
     contracts = tuple(compiler.compile(profile, matches))
+    diagnostics = tuple(diagnostic.to_dict() for diagnostic in compiler.diagnose(profile, matches))
     persisted_contracts = _contract_names_from_json(row.get("axis_contracts_json"))
     compiled_contracts = tuple(sorted(contract.contract for contract in contracts))
     plans: list[dict[str, object]] = []
@@ -177,6 +180,7 @@ def compile_contract_report_row(
         file_path=str(row.get("file_path") or ""),
         container_kinds=tuple(sorted({match.kind for match in matches})),
         contracts=contracts,
+        diagnostics=diagnostics,
         persisted_contracts=persisted_contracts,
         contract_drift=bool(persisted_contracts and persisted_contracts != compiled_contracts),
         plans=tuple(plans),
@@ -203,12 +207,15 @@ def _markdown_table(rows: list[AxisContractReportRow]) -> str:
     lines = [
         "# Axis Contract Report",
         "",
-        "| uid | file | container kinds | contracts | persisted | drift | traversal plans |",
-        "|---|---|---|---|---|---|---|",
+        "| uid | file | container kinds | contracts | diagnostics | persisted | drift | traversal plans |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for row in rows:
         containers = ", ".join(row.container_kinds) or "-"
         contracts = ", ".join(contract.contract for contract in row.contracts) or "-"
+        diagnostics = ", ".join(
+            str(item.get("contract") or "") for item in row.diagnostics
+        ) or "-"
         persisted = ", ".join(row.persisted_contracts) or "-"
         modes = ", ".join(
             str(plan.get("traversal_mode") or "-")
@@ -222,6 +229,7 @@ def _markdown_table(rows: list[AxisContractReportRow]) -> str:
                     row.file_path,
                     containers,
                     contracts,
+                    diagnostics,
                     persisted,
                     "yes" if row.contract_drift else "no",
                     modes,

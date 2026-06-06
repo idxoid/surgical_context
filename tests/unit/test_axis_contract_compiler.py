@@ -98,8 +98,16 @@ def test_callable_chain_without_shared_container_stays_unproven():
     )
 
     contracts = _contracts(profile)
+    diagnostics = AxisContractCompiler().diagnose(
+        profile,
+        ContainerKindClassifier().classify(profile),
+    )
 
     assert contracts == []
+    assert [item.contract for item in diagnostics] == ["callable_container_dispatch"]
+    assert diagnostics[0].missing == (
+        "payload_identity:container_write_value.container==iteration_source.iterable",
+    )
 
 
 def test_marker_only_signal_kind_does_not_fake_dispatch_contract():

@@ -90,6 +90,7 @@ def test_compile_contract_report_row_includes_contract_and_query_plan():
     assert [contract.contract for contract in report_row.contracts] == [
         "metadata_key_roundtrip"
     ]
+    assert report_row.diagnostics == ()
     assert report_row.persisted_contracts == ()
     assert report_row.contract_drift is False
     assert report_row.plans[0]["traversal_mode"] == "deferred_binding_flow"
@@ -141,9 +142,13 @@ def test_contract_report_uses_axis_evidence_payload_for_dispatch_identity():
     )
 
     assert without_facts.contracts == ()
+    assert without_facts.diagnostics[0]["missing"] == [
+        "payload_identity:container_write_value.container==iteration_source.iterable"
+    ]
     assert [contract.contract for contract in with_facts.contracts] == [
         "callable_container_dispatch"
     ]
+    assert with_facts.diagnostics == ()
     assert with_facts.contracts[0].payload["container"] == "self.chain"
 
 
@@ -245,4 +250,4 @@ def test_write_axis_contract_report_outputs_jsonl_and_markdown(tmp_path):
     markdown = md_path.read_text(encoding="utf-8")
     assert "proxy_object" in markdown
     assert "proxy_indirection" in markdown
-    assert "| proxy | /repo/proxy.py | proxy_object | proxy_indirection | - | no |" in markdown
+    assert "| proxy | /repo/proxy.py | proxy_object | proxy_indirection | - | - | no |" in markdown

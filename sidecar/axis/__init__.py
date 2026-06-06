@@ -2,6 +2,7 @@
 
 from sidecar.axis.contract_compiler import (
     AxisContractCompiler,
+    AxisContractDiagnostic,
     AxisContractMatch,
     container_kind_matches_from_json,
 )
@@ -23,6 +24,7 @@ from sidecar.axis.schema import AxisExtraction, AxisFact, AxisProfile
 
 __all__ = [
     "AxisContractCompiler",
+    "AxisContractDiagnostic",
     "AxisContractMatch",
     "AxisExtraction",
     "AxisFact",
