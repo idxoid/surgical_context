@@ -1,5 +1,10 @@
 """Axis fact extraction layer."""
 
+from sidecar.axis.contract_compiler import (
+    AxisContractCompiler,
+    AxisContractMatch,
+    container_kind_matches_from_json,
+)
 from sidecar.axis.python_extractor import PythonAxisExtractor
 from sidecar.axis.query_plan import (
     AxisQueryPlan,
@@ -12,6 +17,8 @@ from sidecar.axis.query_plan import (
 from sidecar.axis.schema import AxisExtraction, AxisFact, AxisProfile
 
 __all__ = [
+    "AxisContractCompiler",
+    "AxisContractMatch",
     "AxisExtraction",
     "AxisFact",
     "AxisProfile",
@@ -20,6 +27,7 @@ __all__ = [
     "AxisRequirement",
     "GraphExpansionStep",
     "PythonAxisExtractor",
+    "container_kind_matches_from_json",
     "compile_axis_query",
     "render_lance_predicate",
 ]
