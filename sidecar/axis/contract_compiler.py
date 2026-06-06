@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from sidecar.axis.container_kind import ContainerKindMatch
 from sidecar.axis.query_plan import AxisQueryRequest, AxisRequirement, TraversalMode
-from sidecar.axis.schema import AxisName, AxisProfile
+from sidecar.axis.schema import AxisFact, AxisName, AxisProfile
 
 ContractPredicate = Callable[
     [AxisProfile, tuple[ContainerKindMatch, ...]],
@@ -52,6 +52,25 @@ def _kind_match(
 
 def _bits_present(profile: AxisProfile, requirements: Iterable[AxisRequirement]) -> bool:
     return all(profile.has(req.axis, req.bit) for req in requirements)
+
+
+def _facts(profile: AxisProfile, axis: AxisName, bit: str) -> list[AxisFact]:
+    return [fact for fact in profile.facts if fact.axis == axis and fact.bit == bit]
+
+
+def _shared_write_iteration_container(profile: AxisProfile) -> str | None:
+    writes = {
+        str(fact.payload.get("container") or "")
+        for fact in _facts(profile, "dfg", "container_write_value")
+        if fact.payload.get("container")
+    }
+    iterations = {
+        str(fact.payload.get("iterable") or "")
+        for fact in _facts(profile, "dfg", "iteration_source")
+        if fact.payload.get("iterable")
+    }
+    shared = sorted(writes & iterations)
+    return shared[0] if shared else None
 
 
 def _requirements_from_pairs(
@@ -167,6 +186,9 @@ def _compile_callable_container_dispatch(
     kind = _kind_match(matches, "middleware_chain", "signal_register")
     if kind is None:
         return None
+    shared_container = _shared_write_iteration_container(profile)
+    if shared_container is None:
+        return None
     return _match_from_kind(
         contract="callable_container_dispatch",
         profile=profile,
@@ -178,6 +200,7 @@ def _compile_callable_container_dispatch(
             _req("cfg", "value_call"),
         ),
         traversal_mode="deferred_binding_flow",
+        payload={"container": shared_container},
     )
 
 

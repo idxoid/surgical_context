@@ -74,8 +74,8 @@ def test_callable_chain_compiles_to_container_dispatch_contract():
     profile = _profile(
         [
             _fact("dfg", "callable_value"),
-            _fact("dfg", "container_write_value"),
-            _fact("dfg", "iteration_source"),
+            _fact("dfg", "container_write_value", payload={"container": "self.chain"}),
+            _fact("dfg", "iteration_source", payload={"iterable": "self.chain"}),
             _fact("cfg", "value_call"),
         ]
     )
@@ -84,6 +84,22 @@ def test_callable_chain_compiles_to_container_dispatch_contract():
 
     assert [c.contract for c in contracts] == ["callable_container_dispatch"]
     assert contracts[0].container_kind == "middleware_chain"
+    assert contracts[0].payload["container"] == "self.chain"
+
+
+def test_callable_chain_without_shared_container_stays_unproven():
+    profile = _profile(
+        [
+            _fact("dfg", "callable_value"),
+            _fact("dfg", "container_write_value", payload={"container": "self.writes"}),
+            _fact("dfg", "iteration_source", payload={"iterable": "self.reads"}),
+            _fact("cfg", "value_call"),
+        ]
+    )
+
+    contracts = _contracts(profile)
+
+    assert contracts == []
 
 
 def test_marker_only_signal_kind_does_not_fake_dispatch_contract():

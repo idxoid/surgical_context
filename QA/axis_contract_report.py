@@ -19,7 +19,7 @@ from sidecar.axis.contract_compiler import (
     container_kind_matches_from_json,
 )
 from sidecar.axis.query_plan import compile_axis_query
-from sidecar.axis.schema import AxisProfile
+from sidecar.axis.schema import AxisFact, AxisProfile
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
@@ -32,16 +32,73 @@ def _list_strings(value: Any) -> list[str]:
     return [str(value)] if str(value) else []
 
 
+def _axis_facts_from_json(raw: Any) -> list[AxisFact]:
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw or "[]")
+        except json.JSONDecodeError:
+            return []
+    elif isinstance(raw, list):
+        data = raw
+    else:
+        return []
+    facts: list[AxisFact] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        axis = str(item.get("axis") or "")
+        bit = str(item.get("bit") or "")
+        if axis not in {"cfg", "dfg", "struct"} or not bit:
+            continue
+        payload = item.get("payload")
+        facts.append(
+            AxisFact(
+                symbol_uid=str(item.get("symbol_uid") or ""),
+                qualified_name=str(item.get("qualified_name") or ""),
+                symbol_kind=str(item.get("symbol_kind") or "symbol"),
+                axis=axis,  # type: ignore[arg-type]
+                bit=bit,
+                line=int(item.get("line") or 0),
+                evidence=str(item.get("evidence") or ""),
+                ast_kind=str(item.get("ast_kind") or ""),
+                payload=payload if isinstance(payload, dict) else {},
+            )
+        )
+    return facts
+
+
 def axis_profile_from_lance_row(row: dict[str, Any]) -> AxisProfile:
     matches = container_kind_matches_from_json(
         str(row.get("axis_container_kinds_json") or "[]")
     )
+    facts = _axis_facts_from_json(row.get("axis_evidence_json"))
     uid = str(row.get("uid") or "")
     qualified_name = (
         matches[0].qualified_name
         if matches and matches[0].qualified_name
         else str(row.get("name") or uid)
     )
+    if facts:
+        profile = AxisProfile(
+            symbol_uid=uid,
+            qualified_name=qualified_name,
+            symbol_kind=str(row.get("symbol_kind") or facts[0].symbol_kind or "symbol"),
+        )
+        for fact in facts:
+            profile.add_fact(
+                AxisFact(
+                    symbol_uid=uid or fact.symbol_uid,
+                    qualified_name=qualified_name or fact.qualified_name,
+                    symbol_kind=profile.symbol_kind,
+                    axis=fact.axis,
+                    bit=fact.bit,
+                    line=fact.line,
+                    evidence=fact.evidence,
+                    ast_kind=fact.ast_kind,
+                    payload=fact.payload,
+                )
+            )
+        return profile
     return AxisProfile(
         symbol_uid=uid,
         qualified_name=qualified_name,
@@ -180,6 +237,7 @@ def run_report(
             "cfg_bits",
             "dfg_bits",
             "struct_bits",
+            "axis_evidence_json",
             "axis_container_kinds_json",
         ],
     )

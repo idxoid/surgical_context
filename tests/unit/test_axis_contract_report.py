@@ -7,10 +7,29 @@ from QA.axis_contract_report import (
     write_axis_contract_report,
 )
 from sidecar.axis.container_kind import ContainerKindMatch
+from sidecar.axis.schema import AxisFact
 
 
 def _kind_json(match: ContainerKindMatch) -> str:
     return json.dumps([match.to_dict()], sort_keys=True)
+
+
+def _fact_json(*facts: AxisFact) -> str:
+    return json.dumps([fact.to_dict() for fact in facts], sort_keys=True)
+
+
+def _fact(axis: str, bit: str, *, payload=None) -> AxisFact:
+    return AxisFact(
+        symbol_uid="u:c",
+        qualified_name="pkg.chain",
+        symbol_kind="function",
+        axis=axis,
+        bit=bit,
+        line=1,
+        evidence=f"<{bit}>",
+        ast_kind="Synthetic",
+        payload=payload or {},
+    )
 
 
 def test_axis_profile_from_lance_row_uses_persisted_bits_and_kind_qualified_name():
@@ -79,6 +98,51 @@ def test_compile_contract_report_row_includes_contract_and_query_plan():
         "AND array_has(struct_bits, 'literal_key') "
         "AND axis_container_kinds_json LIKE '%\"kind\": \"metadata_carrier\"%'"
     )
+
+
+def test_contract_report_uses_axis_evidence_payload_for_dispatch_identity():
+    kind = ContainerKindMatch(
+        kind="middleware_chain",
+        symbol_uid="u:c",
+        qualified_name="pkg.chain",
+        evidence_bits=(
+            ("dfg", "callable_value"),
+            ("dfg", "container_write_value"),
+            ("dfg", "iteration_source"),
+            ("cfg", "value_call"),
+        ),
+        evidence_probes=(),
+        payload={},
+    )
+    base = {
+        "uid": "u:c",
+        "name": "chain",
+        "file_path": "/repo/chain.py",
+        "cfg_bits": ["value_call"],
+        "dfg_bits": ["callable_value", "container_write_value", "iteration_source"],
+        "struct_bits": [],
+        "axis_container_kinds_json": _kind_json(kind),
+    }
+
+    without_facts = compile_contract_report_row(base, workspace_id="ws")
+    with_facts = compile_contract_report_row(
+        {
+            **base,
+            "axis_evidence_json": _fact_json(
+                _fact("dfg", "callable_value"),
+                _fact("dfg", "container_write_value", payload={"container": "self.chain"}),
+                _fact("dfg", "iteration_source", payload={"iterable": "self.chain"}),
+                _fact("cfg", "value_call"),
+            ),
+        },
+        workspace_id="ws",
+    )
+
+    assert without_facts.contracts == ()
+    assert [contract.contract for contract in with_facts.contracts] == [
+        "callable_container_dispatch"
+    ]
+    assert with_facts.contracts[0].payload["container"] == "self.chain"
 
 
 def test_build_report_filters_plain_rows_without_kinds_or_contracts():
