@@ -137,6 +137,7 @@ AXIS_SYMBOLS_SCHEMA = pa.schema(
         pa.field("struct_bits", pa.list_(pa.string())),
         pa.field("axis_evidence_json", pa.string()),
         pa.field("axis_container_kinds_json", pa.string()),
+        pa.field("axis_contracts_json", pa.string()),
     ]
 )
 
@@ -147,6 +148,7 @@ AXIS_SYMBOL_REQUIRED_COLUMNS = {
     "struct_bits",
     "axis_evidence_json",
     "axis_container_kinds_json",
+    "axis_contracts_json",
 }
 
 
@@ -217,6 +219,7 @@ class LanceDBClient:
             "axis_container_kinds_json": str(
                 symbol.get("axis_container_kinds_json") or "[]"
             ),
+            "axis_contracts_json": str(symbol.get("axis_contracts_json") or "[]"),
         }
 
     def _open_or_reset_table(self, name: str, schema: pa.Schema, *, required_columns: set[str]):

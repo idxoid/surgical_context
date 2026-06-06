@@ -436,6 +436,7 @@ def run(x: int):
         } <= set(lance.rows[0]["struct_bits"])
         assert "axis_evidence_json" in lance.rows[0]
         assert json.loads(lance.rows[0]["axis_container_kinds_json"]) == []
+        assert json.loads(lance.rows[0]["axis_contracts_json"]) == []
 
     def test_fast_embed_phase_adds_axis_container_kind_payload(self, tmp_path):
         source = """
@@ -486,9 +487,14 @@ class Settings:
         )
 
         matches = json.loads(lance.rows[0]["axis_container_kinds_json"])
+        contracts = json.loads(lance.rows[0]["axis_contracts_json"])
 
         assert {match["kind"] for match in matches} == {"config_carrier", "data_model"}
         assert all(match["evidence_bits"] for match in matches)
+        assert {contract["contract"] for contract in contracts} == {
+            "configuration_carrier",
+            "data_shape_declaration",
+        }
 
     def test_fast_embed_phase_uses_graph_probe_for_marker_only_container_kind(self, tmp_path):
         source = "def run():\n    return 1\n"
@@ -552,6 +558,7 @@ class Settings:
 
         assert [match["kind"] for match in matches] == ["web_route_register"]
         assert matches[0]["evidence_probes"] == ["library_marker:web_route_register"]
+        assert json.loads(lance.rows[0]["axis_contracts_json"]) == []
 
     def test_fast_embed_phase_leaves_legacy_symbol_rows_without_axis_payload(self, tmp_path):
         source = "def run():\n    return 1\n"
@@ -594,6 +601,7 @@ class Settings:
         assert "cfg_bits" not in lance.rows[0]
         assert "axis_evidence_json" not in lance.rows[0]
         assert "axis_container_kinds_json" not in lance.rows[0]
+        assert "axis_contracts_json" not in lance.rows[0]
 
     def test_hash_skip_gate_with_unchanged_file(self):
         """Test that unchanged files are correctly identified."""

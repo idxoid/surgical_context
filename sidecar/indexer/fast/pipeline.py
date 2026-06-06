@@ -920,6 +920,7 @@ def _axis_payloads_for_extracted_file(
         return {}
     from sidecar.axis import PythonAxisExtractor
     from sidecar.axis.container_kind import ContainerKindClassifier
+    from sidecar.axis.contract_compiler import AxisContractCompiler
 
     try:
         extraction = PythonAxisExtractor().extract(
@@ -935,9 +936,11 @@ def _axis_payloads_for_extracted_file(
         if graph_probe is not None
         else ContainerKindClassifier()
     )
+    contract_compiler = AxisContractCompiler()
     payloads: dict[str, dict] = {}
     for profile in extraction.profiles.values():
         container_kinds = classifier.classify(profile)
+        contracts = contract_compiler.compile(profile, container_kinds)
         payload = {
             "ast_kind_bits": sorted({fact.ast_kind for fact in profile.facts}),
             "cfg_bits": sorted(profile.cfg_bits),
@@ -949,6 +952,10 @@ def _axis_payloads_for_extracted_file(
             ),
             "axis_container_kinds_json": json.dumps(
                 [match.to_dict() for match in container_kinds],
+                sort_keys=True,
+            ),
+            "axis_contracts_json": json.dumps(
+                [match.to_dict() for match in contracts],
                 sort_keys=True,
             ),
         }
