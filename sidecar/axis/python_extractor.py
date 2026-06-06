@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from sidecar.axis.schema import AxisExtraction, AxisFact, AxisName
 from sidecar.parser.uid import UNRESOLVED_SIGNATURE, compute_uid, module_name_from_path
+
+_CONTAINER_MUTATION_METHODS = frozenset(
+    {
+        "add",
+        "append",
+        "extend",
+        "insert",
+        "setdefault",
+        "update",
+    }
+)
+_CONTAINER_READ_METHODS = frozenset({"get"})
 
 
 @dataclass(frozen=True)
@@ -184,6 +196,7 @@ class _AxisVisitor(ast.NodeVisitor):
             self._emit("cfg", "constructor_call", node, payload=payload)
             self._emit("dfg", "constructor_value", node, payload=payload)
         self._emit_call_argument_facts(node)
+        self._emit_container_call_facts(node)
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If) -> None:
@@ -200,12 +213,14 @@ class _AxisVisitor(ast.NodeVisitor):
 
     def visit_For(self, node: ast.For) -> None:
         self._emit("cfg", "loop_driver", node)
+        self._emit_iteration_source(node.target, node.iter)
         self._emit_binding_targets(node.target, "loop_target")
         self.generic_visit(node)
 
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
         self._emit("cfg", "loop_driver", node)
         self._emit("cfg", "async_suspend_resume", node)
+        self._emit_iteration_source(node.target, node.iter, async_iteration=True)
         self._emit_binding_targets(node.target, "loop_target")
         self.generic_visit(node)
 
@@ -338,14 +353,32 @@ class _AxisVisitor(ast.NodeVisitor):
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
         if isinstance(node.ctx, ast.Load):
-            self._emit("dfg", "subscript_read", node)
+            payload = _subscript_key_payload(node)
+            self._emit("dfg", "subscript_read", node, payload=payload)
+            self._emit("dfg", "container_read_key", node, payload=payload)
+            self._emit("dfg", "keyed_read", node, payload=payload)
+            self._emit_literal_key(node.slice, context="subscript_read", container=_unparse(node.value))
         self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
         self._emit("dfg", "collection_assembly", node, payload={"shape": "dict"})
         self._emit("struct", "literal_shape", node, payload={"shape": "dict"})
-        for value in node.values:
+        for key, value in zip(node.keys, node.values, strict=False):
+            if key is not None:
+                self._emit(
+                    "dfg",
+                    "keyed_write",
+                    key,
+                    payload=_keyed_write_payload(key=key, value=value, container="dict_literal"),
+                )
+                self._emit_literal_key(key, context="dict_literal")
             if value is not None:
+                if key is not None:
+                    self._maybe_emit_callable_value(
+                        value,
+                        source="keyed_write",
+                        payload={"container": "dict_literal", "key": _unparse(key)},
+                    )
                 self._maybe_emit_callable_value(value, source="collection_value")
         self.generic_visit(node)
 
@@ -542,6 +575,54 @@ class _AxisVisitor(ast.NodeVisitor):
                 payload={"callee": callee, "keyword": keyword.arg or "**"},
             )
 
+    def _emit_container_call_facts(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Attribute):
+            return
+
+        method = node.func.attr
+        container = _unparse(node.func.value)
+        if method in _CONTAINER_MUTATION_METHODS:
+            values = _container_mutation_values(method, node)
+            key = _container_mutation_key(method, node)
+            payload: dict[str, object] = {
+                "container": container,
+                "method": method,
+                "callee": _unparse(node.func),
+                "arguments": [_expr_payload(_call_arg_expr(arg)) for arg in node.args],
+                "keywords": [
+                    {"name": keyword.arg or "**", **_expr_payload(keyword.value)}
+                    for keyword in node.keywords
+                ],
+            }
+            if key is not None:
+                payload.update(_key_payload(key))
+            if values:
+                payload["values"] = [_expr_payload(value) for value in values]
+                payload["value"] = _unparse(values[0])
+                payload["value_kind"] = type(values[0]).__name__
+
+            self._emit("dfg", "container_write_value", node, payload=payload)
+            for value in values:
+                self._maybe_emit_callable_value(
+                    value,
+                    source="container_write_value",
+                    payload={"container": container, "method": method},
+                )
+            if key is not None:
+                self._emit_literal_key(key, context="container_method_write", container=container)
+
+        if method in _CONTAINER_READ_METHODS and node.args:
+            key = _call_arg_expr(node.args[0])
+            payload = {
+                "container": container,
+                "method": method,
+                "callee": _unparse(node.func),
+                **_key_payload(key),
+            }
+            self._emit("dfg", "container_read_key", node, payload=payload)
+            self._emit("dfg", "keyed_read", node, payload=payload)
+            self._emit_literal_key(key, context="container_method_read", container=container)
+
     def _maybe_emit_callable_value(
         self,
         node: ast.AST,
@@ -576,7 +657,27 @@ class _AxisVisitor(ast.NodeVisitor):
                 if _is_self_attribute(leaf):
                     self._emit("struct", "instance_attribute_hint", leaf, payload=payload)
             elif isinstance(leaf, ast.Subscript):
-                self._emit("dfg", "subscript_write", leaf, payload={"target": _unparse(leaf)})
+                payload = {"target": _unparse(leaf), **_subscript_key_payload(leaf)}
+                self._emit("dfg", "subscript_write", leaf, payload=payload)
+                self._emit_literal_key(leaf.slice, context="subscript_write", container=_unparse(leaf.value))
+                if value is not None:
+                    write_payload = {
+                        **payload,
+                        "value": _unparse(value),
+                        "value_kind": type(value).__name__,
+                    }
+                    self._emit("dfg", "container_write_value", leaf, payload=write_payload)
+                    self._emit(
+                        "dfg",
+                        "keyed_write",
+                        leaf,
+                        payload=_keyed_write_payload(key=leaf.slice, value=value, container=_unparse(leaf.value)),
+                    )
+                    self._maybe_emit_callable_value(
+                        value,
+                        source="container_write_value",
+                        payload={"container": _unparse(leaf.value), "key": _unparse(leaf.slice)},
+                    )
             elif isinstance(leaf, ast.Name) and isinstance(value, ast.Name):
                 self._emit(
                     "dfg",
@@ -589,6 +690,41 @@ class _AxisVisitor(ast.NodeVisitor):
         for leaf in _flatten_targets(target):
             if isinstance(leaf, ast.Name):
                 self._emit("dfg", "assignment_binding", leaf, payload={"target": leaf.id, "source_kind": source_kind})
+
+    def _emit_iteration_source(
+        self,
+        target: ast.AST,
+        iterable: ast.AST,
+        *,
+        async_iteration: bool = False,
+    ) -> None:
+        self._emit(
+            "dfg",
+            "iteration_source",
+            iterable,
+            payload={
+                "target": _unparse(target),
+                "target_kind": type(target).__name__,
+                "iterable": _unparse(iterable),
+                "iterable_kind": type(iterable).__name__,
+                "async": async_iteration,
+            },
+        )
+
+    def _emit_literal_key(
+        self,
+        key: ast.AST,
+        *,
+        context: str,
+        container: str = "",
+    ) -> None:
+        payload = _literal_key_payload(key)
+        if payload is None:
+            return
+        payload.update({"context": context})
+        if container:
+            payload["container"] = container
+        self._emit("struct", "literal_key", key, payload=payload)
 
     def _class_scope(self, node: ast.ClassDef) -> _SymbolScope:
         qualified_name = self._qualified_child_name(node.name)
@@ -741,6 +877,86 @@ def _expr_payload(node: ast.AST) -> dict[str, object]:
         payload["callee"] = _unparse(node.func)
         payload["callee_kind"] = type(node.func).__name__
     return payload
+
+
+_NO_LITERAL = object()
+
+
+def _call_arg_expr(node: ast.AST) -> ast.AST:
+    return node.value if isinstance(node, ast.Starred) else node
+
+
+def _key_payload(key: ast.AST) -> dict[str, object]:
+    payload = {
+        "key": _unparse(key),
+        "key_kind": type(key).__name__,
+    }
+    literal = _literal_key_value(key)
+    if literal is not _NO_LITERAL:
+        payload["key_literal"] = literal
+    return payload
+
+
+def _subscript_key_payload(node: ast.Subscript) -> dict[str, object]:
+    return {
+        "container": _unparse(node.value),
+        "container_kind": type(node.value).__name__,
+        "subscript": _unparse(node),
+        **_key_payload(node.slice),
+    }
+
+
+def _keyed_write_payload(
+    *,
+    key: ast.AST,
+    value: ast.AST | None,
+    container: str,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"container": container, **_key_payload(key)}
+    if value is not None:
+        payload["value"] = _unparse(value)
+        payload["value_kind"] = type(value).__name__
+    return payload
+
+
+def _literal_key_payload(key: ast.AST) -> dict[str, object] | None:
+    literal = _literal_key_value(key)
+    if literal is _NO_LITERAL:
+        return None
+    return {
+        "key": _unparse(key),
+        "key_kind": type(key).__name__,
+        "key_literal": literal,
+        "literal": literal,
+    }
+
+
+def _literal_key_value(key: ast.AST) -> object:
+    if isinstance(key, ast.Constant):
+        return _json_safe_literal(key.value)
+    return _NO_LITERAL
+
+
+def _container_mutation_values(method: str, node: ast.Call) -> list[ast.AST]:
+    args = [_call_arg_expr(arg) for arg in node.args]
+    if method in {"add", "append", "extend", "update"}:
+        values = args
+    elif method == "insert":
+        values = args[1:]
+    elif method == "setdefault":
+        values = args[1:]
+    else:
+        values = []
+
+    if method == "update":
+        values.extend(keyword.value for keyword in node.keywords if keyword.arg is not None)
+    return values
+
+
+def _container_mutation_key(method: str, node: ast.Call) -> ast.AST | None:
+    if method in {"insert", "setdefault"} and node.args:
+        return _call_arg_expr(node.args[0])
+    return None
 
 
 def _json_safe_literal(value: object) -> object:

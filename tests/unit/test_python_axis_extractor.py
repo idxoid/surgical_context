@@ -214,3 +214,108 @@ def test_value_call_marks_dynamic_callable_expression_without_registry_semantics
     value_calls = _fact_payloads(profile, "value_call")
     assert value_calls[0]["callee"] == "handler"
     assert value_calls[0]["callee_kind"] == "Name"
+
+
+def test_subscript_key_read_write_facts_are_physical_container_facts():
+    profile = _profile(
+        """
+        def run(registry):
+            def handler():
+                return None
+
+            registry["task"] = handler
+            picked = registry["task"]
+            return picked()
+        """,
+        "pkg.tasks.run",
+    )
+
+    assert {"return_exit", "value_call"} <= profile.cfg_bits
+    assert {
+        "assignment_binding",
+        "callable_value",
+        "container_read_key",
+        "container_write_value",
+        "keyed_read",
+        "keyed_write",
+        "subscript_read",
+        "subscript_write",
+    } <= profile.dfg_bits
+    assert "literal_key" in profile.struct_bits
+
+    writes = _fact_payloads(profile, "keyed_write")
+    assert any(
+        payload.get("container") == "registry"
+        and payload.get("key_literal") == "task"
+        and payload.get("value") == "handler"
+        for payload in writes
+    )
+
+    reads = _fact_payloads(profile, "container_read_key")
+    assert any(
+        payload.get("container") == "registry" and payload.get("key_literal") == "task"
+        for payload in reads
+    )
+
+
+def test_collection_mutator_call_and_iteration_source_are_axis_facts():
+    profile = _profile(
+        """
+        def on_event():
+            pass
+
+        def install(callbacks):
+            callbacks.append(on_event)
+            for cb in callbacks:
+                cb()
+        """,
+        "pkg.tasks.install",
+    )
+
+    assert {"call_site", "loop_driver", "method_dispatch", "value_call"} <= profile.cfg_bits
+    assert {
+        "assignment_binding",
+        "call_argument",
+        "callable_value",
+        "container_write_value",
+        "iteration_source",
+    } <= profile.dfg_bits
+
+    writes = _fact_payloads(profile, "container_write_value")
+    assert any(
+        payload.get("container") == "callbacks"
+        and payload.get("method") == "append"
+        and payload.get("value") == "on_event"
+        for payload in writes
+    )
+
+    iterations = _fact_payloads(profile, "iteration_source")
+    assert iterations[0]["target"] == "cb"
+    assert iterations[0]["iterable"] == "callbacks"
+
+
+def test_dict_literal_keys_emit_keyed_write_without_role_semantics():
+    profile = _profile(
+        """
+        def handler():
+            pass
+
+        def table():
+            return {"task": handler}
+        """,
+        "pkg.tasks.table",
+    )
+
+    assert "return_exit" in profile.cfg_bits
+    assert {"callable_value", "collection_assembly", "keyed_write", "return_output"} <= (
+        profile.dfg_bits
+    )
+    assert {"literal_key", "literal_shape"} <= profile.struct_bits
+
+    writes = _fact_payloads(profile, "keyed_write")
+    assert any(
+        payload.get("container") == "dict_literal"
+        and payload.get("key_literal") == "task"
+        and payload.get("value") == "handler"
+        for payload in writes
+    )
