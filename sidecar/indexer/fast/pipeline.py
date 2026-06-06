@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -39,7 +40,11 @@ sys.path.append(
 from sidecar.context.framework_hints import FrameworkHintsIndexer
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.index_profile import active_index_profile, resolve_index_profile
+from sidecar.index_profile import (
+    AXIS_PYTHON_V1_PROFILE,
+    active_index_profile,
+    resolve_index_profile,
+)
 from sidecar.indexer.external_boundary import (
     build_project_boundary,
     package_manifest_external_roots,
@@ -835,27 +840,34 @@ def _embed_phase(
     lance: LanceDBClient,
     workspace_id: str,
     reporter: ProgressReporter,
+    project_path: str = "",
 ) -> tuple[int, int]:
     """One global encode+upsert call. Returns (changed_count, removed_count)."""
     symbol_docs: list[dict] = []
     removed_uids: list[str] = []
+    include_axis_facts = getattr(lance, "index_profile_name", "") == AXIS_PYTHON_V1_PROFILE
 
     for diff in diffs:
         ex = diff.extracted
         source_lines = ex.source.splitlines()
         changed_set = {s.uid for s in diff.changed_symbols}
+        axis_payloads = (
+            _axis_payloads_for_extracted_file(ex, project_path=project_path)
+            if include_axis_facts and changed_set
+            else {}
+        )
         for s in ex.symbols:
             if s.uid not in changed_set:
                 continue
-            symbol_docs.append(
-                {
-                    "uid": s.uid,
-                    "name": s.name,
-                    "file_path": s.file_path,
-                    "workspace_id": workspace_id,
-                    "code": "\n".join(source_lines[s.start_line - 1 : s.end_line]),
-                }
-            )
+            row = {
+                "uid": s.uid,
+                "name": s.name,
+                "file_path": s.file_path,
+                "workspace_id": workspace_id,
+                "code": "\n".join(source_lines[s.start_line - 1 : s.end_line]),
+            }
+            row.update(axis_payloads.get(s.uid) or axis_payloads.get(s.qualified_name) or {})
+            symbol_docs.append(row)
         removed_uids.extend(diff.removed_uids)
 
     # Two indivisible steps: encode+upsert, then delete stale rows.
@@ -882,6 +894,43 @@ def _embed_phase(
     reporter.stage_end("embed")
 
     return len(symbol_docs), len(removed_uids)
+
+
+def _axis_payloads_for_extracted_file(ex: ExtractedFile, *, project_path: str = "") -> dict[str, dict]:
+    """Return per-symbol axis payloads keyed by uid and qualified name.
+
+    UID generation should line up with parser symbols, but this first isolated
+    index keeps a qualified-name fallback so signature-normalization drift does
+    not silently drop physical AST facts.
+    """
+    if not ex.path.endswith((".py", ".pyi")):
+        return {}
+    from sidecar.axis import PythonAxisExtractor
+
+    try:
+        extraction = PythonAxisExtractor().extract(
+            ex.source,
+            ex.path,
+            project_root=project_path or None,
+        )
+    except SyntaxError:
+        return {}
+
+    payloads: dict[str, dict] = {}
+    for profile in extraction.profiles.values():
+        payload = {
+            "ast_kind_bits": sorted({fact.ast_kind for fact in profile.facts}),
+            "cfg_bits": sorted(profile.cfg_bits),
+            "dfg_bits": sorted(profile.dfg_bits),
+            "struct_bits": sorted(profile.struct_bits),
+            "axis_evidence_json": json.dumps(
+                [fact.to_dict() for fact in profile.facts],
+                sort_keys=True,
+            ),
+        }
+        payloads[profile.symbol_uid] = payload
+        payloads[profile.qualified_name] = payload
+    return payloads
 
 
 def _affects_phase(
@@ -1325,7 +1374,7 @@ def run_fast_indexing(
 
         # Stage 5: global embedding batch
         t_stage = time.perf_counter()
-        encoded, removed = _embed_phase(diffs, lance, workspace_id, reporter)
+        encoded, removed = _embed_phase(diffs, lance, workspace_id, reporter, project_path)
         stats["symbols_encoded"] = encoded
         stats["symbols_removed"] = removed
         stats["timings_sec"]["embed"] = round(time.perf_counter() - t_stage, 3)

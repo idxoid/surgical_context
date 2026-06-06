@@ -9,11 +9,13 @@ from sidecar.indexer.fast.extractor import ExtractedFile
 from sidecar.indexer.fast.pipeline import (
     FileDiff,
     _apply_graph,
+    _embed_phase,
     _NullReporter,
     _property_api_phase,
     _symbol_alias_phase,
     _type_reference_phase,
 )
+from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 from sidecar.parser.protocol import ImportEdge, SymbolMetadata
 
 
@@ -367,6 +369,113 @@ res.status = function status(code) {
         assert count == 1
         assert touched
         assert linked[0].edge_type == "HAS_API"
+
+    def test_fast_embed_phase_adds_axis_payload_for_axis_python_profile(self, tmp_path):
+        source = """
+@app.task(name="jobs.run")
+def run(x: int):
+    return {"x": x}
+"""
+        path = tmp_path / "pkg" / "tasks.py"
+        path.parent.mkdir()
+        path.write_text(source, encoding="utf-8")
+        symbol = SymbolMetadata(
+            uid="run-uid-from-parser",
+            name="run",
+            kind="function",
+            start_line=2,
+            end_line=4,
+            content_hash="hash",
+            file_path=str(path),
+            qualified_name="pkg.tasks.run",
+            signature="run(int)->_",
+            signature_hash="sig",
+            signature_status="resolved",
+            language="python",
+        )
+        diff = FileDiff(
+            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
+            current_uids=[symbol.uid],
+            changed_uids=[symbol.uid],
+            changed_symbols=[symbol],
+        )
+
+        class FakeLance:
+            index_profile_name = AXIS_PYTHON_V1_PROFILE
+
+            def __init__(self):
+                self.rows = []
+
+            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+                self.rows = symbols
+
+        lance = FakeLance()
+
+        encoded, removed = _embed_phase(
+            [diff],
+            lance,
+            "local/repo@main+axis_python_v1",
+            _NullReporter(),
+            project_path=str(tmp_path),
+        )
+
+        assert encoded == 1
+        assert removed == 0
+        assert {"callable_body", "decorator_application", "return_exit"} <= set(
+            lance.rows[0]["cfg_bits"]
+        )
+        assert {"parameter_input", "collection_assembly", "return_output"} <= set(
+            lance.rows[0]["dfg_bits"]
+        )
+        assert {
+            "function_def",
+            "parameter_decl",
+            "annotation",
+            "decorator_attachment",
+            "literal_shape",
+        } <= set(lance.rows[0]["struct_bits"])
+        assert "axis_evidence_json" in lance.rows[0]
+
+    def test_fast_embed_phase_leaves_legacy_symbol_rows_without_axis_payload(self, tmp_path):
+        source = "def run():\n    return 1\n"
+        path = tmp_path / "tasks.py"
+        path.write_text(source, encoding="utf-8")
+        symbol = SymbolMetadata(
+            uid="run",
+            name="run",
+            kind="function",
+            start_line=1,
+            end_line=2,
+            content_hash="hash",
+            file_path=str(path),
+            qualified_name="tasks.run",
+            signature="run()->_",
+            signature_hash="sig",
+            signature_status="resolved",
+            language="python",
+        )
+        diff = FileDiff(
+            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
+            current_uids=[symbol.uid],
+            changed_uids=[symbol.uid],
+            changed_symbols=[symbol],
+        )
+
+        class FakeLance:
+            index_profile_name = "legacy"
+
+            def __init__(self):
+                self.rows = []
+
+            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+                self.rows = symbols
+
+        lance = FakeLance()
+
+        _embed_phase([diff], lance, "local/repo@main", _NullReporter(), project_path=str(tmp_path))
+
+        assert "cfg_bits" not in lance.rows[0]
+        assert "axis_evidence_json" not in lance.rows[0]
 
     def test_hash_skip_gate_with_unchanged_file(self):
         """Test that unchanged files are correctly identified."""

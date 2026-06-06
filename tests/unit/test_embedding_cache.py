@@ -8,6 +8,13 @@ from sidecar.database.embedding_registry import (
     compute_embedding_hash,
 )
 from sidecar.database.lancedb_client import LanceDBClient
+from sidecar.database.lancedb_client import (
+    AXIS_SYMBOL_REQUIRED_COLUMNS,
+    AXIS_SYMBOLS_SCHEMA,
+    SYMBOLS_SCHEMA,
+    _symbols_schema_for_profile,
+)
+from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 
@@ -129,6 +136,33 @@ def test_lancedb_client_delete_symbol_embeddings_batches_predicates(monkeypatch)
         f"(workspace_id = '{DEFAULT_WORKSPACE_ID}' AND uid = 'd')",
         f"(workspace_id = '{DEFAULT_WORKSPACE_ID}' AND uid = 'e')",
     ]
+
+
+def test_lancedb_axis_profile_uses_extended_symbol_schema():
+    legacy = resolve_index_profile("legacy")
+    axis = resolve_index_profile(AXIS_PYTHON_V1_PROFILE)
+
+    assert _symbols_schema_for_profile(legacy) == SYMBOLS_SCHEMA
+    axis_schema = _symbols_schema_for_profile(axis)
+
+    assert axis_schema == AXIS_SYMBOLS_SCHEMA
+    assert AXIS_SYMBOL_REQUIRED_COLUMNS <= set(axis_schema.names)
+
+
+def test_lancedb_axis_symbol_payload_defaults_to_empty_axis_fields():
+    client = object.__new__(LanceDBClient)
+    client._symbol_axis_columns = AXIS_SYMBOL_REQUIRED_COLUMNS
+
+    assert client._axis_symbol_payload({}) == {
+        "ast_kind_bits": [],
+        "cfg_bits": [],
+        "dfg_bits": [],
+        "struct_bits": [],
+        "axis_evidence_json": "[]",
+    }
+
+    client._symbol_axis_columns = set()
+    assert client._axis_symbol_payload({"cfg_bits": ["callable_body"]}) == {}
 
 
 def test_lancedb_client_set_pending_row_reuses_existing_doc_payload():

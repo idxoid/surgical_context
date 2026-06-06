@@ -18,7 +18,12 @@ from sidecar.database.embedding_registry import (
     compute_embedding_hash,
     get_model_metadata,
 )
-from sidecar.index_profile import IndexProfile, active_index_profile, resolve_index_profile
+from sidecar.index_profile import (
+    AXIS_PYTHON_V1_PROFILE,
+    IndexProfile,
+    active_index_profile,
+    resolve_index_profile,
+)
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 DB_PATH = os.getenv("LANCEDB_PATH", "./data/lancedb")
@@ -123,6 +128,31 @@ SYMBOLS_SCHEMA = pa.schema(
     ]
 )
 
+AXIS_SYMBOLS_SCHEMA = pa.schema(
+    [
+        *SYMBOLS_SCHEMA,
+        pa.field("ast_kind_bits", pa.list_(pa.string())),
+        pa.field("cfg_bits", pa.list_(pa.string())),
+        pa.field("dfg_bits", pa.list_(pa.string())),
+        pa.field("struct_bits", pa.list_(pa.string())),
+        pa.field("axis_evidence_json", pa.string()),
+    ]
+)
+
+AXIS_SYMBOL_REQUIRED_COLUMNS = {
+    "ast_kind_bits",
+    "cfg_bits",
+    "dfg_bits",
+    "struct_bits",
+    "axis_evidence_json",
+}
+
+
+def _symbols_schema_for_profile(profile: IndexProfile) -> pa.Schema:
+    if profile.name == AXIS_PYTHON_V1_PROFILE:
+        return AXIS_SYMBOLS_SCHEMA
+    return SYMBOLS_SCHEMA
+
 
 class LanceDBClient:
     def __init__(self, index_profile: str | IndexProfile | None = None):
@@ -145,6 +175,11 @@ class LanceDBClient:
         )
         self._embed_throttle_seconds = throttle_ms / 1000
         self._embedding_stats = {"cache_hits": 0, "cache_misses": 0, "encoded": 0}
+        self._symbol_axis_columns = (
+            AXIS_SYMBOL_REQUIRED_COLUMNS
+            if self._index_profile.name == AXIS_PYTHON_V1_PROFILE
+            else set()
+        )
         self._table = self._open_or_reset_table(
             self._index_profile.docs_table,
             DOCS_SCHEMA,
@@ -152,13 +187,32 @@ class LanceDBClient:
         )
         self._sym_table = self._open_or_reset_table(
             self._index_profile.symbols_table,
-            SYMBOLS_SCHEMA,
-            required_columns={"uid", "workspace_id", "name", "file_path", "code", "vector"},
+            _symbols_schema_for_profile(self._index_profile),
+            required_columns={
+                "uid",
+                "workspace_id",
+                "name",
+                "file_path",
+                "code",
+                "vector",
+                *self._symbol_axis_columns,
+            },
         )
 
     @property
     def index_profile_name(self) -> str:
         return self._index_profile.name
+
+    def _axis_symbol_payload(self, symbol: dict) -> dict[str, object]:
+        if not self._symbol_axis_columns:
+            return {}
+        return {
+            "ast_kind_bits": list(symbol.get("ast_kind_bits") or []),
+            "cfg_bits": list(symbol.get("cfg_bits") or []),
+            "dfg_bits": list(symbol.get("dfg_bits") or []),
+            "struct_bits": list(symbol.get("struct_bits") or []),
+            "axis_evidence_json": str(symbol.get("axis_evidence_json") or "[]"),
+        }
 
     def _open_or_reset_table(self, name: str, schema: pa.Schema, *, required_columns: set[str]):
         if name not in self._db.table_names():
@@ -682,6 +736,7 @@ class LanceDBClient:
                             "embedding_hash": metadata.embedding_hash,
                         }
                     ),
+                    **self._axis_symbol_payload(s),
                 }
             )
         uids = [s["uid"] for s in symbols]
