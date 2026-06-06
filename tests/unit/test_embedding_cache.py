@@ -1,5 +1,6 @@
 """Unit tests for embedding cache and recomputation controls."""
 
+from sidecar.axis.query_plan import AxisQueryRequest, AxisRequirement, compile_axis_query
 from sidecar.database import lancedb_client as lancedb_client_module
 from sidecar.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
 from sidecar.database.embedding_registry import (
@@ -263,3 +264,86 @@ def test_lancedb_client_search_symbols_by_vector_skips_query_embedding():
             "score": 0.99,
         }
     ]
+
+
+def test_lancedb_client_search_axis_symbols_by_vector_uses_compiled_plan():
+    class FakeTable:
+        def __init__(self):
+            self.search_calls: list[list[float]] = []
+            self.where_calls: list[tuple[str, bool]] = []
+
+        def search(self, vector):
+            self.search_calls.append(vector)
+            return self
+
+        def where(self, predicate: str, prefilter: bool = False):
+            self.where_calls.append((predicate, prefilter))
+            return self
+
+        def limit(self, n: int):
+            assert n == 4
+            return self
+
+        @staticmethod
+        def to_list():
+            return [
+                {
+                    "uid": "uid-a",
+                    "name": "Alpha",
+                    "file_path": "/repo/a.py",
+                    "_distance": 0.2,
+                    "axis_container_kinds_json": "[{\"kind\":\"metadata_carrier\"}]",
+                    "axis_contracts_json": "[{\"contract\":\"metadata_key_roundtrip\"}]",
+                },
+                {
+                    "uid": "uid-b",
+                    "name": "Beta",
+                    "file_path": "/repo/b.py",
+                    "_distance": 0.9,
+                },
+            ]
+
+    client = object.__new__(LanceDBClient)
+    client._sym_table = FakeTable()
+    client._symbol_axis_columns = AXIS_SYMBOL_REQUIRED_COLUMNS
+    plan = compile_axis_query(
+        AxisQueryRequest(
+            traversal_mode="deferred_binding_flow",
+            required_bits=(AxisRequirement("dfg", "keyed_write"),),
+            container_kinds=("metadata_carrier",),
+            limit=4,
+        ),
+        workspace_id="ws",
+    )
+
+    hits = client.search_axis_symbols_by_vector([1.0, 2.0], plan, threshold=0.4)
+
+    assert client._sym_table.search_calls == [[1.0, 2.0]]
+    assert client._sym_table.where_calls == [(plan.lance_predicate, True)]
+    assert hits == [
+        {
+            "uid": "uid-a",
+            "name": "Alpha",
+            "file_path": "/repo/a.py",
+            "distance": 0.2,
+            "score": 0.99,
+            "axis_container_kinds_json": "[{\"kind\":\"metadata_carrier\"}]",
+            "axis_contracts_json": "[{\"contract\":\"metadata_key_roundtrip\"}]",
+        }
+    ]
+
+
+def test_lancedb_client_search_axis_symbols_rejects_legacy_profile():
+    client = object.__new__(LanceDBClient)
+    client._symbol_axis_columns = set()
+    plan = compile_axis_query(
+        AxisQueryRequest(traversal_mode="immediate_control_flow"),
+        workspace_id="ws",
+    )
+
+    try:
+        client.search_axis_symbols_by_vector([1.0, 2.0], plan)
+    except ValueError as exc:
+        assert "axis index profile" in str(exc)
+    else:  # pragma: no cover - defensive assertion style
+        raise AssertionError("expected ValueError")

@@ -5,7 +5,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import lancedb
 import pyarrow as pa
@@ -25,6 +25,9 @@ from sidecar.index_profile import (
     resolve_index_profile,
 )
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
+
+if TYPE_CHECKING:
+    from sidecar.axis.query_plan import AxisQueryPlan
 
 DB_PATH = os.getenv("LANCEDB_PATH", "./data/lancedb")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
@@ -924,6 +927,43 @@ class LanceDBClient:
                         "file_path": r["file_path"],
                         "distance": distance,
                         "score": _l2_to_score(float(distance)),
+                    }
+                )
+        return out
+
+    def search_axis_symbols_by_vector(
+        self,
+        vector: list[float],
+        plan: "AxisQueryPlan",
+        *,
+        threshold: float = 0.4,
+    ) -> list[dict]:
+        """Vector search over axis symbol rows using a compiled axis plan."""
+        if not self._symbol_axis_columns:
+            raise ValueError("Axis symbol search requires an axis index profile")
+        if hasattr(vector, "tolist"):
+            vector = vector.tolist()
+        results = (
+            self._sym_table.search(vector)
+            .where(plan.lance_predicate, prefilter=True)
+            .limit(plan.limit)
+            .to_list()
+        )
+        out = []
+        for r in results:
+            distance = r.get("_distance", 1.0)
+            if distance <= threshold:
+                out.append(
+                    {
+                        "uid": r["uid"],
+                        "name": r["name"],
+                        "file_path": r["file_path"],
+                        "distance": distance,
+                        "score": _l2_to_score(float(distance)),
+                        "axis_container_kinds_json": str(
+                            r.get("axis_container_kinds_json") or "[]"
+                        ),
+                        "axis_contracts_json": str(r.get("axis_contracts_json") or "[]"),
                     }
                 )
         return out
