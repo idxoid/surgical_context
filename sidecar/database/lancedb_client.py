@@ -18,6 +18,7 @@ from sidecar.database.embedding_registry import (
     compute_embedding_hash,
     get_model_metadata,
 )
+from sidecar.index_profile import IndexProfile, active_index_profile, resolve_index_profile
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 DB_PATH = os.getenv("LANCEDB_PATH", "./data/lancedb")
@@ -124,7 +125,13 @@ SYMBOLS_SCHEMA = pa.schema(
 
 
 class LanceDBClient:
-    def __init__(self):
+    def __init__(self, index_profile: str | IndexProfile | None = None):
+        if isinstance(index_profile, IndexProfile):
+            self._index_profile = index_profile
+        elif index_profile:
+            self._index_profile = resolve_index_profile(index_profile)
+        else:
+            self._index_profile = active_index_profile()
         self._db = lancedb.connect(DB_PATH)
         self._model = None
         self._model_metadata = get_model_metadata(EMBED_MODEL)
@@ -139,15 +146,19 @@ class LanceDBClient:
         self._embed_throttle_seconds = throttle_ms / 1000
         self._embedding_stats = {"cache_hits": 0, "cache_misses": 0, "encoded": 0}
         self._table = self._open_or_reset_table(
-            DOCS_TABLE,
+            self._index_profile.docs_table,
             DOCS_SCHEMA,
             required_columns={"id", "workspace_id", "file_path", "chunk", "pending", "vector"},
         )
         self._sym_table = self._open_or_reset_table(
-            SYMBOLS_TABLE,
+            self._index_profile.symbols_table,
             SYMBOLS_SCHEMA,
             required_columns={"uid", "workspace_id", "name", "file_path", "code", "vector"},
         )
+
+    @property
+    def index_profile_name(self) -> str:
+        return self._index_profile.name
 
     def _open_or_reset_table(self, name: str, schema: pa.Schema, *, required_columns: set[str]):
         if name not in self._db.table_names():

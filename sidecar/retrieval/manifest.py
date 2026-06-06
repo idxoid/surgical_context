@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from sidecar.database.embedding_registry import get_model_metadata
+from sidecar.index_profile import active_index_profile, resolve_index_profile
 from sidecar.indexer.repository_profile import summarize_repository_profile
 from sidecar.parser.registry import REGISTRY
 
@@ -20,6 +21,13 @@ INDEX_MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_REL_PATH = Path(".surgical_context") / "index_manifest.json"
 
 _EMBED_MODEL = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
+
+
+def _index_profile_from_stats(stats: dict[str, Any]):
+    profile_name = stats.get("index_profile") if isinstance(stats, dict) else None
+    if isinstance(profile_name, str) and profile_name.strip():
+        return resolve_index_profile(profile_name)
+    return active_index_profile()
 
 
 def manifest_file_path(project_path: str) -> Path:
@@ -91,12 +99,22 @@ def compute_manifest_id(
     """Reproducible id: same workspace, graph generation, git head, embed model, outcome, and (for full_index) work fingerprint."""
     commit = (git or _git_snapshot(project_path)).get("commit") or ""
     gv = "" if graph_version is None else str(int(graph_version))
+    index_profile = _index_profile_from_stats(stats)
     if outcome in ("noop_unchanged", "no_indexable_files"):
         work_fp = ""
     else:
         work_fp = _stats_fingerprint(stats)
     parts = "|".join(
-        [workspace_id, gv, commit, _EMBED_MODEL, outcome, work_fp],
+        [
+            workspace_id,
+            index_profile.name,
+            str(index_profile.schema_version),
+            gv,
+            commit,
+            _EMBED_MODEL,
+            outcome,
+            work_fp,
+        ],
     )
     return hashlib.sha256(parts.encode("utf-8")).hexdigest()[:32]
 
@@ -116,6 +134,7 @@ def build_index_manifest(
     )
     rp_store = stats.get("repository_profile_store") or ""
     emb = get_model_metadata(_EMBED_MODEL)
+    index_profile = _index_profile_from_stats(stats)
     taxonomy = stats.get("role_taxonomy") if isinstance(stats.get("role_taxonomy"), dict) else {}
     role_catalog = stats.get("role_catalog") if isinstance(stats.get("role_catalog"), dict) else {}
     git = _git_snapshot(project_path)
@@ -139,6 +158,7 @@ def build_index_manifest(
         "project_name": os.path.basename(os.path.abspath(project_path).rstrip(os.sep)),
         "indexing_outcome": outcome,
         "indexing_pipeline": indexing_pipeline,
+        **index_profile.manifest_fields(),
         "git": git,
         "parser_languages": REGISTRY.supported_languages(),
         "embedding_model_id": _EMBED_MODEL,

@@ -39,6 +39,7 @@ sys.path.append(
 from sidecar.context.framework_hints import FrameworkHintsIndexer
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
+from sidecar.index_profile import active_index_profile, resolve_index_profile
 from sidecar.indexer.external_boundary import (
     build_project_boundary,
     package_manifest_external_roots,
@@ -1016,6 +1017,7 @@ def run_fast_indexing(
     project_path: str,
     workspace_id: str | None = None,
     *,
+    index_profile: str | None = None,
     hash_workers: int | None = None,
     parse_workers: int | None = None,
     skip_affects: bool = False,
@@ -1030,14 +1032,22 @@ def run_fast_indexing(
     parse_workers = parse_workers or _DEFAULT_PARSE_WORKERS
     reporter = reporter or _NullReporter()
 
-    workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
+    profile = resolve_index_profile(index_profile) if index_profile else active_index_profile()
+    base_workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
+    workspace_id = profile.workspace_id(base_workspace_id)
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-    lance = LanceDBClient()
+    lance = LanceDBClient(index_profile=profile)
     job_log = IndexJobLog()
 
     stats: dict = {
         "project_path": project_path,
+        "base_workspace_id": base_workspace_id,
         "workspace_id": workspace_id,
+        "index_profile": profile.name,
+        "index_profile_schema_version": profile.schema_version,
+        "index_profile_language_scope": profile.language_scope,
+        "lancedb_docs_table": profile.docs_table,
+        "lancedb_symbols_table": profile.symbols_table,
         "skip_affects": skip_affects,
         # `performed` / `skipped` mirror the shape that QA/qa_benchmark.py
         # expects from _empty_indexing_summary(). A real run always
@@ -1067,6 +1077,8 @@ def run_fast_indexing(
 
     t0 = time.perf_counter()
     print(f"🚀 Fast indexing: {project_path} ({workspace_id})")
+    if profile.name != "legacy":
+        print(f"   profile={profile.name} base_workspace={base_workspace_id}")
     print(f"   hash_workers={hash_workers} parse_workers={parse_workers}")
 
     try:

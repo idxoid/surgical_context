@@ -2,6 +2,7 @@
 
 Usage:
     python -m sidecar.indexer.fast [path] [--workspace ID]
+                                   [--index-profile PROFILE]
                                    [--hash-workers N] [--parse-workers N]
 
 Mirrors ``python -m sidecar.indexer.code`` but runs the alternative
@@ -22,6 +23,11 @@ def main():
     parser.add_argument("path", nargs="?", default=ROOT, help="Project path to index")
     parser.add_argument("--workspace", default=None, help="Workspace id override")
     parser.add_argument(
+        "--index-profile",
+        default=None,
+        help="Physical index profile, e.g. legacy or axis_python_v1",
+    )
+    parser.add_argument(
         "--hash-workers",
         type=int,
         default=None,
@@ -40,6 +46,7 @@ def main():
     run_fast_indexing(
         project_path,
         workspace_id=args.workspace,
+        index_profile=args.index_profile,
         hash_workers=args.hash_workers,
         parse_workers=args.parse_workers,
     )
