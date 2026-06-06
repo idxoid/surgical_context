@@ -629,7 +629,19 @@ python -m QA.axis_contract_report \
 ```
 
 This reads persisted axis rows, recompiles L3 contracts from evidence, compares
-them with persisted `axis_contracts_json`, and reports drift.
+them with persisted `axis_contracts_json`, and reports drift. The output
+directory contains:
+
+- `axis_contract_report.jsonl`: one row per symbol with L2/L3 evidence.
+- `axis_contract_report.md`: compact summary plus the full table.
+- `axis_contract_summary.json`: counts by container kind, contract, diagnostic,
+  traversal mode, persisted contract, and drift state.
+
+The CLI also prints the same high-level counts, e.g.:
+
+```text
+rows=483 drift={"no": 483} contracts={...} diagnostics={...} out=/tmp/axis_contract_report
+```
 
 ```bash
 python -m QA.axis_query_smoke "metadata registration" \
