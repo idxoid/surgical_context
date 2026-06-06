@@ -71,10 +71,15 @@ class _AxisVisitor(ast.NodeVisitor):
         self.parents = parents
         self.facts: list[AxisFact] = []
         self.scope_stack: list[_SymbolScope] = [module_scope]
+        self.callable_bindings_stack: list[set[str]] = [set()]
 
     @property
     def current_scope(self) -> _SymbolScope:
         return self.scope_stack[-1]
+
+    @property
+    def current_callable_bindings(self) -> set[str]:
+        return self.callable_bindings_stack[-1]
 
     def visit_Module(self, node: ast.Module) -> None:
         self._emit("struct", "module_scope", node, scope=self.current_scope)
@@ -100,8 +105,16 @@ class _AxisVisitor(ast.NodeVisitor):
             )
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.current_callable_bindings.add(node.name)
         scope = self._class_scope(node)
         self._emit("struct", "class_def", node, scope=scope, payload={"name": node.name})
+        self._emit(
+            "dfg",
+            "callable_value",
+            node,
+            scope=scope,
+            payload={"callable_kind": "class", "origin": "definition", "name": node.name},
+        )
         if node.decorator_list:
             self._emit_decorators(node, scope)
         for base in node.bases:
@@ -123,6 +136,7 @@ class _AxisVisitor(ast.NodeVisitor):
                 )
 
         self.scope_stack.append(scope)
+        self.callable_bindings_stack.append(set())
         try:
             for decorator in node.decorator_list:
                 self.visit(decorator)
@@ -135,6 +149,7 @@ class _AxisVisitor(ast.NodeVisitor):
                     self._emit("struct", "class_attribute", stmt, payload=_assignment_payload(stmt))
                 self.visit(stmt)
         finally:
+            self.callable_bindings_stack.pop()
             self.scope_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -145,16 +160,30 @@ class _AxisVisitor(ast.NodeVisitor):
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self._emit("cfg", "callable_body", node, payload={"callable_kind": "lambda"})
+        self._emit(
+            "dfg",
+            "callable_value",
+            node,
+            payload={"callable_kind": "lambda", "origin": "expression"},
+        )
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         payload = {"callee": _call_name(node.func)}
         self._emit("cfg", "call_site", node, payload=payload)
+        if _is_value_call_callee(node.func):
+            self._emit(
+                "cfg",
+                "value_call",
+                node.func,
+                payload={"callee": _unparse(node.func), "callee_kind": type(node.func).__name__},
+            )
         if isinstance(node.func, ast.Attribute):
             self._emit("cfg", "method_dispatch", node.func, payload=payload)
         if _looks_like_constructor_call(node.func):
             self._emit("cfg", "constructor_call", node, payload=payload)
             self._emit("dfg", "constructor_value", node, payload=payload)
+        self._emit_call_argument_facts(node)
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If) -> None:
@@ -253,6 +282,7 @@ class _AxisVisitor(ast.NodeVisitor):
         self._emit("cfg", "return_exit", node)
         if node.value is not None:
             self._emit("dfg", "return_output", node.value)
+            self._maybe_emit_callable_value(node.value, source="return")
             if _contains_attr_read(node.value):
                 self._emit("dfg", "projection", node.value)
         self.generic_visit(node)
@@ -271,6 +301,7 @@ class _AxisVisitor(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         self._emit("dfg", "assignment_binding", node, payload=_assignment_payload(node))
         self._emit_assignment_value_bits(node.value)
+        self._maybe_emit_callable_value(node.value, source="assignment_value")
         for target in node.targets:
             self._emit_assignment_target_bits(target, node.value)
         self.generic_visit(node)
@@ -285,6 +316,7 @@ class _AxisVisitor(ast.NodeVisitor):
         self._emit("dfg", "assignment_binding", node, payload=_assignment_payload(node))
         if node.value is not None:
             self._emit_assignment_value_bits(node.value)
+            self._maybe_emit_callable_value(node.value, source="assignment_value")
         self._emit_assignment_target_bits(node.target, node.value)
         self.generic_visit(node)
 
@@ -296,6 +328,7 @@ class _AxisVisitor(ast.NodeVisitor):
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         self._emit("dfg", "assignment_binding", node, payload={"target": _unparse(node.target)})
         self._emit_assignment_value_bits(node.value)
+        self._maybe_emit_callable_value(node.value, source="assignment_value")
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
@@ -311,26 +344,36 @@ class _AxisVisitor(ast.NodeVisitor):
     def visit_Dict(self, node: ast.Dict) -> None:
         self._emit("dfg", "collection_assembly", node, payload={"shape": "dict"})
         self._emit("struct", "literal_shape", node, payload={"shape": "dict"})
+        for value in node.values:
+            if value is not None:
+                self._maybe_emit_callable_value(value, source="collection_value")
         self.generic_visit(node)
 
     def visit_List(self, node: ast.List) -> None:
         if isinstance(node.ctx, ast.Load):
             self._emit("dfg", "collection_assembly", node, payload={"shape": "list"})
             self._emit("struct", "literal_shape", node, payload={"shape": "list"})
+            for elt in node.elts:
+                self._maybe_emit_callable_value(elt, source="collection_value")
         self.generic_visit(node)
 
     def visit_Tuple(self, node: ast.Tuple) -> None:
         if isinstance(node.ctx, ast.Load):
             self._emit("dfg", "collection_assembly", node, payload={"shape": "tuple"})
             self._emit("struct", "literal_shape", node, payload={"shape": "tuple"})
+            for elt in node.elts:
+                self._maybe_emit_callable_value(elt, source="collection_value")
         self.generic_visit(node)
 
     def visit_Set(self, node: ast.Set) -> None:
         self._emit("dfg", "collection_assembly", node, payload={"shape": "set"})
         self._emit("struct", "literal_shape", node, payload={"shape": "set"})
+        for elt in node.elts:
+            self._maybe_emit_callable_value(elt, source="collection_value")
         self.generic_visit(node)
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, *, async_function: bool) -> None:
+        self.current_callable_bindings.add(node.name)
         scope = self._function_scope(node)
         self._emit(
             "struct",
@@ -345,6 +388,18 @@ class _AxisVisitor(ast.NodeVisitor):
             node,
             scope=scope,
             payload={"callable_kind": "async_function" if async_function else "function"},
+        )
+        self._emit(
+            "dfg",
+            "callable_value",
+            node,
+            scope=scope,
+            payload={
+                "callable_kind": "async_function" if async_function else "function",
+                "origin": "definition",
+                "name": node.name,
+                "decorated": bool(node.decorator_list),
+            },
         )
         if async_function:
             self._emit("cfg", "async_suspend_resume", node, scope=scope)
@@ -369,6 +424,7 @@ class _AxisVisitor(ast.NodeVisitor):
             )
 
         self.scope_stack.append(scope)
+        self.callable_bindings_stack.append(set())
         try:
             for decorator in node.decorator_list:
                 self.visit(decorator)
@@ -378,6 +434,7 @@ class _AxisVisitor(ast.NodeVisitor):
             for stmt in node.body:
                 self.visit(stmt)
         finally:
+            self.callable_bindings_stack.pop()
             self.scope_stack.pop()
 
     def _emit_parameter_facts(
@@ -385,10 +442,38 @@ class _AxisVisitor(ast.NodeVisitor):
         node: ast.FunctionDef | ast.AsyncFunctionDef,
         scope: _SymbolScope,
     ) -> None:
+        defaults = {arg.arg: default for arg, default in _iter_parameter_defaults(node.args)}
         for arg in _iter_args(node.args):
             payload = {"name": arg.arg}
             self._emit("struct", "parameter_decl", arg, scope=scope, payload=payload)
             self._emit("dfg", "parameter_input", arg, scope=scope, payload=payload)
+            default = defaults.get(arg.arg)
+            if default is not None:
+                default_payload = {
+                    "name": arg.arg,
+                    "default": _unparse(default),
+                    "default_kind": type(default).__name__,
+                }
+                self._emit(
+                    "struct",
+                    "parameter_default",
+                    default,
+                    scope=scope,
+                    payload=default_payload,
+                )
+                self._emit(
+                    "dfg",
+                    "parameter_default_value",
+                    default,
+                    scope=scope,
+                    payload=default_payload,
+                )
+                self._maybe_emit_callable_value(
+                    default,
+                    scope=scope,
+                    source="parameter_default",
+                    payload={"parameter": arg.arg},
+                )
             if arg.annotation is not None:
                 self._emit(
                     "struct",
@@ -406,6 +491,13 @@ class _AxisVisitor(ast.NodeVisitor):
         for decorator in node.decorator_list:
             payload = {"decorator": _unparse(decorator)}
             self._emit("struct", "decorator_attachment", decorator, scope=scope, payload=payload)
+            self._emit(
+                "struct",
+                "decorator_shape",
+                decorator,
+                scope=scope,
+                payload=_decorator_shape_payload(decorator),
+            )
             self._emit("cfg", "decorator_application", decorator, scope=scope, payload=payload)
 
     def _emit_assignment_value_bits(self, value: ast.AST | None) -> None:
@@ -418,6 +510,63 @@ class _AxisVisitor(ast.NodeVisitor):
                 self._emit("dfg", "constructor_value", value, payload=payload)
         if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)):
             self._emit("dfg", "collection_assembly", value, payload={"shape": _shape_name(value)})
+
+    def _emit_call_argument_facts(self, node: ast.Call) -> None:
+        callee = _unparse(node.func)
+        for index, arg in enumerate(node.args):
+            expr = arg.value if isinstance(arg, ast.Starred) else arg
+            payload = {
+                "callee": callee,
+                "position": index,
+                "argument_kind": "starred" if isinstance(arg, ast.Starred) else "positional",
+                **_expr_payload(expr),
+            }
+            self._emit("dfg", "call_argument", expr, payload=payload)
+            self._maybe_emit_callable_value(
+                expr,
+                source="call_argument",
+                payload={"callee": callee, "position": index},
+            )
+        for keyword in node.keywords:
+            expr = keyword.value
+            payload = {
+                "callee": callee,
+                "keyword": keyword.arg or "**",
+                "argument_kind": "kwargs" if keyword.arg is None else "keyword",
+                **_expr_payload(expr),
+            }
+            self._emit("dfg", "call_argument", expr, payload=payload)
+            self._maybe_emit_callable_value(
+                expr,
+                source="call_argument",
+                payload={"callee": callee, "keyword": keyword.arg or "**"},
+            )
+
+    def _maybe_emit_callable_value(
+        self,
+        node: ast.AST,
+        *,
+        source: str,
+        scope: _SymbolScope | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        callable_payload = self._callable_value_payload(node)
+        if callable_payload is None:
+            return
+        if payload:
+            callable_payload.update(payload)
+        callable_payload["source"] = source
+        self._emit("dfg", "callable_value", node, scope=scope, payload=callable_payload)
+
+    def _callable_value_payload(self, node: ast.AST) -> dict[str, object] | None:
+        if isinstance(node, ast.Lambda):
+            return {"callable_kind": "lambda", **_expr_payload(node)}
+        if isinstance(node, ast.Name) and self._name_is_callable_binding(node.id):
+            return {"callable_kind": "known_name", **_expr_payload(node)}
+        return None
+
+    def _name_is_callable_binding(self, name: str) -> bool:
+        return any(name in bindings for bindings in reversed(self.callable_bindings_stack))
 
     def _emit_assignment_target_bits(self, target: ast.AST, value: ast.AST | None) -> None:
         for leaf in _flatten_targets(target):
@@ -507,6 +656,16 @@ def _iter_args(args: ast.arguments) -> Iterable[ast.arg]:
         yield args.kwarg
 
 
+def _iter_parameter_defaults(args: ast.arguments) -> Iterable[tuple[ast.arg, ast.AST]]:
+    positional = [*args.posonlyargs, *args.args]
+    offset = len(positional) - len(args.defaults)
+    for index, default in enumerate(args.defaults):
+        yield positional[offset + index], default
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults, strict=False):
+        if default is not None:
+            yield arg, default
+
+
 def _signature_for_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     params: list[str] = []
     for arg in _iter_args(node.args):
@@ -531,12 +690,63 @@ def _call_name(func: ast.AST) -> str:
     return _unparse(func)
 
 
+def _is_value_call_callee(func: ast.AST) -> bool:
+    return not isinstance(func, ast.Attribute)
+
+
 def _looks_like_constructor_call(func: ast.AST) -> bool:
     if isinstance(func, ast.Name):
         return bool(func.id[:1].isupper())
     if isinstance(func, ast.Attribute):
         return bool(func.attr[:1].isupper())
     return False
+
+
+def _decorator_shape_payload(decorator: ast.AST) -> dict[str, object]:
+    payload = {"decorator": _unparse(decorator), **_expr_payload(decorator)}
+    if isinstance(decorator, ast.Call):
+        payload.update(
+            {
+                "callee": _unparse(decorator.func),
+                "callee_kind": type(decorator.func).__name__,
+                "args": [_expr_payload(arg) for arg in decorator.args],
+                "keywords": [
+                    {
+                        "name": keyword.arg or "**",
+                        **_expr_payload(keyword.value),
+                    }
+                    for keyword in decorator.keywords
+                ],
+            }
+        )
+    return payload
+
+
+def _expr_payload(node: ast.AST) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "expression": _unparse(node),
+        "expression_kind": type(node).__name__,
+    }
+    if isinstance(node, ast.Name):
+        payload["name"] = node.id
+    elif isinstance(node, ast.Attribute):
+        payload["attribute"] = node.attr
+        payload["receiver"] = _unparse(node.value)
+    elif isinstance(node, ast.Subscript):
+        payload["container"] = _unparse(node.value)
+        payload["key"] = _unparse(node.slice)
+    elif isinstance(node, ast.Constant):
+        payload["literal"] = _json_safe_literal(node.value)
+    elif isinstance(node, ast.Call):
+        payload["callee"] = _unparse(node.func)
+        payload["callee_kind"] = type(node.func).__name__
+    return payload
+
+
+def _json_safe_literal(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return repr(value)
 
 
 def _flatten_targets(target: ast.AST) -> Iterable[ast.AST]:

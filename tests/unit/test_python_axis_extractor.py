@@ -8,6 +8,10 @@ def _profile(source: str, qualified_name: str, file_path: str = "pkg/tasks.py"):
     return extraction.profiles_by_qualified_name[qualified_name]
 
 
+def _fact_payloads(profile, bit: str):
+    return [fact.payload for fact in profile.facts if fact.bit == bit]
+
+
 def test_decorated_function_gets_cfg_dfg_struct_bits():
     profile = _profile(
         """
@@ -19,14 +23,26 @@ def test_decorated_function_gets_cfg_dfg_struct_bits():
     )
 
     assert {"callable_body", "decorator_application", "return_exit"} <= profile.cfg_bits
-    assert {"parameter_input", "collection_assembly", "return_output"} <= profile.dfg_bits
+    assert {
+        "call_argument",
+        "callable_value",
+        "parameter_input",
+        "collection_assembly",
+        "return_output",
+    } <= profile.dfg_bits
     assert {
         "function_def",
         "parameter_decl",
         "annotation",
         "decorator_attachment",
+        "decorator_shape",
         "literal_shape",
     } <= profile.struct_bits
+
+    decorator_shape = _fact_payloads(profile, "decorator_shape")[0]
+    assert decorator_shape["callee"] == "app.task"
+    assert decorator_shape["keywords"][0]["name"] == "name"
+    assert decorator_shape["keywords"][0]["literal"] == "jobs.run"
 
 
 def test_method_dispatch_and_state_mutation_bits_are_physical():
@@ -141,3 +157,60 @@ def test_async_exception_and_context_control_bits():
         "yield_output",
         "collection_assembly",
     } <= profile.dfg_bits
+
+
+def test_parameter_defaults_and_call_arguments_are_axis_facts():
+    profile = _profile(
+        """
+        def get_db():
+            return object()
+
+        def endpoint(dep=Depends(get_db), token: str = Header(default="x")):
+            return dep
+        """,
+        "pkg.tasks.endpoint",
+    )
+
+    assert {"parameter_decl", "parameter_default", "annotation"} <= profile.struct_bits
+    assert {
+        "call_argument",
+        "callable_value",
+        "parameter_default_value",
+        "parameter_input",
+    } <= profile.dfg_bits
+
+    call_arguments = _fact_payloads(profile, "call_argument")
+    assert any(
+        payload.get("callee") == "Depends" and payload.get("name") == "get_db"
+        for payload in call_arguments
+    )
+    assert any(
+        payload.get("callee") == "Header"
+        and payload.get("keyword") == "default"
+        and payload.get("literal") == "x"
+        for payload in call_arguments
+    )
+
+    callable_values = _fact_payloads(profile, "callable_value")
+    assert any(
+        payload.get("source") == "call_argument" and payload.get("name") == "get_db"
+        for payload in callable_values
+    )
+
+
+def test_value_call_marks_dynamic_callable_expression_without_registry_semantics():
+    profile = _profile(
+        """
+        def dispatch(callbacks, key):
+            handler = callbacks[key]
+            return handler()
+        """,
+        "pkg.tasks.dispatch",
+    )
+
+    assert {"call_site", "return_exit", "value_call"} <= profile.cfg_bits
+    assert {"assignment_binding", "return_output", "subscript_read"} <= profile.dfg_bits
+
+    value_calls = _fact_payloads(profile, "value_call")
+    assert value_calls[0]["callee"] == "handler"
+    assert value_calls[0]["callee_kind"] == "Name"
