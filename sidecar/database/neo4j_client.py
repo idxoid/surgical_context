@@ -726,14 +726,34 @@ class Neo4jClient:
                 path=file_path,
                 workspace_id=workspace_id,
             )
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})
+                      -[r:IMPORTS_EXTERNAL_SYMBOL]->(:ExternalSymbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
 
     def link_external_boundary(
         self,
         call_links: list[dict],
         import_links: list[dict],
         workspace_id: str = DEFAULT_WORKSPACE_ID,
+        symbol_import_links: list[dict] | None = None,
     ) -> tuple[int, int]:
-        """Materialize ``(:ExternalPkg)`` targets and ``*_EXTERNAL`` edges (C1)."""
+        """Materialize ``(:ExternalPkg)`` targets and ``*_EXTERNAL`` edges (C1).
+
+        ``symbol_import_links`` (when present) also materializes one
+        ``(:ExternalSymbol {qualified_name})`` per ``from M import N`` and an
+        ``IMPORTS_EXTERNAL_SYMBOL`` edge from the importing file. Unlike
+        ExternalPkg these nodes carry upstream identity at name granularity, so
+        the library marker catalogue can look up ``starlette.routing.Router``
+        without name-pattern matching at the consumer site.
+        """
+        symbol_import_links = symbol_import_links or []
         with self.driver.session() as session:
             calls_created, imports_created = session.execute_write(
                 self._create_external_boundary_relations,
@@ -741,7 +761,13 @@ class Neo4jClient:
                 import_links,
                 workspace_id,
             )
-            if calls_created or imports_created:
+            if symbol_import_links:
+                session.execute_write(
+                    self._create_external_symbol_imports,
+                    symbol_import_links,
+                    workspace_id,
+                )
+            if calls_created or imports_created or symbol_import_links:
                 session.run(
                     """
                     MATCH (w:Workspace {id: $workspace_id})
@@ -753,6 +779,14 @@ class Neo4jClient:
                 """
                 MATCH (e:ExternalPkg {workspace_id: $workspace_id})
                 WHERE NOT (e)<-[:CALLS_EXTERNAL|IMPORTS_EXTERNAL|REFERENCES_EXTERNAL {workspace_id: $workspace_id}]-()
+                DETACH DELETE e
+                """,
+                workspace_id=workspace_id,
+            )
+            session.run(
+                """
+                MATCH (e:ExternalSymbol {workspace_id: $workspace_id})
+                WHERE NOT (e)<-[:IMPORTS_EXTERNAL_SYMBOL {workspace_id: $workspace_id}]-()
                 DETACH DELETE e
                 """,
                 workspace_id=workspace_id,
@@ -889,6 +923,44 @@ class Neo4jClient:
             ).single()
             imports_created = int(rec["c"]) if rec else 0
         return calls_created, imports_created
+
+    @staticmethod
+    def _create_external_symbol_imports(tx, rows, workspace_id):
+        """Create ExternalSymbol nodes + IMPORTS_EXTERNAL_SYMBOL edges in one pass.
+
+        Rows are pre-computed by ``external_symbol_import_rows`` and carry the
+        workspace-scoped uid + workspace-independent ``qualified_name`` so the
+        catalogue can match on the latter regardless of which workspace asks.
+        """
+        if not rows:
+            return 0
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MERGE (e:ExternalSymbol {uid: row.external_symbol_uid, workspace_id: $workspace_id})
+            SET e.qualified_name = row.qualified_name,
+                e.module = row.module,
+                e.name = row.name,
+                e.root = row.external_root,
+                e.is_external = true
+            """,
+            rows=rows,
+            workspace_id=workspace_id,
+        )
+        rec = tx.run(
+            """
+            UNWIND $rows AS row
+            MATCH (f:File {path: row.file_path, workspace_id: $workspace_id})
+            MATCH (e:ExternalSymbol {uid: row.external_symbol_uid, workspace_id: $workspace_id})
+            MERGE (f)-[r:IMPORTS_EXTERNAL_SYMBOL {workspace_id: $workspace_id}]->(e)
+            SET r.local_alias = row.local_alias,
+                r.resolver = 'external-boundary-v1'
+            RETURN count(r) AS c
+            """,
+            rows=rows,
+            workspace_id=workspace_id,
+        ).single()
+        return int(rec["c"]) if rec else 0
 
     def link_class_api(
         self,

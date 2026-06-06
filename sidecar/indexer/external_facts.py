@@ -382,8 +382,17 @@ def apply_external_boundary_for_file(
         boundary=boundary,
         project_external_roots=project_external_roots,
     )
+    symbol_import_links = collect_external_symbol_import_links(
+        source_code,
+        file_path,
+        boundary=boundary,
+        project_external_roots=project_external_roots,
+    )
     return link_boundary(
         external_call_link_rows(call_links, workspace_id),
         external_import_link_rows(import_links, workspace_id),
         workspace_id=workspace_id,
+        symbol_import_links=external_symbol_import_rows(
+            symbol_import_links, workspace_id
+        ),
     )

@@ -184,6 +184,44 @@ def test_external_symbol_import_rows_attach_workspace_scoped_uids():
     assert rows[0]["external_root"] == "starlette"
 
 
+def test_apply_external_boundary_for_file_passes_symbol_imports_through_db_stub():
+    from sidecar.indexer.external_facts import apply_external_boundary_for_file
+
+    class _DbStub:
+        def __init__(self):
+            self.received_symbol_imports = None
+
+        def delete_external_imports_for_file(self, path, *, workspace_id):
+            pass
+
+        def link_external_boundary(
+            self,
+            call_rows,
+            import_rows,
+            *,
+            workspace_id,
+            symbol_import_links=None,
+        ):
+            self.received_symbol_imports = symbol_import_links
+            return 0, 0
+
+    db = _DbStub()
+    apply_external_boundary_for_file(
+        db,
+        file_path="svc/main.py",
+        source_code="from starlette.routing import Router\n",
+        calls=[],
+        boundary=frozenset(),
+        workspace_id="ws/test",
+    )
+
+    assert db.received_symbol_imports is not None
+    assert any(
+        row["qualified_name"] == "starlette.routing.Router"
+        for row in db.received_symbol_imports
+    )
+
+
 def test_external_call_link_rows_use_stable_uids():
     from sidecar.indexer.external_facts import ExternalCallLink
 
