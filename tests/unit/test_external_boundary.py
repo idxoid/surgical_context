@@ -3,12 +3,15 @@ from sidecar.indexer.external_boundary import (
     classify_external_root,
     external_pkg_uid,
     external_root_from_qualified_name,
+    external_symbol_uid,
     package_manifest_external_roots,
 )
 from sidecar.indexer.external_facts import (
     collect_external_call_links,
     collect_external_import_links,
+    collect_external_symbol_import_links,
     external_call_link_rows,
+    external_symbol_import_rows,
 )
 from sidecar.indexer.role_clustering import assemble_symbol_rows
 
@@ -79,6 +82,106 @@ def test_collect_external_import_links_from_js_require_manifest_roots():
     )
     roots = {link.external_root for link in links}
     assert roots == {"router", "body-parser"}
+
+
+def test_collect_external_symbol_imports_captures_from_import_names():
+    boundary = frozenset({"myapp"})
+    source = (
+        "from starlette.routing import Router, Mount\n"
+        "from pydantic import BaseModel as PModel\n"
+        "from myapp import routes\n"
+    )
+
+    links = collect_external_symbol_import_links(source, "svc/main.py", boundary=boundary)
+
+    qns = {link.qualified_name for link in links}
+    assert qns == {
+        "starlette.routing.Router",
+        "starlette.routing.Mount",
+        "pydantic.BaseModel",
+    }
+    by_qn = {link.qualified_name: link for link in links}
+    # ``as`` alias preserved without losing the upstream identity used by the
+    # catalogue.
+    assert by_qn["pydantic.BaseModel"].local_alias == "PModel"
+    assert by_qn["starlette.routing.Router"].local_alias == "Router"
+
+
+def test_collect_external_symbol_imports_handles_multiline_parenthesised_body():
+    boundary = frozenset({"myapp"})
+    source = (
+        "from starlette.routing import (\n"
+        "    Router,\n"
+        "    Mount,  # one of many\n"
+        "    Route as R,\n"
+        ")\n"
+    )
+
+    links = collect_external_symbol_import_links(source, "svc/main.py", boundary=boundary)
+    qns = {link.qualified_name for link in links}
+
+    assert qns == {
+        "starlette.routing.Router",
+        "starlette.routing.Mount",
+        "starlette.routing.Route",
+    }
+
+
+def test_collect_external_symbol_imports_handles_dotted_import_statement():
+    boundary = frozenset({"myapp"})
+    source = "import urllib.parse\nimport urllib.parse as up\n"
+
+    links = collect_external_symbol_import_links(source, "svc/main.py", boundary=boundary)
+    by_alias = {link.local_alias: link for link in links}
+
+    # ``import urllib.parse`` binds ``urllib`` locally, but the catalogue
+    # identity is still ``urllib.parse``.
+    assert by_alias["parse"].qualified_name == "urllib.parse"
+    assert by_alias["up"].qualified_name == "urllib.parse"
+
+
+def test_collect_external_symbol_imports_skips_relative_and_internal():
+    boundary = frozenset({"myapp"})
+    source = (
+        "from . import sibling\n"
+        "from .relative import deeper\n"
+        "from myapp.routes import handler\n"
+        "from starlette import middleware\n"
+    )
+
+    links = collect_external_symbol_import_links(source, "myapp/main.py", boundary=boundary)
+    qns = {link.qualified_name for link in links}
+
+    assert qns == {"starlette.middleware"}
+
+
+def test_collect_external_symbol_imports_skips_star_import():
+    boundary = frozenset({"myapp"})
+    source = "from starlette.routing import *\n"
+
+    links = collect_external_symbol_import_links(source, "svc/main.py", boundary=boundary)
+
+    assert links == []
+
+
+def test_external_symbol_import_rows_attach_workspace_scoped_uids():
+    from sidecar.indexer.external_facts import ExternalSymbolImportLink
+
+    link = ExternalSymbolImportLink(
+        file_path="svc/main.py",
+        qualified_name="starlette.routing.Router",
+        module="starlette.routing",
+        name="Router",
+        local_alias="Router",
+    )
+
+    rows = external_symbol_import_rows([link], "ws/test")
+
+    assert rows[0]["external_symbol_uid"] == external_symbol_uid(
+        "ws/test", "starlette.routing.Router"
+    )
+    assert rows[0]["external_pkg_uid"] == external_pkg_uid("ws/test", "starlette")
+    assert rows[0]["external_root"] == "starlette"
 
 
 def test_external_call_link_rows_use_stable_uids():

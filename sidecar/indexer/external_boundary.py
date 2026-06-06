@@ -32,6 +32,21 @@ def external_pkg_uid(workspace_id: str, root: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def external_symbol_uid(workspace_id: str, qualified_name: str) -> str:
+    """Stable uid for an ``(:ExternalSymbol)`` node.
+
+    Unlike ``external_pkg_uid``, this captures the *named* import target rather
+    than the package root: ``starlette.routing.Router``, not ``starlette``. The
+    catalogue lookup is keyed by ``qualified_name`` (workspace-independent), so
+    the same external symbol uses a different uid per workspace but resolves to
+    the same catalogue entry.
+    """
+    import hashlib
+
+    payload = f"external_symbol:{workspace_id}:{qualified_name}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 @lru_cache(maxsize=1)
 def installed_top_level_packages() -> frozenset[str]:
     try:
