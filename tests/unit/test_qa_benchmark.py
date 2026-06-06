@@ -11,8 +11,8 @@ from QA.qa_benchmark import (
     _empty_indexing_summary,
     _expected_file_matches,
     _head_dependency_diagnostics,
-    _missing_expected_roles,
     _indexed_roles_for_symbol_uid,
+    _missing_expected_roles,
     _normalize_cleanup_prefixes,
     _path_matches_prefix,
     _score_ordered_graph_symbols,
@@ -101,6 +101,42 @@ def test_load_question_pack_reads_real_repo_metadata():
     assert {"fastapi", "pydantic", "redux_toolkit", "click", "celery"}.issubset(repo_ids)
     assert len(pack["repositories"]) >= 13
     assert len(pack["questions"]) >= 75
+
+
+def test_load_split_python_and_non_python_question_packs():
+    fixtures = Path(__file__).parent.parent / "fixtures"
+    python_pack = load_question_pack(str(fixtures / "questions_python.yaml"))
+    non_python_pack = load_question_pack(str(fixtures / "questions_non_python.yaml"))
+
+    assert python_pack["kind"] == "real_repo"
+    assert non_python_pack["kind"] == "real_repo"
+    assert len(python_pack["questions"]) == 97
+    assert len(non_python_pack["questions"]) == 44
+
+    python_repo_ids = {repo["id"] for repo in python_pack["repositories"]}
+    non_python_repo_ids = {repo["id"] for repo in non_python_pack["repositories"]}
+    assert python_repo_ids == {
+        "celery",
+        "click",
+        "dathund",
+        "django",
+        "fastapi",
+        "flask",
+        "pydantic",
+        "sqlalchemy",
+        "surgical_context",
+    }
+    assert non_python_repo_ids == {"express", "nestjs", "redux_toolkit", "vue"}
+    assert {repo["language"] for repo in python_pack["repositories"]} == {"python"}
+    assert "python" not in {repo["language"] for repo in non_python_pack["repositories"]}
+
+    python_question_ids = [question["id"] for question in python_pack["questions"]]
+    non_python_question_ids = [question["id"] for question in non_python_pack["questions"]]
+    assert len(python_question_ids) == len(set(python_question_ids))
+    assert len(non_python_question_ids) == len(set(non_python_question_ids))
+    assert set(python_question_ids).isdisjoint(non_python_question_ids)
+    assert {question["repo"] for question in python_pack["questions"]} <= python_repo_ids
+    assert {question["repo"] for question in non_python_pack["questions"]} <= non_python_repo_ids
 
 
 def test_load_celery_question_pack_standalone():
