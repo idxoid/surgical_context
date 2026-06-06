@@ -4,6 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from sidecar.database.neo4j_client import Neo4jClient, _import_row
+from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 from sidecar.indexer.code import index_file
 from sidecar.indexer.fast.extractor import ExtractedFile
 from sidecar.indexer.fast.pipeline import (
@@ -15,7 +16,6 @@ from sidecar.indexer.fast.pipeline import (
     _symbol_alias_phase,
     _type_reference_phase,
 )
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 from sidecar.parser.protocol import ImportEdge, SymbolMetadata
 
 
@@ -435,6 +435,60 @@ def run(x: int):
             "literal_shape",
         } <= set(lance.rows[0]["struct_bits"])
         assert "axis_evidence_json" in lance.rows[0]
+        assert json.loads(lance.rows[0]["axis_container_kinds_json"]) == []
+
+    def test_fast_embed_phase_adds_axis_container_kind_payload(self, tmp_path):
+        source = """
+class Settings:
+    host: str = "localhost"
+    port: int = 5432
+"""
+        path = tmp_path / "settings.py"
+        path.write_text(source, encoding="utf-8")
+        symbol = SymbolMetadata(
+            uid="settings-class-uid-from-parser",
+            name="Settings",
+            kind="class",
+            start_line=2,
+            end_line=4,
+            content_hash="hash",
+            file_path=str(path),
+            qualified_name="settings.Settings",
+            signature="class Settings",
+            signature_hash="sig",
+            signature_status="resolved",
+            language="python",
+        )
+        diff = FileDiff(
+            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
+            current_uids=[symbol.uid],
+            changed_uids=[symbol.uid],
+            changed_symbols=[symbol],
+        )
+
+        class FakeLance:
+            index_profile_name = AXIS_PYTHON_V1_PROFILE
+
+            def __init__(self):
+                self.rows = []
+
+            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+                self.rows = symbols
+
+        lance = FakeLance()
+
+        _embed_phase(
+            [diff],
+            lance,
+            "local/repo@main+axis_python_v1",
+            _NullReporter(),
+            project_path=str(tmp_path),
+        )
+
+        matches = json.loads(lance.rows[0]["axis_container_kinds_json"])
+
+        assert {match["kind"] for match in matches} == {"config_carrier", "data_model"}
+        assert all(match["evidence_bits"] for match in matches)
 
     def test_fast_embed_phase_leaves_legacy_symbol_rows_without_axis_payload(self, tmp_path):
         source = "def run():\n    return 1\n"
@@ -476,6 +530,7 @@ def run(x: int):
 
         assert "cfg_bits" not in lance.rows[0]
         assert "axis_evidence_json" not in lance.rows[0]
+        assert "axis_container_kinds_json" not in lance.rows[0]
 
     def test_hash_skip_gate_with_unchanged_file(self):
         """Test that unchanged files are correctly identified."""

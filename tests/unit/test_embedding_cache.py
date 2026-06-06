@@ -7,11 +7,11 @@ from sidecar.database.embedding_registry import (
     compute_chunk_hash,
     compute_embedding_hash,
 )
-from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.lancedb_client import (
     AXIS_SYMBOL_REQUIRED_COLUMNS,
     AXIS_SYMBOLS_SCHEMA,
     SYMBOLS_SCHEMA,
+    LanceDBClient,
     _symbols_schema_for_profile,
 )
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
@@ -159,6 +159,7 @@ def test_lancedb_axis_symbol_payload_defaults_to_empty_axis_fields():
         "dfg_bits": [],
         "struct_bits": [],
         "axis_evidence_json": "[]",
+        "axis_container_kinds_json": "[]",
     }
 
     client._symbol_axis_columns = set()

@@ -53,7 +53,7 @@ _PROFILES: dict[str, IndexProfile] = {
     ),
     AXIS_PYTHON_V1_PROFILE: IndexProfile(
         name=AXIS_PYTHON_V1_PROFILE,
-        schema_version=1,
+        schema_version=2,
         docs_table="docs_axis_python_v1",
         symbols_table="symbols_axis_python_v1",
         workspace_suffix="+axis_python_v1",

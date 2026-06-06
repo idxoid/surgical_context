@@ -3,8 +3,8 @@
 import json
 from unittest.mock import patch
 
-from sidecar.indexer.repository_profile import build_empty_repository_profile
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+from sidecar.indexer.repository_profile import build_empty_repository_profile
 from sidecar.retrieval.manifest import (
     INDEX_MANIFEST_SCHEMA_VERSION,
     build_index_manifest,
@@ -66,6 +66,7 @@ def test_build_index_manifest_records_index_profile():
     )
 
     assert m["index_profile"] == AXIS_PYTHON_V1_PROFILE
+    assert m["index_profile_schema_version"] == 2
     assert m["index_profile_language_scope"] == "python"
     assert m["lancedb_docs_table"] == "docs_axis_python_v1"
     assert m["lancedb_symbols_table"] == "symbols_axis_python_v1"

@@ -25,10 +25,10 @@ Pipeline stages:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
-import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -906,6 +906,7 @@ def _axis_payloads_for_extracted_file(ex: ExtractedFile, *, project_path: str = 
     if not ex.path.endswith((".py", ".pyi")):
         return {}
     from sidecar.axis import PythonAxisExtractor
+    from sidecar.axis.container_kind import ContainerKindClassifier
 
     try:
         extraction = PythonAxisExtractor().extract(
@@ -916,8 +917,10 @@ def _axis_payloads_for_extracted_file(ex: ExtractedFile, *, project_path: str = 
     except SyntaxError:
         return {}
 
+    classifier = ContainerKindClassifier()
     payloads: dict[str, dict] = {}
     for profile in extraction.profiles.values():
+        container_kinds = classifier.classify(profile)
         payload = {
             "ast_kind_bits": sorted({fact.ast_kind for fact in profile.facts}),
             "cfg_bits": sorted(profile.cfg_bits),
@@ -925,6 +928,10 @@ def _axis_payloads_for_extracted_file(ex: ExtractedFile, *, project_path: str = 
             "struct_bits": sorted(profile.struct_bits),
             "axis_evidence_json": json.dumps(
                 [fact.to_dict() for fact in profile.facts],
+                sort_keys=True,
+            ),
+            "axis_container_kinds_json": json.dumps(
+                [match.to_dict() for match in container_kinds],
                 sort_keys=True,
             ),
         }
