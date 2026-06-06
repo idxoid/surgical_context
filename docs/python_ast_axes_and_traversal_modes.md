@@ -570,3 +570,104 @@ Deferred Binding Flow
 That gives the compiler enough structure for FastAPI, Celery, Flask, ORMs, and
 other inversion-of-control systems without turning framework behavior into
 hardcoded graph physics.
+
+## Implemented vertical slice
+
+The current `axis_python_v1` implementation has the first end-to-end slice of
+that model:
+
+```text
+Python source
+  -> L1 AxisProfile facts
+  -> L2 container kinds
+  -> L3 structural contracts
+  -> LanceDB deterministic prefilter
+  -> Neo4j compiled expansion steps
+```
+
+Implemented runtime modules:
+
+| layer | module | output |
+|---|---|---|
+| L1 axis facts | `sidecar.axis.python_extractor` | `AxisFact`, `AxisProfile` |
+| L2 container kinds | `sidecar.axis.container_kind` | `ContainerKindMatch` |
+| graph probe | `sidecar.axis.graph_probe` | structural marker/probe answers |
+| L3 contracts | `sidecar.axis.contract_compiler` | `AxisContractMatch` |
+| query plan | `sidecar.axis.query_plan` | `AxisQueryPlan` |
+| graph expansion | `sidecar.axis.graph_traversal` | `AxisGraphHit` |
+| storage | `sidecar.database.lancedb_client` | axis prefiltered symbol search |
+
+The physical index profile is isolated:
+
+```text
+INDEX_PROFILE=axis_python_v1
+workspace suffix: +axis_python_v1
+Lance tables: docs_axis_python_v1, symbols_axis_python_v1
+schema_version: 3
+```
+
+`symbols_axis_python_v1` stores:
+
+- `cfg_bits`
+- `dfg_bits`
+- `struct_bits`
+- `axis_evidence_json`
+- `axis_container_kinds_json`
+- `axis_contracts_json`
+
+This is still below the old ranker. No runtime endpoint resolves benchmark
+roles from contracts yet.
+
+## QA tools
+
+Two QA tools exercise the new stack without touching the legacy ranker:
+
+```bash
+python -m QA.axis_contract_report \
+  --workspace local/surgical_context@axis-v3-smoke+axis_python_v1 \
+  --out /tmp/axis_contract_report
+```
+
+This reads persisted axis rows, recompiles L3 contracts from evidence, compares
+them with persisted `axis_contracts_json`, and reports drift.
+
+```bash
+python -m QA.axis_query_smoke "metadata registration" \
+  --workspace local/surgical_context@axis-v3-smoke+axis_python_v1 \
+  --mode deferred_binding_flow \
+  --required-bit dfg:keyed_write \
+  --required-bit dfg:keyed_read \
+  --required-bit struct:literal_key \
+  --container-kind metadata_carrier \
+  --limit 5 \
+  --threshold 2.0 \
+  --out /tmp/axis_query_smoke_metadata.json
+```
+
+This compiles the explicit axis request, uses LanceDB for deterministic
+prefiltered seed search, then expands those seeds through Neo4j using the
+compiled traversal steps.
+
+## Precision rule now enforced
+
+`callable_container_dispatch` is not proven by bit presence alone. The contract
+requires payload identity:
+
+```text
+dfg.container_write_value.payload.container
+  ==
+dfg.iteration_source.payload.iterable
+```
+
+Without that identity, L2 may still report `middleware_chain`, but L3 leaves the
+dispatch contract unproven. This is intentional: the diagnostic should say
+"container-shaped candidate, dispatch not proven" instead of overclaiming a
+deferred runtime path.
+
+## Still not implemented
+
+- L4 role resolver: no contract-to-role runtime bridge is active.
+- Ranker integration: `/ask` and benchmark retrieval still use the legacy path.
+- Library marker catalogue beyond already materialized graph facts.
+- Cross-symbol DFG proof for provider result -> consumer argument.
+- Full value-flow proof for route params, request bodies, and schema projection.

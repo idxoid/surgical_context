@@ -27,6 +27,20 @@ L5 exposure          → role + contract + payload → human-readable answer
 optimisation layer   → bucket  (cuts across L3-L5; never authors them)
 ```
 
+Current implementation status:
+
+| layer | status |
+|---|---|
+| L1 extractor | implemented for Python in `sidecar.axis.python_extractor` |
+| L2 container kind | implemented in `sidecar.axis.container_kind` |
+| L3 contract compiler | implemented in `sidecar.axis.contract_compiler` |
+| L4 role resolver | not implemented in the axis stack |
+| L5 exposure | QA-only via `QA.axis_contract_report` and `QA.axis_query_smoke` |
+
+Persisted `axis_python_v1` rows store L1-L3 materialization, but those fields are
+still diagnostic/search substrate. They are not consumed by the legacy ranker
+as roles.
+
 ## Rules of use
 
 - **Never write a role at the extractor level.** The extractor emits axis bits;
