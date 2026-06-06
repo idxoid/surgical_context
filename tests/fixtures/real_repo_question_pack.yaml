@@ -152,7 +152,7 @@ questions:
     mechanism: fastapi_request_body_dependency_resolution
     required_roles: [handler_or_lifecycle, body_field_builder, dependency_solver, body_argument_mapper]
     expected_symbols: [request_body_to_args, solve_dependencies, get_body_field, get_request_handler]
-    expected_files: [fastapi/routing.py, fastapi/dependencies/utils.py]
+    expected_files: [fastapi/routing.py, fastapi/dependencies/utils.py, fastapi/params.py]
 
   - id: fastapi_q05
     repo: fastapi
@@ -425,7 +425,7 @@ questions:
     mechanism: django_wsgi_request_pipeline
     required_roles: [public_entrypoint, middleware_registry, orchestrator, handler_or_lifecycle]
     expected_symbols: [WSGIHandler, get_wsgi_application, load_middleware, _view_middleware]
-    expected_files: [django/core/wsgi.py, django/core/handlers, django/core/handlers/wsgi.py, django/core/handlers/base.py]
+    expected_files: [django/core/wsgi.py, django/core/handlers/wsgi.py, django/core/handlers/base.py]
 
   - id: django_q02
     repo: django
@@ -438,7 +438,7 @@ questions:
     mechanism: django_queryset_lazy_evaluation
     required_roles: [public_entrypoint, builder_pattern, lazy_executor, sql_compiler]
     expected_symbols: [QuerySet, Query, SQLCompiler, _fetch_all]
-    expected_files: [django/db/models/query.py, django/db/models/sql]
+    expected_files: [django/db/models/query.py, django/db/models/sql/query.py, django/db/models/sql/compiler.py]
 
   - id: django_q03
     repo: django
@@ -607,7 +607,7 @@ questions:
     mechanism: nestjs_decorator_routing
     required_roles: [public_entrypoint, decorator_processor, metadata_registry, route_builder]
     expected_symbols: [Controller, Get, Post, RequestMapping]
-    expected_files: [packages/common/decorators, packages/core/router/router-explorer.ts, packages/core/router/routes-resolver.ts]
+    expected_files: [packages/common/decorators/http/request-mapping.decorator.ts, packages/core/router/router-explorer.ts, packages/core/router/routes-resolver.ts]
 
   - id: nestjs_q02
     repo: nestjs
@@ -620,7 +620,7 @@ questions:
     mechanism: nestjs_dependency_injection
     required_roles: [public_entrypoint, di_container, provider_registry, instance_resolver]
     expected_symbols: [Injectable, Inject, Module, createNestApplication]
-    expected_files: [packages/core/injector, packages/core/injector/module-ref.ts]
+    expected_files: [packages/core/injector/injector.ts, packages/core/injector/container.ts, packages/core/injector/module-ref.ts]
 
   - id: nestjs_q03
     repo: nestjs
@@ -633,7 +633,7 @@ questions:
     mechanism: nestjs_module_composition
     required_roles: [public_entrypoint, module_registry, composition_pattern, config_surface]
     expected_symbols: [Module, imports, controllers, providers]
-    expected_files: [packages/core/injector, packages/core/metadata-scanner]
+    expected_files: [packages/common/decorators/modules/module.decorator.ts, packages/core/injector/compiler.ts, packages/core/metadata-scanner.ts]
 
   - id: nestjs_q04
     repo: nestjs
@@ -711,7 +711,7 @@ questions:
     mechanism: vue_app_initialization
     required_roles: [public_entrypoint, reactive_system, component_factory, lifecycle_handler]
     expected_symbols: [createApp, App, Component, mount]
-    expected_files: [packages/runtime-core/src/apiCreateApp.ts]
+    expected_files: [packages/runtime-core/src/apiCreateApp.ts, packages/runtime-dom/src/index.ts]
 
   - id: vue_q02
     repo: vue
@@ -737,7 +737,7 @@ questions:
     mechanism: vue_template_compilation_rendering
     required_roles: [public_entrypoint, template_compiler, vnode_builder, patch_engine]
     expected_symbols: [render, compile, createVNode, patch]
-    expected_files: [packages/compiler-core/src, packages/runtime-core/src/renderer.ts]
+    expected_files: [packages/compiler-core/src/compile.ts, packages/runtime-core/src/renderer.ts]
 
   - id: vue_q04
     repo: vue

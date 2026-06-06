@@ -759,6 +759,66 @@ class Neo4jClient:
             )
         return calls_created, imports_created
 
+    def materialize_file_integrates_with(
+        self,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        min_shared: int = 2,
+    ) -> int:
+        """Workspace pass: link Files that share >=min_shared non-plumbing external imports.
+
+        `(:File)-[:INTEGRATES_WITH {shared}]->(:File)` is a derived co-reference
+        edge: two workspace files that both import the same set of integration
+        packages (e.g. starlette + anyio for fastapi/routing.py and
+        fastapi/concurrency.py) are structurally collaborating around the same
+        external boundary, even when their own symbols never call each other.
+        Without this edge BFS from a symbol in one file cannot reach the
+        sibling file through a structural step — the only path runs through
+        the external package node and is currently not part of the traversal
+        vocabulary.
+
+        Single-direction edges (``id(f1) < id(f2)``); BFS matches undirected.
+        Cleared and recomputed in full each pass for the workspace.
+        """
+        from sidecar.indexer.external_boundary import EXTERNAL_INTEGRATION_PLUMBING_ROOTS
+
+        plumbing = list(EXTERNAL_INTEGRATION_PLUMBING_ROOTS)
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH ()-[r:INTEGRATES_WITH]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                workspace_id=workspace_id,
+            )
+            result = session.run(
+                """
+                MATCH (e:ExternalPkg {workspace_id: $workspace_id})
+                WHERE NOT e.root IN $plumbing
+                MATCH (f1:File {workspace_id: $workspace_id})-[:IMPORTS_EXTERNAL]->(e)
+                MATCH (f2:File {workspace_id: $workspace_id})-[:IMPORTS_EXTERNAL]->(e)
+                WHERE id(f1) < id(f2)
+                WITH f1, f2, count(DISTINCT e) AS shared
+                WHERE shared >= $min_shared
+                MERGE (f1)-[r:INTEGRATES_WITH {workspace_id: $workspace_id}]->(f2)
+                SET r.shared = shared
+                RETURN count(r) AS created
+                """,
+                workspace_id=workspace_id,
+                plumbing=plumbing,
+                min_shared=min_shared,
+            ).single()
+            created = int((result and result.get("created")) or 0)
+            if created:
+                session.run(
+                    """
+                    MATCH (w:Workspace {id: $workspace_id})
+                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                    """,
+                    workspace_id=workspace_id,
+                )
+            return created
+
     @staticmethod
     def _create_external_boundary_relations(tx, call_links, import_links, workspace_id):
         from sidecar.indexer.external_boundary import external_pkg_uid

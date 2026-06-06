@@ -178,6 +178,18 @@ class UnifiedRanker:
         "REFERENCES": 0.3,
         "DEPENDS_ON": 0.8,
         "IMPORTS": 0.6,
+        # File-level integration coref hop, materialised by
+        # `_get_integrates_with_neighbors`. The candidate enters the pool but
+        # its BFS expansion is suppressed (see the `INTEGRATES_COREF` gate
+        # before `_get_neighbors` in `_graph_candidates_impl`): the integrating
+        # file should surface ONE representative symbol that opens up retrieval
+        # of that file, not drag its whole structural subtree (which in dense
+        # repos like Celery — every internal module shares kombu/amqp imports
+        # — displaces canonical backend files). With the terminal gate the
+        # prior is safe at HAS_API_in level (1.2): the seed-side coref is the
+        # only path to an otherwise unreachable file, and competing CALLS edges
+        # on the same iteration are ranked by their own priors.
+        "INTEGRATES_COREF": 1.2,
         "CALLS_out": 1.0,
         "CALLS_in": 1.2,
         "SEMANTIC_HINT_out": 1.3,
@@ -1863,6 +1875,7 @@ class UnifiedRanker:
         initial_neighbors = [
             *self._get_neighbors(target_uid, visited, distance=1),
             *self._get_external_coref_neighbors(target_uid, visited, limit=12),
+            *self._get_integrates_with_neighbors(target_uid, visited, limit=8),
         ]
         for n in initial_neighbors:
             if not _direction_keeps(n["outgoing"]):
@@ -1955,6 +1968,16 @@ class UnifiedRanker:
                 and _path_is_noisy(c.file_path)
                 and not (reg_chain or marker_chain)
             ):
+                continue
+
+            # INTEGRATES_COREF is terminal: the candidate represents a sibling
+            # file the seed only reaches via shared external imports. Letting
+            # BFS walk that symbol's structural neighbours would drag in the
+            # entire sibling's call cone — fine for tightly-scoped fastapi
+            # questions where the integrating file is small (concurrency.py),
+            # catastrophic for celery where every internal module is a coref
+            # partner of every other and the cone overlaps the pool budget.
+            if rel_type == "INTEGRATES_COREF":
                 continue
 
             for nn in self._get_neighbors(uid, visited, distance=distance + 1):
@@ -3189,6 +3212,104 @@ class UnifiedRanker:
                     uid=uid,
                     visited=list(visited),
                     workspace_id=self.workspace_id,
+                )
+                return [
+                    {
+                        "uid": r["uid"],
+                        "name": r["name"],
+                        "symbol_kind": r["symbol_kind"],
+                        "file_path": r["file_path"],
+                        "file_hash": r["file_hash"],
+                        "token_estimate": r["token_estimate"],
+                        "range": r["range"],
+                        "rel_type": r["rel_type"],
+                        "rel_kind": r["rel_kind"],
+                        "outgoing": r["outgoing"],
+                        "caller_count": r["caller_count"],
+                        "outgoing_call_count": r["outgoing_call_count"],
+                    }
+                    for r in result
+                ]
+        except Exception:
+            return []
+
+    def _get_integrates_with_neighbors(
+        self,
+        uid: str,
+        visited: set,
+        *,
+        limit: int = 12,
+    ) -> list[dict]:
+        """Symbols in workspace files that integration-coref with the target's file.
+
+        ``(:File)-[:INTEGRATES_WITH]-(:File)`` is materialised at index time
+        for file pairs that share >=2 non-plumbing external imports. From a
+        symbol, surface a small bounded set of role-bearing symbols in the
+        coref'd files — they collaborate around the same external boundary
+        and would otherwise be unreachable by structural call/type traversal
+        (fastapi/concurrency.py from fastapi/routing.py's
+        ``run_endpoint_function`` is the canonical case: both files import
+        starlette and anyio, but neither calls into the other's symbols).
+
+        Returned as ``rel_type='INTEGRATES_COREF'`` so scoring can apply a
+        distance penalty appropriate to the indirect link.
+        """
+        query = """
+        MATCH (s:Symbol {uid: $uid})
+        MATCH (sf:File)-[:CONTAINS]->(s)
+        WHERE coalesce(sf.workspace_id, $workspace_id) = $workspace_id
+        MATCH (sf)-[iw:INTEGRATES_WITH]-(cf:File)
+        WHERE coalesce(iw.workspace_id, $workspace_id) = $workspace_id
+          AND cf <> sf
+          AND NOT cf.path CONTAINS '/test/'
+          AND NOT cf.path CONTAINS '/tests/'
+          AND NOT cf.path CONTAINS '/__tests__/'
+          AND NOT cf.path CONTAINS '/spec/'
+        MATCH (cf)-[c:CONTAINS]->(n:Symbol)
+        WHERE NOT n.uid IN $visited
+          AND n.uid <> $uid
+          AND coalesce(n.kind, '') IN ['function', 'method', 'class']
+        WITH n, cf, c, iw,
+             coalesce(n.token_estimate, 0) AS tokens,
+             coalesce(n.derived_primary_role, '') AS primary_role,
+             CASE WHEN coalesce(n.derived_primary_role, '') IN
+               ['api_surface','runtime_surface','integration_surface',
+                'orchestrator','executor','request_router','registration_step',
+                'core_runtime','binding_surface','factory_surface']
+               THEN 0 ELSE 1 END AS role_priority
+        ORDER BY
+          iw.shared DESC,
+          role_priority ASC,
+          tokens ASC
+        // Diversify: one best symbol per integrating file. Otherwise a few
+        // partner files crowd the limit with their many small core_runtime
+        // helpers and a small file like `fastapi/concurrency.py` (with a
+        // single 192-token coroutine wrapper) never surfaces.
+        WITH cf, iw, head(collect({n: n, c: c, tokens: tokens})) AS pick
+        WITH pick.n AS n, cf, pick.c AS c, iw, pick.tokens AS tokens
+        ORDER BY iw.shared DESC, tokens ASC
+        LIMIT $limit
+        RETURN n.uid AS uid,
+               n.name AS name,
+               coalesce(n.kind, '') AS symbol_kind,
+               coalesce(cf.path, '<unknown>') AS file_path,
+               coalesce(cf.hash, '') AS file_hash,
+               tokens AS token_estimate,
+               coalesce(c.range, n.range, [0, 0]) AS range,
+               'INTEGRATES_COREF' AS rel_type,
+               '' AS rel_kind,
+               true AS outgoing,
+               coalesce(n.call_fan_in, 0.0) AS caller_count,
+               coalesce(n.call_fan_out, 0.0) AS outgoing_call_count
+        """
+        try:
+            with self.db.driver.session() as session:
+                result = session.run(
+                    query,
+                    uid=uid,
+                    visited=list(visited),
+                    workspace_id=self.workspace_id,
+                    limit=limit,
                 )
                 return [
                     {

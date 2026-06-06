@@ -259,6 +259,26 @@ def _apply_graph(
     reporter.stage_end("graph")
 
 
+def _integrates_with_phase(
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Workspace pass: ``(:File)-[:INTEGRATES_WITH]->(:File)`` for files sharing
+    >=2 non-plumbing external imports.
+
+    Depends on ``IMPORTS_EXTERNAL`` (built by ``_external_boundary_phase``).
+    """
+    method = getattr(db, "materialize_file_integrates_with", None)
+    if not callable(method):
+        return 0
+    reporter.stage_start("integrates_with", total=1)
+    created = method(workspace_id=workspace_id)
+    reporter.step("integrates_with")
+    reporter.stage_end("integrates_with")
+    return int(created or 0)
+
+
 def _external_boundary_phase(
     diffs: list[FileDiff],
     db: Neo4jClient,
@@ -1165,6 +1185,13 @@ def run_fast_indexing(
         stats["external_calls_linked"] = ext_calls
         stats["external_imports_linked"] = ext_imports
         stats["timings_sec"]["external_boundary"] = round(time.perf_counter() - t_stage, 3)
+
+        # File-level integration coref: pairs of files sharing >=2 non-plumbing
+        # external imports get an INTEGRATES_WITH edge so BFS can cross from a
+        # symbol in one to symbols in the sibling without a structural call path.
+        t_stage = time.perf_counter()
+        stats["integrates_with_edges"] = _integrates_with_phase(db, workspace_id, reporter)
+        stats["timings_sec"]["integrates_with"] = round(time.perf_counter() - t_stage, 3)
 
         t_stage = time.perf_counter()
         stats["mro_api_edges"] = _mro_api_bridge_phase(db, workspace_id, reporter)

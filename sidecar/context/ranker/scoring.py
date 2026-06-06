@@ -209,6 +209,16 @@ class RankerScoring:
             relation = "INSTANTIATES_out" if outgoing else "INSTANTIATES_in"
         elif rel_type == "RESOLVES_ATTR":
             relation = "RESOLVES_ATTR_out" if outgoing else "RESOLVES_ATTR_in"
+        elif rel_type == "INTEGRATES_COREF":
+            # File-level integration coref: surfacing a role-bearing symbol in a
+            # workspace file that shares the same non-plumbing external imports
+            # as the target's file. Treated as an *outgoing* hop with a moderate
+            # prior — stronger than plain DEPENDS_ON (this signal is curated)
+            # but below direct CALLS/HAS_API. The candidate is preselected by
+            # `_get_integrates_with_neighbors` ordering on shared count + role
+            # priority + token estimate, so cheap weight here protects it from
+            # being pruned by the budget against denser CALLS-side neighbors.
+            relation = "INTEGRATES_COREF"
         elif rel_type == "USES_TYPE":
             # A dispatcher (`isinstance(x, T)` / `issubclass`) is the code that
             # branches ON the type — the resolution machinery for T. Reaching it
