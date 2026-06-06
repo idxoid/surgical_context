@@ -90,6 +90,8 @@ def test_compile_contract_report_row_includes_contract_and_query_plan():
     assert [contract.contract for contract in report_row.contracts] == [
         "metadata_key_roundtrip"
     ]
+    assert report_row.persisted_contracts == ()
+    assert report_row.contract_drift is False
     assert report_row.plans[0]["traversal_mode"] == "deferred_binding_flow"
     assert report_row.plans[0]["lance_predicate"] == (
         "workspace_id = 'ws' "
@@ -143,6 +145,40 @@ def test_contract_report_uses_axis_evidence_payload_for_dispatch_identity():
         "callable_container_dispatch"
     ]
     assert with_facts.contracts[0].payload["container"] == "self.chain"
+
+
+def test_contract_report_marks_persisted_contract_drift():
+    row = {
+        "uid": "u:m",
+        "name": "registry",
+        "file_path": "/repo/registry.py",
+        "cfg_bits": [],
+        "dfg_bits": ["keyed_write", "keyed_read"],
+        "struct_bits": ["literal_key"],
+        "axis_contracts_json": "[{\"contract\": \"stale_contract\"}]",
+        "axis_container_kinds_json": _kind_json(
+            ContainerKindMatch(
+                kind="metadata_carrier",
+                symbol_uid="u:m",
+                qualified_name="pkg.registry",
+                evidence_bits=(
+                    ("dfg", "keyed_write"),
+                    ("dfg", "keyed_read"),
+                    ("struct", "literal_key"),
+                ),
+                evidence_probes=(),
+                payload={},
+            )
+        ),
+    }
+
+    report_row = compile_contract_report_row(row, workspace_id="ws")
+
+    assert [contract.contract for contract in report_row.contracts] == [
+        "metadata_key_roundtrip"
+    ]
+    assert report_row.persisted_contracts == ("stale_contract",)
+    assert report_row.contract_drift is True
 
 
 def test_build_report_filters_plain_rows_without_kinds_or_contracts():
@@ -209,3 +245,4 @@ def test_write_axis_contract_report_outputs_jsonl_and_markdown(tmp_path):
     markdown = md_path.read_text(encoding="utf-8")
     assert "proxy_object" in markdown
     assert "proxy_indirection" in markdown
+    assert "| proxy | /repo/proxy.py | proxy_object | proxy_indirection | - | no |" in markdown
