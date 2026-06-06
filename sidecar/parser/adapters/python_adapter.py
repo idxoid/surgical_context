@@ -103,6 +103,156 @@ class PythonAdapter(TreeSitterAdapter):
         uid = compute_uid(module_name, UNRESOLVED_SIGNATURE, "python")
         return module_name, module_name, uid
 
+    # Python built-in callables whose construction we *can* recognise but do
+    # not need to model as graph anchors. ``T = type(...)`` / ``c = dict(...)``
+    # is captured as a parsed fact but does not produce a variable Symbol;
+    # the catalogue is for application-level objects.
+    _BUILTIN_CALLABLE_NAMES = frozenset(
+        {
+            "bool", "bytearray", "bytes", "complex", "dict", "enumerate",
+            "filter", "float", "frozenset", "int", "list", "map", "object",
+            "range", "reversed", "set", "slice", "str", "tuple", "type",
+            "zip", "Exception", "ValueError", "TypeError", "KeyError",
+            "IndexError", "RuntimeError", "OSError", "IOError",
+            "AttributeError", "NotImplementedError", "StopIteration",
+            "FileNotFoundError",
+        }
+    )
+
+    @staticmethod
+    def _module_level_classes(tree) -> set[str]:
+        """Bare names of class definitions sitting directly in the module body."""
+        classes: set[str] = set()
+        for child in tree.root_node.named_children:
+            if child.type != "class_definition":
+                continue
+            name = child.child_by_field_name("name")
+            if name is not None:
+                classes.add(_node_text(name))
+        return classes
+
+    @classmethod
+    def _resolve_construction_callee(
+        cls,
+        fn_node,
+        *,
+        import_bindings: dict[str, str],
+        local_classes: set[str],
+        module: str,
+    ) -> tuple[str, str, bool] | None:
+        """Classify a Call's callee as a constructor or drop it.
+
+        Returns ``(type_name, type_qualified_name, is_external)`` when the
+        callee is a class the parser can name. ``None`` means "drop": the
+        name is not in this file's imports, not a local class definition,
+        and not a recognised Python built-in callable — almost certainly a
+        typo, unimported dependency, or a non-constructor call.
+
+        Externality is decided here, with the file's imports table as the
+        only proof — the linker does not get to guess.
+        """
+        if fn_node is None:
+            return None
+
+        if fn_node.type == "identifier":
+            name = _node_text(fn_node)
+            if not name:
+                return None
+            if name in local_classes:
+                return (name, f"{module}.{name}", False)
+            if name in import_bindings:
+                return (name, import_bindings[name], True)
+            if name in cls._BUILTIN_CALLABLE_NAMES:
+                return None  # built-in: don't model as a graph anchor
+            return None  # unresolved → drop
+
+        if fn_node.type == "attribute":
+            head = fn_node.child_by_field_name("object")
+            attr = fn_node.child_by_field_name("attribute")
+            if head is None or attr is None or head.type != "identifier":
+                return None
+            head_name = _node_text(head)
+            attr_name = _node_text(attr)
+            if not head_name or not attr_name:
+                return None
+            if head_name in import_bindings:
+                qn = f"{import_bindings[head_name]}.{attr_name}"
+                return (attr_name, qn, True)
+            return None
+        return None
+
+    def _module_constructor_variables(
+        self,
+        source_code: str,
+        file_path: str,
+        tree,
+        *,
+        base_symbols: list[SymbolMetadata],
+    ) -> list[SymbolMetadata]:
+        """Variable Symbols for module-level ``name = SomeClass(...)`` lines.
+
+        Triggered only by class-construction assignments at the module body;
+        function-scope locals stay invisible (per design — modelling every
+        local would blow up the graph for no analytic gain). The variable
+        Symbol becomes the DFG anchor decorators / cross-file lookups need
+        to talk about the constructed object.
+        """
+        module_name = module_name_from_path(file_path)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+        local_classes = self._module_level_classes(tree)
+        existing_names = {
+            s.name for s in base_symbols if s.kind in {"function", "class"}
+        }
+        existing_var_names = {s.name for s in base_symbols if s.kind == "variable"}
+        out: list[SymbolMetadata] = []
+        for stmt in tree.root_node.named_children:
+            if stmt.type != "expression_statement":
+                continue
+            assignment = next(
+                (c for c in stmt.named_children if c.type == "assignment"),
+                None,
+            )
+            if assignment is None:
+                continue
+            lhs = assignment.child_by_field_name("left")
+            rhs = assignment.child_by_field_name("right")
+            if lhs is None or rhs is None or lhs.type != "identifier":
+                continue
+            var_name = _node_text(lhs)
+            if not var_name or var_name in existing_names or var_name in existing_var_names:
+                continue
+            if rhs.type != "call":
+                continue
+            fn_node = rhs.child_by_field_name("function")
+            resolved = self._resolve_construction_callee(
+                fn_node,
+                import_bindings=import_bindings,
+                local_classes=local_classes,
+                module=module_name,
+            )
+            if resolved is None:
+                continue
+            qualified_name = f"{module_name}.{var_name}"
+            signature = f"{var_name}()->_"
+            uid = compute_uid(qualified_name, signature, self.language_name)
+            out.append(
+                SymbolMetadata(
+                    uid=uid,
+                    name=var_name,
+                    kind="variable",
+                    start_line=assignment.start_point[0] + 1,
+                    end_line=assignment.end_point[0] + 1,
+                    content_hash="",
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash="",
+                    signature_status="resolved",
+                    language=self.language_name,
+                )
+            )
+        return out
+
     @classmethod
     def _module_symbol(cls, source_code: str, file_path: str) -> SymbolMetadata:
         module_name, qualified_name, uid = cls._module_symbol_identity(file_path)
@@ -136,11 +286,25 @@ class PythonAdapter(TreeSitterAdapter):
         nearest enclosing definition is the module itself (top-level calls,
         decorator applications, module-execution-time assignments) have a
         coherent caller to attach to.
+
+        Module-level constructor assignments — ``app = FastAPI()`` and the like
+        — become their own ``kind="variable"`` Symbols. These are DFG anchors:
+        without them no decorator application ``@app.get(...)`` has a graph
+        node to attach to as receiver. We only materialize variables when the
+        right-hand side resolves to a class (local definition or imported
+        external symbol); unresolvable names are dropped at this layer (the
+        parser is the only place that has both the imports table and the
+        local class set, so spurious references die here instead of polluting
+        the graph).
         """
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
         symbols.insert(0, self._module_symbol(source_code, file_path))
         if tree is None:
             tree = self._parse(source_code)
+        module_var_symbols = self._module_constructor_variables(
+            source_code, file_path, tree, base_symbols=symbols
+        )
+        symbols.extend(module_var_symbols)
         shapes = self._function_return_shapes(tree)
         iteration = self._function_iteration_shapes(tree)
         if shapes or iteration:
@@ -959,25 +1123,34 @@ class PythonAdapter(TreeSitterAdapter):
         import_bindings = self._extract_import_bindings(source_code, file_path)
         symbols = self.extract_symbols(source_code, file_path, tree=tree)
         local_classes = {s.name: s for s in symbols if s.kind == "class"}
+        local_class_names = set(local_classes)
 
         out: list[dict] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
         typed_local_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
         value_local_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
         _, _, module_uid = self._module_symbol_identity(file_path)
 
-        def emit(caller_node, type_name: str, type_qn: str) -> None:
+        def emit(
+            call_node,
+            caller_node,
+            type_name: str,
+            type_qn: str,
+            is_external: bool,
+        ) -> None:
             if not type_qn:
                 return
+            # Module-level ``name = SomeCls(...)`` → the Variable Symbol IS the
+            # caller: the new object lives under that identifier and is the DFG
+            # anchor downstream code (decorators, references) talks to.
             if caller_node is None:
-                # Module-level execution: ``app = FastAPI()`` outside any
-                # function/class. The module is its own structural scope
-                # (Axis 3) and a CFG entry executed at import time (Axis 1);
-                # the synthesized module Symbol carries those facts.
-                caller_uid = module_uid
+                var_uid = self._module_assignment_variable_uid(
+                    call_node, module
+                )
+                caller_uid = var_uid if var_uid is not None else module_uid
             else:
                 caller_uid = self._uid_for_node(caller_node, source_code, file_path)
-            key = (caller_uid, type_qn)
+            key = (caller_uid, type_qn, "external" if is_external else "internal")
             if key in seen:
                 return
             seen.add(key)
@@ -986,6 +1159,7 @@ class PythonAdapter(TreeSitterAdapter):
                     "caller_uid": caller_uid,
                     "type_name": type_name,
                     "type_qualified_name": type_qn,
+                    "is_external": is_external,
                     "file_path": file_path,
                 }
             )
@@ -1116,24 +1290,73 @@ class PythonAdapter(TreeSitterAdapter):
             if node.type != "call":
                 continue
             fn = node.child_by_field_name("function")
-            if fn is None or fn.type != "identifier":
+            if fn is None:
                 continue
-            name = _node_text(fn)
             caller = self._enclosing_def_node(node)
             # Module-level construction: caller is ``None`` here; ``emit``
-            # routes the row to the module Symbol. Per-function class-value
-            # propagation only runs when an actual function scope is present.
+            # routes the row to the module Symbol or, when the call is the
+            # RHS of a module-level assignment, to the Variable anchor.
             locals_map = (
                 class_value_locals(caller) if caller is not None else {}
             )
-            if name in locals_map:
-                for cname, cqn in locals_map[name]:
-                    emit(caller, cname, cqn)
-            elif name in local_classes:
-                emit(caller, name, local_classes[name].qualified_name)
-            elif name in import_bindings:
-                emit(caller, name, import_bindings[name])
+
+            # Branch A: ``v(...)`` where ``v`` holds a class via type[X]
+            # propagation (locals_map). Names that show up here are
+            # internal-or-external based on whether the propagated qn is
+            # module-local.
+            if fn.type == "identifier":
+                name = _node_text(fn)
+                if name in locals_map:
+                    for cname, cqn in locals_map[name]:
+                        is_external = not cqn.startswith(f"{module}.")
+                        emit(node, caller, cname, cqn, is_external)
+                    continue
+
+            # Branch B: bare-name or dotted attribute construction. The
+            # resolver decides external vs internal against the imports
+            # table; unresolvable names drop silently right here, never
+            # reaching the linker. This is the only layer that has both the
+            # imports table and the local class set, so it is also the only
+            # honest place to make that call.
+            resolved = self._resolve_construction_callee(
+                fn,
+                import_bindings=import_bindings,
+                local_classes=local_class_names,
+                module=module,
+            )
+            if resolved is None:
+                continue
+            type_name, type_qn, is_external = resolved
+            emit(node, caller, type_name, type_qn, is_external)
         return out
+
+    def _module_assignment_variable_uid(self, call_node, module: str) -> str | None:
+        """Return the Variable Symbol uid for ``name = call`` at module top level.
+
+        Mirrors :meth:`_module_constructor_variables` exactly — same uid
+        formula — so the caller_uid on instantiation rows lines up with the
+        Variable Symbol the indexer materializes. Returns ``None`` when the
+        call is not the RHS of a module-level identifier assignment.
+        """
+        parent = call_node.parent
+        while parent is not None and parent.type == "parenthesized_expression":
+            parent = parent.parent
+        if parent is None or parent.type != "assignment":
+            return None
+        grand = parent.parent
+        if grand is None or grand.type != "expression_statement":
+            return None
+        if grand.parent is None or grand.parent.type != "module":
+            return None
+        lhs = parent.child_by_field_name("left")
+        if lhs is None or lhs.type != "identifier":
+            return None
+        var_name = _node_text(lhs)
+        if not var_name:
+            return None
+        qualified_name = f"{module}.{var_name}"
+        signature = f"{var_name}()->_"
+        return compute_uid(qualified_name, signature, self.language_name)
 
     def _class_object_targets(
         self, type_node, import_bindings: dict[str, str], module: str
