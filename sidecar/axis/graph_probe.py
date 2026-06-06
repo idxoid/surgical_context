@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from sidecar.axis.container_kind import GraphContextProbe
+from sidecar.axis.library_marker_catalogue import LIBRARY_MARKER_CATALOGUE
 
 _CONTROL_EDGE_TYPES = (
     "CALLS",
@@ -126,17 +127,22 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         cached = self._marker_cache.get(symbol_uid)
         if cached is not None:
             return set(cached)
-        query = """
+        kinds: set[str] = set()
+
+        # 1) Symbol-local proxy marker (existing path). A symbol that the
+        #    parser already flagged as ``proxy_binding`` or that resolves
+        #    through PROXY_OF / RESOLVES_ATTR carries ``proxy_object``
+        #    independently of any external import surface.
+        proxy_query = """
         MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: $symbol_uid})
         OPTIONAL MATCH (s)-[proxy_rel:PROXY_OF|RESOLVES_ATTR]->(:Symbol)
         WHERE coalesce(proxy_rel.workspace_id, $workspace_id) = $workspace_id
         RETURN s.kind AS symbol_kind, count(proxy_rel) AS proxy_rel_count
         """
-        kinds: set[str] = set()
         try:
             with self.db.driver.session() as session:
                 record = session.run(
-                    query,
+                    proxy_query,
                     symbol_uid=symbol_uid,
                     workspace_id=self.workspace_id,
                 ).single()
@@ -147,6 +153,34 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             proxy_rel_count = int(record.get("proxy_rel_count") or 0)
             if symbol_kind == "proxy_binding" or proxy_rel_count > 0:
                 kinds.add("proxy_object")
+
+        # 2) Catalogue lookup via the file's IMPORTS_EXTERNAL_SYMBOL surface.
+        #    The catalogue is keyed by upstream qualified_name. We let the DB
+        #    return the distinct set of external qualified_names the symbol's
+        #    file imports, then filter through the catalogue locally — no
+        #    name-list lives inside this module.
+        catalogue_query = """
+        MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->
+              (:Symbol {uid: $symbol_uid})
+        MATCH (f)-[r:IMPORTS_EXTERNAL_SYMBOL]->(e:ExternalSymbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        RETURN collect(DISTINCT e.qualified_name) AS qns
+        """
+        try:
+            with self.db.driver.session() as session:
+                record = session.run(
+                    catalogue_query,
+                    symbol_uid=symbol_uid,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            record = None
+        if record:
+            for qn in record.get("qns") or []:
+                kind = LIBRARY_MARKER_CATALOGUE.get(str(qn))
+                if kind:
+                    kinds.add(kind)
+
         self._marker_cache[symbol_uid] = kinds
         return set(kinds)
 

@@ -40,16 +40,55 @@ class _Db:
 
 
 def test_neo4j_probe_exposes_proxy_binding_as_proxy_object_marker():
-    db = _Db([{"symbol_kind": "proxy_binding", "proxy_rel_count": 0}])
+    # 1st run: proxy query, 2nd run: catalogue query (empty for this symbol)
+    db = _Db([
+        {"symbol_kind": "proxy_binding", "proxy_rel_count": 0},
+        {"qns": []},
+    ])
     probe = Neo4jGraphContextProbe(db, "ws")
 
     assert probe.library_marker_kinds("u:proxy") == {"proxy_object"}
+    # 2nd call hits the cache, no further DB runs.
     assert probe.library_marker_kinds("u:proxy") == {"proxy_object"}
-    assert len(db.driver.session_obj.runs) == 1
+    assert len(db.driver.session_obj.runs) == 2
     assert db.driver.session_obj.runs[0][1] == {
         "symbol_uid": "u:proxy",
         "workspace_id": "ws",
     }
+
+
+def test_neo4j_probe_resolves_library_marker_kind_via_catalogue():
+    # Proxy query returns nothing; catalogue query returns a known external QN.
+    db = _Db([
+        {"symbol_kind": "class", "proxy_rel_count": 0},
+        {"qns": ["starlette.routing.Router", "typing.Any"]},
+    ])
+    probe = Neo4jGraphContextProbe(db, "ws")
+
+    kinds = probe.library_marker_kinds("u:cls")
+
+    # ``typing.Any`` is not in the catalogue → ignored without name matching.
+    assert kinds == {"web_route_register"}
+
+
+def test_neo4j_probe_returns_union_when_file_imports_multiple_marker_packages():
+    db = _Db([
+        {"symbol_kind": "class", "proxy_rel_count": 0},
+        {"qns": ["celery.app.Celery", "werkzeug.local.LocalProxy"]},
+    ])
+    probe = Neo4jGraphContextProbe(db, "ws")
+
+    assert probe.library_marker_kinds("u:cls") == {"task_register", "proxy_object"}
+
+
+def test_neo4j_probe_ignores_unknown_external_qualified_names():
+    db = _Db([
+        {"symbol_kind": "class", "proxy_rel_count": 0},
+        {"qns": ["some.unknown.External", "another.Random"]},
+    ])
+    probe = Neo4jGraphContextProbe(db, "ws")
+
+    assert probe.library_marker_kinds("u:cls") == set()
 
 
 def test_neo4j_probe_counts_outgoing_edges_to_proxy_markers():
