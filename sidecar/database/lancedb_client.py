@@ -967,3 +967,14 @@ class LanceDBClient:
                     }
                 )
         return out
+
+    def search_axis_symbols(
+        self,
+        query: str,
+        plan: "AxisQueryPlan",
+        *,
+        threshold: float = 0.4,
+    ) -> list[dict]:
+        """Embed query text and search axis symbol rows with a compiled plan."""
+        vec = self._embed([query])[0]
+        return self.search_axis_symbols_by_vector(vec, plan, threshold=threshold)

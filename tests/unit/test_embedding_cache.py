@@ -347,3 +347,29 @@ def test_lancedb_client_search_axis_symbols_rejects_legacy_profile():
         assert "axis index profile" in str(exc)
     else:  # pragma: no cover - defensive assertion style
         raise AssertionError("expected ValueError")
+
+
+def test_lancedb_client_search_axis_symbols_embeds_query_text():
+    class FakeClient(LanceDBClient):
+        def __init__(self):
+            pass
+
+        def _embed(self, texts, progress_callback=None):
+            assert texts == ["how does metadata register"]
+            return [[0.5, 0.25]]
+
+        def search_axis_symbols_by_vector(self, vector, plan, *, threshold=0.4):
+            assert vector == [0.5, 0.25]
+            assert threshold == 0.7
+            return [{"uid": "u"}]
+
+    plan = compile_axis_query(
+        AxisQueryRequest(traversal_mode="deferred_binding_flow"),
+        workspace_id="ws",
+    )
+
+    assert FakeClient().search_axis_symbols(
+        "how does metadata register",
+        plan,
+        threshold=0.7,
+    ) == [{"uid": "u"}]
