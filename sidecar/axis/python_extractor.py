@@ -146,6 +146,14 @@ class _AxisVisitor(ast.NodeVisitor):
                     scope=scope,
                     payload={"metaclass": _unparse(keyword.value)},
                 )
+            else:
+                self._emit(
+                    "struct",
+                    "base_keyword",
+                    keyword.value,
+                    scope=scope,
+                    payload={"keyword": keyword.arg or "**", "value": _unparse(keyword.value)},
+                )
 
         self.scope_stack.append(scope)
         self.callable_bindings_stack.append(set())
@@ -200,15 +208,21 @@ class _AxisVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_If(self, node: ast.If) -> None:
-        self._emit("cfg", "branch_selector", node)
+        self._emit("cfg", "branch_selector", node, payload={"kind": "if"})
+        self._emit_branch_condition(node.test, kind="if")
         self.generic_visit(node)
 
     def visit_Match(self, node: ast.Match) -> None:
-        self._emit("cfg", "branch_selector", node)
+        self._emit("cfg", "branch_selector", node, payload={"kind": "match"})
+        self._emit_branch_condition(node.subject, kind="match_subject")
+        for case in node.cases:
+            if case.guard is not None:
+                self._emit_branch_condition(case.guard, kind="match_guard")
         self.generic_visit(node)
 
     def visit_IfExp(self, node: ast.IfExp) -> None:
-        self._emit("cfg", "branch_selector", node)
+        self._emit("cfg", "branch_selector", node, payload={"kind": "if_expression"})
+        self._emit_branch_condition(node.test, kind="if_expression")
         self.generic_visit(node)
 
     def visit_For(self, node: ast.For) -> None:
@@ -226,6 +240,7 @@ class _AxisVisitor(ast.NodeVisitor):
 
     def visit_While(self, node: ast.While) -> None:
         self._emit("cfg", "loop_driver", node)
+        self._emit_branch_condition(node.test, kind="while")
         self.generic_visit(node)
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
@@ -281,12 +296,14 @@ class _AxisVisitor(ast.NodeVisitor):
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         self._emit("cfg", "exception_transfer", node)
+        self._emit("cfg", "exception_handler_type", node, payload=_exception_handler_payload(node))
         if node.name:
             self._emit("dfg", "exception_value", node, payload={"name": node.name})
         self.generic_visit(node)
 
     def visit_Raise(self, node: ast.Raise) -> None:
         self._emit("cfg", "exception_transfer", node)
+        self._emit("cfg", "exception_raise_value", node, payload=_raise_payload(node))
         self.generic_visit(node)
 
     def visit_Await(self, node: ast.Await) -> None:
@@ -295,9 +312,17 @@ class _AxisVisitor(ast.NodeVisitor):
 
     def visit_Return(self, node: ast.Return) -> None:
         self._emit("cfg", "return_exit", node)
+        self._emit("dfg", "return_shape_kind", node, payload=_return_shape_payload(node.value))
         if node.value is not None:
             self._emit("dfg", "return_output", node.value)
             self._maybe_emit_callable_value(node.value, source="return")
+            if _looks_like_constructed_output(node.value):
+                self._emit(
+                    "dfg",
+                    "constructed_output",
+                    node.value,
+                    payload=_constructed_output_payload(node.value, destination="return"),
+                )
             if _contains_attr_read(node.value):
                 self._emit("dfg", "projection", node.value)
         self.generic_visit(node)
@@ -322,18 +347,18 @@ class _AxisVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self._emit(
-            "struct",
-            "annotation",
+        self._emit_annotation_facts(
             node.annotation,
-            payload={"annotation": _unparse(node.annotation), "target": _unparse(node.target)},
+            payload={"kind": "assignment", "target": _unparse(node.target)},
         )
         self._emit("dfg", "assignment_binding", node, payload=_assignment_payload(node))
         if node.value is not None:
             self._emit_assignment_value_bits(node.value)
             self._maybe_emit_callable_value(node.value, source="assignment_value")
         self._emit_assignment_target_bits(node.target, node.value)
-        self.generic_visit(node)
+        self.visit(node.target)
+        if node.value is not None:
+            self.visit(node.value)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         self._emit("dfg", "augmented_mutation", node)
@@ -448,12 +473,10 @@ class _AxisVisitor(ast.NodeVisitor):
             self._emit_decorators(node, scope)
         self._emit_parameter_facts(node, scope)
         if node.returns is not None:
-            self._emit(
-                "struct",
-                "annotation",
+            self._emit_annotation_facts(
                 node.returns,
                 scope=scope,
-                payload={"kind": "return", "annotation": _unparse(node.returns)},
+                payload={"kind": "return"},
             )
 
         self.scope_stack.append(scope)
@@ -508,12 +531,10 @@ class _AxisVisitor(ast.NodeVisitor):
                     payload={"parameter": arg.arg},
                 )
             if arg.annotation is not None:
-                self._emit(
-                    "struct",
-                    "annotation",
+                self._emit_annotation_facts(
                     arg.annotation,
                     scope=scope,
-                    payload={"kind": "parameter", "name": arg.arg, "annotation": _unparse(arg.annotation)},
+                    payload={"kind": "parameter", "name": arg.arg},
                 )
 
     def _emit_decorators(
@@ -541,6 +562,12 @@ class _AxisVisitor(ast.NodeVisitor):
             self._emit("dfg", "call_result_origin", value, payload=payload)
             if _looks_like_constructor_call(value.func):
                 self._emit("dfg", "constructor_value", value, payload=payload)
+                self._emit(
+                    "dfg",
+                    "constructed_output",
+                    value,
+                    payload=_constructed_output_payload(value, destination="assignment"),
+                )
         if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)):
             self._emit("dfg", "collection_assembly", value, payload={"shape": _shape_name(value)})
 
@@ -622,6 +649,16 @@ class _AxisVisitor(ast.NodeVisitor):
             self._emit("dfg", "container_read_key", node, payload=payload)
             self._emit("dfg", "keyed_read", node, payload=payload)
             self._emit_literal_key(key, context="container_method_read", container=container)
+
+    def _emit_branch_condition(self, condition: ast.AST, *, kind: str) -> None:
+        payload = {
+            "kind": kind,
+            "condition": _unparse(condition),
+            "condition_kind": type(condition).__name__,
+            "reads": _read_expression_payloads(condition),
+        }
+        self._emit("cfg", "branch_condition", condition, payload=payload)
+        self._emit("dfg", "branch_influence", condition, payload=payload)
 
     def _maybe_emit_callable_value(
         self,
@@ -725,6 +762,26 @@ class _AxisVisitor(ast.NodeVisitor):
         if container:
             payload["container"] = container
         self._emit("struct", "literal_key", key, payload=payload)
+
+    def _emit_annotation_facts(
+        self,
+        annotation: ast.AST,
+        *,
+        scope: _SymbolScope | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        annotation_payload = {"annotation": _unparse(annotation)}
+        if payload:
+            annotation_payload.update(payload)
+        self._emit("struct", "annotation", annotation, scope=scope, payload=annotation_payload)
+        for generic in _iter_generic_shapes(annotation):
+            self._emit(
+                "struct",
+                "generic_shape",
+                generic,
+                scope=scope,
+                payload={**annotation_payload, **_generic_shape_payload(generic)},
+            )
 
     def _class_scope(self, node: ast.ClassDef) -> _SymbolScope:
         qualified_name = self._qualified_child_name(node.name)
@@ -877,6 +934,122 @@ def _expr_payload(node: ast.AST) -> dict[str, object]:
         payload["callee"] = _unparse(node.func)
         payload["callee_kind"] = type(node.func).__name__
     return payload
+
+
+def _read_expression_payloads(node: ast.AST) -> list[dict[str, object]]:
+    reads: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Subscript) and isinstance(child.ctx, ast.Load):
+            payload = {"read_kind": "subscript", **_expr_payload(child), **_subscript_key_payload(child)}
+        elif isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load):
+            payload = {"read_kind": "attribute", **_expr_payload(child)}
+        elif isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+            payload = {"read_kind": "name", **_expr_payload(child)}
+        else:
+            continue
+        key = (str(payload["expression"]), str(payload["expression_kind"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        reads.append(payload)
+    return reads
+
+
+def _raise_payload(node: ast.Raise) -> dict[str, object]:
+    payload: dict[str, object] = {"raise_kind": "bare"}
+    if node.exc is not None:
+        payload = {"raise_kind": "expression", **_expr_payload(node.exc)}
+        if isinstance(node.exc, ast.Call):
+            payload.update(_constructed_output_payload(node.exc, destination="raise"))
+    if node.cause is not None:
+        payload["cause"] = _unparse(node.cause)
+        payload["cause_kind"] = type(node.cause).__name__
+    return payload
+
+
+def _exception_handler_payload(node: ast.ExceptHandler) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "caught_type": _unparse(node.type),
+        "caught_type_kind": type(node.type).__name__ if node.type is not None else "bare",
+        "bound_name": node.name or "",
+    }
+    if isinstance(node.type, ast.Tuple):
+        payload["caught_types"] = [_unparse(elt) for elt in node.type.elts]
+    return payload
+
+
+def _return_shape_payload(value: ast.AST | None) -> dict[str, object]:
+    if value is None:
+        return {"shape_kind": "none", "expression": "", "expression_kind": "None"}
+    payload = {"shape_kind": _return_shape_kind(value), **_expr_payload(value)}
+    if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)):
+        payload["collection_shape"] = _shape_name(value)
+    return payload
+
+
+def _return_shape_kind(value: ast.AST) -> str:
+    if isinstance(value, ast.Dict):
+        return "mapping"
+    if isinstance(value, (ast.List, ast.Tuple, ast.ListComp)):
+        return "sequence"
+    if isinstance(value, (ast.Set, ast.SetComp)):
+        return "set"
+    if _looks_like_constructed_output(value):
+        return "constructed"
+    if isinstance(value, ast.Call):
+        return "call_result"
+    if isinstance(value, ast.Lambda):
+        return "callable"
+    if isinstance(value, ast.Name):
+        return "name"
+    if isinstance(value, ast.Attribute):
+        return "attribute"
+    if isinstance(value, ast.Subscript):
+        return "subscript"
+    if isinstance(value, ast.Constant):
+        return "literal"
+    return type(value).__name__
+
+
+def _looks_like_constructed_output(value: ast.AST | None) -> bool:
+    return isinstance(value, ast.Call) and _looks_like_constructor_call(value.func)
+
+
+def _constructed_output_payload(call: ast.Call, *, destination: str) -> dict[str, object]:
+    return {
+        "destination": destination,
+        "callee": _unparse(call.func),
+        "callee_kind": type(call.func).__name__,
+        "args": [_expr_payload(_call_arg_expr(arg)) for arg in call.args],
+        "keywords": [
+            {
+                "keyword": keyword.arg or "**",
+                **_expr_payload(keyword.value),
+            }
+            for keyword in call.keywords
+        ],
+    }
+
+
+def _iter_generic_shapes(annotation: ast.AST) -> Iterable[ast.Subscript]:
+    for node in ast.walk(annotation):
+        if isinstance(node, ast.Subscript):
+            yield node
+
+
+def _generic_shape_payload(node: ast.Subscript) -> dict[str, object]:
+    return {
+        "generic": _unparse(node),
+        "base": _unparse(node.value),
+        "args": [_expr_payload(arg) for arg in _generic_args(node.slice)],
+    }
+
+
+def _generic_args(slice_node: ast.AST) -> list[ast.AST]:
+    if isinstance(slice_node, ast.Tuple):
+        return list(slice_node.elts)
+    return [slice_node]
 
 
 _NO_LITERAL = object()

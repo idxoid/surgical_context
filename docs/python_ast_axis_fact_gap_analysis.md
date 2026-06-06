@@ -35,24 +35,39 @@ Implemented in [python_extractor.py](../sidecar/axis/python_extractor.py).
 | `async_suspend_resume` | present | async function, await, async for/with. |
 | `generator_yield` | present | `yield`, `yield from`. |
 | `return_exit` | present | `return`. |
+| `value_call` | present | Call where callee is a value expression (`Name`, `Subscript`, etc.), not method dispatch. |
+| `branch_condition` | present | Branch/loop condition payload with expression and physical reads. |
+| `exception_raise_value` | present | `raise` payload with raised expression/call and cause. |
+| `exception_handler_type` | present | `except` payload with caught type(s) and bound name. |
 
 ### DFG bits present
 
 | bit | status | notes |
 |---|---|---|
-| `parameter_input` | present | Function args only; defaults are visited but not tied to params. |
+| `parameter_input` | present | Function args. |
+| `parameter_default_value` | present | Parameter default expression tied to parameter name. |
 | `assignment_binding` | present | Assign, ann-assign, named expr, loop targets. |
 | `aliasing` | present | Simple `name = name`. |
+| `call_argument` | present | Positional/keyword argument value entering a call. |
+| `callable_value` | present | Function/class/lambda or known callable name used as data. |
 | `call_result_origin` | present | Assignment/named expr from call. |
 | `constructor_value` | present | Capitalized constructor-like call. |
 | `attr_read` | present | Attribute load, excluding method callee position. |
 | `attr_write` | present | Attribute store. |
 | `subscript_read` | present | Subscript load. |
 | `subscript_write` | present | Subscript store. |
+| `container_write_value` | present | Subscript assignment and generic container mutator calls. |
+| `container_read_key` | present | Subscript load and generic `.get(key)` read. |
+| `keyed_write` | present | Key/value write in subscript assignment and dict literal entries. |
+| `keyed_read` | present | Keyed read in subscript load and generic `.get(key)` read. |
+| `iteration_source` | present | `for target in iterable` / `async for`. |
 | `augmented_mutation` | present | `+=` etc. |
 | `collection_assembly` | present | Literal/comprehension collection shape. |
+| `branch_influence` | present | Physical reads participating in a branch/loop condition. |
 | `projection` | partial | Return expression containing attr read. |
 | `return_output` | present | Return value. |
+| `return_shape_kind` | present | Return expression classified as mapping/sequence/constructed/name/etc. |
+| `constructed_output` | present | Constructor-like call used as assignment or return output. |
 | `yield_output` | present | Yield value. |
 | `context_resource` | present | `with expr as name`. |
 | `exception_value` | present | `except X as name`. |
@@ -73,8 +88,13 @@ Implemented in [python_extractor.py](../sidecar/axis/python_extractor.py).
 | `metaclass` | present | Class metaclass keyword. |
 | `parameter_decl` | present | Function parameters. |
 | `annotation` | present | Parameter, return, ann-assign. |
+| `generic_shape` | present | Subscripted annotation shape (`dict[K, V]`, `list[T]`, etc.). |
 | `decorator_attachment` | present | Decorator syntax. |
+| `decorator_shape` | present | Decorator callee/args/keywords payload. |
+| `parameter_default` | present | Parameter default expression shape. |
 | `literal_shape` | present | Collection literal/comprehension shape. |
+| `literal_key` | present | Static literal key in dict/subscript contexts. |
+| `base_keyword` | present | Non-metaclass class keyword payload. |
 
 ## Needed contract families
 
@@ -94,7 +114,11 @@ needed.
 | Runtime adapter | async/sync bridge, greenlet/thread pool, middleware wrapper | await/thread/greenlet call boundary, wrapper continuation call |
 | Error handling | FastAPI/Flask errors, Celery retry/timeout, Pydantic validation errors | raise value/type, except type, handler registry, error object construction |
 
-## Missing or partial facts
+## Fact gaps and implementation slices
+
+The tables below started as a gap inventory. Slices A-C are now implemented in
+the extractor; remaining rows still describe future structural work or sharper
+contracts on top of the physical facts.
 
 ### P0: facts required before Deferred Binding Flow
 
@@ -121,6 +145,8 @@ decide whether a specific container mutation participates in registry binding.
 ### P1: facts needed for metadata/config/error contracts
 
 These are next after P0 because they make contracts precise rather than broad.
+Most key/branch/error/generic rows are now implemented as physical facts; the
+contract compiler still has to prove cross-axis meaning.
 
 | missing fact | axis | why needed | structural extraction rule |
 |---|---|---|---|
@@ -132,17 +158,19 @@ These are next after P0 because they make contracts precise rather than broad.
 | `cfg_exception_raise_value` | CFG | Retry/timeout/error contracts need raised object/type. | Payload on `Raise`: expression kind, callee/type if `raise X(...)`. |
 | `cfg_exception_handler_type` | CFG | Error dispatch needs except classes. | Payload on `ExceptHandler`: caught type expression and bound name. |
 | `dfg_error_object_origin` | DFG | Error response mapping needs error value construction. | Emit when raise value is a constructor-like call or caught value is transformed/returned. |
-| `struct_generic_shape` | Structural | Already in spec but not implemented. Needed for typed containers/providers. | For subscripted annotations (`list[T]`, `dict[K,V]`, `Annotated[...]`), emit base and args. |
+| `struct_generic_shape` | Structural | Needed for typed containers/providers. | For subscripted annotations (`list[T]`, `dict[K,V]`, `Annotated[...]`), emit base and args. |
 | `struct_base_keyword` | Structural | Class creation/config sometimes lives in class keywords beyond metaclass. | Emit all class keywords, not only `metaclass`. |
 
 ### P2: facts useful for shape projection and runtime adapters
 
-These can follow once registration/dependency/config gaps are covered.
+These can follow once registration/dependency/config gaps are covered. Return
+shape and constructed output are now implemented; closure/context/stream facts
+remain future work.
 
 | missing fact | axis | why needed | structural extraction rule |
 |---|---|---|---|
 | `dfg_attr_write_value` | DFG | Current attr write does not include written value. Needed for object composition. | Add value expression to attr/subscript write payloads. |
-| `dfg_return_shape_kind` | DFG | Current collection assembly exists but return shape is indirect. | On `Return`, classify returned expression: mapping, sequence, constructed, callable, name, attr, subscript. |
+| `dfg_return_shape_kind` | DFG | Return shape should be directly visible. | On `Return`, classify returned expression: mapping, sequence, constructed, callable, name, attr, subscript. |
 | `dfg_constructed_output` | DFG | Shape projection often returns `Result(a=x.y)`. | For constructor-like calls in return/assignment, emit callee plus keyword/arg source expressions. |
 | `dfg_closure_capture` | DFG | Decorator factories/wrappers use outer values. | For nested function/lambda, compare used names against enclosing scope bindings. |
 | `cfg_wrapper_continuation_call` | CFG | Middleware/interceptor wrappers call `next`/continuation/inner app. | Emit call of a parameter/local callable as value call; later contract can classify wrapper. |
@@ -181,6 +209,8 @@ cfg_value_call
 Why: these do not require real dataflow, are high precision, and unlock DI,
 decorator registration, and callback detection.
 
+Status: implemented.
+
 ### Slice B: container/key/value writes and reads
 
 Add:
@@ -196,6 +226,8 @@ dfg_iteration_source
 
 Why: this is the physical substrate for registry and metadata write/read
 bridges. Keep names generic; do not label them registry/metadata in extractor.
+
+Status: implemented.
 
 ### Slice C: branch/error/return detail
 
@@ -214,6 +246,10 @@ struct_generic_shape
 Why: these cover config effect, error mapping, and shape projection. They also
 make benchmark diagnostics sharper: "missing key read" is much better than
 "missing binding".
+
+Status: implemented as `branch_condition`, `branch_influence`,
+`exception_raise_value`, `exception_handler_type`, `return_shape_kind`,
+`constructed_output`, and `generic_shape`.
 
 ## Anti-patterns to avoid
 

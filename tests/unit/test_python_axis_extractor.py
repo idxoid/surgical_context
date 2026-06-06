@@ -115,9 +115,11 @@ def test_class_structure_bits_capture_type_shape_without_roles():
         "metaclass",
         "class_attribute",
         "annotation",
+        "generic_shape",
         "literal_shape",
     } <= class_profile.struct_bits
     assert "collection_assembly" in class_profile.dfg_bits
+    assert "subscript_read" not in class_profile.dfg_bits
 
     assert {"function_def", "method_member", "parameter_decl", "annotation"} <= (
         method_profile.struct_bits
@@ -319,3 +321,127 @@ def test_dict_literal_keys_emit_keyed_write_without_role_semantics():
         and payload.get("value") == "handler"
         for payload in writes
     )
+
+
+def test_branch_condition_and_generic_annotation_payloads_are_axis_facts():
+    profile = _profile(
+        """
+        def choose(config: dict[str, bool], items: list[int]) -> list[int]:
+            if config["enabled"] and items:
+                return items
+            return []
+        """,
+        "pkg.tasks.choose",
+    )
+
+    assert {"branch_condition", "branch_selector", "return_exit"} <= profile.cfg_bits
+    assert {"branch_influence", "return_shape_kind"} <= profile.dfg_bits
+    assert {"annotation", "generic_shape"} <= profile.struct_bits
+
+    branch_conditions = _fact_payloads(profile, "branch_condition")
+    condition = next(
+        payload for payload in branch_conditions if payload["condition"] == "config['enabled'] and items"
+    )
+    assert condition["kind"] == "if"
+    assert any(
+        read.get("read_kind") == "subscript"
+        and read.get("container") == "config"
+        and read.get("key_literal") == "enabled"
+        for read in condition["reads"]
+    )
+    assert any(read.get("read_kind") == "name" and read.get("name") == "items" for read in condition["reads"])
+
+    generic_shapes = _fact_payloads(profile, "generic_shape")
+    assert any(payload.get("generic") == "dict[str, bool]" for payload in generic_shapes)
+    assert any(payload.get("generic") == "list[int]" for payload in generic_shapes)
+
+
+def test_exception_raise_and_handler_type_payloads_are_axis_facts():
+    profile = _profile(
+        """
+        def guard(value):
+            try:
+                if not value:
+                    raise ValidationError("missing")
+            except (ValidationError, TypeError) as exc:
+                return {"error": exc}
+        """,
+        "pkg.tasks.guard",
+    )
+
+    assert {
+        "branch_condition",
+        "exception_handler_type",
+        "exception_raise_value",
+        "exception_transfer",
+        "return_exit",
+    } <= profile.cfg_bits
+    assert {"branch_influence", "return_shape_kind"} <= profile.dfg_bits
+
+    raises = _fact_payloads(profile, "exception_raise_value")
+    assert any(
+        payload.get("callee") == "ValidationError"
+        and payload.get("destination") == "raise"
+        for payload in raises
+    )
+
+    handlers = _fact_payloads(profile, "exception_handler_type")
+    assert any(
+        payload.get("caught_types") == ["ValidationError", "TypeError"]
+        and payload.get("bound_name") == "exc"
+        for payload in handlers
+    )
+
+    return_shapes = _fact_payloads(profile, "return_shape_kind")
+    assert any(payload.get("shape_kind") == "mapping" for payload in return_shapes)
+
+
+def test_constructed_output_and_class_keyword_payloads_are_physical():
+    class_profile = _profile(
+        """
+        class Result(Base, frozen=True):
+            pass
+
+        def build(user) -> Result:
+            result = Result(name=user.name)
+            return Result(item=result)
+        """,
+        "pkg.tasks.Result",
+    )
+    build_profile = _profile(
+        """
+        class Result(Base, frozen=True):
+            pass
+
+        def build(user) -> Result:
+            result = Result(name=user.name)
+            return Result(item=result)
+        """,
+        "pkg.tasks.build",
+    )
+
+    assert "base_keyword" in class_profile.struct_bits
+    assert {"call_result_origin", "constructed_output", "return_shape_kind"} <= (
+        build_profile.dfg_bits
+    )
+
+    class_keywords = _fact_payloads(class_profile, "base_keyword")
+    assert class_keywords[0]["keyword"] == "frozen"
+    assert class_keywords[0]["value"] == "True"
+
+    constructed = _fact_payloads(build_profile, "constructed_output")
+    assert any(
+        payload.get("destination") == "assignment"
+        and payload.get("callee") == "Result"
+        and payload.get("keywords", [])[0].get("keyword") == "name"
+        for payload in constructed
+    )
+    assert any(
+        payload.get("destination") == "return"
+        and payload.get("callee") == "Result"
+        and payload.get("keywords", [])[0].get("keyword") == "item"
+        for payload in constructed
+    )
+
+    return_shapes = _fact_payloads(build_profile, "return_shape_kind")
+    assert any(payload.get("shape_kind") == "constructed" for payload in return_shapes)
