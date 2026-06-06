@@ -946,6 +946,7 @@ def _axis_payloads_for_extracted_file(
             "cfg_bits": sorted(profile.cfg_bits),
             "dfg_bits": sorted(profile.dfg_bits),
             "struct_bits": sorted(profile.struct_bits),
+            "container_kinds": sorted({match.kind for match in container_kinds}),
             "axis_evidence_json": json.dumps(
                 [fact.to_dict() for fact in profile.facts],
                 sort_keys=True,

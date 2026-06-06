@@ -138,6 +138,7 @@ AXIS_SYMBOLS_SCHEMA = pa.schema(
         pa.field("cfg_bits", pa.list_(pa.string())),
         pa.field("dfg_bits", pa.list_(pa.string())),
         pa.field("struct_bits", pa.list_(pa.string())),
+        pa.field("container_kinds", pa.list_(pa.string())),
         pa.field("axis_evidence_json", pa.string()),
         pa.field("axis_container_kinds_json", pa.string()),
         pa.field("axis_contracts_json", pa.string()),
@@ -149,6 +150,7 @@ AXIS_SYMBOL_REQUIRED_COLUMNS = {
     "cfg_bits",
     "dfg_bits",
     "struct_bits",
+    "container_kinds",
     "axis_evidence_json",
     "axis_container_kinds_json",
     "axis_contracts_json",
@@ -218,6 +220,7 @@ class LanceDBClient:
             "cfg_bits": list(symbol.get("cfg_bits") or []),
             "dfg_bits": list(symbol.get("dfg_bits") or []),
             "struct_bits": list(symbol.get("struct_bits") or []),
+            "container_kinds": list(symbol.get("container_kinds") or []),
             "axis_evidence_json": str(symbol.get("axis_evidence_json") or "[]"),
             "axis_container_kinds_json": str(
                 symbol.get("axis_container_kinds_json") or "[]"
@@ -960,6 +963,10 @@ class LanceDBClient:
                         "file_path": r["file_path"],
                         "distance": distance,
                         "score": _l2_to_score(float(distance)),
+                        "cfg_bits": list(r.get("cfg_bits") or []),
+                        "dfg_bits": list(r.get("dfg_bits") or []),
+                        "struct_bits": list(r.get("struct_bits") or []),
+                        "container_kinds": list(r.get("container_kinds") or []),
                         "axis_container_kinds_json": str(
                             r.get("axis_container_kinds_json") or "[]"
                         ),

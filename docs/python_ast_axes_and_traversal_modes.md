@@ -603,7 +603,7 @@ The physical index profile is isolated:
 INDEX_PROFILE=axis_python_v1
 workspace suffix: +axis_python_v1
 Lance tables: docs_axis_python_v1, symbols_axis_python_v1
-schema_version: 3
+schema_version: 4
 ```
 
 `symbols_axis_python_v1` stores:
@@ -611,8 +611,11 @@ schema_version: 3
 - `cfg_bits`
 - `dfg_bits`
 - `struct_bits`
+- `container_kinds` (list-of-strings; used by the deterministic Lance prefilter
+  via `array_has(container_kinds, '<kind>')`)
 - `axis_evidence_json`
-- `axis_container_kinds_json`
+- `axis_container_kinds_json` (full L2 match objects for diagnostics; the
+  prefilter does **not** read this column)
 - `axis_contracts_json`
 
 This is still below the old ranker. No runtime endpoint resolves benchmark

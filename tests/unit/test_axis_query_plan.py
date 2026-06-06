@@ -36,8 +36,8 @@ def test_render_lance_predicate_can_filter_persisted_container_kinds():
     assert predicate == (
         "workspace_id = 'ws' "
         "AND array_has(dfg_bits, 'keyed_write') "
-        "AND axis_container_kinds_json LIKE '%\"kind\": \"data_model\"%' "
-        "AND axis_container_kinds_json LIKE '%\"kind\": \"metadata_carrier\"%'"
+        "AND array_has(container_kinds, 'data_model') "
+        "AND array_has(container_kinds, 'metadata_carrier')"
     )
 
 

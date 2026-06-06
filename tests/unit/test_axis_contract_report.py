@@ -100,7 +100,7 @@ def test_compile_contract_report_row_includes_contract_and_query_plan():
         "AND array_has(dfg_bits, 'keyed_read') "
         "AND array_has(dfg_bits, 'keyed_write') "
         "AND array_has(struct_bits, 'literal_key') "
-        "AND axis_container_kinds_json LIKE '%\"kind\": \"metadata_carrier\"%'"
+        "AND array_has(container_kinds, 'metadata_carrier')"
     )
 
 

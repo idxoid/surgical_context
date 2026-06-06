@@ -559,6 +559,7 @@ class Settings:
         assert [match["kind"] for match in matches] == ["web_route_register"]
         assert matches[0]["evidence_probes"] == ["library_marker:web_route_register"]
         assert json.loads(lance.rows[0]["axis_contracts_json"]) == []
+        assert list(lance.rows[0]["container_kinds"]) == ["web_route_register"]
 
     def test_fast_embed_phase_leaves_legacy_symbol_rows_without_axis_payload(self, tmp_path):
         source = "def run():\n    return 1\n"

@@ -146,10 +146,18 @@ def _axis_bit_predicate(requirement: AxisRequirement) -> str:
 
 
 def _container_kind_predicate(kind: str) -> str:
+    """Match against the dedicated ``container_kinds`` list column.
+
+    Earlier revisions used a substring ``LIKE`` over the serialized
+    ``axis_container_kinds_json`` blob; that match was fragile (a payload
+    value containing the literal ``"kind": "X"`` could collide) and could
+    not be index-backed by Lance. The dedicated column is a list of strings
+    populated alongside the JSON blob; ``array_has`` is exact and structural.
+    """
+
     if not kind.strip():
         raise ValueError("Container kind cannot be empty")
-    pattern = f'%\"kind\": \"{kind}\"%'
-    return f"axis_container_kinds_json LIKE {_quote_lance_string(pattern)}"
+    return f"array_has(container_kinds, {_quote_lance_string(kind)})"
 
 
 def render_lance_predicate(
