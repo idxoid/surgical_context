@@ -23,6 +23,27 @@ ContractPredicate = Callable[
 _PREDICATES: dict[str, ContractPredicate] = {}
 
 
+@dataclass(frozen=True)
+class _ContractSpec:
+    """Declarative shape of one contract, used by both compile and diagnose.
+
+    Keeping this separate from the predicate body lets ``diagnose()`` produce a
+    per-bit diagnostic for *every* registered contract without each predicate
+    re-implementing the same teardown logic. The predicate is still the source
+    of truth for what is proven; the spec is the source of truth for what is
+    required.
+    """
+
+    contract: str
+    container_kinds: tuple[str, ...]
+    required_bits: tuple["AxisRequirement", ...]
+    payload_rule_name: str | None = None
+    payload_rule: Callable[[AxisProfile], bool] | None = None
+
+
+_SPECS: dict[str, _ContractSpec] = {}
+
+
 def register_contract(contract: str) -> Callable[[ContractPredicate], ContractPredicate]:
     """Register one structural contract predicate."""
 
@@ -33,6 +54,12 @@ def register_contract(contract: str) -> Callable[[ContractPredicate], ContractPr
         return fn
 
     return deco
+
+
+def _register_spec(spec: _ContractSpec) -> None:
+    if spec.contract in _SPECS:
+        raise ValueError(f"Contract spec already registered: {spec.contract}")
+    _SPECS[spec.contract] = spec
 
 
 def _req(axis: AxisName, bit: str) -> AxisRequirement:
@@ -181,6 +208,17 @@ def _match_from_kind(
     )
 
 
+_register_spec(_ContractSpec(
+    contract="metadata_key_roundtrip",
+    container_kinds=("metadata_carrier",),
+    required_bits=(
+        AxisRequirement("dfg", "keyed_write"),
+        AxisRequirement("dfg", "keyed_read"),
+        AxisRequirement("struct", "literal_key"),
+    ),
+))
+
+
 @register_contract("metadata_key_roundtrip")
 def _compile_metadata_key_roundtrip(
     profile: AxisProfile,
@@ -200,6 +238,23 @@ def _compile_metadata_key_roundtrip(
         ),
         traversal_mode="deferred_binding_flow",
     )
+
+
+_register_spec(_ContractSpec(
+    contract="callable_container_dispatch",
+    container_kinds=("middleware_chain", "signal_register"),
+    required_bits=(
+        AxisRequirement("dfg", "callable_value"),
+        AxisRequirement("dfg", "container_write_value"),
+        AxisRequirement("dfg", "iteration_source"),
+        AxisRequirement("cfg", "value_call"),
+    ),
+    payload_rule_name=(
+        "payload_identity:container_write_value.container"
+        "==iteration_source.iterable"
+    ),
+    payload_rule=lambda profile: _shared_write_iteration_container(profile) is not None,
+))
 
 
 @register_contract("callable_container_dispatch")
@@ -228,6 +283,17 @@ def _compile_callable_container_dispatch(
     )
 
 
+_register_spec(_ContractSpec(
+    contract="provider_default_binding",
+    container_kinds=("di_container",),
+    required_bits=(
+        AxisRequirement("struct", "parameter_default"),
+        AxisRequirement("dfg", "parameter_default_value"),
+        AxisRequirement("dfg", "callable_value"),
+    ),
+))
+
+
 @register_contract("provider_default_binding")
 def _compile_provider_default_binding(
     profile: AxisProfile,
@@ -247,6 +313,13 @@ def _compile_provider_default_binding(
         ),
         traversal_mode="deferred_binding_flow",
     )
+
+
+_register_spec(_ContractSpec(
+    contract="proxy_indirection",
+    container_kinds=("proxy_object",),
+    required_bits=(),
+))
 
 
 @register_contract("proxy_indirection")
@@ -270,6 +343,13 @@ def _compile_proxy_indirection(
     )
 
 
+_register_spec(_ContractSpec(
+    contract="data_shape_declaration",
+    container_kinds=("data_model",),
+    required_bits=(),
+))
+
+
 @register_contract("data_shape_declaration")
 def _compile_data_shape_declaration(
     profile: AxisProfile,
@@ -284,6 +364,17 @@ def _compile_data_shape_declaration(
         kind=kind,
         traversal_mode=None,
     )
+
+
+_register_spec(_ContractSpec(
+    contract="configuration_carrier",
+    container_kinds=("config_carrier",),
+    required_bits=(
+        AxisRequirement("struct", "class_def"),
+        AxisRequirement("struct", "class_attribute"),
+        AxisRequirement("struct", "annotation"),
+    ),
+))
 
 
 @register_contract("configuration_carrier")
@@ -343,36 +434,48 @@ class AxisContractCompiler:
         profile: AxisProfile,
         container_matches: Iterable[ContainerKindMatch],
     ) -> list[AxisContractDiagnostic]:
+        """Per-bit diagnostics for every contract whose container kind is
+        matched but whose proof did not complete.
+
+        Driven by ``_SPECS`` so adding a contract automatically adds its
+        diagnostic. A contract with no required bits and no payload rule
+        cannot produce a missing-bit diagnostic; if such a contract has its
+        kind matched but did not compile, that is a predicate bug, and the
+        diagnostic surfaces it as ``contract_predicate_returned_none:<name>``.
+        """
         matches = tuple(container_matches)
+        proven = {match.contract for match in self.compile(profile, matches)}
         diagnostics: list[AxisContractDiagnostic] = []
-        middleware = _kind_match(matches, "middleware_chain", "signal_register")
-        if middleware is not None and not any(
-            contract.contract == "callable_container_dispatch"
-            for contract in self.compile(profile, matches)
-        ):
-            requirements = (
-                _req("dfg", "callable_value"),
-                _req("dfg", "container_write_value"),
-                _req("dfg", "iteration_source"),
-                _req("cfg", "value_call"),
-            )
-            missing = [
+        for spec in _SPECS.values():
+            if spec.contract in proven:
+                continue
+            kind = _kind_match(matches, *spec.container_kinds)
+            if kind is None:
+                continue
+            missing: list[str] = [
                 f"{req.axis}:{req.bit}"
-                for req in requirements
+                for req in spec.required_bits
                 if not profile.has(req.axis, req.bit)
             ]
-            if not _shared_write_iteration_container(profile):
-                missing.append("payload_identity:container_write_value.container==iteration_source.iterable")
+            if (
+                spec.payload_rule is not None
+                and spec.payload_rule_name
+                and not spec.payload_rule(profile)
+            ):
+                missing.append(spec.payload_rule_name)
+            if not missing:
+                missing.append(f"contract_predicate_returned_none:{spec.contract}")
+            present = tuple(
+                req for req in spec.required_bits if profile.has(req.axis, req.bit)
+            )
             diagnostics.append(
                 AxisContractDiagnostic(
-                    contract="callable_container_dispatch",
+                    contract=spec.contract,
                     symbol_uid=profile.symbol_uid,
                     qualified_name=profile.qualified_name,
-                    container_kind=middleware.kind,
+                    container_kind=kind.kind,
                     missing=tuple(missing),
-                    present_bits=tuple(
-                        req for req in requirements if profile.has(req.axis, req.bit)
-                    ),
+                    present_bits=present,
                 )
             )
         return diagnostics
