@@ -42,11 +42,20 @@ def _profile(facts: list[AxisFact], *, uid="u:x", qn="pkg.X", kind="class") -> A
 class _StubProbe:
     """Test probe — answers are constructed inline per test."""
 
-    def __init__(self, *, marker_kinds: set[str] | None = None, dispersion: float = 0.0, driver: bool = False, kind_edges: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        marker_kinds: set[str] | None = None,
+        dispersion: float = 0.0,
+        driver: bool = False,
+        kind_edges: int = 0,
+        peer_kinds_by_prefix: dict[str, set[str]] | None = None,
+    ) -> None:
         self._marker_kinds = marker_kinds or set()
         self._dispersion = dispersion
         self._driver = driver
         self._kind_edges = kind_edges
+        self._peer_kinds_by_prefix = peer_kinds_by_prefix or {}
 
     def library_marker_kinds(self, symbol_uid: str) -> set[str]:
         return set(self._marker_kinds)
@@ -59,6 +68,80 @@ class _StubProbe:
 
     def outgoing_kind_edges(self, symbol_uid, kinds) -> int:  # type: ignore[no-untyped-def]
         return self._kind_edges
+
+    def outgoing_handles_count(self, symbol_uid: str) -> int:
+        return 0
+
+    def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
+        return set(self._peer_kinds_by_prefix.get(qualified_name_prefix, set()))
+
+
+# ---------------------------------------------------------------------------
+# registry_class — cross-symbol structural floor under marker-only kinds
+# ---------------------------------------------------------------------------
+
+
+def test_registry_class_fires_when_peer_method_carries_metadata_carrier():
+    profile = _profile(
+        [_fact("struct", "class_def", uid="u:App", qn="sansio.app.App", kind="class")],
+        uid="u:App",
+        qn="sansio.app.App",
+        kind="class",
+    )
+    probe = _StubProbe(
+        peer_kinds_by_prefix={"sansio.app.App.": {"metadata_carrier"}},
+    )
+
+    matches = ContainerKindClassifier(probe).classify(profile)
+
+    kinds = {m.kind for m in matches}
+    assert "registry_class" in kinds
+    rc = next(m for m in matches if m.kind == "registry_class")
+    assert rc.payload["registry_method_kinds"] == ["metadata_carrier"]
+    assert any("peer_method_kinds:" in p for p in rc.evidence_probes)
+
+
+def test_registry_class_fires_for_middleware_chain_peer_too():
+    profile = _profile(
+        [_fact("struct", "class_def", uid="u:H", qn="pkg.Hub", kind="class")],
+        uid="u:H", qn="pkg.Hub", kind="class",
+    )
+    probe = _StubProbe(
+        peer_kinds_by_prefix={"pkg.Hub.": {"middleware_chain", "config_carrier"}},
+    )
+
+    matches = ContainerKindClassifier(probe).classify(profile)
+
+    assert "registry_class" in {m.kind for m in matches}
+
+
+def test_registry_class_does_not_fire_without_registry_peers():
+    profile = _profile(
+        [_fact("struct", "class_def", uid="u:M", qn="pkg.Plain", kind="class")],
+        uid="u:M", qn="pkg.Plain", kind="class",
+    )
+    # Peer methods exist but carry only data_model / config_carrier kinds.
+    probe = _StubProbe(
+        peer_kinds_by_prefix={"pkg.Plain.": {"data_model", "config_carrier"}},
+    )
+
+    matches = ContainerKindClassifier(probe).classify(profile)
+
+    assert "registry_class" not in {m.kind for m in matches}
+
+
+def test_registry_class_does_not_fire_on_non_class_symbols():
+    profile = _profile(
+        [_fact("struct", "function_def", uid="u:f", qn="pkg.f", kind="function")],
+        uid="u:f", qn="pkg.f", kind="function",
+    )
+    probe = _StubProbe(
+        peer_kinds_by_prefix={"pkg.f.": {"metadata_carrier"}},
+    )
+
+    matches = ContainerKindClassifier(probe).classify(profile)
+
+    assert "registry_class" not in {m.kind for m in matches}
 
 
 # ---------------------------------------------------------------------------

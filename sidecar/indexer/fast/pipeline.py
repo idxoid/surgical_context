@@ -927,6 +927,57 @@ def _embed_phase(
     return len(symbol_docs), len(removed_uids)
 
 
+class _PeerAwarePeerProbe:
+    """Wrap a ``GraphContextProbe`` with a per-file peer-kind lookup.
+
+    Delegates every probe method to the wrapped base probe (or to a
+    ``NullGraphProbe``-style return when no base probe is present) and only
+    overrides ``peer_container_kinds_for`` to consult the supplied
+    ``peer_kinds_by_qn`` map. The map carries the container kinds of
+    every non-class profile in the same file, keyed by qualified_name.
+    """
+
+    def __init__(
+        self,
+        base: "GraphContextProbe | None",
+        peer_kinds_by_qn: dict[str, set[str]],
+    ) -> None:
+        self._base = base
+        self._peer_kinds_by_qn = peer_kinds_by_qn
+
+    def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
+        collected: set[str] = set()
+        for qn, kinds in self._peer_kinds_by_qn.items():
+            if qn.startswith(qualified_name_prefix):
+                collected |= kinds
+        return collected
+
+    def outgoing_kind_edges(self, symbol_uid, kinds):
+        if self._base is None:
+            return 0
+        return self._base.outgoing_kind_edges(symbol_uid, kinds)
+
+    def library_marker_kinds(self, symbol_uid):
+        if self._base is None:
+            return set()
+        return self._base.library_marker_kinds(symbol_uid)
+
+    def caller_package_dispersion(self, symbol_uid):
+        if self._base is None:
+            return 0.0
+        return self._base.caller_package_dispersion(symbol_uid)
+
+    def is_cfg_driver(self, symbol_uid):
+        if self._base is None:
+            return False
+        return self._base.is_cfg_driver(symbol_uid)
+
+    def outgoing_handles_count(self, symbol_uid):
+        if self._base is None:
+            return 0
+        return self._base.outgoing_handles_count(symbol_uid)
+
+
 def _axis_payloads_for_extracted_file(
     ex: ExtractedFile,
     *,
@@ -955,11 +1006,7 @@ def _axis_payloads_for_extracted_file(
     except SyntaxError:
         return {}
 
-    classifier = (
-        ContainerKindClassifier(probe=graph_probe)
-        if graph_probe is not None
-        else ContainerKindClassifier()
-    )
+    base_probe = graph_probe if graph_probe is not None else None
     contract_compiler = AxisContractCompiler()
     payloads: dict[str, dict] = {}
 
@@ -1012,8 +1059,40 @@ def _axis_payloads_for_extracted_file(
             )
         profiles_by_uid[sym.uid] = stub
 
+    # Two-pass classification: methods/variables/etc. first so the per-file
+    # peer-kind map is fully populated before class profiles are classified.
+    # ``registry_class`` reads this map through the peer-aware probe wrapper
+    # below to fire when a class's same-file methods carry registry-shape
+    # kinds (``metadata_carrier`` / ``middleware_chain``).
+    classifier = (
+        ContainerKindClassifier(probe=base_probe)
+        if base_probe is not None
+        else ContainerKindClassifier()
+    )
+    container_kinds_by_uid: dict[str, list] = {}
+    for uid, profile in profiles_by_uid.items():
+        if profile.symbol_kind == "class":
+            continue
+        container_kinds_by_uid[uid] = classifier.classify(profile)
+
+    peer_kinds_by_qn: dict[str, set[str]] = {}
+    for uid, matches in container_kinds_by_uid.items():
+        prof = profiles_by_uid[uid]
+        if not matches:
+            continue
+        peer_kinds_by_qn.setdefault(prof.qualified_name, set()).update(
+            match.kind for match in matches
+        )
+
+    class_probe = _PeerAwarePeerProbe(base_probe, peer_kinds_by_qn)
+    class_classifier = ContainerKindClassifier(probe=class_probe)
+    for uid, profile in profiles_by_uid.items():
+        if profile.symbol_kind != "class":
+            continue
+        container_kinds_by_uid[uid] = class_classifier.classify(profile)
+
     for profile in profiles_by_uid.values():
-        container_kinds = classifier.classify(profile)
+        container_kinds = container_kinds_by_uid.get(profile.symbol_uid, [])
         contracts = contract_compiler.compile(profile, container_kinds)
         payload = {
             "ast_kind_bits": sorted({fact.ast_kind for fact in profile.facts}),

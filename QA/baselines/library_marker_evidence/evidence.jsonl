@@ -1,27 +1,27 @@
-{"canonical_qn": "aiohttp.web.Application", "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "aiohttp.web.UrlDispatcher", "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "arq.connections.ArqRedis", "declared_kind": "task_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "blinker.Namespace", "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "blinker.Signal", "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "celery.app.base.Celery", "declared_kind": "task_register", "method_evidence": [{"method_qualified_name": "app.base.Celery.send_task", "method_uid": "ac078e1874f83dfc", "registry_contracts": ["metadata_key_roundtrip"]}], "status": "structurally_backed", "workspace": "qa_repo/celery@axis-v4+axis_python_v1"}
-{"canonical_qn": "celery.utils.dispatch.Signal", "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "django.dispatch.Signal", "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "django.dispatch.dispatcher.Signal", "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "dramatiq.Broker", "declared_kind": "task_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "fastapi.applications.FastAPI", "declared_kind": "web_route_register", "method_evidence": [], "status": "unproven", "workspace": "qa_repo/fastapi@axis-v4+axis_python_v1"}
-{"canonical_qn": "fastapi.routing.APIRouter", "declared_kind": "web_route_register", "method_evidence": [], "status": "unproven", "workspace": "qa_repo/fastapi@axis-v4+axis_python_v1"}
-{"canonical_qn": "flask.app.Flask", "declared_kind": "web_route_register", "method_evidence": [{"method_qualified_name": "sansio.app.App.add_url_rule", "method_uid": "8d5a7e8e5739551d", "registry_contracts": ["metadata_key_roundtrip"]}], "status": "structurally_backed", "workspace": "qa_repo/flask@axis-v4+axis_python_v1"}
-{"canonical_qn": "flask.blueprints.Blueprint", "declared_kind": "web_route_register", "method_evidence": [], "status": "unproven", "workspace": "qa_repo/flask@axis-v4+axis_python_v1"}
-{"canonical_qn": "huey.Huey", "declared_kind": "task_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "rq.Queue", "declared_kind": "task_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "sanic.Sanic", "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "sanic.blueprints.Blueprint", "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "starlette.applications.Starlette", "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "starlette.exceptions.ExceptionMiddleware", "declared_kind": "error_dispatch", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "starlette.middleware.exceptions.ExceptionMiddleware", "declared_kind": "error_dispatch", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "starlette.routing.Mount", "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "starlette.routing.Route", "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "starlette.routing.Router", "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "werkzeug.local.Local", "declared_kind": "proxy_object", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "werkzeug.local.LocalProxy", "declared_kind": "proxy_object", "method_evidence": [], "status": "absent", "workspace": null}
-{"canonical_qn": "werkzeug.local.LocalStack", "declared_kind": "proxy_object", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "aiohttp.web.Application", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "aiohttp.web.UrlDispatcher", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "arq.connections.ArqRedis", "class_registry_evidence": null, "declared_kind": "task_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "blinker.Namespace", "class_registry_evidence": null, "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "blinker.Signal", "class_registry_evidence": null, "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "celery.app.base.Celery", "class_registry_evidence": "peer_method_kinds:metadata_carrier,middleware_chain", "declared_kind": "task_register", "method_evidence": [{"method_qualified_name": "app.base.Celery.send_task", "method_uid": "ac078e1874f83dfc", "registry_contracts": ["metadata_key_roundtrip"]}], "status": "structurally_backed", "workspace": "qa_repo/celery@axis-v4+axis_python_v1"}
+{"canonical_qn": "celery.utils.dispatch.Signal", "class_registry_evidence": null, "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "django.dispatch.Signal", "class_registry_evidence": null, "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "django.dispatch.dispatcher.Signal", "class_registry_evidence": null, "declared_kind": "signal_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "dramatiq.Broker", "class_registry_evidence": null, "declared_kind": "task_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "fastapi.applications.FastAPI", "class_registry_evidence": "peer_method_kinds:metadata_carrier,middleware_chain", "declared_kind": "web_route_register", "method_evidence": [], "status": "structurally_backed", "workspace": "qa_repo/fastapi@axis-v4+axis_python_v1"}
+{"canonical_qn": "fastapi.routing.APIRouter", "class_registry_evidence": "peer_method_kinds:middleware_chain", "declared_kind": "web_route_register", "method_evidence": [], "status": "structurally_backed", "workspace": "qa_repo/fastapi@axis-v4+axis_python_v1"}
+{"canonical_qn": "flask.app.Flask", "class_registry_evidence": "peer_method_kinds:middleware_chain", "declared_kind": "web_route_register", "method_evidence": [{"method_qualified_name": "sansio.app.App.add_url_rule", "method_uid": "8d5a7e8e5739551d", "registry_contracts": ["metadata_key_roundtrip"]}], "status": "structurally_backed", "workspace": "qa_repo/flask@axis-v4+axis_python_v1"}
+{"canonical_qn": "flask.blueprints.Blueprint", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "unproven", "workspace": "qa_repo/flask@axis-v4+axis_python_v1"}
+{"canonical_qn": "huey.Huey", "class_registry_evidence": null, "declared_kind": "task_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "rq.Queue", "class_registry_evidence": null, "declared_kind": "task_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "sanic.Sanic", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "sanic.blueprints.Blueprint", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "starlette.applications.Starlette", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "starlette.exceptions.ExceptionMiddleware", "class_registry_evidence": null, "declared_kind": "error_dispatch", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "starlette.middleware.exceptions.ExceptionMiddleware", "class_registry_evidence": null, "declared_kind": "error_dispatch", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "starlette.routing.Mount", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "starlette.routing.Route", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "starlette.routing.Router", "class_registry_evidence": null, "declared_kind": "web_route_register", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "werkzeug.local.Local", "class_registry_evidence": null, "declared_kind": "proxy_object", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "werkzeug.local.LocalProxy", "class_registry_evidence": null, "declared_kind": "proxy_object", "method_evidence": [], "status": "absent", "workspace": null}
+{"canonical_qn": "werkzeug.local.LocalStack", "class_registry_evidence": null, "declared_kind": "proxy_object", "method_evidence": [], "status": "absent", "workspace": null}

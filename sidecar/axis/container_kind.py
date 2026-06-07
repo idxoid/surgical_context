@@ -80,6 +80,14 @@ class GraphContextProbe(Protocol):
         cross-axis proof that the marker-only kind (web_route_register,
         task_register, error_dispatch) is real, not just instantiated."""
 
+    def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
+        """Union of container kinds across peer profiles whose qualified_name
+        starts with ``qualified_name_prefix``. The pipeline uses a per-file
+        wrapping probe so a class predicate can ask
+        ``probe.peer_container_kinds_for(class_qn + '.')`` and see what kinds
+        its same-file methods carry — the structural floor under
+        ``registry_class``. The default probe knows no peers (empty set)."""
+
 
 class NullGraphProbe:
     """Default probe: no graph context available, every probe returns 'no'."""
@@ -98,6 +106,9 @@ class NullGraphProbe:
 
     def outgoing_handles_count(self, symbol_uid: str) -> int:
         return 0
+
+    def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
+        return set()
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +192,50 @@ def _cfg(profile: AxisProfile, bit: str) -> list[AxisFact]:
 # from a library marker) ALSO get a predicate but it short-circuits unless
 # the probe answers.
 # ---------------------------------------------------------------------------
+
+
+@register_kind("registry_class")
+def _classify_registry_class(
+    profile: AxisProfile,
+    probe: GraphContextProbe,
+) -> ContainerKindMatch | None:
+    """A class whose own methods carry a registry-shape contract.
+
+    Structural floor under the marker-only registry kinds
+    (``web_route_register``, ``task_register``, ``signal_register``,
+    ``error_dispatch``). When a class definition's same-file methods
+    already prove the ``metadata_key_roundtrip`` (keyed registry write +
+    read of the same key) or ``callable_container_dispatch`` (callable
+    write + iteration + invocation on a shared container) pattern, the
+    *class itself* is structurally a registry — independent of the
+    catalogue, independent of any external marker, independent of name
+    patterns.
+
+    Cross-file inheritance walking (Flask inheriting App's registry
+    method from a different file) is not yet handled here; that requires
+    a workspace-level pass and is the next step in the catalogue
+    replacement path. The 3 currently ``unproven`` catalogue entries
+    (Flask, Blueprint, FastAPI's APIRouter) need that inheritance
+    aggregation to convert to ``backed`` structurally.
+    """
+    if profile.symbol_kind != "class":
+        return None
+    prefix = f"{profile.qualified_name}."
+    peer_kinds = probe.peer_container_kinds_for(prefix)
+    registry_method_kinds = {"metadata_carrier", "middleware_chain"}
+    matched = peer_kinds & registry_method_kinds
+    if not matched:
+        return None
+    return ContainerKindMatch(
+        kind="registry_class",
+        symbol_uid=profile.symbol_uid,
+        qualified_name=profile.qualified_name,
+        evidence_bits=(("struct", "class_def"),),
+        evidence_probes=(
+            f"peer_method_kinds:{','.join(sorted(matched))}",
+        ),
+        payload={"registry_method_kinds": sorted(matched)},
+    )
 
 
 @register_kind("data_model")

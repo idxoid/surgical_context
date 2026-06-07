@@ -86,15 +86,18 @@ def test_unproven_entries_do_not_silently_grow(baseline: dict) -> None:
     can't yet detect. Growth here is hidden debt — flag it.
     """
     unproven = baseline["by_status"].get("unproven", 0)
-    # Initial baseline: 3 unproven (flask.blueprints.Blueprint,
-    # fastapi.applications.FastAPI, fastapi.routing.APIRouter). Loosen this
-    # once the L2 registry_class predicate lands and converts them to backed.
-    assert unproven <= 3, (
+    # After the per-file ``registry_class`` predicate landed, the unproven
+    # ceiling dropped from 3 → 1. The remaining entry is
+    # ``flask.blueprints.Blueprint`` — its own file is a thin wrapper that
+    # inherits the registration methods from ``sansio.blueprints.Blueprint``
+    # in a different file. Cross-file inheritance walking in registry_class
+    # (workspace-level pass) is the next reduction step.
+    assert unproven <= 1, (
         f"{unproven} catalogue entries are unproven against indexed-library "
-        "evidence (was 3 at baseline). Either:\n"
+        "evidence (was 1 at baseline). Either:\n"
         "  - the entry is wrong (remove it from catalogue), OR\n"
-        "  - the L2 predicate set needs the registry_class fingerprint to "
-        "    catch the structural shape of these classes.\n"
+        "  - the L2 predicate set needs cross-file inheritance aggregation\n"
+        "    in registry_class to catch the structural shape.\n"
         "If this is intentional, rerun the evidence report and update the "
         "expected ceiling in this test."
     )

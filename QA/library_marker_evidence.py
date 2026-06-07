@@ -66,6 +66,7 @@ class CatalogueEvidence:
     status: str  # structurally_backed | unproven | absent
     workspace: str | None
     method_evidence: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    class_registry_evidence: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +75,7 @@ class CatalogueEvidence:
             "status": self.status,
             "workspace": self.workspace,
             "method_evidence": list(self.method_evidence),
+            "class_registry_evidence": self.class_registry_evidence,
         }
 
 
@@ -98,20 +100,22 @@ def _find_class_with_evidence(
     workspace_id: str,
     package: str,
     canonical_qn: str,
-) -> tuple[bool, list[dict[str, Any]]] | None:
-    """If ``canonical_qn`` belongs to this workspace's package, find the class
-    Symbol and collect its methods' contract lists, including methods inherited
-    from in-workspace ancestors via ``DEPENDS_ON``.
+) -> tuple[bool, list[dict[str, Any]], str | None] | None:
+    """Resolve the canonical class in the workspace and collect both proof
+    channels:
+
+      - **method contracts** — walk ``DEPENDS_ON`` ancestry + ``HAS_API`` to
+        the class's methods (own and inherited), look up their persisted
+        ``axis_contracts_json`` in Lance, and keep the registry-shape
+        contracts (``metadata_key_roundtrip`` / ``callable_container_dispatch``).
+      - **class registry_class kind** — the L2 ``registry_class`` predicate
+        runs at index time and records the class itself as registry when its
+        per-file peer methods carry registry kinds; the gate trusts this
+        verdict as another structural channel.
 
     Returns ``None`` when the canonical QN doesn't belong to this workspace's
-    package. Otherwise returns ``(class_found, method_evidence)``.
-
-    Including the inheritance chain is structurally honest: registry concerns
-    routinely live on a base class (``sansio.app.App.add_url_rule`` rather
-    than on a concrete ``flask.app.Flask`` override). A class IS a registry
-    by virtue of its OWN methods OR the methods of any class in its
-    structural ancestry — walking ``DEPENDS_ON`` is the parser-derived
-    inheritance edge.
+    package. Otherwise returns ``(class_found, method_evidence,
+    class_registry_class_evidence)``.
     """
     prefix = f"{package}."
     if not canonical_qn.startswith(prefix):
@@ -136,11 +140,45 @@ def _find_class_with_evidence(
             qn=local_qn,
         ).single()
     if rec is None or rec.get("class_uid") is None:
-        return (False, [])
+        return (False, [], None)
     method_uids = [u for u in (rec.get("method_uids") or []) if u]
-    if not method_uids:
-        return (True, [])
-    return (True, _collect_method_contract_evidence(db, workspace_id, method_uids))
+    class_uid = str(rec["class_uid"])
+    method_evidence = (
+        _collect_method_contract_evidence(db, workspace_id, method_uids)
+        if method_uids
+        else []
+    )
+    class_kind_evidence = _check_class_registry_kind(workspace_id, class_uid)
+    return (True, method_evidence, class_kind_evidence)
+
+
+def _check_class_registry_kind(workspace_id: str, class_uid: str) -> str | None:
+    """Return the ``peer_method_kinds`` evidence string from the class's
+    ``registry_class`` ContainerKindMatch, or ``None`` if the class wasn't
+    classified as such.
+    """
+    import lancedb
+
+    table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
+    rows = table.to_lance().to_table(
+        columns=["uid", "axis_container_kinds_json", "workspace_id"],
+    ).to_pylist()
+    for row in rows:
+        if row.get("workspace_id") != workspace_id or row.get("uid") != class_uid:
+            continue
+        try:
+            kinds_json = json.loads(row.get("axis_container_kinds_json") or "[]")
+        except json.JSONDecodeError:
+            return None
+        for match in kinds_json:
+            if match.get("kind") == "registry_class":
+                evidence_probes = match.get("evidence_probes") or []
+                return (
+                    ", ".join(str(p) for p in evidence_probes)
+                    or "registry_class"
+                )
+        return None
+    return None
 
 
 def _collect_method_contract_evidence(
@@ -215,6 +253,7 @@ def evaluate_catalogue(
         declared_kind = LIBRARY_MARKER_CATALOGUE[canonical_qn]
         matched_workspace: str | None = None
         method_evidence: list[dict[str, Any]] = []
+        class_registry_evidence: str | None = None
         found_class = False
         for ws in workspaces:
             package = package_for_ws.get(ws)
@@ -223,14 +262,14 @@ def evaluate_catalogue(
             result = _find_class_with_evidence(db, ws, package, canonical_qn)
             if result is None:
                 continue
-            found_class, method_evidence = result
+            found_class, method_evidence, class_registry_evidence = result
             matched_workspace = ws
             break
 
         if matched_workspace is None or not found_class:
             status = "absent"
             ws_label: str | None = None
-        elif method_evidence:
+        elif method_evidence or class_registry_evidence:
             status = "structurally_backed"
             ws_label = matched_workspace
         else:
@@ -244,6 +283,7 @@ def evaluate_catalogue(
                 status=status,
                 workspace=ws_label,
                 method_evidence=tuple(method_evidence),
+                class_registry_evidence=class_registry_evidence,
             )
         )
     return out
@@ -274,7 +314,13 @@ def _render_markdown(rows: list[CatalogueEvidence], summary: dict[str, Any]) -> 
     ]
     for kind, statuses in summary["by_kind"].items():
         lines.append(f"- **{kind}**: `{json.dumps(statuses, sort_keys=True)}`")
-    lines.extend(["", "## Entries", "", "| canonical_qn | kind | status | workspace | method evidence |", "|---|---|---|---|---|"])
+    lines.extend([
+        "",
+        "## Entries",
+        "",
+        "| canonical_qn | kind | status | workspace | method evidence | registry_class |",
+        "|---|---|---|---|---|---|",
+    ])
     for row in rows:
         evidence_brief = (
             ", ".join(
@@ -284,8 +330,9 @@ def _render_markdown(rows: list[CatalogueEvidence], summary: dict[str, Any]) -> 
             or "-"
         )
         ws = row.workspace or "-"
+        rc = row.class_registry_evidence or "-"
         lines.append(
-            f"| `{row.canonical_qn}` | {row.declared_kind} | **{row.status}** | {ws} | {evidence_brief} |"
+            f"| `{row.canonical_qn}` | {row.declared_kind} | **{row.status}** | {ws} | {evidence_brief} | {rc} |"
         )
     return "\n".join(lines) + "\n"
 

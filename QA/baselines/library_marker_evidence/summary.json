@@ -15,14 +15,14 @@
     },
     "web_route_register": {
       "absent": 8,
-      "structurally_backed": 1,
-      "unproven": 3
+      "structurally_backed": 3,
+      "unproven": 1
     }
   },
   "by_status": {
     "absent": 22,
-    "structurally_backed": 2,
-    "unproven": 3
+    "structurally_backed": 4,
+    "unproven": 1
   },
   "total": 27
 }
