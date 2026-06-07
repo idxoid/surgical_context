@@ -1,7 +1,33 @@
 """Catalogue: external symbol qualified name → container kind.
 
-The catalogue is the place — and the only place — where the axis layer
-admits library-specific knowledge. The discipline:
+⚠️ TRANSITION SHIM — DO NOT GROW WITHOUT REPLACEMENT PLAN.
+
+This module is a hand-authored ``external_qn → kind`` table. By shape it is
+the same fixture pattern that Phase 9.5 removed (``_target_query_bonus``,
+``_GENERIC_AUTO_ROLE_PLANS``, …) — only keyed on upstream qualified names
+instead of local symbol names. It exists ONLY so the L2 layer has SOME
+non-zero surface on consumer-style ``app = FastAPI()`` while the structural
+catalogue is built.
+
+The structural endgame (replacement, not extension):
+
+  1. Index external library stubs (pyi / typeshed for starlette, flask,
+     celery, …) under the same L1 axis extractor.
+  2. Run the L2 ``ContainerKindClassifier`` over the resulting profiles.
+     The bit-signature of ``starlette.routing.Router`` will classify as
+     ``web_route_register`` because the class has the registry write /
+     read / dispatch fingerprint — not because we wrote it down here.
+  3. Cache the result as ``external_qn → {kind, bit_signature_hash}``.
+     The catalogue file becomes the *output* of an index pass, not an
+     input authored by hand.
+  4. Delete every literal entry in this module. Any kind that cannot be
+     proved structurally on the external symbol's own AST is unearned
+     and must stay unproven — same rule as for local code.
+
+Until that bootstrap exists, treat every entry below as debt. Adding a
+new entry is paying interest on a loan that has not been refinanced.
+
+The discipline for the transition period:
 
   - An entry is **(external qualified_name, container_kind)**. The
     qualified_name is workspace-independent; the kind is one of the
