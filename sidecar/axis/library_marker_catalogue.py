@@ -77,6 +77,16 @@ _WEB_ROUTE_REGISTER: tuple[str, ...] = (
     "aiohttp.web.UrlDispatcher",
     "sanic.Sanic",
     "sanic.blueprints.Blueprint",
+    # Re-export aliases as users actually import them: ``from flask import
+    # Flask`` resolves to ``flask.Flask`` in the consumer's parser stream,
+    # not to the internal ``flask.app.Flask``. Listed here because the
+    # transition shim has no cross-workspace re-export resolution; the
+    # structural replacement (index ``flask/__init__.py`` and follow
+    # ``RE_EXPORTS`` edges) makes these aliases automatic.
+    "flask.Flask",
+    "flask.Blueprint",
+    "fastapi.FastAPI",
+    "fastapi.APIRouter",
 )
 
 # ---------------------------------------------------------------------------

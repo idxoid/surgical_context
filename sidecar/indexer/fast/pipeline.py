@@ -1394,15 +1394,6 @@ def run_fast_indexing(
         # their PROXY_OF / via_proxy neighbors.
         degree_seeds |= proxy_uids
 
-        # Stage 4.65: DECORATED_BY + HANDLES edges. Not counted into materialized degree
-        # (kept out of _DEGREE_REL_PATTERN to avoid a global degree shift), so it
-        # need not precede the degree phase for counting.
-        t_stage = time.perf_counter()
-        stats["decorators_linked"] = _decorator_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
-
         # Stage 4.655: READS_ATTR + WRITES_ATTR edges. Same syntactic-fact
         # pattern as decorators / type references — runs after _apply_graph
         # so attribute symbols exist. Kept out of degree materialisation.
@@ -1442,11 +1433,26 @@ def run_fast_indexing(
 
         # Stage 4.668: INSTANTIATES edges (caller -> constructed class). Like
         # USES_TYPE, a low-weight derived relation, not in materialized degree.
+        # Runs BEFORE decorators because the decorator linker's variable-owner
+        # branch reads INSTANTIATES_EXTERNAL to decide whether a module-level
+        # variable qualifies as a registry hook (e.g. ``app = FastAPI()`` →
+        # ``@app.get(...)``).
         t_stage = time.perf_counter()
         stats["instantiations_linked"] = _instantiation_phase(
             diffs, db, workspace_id, reporter, project_path
         )
         stats["timings_sec"]["instantiations"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.669: DECORATED_BY + HANDLES edges. Not counted into materialized
+        # degree (kept out of _DEGREE_REL_PATTERN to avoid a global degree shift),
+        # so it need not precede the degree phase for counting. Must run AFTER
+        # the instantiation phase so the variable-owner branch can see
+        # INSTANTIATES_EXTERNAL edges on registry-like module-level variables.
+        t_stage = time.perf_counter()
+        stats["decorators_linked"] = _decorator_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.67: INJECTS edges (DI bindings). Like USES_TYPE, not in degree.
         t_stage = time.perf_counter()

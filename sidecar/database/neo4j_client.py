@@ -1578,6 +1578,41 @@ class Neo4jClient:
             decorators=decorators,
             workspace_id=workspace_id,
         )
+        # Variable-owner branch: ``@app.get(...)`` where ``app`` is a
+        # module-level Variable Symbol holding an external instance (e.g.
+        # ``app = FastAPI()`` / ``app = Flask(__name__)``). The variable is
+        # admitted as an owner only when it carries at least one outgoing
+        # ``INSTANTIATES_EXTERNAL`` edge — that is the structural proof
+        # that the variable is *an instance of something external*, which
+        # is the kind of object that legitimately acts as a registry hook
+        # in a decorator. Plain unrelated module-level variables don't get
+        # promoted to decorator owners and stay out of the HANDLES graph.
+        tx.run(
+            """
+            UNWIND $decorators AS d
+            WITH d
+            WHERE coalesce(d.decorator_owner_qualified_name, '') <> ''
+            MATCH (decorated:Symbol {uid: d.decorated_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(owner:Symbol)
+            WHERE (owner.qualified_name = d.decorator_owner_qualified_name
+               OR owner.name = d.decorator_owner_name)
+              AND coalesce(owner.kind, '') = 'variable'
+            MATCH (owner)-[ext:INSTANTIATES_EXTERNAL]->(:ExternalSymbol)
+            WHERE coalesce(ext.workspace_id, $workspace_id) = $workspace_id
+            WITH decorated, d, owner
+            ORDER BY
+              CASE WHEN owner.qualified_name = d.decorator_owner_qualified_name THEN 0 ELSE 1 END,
+              size(owner.qualified_name) ASC
+            WITH decorated, d, collect(owner)[0] AS owner
+            WHERE owner IS NOT NULL AND decorated <> owner
+            MERGE (owner)-[h:HANDLES {workspace_id: $workspace_id}]->(decorated)
+            SET h.resolver = 'decorator-owner-v1-variable',
+                h.decorator_name = d.decorator_name,
+                h.decorator_owner_name = d.decorator_owner_name
+            """,
+            decorators=decorators,
+            workspace_id=workspace_id,
+        )
 
     def link_attr_accesses(
         self,
