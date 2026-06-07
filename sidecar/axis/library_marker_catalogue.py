@@ -92,8 +92,11 @@ _WEB_ROUTE_REGISTER: tuple[str, ...] = (
 # callables for deferred execution by a worker loop reading the same registry.
 # ---------------------------------------------------------------------------
 _TASK_REGISTER: tuple[str, ...] = (
-    "celery.app.Celery",
-    "celery.Celery",
+    # Celery's actual class lives at ``celery.app.base.Celery`` — the
+    # ``celery.app.Celery`` and ``celery.Celery`` consumer forms are re-export
+    # aliases resolved structurally via the alias map. Surfaced by
+    # ``QA.library_marker_evidence``.
+    "celery.app.base.Celery",
     "dramatiq.Broker",
     "rq.Queue",
     "huey.Huey",

@@ -93,7 +93,7 @@ def test_neo4j_probe_catalogue_query_walks_extends_and_instantiates_external():
 def test_neo4j_probe_returns_union_when_file_imports_multiple_marker_packages():
     db = _Db([
         {"symbol_kind": "class", "proxy_rel_count": 0},
-        {"qns": ["celery.app.Celery", "werkzeug.local.LocalProxy"]},
+        {"qns": ["celery.app.base.Celery", "werkzeug.local.LocalProxy"]},
     ])
     probe = Neo4jGraphContextProbe(db, "ws")
 

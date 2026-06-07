@@ -1,0 +1,28 @@
+{
+  "by_kind": {
+    "error_dispatch": {
+      "absent": 2
+    },
+    "proxy_object": {
+      "absent": 3
+    },
+    "signal_register": {
+      "absent": 5
+    },
+    "task_register": {
+      "absent": 4,
+      "structurally_backed": 1
+    },
+    "web_route_register": {
+      "absent": 8,
+      "structurally_backed": 1,
+      "unproven": 3
+    }
+  },
+  "by_status": {
+    "absent": 22,
+    "structurally_backed": 2,
+    "unproven": 3
+  },
+  "total": 27
+}
