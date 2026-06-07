@@ -1592,6 +1592,32 @@ def run_fast_indexing(
         stats["symbols_removed"] = removed
         stats["timings_sec"]["embed"] = round(time.perf_counter() - t_stage, 3)
 
+        # Stage 5.5: propagate ``registry_class`` via cross-file inheritance.
+        # ``_axis_payloads_for_extracted_file`` only sees same-file peer
+        # methods; this workspace-level pass walks DEPENDS_ON edges and
+        # resolves local-alias inheritance through per-file import bindings,
+        # so a class whose registry ancestor lives in a different file
+        # (``flask.blueprints.Blueprint`` over
+        # ``flask.sansio.blueprints.Blueprint``) gets ``registry_class``
+        # added to its Lance container_kinds the same as if it had been
+        # detected per-file.
+        if profile.name == AXIS_PYTHON_V1_PROFILE:
+            t_stage = time.perf_counter()
+            from sidecar.indexer.fast.registry_class_inheritance import (
+                propagate_registry_class_via_inheritance,
+            )
+
+            propagated = propagate_registry_class_via_inheritance(
+                db,
+                lance,
+                workspace_id,
+                project_path=project_path,
+            )
+            stats["registry_class_propagated"] = propagated
+            stats["timings_sec"]["registry_class_inheritance"] = round(
+                time.perf_counter() - t_stage, 3
+            )
+
         # Stage 6: single AFFECTS rebuild
         if skip_affects:
             reporter.stage_start("affects", total=0)

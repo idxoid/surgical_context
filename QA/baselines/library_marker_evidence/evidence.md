@@ -1,7 +1,7 @@
 # Library marker catalogue — structural evidence report
 
 - total entries: 27
-- by status: `{"absent": 22, "structurally_backed": 4, "unproven": 1}`
+- by status: `{"absent": 22, "structurally_backed": 5}`
 
 ## By kind
 
@@ -9,7 +9,7 @@
 - **proxy_object**: `{"absent": 3}`
 - **signal_register**: `{"absent": 5}`
 - **task_register**: `{"absent": 4, "structurally_backed": 1}`
-- **web_route_register**: `{"absent": 8, "structurally_backed": 3, "unproven": 1}`
+- **web_route_register**: `{"absent": 8, "structurally_backed": 4}`
 
 ## Entries
 
@@ -28,7 +28,7 @@
 | `fastapi.applications.FastAPI` | web_route_register | **structurally_backed** | qa_repo/fastapi@axis-v4+axis_python_v1 | - | peer_method_kinds:metadata_carrier,middleware_chain |
 | `fastapi.routing.APIRouter` | web_route_register | **structurally_backed** | qa_repo/fastapi@axis-v4+axis_python_v1 | - | peer_method_kinds:middleware_chain |
 | `flask.app.Flask` | web_route_register | **structurally_backed** | qa_repo/flask@axis-v4+axis_python_v1 | add_url_rule(metadata_key_roundtrip) | peer_method_kinds:middleware_chain |
-| `flask.blueprints.Blueprint` | web_route_register | **unproven** | qa_repo/flask@axis-v4+axis_python_v1 | - | - |
+| `flask.blueprints.Blueprint` | web_route_register | **structurally_backed** | qa_repo/flask@axis-v4+axis_python_v1 | - | inherited_registry_class_via:a3c948d8a84758cc |
 | `huey.Huey` | task_register | **absent** | - | - | - |
 | `rq.Queue` | task_register | **absent** | - | - | - |
 | `sanic.Sanic` | web_route_register | **absent** | - | - | - |
