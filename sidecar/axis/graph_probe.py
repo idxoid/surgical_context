@@ -154,13 +154,17 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             if symbol_kind == "proxy_binding" or proxy_rel_count > 0:
                 kinds.add("proxy_object")
 
-        # 2) Catalogue lookup via the symbol's EXTENDS_EXTERNAL edges. This is
-        #    the structural inheritance link materialized by the post-pass
-        #    that joins parsed_base_names with IMPORTS_EXTERNAL_SYMBOL.local_alias.
-        #    Only classes whose declared base IS the imported external symbol
-        #    get marked — a much tighter signal than "the file imports it".
+        # 2) Catalogue lookup via the symbol's EXTENDS_EXTERNAL and
+        #    INSTANTIATES_EXTERNAL edges. Both are structural proofs:
+        #     - EXTENDS_EXTERNAL: ``class C(Marker):`` — subclass inherits
+        #       from an upstream catalogue class.
+        #     - INSTANTIATES_EXTERNAL: ``v = Marker(...)`` — the Variable
+        #       Symbol holds an instance of an upstream catalogue class.
+        #    Both edges carry the upstream qualified_name on the
+        #    ExternalSymbol node, which the catalogue filter consumes
+        #    locally; no name list lives in this probe.
         catalogue_query = """
-        MATCH (s:Symbol {uid: $symbol_uid})-[r:EXTENDS_EXTERNAL]->(e:ExternalSymbol)
+        MATCH (s:Symbol {uid: $symbol_uid})-[r:EXTENDS_EXTERNAL|INSTANTIATES_EXTERNAL]->(e:ExternalSymbol)
         WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
         RETURN collect(DISTINCT e.qualified_name) AS qns
         """

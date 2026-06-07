@@ -72,8 +72,10 @@ _TASK_REGISTER: tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 _SIGNAL_REGISTER: tuple[str, ...] = (
     "blinker.Signal",
+    "blinker.Namespace",
     "django.dispatch.Signal",
     "django.dispatch.dispatcher.Signal",
+    "celery.utils.dispatch.Signal",
 )
 
 # ---------------------------------------------------------------------------

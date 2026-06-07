@@ -71,6 +71,25 @@ def test_neo4j_probe_resolves_library_marker_kind_via_catalogue():
     assert kinds == {"web_route_register"}
 
 
+def test_neo4j_probe_catalogue_query_walks_extends_and_instantiates_external():
+    # Confirms the probe asks the graph for both edge types in a single
+    # query — so a Variable Symbol carrying an INSTANTIATES_EXTERNAL edge to
+    # a catalogue entry produces the same marker as a class that EXTENDS it.
+    db = _Db([
+        {"symbol_kind": "variable", "proxy_rel_count": 0},
+        {"qns": ["werkzeug.local.LocalProxy"]},
+    ])
+    probe = Neo4jGraphContextProbe(db, "ws")
+
+    kinds = probe.library_marker_kinds("u:var")
+
+    assert kinds == {"proxy_object"}
+    # The catalogue query is the 2nd DB call; confirm it joins both edge
+    # types in a single MATCH instead of issuing two separate queries.
+    queries = [call[0] for call in db.driver.session_obj.runs]
+    assert "EXTENDS_EXTERNAL|INSTANTIATES_EXTERNAL" in queries[1]
+
+
 def test_neo4j_probe_returns_union_when_file_imports_multiple_marker_packages():
     db = _Db([
         {"symbol_kind": "class", "proxy_rel_count": 0},

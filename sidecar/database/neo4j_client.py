@@ -786,7 +786,7 @@ class Neo4jClient:
             session.run(
                 """
                 MATCH (e:ExternalSymbol {workspace_id: $workspace_id})
-                WHERE NOT (e)<-[:IMPORTS_EXTERNAL_SYMBOL {workspace_id: $workspace_id}]-()
+                WHERE NOT (e)<-[:IMPORTS_EXTERNAL_SYMBOL|EXTENDS_EXTERNAL|INSTANTIATES_EXTERNAL {workspace_id: $workspace_id}]-()
                 DETACH DELETE e
                 """,
                 workspace_id=workspace_id,
@@ -2029,35 +2029,86 @@ class Neo4jClient:
     def _create_instantiation_relations(tx, instantiations, workspace_id):
         if not instantiations:
             return
-        tx.run(
-            """
-            UNWIND $instantiations AS d
-            MATCH (caller:Symbol {uid: d.caller_uid})
-            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(cls:Symbol)
-            WHERE (cls.qualified_name = d.type_qualified_name OR cls.name = d.type_name)
-              AND cls.kind IN ['class', 'interface', 'struct', 'enum']
-            WITH caller, d, cls
-            ORDER BY
-              CASE WHEN cls.qualified_name = d.type_qualified_name THEN 0 ELSE 1 END,
-              size(cls.qualified_name) ASC
-            WITH caller, d, collect(cls)[0] AS cls
-            WHERE cls IS NOT NULL AND caller <> cls
-            MERGE (caller)-[r:INSTANTIATES {workspace_id: $workspace_id}]->(cls)
-            SET r.resolver = 'instantiate-v1',
-                r.type_name = d.type_name
-            """,
-            instantiations=instantiations,
-            workspace_id=workspace_id,
-        )
+        # Split parser rows into internal (in-workspace target) and external
+        # (upstream library target) groups. The parser has already proven
+        # externality via the file's imports table; the linker just routes.
+        internal_rows = [d for d in instantiations if not d.get("is_external")]
+        external_rows = [d for d in instantiations if d.get("is_external")]
+
+        if internal_rows:
+            tx.run(
+                """
+                UNWIND $instantiations AS d
+                MATCH (caller:Symbol {uid: d.caller_uid})
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(cls:Symbol)
+                WHERE (cls.qualified_name = d.type_qualified_name OR cls.name = d.type_name)
+                  AND cls.kind IN ['class', 'interface', 'struct', 'enum']
+                WITH caller, d, cls
+                ORDER BY
+                  CASE WHEN cls.qualified_name = d.type_qualified_name THEN 0 ELSE 1 END,
+                  size(cls.qualified_name) ASC
+                WITH caller, d, collect(cls)[0] AS cls
+                WHERE cls IS NOT NULL AND caller <> cls
+                MERGE (caller)-[r:INSTANTIATES {workspace_id: $workspace_id}]->(cls)
+                SET r.resolver = 'instantiate-v1',
+                    r.type_name = d.type_name
+                """,
+                instantiations=internal_rows,
+                workspace_id=workspace_id,
+            )
+
+        if external_rows:
+            from sidecar.indexer.external_boundary import external_symbol_uid
+
+            external_payload: list[dict] = []
+            for row in external_rows:
+                qn = str(row.get("type_qualified_name") or "")
+                caller_uid = str(row.get("caller_uid") or "")
+                if not qn or not caller_uid:
+                    continue
+                module, _, name = qn.rpartition(".")
+                external_payload.append(
+                    {
+                        "caller_uid": caller_uid,
+                        "type_name": str(row.get("type_name") or ""),
+                        "type_qualified_name": qn,
+                        "type_module": module,
+                        "type_short_name": name or qn,
+                        "type_external_uid": external_symbol_uid(workspace_id, qn),
+                    }
+                )
+
+            if external_payload:
+                tx.run(
+                    """
+                    UNWIND $rows AS d
+                    MATCH (caller:Symbol {uid: d.caller_uid})
+                    MERGE (e:ExternalSymbol {
+                        uid: d.type_external_uid,
+                        workspace_id: $workspace_id
+                    })
+                    ON CREATE SET e.qualified_name = d.type_qualified_name,
+                        e.module = d.type_module,
+                        e.name = d.type_short_name,
+                        e.is_external = true,
+                        e.resolver = 'instantiate-external-v1-derived'
+                    MERGE (caller)-[r:INSTANTIATES_EXTERNAL {workspace_id: $workspace_id}]->(e)
+                    SET r.resolver = 'instantiate-external-v1',
+                        r.type_name = d.type_name
+                    """,
+                    rows=external_payload,
+                    workspace_id=workspace_id,
+                )
 
     def delete_instantiations_for_file(
         self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
     ):
-        """Clear INSTANTIATES edges from a file's symbols before relinking."""
+        """Clear INSTANTIATES and INSTANTIATES_EXTERNAL edges from a file's symbols."""
         with self.driver.session() as session:
             session.run(
                 """
-                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)-[r:INSTANTIATES]->()
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                    -[r:INSTANTIATES|INSTANTIATES_EXTERNAL]->()
                 WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 DELETE r
                 """,

@@ -944,6 +944,7 @@ def _axis_payloads_for_extracted_file(
     from sidecar.axis import PythonAxisExtractor
     from sidecar.axis.container_kind import ContainerKindClassifier
     from sidecar.axis.contract_compiler import AxisContractCompiler
+    from sidecar.axis.schema import AxisProfile
 
     try:
         extraction = PythonAxisExtractor().extract(
@@ -961,7 +962,32 @@ def _axis_payloads_for_extracted_file(
     )
     contract_compiler = AxisContractCompiler()
     payloads: dict[str, dict] = {}
-    for profile in extraction.profiles.values():
+
+    # ``extraction.profiles`` is a ``@property`` — re-derived from facts on
+    # every access. We materialize it once, then extend with stub profiles
+    # for module-level Variable Symbols emitted by the parser.
+    #
+    # The axis extractor walks scopes (module/class/function); it does NOT
+    # profile module-level variable assignments. But the parser does — and
+    # those Variable Symbols carry EXTENDS_EXTERNAL / INSTANTIATES_EXTERNAL
+    # edges in the graph that the marker-only container kinds (proxy_object,
+    # web_route_register, signal_register, …) read through the probe. Without
+    # the stub profile, the classifier never runs for those uids and the
+    # catalogue stays silent on consumer-style ``app = FastAPI()`` /
+    # ``current_app = LocalProxy(...)`` patterns.
+    profiles_by_uid: dict[str, AxisProfile] = dict(extraction.profiles)
+    for sym in ex.symbols:
+        if sym.kind != "variable":
+            continue
+        if sym.uid in profiles_by_uid:
+            continue
+        profiles_by_uid[sym.uid] = AxisProfile(
+            symbol_uid=sym.uid,
+            qualified_name=sym.qualified_name,
+            symbol_kind="variable",
+        )
+
+    for profile in profiles_by_uid.values():
         container_kinds = classifier.classify(profile)
         contracts = contract_compiler.compile(profile, container_kinds)
         payload = {
