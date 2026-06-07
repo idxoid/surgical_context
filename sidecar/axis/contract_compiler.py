@@ -480,6 +480,45 @@ def _compile_error_dispatch_binding(
     )
 
 
+# Generic contract for any Variable that the consumer uses as a registry,
+# regardless of catalogue subtype. ``registry_class`` carries the structural
+# proof that this variable is a registry (per-file peer methods, inherited
+# registry methods, or — most commonly — the variable holds an external
+# instance with HANDLES edges from decorators). When the variable also has
+# ``dfg.registered_callable`` (the use proof), the contract proves a
+# deferred-binding shape without naming a subtype.
+#
+# When the catalogue happens to know the subtype (web / task / signal /
+# error), the matching subtype contract above ALSO fires; both contracts
+# coexist on the same Variable. ``registry_binding_inferred`` is the fall-
+# through that guarantees an L3 contract for consumers using libraries the
+# catalogue does not list.
+
+
+_register_spec(_ContractSpec(
+    contract="registry_binding_inferred",
+    container_kinds=("registry_class",),
+    required_bits=(AxisRequirement("dfg", "registered_callable"),),
+))
+
+
+@register_contract("registry_binding_inferred")
+def _compile_registry_binding_inferred(
+    profile: AxisProfile,
+    matches: tuple[ContainerKindMatch, ...],
+) -> AxisContractMatch | None:
+    kind = _kind_match(matches, "registry_class")
+    if kind is None:
+        return None
+    return _match_from_kind(
+        contract="registry_binding_inferred",
+        profile=profile,
+        kind=kind,
+        required_bits=(AxisRequirement("dfg", "registered_callable"),),
+        traversal_mode="deferred_binding_flow",
+    )
+
+
 class AxisContractCompiler:
     """Compile L2 container-kind matches into L3 structural contracts."""
 

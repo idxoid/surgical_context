@@ -261,6 +261,99 @@ def test_task_register_binding_uses_same_use_proof():
     assert [c.contract for c in contracts] == ["task_register_binding"]
 
 
+def test_registry_binding_inferred_fires_on_consumer_derived_variable():
+    """A Variable Symbol with the consumer-derived ``registry_class`` kind
+    AND ``dfg.registered_callable`` proves the generic
+    ``registry_binding_inferred`` contract — no catalogue entry required.
+    Allows L3 retrieval over libraries the catalogue does not enumerate.
+    """
+    profile = _profile(
+        [
+            _fact(
+                "dfg",
+                "registered_callable",
+                uid="u:app",
+                qn="myapp.app",
+                kind="variable",
+                payload={"count": 4},
+            ),
+        ],
+        uid="u:app", qn="myapp.app", kind="variable",
+    )
+    marker = ContainerKindMatch(
+        kind="registry_class",
+        symbol_uid="u:app",
+        qualified_name="myapp.app",
+        evidence_bits=(("dfg", "registered_callable"),),
+        evidence_probes=("consumer_derived:registered_handler_count=4",),
+        payload={"registered_callable_count": 4},
+    )
+
+    contracts = AxisContractCompiler().compile(profile, [marker])
+
+    names = {c.contract for c in contracts}
+    assert "registry_binding_inferred" in names
+
+
+def test_registry_binding_inferred_does_not_fire_without_registered_callable():
+    """``registry_class`` alone is not enough — the structural USE proof
+    (decorator-bound HANDLES out edges → ``dfg.registered_callable``) is
+    required for the inferred contract to prove.
+    """
+    profile = _profile(
+        [_fact("struct", "class_def", uid="u:c", qn="pkg.C", kind="class")],
+        uid="u:c", qn="pkg.C", kind="class",
+    )
+    marker = ContainerKindMatch(
+        kind="registry_class",
+        symbol_uid="u:c",
+        qualified_name="pkg.C",
+        evidence_bits=(("struct", "class_def"),),
+        evidence_probes=("peer_method_kinds:metadata_carrier",),
+        payload={"registry_method_kinds": ["metadata_carrier"]},
+    )
+
+    contracts = AxisContractCompiler().compile(profile, [marker])
+
+    assert "registry_binding_inferred" not in {c.contract for c in contracts}
+
+
+def test_registry_binding_inferred_coexists_with_catalogue_subtype_contract():
+    """When the catalogue knows the subtype (e.g. web_route_register),
+    both contracts must fire: the subtype-specific one and the generic
+    inferred one. They are not mutually exclusive.
+    """
+    profile = _profile(
+        [
+            _fact("dfg", "registered_callable", uid="u:app", qn="myapp.app", kind="variable"),
+        ],
+        uid="u:app", qn="myapp.app", kind="variable",
+    )
+    matches = [
+        ContainerKindMatch(
+            kind="web_route_register",
+            symbol_uid="u:app",
+            qualified_name="myapp.app",
+            evidence_bits=(),
+            evidence_probes=("library_marker:web_route_register",),
+            payload={},
+        ),
+        ContainerKindMatch(
+            kind="registry_class",
+            symbol_uid="u:app",
+            qualified_name="myapp.app",
+            evidence_bits=(("dfg", "registered_callable"),),
+            evidence_probes=("consumer_derived:registered_handler_count=2",),
+            payload={"registered_callable_count": 2},
+        ),
+    ]
+
+    contracts = AxisContractCompiler().compile(profile, matches)
+    names = {c.contract for c in contracts}
+
+    assert {"route_register_binding", "registry_binding_inferred"} <= names
+
+
 def test_container_kind_matches_from_json_round_trips_persisted_matches():
     raw = (
         "[{\"kind\": \"metadata_carrier\", \"symbol_uid\": \"u:x\", "
