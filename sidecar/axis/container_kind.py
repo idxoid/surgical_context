@@ -199,43 +199,73 @@ def _classify_registry_class(
     profile: AxisProfile,
     probe: GraphContextProbe,
 ) -> ContainerKindMatch | None:
-    """A class whose own methods carry a registry-shape contract.
+    """Structural floor under marker-only registry kinds.
 
-    Structural floor under the marker-only registry kinds
-    (``web_route_register``, ``task_register``, ``signal_register``,
-    ``error_dispatch``). When a class definition's same-file methods
-    already prove the ``metadata_key_roundtrip`` (keyed registry write +
-    read of the same key) or ``callable_container_dispatch`` (callable
-    write + iteration + invocation on a shared container) pattern, the
-    *class itself* is structurally a registry — independent of the
-    catalogue, independent of any external marker, independent of name
-    patterns.
+    Two channels lead here, both axis-only and independent of the catalogue:
 
-    Cross-file inheritance walking (Flask inheriting App's registry
-    method from a different file) is not yet handled here; that requires
-    a workspace-level pass and is the next step in the catalogue
-    replacement path. The 3 currently ``unproven`` catalogue entries
-    (Flask, Blueprint, FastAPI's APIRouter) need that inheritance
-    aggregation to convert to ``backed`` structurally.
+      1. **Class channel** — a class definition whose same-file peer methods
+         already prove ``metadata_key_roundtrip`` (keyed registry write +
+         read of the same key) or ``callable_container_dispatch`` (callable
+         write + iteration + invocation on a shared container). The
+         workspace-level inheritance phase
+         (:mod:`sidecar.indexer.fast.registry_class_inheritance`)
+         propagates this verdict down ``DEPENDS_ON`` ancestry and through
+         per-file import alias resolution.
+
+      2. **Consumer-derived Variable channel** — a module-level Variable
+         Symbol that holds an instance ( ``app = Something()``) and has at
+         least one outgoing ``HANDLES`` edge (a decorator like
+         ``@app.route``). The decorator-binding pattern IS the structural
+         proof: whatever ``Something`` is, it is being used here as a
+         registry receiving callable bindings. Catalogue still names the
+         subtype (web / task / signal) on top; this channel guarantees the
+         *generic* registry classification even for libraries no catalogue
+         entry lists.
     """
-    if profile.symbol_kind != "class":
-        return None
-    prefix = f"{profile.qualified_name}."
-    peer_kinds = probe.peer_container_kinds_for(prefix)
-    registry_method_kinds = {"metadata_carrier", "middleware_chain"}
-    matched = peer_kinds & registry_method_kinds
-    if not matched:
-        return None
-    return ContainerKindMatch(
-        kind="registry_class",
-        symbol_uid=profile.symbol_uid,
-        qualified_name=profile.qualified_name,
-        evidence_bits=(("struct", "class_def"),),
-        evidence_probes=(
-            f"peer_method_kinds:{','.join(sorted(matched))}",
-        ),
-        payload={"registry_method_kinds": sorted(matched)},
-    )
+    if profile.symbol_kind == "class":
+        prefix = f"{profile.qualified_name}."
+        peer_kinds = probe.peer_container_kinds_for(prefix)
+        registry_method_kinds = {"metadata_carrier", "middleware_chain"}
+        matched = peer_kinds & registry_method_kinds
+        if not matched:
+            return None
+        return ContainerKindMatch(
+            kind="registry_class",
+            symbol_uid=profile.symbol_uid,
+            qualified_name=profile.qualified_name,
+            evidence_bits=(("struct", "class_def"),),
+            evidence_probes=(
+                f"peer_method_kinds:{','.join(sorted(matched))}",
+            ),
+            payload={"registry_method_kinds": sorted(matched)},
+        )
+
+    if profile.symbol_kind == "variable":
+        # ``dfg.registered_callable`` is emitted on the stub profile by the
+        # pipeline when the Variable has ≥1 outgoing HANDLES edge. Its
+        # presence is the consumer-derived proof that this variable acts
+        # as a registry — no catalogue lookup needed.
+        registered_facts = [
+            f for f in profile.facts
+            if f.axis == "dfg" and f.bit == "registered_callable"
+        ]
+        if not registered_facts:
+            return None
+        registered_count = sum(
+            int((f.payload or {}).get("count") or 0) for f in registered_facts
+        )
+        return ContainerKindMatch(
+            kind="registry_class",
+            symbol_uid=profile.symbol_uid,
+            qualified_name=profile.qualified_name,
+            evidence_bits=(("dfg", "registered_callable"),),
+            evidence_probes=(
+                f"consumer_derived:registered_handler_count={registered_count}",
+            ),
+            payload={"registered_callable_count": registered_count},
+        )
+
+    return None
 
 
 @register_kind("data_model")

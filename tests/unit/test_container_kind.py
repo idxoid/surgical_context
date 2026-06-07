@@ -130,7 +130,7 @@ def test_registry_class_does_not_fire_without_registry_peers():
     assert "registry_class" not in {m.kind for m in matches}
 
 
-def test_registry_class_does_not_fire_on_non_class_symbols():
+def test_registry_class_does_not_fire_on_function_symbol_with_peers():
     profile = _profile(
         [_fact("struct", "function_def", uid="u:f", qn="pkg.f", kind="function")],
         uid="u:f", qn="pkg.f", kind="function",
@@ -140,6 +140,53 @@ def test_registry_class_does_not_fire_on_non_class_symbols():
     )
 
     matches = ContainerKindClassifier(probe).classify(profile)
+
+    assert "registry_class" not in {m.kind for m in matches}
+
+
+# ---------------------------------------------------------------------------
+# Consumer-derived Variable channel: ``app = Something(); @app.route(...)``
+# ---------------------------------------------------------------------------
+
+
+def test_registry_class_fires_on_variable_with_registered_callable():
+    """Module-level Variable with HANDLES out (consumer decorator pattern)
+    structurally classifies as registry — no catalogue / external marker
+    needed. The catalogue still names the *subtype* on top, but the
+    generic registry classification is guaranteed.
+    """
+    profile = _profile(
+        [
+            _fact(
+                "dfg",
+                "registered_callable",
+                uid="u:app",
+                qn="myapp.app",
+                kind="variable",
+                payload={"count": 3},
+            ),
+        ],
+        uid="u:app", qn="myapp.app", kind="variable",
+    )
+
+    matches = ContainerKindClassifier(NullGraphProbe()).classify(profile)
+
+    rc = next((m for m in matches if m.kind == "registry_class"), None)
+    assert rc is not None
+    assert rc.payload["registered_callable_count"] == 3
+    assert any("consumer_derived" in p for p in rc.evidence_probes)
+
+
+def test_registry_class_does_not_fire_on_variable_without_registered_callable():
+    """A Variable that holds a value but has no decorator-registered handlers
+    is NOT a registry — the structural proof is the decorator binding.
+    """
+    profile = _profile(
+        [_fact("struct", "module_scope", uid="u:v", qn="myapp.cache", kind="variable")],
+        uid="u:v", qn="myapp.cache", kind="variable",
+    )
+
+    matches = ContainerKindClassifier(NullGraphProbe()).classify(profile)
 
     assert "registry_class" not in {m.kind for m in matches}
 
