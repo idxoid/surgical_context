@@ -80,6 +80,13 @@ class GraphContextProbe(Protocol):
         cross-axis proof that the marker-only kind (web_route_register,
         task_register, error_dispatch) is real, not just instantiated."""
 
+    def outgoing_injects_count(self, symbol_uid: str) -> int:
+        """Count outgoing ``INJECTS`` edges from ``symbol_uid``. A function
+        with at least one INJECTS edge has had at least one of its parameter
+        defaults resolved to a provider symbol — the cross-symbol DFG proof
+        that the ``Depends(provider)`` / ``Inject(provider)`` pattern is
+        actually wired, not just a local ``Call``-shaped default."""
+
     def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
         """Union of container kinds across peer profiles whose qualified_name
         starts with ``qualified_name_prefix``. The pipeline uses a per-file
@@ -105,6 +112,9 @@ class NullGraphProbe:
         return False
 
     def outgoing_handles_count(self, symbol_uid: str) -> int:
+        return 0
+
+    def outgoing_injects_count(self, symbol_uid: str) -> int:
         return 0
 
     def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:

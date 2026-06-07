@@ -72,6 +72,9 @@ class _StubProbe:
     def outgoing_handles_count(self, symbol_uid: str) -> int:
         return 0
 
+    def outgoing_injects_count(self, symbol_uid: str) -> int:
+        return 0
+
     def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
         return set(self._peer_kinds_by_prefix.get(qualified_name_prefix, set()))
 

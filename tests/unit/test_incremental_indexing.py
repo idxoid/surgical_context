@@ -543,6 +543,15 @@ class Settings:
             def is_cfg_driver(self, symbol_uid):
                 return False
 
+            def outgoing_handles_count(self, symbol_uid):
+                return 0
+
+            def outgoing_injects_count(self, symbol_uid):
+                return 0
+
+            def peer_container_kinds_for(self, qualified_name_prefix):
+                return set()
+
         lance = FakeLance()
 
         _embed_phase(

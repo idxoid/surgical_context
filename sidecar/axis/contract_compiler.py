@@ -519,6 +519,51 @@ def _compile_registry_binding_inferred(
     )
 
 
+# Cross-symbol DFG contract for the ``Depends(provider)`` / ``Inject(provider)``
+# pattern. ``provider_default_binding`` already proves the *shape* on the
+# consumer alone (function with parameter_default=Call producing
+# callable_value). This contract additionally requires the *wiring* proof:
+# the pipeline must have observed ≥1 ``INJECTS`` edge out of this function,
+# meaning at least one of its parameter defaults resolved to a real
+# provider symbol in the graph. Both contracts coexist on a fully-wired
+# consumer; the shape-only contract still fires when the provider is
+# unresolved (e.g. ``Depends(undefined_thing)``).
+
+
+_register_spec(_ContractSpec(
+    contract="dependency_injection_binding",
+    container_kinds=("di_container",),
+    required_bits=(
+        AxisRequirement("struct", "parameter_default"),
+        AxisRequirement("dfg", "parameter_default_value"),
+        AxisRequirement("dfg", "callable_value"),
+        AxisRequirement("dfg", "injected_dependency"),
+    ),
+))
+
+
+@register_contract("dependency_injection_binding")
+def _compile_dependency_injection_binding(
+    profile: AxisProfile,
+    matches: tuple[ContainerKindMatch, ...],
+) -> AxisContractMatch | None:
+    kind = _kind_match(matches, "di_container")
+    if kind is None:
+        return None
+    return _match_from_kind(
+        contract="dependency_injection_binding",
+        profile=profile,
+        kind=kind,
+        required_bits=(
+            AxisRequirement("struct", "parameter_default"),
+            AxisRequirement("dfg", "parameter_default_value"),
+            AxisRequirement("dfg", "callable_value"),
+            AxisRequirement("dfg", "injected_dependency"),
+        ),
+        traversal_mode="deferred_binding_flow",
+    )
+
+
 class AxisContractCompiler:
     """Compile L2 container-kind matches into L3 structural contracts."""
 

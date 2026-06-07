@@ -253,5 +253,31 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             return 0
         return int((record and record.get("n")) or 0)
 
+    def outgoing_injects_count(self, symbol_uid: str) -> int:
+        """Count outgoing ``INJECTS`` edges out of ``symbol_uid``.
+
+        Each ``INJECTS`` edge is one parameter default that resolved to a
+        provider symbol via the DI marker pattern (``Depends(provider)``,
+        ``Inject(provider)``, …). A function with non-zero count is one
+        whose dependency wiring is actually visible in the graph — the
+        ``dependency_injection_binding`` contract uses that as cross-symbol
+        DFG proof.
+        """
+        query = """
+        MATCH (s:Symbol {uid: $symbol_uid})-[r:INJECTS]->(:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        RETURN count(r) AS n
+        """
+        try:
+            with self.db.driver.session() as session:
+                record = session.run(
+                    query,
+                    symbol_uid=symbol_uid,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            return 0
+        return int((record and record.get("n")) or 0)
+
 
 __all__ = ["Neo4jGraphContextProbe"]

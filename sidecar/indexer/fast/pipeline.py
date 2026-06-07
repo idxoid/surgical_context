@@ -977,6 +977,11 @@ class _PeerAwarePeerProbe:
             return 0
         return self._base.outgoing_handles_count(symbol_uid)
 
+    def outgoing_injects_count(self, symbol_uid):
+        if self._base is None:
+            return 0
+        return self._base.outgoing_injects_count(symbol_uid)
+
 
 def _axis_payloads_for_extracted_file(
     ex: ExtractedFile,
@@ -1058,6 +1063,33 @@ def _axis_payloads_for_extracted_file(
                 )
             )
         profiles_by_uid[sym.uid] = stub
+
+    # Function/method profiles: probe the graph for INJECTS edges. Non-zero
+    # count is the cross-symbol DFG proof that this function's parameter
+    # defaults resolved to provider symbols (the ``Depends(provider)`` /
+    # ``Inject(provider)`` pattern actually wired in the graph). Emitted as
+    # ``dfg.injected_dependency``; consumed by the
+    # ``dependency_injection_binding`` contract on top of ``di_container``.
+    if graph_probe is not None:
+        for uid, profile in profiles_by_uid.items():
+            if profile.symbol_kind not in {"function", "method"}:
+                continue
+            injects_count = graph_probe.outgoing_injects_count(uid)
+            if injects_count <= 0:
+                continue
+            profile.add_fact(
+                AxisFact(
+                    symbol_uid=uid,
+                    qualified_name=profile.qualified_name,
+                    symbol_kind=profile.symbol_kind,
+                    axis="dfg",
+                    bit="injected_dependency",
+                    line=0,
+                    evidence=f"<injects:{injects_count}>",
+                    ast_kind="GraphProbe",
+                    payload={"count": injects_count},
+                )
+            )
 
     # Two-pass classification: methods/variables/etc. first so the per-file
     # peer-kind map is fully populated before class profiles are classified.

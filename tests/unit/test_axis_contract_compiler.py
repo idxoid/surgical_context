@@ -354,6 +354,33 @@ def test_registry_binding_inferred_coexists_with_catalogue_subtype_contract():
     assert {"route_register_binding", "registry_binding_inferred"} <= names
 
 
+def test_dependency_injection_binding_requires_cross_symbol_injected_dependency_fact():
+    """The shape-only ``provider_default_binding`` still fires on a
+    consumer with the right axis bits, but ``dependency_injection_binding``
+    additionally requires the cross-symbol DFG proof emitted by the
+    pipeline when ``outgoing_injects_count > 0``. Without the wiring
+    proof, only the shape contract fires; with it, both coexist.
+    """
+    base_facts = [
+        _fact("struct", "function_def"),
+        _fact("struct", "parameter_default", payload={"default_kind": "Call"}),
+        _fact("dfg", "parameter_default_value"),
+        _fact("dfg", "callable_value"),
+    ]
+    shape_only = _profile(base_facts)
+    contracts_no_inject = {c.contract for c in _contracts(shape_only)}
+    assert "provider_default_binding" in contracts_no_inject
+    assert "dependency_injection_binding" not in contracts_no_inject
+
+    wired = _profile(
+        base_facts
+        + [_fact("dfg", "injected_dependency", payload={"count": 2})]
+    )
+    contracts_wired = {c.contract for c in _contracts(wired)}
+    assert "provider_default_binding" in contracts_wired
+    assert "dependency_injection_binding" in contracts_wired
+
+
 def test_container_kind_matches_from_json_round_trips_persisted_matches():
     raw = (
         "[{\"kind\": \"metadata_carrier\", \"symbol_uid\": \"u:x\", "
