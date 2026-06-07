@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from sidecar.axis.container_kind import GraphContextProbe
-from sidecar.axis.library_marker_catalogue import LIBRARY_MARKER_CATALOGUE
+from sidecar.axis.library_marker_catalogue import kind_for_external_qualified_name
 
 _CONTROL_EDGE_TYPES = (
     "CALLS",
@@ -179,7 +179,7 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             record = None
         if record:
             for qn in record.get("qns") or []:
-                kind = LIBRARY_MARKER_CATALOGUE.get(str(qn))
+                kind = kind_for_external_qualified_name(str(qn))
                 if kind:
                     kinds.add(kind)
 

@@ -73,20 +73,18 @@ _WEB_ROUTE_REGISTER: tuple[str, ...] = (
     "starlette.applications.Starlette",
     "flask.app.Flask",
     "flask.blueprints.Blueprint",
+    "fastapi.applications.FastAPI",
+    "fastapi.routing.APIRouter",
     "aiohttp.web.Application",
     "aiohttp.web.UrlDispatcher",
     "sanic.Sanic",
     "sanic.blueprints.Blueprint",
-    # Re-export aliases as users actually import them: ``from flask import
-    # Flask`` resolves to ``flask.Flask`` in the consumer's parser stream,
-    # not to the internal ``flask.app.Flask``. Listed here because the
-    # transition shim has no cross-workspace re-export resolution; the
-    # structural replacement (index ``flask/__init__.py`` and follow
-    # ``RE_EXPORTS`` edges) makes these aliases automatic.
-    "flask.Flask",
-    "flask.Blueprint",
-    "fastapi.FastAPI",
-    "fastapi.APIRouter",
+    # Re-export aliases (``flask.Flask`` → ``flask.app.Flask``,
+    # ``fastapi.FastAPI`` → ``fastapi.applications.FastAPI``, …) are NOT
+    # listed here. They are derived structurally from the indexed library's
+    # ``RE_EXPORTS`` edges by ``QA.build_library_marker_aliases`` and
+    # resolved through ``sidecar.axis.library_marker_aliases`` at lookup
+    # time. Re-export plumbing therefore never needs to grow this table.
 )
 
 # ---------------------------------------------------------------------------
@@ -156,8 +154,26 @@ LIBRARY_MARKER_CATALOGUE: dict[str, str] = _build_catalogue()
 
 
 def kind_for_external_qualified_name(qualified_name: str) -> str | None:
-    """Return the container kind a known external symbol carries, or ``None``."""
-    return LIBRARY_MARKER_CATALOGUE.get(qualified_name)
+    """Return the container kind a known external symbol carries, or ``None``.
+
+    Looks up the literal catalogue first. On miss, attempts to resolve the
+    QN through the structurally-derived alias map (re-exports from indexed
+    library workspaces — :mod:`sidecar.axis.library_marker_aliases`) and
+    re-queries with the canonical QN. Direct catalogue hits stay
+    authoritative; aliasing is a fallback that never overrides an explicit
+    entry.
+    """
+    direct = LIBRARY_MARKER_CATALOGUE.get(qualified_name)
+    if direct is not None:
+        return direct
+    # Import locally to keep the alias map optional — if the JSON file is
+    # absent (early bootstrap / clean checkout), catalogue still works.
+    from sidecar.axis.library_marker_aliases import resolve_alias
+
+    canonical = resolve_alias(qualified_name)
+    if canonical is None:
+        return None
+    return LIBRARY_MARKER_CATALOGUE.get(canonical)
 
 
 __all__ = [

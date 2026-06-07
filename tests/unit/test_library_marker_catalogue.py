@@ -56,3 +56,21 @@ def test_lookup_returns_expected_kind(qn: str, kind: str):
 
 def test_lookup_returns_none_for_unknown_qn():
     assert kind_for_external_qualified_name("not.in.catalogue") is None
+
+
+def test_lookup_resolves_through_structural_alias_map():
+    """The 4 re-export aliases were removed from the literal catalogue and now
+    resolve structurally via ``sidecar.axis.library_marker_aliases`` (built
+    from ``RE_EXPORTS`` edges of indexed library workspaces). The consumer
+    QN ``flask.Flask`` must still classify as ``web_route_register``.
+    """
+    # No literal entry for the consumer form…
+    assert "flask.Flask" not in LIBRARY_MARKER_CATALOGUE
+    assert "fastapi.FastAPI" not in LIBRARY_MARKER_CATALOGUE
+    # …but the canonical form is in the literal catalogue,
+    assert LIBRARY_MARKER_CATALOGUE["flask.app.Flask"] == "web_route_register"
+    # …and the resolver bridges consumer → canonical:
+    assert kind_for_external_qualified_name("flask.Flask") == "web_route_register"
+    assert kind_for_external_qualified_name("fastapi.FastAPI") == "web_route_register"
+    assert kind_for_external_qualified_name("flask.Blueprint") == "web_route_register"
+    assert kind_for_external_qualified_name("fastapi.APIRouter") == "web_route_register"
