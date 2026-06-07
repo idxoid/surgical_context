@@ -944,7 +944,7 @@ def _axis_payloads_for_extracted_file(
     from sidecar.axis import PythonAxisExtractor
     from sidecar.axis.container_kind import ContainerKindClassifier
     from sidecar.axis.contract_compiler import AxisContractCompiler
-    from sidecar.axis.schema import AxisProfile
+    from sidecar.axis.schema import AxisFact, AxisProfile
 
     try:
         extraction = PythonAxisExtractor().extract(
@@ -981,11 +981,36 @@ def _axis_payloads_for_extracted_file(
             continue
         if sym.uid in profiles_by_uid:
             continue
-        profiles_by_uid[sym.uid] = AxisProfile(
+        stub = AxisProfile(
             symbol_uid=sym.uid,
             qualified_name=sym.qualified_name,
             symbol_kind="variable",
         )
+        # Pull the cross-axis structural use signal from the graph: how many
+        # HANDLES edges leave this variable. Non-zero means the registry has
+        # been used (≥1 handler bound via decorator), which is what L3
+        # contracts like ``route_register_binding`` need to prove the marker
+        # is real, not just instantiated.
+        handles_count = (
+            graph_probe.outgoing_handles_count(sym.uid)
+            if graph_probe is not None
+            else 0
+        )
+        if handles_count > 0:
+            stub.add_fact(
+                AxisFact(
+                    symbol_uid=sym.uid,
+                    qualified_name=sym.qualified_name,
+                    symbol_kind="variable",
+                    axis="dfg",
+                    bit="registered_callable",
+                    line=sym.start_line,
+                    evidence=f"<handles:{handles_count}>",
+                    ast_kind="GraphProbe",
+                    payload={"count": handles_count},
+                )
+            )
+        profiles_by_uid[sym.uid] = stub
 
     for profile in profiles_by_uid.values():
         container_kinds = classifier.classify(profile)

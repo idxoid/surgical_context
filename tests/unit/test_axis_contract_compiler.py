@@ -184,6 +184,83 @@ def test_static_data_and_config_contracts_do_not_have_traversal_mode():
         by_name["configuration_carrier"].to_query_request()
 
 
+def test_route_register_marker_alone_does_not_prove_route_register_binding():
+    profile = _profile([_fact("struct", "module_scope")], uid="u:app", qn="myapp.app", kind="variable")
+    marker = ContainerKindMatch(
+        kind="web_route_register",
+        symbol_uid="u:app",
+        qualified_name="myapp.app",
+        evidence_bits=(),
+        evidence_probes=("library_marker:web_route_register",),
+        payload={},
+    )
+    # Catalogue match without a single registered handler — the kind is
+    # present but the contract must stay unproven (marker-only does not
+    # prove use).
+    contracts = AxisContractCompiler().compile(profile, [marker])
+    assert contracts == []
+
+    diagnostics = AxisContractCompiler().diagnose(profile, [marker])
+    assert any(d.contract == "route_register_binding" for d in diagnostics)
+
+
+def test_route_register_binding_proves_when_handler_registered_via_handles_edge():
+    profile = _profile(
+        [
+            _fact("struct", "module_scope", uid="u:app", qn="myapp.app", kind="variable"),
+            _fact(
+                "dfg",
+                "registered_callable",
+                uid="u:app",
+                qn="myapp.app",
+                kind="variable",
+                payload={"count": 3},
+            ),
+        ],
+        uid="u:app",
+        qn="myapp.app",
+        kind="variable",
+    )
+    marker = ContainerKindMatch(
+        kind="web_route_register",
+        symbol_uid="u:app",
+        qualified_name="myapp.app",
+        evidence_bits=(),
+        evidence_probes=("library_marker:web_route_register",),
+        payload={},
+    )
+
+    contracts = AxisContractCompiler().compile(profile, [marker])
+
+    assert [c.contract for c in contracts] == ["route_register_binding"]
+    request = contracts[0].to_query_request()
+    assert request.container_kinds == ("web_route_register",)
+    assert request.traversal_mode == "deferred_binding_flow"
+
+
+def test_task_register_binding_uses_same_use_proof():
+    profile = _profile(
+        [
+            _fact("dfg", "registered_callable", uid="u:app", qn="myapp.celery", kind="variable"),
+        ],
+        uid="u:app",
+        qn="myapp.celery",
+        kind="variable",
+    )
+    marker = ContainerKindMatch(
+        kind="task_register",
+        symbol_uid="u:app",
+        qualified_name="myapp.celery",
+        evidence_bits=(),
+        evidence_probes=("library_marker:task_register",),
+        payload={},
+    )
+
+    contracts = AxisContractCompiler().compile(profile, [marker])
+
+    assert [c.contract for c in contracts] == ["task_register_binding"]
+
+
 def test_container_kind_matches_from_json_round_trips_persisted_matches():
     raw = (
         "[{\"kind\": \"metadata_carrier\", \"symbol_uid\": \"u:x\", "

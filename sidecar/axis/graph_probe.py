@@ -227,5 +227,31 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         # false until the graph materializes a narrow dispatch-loop marker.
         return False
 
+    def outgoing_handles_count(self, symbol_uid: str) -> int:
+        """Count outgoing ``HANDLES`` edges out of ``symbol_uid``.
+
+        A registry Variable like ``app = Flask(...)`` only earns the
+        ``route_register_binding`` contract if there is structural evidence
+        the registry is actually used — at least one ``HANDLES`` edge to a
+        decorated handler. With the pipeline phase ordering
+        (instantiations → decorators → embed/axis-classify), HANDLES edges
+        are materialised before this probe is consulted.
+        """
+        query = """
+        MATCH (s:Symbol {uid: $symbol_uid})-[r:HANDLES]->(:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        RETURN count(r) AS n
+        """
+        try:
+            with self.db.driver.session() as session:
+                record = session.run(
+                    query,
+                    symbol_uid=symbol_uid,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            return 0
+        return int((record and record.get("n")) or 0)
+
 
 __all__ = ["Neo4jGraphContextProbe"]

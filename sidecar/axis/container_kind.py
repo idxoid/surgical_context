@@ -73,6 +73,13 @@ class GraphContextProbe(Protocol):
         registered handler invocation, or otherwise drives control flow.
         Used by ``dispersed_runtime_position`` to rule out CFG drivers."""
 
+    def outgoing_handles_count(self, symbol_uid: str) -> int:
+        """Count outgoing ``HANDLES`` edges from ``symbol_uid``. A registry
+        Symbol (e.g. ``app = Flask(...)``) with at least one HANDLES edge
+        has actually been used to register a handler via a decorator — the
+        cross-axis proof that the marker-only kind (web_route_register,
+        task_register, error_dispatch) is real, not just instantiated."""
+
 
 class NullGraphProbe:
     """Default probe: no graph context available, every probe returns 'no'."""
@@ -88,6 +95,9 @@ class NullGraphProbe:
 
     def is_cfg_driver(self, symbol_uid: str) -> bool:
         return False
+
+    def outgoing_handles_count(self, symbol_uid: str) -> int:
+        return 0
 
 
 # ---------------------------------------------------------------------------

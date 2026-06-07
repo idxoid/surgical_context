@@ -398,6 +398,88 @@ def _compile_configuration_carrier(
     )
 
 
+# Marker-only kinds (web_route_register / task_register / error_dispatch) come
+# from the catalogue via INSTANTIATES_EXTERNAL / EXTENDS_EXTERNAL on a Variable
+# Symbol. The marker alone proves the *shape* (this object is a registry); the
+# ``dfg.registered_callable`` fact — emitted on the stub profile when the
+# variable has ≥1 outgoing HANDLES edge — proves the *use* (this registry
+# actually had a handler bound to it). Without the use-proof, the kind is
+# matched but the contract stays unproven, and the diagnostic surfaces a
+# registry-without-handlers case rather than overclaiming.
+
+
+_register_spec(_ContractSpec(
+    contract="route_register_binding",
+    container_kinds=("web_route_register",),
+    required_bits=(AxisRequirement("dfg", "registered_callable"),),
+))
+
+
+@register_contract("route_register_binding")
+def _compile_route_register_binding(
+    profile: AxisProfile,
+    matches: tuple[ContainerKindMatch, ...],
+) -> AxisContractMatch | None:
+    kind = _kind_match(matches, "web_route_register")
+    if kind is None:
+        return None
+    return _match_from_kind(
+        contract="route_register_binding",
+        profile=profile,
+        kind=kind,
+        required_bits=(AxisRequirement("dfg", "registered_callable"),),
+        traversal_mode="deferred_binding_flow",
+    )
+
+
+_register_spec(_ContractSpec(
+    contract="task_register_binding",
+    container_kinds=("task_register",),
+    required_bits=(AxisRequirement("dfg", "registered_callable"),),
+))
+
+
+@register_contract("task_register_binding")
+def _compile_task_register_binding(
+    profile: AxisProfile,
+    matches: tuple[ContainerKindMatch, ...],
+) -> AxisContractMatch | None:
+    kind = _kind_match(matches, "task_register")
+    if kind is None:
+        return None
+    return _match_from_kind(
+        contract="task_register_binding",
+        profile=profile,
+        kind=kind,
+        required_bits=(AxisRequirement("dfg", "registered_callable"),),
+        traversal_mode="deferred_binding_flow",
+    )
+
+
+_register_spec(_ContractSpec(
+    contract="error_dispatch_binding",
+    container_kinds=("error_dispatch",),
+    required_bits=(AxisRequirement("dfg", "registered_callable"),),
+))
+
+
+@register_contract("error_dispatch_binding")
+def _compile_error_dispatch_binding(
+    profile: AxisProfile,
+    matches: tuple[ContainerKindMatch, ...],
+) -> AxisContractMatch | None:
+    kind = _kind_match(matches, "error_dispatch")
+    if kind is None:
+        return None
+    return _match_from_kind(
+        contract="error_dispatch_binding",
+        profile=profile,
+        kind=kind,
+        required_bits=(AxisRequirement("dfg", "registered_callable"),),
+        traversal_mode="deferred_binding_flow",
+    )
+
+
 class AxisContractCompiler:
     """Compile L2 container-kind matches into L3 structural contracts."""
 
