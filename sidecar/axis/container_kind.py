@@ -395,6 +395,64 @@ def _classify_middleware_chain(
     )
 
 
+@register_kind("keyed_dispatch_callable")
+def _classify_keyed_dispatch_callable(
+    profile: AxisProfile,
+    probe: GraphContextProbe,
+) -> ContainerKindMatch | None:
+    """Method that resolves a callable through a keyed lookup on a
+    container attribute and then invokes it.
+
+    Concrete shape::
+
+        def dispatch(self, ..., key):
+            ...
+            handler = self.registry[key]   # subscript_read + keyed_read + container_read_key
+            return handler(...)            # callable_value + value_call
+
+    This is Flask's ``Flask.dispatch_request`` /
+    ``Flask.full_dispatch_request`` / ``Flask.wsgi_app`` pattern,
+    Django's URL resolver dispatch, FastAPI's APIRoute closure that
+    grabs a handler out of a route table, and any registry-keyed
+    dispatcher.
+
+    Distinct from ``middleware_chain`` (which *iterates* a list-shaped
+    container and invokes each entry) and ``signal_register`` (which
+    fans out to receivers). The discriminator is the **absence of
+    iteration**: keyed dispatch picks one callable by key, middleware
+    walks them all.
+    """
+    if not _dfg(profile, "subscript_read"):
+        return None
+    if not _dfg(profile, "keyed_read"):
+        return None
+    if not _dfg(profile, "container_read_key"):
+        return None
+    if not _dfg(profile, "callable_value"):
+        return None
+    if not _cfg(profile, "value_call"):
+        return None
+    # Discriminator: middleware chains iterate the container. A
+    # registry-keyed dispatcher reads ONE entry by key, never the whole
+    # list, so iteration_source must NOT be present in the same body.
+    if _dfg(profile, "iteration_source"):
+        return None
+    return ContainerKindMatch(
+        kind="keyed_dispatch_callable",
+        symbol_uid=profile.symbol_uid,
+        qualified_name=profile.qualified_name,
+        evidence_bits=(
+            ("dfg", "subscript_read"),
+            ("dfg", "keyed_read"),
+            ("dfg", "container_read_key"),
+            ("dfg", "callable_value"),
+            ("cfg", "value_call"),
+        ),
+        evidence_probes=(),
+        payload={},
+    )
+
+
 @register_kind("signal_register")
 def _classify_signal_register(
     profile: AxisProfile,

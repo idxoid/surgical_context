@@ -95,6 +95,7 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
             "proxy_object",
             "di_container",
             "middleware_chain",
+            "keyed_dispatch_callable",
             "metadata_carrier",
         }),
     ),
@@ -141,11 +142,19 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
         contracts=frozenset({"metadata_key_roundtrip"}),
         kinds=frozenset({"metadata_carrier"}),
     ),
-    # ``dispatch_surface`` is the callable-container dispatch role
-    # (middleware/signal chains where iteration invokes stored callables).
+    # ``dispatch_surface`` is the callable-container dispatch role:
+    # middleware/signal chains where iteration invokes stored callables
+    # *and* registry-keyed dispatchers that resolve one callable by key
+    # and invoke it. Both shapes answer "where does the runtime pick a
+    # callable out of a container and run it?" — the structurally
+    # honest reading of the role.
     "dispatch_surface": RoleEvidence(
         contracts=frozenset({"callable_container_dispatch"}),
-        kinds=frozenset({"middleware_chain", "signal_register"}),
+        kinds=frozenset({
+            "middleware_chain",
+            "signal_register",
+            "keyed_dispatch_callable",
+        }),
     ),
 }
 

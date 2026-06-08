@@ -329,6 +329,73 @@ def test_middleware_chain_rejects_when_iterated_but_never_called():
 
 
 # ---------------------------------------------------------------------------
+# keyed_dispatch_callable
+# ---------------------------------------------------------------------------
+
+
+def _keyed_dispatch_facts() -> list[AxisFact]:
+    """The minimum axis fingerprint of a registry-keyed dispatcher
+    (Flask ``dispatch_request``-style)."""
+    return [
+        _fact("dfg", "subscript_read"),
+        _fact("dfg", "keyed_read"),
+        _fact("dfg", "container_read_key"),
+        _fact("dfg", "callable_value"),
+        _fact("cfg", "value_call"),
+    ]
+
+
+def test_keyed_dispatch_callable_fires_on_full_fingerprint():
+    profile = _profile(_keyed_dispatch_facts())
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    kinds = {m.kind for m in classifier.classify(profile)}
+    assert "keyed_dispatch_callable" in kinds
+
+
+def test_keyed_dispatch_callable_rejects_when_iterating():
+    """Discriminator vs middleware_chain: keyed dispatch picks ONE
+    callable by key; middleware iterates the container. If
+    ``iteration_source`` is present in the same callable body, the
+    classifier must NOT call this a keyed dispatcher.
+    """
+    profile = _profile(
+        _keyed_dispatch_facts() + [_fact("dfg", "iteration_source")]
+    )
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    kinds = {m.kind for m in classifier.classify(profile)}
+    assert "keyed_dispatch_callable" not in kinds
+
+
+def test_keyed_dispatch_callable_requires_subscript_read():
+    facts = [f for f in _keyed_dispatch_facts() if f.bit != "subscript_read"]
+    profile = _profile(facts)
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    assert "keyed_dispatch_callable" not in {
+        m.kind for m in classifier.classify(profile)
+    }
+
+
+def test_keyed_dispatch_callable_requires_callable_value():
+    """Without ``callable_value`` the subscript-read is just a data
+    lookup, not a dispatch. The classifier must distinguish."""
+    facts = [f for f in _keyed_dispatch_facts() if f.bit != "callable_value"]
+    profile = _profile(facts)
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    assert "keyed_dispatch_callable" not in {
+        m.kind for m in classifier.classify(profile)
+    }
+
+
+def test_keyed_dispatch_callable_requires_value_call():
+    facts = [f for f in _keyed_dispatch_facts() if f.bit != "value_call"]
+    profile = _profile(facts)
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    assert "keyed_dispatch_callable" not in {
+        m.kind for m in classifier.classify(profile)
+    }
+
+
+# ---------------------------------------------------------------------------
 # signal_register
 # ---------------------------------------------------------------------------
 
