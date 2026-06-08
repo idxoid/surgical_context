@@ -168,6 +168,15 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
         contracts=frozenset(),
         kinds=frozenset(),
     ),
+    # ``structural_neighbour`` is a *file-level* pseudo-role used by
+    # the AFFECTS-bridge pass (``sidecar.axis.structural_neighbours``)
+    # to surface symbols that share the indexer's pre-computed impact
+    # closure with the existing candidate pool but live in files no
+    # other retrieval pass touched. Empty evidence = traversal-only.
+    "structural_neighbour": RoleEvidence(
+        contracts=frozenset(),
+        kinds=frozenset(),
+    ),
 }
 
 

@@ -39,6 +39,7 @@ from sidecar.axis.impact_traversal import expand_impact_neighbourhood
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
 from sidecar.axis.role_retrieval import find_symbols_by_role
+from sidecar.axis.structural_neighbours import expand_structural_neighbours
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
@@ -103,14 +104,31 @@ def _load_pack(pack_path: Path) -> list[dict[str, Any]]:
 
 
 def _file_matches(retrieved: str, expected: str) -> bool:
-    """An expected file matches when the retrieved path ends with it
-    (modulo a path separator). Both sides are normalised to use ``/``.
+    """An expected entry matches a retrieved path when either:
+
+      * the entry's last segment has an extension (looks like a file) —
+        the retrieved path ends with ``/<expected>`` (or equals it), OR
+      * the entry's last segment has no extension (looks like a
+        directory or a directory tree marker — e.g. ``tests``,
+        ``fastapi/dependencies``) — the retrieved path *contains* the
+        entry as a directory component.
+
+    The directory case is critical for impact-style questions where
+    the question pack lists a *region* of the codebase ("tests",
+    "fastapi/dependencies") as the expected answer surface rather
+    than a specific file. Without it, ``recall`` undercounts whenever
+    the answer set is "any file under this directory".
     """
     r = retrieved.replace("\\", "/").rstrip("/")
-    e = expected.replace("\\", "/").lstrip("/")
+    e = expected.replace("\\", "/").strip("/")
     if not r or not e:
         return False
-    return r.endswith("/" + e) or r == e
+    last_segment = e.rsplit("/", 1)[-1]
+    if "." in last_segment:
+        return r.endswith("/" + e) or r == e
+    # Directory entry — match if ``/<expected>/`` is a path component.
+    needle = "/" + e + "/"
+    return needle in (r + "/")
 
 
 def _compute_recall(expected: list[str], retrieved: list[str]) -> tuple[float, list[str]]:
@@ -190,6 +208,19 @@ def run_question(
             db=db,
             lance=lance,
             workspace_id=workspace_id,
+        )
+
+    # File-level structural-neighbour pass via undirected AFFECTS.
+    # Capped tightly — see ``expand_structural_neighbours`` docstring.
+    existing_pool_for_struct = [
+        c
+        for role, cands in raw_by_role.items()
+        if role not in {"impact_analysis", "structural_neighbour"}
+        for c in cands
+    ]
+    if existing_pool_for_struct:
+        raw_by_role["structural_neighbour"] = expand_structural_neighbours(
+            existing_pool_for_struct, db=db, workspace_id=workspace_id,
         )
 
     # Impact-analysis pass — anchored on the existing candidate pool,

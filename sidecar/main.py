@@ -1715,6 +1715,7 @@ def ask_axis(
     from sidecar.axis.intent_classifier import classify_intent
     from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
     from sidecar.axis.role_retrieval import find_symbols_by_role
+    from sidecar.axis.structural_neighbours import expand_structural_neighbours
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 
@@ -1773,6 +1774,30 @@ def ask_axis(
                         db=db,
                         lance=lance,
                         workspace_id=workspace_id,
+                    )
+
+        # Structural-neighbour pass — file-level adjacency via
+        # undirected AFFECTS. Surfaces files structurally entangled
+        # with the seeds even when no role kind, no shared external,
+        # and no contract hits them (e.g. ``fastapi/concurrency.py``
+        # reaching ``routing.py`` through the indexer's AFFECTS
+        # closure). Capped tightly so the file-level pool stays small
+        # next to vector retrieval.
+        existing_pool_for_struct = [
+            c
+            for role, cands in raw_by_role.items()
+            if role not in {"impact_analysis", "structural_neighbour"}
+            for c in cands
+        ]
+        if existing_pool_for_struct:
+            with trace.stage("structural_neighbours"):
+                with db_session(user_id=user_id) as db:
+                    raw_by_role["structural_neighbour"] = (
+                        expand_structural_neighbours(
+                            existing_pool_for_struct,
+                            db=db,
+                            workspace_id=workspace_id,
+                        )
                     )
 
         # Impact-analysis pass — when the intent classifier flagged
