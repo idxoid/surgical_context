@@ -35,6 +35,7 @@ import yaml
 
 from sidecar.axis.context_builder import build_context_for_candidates
 from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
+from sidecar.axis.impact_traversal import expand_impact_neighbourhood
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
 from sidecar.axis.role_retrieval import find_symbols_by_role
@@ -190,6 +191,22 @@ def run_question(
             lance=lance,
             workspace_id=workspace_id,
         )
+
+    # Impact-analysis pass — anchored on the existing candidate pool,
+    # walks reverse-CALLS, forward-AFFECTS, structural inheritors and
+    # API carriers. Fires only when the intent classifier explicitly
+    # gestures at "what's affected if this changes?".
+    if any(m.role == "impact_analysis" for m in intent):
+        existing_pool = [
+            c
+            for role, cands in raw_by_role.items()
+            if role != "impact_analysis"
+            for c in cands
+        ]
+        if existing_pool:
+            raw_by_role["impact_analysis"] = expand_impact_neighbourhood(
+                existing_pool, db=db, workspace_id=workspace_id,
+            )
 
     # Multi-role *intersection* pass — when ≥2 intents fire we use the
     # weaker signals as structural constraints, dropping primary

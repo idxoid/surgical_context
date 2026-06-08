@@ -1711,6 +1711,7 @@ def ask_axis(
 
     from sidecar.axis.context_builder import build_context_for_candidates
     from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
+    from sidecar.axis.impact_traversal import expand_impact_neighbourhood
     from sidecar.axis.intent_classifier import classify_intent
     from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
     from sidecar.axis.role_retrieval import find_symbols_by_role
@@ -1773,6 +1774,31 @@ def ask_axis(
                         lance=lance,
                         workspace_id=workspace_id,
                     )
+
+        # Impact-analysis pass — when the intent classifier flagged
+        # ``impact_analysis`` (a question-shape pseudo-role, no vector
+        # retrieval), run the blast-radius walk: reverse CALLS_*,
+        # forward AFFECTS, structural EXTENDS / INHERITED_API. Seeds
+        # are every concrete candidate already in the pool, so the
+        # impact closure is anchored on what the other roles already
+        # nominated.
+        if any(m.role == "impact_analysis" for m in intent):
+            existing_pool = [
+                c
+                for role, cands in raw_by_role.items()
+                if role != "impact_analysis"
+                for c in cands
+            ]
+            if existing_pool:
+                with trace.stage("impact_traversal"):
+                    with db_session(user_id=user_id) as db:
+                        raw_by_role["impact_analysis"] = (
+                            expand_impact_neighbourhood(
+                                existing_pool,
+                                db=db,
+                                workspace_id=workspace_id,
+                            )
+                        )
 
         # Multi-role *intersection* pass — when ≥2 intents fire we use
         # the weaker signals as STRUCTURAL CONSTRAINTS, not as a

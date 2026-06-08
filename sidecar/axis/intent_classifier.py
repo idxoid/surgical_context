@@ -81,6 +81,10 @@ ROLE_INTENT_DESCRIPTIONS: dict[str, str] = {
         "How is a value bound or registered now so that it can be "
         "dispatched later by the runtime?"
     ),
+    "impact_analysis": (
+        "If this code changes, what callers, tests, downstream "
+        "modules, or example code would break or be affected?"
+    ),
 }
 
 
@@ -172,7 +176,26 @@ def classify_intent(
                 )
             )
     matches.sort(key=lambda m: m.similarity, reverse=True)
-    return matches[:top_k]
+    # Cap to top-k *role* intents; ``impact_analysis`` is a question-
+    # shape mode (no retrieval pool of its own — see
+    # ``role_resolver.ROLE_EVIDENCE_MAP``) so it must not displace a
+    # role intent in the cut. If the impact intent crossed threshold
+    # but ranked outside the top-k, it gets appended; otherwise the
+    # blast-radius traversal would simply not run on a question that
+    # asked for it.
+    role_intents = [m for m in matches if m.role != "impact_analysis"][:top_k]
+    impact_intents = [m for m in matches if m.role == "impact_analysis"]
+    if impact_intents and impact_intents[0] not in role_intents:
+        # Order the impact intent by its similarity rank — keep callers
+        # who read ``intent[0]`` as the "primary" honest if it really is
+        # the top match.
+        merged = sorted(
+            role_intents + impact_intents[:1],
+            key=lambda m: m.similarity,
+            reverse=True,
+        )
+        return merged
+    return role_intents
 
 
 __all__ = [

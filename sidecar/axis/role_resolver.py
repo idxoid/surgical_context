@@ -156,6 +156,18 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
             "keyed_dispatch_callable",
         }),
     ),
+    # ``impact_analysis`` is a *question-shape* pseudo-role, not a
+    # retrieval role: it has no contracts or kinds because no symbol
+    # ever IS an impact answer in isolation. The shape fires when the
+    # question asks "what depends on / breaks if / is affected by X",
+    # and the consumer reads the empty evidence map as a signal to run
+    # the blast-radius traversal on the other roles' candidates instead
+    # of issuing a vector lookup. See
+    # ``sidecar.axis.impact_traversal``.
+    "impact_analysis": RoleEvidence(
+        contracts=frozenset(),
+        kinds=frozenset(),
+    ),
 }
 
 
