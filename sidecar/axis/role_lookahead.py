@@ -123,20 +123,40 @@ def _query_neighbour_uids(
     seed_uids: list[str],
     *,
     max_hops: int,
+    include_tests: bool = False,
 ) -> dict[str, set[str]]:
     """For each seed uid, walk up to ``max_hops`` via the proximity-rel
     whitelist and return the set of reached Symbol uids. Workspace
     scoping comes from the ``File-CONTAINS-Symbol`` edge — Symbol nodes
-    themselves do not carry ``workspace_id``."""
+    themselves do not carry ``workspace_id``.
+
+    ``include_tests=False`` (the default) joins on the neighbour's
+    File and applies the conventional test-path exclusion — the
+    structural fence that keeps role lookahead from injecting test
+    symbols into production-style retrieval pools.
+    """
     if not seed_uids:
         return {}
     rel_pattern = _safe_rel_pattern(_PROXIMITY_RELS)
-    cypher = f"""
-    UNWIND $seed_uids AS su
-    MATCH (f:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(s:Symbol {{uid: su}})
-    MATCH (s)-[r:{rel_pattern}*1..{max_hops}]-(n:Symbol)
-    RETURN su AS seed_uid, collect(DISTINCT n.uid) AS neighbours
-    """
+    if include_tests:
+        cypher = f"""
+        UNWIND $seed_uids AS su
+        MATCH (f:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(s:Symbol {{uid: su}})
+        MATCH (s)-[r:{rel_pattern}*1..{max_hops}]-(n:Symbol)
+        RETURN su AS seed_uid, collect(DISTINCT n.uid) AS neighbours
+        """
+    else:
+        from sidecar.axis.test_file_filter import cypher_test_exclusion_clause
+
+        exclusion = cypher_test_exclusion_clause("fn")
+        cypher = f"""
+        UNWIND $seed_uids AS su
+        MATCH (f:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(s:Symbol {{uid: su}})
+        MATCH (s)-[r:{rel_pattern}*1..{max_hops}]-(n:Symbol)
+        MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
+        WHERE {exclusion}
+        RETURN su AS seed_uid, collect(DISTINCT n.uid) AS neighbours
+        """
     out: dict[str, set[str]] = {}
     try:
         with db.driver.session() as session:
@@ -209,6 +229,7 @@ def expand_candidates_via_neighbourhood(
     max_injected_per_role: int = 8,
     auto_promote_min_hits: int = 3,
     auto_promote_role_pool: Iterable[str] | None = None,
+    include_tests: bool = False,
 ) -> dict[str, list[RoleCandidate]]:
     """Walk K hops from every role's candidates and use the
     container_kinds of the reached neighbours two ways:
@@ -277,7 +298,9 @@ def expand_candidates_via_neighbourhood(
             continue
 
         neighbours_by_seed = _query_neighbour_uids(
-            db, workspace_id, seed_uids, max_hops=max_hops,
+            db, workspace_id, seed_uids,
+            max_hops=max_hops,
+            include_tests=include_tests,
         )
         flat_neighbours: set[str] = set()
         for ns in neighbours_by_seed.values():

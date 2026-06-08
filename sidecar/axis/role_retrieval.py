@@ -122,6 +122,7 @@ def find_symbols_by_role(
     limit: int = 25,
     lance_db_path: str = "./data/lancedb",
     embed_fn=None,
+    include_tests: bool = False,
 ) -> list[RoleCandidate]:
     """Return symbols satisfying ``role`` in ``workspace_id``, ranked.
 
@@ -159,10 +160,19 @@ def find_symbols_by_role(
     if has_query:
         columns = columns + ["vector"]
 
+    # Test-file fencing: by default, drop rows whose ``file_path`` lives
+    # under a conventional test surface. The pass-through escape
+    # ``include_tests=True`` is reserved for callers driving impact-style
+    # questions (the ``impact_analysis`` traversal) where tests *are*
+    # the answer. Imported lazily so the module's CLI/test imports do
+    # not pull a new dependency just for the predicate.
+    from sidecar.axis.test_file_filter import is_test_path
+
     all_rows = [
         r
         for r in table.to_lance().to_table(columns=columns).to_pylist()
         if r.get("workspace_id") == workspace_id
+        and (include_tests or not is_test_path(str(r.get("file_path") or "")))
     ]
 
     # Structural filter — keep only rows whose persisted contracts OR

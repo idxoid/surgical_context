@@ -65,6 +65,7 @@ def expand_structural_neighbours(
     max_total: int = 10,
     base_score: float = 0.25,
     exclude_uids: Iterable[str] = (),
+    include_tests: bool = False,
 ) -> list[RoleCandidate]:
     """Walk ``AFFECTS`` undirected K hops from each seed, return
     deduplicated symbols from *previously-unseen* files (relative to
@@ -86,11 +87,18 @@ def expand_structural_neighbours(
     # ``size(r)`` returns the relationship-list length for a
     # variable-length pattern; ``length(r)`` is for Path objects and
     # raises a type mismatch in Cypher 5.
+    if include_tests:
+        where_clause = ""
+    else:
+        from sidecar.axis.test_file_filter import cypher_test_exclusion_clause
+
+        where_clause = "WHERE " + cypher_test_exclusion_clause("fn")
     cypher = f"""
     UNWIND $seed_uids AS su
     MATCH (f:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(s:Symbol {{uid: su}})
     MATCH (s)-[r:{rel_pattern}*1..{max_hops}]-(n:Symbol)
     MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
+    {where_clause}
     RETURN DISTINCT
         n.uid AS uid,
         coalesce(n.name, '') AS name,
