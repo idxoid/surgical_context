@@ -108,6 +108,7 @@ def build_context_for_candidates(
     lance,
     max_per_seed: int = 6,
     traversal_mode: str = "deferred_binding_flow",
+    include_tests: bool = False,
 ) -> list[ContextBundle]:
     """Expand each candidate into a ``ContextBundle`` of related code.
 
@@ -115,7 +116,12 @@ def build_context_for_candidates(
     (depth-then-name ordering). ``traversal_mode`` picks the expansion
     pattern from ``AxisQueryPlan``; defaults to deferred-binding
     because every current contract uses it.
+
+    ``include_tests`` mirrors the retrieval-pass flag — by default,
+    expansion hits that land in conventional test surfaces are
+    dropped. Impact-style consumers can flip the flag to keep them.
     """
+    from sidecar.axis.test_file_filter import is_test_path
     candidates = list(candidates)
     if not candidates:
         return []
@@ -137,8 +143,13 @@ def build_context_for_candidates(
         uids_to_fetch.add(cand.uid)
         hits = traversal.expand([cand.uid], plan)
         # Dedupe by uid, keep the shallowest occurrence (closer wins).
+        # The test-file fence applies after dedup: an expansion hit
+        # that lands in a test surface is dropped unless the caller
+        # opted in via ``include_tests``.
         nearest_by_uid: dict[str, Any] = {}
         for h in hits:
+            if not include_tests and is_test_path(h.file_path or ""):
+                continue
             existing = nearest_by_uid.get(h.uid)
             if existing is None or h.depth < existing.depth:
                 nearest_by_uid[h.uid] = h
