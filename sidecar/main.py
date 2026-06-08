@@ -1712,6 +1712,7 @@ def ask_axis(
     from sidecar.axis.context_builder import build_context_for_candidates
     from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
     from sidecar.axis.intent_classifier import classify_intent
+    from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
     from sidecar.axis.role_retrieval import find_symbols_by_role
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
@@ -1754,6 +1755,25 @@ def ask_axis(
                     limit=req.per_role_limit,
                 )
 
+        # Cross-role *lookahead*: walk K hops from each role's vector
+        # candidates, inject neighbours whose container_kinds back a
+        # different intent role. Closes the case where the intent
+        # classifier picks the right *theme* (e.g. proxy_mechanism for
+        # "current_app") but the actual answer lives in a sibling role
+        # (e.g. dispatch_surface — Flask's ``wsgi_app`` /
+        # ``dispatch_request``). The lookahead is injection-only — it
+        # never displaces vector candidates.
+        if len(intent) >= 2 and any(raw_by_role.get(m.role) for m in intent):
+            with trace.stage("cross_role_lookahead"):
+                with db_session(user_id=user_id) as db:
+                    raw_by_role = expand_candidates_via_neighbourhood(
+                        [m.role for m in intent],
+                        raw_by_role,
+                        db=db,
+                        lance=lance,
+                        workspace_id=workspace_id,
+                    )
+
         # Multi-role *intersection* pass — when ≥2 intents fire we use
         # the weaker signals as STRUCTURAL CONSTRAINTS, not as a
         # separate candidate pool. A primary candidate survives only if
@@ -1784,9 +1804,15 @@ def ask_axis(
                             )
                         )
 
-        for match in intent:
-            candidates = raw_by_role.get(match.role) or []
-            candidates_by_role[match.role] = [
+        # ``raw_by_role`` may carry roles the intent classifier never
+        # produced — see ``expand_candidates_via_neighbourhood`` auto-promote.
+        intent_role_order = [m.role for m in intent]
+        promoted_roles = [r for r in raw_by_role if r not in set(intent_role_order)]
+        for role in intent_role_order + promoted_roles:
+            candidates = raw_by_role.get(role) or []
+            if not candidates:
+                continue
+            candidates_by_role[role] = [
                 AxisCandidateResponse(
                     uid=c.uid,
                     name=c.name,

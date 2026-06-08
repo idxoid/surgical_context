@@ -49,6 +49,9 @@ _PROXIMITY_RELS: tuple[str, ...] = (
     "DECORATED_BY",
     "USES_TYPE",
     "REFERENCES",
+    "READS_ATTR",
+    "WRITES_ATTR",
+    "RESOLVES_ATTR",
 )
 
 

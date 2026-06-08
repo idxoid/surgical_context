@@ -36,6 +36,7 @@ import yaml
 from sidecar.axis.context_builder import build_context_for_candidates
 from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
 from sidecar.axis.intent_classifier import classify_intent
+from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
 from sidecar.axis.role_retrieval import find_symbols_by_role
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
@@ -174,6 +175,22 @@ def run_question(
             limit=per_role_limit,
         )
 
+    # Cross-role *lookahead*: walk K hops from each role's seed
+    # candidates and inject neighbours whose container_kinds back any
+    # *other* intent role. Restores recall when the intent classifier
+    # picks the right theme but the answer's role has shallow vector
+    # retrieval (e.g. flask ``current_app`` question primes
+    # proxy_mechanism, but the mechanism's implementation lives in
+    # ``dispatch_surface``-tagged dispatchers).
+    if len(intent) >= 2 and any(raw_by_role.values()):
+        raw_by_role = expand_candidates_via_neighbourhood(
+            [m.role for m in intent],
+            raw_by_role,
+            db=db,
+            lance=lance,
+            workspace_id=workspace_id,
+        )
+
     # Multi-role *intersection* pass — when ≥2 intents fire we use the
     # weaker signals as structural constraints, dropping primary
     # candidates that have no graph proximity to any secondary
@@ -192,9 +209,19 @@ def run_question(
                 primary, secondary, db=db, workspace_id=workspace_id,
             )
 
+    # Iterate over every key in ``raw_by_role`` — the lookahead may
+    # have *promoted* a non-intent role into its own pool. Skipping those
+    # would discard the graph-evidenced candidates the lookahead produced.
     candidates_for_context: list = []
-    for match in intent:
-        candidates_for_context.extend(raw_by_role.get(match.role) or [])
+    seen_role_keys: set[str] = set()
+    intent_role_keys = [m.role for m in intent]
+    for role_key in intent_role_keys + [
+        r for r in raw_by_role if r not in set(intent_role_keys)
+    ]:
+        if role_key in seen_role_keys:
+            continue
+        seen_role_keys.add(role_key)
+        candidates_for_context.extend(raw_by_role.get(role_key) or [])
 
     result.candidate_count = len(candidates_for_context)
     bundles = build_context_for_candidates(
