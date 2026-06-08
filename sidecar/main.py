@@ -1710,6 +1710,7 @@ def ask_axis(
     """
 
     from sidecar.axis.context_builder import build_context_for_candidates
+    from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
     from sidecar.axis.intent_classifier import classify_intent
     from sidecar.axis.role_retrieval import find_symbols_by_role
     from sidecar.database.lancedb_client import LanceDBClient
@@ -1743,34 +1744,66 @@ def ask_axis(
         ]
 
         with trace.stage("retrieval"):
-            candidates_by_role: dict[str, list[AxisCandidateResponse]] = {}
-            all_candidates_for_context: list = []
+            raw_by_role: dict[str, list] = {}
             for match in intent:
-                candidates = find_symbols_by_role(
+                raw_by_role[match.role] = find_symbols_by_role(
                     workspace_id,
                     match.role,
                     query_text=req.question,
                     embed_fn=_embed,
                     limit=req.per_role_limit,
                 )
-                candidates_by_role[match.role] = [
-                    AxisCandidateResponse(
-                        uid=c.uid,
-                        name=c.name,
-                        file_path=c.file_path,
-                        role=c.role,
-                        satisfying_contracts=list(c.satisfying_contracts),
-                        satisfying_kinds=list(c.satisfying_kinds),
-                        contract_count=c.contract_count,
-                        kind_count=c.kind_count,
-                        vector_distance=c.vector_distance,
-                        score=c.score,
-                    )
-                    for c in candidates
-                ]
-                all_candidates_for_context.extend(
-                    candidates[: req.context_seeds_per_role]
+
+        # Multi-role *intersection* pass — when ≥2 intents fire we use
+        # the weaker signals as STRUCTURAL CONSTRAINTS, not as a
+        # separate candidate pool. A primary candidate survives only if
+        # it has graph proximity to at least one secondary candidate.
+        # Surviving candidates keep a small per-role score boost so the
+        # consumer sees the intersection signal. If a role's
+        # intersection is empty, ``fallback_on_empty=True`` returns the
+        # original primary list so a too-narrow intent does not silently
+        # zero out a result.
+        candidates_by_role: dict[str, list[AxisCandidateResponse]] = {}
+        all_candidates_for_context: list = []
+        if len(intent) >= 2:
+            with trace.stage("cross_role_intersection"):
+                with db_session(user_id=user_id) as db:
+                    for i, match in enumerate(intent):
+                        primary = raw_by_role.get(match.role) or []
+                        secondary = {
+                            other.role: raw_by_role.get(other.role) or []
+                            for j, other in enumerate(intent)
+                            if j != i
+                        }
+                        raw_by_role[match.role] = (
+                            intersect_by_cross_role_proximity(
+                                primary,
+                                secondary,
+                                db=db,
+                                workspace_id=workspace_id,
+                            )
+                        )
+
+        for match in intent:
+            candidates = raw_by_role.get(match.role) or []
+            candidates_by_role[match.role] = [
+                AxisCandidateResponse(
+                    uid=c.uid,
+                    name=c.name,
+                    file_path=c.file_path,
+                    role=c.role,
+                    satisfying_contracts=list(c.satisfying_contracts),
+                    satisfying_kinds=list(c.satisfying_kinds),
+                    contract_count=c.contract_count,
+                    kind_count=c.kind_count,
+                    vector_distance=c.vector_distance,
+                    score=c.score,
                 )
+                for c in candidates
+            ]
+            all_candidates_for_context.extend(
+                candidates[: req.context_seeds_per_role]
+            )
 
         bundles_payload: list[AxisContextBundleResponse] = []
         if req.with_context and all_candidates_for_context:

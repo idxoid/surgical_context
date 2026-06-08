@@ -34,6 +34,7 @@ from typing import Any
 import yaml
 
 from sidecar.axis.context_builder import build_context_for_candidates
+from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_retrieval import find_symbols_by_role
 from sidecar.database.lancedb_client import LanceDBClient
@@ -64,6 +65,7 @@ class QuestionResult:
     file_recall: float = 0.0
     intent_top_role: str | None = None
     intent_top_similarity: float | None = None
+    intent_matches: list[tuple[str, float]] = field(default_factory=list)
     skipped_reason: str | None = None
     candidate_count: int = 0
 
@@ -80,6 +82,9 @@ class QuestionResult:
             "file_recall": self.file_recall,
             "intent_top_role": self.intent_top_role,
             "intent_top_similarity": self.intent_top_similarity,
+            "intent_matches": [
+                {"role": r, "similarity": s} for r, s in self.intent_matches
+            ],
             "skipped_reason": self.skipped_reason,
             "candidate_count": self.candidate_count,
         }
@@ -157,17 +162,39 @@ def run_question(
     if intent:
         result.intent_top_role = intent[0].role
         result.intent_top_similarity = intent[0].similarity
+        result.intent_matches = [(m.role, m.similarity) for m in intent]
 
-    candidates_for_context: list = []
+    raw_by_role: dict[str, list] = {}
     for match in intent:
-        cands = find_symbols_by_role(
+        raw_by_role[match.role] = find_symbols_by_role(
             workspace_id,
             match.role,
             query_text=result.question,
             embed_fn=_embed,
             limit=per_role_limit,
         )
-        candidates_for_context.extend(cands)
+
+    # Multi-role *intersection* pass — when ≥2 intents fire we use the
+    # weaker signals as structural constraints, dropping primary
+    # candidates that have no graph proximity to any secondary
+    # candidate. ``fallback_on_empty`` keeps the original primary list
+    # if no candidate intersects, so a single-role question never
+    # silently zeros out.
+    if len(intent) >= 2:
+        for i, match in enumerate(intent):
+            primary = raw_by_role.get(match.role) or []
+            secondary = {
+                other.role: raw_by_role.get(other.role) or []
+                for j, other in enumerate(intent)
+                if j != i
+            }
+            raw_by_role[match.role] = intersect_by_cross_role_proximity(
+                primary, secondary, db=db, workspace_id=workspace_id,
+            )
+
+    candidates_for_context: list = []
+    for match in intent:
+        candidates_for_context.extend(raw_by_role.get(match.role) or [])
 
     result.candidate_count = len(candidates_for_context)
     bundles = build_context_for_candidates(
