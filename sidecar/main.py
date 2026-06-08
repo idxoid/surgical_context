@@ -216,6 +216,70 @@ class AskResponse(BaseModel):
     index_manifest_schema_version: int | None = None
 
 
+class AskAxisRequest(BaseModel):
+    """``/ask/axis`` payload — axis-pipeline-only retrieval shape.
+
+    No symbol anchor, no token budget: the axis pipeline picks
+    candidates by role intent. ``with_context`` toggles whether
+    expanded code bundles come back; without it the response only
+    carries intent matches + ranked candidates (cheap).
+    """
+
+    question: str
+    top_roles: int = Field(default=3, ge=1, le=10)
+    intent_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
+    per_role_limit: int = Field(default=8, ge=1, le=50)
+    with_context: bool = True
+    context_seeds_per_role: int = Field(default=2, ge=1, le=10)
+    context_per_seed: int = Field(default=4, ge=1, le=20)
+
+
+class AxisIntentMatchResponse(BaseModel):
+    role: str
+    similarity: float
+    description: str
+
+
+class AxisCandidateResponse(BaseModel):
+    uid: str
+    name: str
+    file_path: str
+    role: str
+    satisfying_contracts: list[str]
+    contract_count: int
+    vector_distance: float | None
+    score: float
+
+
+class AxisContextSymbolResponse(BaseModel):
+    uid: str
+    name: str
+    file_path: str
+    role: str
+    distance_from_seed: int
+    expansion_step: str | None
+    code: str | None
+
+
+class AxisContextBundleResponse(BaseModel):
+    role: str
+    seed: AxisContextSymbolResponse
+    related: list[AxisContextSymbolResponse]
+
+
+class AskAxisResponse(BaseModel):
+    """Axis-pipeline response. The endpoint does not call an LLM —
+    callers can plug ``context_bundles`` into their own prompt.
+    """
+
+    question: str
+    workspace_id: str
+    user: str
+    intent_matches: list[AxisIntentMatchResponse]
+    candidates_by_role: dict[str, list[AxisCandidateResponse]]
+    context_bundles: list[AxisContextBundleResponse]
+
+
 class FeedbackRequest(BaseModel):
     feedback_token: str
     kind: str
@@ -1621,6 +1685,135 @@ def ask(
     except Exception:
         status = "error"
         logger.exception("trace_id=%s endpoint=/ask status=error", trace.trace_id)
+        raise
+    finally:
+        default_metrics.record_trace(trace, status)
+
+
+@app.post("/ask/axis", response_model=AskAxisResponse)
+def ask_axis(
+    req: AskAxisRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+    x_trace_id: str = Header(None),
+):
+    """Axis-pipeline answer: intent → roles → ranked candidates → context.
+
+    Returns structured retrieval evidence WITHOUT calling an LLM. Caller
+    plugs ``context_bundles`` into its own prompt. Useful for A/B
+    comparing against the legacy ``/ask`` cascade, for headless
+    retrieval consumers (CI gates, indexers, tests), and for
+    incrementally migrating UI surfaces off the legacy stack.
+    """
+
+    from sidecar.axis.context_builder import build_context_for_candidates
+    from sidecar.axis.intent_classifier import classify_intent
+    from sidecar.axis.role_retrieval import find_symbols_by_role
+    from sidecar.database.lancedb_client import LanceDBClient
+    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    trace = _start_trace("/ask/axis", x_trace_id, workspace_id)
+    status = "ok"
+
+    try:
+        lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+
+        def _embed(text: str):
+            return lance._embed([text])[0]  # noqa: SLF001
+
+        with trace.stage("intent"):
+            intent = classify_intent(
+                req.question,
+                _embed,
+                top_k=req.top_roles,
+                threshold=req.intent_threshold,
+            )
+        intent_payload = [
+            AxisIntentMatchResponse(
+                role=m.role,
+                similarity=m.similarity,
+                description=m.description,
+            )
+            for m in intent
+        ]
+
+        with trace.stage("retrieval"):
+            candidates_by_role: dict[str, list[AxisCandidateResponse]] = {}
+            all_candidates_for_context: list = []
+            for match in intent:
+                candidates = find_symbols_by_role(
+                    workspace_id,
+                    match.role,
+                    query_text=req.question,
+                    embed_fn=_embed,
+                    limit=req.per_role_limit,
+                )
+                candidates_by_role[match.role] = [
+                    AxisCandidateResponse(
+                        uid=c.uid,
+                        name=c.name,
+                        file_path=c.file_path,
+                        role=c.role,
+                        satisfying_contracts=list(c.satisfying_contracts),
+                        contract_count=c.contract_count,
+                        vector_distance=c.vector_distance,
+                        score=c.score,
+                    )
+                    for c in candidates
+                ]
+                all_candidates_for_context.extend(
+                    candidates[: req.context_seeds_per_role]
+                )
+
+        bundles_payload: list[AxisContextBundleResponse] = []
+        if req.with_context and all_candidates_for_context:
+            with trace.stage("context"):
+                with db_session(user_id=user_id) as db:
+                    bundles = build_context_for_candidates(
+                        all_candidates_for_context,
+                        workspace_id=workspace_id,
+                        db=db,
+                        lance=lance,
+                        max_per_seed=req.context_per_seed,
+                    )
+            for bundle in bundles:
+                bundles_payload.append(
+                    AxisContextBundleResponse(
+                        role=bundle.role,
+                        seed=AxisContextSymbolResponse(**bundle.seed.to_dict()),
+                        related=[
+                            AxisContextSymbolResponse(**s.to_dict())
+                            for s in bundle.related
+                        ],
+                    )
+                )
+
+        logger.info(
+            "trace_id=%s endpoint=/ask/axis status=ok roles=%d candidates=%d bundles=%d",
+            trace.trace_id,
+            len(intent_payload),
+            sum(len(v) for v in candidates_by_role.values()),
+            len(bundles_payload),
+        )
+        return AskAxisResponse(
+            question=req.question,
+            workspace_id=workspace_id,
+            user=user_id,
+            intent_matches=intent_payload,
+            candidates_by_role=candidates_by_role,
+            context_bundles=bundles_payload,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        status = "error"
+        logger.exception(
+            "trace_id=%s endpoint=/ask/axis status=error",
+            trace.trace_id,
+        )
         raise
     finally:
         default_metrics.record_trace(trace, status)
