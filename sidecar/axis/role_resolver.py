@@ -1,4 +1,4 @@
-"""L4 role resolver — contracts → user-facing roles.
+"""L4 role resolver — L3 contracts + L2 container kinds → user-facing roles.
 
 Per ``docs/python_ast_axes_and_traversal_modes.md``:
 
@@ -9,34 +9,40 @@ Per ``docs/python_ast_axes_and_traversal_modes.md``:
 This module is the *only* place axis-layer answers user-facing role
 questions. It owns one structural table:
 
-  ``ROLE_CONTRACT_MAP: {role_name: frozenset of contract names}``
+  ``ROLE_EVIDENCE_MAP: {role_name: RoleEvidence(contracts, kinds)}``
 
-The table is a small, hand-curated OR-of-contracts mapping. Each role
-names what the user / ranker / benchmark asks for; each contract listed
-under a role is a *structural proof shape* that, if proven on a symbol,
-satisfies that role on the same symbol. Roles are **not** axis bits and
-**not** container kinds — they are the final consumer-facing layer.
+Each role can be satisfied by EITHER a proven L3 contract OR a recognised
+L2 container kind on the symbol. Both halves matter:
+
+  - **Contract evidence** is the strongest form — it carries proof that
+    the structural pattern is actually *used* (e.g. a registry that has
+    handlers bound). Consumer instances generate it.
+  - **Kind evidence** is the existence-only form — the symbol IS the
+    shape, but the use-proof side may be missing (e.g. a class definition
+    inside a library has ``web_route_register`` kind but no
+    ``route_register_binding`` contract because nothing decorates it
+    inside its own workspace). Library-internal definitions need this
+    channel so they aren't excluded from role-level retrieval.
+
+Both halves are honest L2/L3 outputs; neither references symbol names
+or framework labels. The split decouples "is this the shape?" (kind)
+from "is it actually used?" (contract); a downstream scorer can prefer
+contract-backed symbols when both are present.
 
 Discipline (mirrors the catalogue's transition-shim rules):
 
-  - A role's contract list is the entire set of axis-proven shapes that
-    satisfy it. Adding a new contract that conceptually belongs to a
-    role must be reflected here, *and* its inclusion must be honest —
-    the contract has to genuinely answer the role's question.
+  - A role's evidence is the entire set of axis-proven shapes that
+    satisfy it. Adding a new contract / kind that conceptually belongs
+    to a role must be reflected here, *and* its inclusion must be honest.
 
-  - A role with zero contracts in the map is a no-op (returns empty
-    set). Don't add empty roles to the map.
+  - A role with zero contracts AND zero kinds in the map is a no-op.
 
-  - No role definition references container kinds, symbol names, or
-    framework names. Roles are answered through contracts; contracts
-    have all the structural context.
+  - No role definition references symbol names or framework names.
 
   - When ambiguity arises (``callable_container_dispatch`` proves both
     middleware and signal patterns), the contract list contains it for
-    *any* role it can legitimately answer. Distinguishing middleware
-    vs signal at the role layer requires inspecting the underlying
-    container kind, which is :func:`resolve_roles_with_evidence`'s job
-    rather than the bare :func:`resolve_roles`'s.
+    *any* role it can legitimately answer. Subtype distinctions
+    (middleware vs signal vs metadata) come from the *kind* side.
 """
 
 from __future__ import annotations
@@ -50,51 +56,104 @@ from dataclasses import dataclass
 # ---------------------------------------------------------------------------
 
 
-ROLE_CONTRACT_MAP: dict[str, frozenset[str]] = {
+@dataclass(frozen=True)
+class RoleEvidence:
+    """Two channels of evidence that satisfy one role."""
+
+    contracts: frozenset[str]
+    kinds: frozenset[str] = frozenset()
+
+    def to_dict(self) -> dict[str, list[str]]:
+        return {
+            "contracts": sorted(self.contracts),
+            "kinds": sorted(self.kinds),
+        }
+
+
+ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
     # ``binding_surface`` is the broad "values are bound now so runtime
-    # can dispatch them later" role — every deferred-binding shape
-    # qualifies, regardless of subtype.
-    "binding_surface": frozenset({
-        "route_register_binding",
-        "task_register_binding",
-        "error_dispatch_binding",
-        "registry_binding_inferred",
-        "callable_container_dispatch",
-        "metadata_key_roundtrip",
-        "provider_default_binding",
-        "dependency_injection_binding",
-        "proxy_indirection",
-    }),
-    # ``routing_surface`` is specifically web route binding — the
-    # ``route_register_binding`` contract is the only L3 proof for it.
-    "routing_surface": frozenset({"route_register_binding"}),
+    # can dispatch them later" umbrella role — every deferred-binding
+    # shape qualifies, regardless of subtype.
+    "binding_surface": RoleEvidence(
+        contracts=frozenset({
+            "route_register_binding",
+            "task_register_binding",
+            "error_dispatch_binding",
+            "registry_binding_inferred",
+            "callable_container_dispatch",
+            "metadata_key_roundtrip",
+            "provider_default_binding",
+            "dependency_injection_binding",
+            "proxy_indirection",
+        }),
+        kinds=frozenset({
+            "registry_class",
+            "web_route_register",
+            "task_register",
+            "error_dispatch",
+            "signal_register",
+            "proxy_object",
+            "di_container",
+            "middleware_chain",
+            "metadata_carrier",
+        }),
+    ),
+    # ``routing_surface`` is specifically web route binding.
+    "routing_surface": RoleEvidence(
+        contracts=frozenset({"route_register_binding"}),
+        kinds=frozenset({"web_route_register"}),
+    ),
     # ``task_surface`` mirrors routing for task-queue registration.
-    "task_surface": frozenset({"task_register_binding"}),
-    # ``error_surface`` covers the exception-dispatch case at L3.
-    "error_surface": frozenset({"error_dispatch_binding"}),
-    # ``proxy_mechanism`` is the lazy-resolution / context-binding role
-    # the legacy cascade carried; proven structurally by proxy_indirection.
-    "proxy_mechanism": frozenset({"proxy_indirection"}),
+    "task_surface": RoleEvidence(
+        contracts=frozenset({"task_register_binding"}),
+        kinds=frozenset({"task_register"}),
+    ),
+    # ``error_surface`` covers the exception-dispatch case.
+    "error_surface": RoleEvidence(
+        contracts=frozenset({"error_dispatch_binding"}),
+        kinds=frozenset({"error_dispatch"}),
+    ),
+    # ``proxy_mechanism`` is the lazy-resolution / context-binding role.
+    "proxy_mechanism": RoleEvidence(
+        contracts=frozenset({"proxy_indirection"}),
+        kinds=frozenset({"proxy_object"}),
+    ),
     # ``dependency_solver`` covers the provider→consumer wiring role.
-    # Both contracts qualify; ``dependency_injection_binding`` brings
-    # the cross-symbol proof on top of the shape-only one.
-    "dependency_solver": frozenset({
-        "provider_default_binding",
-        "dependency_injection_binding",
-    }),
-    # ``data_model_surface`` mirrors the L3 data_shape_declaration —
-    # purely structural class-with-typed-attrs surfaces.
-    "data_model_surface": frozenset({"data_shape_declaration"}),
+    "dependency_solver": RoleEvidence(
+        contracts=frozenset({
+            "provider_default_binding",
+            "dependency_injection_binding",
+        }),
+        kinds=frozenset({"di_container"}),
+    ),
+    # ``data_model_surface`` is the data_shape_declaration shape.
+    "data_model_surface": RoleEvidence(
+        contracts=frozenset({"data_shape_declaration"}),
+        kinds=frozenset({"data_model"}),
+    ),
     # ``configuration_surface`` is the config-carrier shape.
-    "configuration_surface": frozenset({"configuration_carrier"}),
-    # ``metadata_surface`` is the keyed write/read roundtrip — the
-    # ``metadata_carrier`` shape qualifies as a metadata surface for
-    # role-level questions about declarative metadata.
-    "metadata_surface": frozenset({"metadata_key_roundtrip"}),
+    "configuration_surface": RoleEvidence(
+        contracts=frozenset({"configuration_carrier"}),
+        kinds=frozenset({"config_carrier"}),
+    ),
+    # ``metadata_surface`` is the keyed write/read roundtrip.
+    "metadata_surface": RoleEvidence(
+        contracts=frozenset({"metadata_key_roundtrip"}),
+        kinds=frozenset({"metadata_carrier"}),
+    ),
     # ``dispatch_surface`` is the callable-container dispatch role
-    # (middleware/signal/registry chains where iteration invokes
-    # stored callables).
-    "dispatch_surface": frozenset({"callable_container_dispatch"}),
+    # (middleware/signal chains where iteration invokes stored callables).
+    "dispatch_surface": RoleEvidence(
+        contracts=frozenset({"callable_container_dispatch"}),
+        kinds=frozenset({"middleware_chain", "signal_register"}),
+    ),
+}
+
+
+# Backward-compatible view: only the contract side. Existing callers
+# that key by role and want contract names keep working.
+ROLE_CONTRACT_MAP: dict[str, frozenset[str]] = {
+    role: ev.contracts for role, ev in ROLE_EVIDENCE_MAP.items()
 }
 
 
@@ -105,61 +164,93 @@ ROLE_CONTRACT_MAP: dict[str, frozenset[str]] = {
 
 @dataclass(frozen=True)
 class RoleResolution:
-    """One role satisfied on a symbol, with the contracts that proved it."""
+    """One role satisfied on a symbol, with the contracts AND kinds
+    that proved it."""
 
     role: str
     satisfying_contracts: tuple[str, ...]
+    satisfying_kinds: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "role": self.role,
             "satisfying_contracts": list(self.satisfying_contracts),
+            "satisfying_kinds": list(self.satisfying_kinds),
         }
 
 
-def resolve_roles(contract_names: Iterable[str]) -> set[str]:
-    """Return every role at least one of ``contract_names`` satisfies."""
-    proven = set(contract_names)
+def resolve_roles(
+    contract_names: Iterable[str] = (),
+    *,
+    container_kinds: Iterable[str] = (),
+) -> set[str]:
+    """Return every role satisfied by at least one of ``contract_names``
+    OR one of ``container_kinds``.
+    """
+    proven_contracts = set(contract_names)
+    proven_kinds = set(container_kinds)
     return {
         role
-        for role, contracts in ROLE_CONTRACT_MAP.items()
-        if contracts & proven
+        for role, ev in ROLE_EVIDENCE_MAP.items()
+        if (ev.contracts & proven_contracts) or (ev.kinds & proven_kinds)
     }
 
 
 def resolve_roles_with_evidence(
-    contract_names: Iterable[str],
+    contract_names: Iterable[str] = (),
+    *,
+    container_kinds: Iterable[str] = (),
 ) -> list[RoleResolution]:
-    """Same as :func:`resolve_roles` but each result carries the subset
-    of contracts that actually fired for that role.
+    """Same as :func:`resolve_roles` but each result carries the subsets
+    of contracts AND kinds that actually fired for that role.
     """
-    proven = set(contract_names)
+    proven_contracts = set(contract_names)
+    proven_kinds = set(container_kinds)
     out: list[RoleResolution] = []
-    for role in sorted(ROLE_CONTRACT_MAP):
-        matched = tuple(sorted(ROLE_CONTRACT_MAP[role] & proven))
-        if not matched:
+    for role in sorted(ROLE_EVIDENCE_MAP):
+        ev = ROLE_EVIDENCE_MAP[role]
+        matched_contracts = tuple(sorted(ev.contracts & proven_contracts))
+        matched_kinds = tuple(sorted(ev.kinds & proven_kinds))
+        if not matched_contracts and not matched_kinds:
             continue
-        out.append(RoleResolution(role=role, satisfying_contracts=matched))
+        out.append(
+            RoleResolution(
+                role=role,
+                satisfying_contracts=matched_contracts,
+                satisfying_kinds=matched_kinds,
+            )
+        )
     return out
 
 
 def registered_roles() -> set[str]:
     """Every role name the resolver knows about."""
-    return set(ROLE_CONTRACT_MAP)
+    return set(ROLE_EVIDENCE_MAP)
 
 
 def registered_contracts() -> set[str]:
     """Every contract name that appears under at least one role."""
     out: set[str] = set()
-    for contracts in ROLE_CONTRACT_MAP.values():
-        out |= contracts
+    for ev in ROLE_EVIDENCE_MAP.values():
+        out |= ev.contracts
+    return out
+
+
+def registered_kinds() -> set[str]:
+    """Every container kind that appears under at least one role."""
+    out: set[str] = set()
+    for ev in ROLE_EVIDENCE_MAP.values():
+        out |= ev.kinds
     return out
 
 
 __all__ = [
     "ROLE_CONTRACT_MAP",
+    "ROLE_EVIDENCE_MAP",
+    "RoleEvidence",
     "RoleResolution",
     "registered_contracts",
+    "registered_kinds",
     "registered_roles",
     "resolve_roles",
     "resolve_roles_with_evidence",

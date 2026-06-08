@@ -45,7 +45,9 @@ def patch_axis_pipeline(monkeypatch):
         file_path="/repo/app.py",
         role="routing_surface",
         satisfying_contracts=("route_register_binding",),
+        satisfying_kinds=("web_route_register",),
         contract_count=1,
+        kind_count=1,
         vector_distance=0.5,
         score=0.8,
     )

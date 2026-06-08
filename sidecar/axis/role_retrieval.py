@@ -34,20 +34,23 @@ from typing import Any
 
 import lancedb
 
-from sidecar.axis.role_resolver import ROLE_CONTRACT_MAP
+from sidecar.axis.role_resolver import ROLE_EVIDENCE_MAP
 
 
 @dataclass(frozen=True)
 class RoleCandidate:
-    """One symbol satisfying a role, with the contracts that fired and
-    the ranking score components."""
+    """One symbol satisfying a role, with both evidence channels (the
+    L3 contracts and the L2 container kinds that fired) plus the
+    ranking score components."""
 
     uid: str
     name: str
     file_path: str
     role: str
     satisfying_contracts: tuple[str, ...]
+    satisfying_kinds: tuple[str, ...]
     contract_count: int
+    kind_count: int
     vector_distance: float | None
     score: float
 
@@ -58,23 +61,35 @@ class RoleCandidate:
             "file_path": self.file_path,
             "role": self.role,
             "satisfying_contracts": list(self.satisfying_contracts),
+            "satisfying_kinds": list(self.satisfying_kinds),
             "contract_count": self.contract_count,
+            "kind_count": self.kind_count,
             "vector_distance": self.vector_distance,
             "score": self.score,
         }
 
 
 def _structural_score(
-    matched_count: int,
-    total_role_contracts: int,
+    matched_contracts: int,
+    matched_kinds: int,
+    total_contracts: int,
+    total_kinds: int,
 ) -> float:
-    """``[0, 1]`` proportion of the role's contracts that fired on this
-    symbol. A symbol satisfying 3 of 4 possible contracts for the role
-    scores higher than one satisfying just 1.
+    """``[0, 1]`` proportion of the role's evidence that fired on this
+    symbol, computed across both contracts and kinds.
+
+    Contracts are weighted slightly higher (1.0) than kinds (0.6)
+    because contracts include the use-proof side of binding while kinds
+    are existence-only. A symbol with a contract match outranks a
+    symbol that only matches by kind, when both are otherwise tied.
     """
-    if total_role_contracts <= 0:
+    contract_weight = 1.0
+    kind_weight = 0.6
+    total = total_contracts * contract_weight + total_kinds * kind_weight
+    if total <= 0:
         return 0.0
-    return min(1.0, matched_count / float(total_role_contracts))
+    matched = matched_contracts * contract_weight + matched_kinds * kind_weight
+    return min(1.0, matched / total)
 
 
 def _semantic_score(distance: float | None) -> float:
@@ -126,14 +141,21 @@ def find_symbols_by_role(
     becomes a bottleneck, a dedicated ``axis_roles`` Lance column will
     let the filter run as a Lance prefilter instead.
     """
-    contracts_for_role = ROLE_CONTRACT_MAP.get(role)
-    if not contracts_for_role:
+    evidence = ROLE_EVIDENCE_MAP.get(role)
+    if evidence is None or (not evidence.contracts and not evidence.kinds):
         return []
 
     table = lancedb.connect(lance_db_path).open_table("symbols_axis_python_v1")
 
     has_query = bool(query_text and embed_fn is not None)
-    columns = ["uid", "name", "file_path", "axis_contracts_json", "workspace_id"]
+    columns = [
+        "uid",
+        "name",
+        "file_path",
+        "axis_contracts_json",
+        "axis_container_kinds_json",
+        "workspace_id",
+    ]
     if has_query:
         columns = columns + ["vector"]
 
@@ -143,28 +165,37 @@ def find_symbols_by_role(
         if r.get("workspace_id") == workspace_id
     ]
 
-    # Structural filter — keep only rows matching role's contracts.
-    matched_rows: list[tuple[dict, list[str]]] = []
+    # Structural filter — keep only rows whose persisted contracts OR
+    # container kinds intersect the role's evidence set.
+    matched_rows: list[tuple[dict, list[str], list[str]]] = []
     for row in all_rows:
         try:
             contract_objs = json.loads(row.get("axis_contracts_json") or "[]")
         except json.JSONDecodeError:
-            continue
-        matched = sorted({
+            contract_objs = []
+        try:
+            kind_objs = json.loads(row.get("axis_container_kinds_json") or "[]")
+        except json.JSONDecodeError:
+            kind_objs = []
+        matched_contracts = sorted({
             str(c.get("contract") or "")
             for c in contract_objs
-            if str(c.get("contract") or "") in contracts_for_role
+            if str(c.get("contract") or "") in evidence.contracts
         })
-        if matched:
-            matched_rows.append((row, matched))
+        matched_kinds = sorted({
+            str(k.get("kind") or "")
+            for k in kind_objs
+            if str(k.get("kind") or "") in evidence.kinds
+        })
+        if matched_contracts or matched_kinds:
+            matched_rows.append((row, matched_contracts, matched_kinds))
 
-    # Optional vector rerank on the structurally-narrowed candidates.
     distances: dict[str, float] = {}
     if has_query and matched_rows:
         query_vec = embed_fn(query_text)
         if hasattr(query_vec, "tolist"):
             query_vec = query_vec.tolist()
-        for row, _ in matched_rows:
+        for row, _, _ in matched_rows:
             vec = row.get("vector")
             if vec is None:
                 continue
@@ -173,10 +204,16 @@ def find_symbols_by_role(
             distances[row["uid"]] = _l2_distance(query_vec, vec)
 
     candidates: list[RoleCandidate] = []
-    total = len(contracts_for_role)
-    for row, matched in matched_rows:
+    total_contracts = len(evidence.contracts)
+    total_kinds = len(evidence.kinds)
+    for row, matched_contracts, matched_kinds in matched_rows:
         distance = distances.get(row.get("uid"))
-        structural = _structural_score(len(matched), total)
+        structural = _structural_score(
+            len(matched_contracts),
+            len(matched_kinds),
+            total_contracts,
+            total_kinds,
+        )
         semantic = _semantic_score(distance)
         candidates.append(
             RoleCandidate(
@@ -184,8 +221,10 @@ def find_symbols_by_role(
                 name=str(row.get("name") or ""),
                 file_path=str(row.get("file_path") or ""),
                 role=role,
-                satisfying_contracts=tuple(matched),
-                contract_count=len(matched),
+                satisfying_contracts=tuple(matched_contracts),
+                satisfying_kinds=tuple(matched_kinds),
+                contract_count=len(matched_contracts),
+                kind_count=len(matched_kinds),
                 vector_distance=(
                     float(distance) if distance is not None else None
                 ),

@@ -93,7 +93,9 @@ def _make_candidate(
         file_path=f"/tmp/{name}.py",
         role=role,
         satisfying_contracts=("registry_binding_inferred",),
+        satisfying_kinds=(),
         contract_count=1,
+        kind_count=0,
         vector_distance=None,
         score=score,
     )

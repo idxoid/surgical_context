@@ -246,7 +246,9 @@ class AxisCandidateResponse(BaseModel):
     file_path: str
     role: str
     satisfying_contracts: list[str]
+    satisfying_kinds: list[str] = Field(default_factory=list)
     contract_count: int
+    kind_count: int = 0
     vector_distance: float | None
     score: float
 
@@ -1758,7 +1760,9 @@ def ask_axis(
                         file_path=c.file_path,
                         role=c.role,
                         satisfying_contracts=list(c.satisfying_contracts),
+                        satisfying_kinds=list(c.satisfying_kinds),
                         contract_count=c.contract_count,
+                        kind_count=c.kind_count,
                         vector_distance=c.vector_distance,
                         score=c.score,
                     )
