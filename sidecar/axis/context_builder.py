@@ -1,0 +1,188 @@
+"""Context builder — RoleCandidate → expanded code bundle for an LLM.
+
+The role-driven retrieval primitive returns ranked seed symbols. An
+``/ask``-style consumer needs the *code* around those seeds — not just
+the seed name and uid. This module is the bridge: for each candidate,
+walk its structural neighbourhood via ``AxisGraphTraversal``, dedupe
++ depth-rank the related symbols, and pull their ``code`` from Lance.
+
+What "neighbourhood" means depends on the contract that satisfied the
+role. ``deferred_binding_flow`` (the only mode any current contract
+uses) walks ``DECORATED_BY | USES_TYPE | INJECTS | HANDLES | REFERENCES
+| HAS_API | INHERITED_API`` first (the structural binding ring) then
+``CALLS_*`` for runtime dispatch — exactly what a question about a
+registry or dependency-binding pattern needs to surface.
+
+The output is a ``ContextBundle`` per candidate, ready for prompt
+assembly. We do not produce the final prompt: prompt shape is the
+consumer's choice (chat format, tool-use schema, etc.).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from typing import Any
+
+from sidecar.axis.graph_traversal import AxisGraphTraversal
+from sidecar.axis.query_plan import AxisQueryRequest, compile_axis_query
+from sidecar.axis.role_retrieval import RoleCandidate
+
+
+@dataclass(frozen=True)
+class ContextSymbol:
+    """One symbol in the assembled context: the seed (depth 0) or a
+    related symbol reached through graph expansion."""
+
+    uid: str
+    name: str
+    file_path: str
+    role: str
+    distance_from_seed: int
+    expansion_step: str | None
+    code: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "uid": self.uid,
+            "name": self.name,
+            "file_path": self.file_path,
+            "role": self.role,
+            "distance_from_seed": self.distance_from_seed,
+            "expansion_step": self.expansion_step,
+            "code": self.code,
+        }
+
+
+@dataclass(frozen=True)
+class ContextBundle:
+    """Bundle for one seed candidate: the seed plus its expanded
+    related symbols, ordered closest-first."""
+
+    role: str
+    seed: ContextSymbol
+    related: tuple[ContextSymbol, ...] = field(default_factory=tuple)
+
+    def all_symbols(self) -> list[ContextSymbol]:
+        return [self.seed, *self.related]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "role": self.role,
+            "seed": self.seed.to_dict(),
+            "related": [s.to_dict() for s in self.related],
+        }
+
+
+def _fetch_codes(
+    lance,
+    workspace_id: str,
+    uids: set[str],
+) -> dict[str, str | None]:
+    """Pull ``code`` for a set of uids in one table scan.
+
+    Lance does not give us a clean WHERE-by-list across heterogeneous
+    columns; one full scan filtered in-process is acceptable for the
+    workspaces we currently target (thousands of symbols, not millions).
+    """
+    if not uids:
+        return {}
+    table = lance._sym_table  # noqa: SLF001
+    rows = (
+        table.to_lance()
+        .to_table(columns=["uid", "code", "workspace_id"])
+        .to_pylist()
+    )
+    return {
+        r["uid"]: r.get("code")
+        for r in rows
+        if r.get("workspace_id") == workspace_id and r.get("uid") in uids
+    }
+
+
+def build_context_for_candidates(
+    candidates: Iterable[RoleCandidate],
+    *,
+    workspace_id: str,
+    db,
+    lance,
+    max_per_seed: int = 6,
+    traversal_mode: str = "deferred_binding_flow",
+) -> list[ContextBundle]:
+    """Expand each candidate into a ``ContextBundle`` of related code.
+
+    ``max_per_seed`` caps how many related symbols come back per seed
+    (depth-then-name ordering). ``traversal_mode`` picks the expansion
+    pattern from ``AxisQueryPlan``; defaults to deferred-binding
+    because every current contract uses it.
+    """
+    candidates = list(candidates)
+    if not candidates:
+        return []
+
+    traversal = AxisGraphTraversal(db, workspace_id)
+    request = AxisQueryRequest(
+        traversal_mode=traversal_mode,
+        limit=max(1, max_per_seed),
+    )
+    plan = compile_axis_query(request, workspace_id=workspace_id)
+
+    # Expand each candidate independently — seeds shouldn't bleed into
+    # each other's neighbourhoods unintentionally.
+    expansion_per_candidate: list[
+        tuple[RoleCandidate, list]
+    ] = []
+    uids_to_fetch: set[str] = set()
+    for cand in candidates:
+        uids_to_fetch.add(cand.uid)
+        hits = traversal.expand([cand.uid], plan)
+        # Dedupe by uid, keep the shallowest occurrence (closer wins).
+        nearest_by_uid: dict[str, Any] = {}
+        for h in hits:
+            existing = nearest_by_uid.get(h.uid)
+            if existing is None or h.depth < existing.depth:
+                nearest_by_uid[h.uid] = h
+        ordered = sorted(
+            nearest_by_uid.values(),
+            key=lambda h: (h.depth, (h.name or "").lower()),
+        )[:max_per_seed]
+        expansion_per_candidate.append((cand, ordered))
+        for h in ordered:
+            uids_to_fetch.add(h.uid)
+
+    code_by_uid = _fetch_codes(lance, workspace_id, uids_to_fetch)
+
+    bundles: list[ContextBundle] = []
+    for cand, hits in expansion_per_candidate:
+        seed = ContextSymbol(
+            uid=cand.uid,
+            name=cand.name,
+            file_path=cand.file_path,
+            role=cand.role,
+            distance_from_seed=0,
+            expansion_step=None,
+            code=code_by_uid.get(cand.uid),
+        )
+        related = tuple(
+            ContextSymbol(
+                uid=h.uid,
+                name=h.name,
+                file_path=h.file_path,
+                role=cand.role,
+                distance_from_seed=h.depth,
+                expansion_step=h.step,
+                code=code_by_uid.get(h.uid),
+            )
+            for h in hits
+        )
+        bundles.append(
+            ContextBundle(role=cand.role, seed=seed, related=related)
+        )
+    return bundles
+
+
+__all__ = [
+    "ContextBundle",
+    "ContextSymbol",
+    "build_context_for_candidates",
+]
