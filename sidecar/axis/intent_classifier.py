@@ -42,8 +42,8 @@ from sidecar.axis.role_resolver import ROLE_CONTRACT_MAP
 # (i.e. a real consumer might ask a question that points at it).
 ROLE_INTENT_DESCRIPTIONS: dict[str, str] = {
     "routing_surface": (
-        "How are URL routes or HTTP endpoints registered and dispatched "
-        "to handler functions?"
+        "How are URL routes, HTTP endpoints, WebSocket connections, or "
+        "request handlers registered, matched, and dispatched?"
     ),
     "task_surface": (
         "How are background tasks, queued jobs, or scheduled workers "

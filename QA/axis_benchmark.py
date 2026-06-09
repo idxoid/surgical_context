@@ -39,6 +39,7 @@ from sidecar.axis.impact_traversal import expand_impact_neighbourhood
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
 from sidecar.axis.role_retrieval import find_symbols_by_role
+from sidecar.axis.sibling_shims import expand_sibling_shims
 from sidecar.axis.structural_neighbours import expand_structural_neighbours
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
@@ -219,9 +220,19 @@ def run_question(
         for c in cands
     ]
     if existing_pool_for_struct:
-        raw_by_role["structural_neighbour"] = expand_structural_neighbours(
+        affects_pool = expand_structural_neighbours(
             existing_pool_for_struct, db=db, workspace_id=workspace_id,
         )
+        # Sibling-shim discovery — re-export modules adjacent to seeds.
+        shim_pool = expand_sibling_shims(
+            existing_pool_for_struct,
+            lance=lance,
+            workspace_id=workspace_id,
+            exclude_uids=[c.uid for c in affects_pool],
+            query_text=result.question,
+            embed_fn=_embed,
+        )
+        raw_by_role["structural_neighbour"] = list(affects_pool) + list(shim_pool)
 
     # Impact-analysis pass — anchored on the existing candidate pool,
     # walks reverse-CALLS, forward-AFFECTS, structural inheritors and
