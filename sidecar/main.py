@@ -1712,6 +1712,7 @@ def ask_axis(
     from sidecar.axis.context_builder import build_context_for_candidates
     from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
     from sidecar.axis.impact_traversal import expand_impact_neighbourhood
+    from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
     from sidecar.axis.intent_classifier import classify_intent
     from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
     from sidecar.axis.role_retrieval import find_symbols_by_role
@@ -1812,8 +1813,23 @@ def ask_axis(
                 query_text=req.question,
                 embed_fn=_embed,
             )
+            # Upward inheritance walk: ``DEPENDS_ON`` between class
+            # symbols encodes inheritance. A concrete implementation
+            # in the pool (Celery's ``TaskPool`` carrying real CFG/DFG)
+            # implies its abstract base (``BasePool``) is relevant —
+            # but the base file has no axis bits to win retrieval on
+            # its own.
+            with db_session(user_id=user_id) as db:
+                ancestor_pool = expand_inheritance_ancestors(
+                    existing_pool_for_struct,
+                    db=db,
+                    workspace_id=workspace_id,
+                    exclude_uids=[
+                        c.uid for c in (list(affects_pool) + list(shim_pool))
+                    ],
+                )
             raw_by_role["structural_neighbour"] = (
-                list(affects_pool) + list(shim_pool)
+                list(affects_pool) + list(shim_pool) + list(ancestor_pool)
             )
 
         # Impact-analysis pass — when the intent classifier flagged
