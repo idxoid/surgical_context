@@ -283,6 +283,11 @@ def expand_candidates_via_neighbourhood(
     # to decide which non-intent roles cross the auto-promote bar
     # *after* every source role has contributed evidence.
     promotion_evidence: dict[str, dict[str, tuple[str, tuple[str, ...]]]] = {}
+    # Cumulative reach count across every source-role walk. Drives
+    # the cap selection inside auto-promotion — a neighbour reachable
+    # from many distinct seeds across multiple source roles is more
+    # structurally central than one reached from a single use site.
+    aggregated_neighbour_reach: dict[str, int] = {}
 
     for source_role in intent_roles:
         seeds = out.get(source_role) or []
@@ -302,9 +307,21 @@ def expand_candidates_via_neighbourhood(
             max_hops=max_hops,
             include_tests=include_tests,
         )
-        flat_neighbours: set[str] = set()
+        # Per-neighbour reach count: how many distinct seeds reach
+        # this uid. The ranking signal that drives co-dependent
+        # promotion — a declaration symbol reachable from *many* use
+        # sites (e.g. celery's ``Task.apply`` from every routing seed)
+        # is structurally more central than one reachable from a
+        # single seed, and must beat lance-scan insertion order when
+        # the ``max_injected_per_role`` cap selects winners.
+        neighbour_reach: dict[str, int] = {}
         for ns in neighbours_by_seed.values():
-            flat_neighbours |= ns
+            for uid in ns:
+                neighbour_reach[uid] = neighbour_reach.get(uid, 0) + 1
+                aggregated_neighbour_reach[uid] = (
+                    aggregated_neighbour_reach.get(uid, 0) + 1
+                )
+        flat_neighbours = set(neighbour_reach.keys())
         flat_neighbours -= all_seed_uids
         if not flat_neighbours:
             continue
@@ -352,15 +369,30 @@ def expand_candidates_via_neighbourhood(
                         tuple(sorted(evidence_kinds)),
                     )
 
+        # Rank intent-target injections by reach count so a
+        # declaration reachable from many use sites beats whichever
+        # candidate the Lance scan listed first.
         for target_role, items in per_target.items():
-            out[target_role].extend(items[:max_injected_per_role])
+            items_sorted = sorted(
+                items,
+                key=lambda c: neighbour_reach.get(c.uid, 0),
+                reverse=True,
+            )
+            out[target_role].extend(items_sorted[:max_injected_per_role])
 
     # Auto-promote non-intent roles that accumulated enough evidence.
     for target_role, uid_evidence in promotion_evidence.items():
         if len(uid_evidence) < auto_promote_min_hits:
             continue
+        # Rank by reach across ALL source roles' walks combined.
+        ranked_uids = sorted(
+            uid_evidence.keys(),
+            key=lambda uid: aggregated_neighbour_reach.get(uid, 0),
+            reverse=True,
+        )
         injected: list[RoleCandidate] = []
-        for uid, (name_path, kinds) in uid_evidence.items():
+        for uid in ranked_uids:
+            name_path, kinds = uid_evidence[uid]
             name, _, file_path = name_path.partition("|")
             injected.append(
                 RoleCandidate(
