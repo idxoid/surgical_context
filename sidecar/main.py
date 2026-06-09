@@ -1807,23 +1807,31 @@ def ask_axis(
         # are every concrete candidate already in the pool, so the
         # impact closure is anchored on what the other roles already
         # nominated.
-        if any(m.role == "impact_analysis" for m in intent):
+        mode_intents_present = {
+            m.role
+            for m in intent
+            if m.role in {"impact_analysis", "trace_dependency"}
+        }
+        if mode_intents_present:
             existing_pool = [
                 c
                 for role, cands in raw_by_role.items()
-                if role != "impact_analysis"
+                if role not in {"impact_analysis", "trace_dependency"}
                 for c in cands
             ]
             if existing_pool:
                 with trace.stage("impact_traversal"):
                     with db_session(user_id=user_id) as db:
-                        raw_by_role["impact_analysis"] = (
-                            expand_impact_neighbourhood(
-                                existing_pool,
-                                db=db,
-                                workspace_id=workspace_id,
-                            )
+                        impacted = expand_impact_neighbourhood(
+                            existing_pool,
+                            db=db,
+                            workspace_id=workspace_id,
                         )
+                # Both mode intents share the same blast-radius pool —
+                # the consumer reads either key under one synthesised
+                # entry under the surviving mode role.
+                for mode_role in mode_intents_present:
+                    raw_by_role[mode_role] = impacted
 
         # Multi-role *intersection* pass — when ≥2 intents fire we use
         # the weaker signals as STRUCTURAL CONSTRAINTS, not as a

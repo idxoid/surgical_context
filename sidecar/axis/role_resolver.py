@@ -96,18 +96,25 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
             "di_container",
             "middleware_chain",
             "keyed_dispatch_callable",
+            "keyed_register_callable",
             "metadata_carrier",
         }),
     ),
-    # ``routing_surface`` is specifically web route binding.
+    # ``routing_surface`` is specifically web route binding —
+    # registration *or* dispatch. ``keyed_register_callable`` covers
+    # ``Flask.add_url_rule`` / ``APIRouter.add_api_route`` style
+    # registration; ``keyed_dispatch_callable`` covers Flask's
+    # ``dispatch_request``.
     "routing_surface": RoleEvidence(
         contracts=frozenset({"route_register_binding"}),
-        kinds=frozenset({"web_route_register"}),
+        kinds=frozenset({"web_route_register", "keyed_register_callable"}),
     ),
     # ``task_surface`` mirrors routing for task-queue registration.
+    # ``keyed_register_callable`` catches Celery's
+    # ``TaskRegistry.register`` (``self[task.name] = task``).
     "task_surface": RoleEvidence(
         contracts=frozenset({"task_register_binding"}),
-        kinds=frozenset({"task_register"}),
+        kinds=frozenset({"task_register", "keyed_register_callable"}),
     ),
     # ``error_surface`` covers the exception-dispatch case.
     "error_surface": RoleEvidence(
@@ -165,6 +172,16 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
     # of issuing a vector lookup. See
     # ``sidecar.axis.impact_traversal``.
     "impact_analysis": RoleEvidence(
+        contracts=frozenset(),
+        kinds=frozenset(),
+    ),
+    # ``trace_dependency`` is the second question-shape pseudo-role:
+    # fires when the question asks "who calls X / what does X delegate
+    # to / where does the flow go from here". Empty evidence means
+    # vector retrieval is a no-op; the consumer reads the empty map as
+    # a signal to run the impact / call-chain traversal on the other
+    # roles' candidates.
+    "trace_dependency": RoleEvidence(
         contracts=frozenset(),
         kinds=frozenset(),
     ),

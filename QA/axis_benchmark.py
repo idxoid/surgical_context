@@ -227,17 +227,24 @@ def run_question(
     # walks reverse-CALLS, forward-AFFECTS, structural inheritors and
     # API carriers. Fires only when the intent classifier explicitly
     # gestures at "what's affected if this changes?".
-    if any(m.role == "impact_analysis" for m in intent):
+    mode_intents_present = {
+        m.role
+        for m in intent
+        if m.role in {"impact_analysis", "trace_dependency"}
+    }
+    if mode_intents_present:
         existing_pool = [
             c
             for role, cands in raw_by_role.items()
-            if role != "impact_analysis"
+            if role not in {"impact_analysis", "trace_dependency"}
             for c in cands
         ]
         if existing_pool:
-            raw_by_role["impact_analysis"] = expand_impact_neighbourhood(
+            impacted = expand_impact_neighbourhood(
                 existing_pool, db=db, workspace_id=workspace_id,
             )
+            for mode_role in mode_intents_present:
+                raw_by_role[mode_role] = impacted
 
     # Multi-role *intersection* pass — when ≥2 intents fire we use the
     # weaker signals as structural constraints, dropping primary

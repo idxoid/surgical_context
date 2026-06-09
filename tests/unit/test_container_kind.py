@@ -329,6 +329,68 @@ def test_middleware_chain_rejects_when_iterated_but_never_called():
 
 
 # ---------------------------------------------------------------------------
+# keyed_register_callable
+# ---------------------------------------------------------------------------
+
+
+def _keyed_register_facts() -> list[AxisFact]:
+    """Fingerprint of a registration method that writes a callable
+    into a keyed container — Celery's ``TaskRegistry.register``,
+    FastAPI's ``add_api_route``, Flask's ``add_url_rule``."""
+    return [
+        _fact("dfg", "subscript_write"),
+        _fact("dfg", "keyed_write"),
+        _fact("dfg", "container_write_value"),
+        _fact("dfg", "callable_value"),
+    ]
+
+
+def test_keyed_register_callable_fires_on_full_fingerprint():
+    profile = _profile(_keyed_register_facts())
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    assert "keyed_register_callable" in {
+        m.kind for m in classifier.classify(profile)
+    }
+
+
+def test_keyed_register_callable_rejects_when_iterating():
+    """Middleware chains both iterate AND write — that is a chain, not
+    a registration, so the kind must back off when both shapes overlap.
+    """
+    profile = _profile(
+        _keyed_register_facts() + [_fact("dfg", "iteration_source")]
+    )
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    assert "keyed_register_callable" not in {
+        m.kind for m in classifier.classify(profile)
+    }
+
+
+def test_keyed_register_callable_requires_callable_value():
+    """A pure ``self[key] = some_data`` (no callable) is not a
+    register-callable pattern — it is plain dict storage."""
+    facts = [
+        f for f in _keyed_register_facts() if f.bit != "callable_value"
+    ]
+    profile = _profile(facts)
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    assert "keyed_register_callable" not in {
+        m.kind for m in classifier.classify(profile)
+    }
+
+
+def test_keyed_register_callable_requires_subscript_write():
+    facts = [
+        f for f in _keyed_register_facts() if f.bit != "subscript_write"
+    ]
+    profile = _profile(facts)
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    assert "keyed_register_callable" not in {
+        m.kind for m in classifier.classify(profile)
+    }
+
+
+# ---------------------------------------------------------------------------
 # keyed_dispatch_callable
 # ---------------------------------------------------------------------------
 

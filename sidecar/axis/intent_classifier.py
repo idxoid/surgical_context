@@ -85,6 +85,10 @@ ROLE_INTENT_DESCRIPTIONS: dict[str, str] = {
         "If this code changes, what callers, tests, downstream "
         "modules, or example code would break or be affected?"
     ),
+    "trace_dependency": (
+        "What is the call chain from this code: which callers reach "
+        "it and which functions does it invoke or delegate to?"
+    ),
 }
 
 
@@ -176,21 +180,24 @@ def classify_intent(
                 )
             )
     matches.sort(key=lambda m: m.similarity, reverse=True)
-    # Cap to top-k *role* intents; ``impact_analysis`` is a question-
-    # shape mode (no retrieval pool of its own — see
-    # ``role_resolver.ROLE_EVIDENCE_MAP``) so it must not displace a
-    # role intent in the cut. If the impact intent crossed threshold
-    # but ranked outside the top-k, it gets appended; otherwise the
-    # blast-radius traversal would simply not run on a question that
-    # asked for it.
-    role_intents = [m for m in matches if m.role != "impact_analysis"][:top_k]
-    impact_intents = [m for m in matches if m.role == "impact_analysis"]
-    if impact_intents and impact_intents[0] not in role_intents:
-        # Order the impact intent by its similarity rank — keep callers
-        # who read ``intent[0]`` as the "primary" honest if it really is
-        # the top match.
+    # Cap to top-k *role* intents; ``impact_analysis`` and
+    # ``trace_dependency`` are question-shape modes (no retrieval pool
+    # of their own — see ``role_resolver.ROLE_EVIDENCE_MAP``) so they
+    # must not displace a role intent in the cut. If a mode intent
+    # crossed threshold but ranked outside the top-k, it gets appended;
+    # otherwise the corresponding traversal would simply not run on a
+    # question that asked for it.
+    mode_roles = {"impact_analysis", "trace_dependency"}
+    role_intents = [m for m in matches if m.role not in mode_roles][:top_k]
+    mode_intents = [m for m in matches if m.role in mode_roles]
+    appended: list[IntentMatch] = []
+    role_role_set = {m.role for m in role_intents}
+    for m in mode_intents:
+        if m.role not in role_role_set and m not in role_intents:
+            appended.append(m)
+    if appended:
         merged = sorted(
-            role_intents + impact_intents[:1],
+            role_intents + appended,
             key=lambda m: m.similarity,
             reverse=True,
         )

@@ -395,6 +395,59 @@ def _classify_middleware_chain(
     )
 
 
+@register_kind("keyed_register_callable")
+def _classify_keyed_register_callable(
+    profile: AxisProfile,
+    probe: GraphContextProbe,
+) -> ContainerKindMatch | None:
+    """Method that registers a callable into a keyed container.
+
+    Mirror of ``keyed_dispatch_callable``: the dispatcher *reads* one
+    callable out of a registry by key and invokes it; this kind
+    *writes* one callable into a registry by key and exits. Celery's
+    ``TaskRegistry.register`` (``self[task.name] = task``), FastAPI's
+    ``APIRouter.add_api_route`` (``self.routes.append(APIRoute(...))``
+    after keyed lookup), and Flask's ``Flask.add_url_rule`` all match
+    this shape.
+
+    Required structural fingerprint:
+
+      - dfg.subscript_write + dfg.keyed_write + dfg.container_write_value
+        (write one entry into a keyed container)
+      - dfg.callable_value (the value being stored is a callable; pure
+        data registration would not show this bit)
+
+    Discriminator vs ``middleware_chain``: ``middleware_chain`` stores
+    callables *and* iterates them; pure registration never iterates the
+    container in the same body. So ``iteration_source`` must be
+    absent.
+    """
+    if not _dfg(profile, "subscript_write"):
+        return None
+    if not _dfg(profile, "keyed_write"):
+        return None
+    if not _dfg(profile, "container_write_value"):
+        return None
+    if not _dfg(profile, "callable_value"):
+        return None
+    # Discriminator: middleware_chain iterates; registration does not.
+    if _dfg(profile, "iteration_source"):
+        return None
+    return ContainerKindMatch(
+        kind="keyed_register_callable",
+        symbol_uid=profile.symbol_uid,
+        qualified_name=profile.qualified_name,
+        evidence_bits=(
+            ("dfg", "subscript_write"),
+            ("dfg", "keyed_write"),
+            ("dfg", "container_write_value"),
+            ("dfg", "callable_value"),
+        ),
+        evidence_probes=(),
+        payload={},
+    )
+
+
 @register_kind("keyed_dispatch_callable")
 def _classify_keyed_dispatch_callable(
     profile: AxisProfile,
