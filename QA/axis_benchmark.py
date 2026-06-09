@@ -263,7 +263,21 @@ def run_question(
     # candidate. ``fallback_on_empty`` keeps the original primary list
     # if no candidate intersects, so a single-role question never
     # silently zeros out.
-    if len(intent) >= 2:
+    #
+    # Mode intents (``impact_analysis`` / ``trace_dependency``) signal
+    # broad exploratory traversal. Their secondary effect on
+    # intersection is harmful: an impact question is exactly the case
+    # where the "right" answer file may have no graph proximity to
+    # the other tangential intent candidates (e.g. celery's
+    # ``app/amqp.py`` is the publisher answer for an apply_async
+    # impact question, but has no proximity to the loaders/timer
+    # candidates the other weak intents nominate). Skip intersection
+    # when any mode intent is present so the wider pool reaches the
+    # impact / call-chain traversals downstream.
+    has_mode_intent = any(
+        m.role in {"impact_analysis", "trace_dependency"} for m in intent
+    )
+    if len(intent) >= 2 and not has_mode_intent:
         for i, match in enumerate(intent):
             primary = raw_by_role.get(match.role) or []
             secondary = {

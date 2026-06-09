@@ -1860,7 +1860,14 @@ def ask_axis(
         # zero out a result.
         candidates_by_role: dict[str, list[AxisCandidateResponse]] = {}
         all_candidates_for_context: list = []
-        if len(intent) >= 2:
+        # Mode intents (impact / trace) signal exploratory traversal.
+        # Skip intersection in that mode so the wider candidate pool
+        # reaches the downstream blast-radius walk; see the parallel
+        # rationale in ``QA.axis_benchmark``.
+        has_mode_intent = any(
+            m.role in {"impact_analysis", "trace_dependency"} for m in intent
+        )
+        if len(intent) >= 2 and not has_mode_intent:
             with trace.stage("cross_role_intersection"):
                 with db_session(user_id=user_id) as db:
                     for i, match in enumerate(intent):
