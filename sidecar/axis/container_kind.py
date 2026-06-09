@@ -433,6 +433,19 @@ def _classify_keyed_register_callable(
     # Discriminator: middleware_chain iterates; registration does not.
     if _dfg(profile, "iteration_source"):
         return None
+    # Discriminator: a real registration is a *setter* — it stores its
+    # parameter and returns (typically ``None``). Methods that also
+    # produce a return value with a structured shape
+    # (``FastAPI.__call__`` writing to ``scope`` then awaiting
+    # ``super().__call__``; ``APIRoute.matches`` writing ``self`` into
+    # ``child_scope`` then returning ``(match, child_scope)``) are
+    # dispatch / inspection methods that happen to mutate a container,
+    # not registration calls. The ``return_output`` bit fires whenever
+    # a method propagates a value out; combined with the storage
+    # signature it is a precise structural separator. Real
+    # registration methods set state and exit.
+    if _dfg(profile, "return_output"):
+        return None
     return ContainerKindMatch(
         kind="keyed_register_callable",
         symbol_uid=profile.symbol_uid,

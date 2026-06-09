@@ -390,6 +390,24 @@ def test_keyed_register_callable_requires_subscript_write():
     }
 
 
+def test_keyed_register_callable_rejects_when_returning_value():
+    """A method that mutates a container *and* returns a value is a
+    dispatcher / inspector (e.g. ``APIRoute.matches`` which writes
+    ``child_scope["route"] = self`` then returns ``(match, child_scope)``,
+    or ``FastAPI.__call__`` which sets ``scope["root_path"]`` then
+    awaits ``super().__call__``). A real registration is a pure
+    side-effect setter — fires the storage bits and exits without
+    propagating a value out.
+    """
+    profile = _profile(
+        _keyed_register_facts() + [_fact("dfg", "return_output")]
+    )
+    classifier = ContainerKindClassifier(NullGraphProbe())
+    assert "keyed_register_callable" not in {
+        m.kind for m in classifier.classify(profile)
+    }
+
+
 # ---------------------------------------------------------------------------
 # keyed_dispatch_callable
 # ---------------------------------------------------------------------------
