@@ -51,9 +51,13 @@ from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 # Map ``repo`` from the question pack to the axis-profile workspace_id
 # we actually indexed. Repos not listed here are skipped with reason.
 REPO_TO_WORKSPACE: dict[str, str] = {
-    "fastapi": "qa_repo/fastapi@axis-v4+axis_python_v1",
-    "flask":   "qa_repo/flask@axis-v4+axis_python_v1",
-    "celery":  "qa_repo/celery@axis-v4+axis_python_v1",
+    "fastapi":    "qa_repo/fastapi@axis-v4+axis_python_v1",
+    "flask":      "qa_repo/flask@axis-v4+axis_python_v1",
+    "celery":     "qa_repo/celery@axis-v4+axis_python_v1",
+    "click":      "qa_repo/click@axis-v4+axis_python_v1",
+    "pydantic":   "qa_repo/pydantic@axis-v4+axis_python_v1",
+    "sqlalchemy": "qa_repo/sqlalchemy@axis-v4+axis_python_v1",
+    "django":     "qa_repo/django@axis-v4+axis_python_v1",
 }
 
 
