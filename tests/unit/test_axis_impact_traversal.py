@@ -234,8 +234,5 @@ def test_max_impacted_caps_pool_size():
     assert len(out) == 10
 
 
-def test_unsafe_edge_pattern_rejected():
-    from sidecar.axis.impact_traversal import _safe_rel_pattern
-
-    with pytest.raises(ValueError, match="unsafe edge type"):
-        _safe_rel_pattern(["CALLS", "DROP TABLE"])
+# Cypher-injection defence now lives in the shared graph_walk core —
+# see tests/unit/test_axis_graph_walk.py::test_safe_rel_pattern_rejects_injection.

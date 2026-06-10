@@ -23,50 +23,21 @@ so the worst case is "no change" rather than "answer drops out".
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 
+from sidecar.axis.graph_walk import EdgeProfile, _safe_rel_pattern
 from sidecar.axis.role_retrieval import RoleCandidate
 
 
-# Whitelist of edge types the proximity walk follows. Picked to be the
-# same relations the ``AxisGraphTraversal`` deferred-binding mode uses,
-# so the cross-role intersection mirrors the L5 context expansion.
-_PROXIMITY_RELS: tuple[str, ...] = (
-    "CALLS",
-    "CALLS_DIRECT",
-    "CALLS_SCOPED",
-    "CALLS_IMPORTED",
-    "CALLS_DYNAMIC",
-    "CALLS_INFERRED",
-    "CALLS_GUESS",
-    "CALLS_EXTERNAL",
-    "HAS_API",
-    "INHERITED_API",
-    "HANDLES",
-    "INSTANTIATES",
-    "DEPENDS_ON",
-    "DECORATED_BY",
-    "USES_TYPE",
-    "REFERENCES",
-    "READS_ATTR",
-    "WRITES_ATTR",
-    "RESOLVES_ATTR",
-)
-
-
-def _safe_rel_pattern(edge_types: Iterable[str]) -> str:
-    """Concatenate edge types into a Cypher ``|``-pattern. Each type is
-    validated to be a Cypher-safe identifier (``[A-Z][A-Z0-9_]*``)."""
-    import re
-
-    safe = []
-    pattern = re.compile(r"^[A-Z][A-Z0-9_]*$")
-    for et in edge_types:
-        if not pattern.match(et):
-            raise ValueError(f"unsafe edge type: {et!r}")
-        safe.append(et)
-    return "|".join(safe)
+# Edge whitelist for the proximity walk — shared with the rest of the
+# axis expansion stack via ``EdgeProfile.PROXIMITY`` so widening it in
+# one place reaches intersection, lookahead, and the structural passes
+# alike. ``cross_role_boost`` keeps its own Cypher (it filters the walk
+# to a *secondary-uid set* and groups by primary, which the generic
+# ``walk_neighbours`` does not) but draws the relation list from the
+# single source of truth.
+_PROXIMITY_RELS: tuple[str, ...] = EdgeProfile.PROXIMITY
 
 
 def _query_proximity_roles(

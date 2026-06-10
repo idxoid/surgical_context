@@ -31,55 +31,12 @@ dense graph touches many neighbours.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from sidecar.axis.graph_walk import EdgeProfile, walk_neighbours
 from sidecar.axis.role_resolver import ROLE_EVIDENCE_MAP
 from sidecar.axis.role_retrieval import RoleCandidate
-
-
-# Same proximity-edge whitelist as
-# ``sidecar.axis.cross_role_boost`` — when we widen it there we should
-# widen it here too so intersection and expansion see the same graph.
-# ``READS_ATTR`` / ``WRITES_ATTR`` / ``RESOLVES_ATTR`` are how proxy
-# objects (Flask ``current_app``, Werkzeug ``LocalProxy``) connect to
-# their consumers — the structural backbone the user pointed at for
-# "this proxy is used inside that dispatcher".
-_PROXIMITY_RELS: tuple[str, ...] = (
-    "CALLS",
-    "CALLS_DIRECT",
-    "CALLS_SCOPED",
-    "CALLS_IMPORTED",
-    "CALLS_DYNAMIC",
-    "CALLS_INFERRED",
-    "CALLS_GUESS",
-    "CALLS_EXTERNAL",
-    "HAS_API",
-    "INHERITED_API",
-    "HANDLES",
-    "INSTANTIATES",
-    "DEPENDS_ON",
-    "DECORATED_BY",
-    "USES_TYPE",
-    "REFERENCES",
-    "READS_ATTR",
-    "WRITES_ATTR",
-    "RESOLVES_ATTR",
-)
-
-
-def _safe_rel_pattern(edge_types: Iterable[str]) -> str:
-    """Concatenate edge types into a Cypher ``|``-pattern; reject anything
-    that isn't an uppercase identifier so a malformed name can never
-    smuggle a fragment into the query."""
-    safe: list[str] = []
-    pattern = re.compile(r"^[A-Z][A-Z0-9_]*$")
-    for et in edge_types:
-        if not pattern.match(et):
-            raise ValueError(f"unsafe edge type: {et!r}")
-        safe.append(et)
-    return "|".join(safe)
 
 
 def _flat_kinds(raw: Any) -> set[str]:
@@ -114,65 +71,6 @@ def _build_kind_to_roles(intent_roles: Iterable[str]) -> dict[str, set[str]]:
             continue
         for kind in ev.kinds:
             out.setdefault(kind, set()).add(role)
-    return out
-
-
-def _query_neighbour_uids(
-    db,
-    workspace_id: str,
-    seed_uids: list[str],
-    *,
-    max_hops: int,
-    include_tests: bool = False,
-) -> dict[str, set[str]]:
-    """For each seed uid, walk up to ``max_hops`` via the proximity-rel
-    whitelist and return the set of reached Symbol uids. Workspace
-    scoping comes from the ``File-CONTAINS-Symbol`` edge — Symbol nodes
-    themselves do not carry ``workspace_id``.
-
-    ``include_tests=False`` (the default) joins on the neighbour's
-    File and applies the conventional test-path exclusion — the
-    structural fence that keeps role lookahead from injecting test
-    symbols into production-style retrieval pools.
-    """
-    if not seed_uids:
-        return {}
-    rel_pattern = _safe_rel_pattern(_PROXIMITY_RELS)
-    if include_tests:
-        cypher = f"""
-        UNWIND $seed_uids AS su
-        MATCH (f:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(s:Symbol {{uid: su}})
-        MATCH (s)-[r:{rel_pattern}*1..{max_hops}]-(n:Symbol)
-        RETURN su AS seed_uid, collect(DISTINCT n.uid) AS neighbours
-        """
-    else:
-        from sidecar.axis.test_file_filter import cypher_test_exclusion_clause
-
-        exclusion = cypher_test_exclusion_clause("fn")
-        cypher = f"""
-        UNWIND $seed_uids AS su
-        MATCH (f:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(s:Symbol {{uid: su}})
-        MATCH (s)-[r:{rel_pattern}*1..{max_hops}]-(n:Symbol)
-        MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
-        WHERE {exclusion}
-        RETURN su AS seed_uid, collect(DISTINCT n.uid) AS neighbours
-        """
-    out: dict[str, set[str]] = {}
-    try:
-        with db.driver.session() as session:
-            for record in session.run(
-                cypher,
-                seed_uids=list(seed_uids),
-                workspace_id=workspace_id,
-            ):
-                seed = str(record.get("seed_uid") or "")
-                if not seed:
-                    continue
-                out[seed] = {
-                    str(u) for u in record.get("neighbours") or [] if u
-                }
-    except Exception:
-        return {}
     return out
 
 
@@ -302,25 +200,27 @@ def expand_candidates_via_neighbourhood(
         if not seed_uids:
             continue
 
-        neighbours_by_seed = _query_neighbour_uids(
-            db, workspace_id, seed_uids,
-            max_hops=max_hops,
-            include_tests=include_tests,
-        )
         # Per-neighbour reach count: how many distinct seeds reach
-        # this uid. The ranking signal that drives co-dependent
-        # promotion — a declaration symbol reachable from *many* use
-        # sites (e.g. celery's ``Task.apply`` from every routing seed)
-        # is structurally more central than one reachable from a
-        # single seed, and must beat lance-scan insertion order when
-        # the ``max_injected_per_role`` cap selects winners.
+        # this uid. The shared walk returns it directly (``Neighbour.reach``
+        # = ``count(DISTINCT su)``). It is the ranking signal that
+        # drives co-dependent promotion — a declaration reachable from
+        # *many* use sites (e.g. celery's ``Task.apply`` from every
+        # routing seed) is structurally more central than one reachable
+        # from a single seed, and must beat lance-scan insertion order
+        # when the ``max_injected_per_role`` cap selects winners.
+        neighbours = walk_neighbours(
+            db, workspace_id, seed_uids,
+            edges=EdgeProfile.PROXIMITY,
+            direction="undirected",
+            max_hops=max_hops,
+            exclude_tests=not include_tests,
+        )
         neighbour_reach: dict[str, int] = {}
-        for ns in neighbours_by_seed.values():
-            for uid in ns:
-                neighbour_reach[uid] = neighbour_reach.get(uid, 0) + 1
-                aggregated_neighbour_reach[uid] = (
-                    aggregated_neighbour_reach.get(uid, 0) + 1
-                )
+        for nb in neighbours:
+            neighbour_reach[nb.uid] = nb.reach
+            aggregated_neighbour_reach[nb.uid] = (
+                aggregated_neighbour_reach.get(nb.uid, 0) + nb.reach
+            )
         flat_neighbours = set(neighbour_reach.keys())
         flat_neighbours -= all_seed_uids
         if not flat_neighbours:

@@ -53,6 +53,23 @@ class _FakeDB:
         self.driver = _Driver(self._session)
 
 
+def _wrows(uids, *, reach=1, depth=1):
+    """Build ``walk_neighbours``-shaped rows for one walk call. Each
+    reached uid becomes one row carrying depth + reach (the shared
+    graph_walk core returns one row per neighbour, not a per-seed
+    collect)."""
+    return [
+        {
+            "uid": u,
+            "name": u.split(":")[-1],
+            "file_path": f"/tmp/{u}.py",
+            "depth": depth,
+            "reach": reach,
+        }
+        for u in uids
+    ]
+
+
 class _FakeLanceTable:
     def __init__(self, rows: list[dict[str, Any]]):
         self._rows = rows
@@ -132,7 +149,7 @@ def test_neighbour_backing_other_role_is_injected():
     cands = {"proxy_mechanism": [seed], "dispatch_surface": []}
 
     # Neo4j: u:proxy reaches u:dispatcher.
-    db = _FakeDB([[{"seed_uid": "u:proxy", "neighbours": ["u:dispatcher"]}]])
+    db = _FakeDB([_wrows(["u:dispatcher"])])
     lance = _FakeLance(
         [
             _lance_row(
@@ -171,7 +188,7 @@ def test_neighbour_already_in_target_role_is_not_duplicated():
         "proxy_mechanism": [seed],
         "dispatch_surface": [pre_existing],
     }
-    db = _FakeDB([[{"seed_uid": "u:proxy", "neighbours": ["u:dispatcher"]}]])
+    db = _FakeDB([_wrows(["u:dispatcher"])])
     lance = _FakeLance(
         [_lance_row("u:dispatcher", kinds=["keyed_dispatch_callable"])]
     )
@@ -204,14 +221,9 @@ def test_neighbour_that_is_another_roles_seed_is_not_injected():
     # an entirely new uid u:other carrying middleware_chain.
     db = _FakeDB(
         [
-            [
-                {
-                    "seed_uid": "u:proxy",
-                    "neighbours": ["u:dispatcher", "u:other"],
-                }
-            ],
+            _wrows(["u:dispatcher", "u:other"]),
             # second iteration: dispatch_surface seed walks too
-            [{"seed_uid": "u:dispatcher", "neighbours": []}],
+            [],
         ]
     )
     lance = _FakeLance(
@@ -242,7 +254,7 @@ def test_neighbour_kind_not_in_intent_is_ignored():
     against."""
     seed = _candidate("u:proxy", role="proxy_mechanism")
     cands = {"proxy_mechanism": [seed], "dispatch_surface": []}
-    db = _FakeDB([[{"seed_uid": "u:proxy", "neighbours": ["u:cfg"]}]])
+    db = _FakeDB([_wrows(["u:cfg"])])
     # config_carrier backs configuration_surface, NOT dispatch_surface
     # — and configuration_surface is not in the intent ranking.
     lance = _FakeLance([_lance_row("u:cfg", kinds=["config_carrier"])])
@@ -264,7 +276,7 @@ def test_max_injected_per_role_cap_respected():
     seed = _candidate("u:proxy", role="proxy_mechanism")
     cands = {"proxy_mechanism": [seed], "dispatch_surface": []}
     neighbours = [f"u:n{i}" for i in range(20)]
-    db = _FakeDB([[{"seed_uid": "u:proxy", "neighbours": neighbours}]])
+    db = _FakeDB([_wrows(neighbours)])
     lance = _FakeLance(
         [_lance_row(u, kinds=["middleware_chain"]) for u in neighbours]
     )
@@ -286,7 +298,7 @@ def test_workspace_isolation_blocks_neighbour_kind_lookup():
     that collides across workspaces is not attributed cross-workspace."""
     seed = _candidate("u:proxy", role="proxy_mechanism")
     cands = {"proxy_mechanism": [seed], "dispatch_surface": []}
-    db = _FakeDB([[{"seed_uid": "u:proxy", "neighbours": ["u:other_ws"]}]])
+    db = _FakeDB([_wrows(["u:other_ws"])])
     # Same uid lives in a different workspace.
     row = {
         "uid": "u:other_ws",
@@ -323,16 +335,7 @@ def test_auto_promote_creates_non_intent_role_pool():
     """
     seed = _candidate("u:proxy", role="proxy_mechanism")
     cands = {"proxy_mechanism": [seed]}
-    db = _FakeDB(
-        [
-            [
-                {
-                    "seed_uid": "u:proxy",
-                    "neighbours": ["u:d1", "u:d2", "u:d3", "u:other"],
-                }
-            ]
-        ]
-    )
+    db = _FakeDB([_wrows(["u:d1", "u:d2", "u:d3", "u:other"])])
     lance = _FakeLance(
         [
             _lance_row("u:d1", kinds=["keyed_dispatch_callable"], name="dispatch_request"),
@@ -364,7 +367,7 @@ def test_auto_promote_threshold_blocks_weak_evidence():
     The threshold guards against intent inflation."""
     seed = _candidate("u:proxy", role="proxy_mechanism")
     cands = {"proxy_mechanism": [seed]}
-    db = _FakeDB([[{"seed_uid": "u:proxy", "neighbours": ["u:single"]}]])
+    db = _FakeDB([_wrows(["u:single"])])
     lance = _FakeLance(
         [_lance_row("u:single", kinds=["keyed_dispatch_callable"])]
     )
@@ -388,12 +391,7 @@ def test_auto_promote_pool_filter_restricts_eligible_roles():
     cands = {"proxy_mechanism": [seed]}
     db = _FakeDB(
         [
-            [
-                {
-                    "seed_uid": "u:proxy",
-                    "neighbours": ["u:d1", "u:d2", "u:d3"],
-                }
-            ]
+            _wrows(["u:d1", "u:d2", "u:d3"])
         ]
     )
     lance = _FakeLance(
@@ -419,10 +417,5 @@ def test_auto_promote_pool_filter_restricts_eligible_roles():
     assert "configuration_surface" not in out
 
 
-def test_unsafe_edge_pattern_rejected():
-    """Cypher injection through the proximity walk is impossible: every
-    edge type goes through the safe-pattern validator."""
-    from sidecar.axis.role_lookahead import _safe_rel_pattern
-
-    with pytest.raises(ValueError, match="unsafe edge type"):
-        _safe_rel_pattern(["CALLS", "DROP TABLE"])
+# Cypher-injection defence now lives in the shared graph_walk core —
+# see tests/unit/test_axis_graph_walk.py::test_safe_rel_pattern_rejects_injection.
