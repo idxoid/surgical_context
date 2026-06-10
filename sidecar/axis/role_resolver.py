@@ -116,10 +116,16 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
         contracts=frozenset({"task_register_binding"}),
         kinds=frozenset({"task_register", "keyed_register_callable"}),
     ),
-    # ``error_surface`` covers the exception-dispatch case.
+    # ``error_surface`` covers both sides of error handling:
+    # ``error_dispatch`` (code that catches and routes exceptions) and
+    # ``error_model`` (the exception-type classes that carry and format
+    # the error — e.g. click's ``UsageError`` / ``ClickException``
+    # hierarchy). The ``error_model`` kind is propagated at index time
+    # from builtin-exception inheritance (see
+    # ``registry_class_inheritance.propagate_error_model_via_inheritance``).
     "error_surface": RoleEvidence(
         contracts=frozenset({"error_dispatch_binding"}),
-        kinds=frozenset({"error_dispatch"}),
+        kinds=frozenset({"error_dispatch", "error_model"}),
     ),
     # ``proxy_mechanism`` is the lazy-resolution / context-binding role.
     "proxy_mechanism": RoleEvidence(

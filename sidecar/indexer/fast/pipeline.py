@@ -1636,6 +1636,7 @@ def run_fast_indexing(
         if profile.name == AXIS_PYTHON_V1_PROFILE:
             t_stage = time.perf_counter()
             from sidecar.indexer.fast.registry_class_inheritance import (
+                propagate_error_model_via_inheritance,
                 propagate_registry_class_via_inheritance,
             )
 
@@ -1646,6 +1647,16 @@ def run_fast_indexing(
                 project_path=project_path,
             )
             stats["registry_class_propagated"] = propagated
+            # Exception-type classes get the ``error_model`` kind from
+            # builtin-exception inheritance — the definition side of
+            # ``error_surface``, distinct from ``error_dispatch``.
+            error_models = propagate_error_model_via_inheritance(
+                db,
+                lance,
+                workspace_id,
+                project_path=project_path,
+            )
+            stats["error_model_propagated"] = error_models
             stats["timings_sec"]["registry_class_inheritance"] = round(
                 time.perf_counter() - t_stage, 3
             )

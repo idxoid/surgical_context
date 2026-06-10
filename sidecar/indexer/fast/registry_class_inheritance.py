@@ -187,6 +187,271 @@ def _alias_ancestor_uids_for_class(
     return out
 
 
+# Python builtin exception hierarchy. Membership here is a *language-
+# level* contract, not a domain-name heuristic: ``raise`` requires a
+# ``BaseException`` subclass, so a class is an exception type iff it
+# (transitively) inherits one of these. This is the same kind of
+# structural anchor as "inherits an external framework marker" — the
+# name set is fixed by the language, not by what a project happens to
+# call things. Warning subclasses are intentionally excluded; they are
+# not error-surface answers.
+_EXCEPTION_BASES: frozenset[str] = frozenset({
+    "BaseException",
+    "Exception",
+    "ArithmeticError",
+    "AssertionError",
+    "AttributeError",
+    "BufferError",
+    "EOFError",
+    "ImportError",
+    "ModuleNotFoundError",
+    "LookupError",
+    "IndexError",
+    "KeyError",
+    "MemoryError",
+    "NameError",
+    "UnboundLocalError",
+    "OSError",
+    "IOError",
+    "EnvironmentError",
+    "BlockingIOError",
+    "ChildProcessError",
+    "ConnectionError",
+    "BrokenPipeError",
+    "ConnectionAbortedError",
+    "ConnectionRefusedError",
+    "ConnectionResetError",
+    "FileExistsError",
+    "FileNotFoundError",
+    "InterruptedError",
+    "IsADirectoryError",
+    "NotADirectoryError",
+    "PermissionError",
+    "ProcessLookupError",
+    "TimeoutError",
+    "OverflowError",
+    "RecursionError",
+    "ReferenceError",
+    "RuntimeError",
+    "NotImplementedError",
+    "StopIteration",
+    "StopAsyncIteration",
+    "SyntaxError",
+    "IndentationError",
+    "TabError",
+    "SystemError",
+    "SystemExit",
+    "TypeError",
+    "ValueError",
+    "UnicodeError",
+    "UnicodeDecodeError",
+    "UnicodeEncodeError",
+    "UnicodeTranslateError",
+    "ZeroDivisionError",
+    "FloatingPointError",
+    "KeyboardInterrupt",
+    "GeneratorExit",
+})
+
+
+def resolve_error_model_uids(
+    parsed_bases_by_uid: dict[str, list[str]],
+    ancestors_by_uid: dict[str, set[str]],
+) -> set[str]:
+    """Pure core of the error-model classification.
+
+    A uid is an ``error_model`` when its own parsed bases name a builtin
+    exception (``_EXCEPTION_BASES``) — a *direct anchor* — or when its
+    ancestor set (transitive ``DEPENDS_ON`` ∪ alias-resolved) reaches an
+    anchor. Iterated to a fixpoint so alias-only ancestor edges that add
+    a single hop still converge.
+
+    Kept IO-free so the language-level inheritance logic can be unit
+    tested without a Neo4j / Lance harness.
+    """
+    anchor_uids: set[str] = {
+        uid
+        for uid, bases in parsed_bases_by_uid.items()
+        if _EXCEPTION_BASES & set(bases)
+    }
+    error_model_uids: set[str] = set(anchor_uids)
+    changed = True
+    while changed:
+        changed = False
+        for uid, ancestors in ancestors_by_uid.items():
+            if uid in error_model_uids:
+                continue
+            if ancestors & error_model_uids or ancestors & anchor_uids:
+                error_model_uids.add(uid)
+                changed = True
+    return error_model_uids
+
+
+def propagate_error_model_via_inheritance(
+    db: Neo4jClient,
+    lance,
+    workspace_id: str,
+    *,
+    project_path: str | None = None,
+) -> int:
+    """Tag exception-type classes with the ``error_model`` container kind.
+
+    A class is an ``error_model`` when its inheritance chain reaches a
+    builtin exception base (``_EXCEPTION_BASES``). Two channels resolve
+    the chain, mirroring the registry-class propagator:
+
+      * direct ``parsed_base_names`` membership — ``ClickException(Exception)``
+        anchors immediately;
+      * transitive ``DEPENDS_ON`` ancestry plus alias-resolved bases —
+        ``UsageError(ClickException)`` inherits the anchor through the
+        in-workspace chain.
+
+    ``error_model`` is the *exception-definition* side of error handling
+    (the class that carries the error and formats it), distinct from
+    ``error_dispatch`` (the code that catches and routes exceptions).
+    Both back ``error_surface``. Returns the number of class rows
+    updated.
+    """
+    package = _workspace_package(db, workspace_id)
+    rows = _query_class_inheritance_context(db, workspace_id)
+    if not rows:
+        return 0
+    lance_kinds = _read_lance_kinds(lance, workspace_id)
+
+    if not project_path:
+        project_path = current_project_root()
+
+    parsed_bases_by_uid: dict[str, list[str]] = {
+        r["class_uid"]: list(r.get("parsed_base_names") or []) for r in rows
+    }
+
+    # Alias-resolved ancestor uids per class — same resolution the
+    # registry propagator uses, so a base imported under a local alias
+    # still links to its in-workspace class uid.
+    depends_on_names_by_class: dict[str, set[str]] = {}
+    name_by_uid: dict[str, str] = {
+        r["class_uid"]: (r["class_qn"] or "").split(".")[-1] for r in rows
+    }
+    for r in rows:
+        names = {
+            name_by_uid.get(a, "") for a in (r.get("ancestor_uids") or [])
+        }
+        depends_on_names_by_class[r["class_uid"]] = names
+
+    needed_local_qns: set[str] = set()
+    alias_targets: dict[str, list[str]] = {}
+    cached_bindings: dict[str, dict[str, str]] = {}
+    with project_root_scope(project_path):
+        for r in rows:
+            base_names = parsed_bases_by_uid.get(r["class_uid"], [])
+            if not base_names:
+                continue
+            file_path = str(r.get("file_path") or "")
+            bindings = cached_bindings.get(file_path)
+            if bindings is None:
+                try:
+                    with open(file_path, "r", encoding="utf-8") as fh:
+                        source = fh.read()
+                except OSError:
+                    cached_bindings[file_path] = {}
+                    continue
+                bindings = _PYTHON_ADAPTER._extract_import_bindings(  # noqa: SLF001
+                    source, file_path
+                )
+                cached_bindings[file_path] = bindings
+            depends_on_names = depends_on_names_by_class.get(r["class_uid"], set())
+            local_qns: list[str] = []
+            for base in base_names:
+                if base in depends_on_names:
+                    continue
+                upstream_qn = bindings.get(base)
+                if not upstream_qn:
+                    continue
+                local_qn = _strip_package_prefix(upstream_qn, package)
+                if not local_qn:
+                    continue
+                local_qns.append(local_qn)
+                needed_local_qns.add(local_qn)
+            if local_qns:
+                alias_targets[r["class_uid"]] = local_qns
+
+    candidate_uids_by_local_qn = _query_classes_by_local_qn(
+        db, workspace_id, needed_local_qns,
+    )
+
+    # Full ancestor set per class = DEPENDS_ON transitive ∪ alias-resolved.
+    ancestors_by_uid: dict[str, set[str]] = {}
+    for r in rows:
+        uid = r["class_uid"]
+        ancestors = set(r.get("ancestor_uids") or [])
+        for local_qn in alias_targets.get(uid, []):
+            anc_uid = candidate_uids_by_local_qn.get(local_qn)
+            if anc_uid:
+                ancestors.add(anc_uid)
+        ancestors_by_uid[uid] = ancestors
+
+    error_model_uids = resolve_error_model_uids(
+        parsed_bases_by_uid, ancestors_by_uid
+    )
+
+    # Build Lance row updates for classes that don't already carry it.
+    update_map: dict[str, dict[str, Any]] = {}
+    for uid in error_model_uids:
+        self_data = lance_kinds.get(uid)
+        if not self_data:
+            continue
+        if "error_model" in self_data["container_kinds"]:
+            continue
+        new_container_kinds = sorted(
+            set(self_data["container_kinds"]) | {"error_model"}
+        )
+        try:
+            existing_matches = json.loads(
+                self_data["axis_container_kinds_json"] or "[]"
+            )
+        except json.JSONDecodeError:
+            existing_matches = []
+        existing_matches.append(
+            {
+                "kind": "error_model",
+                "symbol_uid": uid,
+                "qualified_name": name_by_uid.get(uid, ""),
+                "evidence_bits": [["struct", "class_def"]],
+                "evidence_probes": ["inherits_builtin_exception"],
+                "payload": {},
+            }
+        )
+        update_map[uid] = {
+            "container_kinds": new_container_kinds,
+            "axis_container_kinds_json": json.dumps(
+                existing_matches, sort_keys=True
+            ),
+        }
+
+    if not update_map:
+        return 0
+    table = lance._sym_table  # noqa: SLF001
+    existing_rows = [
+        r
+        for r in table.to_lance().to_table().to_pylist()
+        if r.get("workspace_id") == workspace_id and r.get("uid") in update_map
+    ]
+    if not existing_rows:
+        return 0
+    for row in existing_rows:
+        payload = update_map[row["uid"]]
+        row["container_kinds"] = list(payload["container_kinds"])
+        row["axis_container_kinds_json"] = payload["axis_container_kinds_json"]
+    import pyarrow as pa
+
+    arrow = pa.Table.from_pylist(existing_rows, schema=table.schema)
+    quoted_ws = workspace_id.replace("'", "''")
+    uid_in = ", ".join("'" + uid.replace("'", "''") + "'" for uid in update_map)
+    table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
+    table.add(arrow)
+    return len(existing_rows)
+
+
 def propagate_registry_class_via_inheritance(
     db: Neo4jClient,
     lance,
