@@ -64,6 +64,7 @@ REPO_TO_WORKSPACE: dict[str, str] = {
     "pydantic":   "qa_repo/pydantic@axis-v4+axis_python_v1",
     "sqlalchemy": "qa_repo/sqlalchemy@axis-v4+axis_python_v1",
     "django":     "qa_repo/django@axis-v4+axis_python_v1",
+    "dathund":    "qa_repo/dathund@axis-v4+axis_python_v1",
 }
 
 
