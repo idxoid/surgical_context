@@ -19,12 +19,25 @@ class _Arrow:
         return list(self._rows)
 
 
+def _apply_ws_filter(rows, filter_str):
+    """Simulate Lance predicate pushdown for ``workspace_id = '...'``."""
+    if not filter_str:
+        return rows
+    import re
+
+    m = re.search(r"workspace_id = '(.*)'", filter_str)
+    if not m:
+        return rows
+    ws = m.group(1).replace("''", "'")
+    return [r for r in rows if r.get("workspace_id") == ws]
+
+
 class _Lance:
     def __init__(self, rows):
         self._rows = rows
 
-    def to_table(self, columns=None):
-        return _Arrow(self._rows)
+    def to_table(self, columns=None, filter=None):
+        return _Arrow(_apply_ws_filter(self._rows, filter))
 
 
 class _Table:

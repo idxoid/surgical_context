@@ -1718,7 +1718,8 @@ def ask_axis(
     from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
     from sidecar.axis.role_retrieval import (
         find_seeds_by_vector,
-        find_symbols_by_role,
+        find_symbols_by_roles,
+        scan_workspace_rows,
     )
     from sidecar.axis.sibling_shims import expand_sibling_shims
     from sidecar.axis.structural_neighbours import expand_structural_neighbours
@@ -1753,15 +1754,17 @@ def ask_axis(
         ]
 
         with trace.stage("retrieval"):
-            raw_by_role: dict[str, list] = {}
-            for match in intent:
-                raw_by_role[match.role] = find_symbols_by_role(
-                    workspace_id,
-                    match.role,
-                    query_text=req.question,
-                    embed_fn=_embed,
-                    limit=req.per_role_limit,
-                )
+            # One workspace-scoped scan (predicate pushdown + parse
+            # once) feeds every role retrieval and the vector seeds.
+            axis_scanned = scan_workspace_rows(workspace_id)
+            raw_by_role: dict[str, list] = find_symbols_by_roles(
+                workspace_id,
+                [m.role for m in intent],
+                query_text=req.question,
+                embed_fn=_embed,
+                limit=req.per_role_limit,
+                prescanned=axis_scanned,
+            )
 
         # Cross-role *lookahead*: walk K hops from each role's vector
         # candidates, inject neighbours whose container_kinds back a
@@ -1794,6 +1797,7 @@ def ask_axis(
                 req.question,
                 embed_fn=_embed,
                 limit=req.per_role_limit,
+                prescanned=axis_scanned,
             )
 
         # Structural-neighbour pass — file-level adjacency via

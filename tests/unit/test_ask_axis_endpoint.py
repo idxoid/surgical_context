@@ -52,7 +52,13 @@ def patch_axis_pipeline(monkeypatch):
         score=0.8,
     )
 
-    monkeypatch.setattr(_retr_mod, "find_symbols_by_role", lambda *a, **k: [candidate])
+    monkeypatch.setattr(_retr_mod, "scan_workspace_rows", lambda *a, **k: [])
+    monkeypatch.setattr(
+        _retr_mod,
+        "find_symbols_by_roles",
+        lambda ws, roles, **k: {r: [candidate] for r in roles},
+    )
+    monkeypatch.setattr(_retr_mod, "find_seeds_by_vector", lambda *a, **k: [])
 
     bundle = ContextBundle(
         role="routing_surface",

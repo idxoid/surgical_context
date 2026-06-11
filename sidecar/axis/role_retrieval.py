@@ -114,6 +114,157 @@ def _combined_score(
     return 0.5 * structural + 0.5 * semantic
 
 
+def scan_workspace_rows(
+    workspace_id: str,
+    *,
+    lance_db_path: str = "./data/lancedb",
+    include_tests: bool = False,
+    with_vector: bool = True,
+) -> list[dict]:
+    """One workspace-scoped Lance scan, JSON parsed once.
+
+    The whole retrieval layer used to scan the *entire* symbol table
+    (every workspace) and filter in Python — once per role, three times
+    per question. For a 14k-symbol workspace inside a 43k-row table that
+    materialised 43k rows × the 384-dim vector column three times over.
+
+    This reads the workspace's rows in a single pass: the ``workspace_id``
+    equality is pushed down into Lance (a C++ bitmask, not a Python
+    loop), the test-file fence runs once, and each row's contracts/kinds
+    JSON is parsed once into ``_contracts`` / ``_kinds`` sets so every
+    downstream role match is a cheap set intersection. Pass the result
+    to ``find_symbols_by_roles`` and ``find_seeds_by_vector`` to serve
+    both off one scan.
+    """
+    table = lancedb.connect(lance_db_path).open_table("symbols_axis_python_v1")
+    columns = [
+        "uid",
+        "name",
+        "file_path",
+        "axis_contracts_json",
+        "axis_container_kinds_json",
+        "workspace_id",
+    ]
+    if with_vector:
+        columns.append("vector")
+    ws_quoted = workspace_id.replace("'", "''")
+    arrow = table.to_lance().to_table(
+        columns=columns, filter=f"workspace_id = '{ws_quoted}'"
+    )
+    from sidecar.axis.test_file_filter import is_test_path
+
+    out: list[dict] = []
+    for r in arrow.to_pylist():
+        if not include_tests and is_test_path(str(r.get("file_path") or "")):
+            continue
+        try:
+            contract_objs = json.loads(r.get("axis_contracts_json") or "[]")
+        except json.JSONDecodeError:
+            contract_objs = []
+        try:
+            kind_objs = json.loads(r.get("axis_container_kinds_json") or "[]")
+        except json.JSONDecodeError:
+            kind_objs = []
+        r["_contracts"] = {
+            str(c.get("contract") or "") for c in contract_objs
+        }
+        r["_kinds"] = {str(k.get("kind") or "") for k in kind_objs}
+        out.append(r)
+    return out
+
+
+def find_symbols_by_roles(
+    workspace_id: str,
+    roles: list[str],
+    *,
+    query_text: str | None = None,
+    limit: int = 25,
+    lance_db_path: str = "./data/lancedb",
+    embed_fn=None,
+    include_tests: bool = False,
+    prescanned: list[dict] | None = None,
+) -> dict[str, list[RoleCandidate]]:
+    """Batch role retrieval off a single scan.
+
+    Distributes the pre-scanned, pre-parsed workspace rows to each role
+    by set intersection, embeds the query once, and caches per-uid
+    distances across roles. Equivalent to calling ``find_symbols_by_role``
+    per role but with one scan + one embed instead of N of each.
+    """
+    rows = (
+        prescanned
+        if prescanned is not None
+        else scan_workspace_rows(
+            workspace_id,
+            lance_db_path=lance_db_path,
+            include_tests=include_tests,
+        )
+    )
+    has_query = bool(query_text and embed_fn is not None)
+    query_vec = None
+    if has_query:
+        query_vec = embed_fn(query_text)
+        if hasattr(query_vec, "tolist"):
+            query_vec = query_vec.tolist()
+    distance_cache: dict[str, float | None] = {}
+
+    def _distance(row: dict) -> float | None:
+        uid = str(row.get("uid") or "")
+        if uid in distance_cache:
+            return distance_cache[uid]
+        d: float | None = None
+        if has_query:
+            vec = row.get("vector")
+            if vec is not None:
+                if hasattr(vec, "tolist"):
+                    vec = vec.tolist()
+                d = _l2_distance(query_vec, vec)
+        distance_cache[uid] = d
+        return d
+
+    out: dict[str, list[RoleCandidate]] = {}
+    for role in roles:
+        evidence = ROLE_EVIDENCE_MAP.get(role)
+        if evidence is None or (not evidence.contracts and not evidence.kinds):
+            out[role] = []
+            continue
+        total_contracts = len(evidence.contracts)
+        total_kinds = len(evidence.kinds)
+        candidates: list[RoleCandidate] = []
+        for row in rows:
+            matched_contracts = sorted(row["_contracts"] & evidence.contracts)
+            matched_kinds = sorted(row["_kinds"] & evidence.kinds)
+            if not (matched_contracts or matched_kinds):
+                continue
+            distance = _distance(row)
+            structural = _structural_score(
+                len(matched_contracts),
+                len(matched_kinds),
+                total_contracts,
+                total_kinds,
+            )
+            semantic = _semantic_score(distance)
+            candidates.append(
+                RoleCandidate(
+                    uid=str(row.get("uid") or ""),
+                    name=str(row.get("name") or ""),
+                    file_path=str(row.get("file_path") or ""),
+                    role=role,
+                    satisfying_contracts=tuple(matched_contracts),
+                    satisfying_kinds=tuple(matched_kinds),
+                    contract_count=len(matched_contracts),
+                    kind_count=len(matched_kinds),
+                    vector_distance=(
+                        float(distance) if distance is not None else None
+                    ),
+                    score=_combined_score(structural, semantic, has_query),
+                )
+            )
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        out[role] = candidates[:limit]
+    return out
+
+
 def find_symbols_by_role(
     workspace_id: str,
     role: str,
@@ -142,108 +293,18 @@ def find_symbols_by_role(
     becomes a bottleneck, a dedicated ``axis_roles`` Lance column will
     let the filter run as a Lance prefilter instead.
     """
-    evidence = ROLE_EVIDENCE_MAP.get(role)
-    if evidence is None or (not evidence.contracts and not evidence.kinds):
-        return []
-
-    table = lancedb.connect(lance_db_path).open_table("symbols_axis_python_v1")
-
-    has_query = bool(query_text and embed_fn is not None)
-    columns = [
-        "uid",
-        "name",
-        "file_path",
-        "axis_contracts_json",
-        "axis_container_kinds_json",
-        "workspace_id",
-    ]
-    if has_query:
-        columns = columns + ["vector"]
-
-    # Test-file fencing: by default, drop rows whose ``file_path`` lives
-    # under a conventional test surface. The pass-through escape
-    # ``include_tests=True`` is reserved for callers driving impact-style
-    # questions (the ``impact_analysis`` traversal) where tests *are*
-    # the answer. Imported lazily so the module's CLI/test imports do
-    # not pull a new dependency just for the predicate.
-    from sidecar.axis.test_file_filter import is_test_path
-
-    all_rows = [
-        r
-        for r in table.to_lance().to_table(columns=columns).to_pylist()
-        if r.get("workspace_id") == workspace_id
-        and (include_tests or not is_test_path(str(r.get("file_path") or "")))
-    ]
-
-    # Structural filter — keep only rows whose persisted contracts OR
-    # container kinds intersect the role's evidence set.
-    matched_rows: list[tuple[dict, list[str], list[str]]] = []
-    for row in all_rows:
-        try:
-            contract_objs = json.loads(row.get("axis_contracts_json") or "[]")
-        except json.JSONDecodeError:
-            contract_objs = []
-        try:
-            kind_objs = json.loads(row.get("axis_container_kinds_json") or "[]")
-        except json.JSONDecodeError:
-            kind_objs = []
-        matched_contracts = sorted({
-            str(c.get("contract") or "")
-            for c in contract_objs
-            if str(c.get("contract") or "") in evidence.contracts
-        })
-        matched_kinds = sorted({
-            str(k.get("kind") or "")
-            for k in kind_objs
-            if str(k.get("kind") or "") in evidence.kinds
-        })
-        if matched_contracts or matched_kinds:
-            matched_rows.append((row, matched_contracts, matched_kinds))
-
-    distances: dict[str, float] = {}
-    if has_query and matched_rows:
-        query_vec = embed_fn(query_text)
-        if hasattr(query_vec, "tolist"):
-            query_vec = query_vec.tolist()
-        for row, _, _ in matched_rows:
-            vec = row.get("vector")
-            if vec is None:
-                continue
-            if hasattr(vec, "tolist"):
-                vec = vec.tolist()
-            distances[row["uid"]] = _l2_distance(query_vec, vec)
-
-    candidates: list[RoleCandidate] = []
-    total_contracts = len(evidence.contracts)
-    total_kinds = len(evidence.kinds)
-    for row, matched_contracts, matched_kinds in matched_rows:
-        distance = distances.get(row.get("uid"))
-        structural = _structural_score(
-            len(matched_contracts),
-            len(matched_kinds),
-            total_contracts,
-            total_kinds,
-        )
-        semantic = _semantic_score(distance)
-        candidates.append(
-            RoleCandidate(
-                uid=str(row.get("uid") or ""),
-                name=str(row.get("name") or ""),
-                file_path=str(row.get("file_path") or ""),
-                role=role,
-                satisfying_contracts=tuple(matched_contracts),
-                satisfying_kinds=tuple(matched_kinds),
-                contract_count=len(matched_contracts),
-                kind_count=len(matched_kinds),
-                vector_distance=(
-                    float(distance) if distance is not None else None
-                ),
-                score=_combined_score(structural, semantic, has_query),
-            )
-        )
-
-    candidates.sort(key=lambda c: c.score, reverse=True)
-    return candidates[:limit]
+    # Thin wrapper over the batch path — one role, one scan (now with
+    # workspace predicate pushdown). Kept for the many existing callers
+    # and tests that retrieve a single role.
+    return find_symbols_by_roles(
+        workspace_id,
+        [role],
+        query_text=query_text,
+        limit=limit,
+        lance_db_path=lance_db_path,
+        embed_fn=embed_fn,
+        include_tests=include_tests,
+    ).get(role, [])
 
 
 def find_seeds_by_vector(
@@ -254,6 +315,7 @@ def find_seeds_by_vector(
     limit: int = 12,
     lance_db_path: str = "./data/lancedb",
     include_tests: bool = False,
+    prescanned: list[dict] | None = None,
 ) -> list[RoleCandidate]:
     """Role-AGNOSTIC vector seed retrieval — top-``limit`` symbols by
     embedding similarity, with NO role/kind filter.
@@ -273,17 +335,15 @@ def find_seeds_by_vector(
     """
     if not query_text or embed_fn is None:
         return []
-    table = lancedb.connect(lance_db_path).open_table("symbols_axis_python_v1")
-    from sidecar.axis.test_file_filter import is_test_path
-
-    rows = [
-        r
-        for r in table.to_lance()
-        .to_table(columns=["uid", "name", "file_path", "vector", "workspace_id"])
-        .to_pylist()
-        if r.get("workspace_id") == workspace_id
-        and (include_tests or not is_test_path(str(r.get("file_path") or "")))
-    ]
+    rows = (
+        prescanned
+        if prescanned is not None
+        else scan_workspace_rows(
+            workspace_id,
+            lance_db_path=lance_db_path,
+            include_tests=include_tests,
+        )
+    )
     if not rows:
         return []
     query_vec = embed_fn(query_text)
@@ -332,4 +392,6 @@ __all__ = [
     "RoleCandidate",
     "find_seeds_by_vector",
     "find_symbols_by_role",
+    "find_symbols_by_roles",
+    "scan_workspace_rows",
 ]

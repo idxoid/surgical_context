@@ -32,10 +32,21 @@ def fake_lance(monkeypatch):
             outer = self
 
             class _LanceWrap:
-                def to_table(self, columns=None):
+                def to_table(self, columns=None, filter=None):
+                    rows = list(outer.rows)
+                    if filter:
+                        import re
+
+                        m = re.search(r"workspace_id = '(.*)'", filter)
+                        if m:
+                            ws = m.group(1).replace("''", "'")
+                            rows = [
+                                r for r in rows if r.get("workspace_id") == ws
+                            ]
+
                     class _Arrow:
                         def to_pylist(self_inner):
-                            return list(outer.rows)
+                            return rows
 
                     return _Arrow()
 

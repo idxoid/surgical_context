@@ -40,7 +40,11 @@ from sidecar.axis.axis_phased import expand_phased
 from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
-from sidecar.axis.role_retrieval import find_seeds_by_vector, find_symbols_by_role
+from sidecar.axis.role_retrieval import (
+    find_seeds_by_vector,
+    find_symbols_by_roles,
+    scan_workspace_rows,
+)
 from sidecar.axis.sibling_shims import expand_sibling_shims
 from sidecar.axis.structural_neighbours import expand_structural_neighbours
 from sidecar.database.lancedb_client import LanceDBClient
@@ -191,15 +195,18 @@ def run_question(
         result.intent_top_similarity = intent[0].similarity
         result.intent_matches = [(m.role, m.similarity) for m in intent]
 
-    raw_by_role: dict[str, list] = {}
-    for match in intent:
-        raw_by_role[match.role] = find_symbols_by_role(
-            workspace_id,
-            match.role,
-            query_text=result.question,
-            embed_fn=_embed,
-            limit=per_role_limit,
-        )
+    # One workspace-scoped Lance scan serves every role retrieval AND
+    # the role-agnostic vector seeds — workspace predicate pushdown +
+    # parse-once instead of a full-table scan per role.
+    scanned = scan_workspace_rows(workspace_id)
+    raw_by_role: dict[str, list] = find_symbols_by_roles(
+        workspace_id,
+        [m.role for m in intent],
+        query_text=result.question,
+        embed_fn=_embed,
+        limit=per_role_limit,
+        prescanned=scanned,
+    )
 
     # Cross-role *lookahead*: walk K hops from each role's seed
     # candidates and inject neighbours whose container_kinds back any
@@ -230,6 +237,7 @@ def run_question(
         result.question,
         embed_fn=_embed,
         limit=per_role_limit,
+        prescanned=scanned,
     )
 
     # File-level structural-neighbour pass via undirected AFFECTS.
