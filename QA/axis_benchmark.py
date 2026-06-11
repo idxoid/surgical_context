@@ -36,6 +36,7 @@ import yaml
 from sidecar.axis.context_builder import build_context_for_candidates
 from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
 from sidecar.axis.impact_traversal import expand_impact_neighbourhood
+from sidecar.axis.axis_phased import expand_phased
 from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
@@ -247,8 +248,26 @@ def run_question(
                 c.uid for c in (list(affects_pool) + list(shim_pool))
             ],
         )
+        # Reactive phased walk (REGISTRY*→CONTROL) — start axis chosen
+        # by the seeds' kinds, not intent. Closes the case where intent
+        # picked the wrong role but the seeds still sit on a registry /
+        # router whose topology leads to the answer.
+        already = {
+            c.uid
+            for c in (list(affects_pool) + list(shim_pool) + list(ancestor_pool))
+        }
+        phased_pool = expand_phased(
+            existing_pool_for_struct,
+            db=db,
+            lance=lance,
+            workspace_id=workspace_id,
+            exclude_uids=already,
+        )
         raw_by_role["structural_neighbour"] = (
-            list(affects_pool) + list(shim_pool) + list(ancestor_pool)
+            list(affects_pool)
+            + list(shim_pool)
+            + list(ancestor_pool)
+            + list(phased_pool)
         )
 
     # Impact-analysis pass — anchored on the existing candidate pool,
