@@ -26,10 +26,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import yaml
 
@@ -497,6 +499,88 @@ def _print_comparison(prev_summary: dict[str, Any], summary: dict[str, Any]) -> 
     )
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+
+    whole_seconds = int(seconds)
+    minutes, secs = divmod(whole_seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m{secs:02d}s"
+
+
+def _compact_progress_text(text: str, *, limit: int = 96) -> str:
+    compacted = " ".join(text.split())
+    if len(compacted) <= limit:
+        return compacted
+    return compacted[: limit - 3].rstrip() + "..."
+
+
+def _print_progress_start(
+    *,
+    index: int,
+    total: int,
+    question_entry: dict[str, Any],
+    stream: TextIO,
+) -> None:
+    qid = str(question_entry.get("id") or "(no id)")
+    repo = str(question_entry.get("repo") or "(no repo)")
+    question = _compact_progress_text(str(question_entry.get("question") or ""))
+    print(
+        f"[axis {index}/{total}] start {repo}/{qid}: {question}",
+        file=stream,
+        flush=True,
+    )
+
+
+def _print_progress_done(
+    *,
+    index: int,
+    total: int,
+    result: QuestionResult,
+    question_seconds: float,
+    elapsed_seconds: float,
+    scored_count: int,
+    skipped_count: int,
+    full_count: int,
+    zero_count: int,
+    recall_sum: float,
+    stream: TextIO,
+) -> None:
+    completed = index
+    remaining = max(total - completed, 0)
+    eta_seconds = (elapsed_seconds / completed) * remaining if completed else 0.0
+    running_mean = recall_sum / scored_count if scored_count else 0.0
+
+    if result.skipped_reason:
+        detail = f"skipped={result.skipped_reason}"
+    else:
+        intent = result.intent_top_role or "(none)"
+        if result.intent_top_similarity is not None:
+            intent = f"{intent}({result.intent_top_similarity:.2f})"
+        detail = (
+            f"recall={result.file_recall:.3f} "
+            f"matched={len(result.matched_files)}/{len(result.expected_files)} "
+            f"candidates={result.candidate_count} intent={intent}"
+        )
+
+    print(
+        f"[axis {index}/{total}] done  {result.repo}/{result.question_id} "
+        f"{detail} "
+        f"q={_format_duration(question_seconds)} "
+        f"elapsed={_format_duration(elapsed_seconds)} "
+        f"eta={_format_duration(eta_seconds)} "
+        f"mean={running_mean:.3f} full={full_count} zero={zero_count} "
+        f"skipped={skipped_count}",
+        file=stream,
+        flush=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Axis pipeline benchmark over the Python question pack",
@@ -517,6 +601,11 @@ def main() -> None:
         default=None,
         help="Previous summary.json to compare against",
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable per-question progress output on stderr",
+    )
     args = parser.parse_args()
 
     questions = _load_pack(args.pack)
@@ -528,7 +617,32 @@ def main() -> None:
     lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
 
     results: list[QuestionResult] = []
-    for entry in questions:
+    progress_enabled = not args.no_progress
+    progress_stream = sys.stderr
+    total_questions = len(questions)
+    run_started = time.monotonic()
+    scored_count = 0
+    skipped_count = 0
+    full_count = 0
+    zero_count = 0
+    recall_sum = 0.0
+
+    if progress_enabled:
+        print(
+            f"[axis] pack={args.pack} questions={total_questions} out={args.out}",
+            file=progress_stream,
+            flush=True,
+        )
+
+    for index, entry in enumerate(questions, start=1):
+        if progress_enabled:
+            _print_progress_start(
+                index=index,
+                total=total_questions,
+                question_entry=entry,
+                stream=progress_stream,
+            )
+        question_started = time.monotonic()
         res = run_question(
             entry,
             db=db,
@@ -539,6 +653,32 @@ def main() -> None:
             context_per_seed=args.context_per_seed,
         )
         results.append(res)
+        question_seconds = time.monotonic() - question_started
+
+        if res.skipped_reason:
+            skipped_count += 1
+        else:
+            scored_count += 1
+            recall_sum += res.file_recall
+            if res.file_recall >= 1.0 - 1e-9:
+                full_count += 1
+            if res.file_recall == 0.0:
+                zero_count += 1
+
+        if progress_enabled:
+            _print_progress_done(
+                index=index,
+                total=total_questions,
+                result=res,
+                question_seconds=question_seconds,
+                elapsed_seconds=time.monotonic() - run_started,
+                scored_count=scored_count,
+                skipped_count=skipped_count,
+                full_count=full_count,
+                zero_count=zero_count,
+                recall_sum=recall_sum,
+                stream=progress_stream,
+            )
 
     summary = summarise(results)
 
