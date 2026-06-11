@@ -1834,6 +1834,7 @@ def ask_axis(
                 exclude_uids=[c.uid for c in affects_pool],
                 query_text=req.question,
                 embed_fn=_embed,
+                prescanned=axis_scanned,
             )
             # Upward inheritance walk: ``DEPENDS_ON`` between class
             # symbols encodes inheritance. A concrete implementation
@@ -1869,6 +1870,7 @@ def ask_axis(
                     lance=lance,
                     workspace_id=workspace_id,
                     exclude_uids=already,
+                    prescanned=axis_scanned,
                 )
             raw_by_role["structural_neighbour"] = (
                 list(affects_pool)

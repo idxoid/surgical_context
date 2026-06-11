@@ -79,6 +79,7 @@ def expand_sibling_shims(
     exclude_uids: Iterable[str] = (),
     query_text: str | None = None,
     embed_fn=None,
+    prescanned=None,
 ) -> list[RoleCandidate]:
     """For each seed's containing directory, surface sibling ``.py``
     files in the same workspace whose ``axis_container_kinds_json`` is
@@ -101,21 +102,27 @@ def expand_sibling_shims(
     if not seed_dirs:
         return []
 
-    sym_table = getattr(lance, "_sym_table", None)
-    if sym_table is None:
-        # Lance fake or partial client without the symbol table —
-        # nothing to scan, return empty so the consumer keeps its
-        # vector pool intact.
-        return []
-    rows = sym_table.to_lance().to_table(
-        columns=[
-            "uid",
-            "name",
-            "file_path",
-            "axis_container_kinds_json",
-            "workspace_id",
-        ]
-    ).to_pylist()
+    # Prefer the shared workspace scan (already workspace-filtered, with
+    # ``_kinds`` pre-parsed) over a fresh full-table scan. The fallback
+    # path keeps standalone callers (and tests without a shared scan)
+    # working.
+    if prescanned is not None:
+        rows = prescanned.rows
+        use_parsed = True
+    else:
+        sym_table = getattr(lance, "_sym_table", None)
+        if sym_table is None:
+            return []
+        rows = sym_table.to_lance().to_table(
+            columns=[
+                "uid",
+                "name",
+                "file_path",
+                "axis_container_kinds_json",
+                "workspace_id",
+            ]
+        ).to_pylist()
+        use_parsed = False
 
     # Collect every workspace row whose file lives directly inside one
     # of the seed directories AND whose container_kinds set is empty.
@@ -124,14 +131,19 @@ def expand_sibling_shims(
     # because the body is ``from X import Y as Y`` only.
     by_file: dict[str, list[dict]] = {}
     for row in rows:
-        if row.get("workspace_id") != workspace_id:
+        if not use_parsed and row.get("workspace_id") != workspace_id:
             continue
         path = str(row.get("file_path") or "")
         if not path or not path.endswith(".py"):
             continue
         if _parent_dir(path) not in seed_dirs:
             continue
-        if _flat_kinds(row.get("axis_container_kinds_json")):
+        kinds = (
+            row.get("_kinds")
+            if use_parsed
+            else _flat_kinds(row.get("axis_container_kinds_json"))
+        )
+        if kinds:
             continue
         by_file.setdefault(path, []).append(row)
 

@@ -52,7 +52,11 @@ def patch_axis_pipeline(monkeypatch):
         score=0.8,
     )
 
-    monkeypatch.setattr(_retr_mod, "scan_workspace_rows", lambda *a, **k: [])
+    monkeypatch.setattr(
+        _retr_mod,
+        "scan_workspace_rows",
+        lambda *a, **k: _retr_mod.WorkspaceScan(rows=[], vectors=None),
+    )
     monkeypatch.setattr(
         _retr_mod,
         "find_symbols_by_roles",

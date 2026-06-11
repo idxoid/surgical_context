@@ -260,6 +260,7 @@ def run_question(
             exclude_uids=[c.uid for c in affects_pool],
             query_text=result.question,
             embed_fn=_embed,
+            prescanned=scanned,
         )
         # Upward inheritance walk via DEPENDS_ON — abstract bases of
         # the concrete implementations in the pool.
@@ -285,6 +286,7 @@ def run_question(
             lance=lance,
             workspace_id=workspace_id,
             exclude_uids=already,
+            prescanned=scanned,
         )
         raw_by_role["structural_neighbour"] = (
             list(affects_pool)

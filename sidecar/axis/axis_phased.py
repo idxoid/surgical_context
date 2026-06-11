@@ -54,10 +54,19 @@ def _flat_kinds(raw) -> set[str]:
     return out
 
 
-def _fetch_kinds(lance, workspace_id: str, uids: set[str]) -> dict[str, set[str]]:
-    """Read the container kinds of each uid from the Lance symbol table."""
+def _fetch_kinds(
+    lance, workspace_id: str, uids: set[str], prescanned=None
+) -> dict[str, set[str]]:
+    """Container kinds per uid. Prefers the shared workspace scan
+    (``_kinds`` already parsed) over a fresh full-table scan."""
     if not uids:
         return {}
+    if prescanned is not None:
+        return {
+            str(r.get("uid") or ""): set(r.get("_kinds") or set())
+            for r in prescanned.rows
+            if str(r.get("uid") or "") in uids
+        }
     sym = getattr(lance, "_sym_table", None)
     if sym is None:
         return {}
@@ -86,6 +95,7 @@ def expand_phased(
     base_score: float = 0.4,
     exclude_uids: Iterable[str] = (),
     include_tests: bool = False,
+    prescanned=None,
 ) -> list[RoleCandidate]:
     """Run the REGISTRY*→CONTROL phased walk from the seeds.
 
@@ -108,7 +118,9 @@ def expand_phased(
     excluded = set(exclude_uids) | seed_uid_set
 
     # Reactive start axis: union of the seeds' kinds → discovery axes.
-    seed_kinds = _fetch_kinds(lance, workspace_id, seed_uid_set)
+    seed_kinds = _fetch_kinds(
+        lance, workspace_id, seed_uid_set, prescanned=prescanned
+    )
     all_seed_kinds: set[str] = set()
     for ks in seed_kinds.values():
         all_seed_kinds |= ks
