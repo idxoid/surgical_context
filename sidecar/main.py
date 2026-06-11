@@ -1716,7 +1716,10 @@ def ask_axis(
     from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
     from sidecar.axis.intent_classifier import classify_intent
     from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
-    from sidecar.axis.role_retrieval import find_symbols_by_role
+    from sidecar.axis.role_retrieval import (
+        find_seeds_by_vector,
+        find_symbols_by_role,
+    )
     from sidecar.axis.sibling_shims import expand_sibling_shims
     from sidecar.axis.structural_neighbours import expand_structural_neighbours
     from sidecar.database.lancedb_client import LanceDBClient
@@ -1778,6 +1781,20 @@ def ask_axis(
                         lance=lance,
                         workspace_id=workspace_id,
                     )
+
+        # Role-AGNOSTIC vector seeds — added AFTER lookahead (which
+        # rebuilds the dict around intent roles and would drop a
+        # non-intent key). The intent classifier no longer gates
+        # structure selection: ``find_symbols_by_role`` discards the
+        # right nodes when intent picks the wrong role, pure similarity
+        # does not. Intent stays a resource manager (ranking + depth).
+        with trace.stage("vector_seeds"):
+            raw_by_role["vector_seed"] = find_seeds_by_vector(
+                workspace_id,
+                req.question,
+                embed_fn=_embed,
+                limit=req.per_role_limit,
+            )
 
         # Structural-neighbour pass — file-level adjacency via
         # undirected AFFECTS. Surfaces files structurally entangled

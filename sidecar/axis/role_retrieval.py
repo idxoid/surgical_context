@@ -246,6 +246,79 @@ def find_symbols_by_role(
     return candidates[:limit]
 
 
+def find_seeds_by_vector(
+    workspace_id: str,
+    query_text: str,
+    *,
+    embed_fn,
+    limit: int = 12,
+    lance_db_path: str = "./data/lancedb",
+    include_tests: bool = False,
+) -> list[RoleCandidate]:
+    """Role-AGNOSTIC vector seed retrieval — top-``limit`` symbols by
+    embedding similarity, with NO role/kind filter.
+
+    This is the seed source that keeps the intent classifier out of
+    structure selection. ``find_symbols_by_role`` gates Lance rows by a
+    role's evidence kinds/contracts; when intent picks the wrong role
+    (django ``proxy_mechanism`` for a QuerySet, click ``proxy_mechanism``
+    for ``Context.parse_args``) the gate discards the right nodes. Pure
+    similarity does not gate — it finds the structurally-nearest symbols
+    regardless of role, and the reactive traversal + intent ranking take
+    it from there.
+
+    Returns candidates tagged ``role="vector_seed"``; ``score`` is the
+    normalised semantic score so the consumer can rank them against
+    role-evidenced candidates.
+    """
+    if not query_text or embed_fn is None:
+        return []
+    table = lancedb.connect(lance_db_path).open_table("symbols_axis_python_v1")
+    from sidecar.axis.test_file_filter import is_test_path
+
+    rows = [
+        r
+        for r in table.to_lance()
+        .to_table(columns=["uid", "name", "file_path", "vector", "workspace_id"])
+        .to_pylist()
+        if r.get("workspace_id") == workspace_id
+        and (include_tests or not is_test_path(str(r.get("file_path") or "")))
+    ]
+    if not rows:
+        return []
+    query_vec = embed_fn(query_text)
+    if hasattr(query_vec, "tolist"):
+        query_vec = query_vec.tolist()
+
+    scored: list[tuple[float, dict]] = []
+    for row in rows:
+        vec = row.get("vector")
+        if vec is None:
+            continue
+        if hasattr(vec, "tolist"):
+            vec = vec.tolist()
+        scored.append((_l2_distance(query_vec, vec), row))
+    scored.sort(key=lambda t: t[0])
+
+    out: list[RoleCandidate] = []
+    for distance, row in scored[:limit]:
+        out.append(
+            RoleCandidate(
+                uid=str(row.get("uid") or ""),
+                name=str(row.get("name") or ""),
+                file_path=str(row.get("file_path") or ""),
+                role="vector_seed",
+                satisfying_contracts=(),
+                satisfying_kinds=(),
+                contract_count=0,
+                kind_count=0,
+                vector_distance=float(distance),
+                score=_semantic_score(distance),
+            )
+        )
+    return out
+
+
 def _l2_distance(a, b) -> float:
     """Plain L2 distance between two flat float sequences."""
     import math
@@ -257,5 +330,6 @@ def _l2_distance(a, b) -> float:
 
 __all__ = [
     "RoleCandidate",
+    "find_seeds_by_vector",
     "find_symbols_by_role",
 ]

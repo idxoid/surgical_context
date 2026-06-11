@@ -40,7 +40,7 @@ from sidecar.axis.axis_phased import expand_phased
 from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
-from sidecar.axis.role_retrieval import find_symbols_by_role
+from sidecar.axis.role_retrieval import find_seeds_by_vector, find_symbols_by_role
 from sidecar.axis.sibling_shims import expand_sibling_shims
 from sidecar.axis.structural_neighbours import expand_structural_neighbours
 from sidecar.database.lancedb_client import LanceDBClient
@@ -216,6 +216,21 @@ def run_question(
             lance=lance,
             workspace_id=workspace_id,
         )
+
+    # Role-AGNOSTIC vector seeds — added AFTER lookahead (which rebuilds
+    # the dict around intent roles only and would drop a non-intent
+    # key). The intent classifier no longer gates structure selection:
+    # ``find_symbols_by_role`` discards the right nodes when intent
+    # picks the wrong role, pure similarity does not. These seeds join
+    # the pool and anchor the phased walk, so a misrouted intent (click
+    # parse_args → proxy) still reaches its answer by topology. Intent
+    # stays a resource manager (ranking + depth), out of structure.
+    raw_by_role["vector_seed"] = find_seeds_by_vector(
+        workspace_id,
+        result.question,
+        embed_fn=_embed,
+        limit=per_role_limit,
+    )
 
     # File-level structural-neighbour pass via undirected AFFECTS.
     # Capped tightly — see ``expand_structural_neighbours`` docstring.
