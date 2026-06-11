@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
@@ -112,11 +113,14 @@ def bridges_available() -> dict[str, bool]:
 
 
 def _line_value(text: str, key: str) -> str:
-    prefix = f"{key}:"
+    pattern = re.compile(
+        rf"^\s*(?:[-+]\s+|\*\s+)?[`*_]*\s*{re.escape(key)}\s*[`*_]*\s*:\s*(.*)$",
+        re.IGNORECASE,
+    )
     for line in text.splitlines():
-        line = line.strip()
-        if line.upper().startswith(prefix.upper()):
-            return line.split(":", 1)[1].strip()
+        match = pattern.match(line)
+        if match:
+            return match.group(1).strip().strip("`*_").strip()
     return ""
 
 

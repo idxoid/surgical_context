@@ -28,6 +28,29 @@ def test_parse_verdict_extracts_quality_lines():
     assert parsed["context_sufficient"] == "yes"
 
 
+def test_parse_verdict_accepts_markdown_wrapped_lines():
+    text = (
+        "Some answer.\n"
+        "- VERDICT: pass\n"
+        "`CORRECTNESS`: partial\n"
+        "* GROUNDING: mixed\n"
+        "**COMPLETENESS**: partial\n"
+        "- CONTEXT_SUFFICIENT: no\n"
+        "`UNSUPPORTED_CLAIMS`: none\n"
+        "* MISSING_EVIDENCE: missing call site\n"
+        "- ANSWER_QUALITY: partial\n"
+        "- CONTEXT_SUFFICIENCY: sufficient\n"
+    )
+    parsed = _parse_verdict(text)
+    assert parsed["answer_quality"] == "partial"
+    assert parsed["context_sufficiency"] == "sufficient"
+    assert parsed["verdict"] == "pass"
+    assert parsed["grounding"] == "mixed"
+    assert parsed["completeness"] == "partial"
+    assert parsed["context_sufficient"] == "no"
+    assert parsed["missing_evidence"] == "missing call site"
+
+
 def test_tier_model_env_override(monkeypatch):
     monkeypatch.setenv("QA_JUDGE_CLAUDE_MODEL_HIGH", "custom-claude")
     assert tier_model("claude", "high") == "custom-claude"
