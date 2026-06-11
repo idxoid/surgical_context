@@ -33,7 +33,17 @@ from sidecar.axis.graph_walk import walk_neighbours
 from sidecar.axis.role_retrieval import RoleCandidate
 
 
-_DISCOVERY_AXES = frozenset({Axis.REGISTRY, Axis.STRUCTURAL})
+# Discovery axes: how the walk reaches the entities a seed *organises*
+# before execution falls into CONTROL. REGISTRY (decorated entrypoints),
+# STRUCTURAL (type hierarchy), and COMPOSITION (collaborators held in
+# attributes — celery's bootstep ``self.strategies`` / ``self.pool``,
+# reached via READS_ATTR). COMPOSITION only fires for seeds whose kind
+# is composition-natural (proxy_object / config_carrier /
+# metadata_carrier), so the dense attribute edges are not walked from
+# arbitrary seeds.
+_DISCOVERY_AXES = frozenset(
+    {Axis.REGISTRY, Axis.STRUCTURAL, Axis.COMPOSITION}
+)
 
 
 def _flat_kinds(raw) -> set[str]:
