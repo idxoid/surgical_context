@@ -46,7 +46,6 @@ from sidecar.axis.role_retrieval import (
     find_symbols_by_roles,
     scan_workspace_rows,
 )
-from sidecar.axis.sibling_shims import expand_sibling_shims
 from sidecar.axis.structural_neighbours import expand_structural_neighbours
 from sidecar.axis.trace_traversal import expand_trace_neighbourhood
 from sidecar.database.lancedb_client import LanceDBClient
@@ -267,23 +266,13 @@ def run_question(
         affects_pool = expand_structural_neighbours(
             existing_pool_for_struct, db=db, workspace_id=workspace_id,
         )
-        # Sibling-shim discovery — re-export modules adjacent to seeds.
-        shim_pool = expand_sibling_shims(
-            existing_pool_for_struct,
-            lance=lance,
-            workspace_id=workspace_id,
-            exclude_uids=[c.uid for c in affects_pool],
-            prescanned=scanned,
-        )
         # Upward inheritance walk via DEPENDS_ON — abstract bases of
         # the concrete implementations in the pool.
         ancestor_pool = expand_inheritance_ancestors(
             existing_pool_for_struct,
             db=db,
             workspace_id=workspace_id,
-            exclude_uids=[
-                c.uid for c in (list(affects_pool) + list(shim_pool))
-            ],
+            exclude_uids=[c.uid for c in affects_pool],
         )
         # Reactive phased walk (REGISTRY*→CONTROL) — start axis chosen
         # by the seeds' kinds, not intent. Closes the case where intent
@@ -291,7 +280,7 @@ def run_question(
         # router whose topology leads to the answer.
         already = {
             c.uid
-            for c in (list(affects_pool) + list(shim_pool) + list(ancestor_pool))
+            for c in (list(affects_pool) + list(ancestor_pool))
         }
         phased_pool = expand_phased(
             existing_pool_for_struct,
@@ -303,7 +292,6 @@ def run_question(
         )
         raw_by_role["structural_neighbour"] = (
             list(affects_pool)
-            + list(shim_pool)
             + list(ancestor_pool)
             + list(phased_pool)
         )

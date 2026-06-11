@@ -1,8 +1,8 @@
 """Shared graph-walk core for the axis expansion passes.
 
-Six expansion passes (``role_lookahead``, ``cross_role_boost``,
-``impact_traversal``, ``structural_neighbours``, ``inheritance_ancestors``,
-``sibling_shims``) grew independently. Five of them re-implemented the
+Five expansion passes (``role_lookahead``, ``cross_role_boost``,
+``impact_traversal``, ``structural_neighbours``,
+``inheritance_ancestors``) grew independently, each re-implementing the
 same three things: a Cypher-injection-safe edge-pattern builder, a
 workspace-scoped neighbour walk over a relationship whitelist, and a
 file-bucketed dedup-and-cap. This module is the single home for that
@@ -28,9 +28,7 @@ What deliberately does *not* live here: the per-pass *interpretation*
 of neighbours (lookahead's kind→role injection, impact's
 walk-tagging, inheritance's class anchoring choice). Those stay in
 their modules — this core only finds and ranks nodes, it never
-decides what a node *means*. ``sibling_shims`` is intentionally not a
-client: it walks the file system (Lance directory adjacency), not the
-graph.
+decides what a node *means*.
 """
 
 from __future__ import annotations

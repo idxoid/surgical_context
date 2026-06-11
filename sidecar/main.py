@@ -1721,7 +1721,6 @@ def ask_axis(
         find_symbols_by_roles,
         scan_workspace_rows,
     )
-    from sidecar.axis.sibling_shims import expand_sibling_shims
     from sidecar.axis.structural_neighbours import expand_structural_neighbours
     from sidecar.axis.trace_traversal import expand_trace_neighbourhood
     from sidecar.database.lancedb_client import LanceDBClient
@@ -1822,19 +1821,6 @@ def ask_axis(
                         db=db,
                         workspace_id=workspace_id,
                     )
-            # Sibling-shim discovery: re-export modules adjacent to
-            # the seeds are invisible to graph walks because they have
-            # no axis bits and no outgoing edges. Surface them by
-            # directory adjacency. The output is merged into the
-            # ``structural_neighbour`` pool so the consumer reads one
-            # key.
-            shim_pool = expand_sibling_shims(
-                existing_pool_for_struct,
-                lance=lance,
-                workspace_id=workspace_id,
-                exclude_uids=[c.uid for c in affects_pool],
-                prescanned=axis_scanned,
-            )
             # Upward inheritance walk: ``DEPENDS_ON`` between class
             # symbols encodes inheritance. A concrete implementation
             # in the pool (Celery's ``TaskPool`` carrying real CFG/DFG)
@@ -1846,9 +1832,7 @@ def ask_axis(
                     existing_pool_for_struct,
                     db=db,
                     workspace_id=workspace_id,
-                    exclude_uids=[
-                        c.uid for c in (list(affects_pool) + list(shim_pool))
-                    ],
+                    exclude_uids=[c.uid for c in affects_pool],
                 )
                 # Reactive phased walk (REGISTRY*→CONTROL) — start axis
                 # from the seeds' kinds, not intent. Additive; closes
@@ -1857,11 +1841,7 @@ def ask_axis(
                 # answer.
                 already = {
                     c.uid
-                    for c in (
-                        list(affects_pool)
-                        + list(shim_pool)
-                        + list(ancestor_pool)
-                    )
+                    for c in (list(affects_pool) + list(ancestor_pool))
                 }
                 phased_pool = expand_phased(
                     existing_pool_for_struct,
@@ -1873,7 +1853,6 @@ def ask_axis(
                 )
             raw_by_role["structural_neighbour"] = (
                 list(affects_pool)
-                + list(shim_pool)
                 + list(ancestor_pool)
                 + list(phased_pool)
             )
