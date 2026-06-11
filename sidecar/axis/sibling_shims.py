@@ -62,6 +62,14 @@ def _flat_kinds(raw):
     return out
 
 
+def _significant_tokens(text: str) -> set[str]:
+    """Lowercase word tokens of length ≥3 — drops short noise tokens
+    (``io``, ``py``, ``of``) that would create spurious overlaps."""
+    import re
+
+    return {t for t in re.findall(r"[a-z]+", text.lower()) if len(t) >= 3}
+
+
 def _parent_dir(path: str) -> str:
     norm = path.replace("\\", "/")
     if "/" not in norm:
@@ -162,38 +170,43 @@ def expand_sibling_shims(
             continue
         candidates_by_file.append((path, chosen))
 
-    # When a query embedding is available, rank shim files by cosine
-    # similarity of the query vector to the shim's module name. A
-    # WebSocket question phrased "how does FastAPI handle WebSocket
-    # handshakes" embeds close to ``fastapi.websockets``; this lets
-    # the cap surface the *relevant* shim instead of whichever sits
-    # first in the Lance scan. Without the query the order is
-    # whatever insertion produced — still useful, just non-targeted.
-    if query_text and embed_fn is not None and candidates_by_file:
-        try:
-            import numpy as np
-
-            q = embed_fn(query_text)
-            if hasattr(q, "tolist"):
-                q = q.tolist()
-            qv = np.asarray(q, dtype="float32")
-            qn = float(np.linalg.norm(qv)) or 1.0
-            scored: list[tuple[float, str, dict]] = []
-            for path, row in candidates_by_file:
+    # Rank shim files by token overlap between the question and the
+    # shim's module path — deterministic, embedder-free, and more
+    # accurate here than vector cosine. A shim's relevance is a keyword
+    # match ("WebSocket" question → ``fastapi.websockets``), not a
+    # semantic one: cosine on short module names drifts (it ranks
+    # ``websockets`` above ``middleware`` for a *middleware* question
+    # because the dense embeddings of two one-word library names sit
+    # close). Token overlap keys on the actual shared word. Ties
+    # (no overlap) keep the insertion order, i.e. the no-query
+    # behaviour — better than a drifted guess.
+    if query_text and candidates_by_file:
+        q_tokens = _significant_tokens(query_text)
+        if q_tokens:
+            def _rank_key(item: tuple[str, dict]) -> tuple:
+                path, row = item
                 name = str(row.get("name") or path.rsplit("/", 1)[-1])
-                v = embed_fn(name)
-                if hasattr(v, "tolist"):
-                    v = v.tolist()
-                rv = np.asarray(v, dtype="float32")
-                rn = float(np.linalg.norm(rv)) or 1.0
-                sim = float((qv @ rv) / (qn * rn))
-                scored.append((sim, path, row))
-            scored.sort(key=lambda t: t[0], reverse=True)
-            candidates_by_file = [(p, r) for _, p, r in scored]
-        except Exception:
-            # Embed failure should not break the pass — fall back to
-            # insertion order.
-            pass
+                n_tokens = _significant_tokens(name) | _significant_tokens(path)
+                overlap = sum(
+                    1
+                    for n in n_tokens
+                    if any(n in w or w in n for w in q_tokens)
+                )
+                # Tie-break: files in one directory share the directory
+                # token, so they tie on overlap (every ``middleware/*``
+                # scores the same on a "middleware" question). Prefer the
+                # package surface (``__init__.py``) and the shallower
+                # path — the package's ``__init__`` is the re-export the
+                # question is really pointing at, not a leaf submodule.
+                is_init = path.endswith("__init__.py")
+                depth = path.count("/")
+                return (overlap, is_init, -depth)
+
+            # Sort desc by the composite key; ties (all-equal) keep the
+            # original insertion order via the stable sort.
+            candidates_by_file = sorted(
+                candidates_by_file, key=_rank_key, reverse=True
+            )
 
     shims: list[RoleCandidate] = []
     for path, chosen in candidates_by_file:
