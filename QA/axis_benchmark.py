@@ -37,6 +37,7 @@ from sidecar.axis.context_builder import build_context_for_candidates
 from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
 from sidecar.axis.impact_traversal import expand_impact_neighbourhood
 from sidecar.axis.axis_phased import expand_phased
+from sidecar.axis.axis_ranking import apply_intent_axis_boost
 from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
@@ -349,6 +350,11 @@ def run_question(
             raw_by_role[match.role] = intersect_by_cross_role_proximity(
                 primary, secondary, db=db, workspace_id=workspace_id,
             )
+
+    # Intent-axis ranking — intent as a ranker (not a selector). Boost
+    # candidates whose kind-axes match the intent's axes; pools re-sort.
+    # Role-agnostic seeds (no kinds) pass through untouched.
+    raw_by_role = apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
 
     # Iterate over every key in ``raw_by_role`` — the lookahead may
     # have *promoted* a non-intent role into its own pool. Skipping those
