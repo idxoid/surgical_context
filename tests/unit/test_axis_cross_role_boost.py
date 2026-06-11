@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from sidecar.axis.cross_role_boost import (
@@ -11,7 +9,6 @@ from sidecar.axis.cross_role_boost import (
     intersect_by_cross_role_proximity,
 )
 from sidecar.axis.role_retrieval import RoleCandidate
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -217,6 +214,23 @@ def test_results_resorted_after_boost():
 
     # u:boosted: 0.5 + 0.3 = 0.8 > u:high (0.7).
     assert [c.uid for c in out] == ["u:boosted", "u:high"]
+
+
+@pytest.mark.parametrize("bad_hops", [0, -1, 1.5, "2", True])
+def test_cross_role_rejects_unsafe_max_hops(bad_hops):
+    primary = [_candidate("u:p", "p")]
+    secondary = {
+        "routing_surface": [_candidate("u:r", "r", role="routing_surface")]
+    }
+
+    with pytest.raises(ValueError, match="max_hops"):
+        boost_by_cross_role_proximity(
+            primary,
+            secondary_by_role=secondary,
+            db=_FakeDB(),
+            workspace_id=WORKSPACE,
+            max_hops=bad_hops,  # type: ignore[arg-type]
+        )
 
 
 def test_intersect_drops_candidates_without_cross_role_neighbours():

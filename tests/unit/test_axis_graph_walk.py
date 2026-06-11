@@ -7,11 +7,10 @@ import pytest
 from sidecar.axis.graph_walk import (
     EdgeProfile,
     Neighbour,
+    _safe_rel_pattern,
     cap_by_file,
     walk_neighbours,
 )
-from sidecar.axis.graph_walk import _safe_rel_pattern
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -134,6 +133,18 @@ def test_max_hops_threaded_into_pattern():
     assert "*1..4" in db.session_obj.runs[0][0]
 
 
+@pytest.mark.parametrize("bad_hops", [0, -1, 1.5, "2", True])
+def test_walk_rejects_unsafe_max_hops(bad_hops):
+    with pytest.raises(ValueError, match="max_hops"):
+        walk_neighbours(
+            _FakeDB(),
+            WORKSPACE,
+            ["u:s"],
+            edges=EdgeProfile.AFFECTS,
+            max_hops=bad_hops,  # type: ignore[arg-type]
+        )
+
+
 # --- walk_neighbours: anchor + filters -------------------------------------
 
 
@@ -181,6 +192,13 @@ def test_reach_and_depth_aggregation_in_query():
     q = db.session_obj.runs[0][0]
     assert "count(DISTINCT su) AS reach" in q
     assert "min(size(r)) AS depth" in q
+
+
+def test_walk_filters_traversed_relationships_by_workspace():
+    db = _FakeDB([])
+    walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS)
+    q = db.session_obj.runs[0][0]
+    assert "all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)" in q
 
 
 # --- cap_by_file -----------------------------------------------------------

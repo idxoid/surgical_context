@@ -26,9 +26,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 
-from sidecar.axis.graph_walk import EdgeProfile, _safe_rel_pattern
+from sidecar.axis.graph_walk import EdgeProfile, _safe_max_hops, _safe_rel_pattern
 from sidecar.axis.role_retrieval import RoleCandidate
-
 
 # Edge whitelist for the proximity walk — shared with the rest of the
 # axis expansion stack via ``EdgeProfile.PROXIMITY`` so widening it in
@@ -64,10 +63,11 @@ def _query_proximity_roles(
         return {}
 
     rel_pattern = _safe_rel_pattern(_PROXIMITY_RELS)
+    hops = _safe_max_hops(max_hops)
     cypher = f"""
     UNWIND $primary_uids AS pu
     MATCH (p:Symbol {{uid: pu}})
-    MATCH (p)-[r:{rel_pattern}*1..{max_hops}]-(n:Symbol)
+    MATCH (p)-[r:{rel_pattern}*1..{hops}]-(n:Symbol)
     WHERE n.uid IN $secondary_uids
       AND all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)
     RETURN p.uid AS primary_uid, collect(DISTINCT n.uid) AS reachable

@@ -40,7 +40,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-
 # ---------------------------------------------------------------------------
 # Edge profiles — named relationship whitelists.
 # ---------------------------------------------------------------------------
@@ -118,6 +117,13 @@ def _safe_rel_pattern(edge_types: Iterable[str]) -> str:
     return "|".join(safe)
 
 
+def _safe_max_hops(max_hops: int) -> int:
+    """Validate a hop bound before interpolating it into Cypher syntax."""
+    if type(max_hops) is not int or max_hops < 1:
+        raise ValueError("max_hops must be an integer >= 1")
+    return max_hops
+
+
 # ---------------------------------------------------------------------------
 # Walk
 # ---------------------------------------------------------------------------
@@ -180,18 +186,21 @@ def walk_neighbours(
     if not seeds:
         return []
     rel = _safe_rel_pattern(edges)
+    hops = _safe_max_hops(max_hops)
 
     # Build the directional relationship fragment between the anchor
     # symbol ``s`` (or ``cls``) and the neighbour ``n``.
     start_var = "cls" if anchor == "file_classes" else "s"
     if direction == "forward":
-        edge_frag = f"({start_var})-[r:{rel}*1..{max_hops}]->(n:Symbol)"
+        edge_frag = f"({start_var})-[r:{rel}*1..{hops}]->(n:Symbol)"
     elif direction == "reverse":
-        edge_frag = f"(n:Symbol)-[r:{rel}*1..{max_hops}]->({start_var})"
+        edge_frag = f"(n:Symbol)-[r:{rel}*1..{hops}]->({start_var})"
     else:  # undirected
-        edge_frag = f"({start_var})-[r:{rel}*1..{max_hops}]-(n:Symbol)"
+        edge_frag = f"({start_var})-[r:{rel}*1..{hops}]-(n:Symbol)"
 
-    where_clauses: list[str] = []
+    where_clauses: list[str] = [
+        "all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)"
+    ]
     if class_targets_only:
         where_clauses.append("n.kind = 'class'")
     if exclude_tests:
