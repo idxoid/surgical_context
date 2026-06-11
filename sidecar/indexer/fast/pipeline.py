@@ -53,6 +53,7 @@ from sidecar.indexer.external_facts import apply_external_boundary_for_file
 from sidecar.indexer.fast.collector import collect_files
 from sidecar.indexer.fast.extractor import ExtractedFile, FastExtractor, hash_file
 from sidecar.indexer.fast.schema import ensure_fast_indexes
+from sidecar.indexer.file_tier import classify_file_tier, is_pure_reexport_source
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.repository_profile import (
     RepositoryProfileInputs,
@@ -877,6 +878,11 @@ def _embed_phase(
     for diff in diffs:
         ex = diff.extracted
         source_lines = ex.source.splitlines()
+        # File tier is a per-file structural property: path topology +
+        # whether the module body is a pure re-export. Computed once per
+        # file and stamped on every symbol row so the axis ranker can
+        # demote noise tiers in seed retrieval (see file_tier.py).
+        file_reexport = is_pure_reexport_source(ex.source)
         changed_set = {s.uid for s in diff.changed_symbols}
         axis_payloads = (
             _axis_payloads_for_extracted_file(
@@ -896,6 +902,9 @@ def _embed_phase(
                 "file_path": s.file_path,
                 "workspace_id": workspace_id,
                 "code": "\n".join(source_lines[s.start_line - 1 : s.end_line]),
+                "file_tier": classify_file_tier(
+                    s.file_path, pure_reexport=file_reexport
+                ),
             }
             row.update(axis_payloads.get(s.uid) or axis_payloads.get(s.qualified_name) or {})
             symbol_docs.append(row)

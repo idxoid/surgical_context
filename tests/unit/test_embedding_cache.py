@@ -163,6 +163,7 @@ def test_lancedb_axis_symbol_payload_defaults_to_empty_axis_fields():
         "axis_evidence_json": "[]",
         "axis_container_kinds_json": "[]",
         "axis_contracts_json": "[]",
+        "file_tier": "core",
     }
 
     client._symbol_axis_columns = set()

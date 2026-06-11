@@ -161,6 +161,16 @@ def scan_workspace_rows(
         "axis_container_kinds_json",
         "workspace_id",
     ]
+    # ``file_tier`` is materialised at index time (schema v5+). Request it
+    # only when the table actually carries the column, so the scan still
+    # works against an index written before the tier landed (pre-reindex);
+    # absent → the ranker reads the default ``core``.
+    try:
+        _have_tier = "file_tier" in set(table.schema.names)
+    except Exception:
+        _have_tier = False
+    if _have_tier:
+        columns.append("file_tier")
     if with_vector:
         columns.append("vector")
     ws_quoted = workspace_id.replace("'", "''")

@@ -28,7 +28,7 @@ def test_axis_python_profile_isolates_workspace_and_lancedb_tables():
     assert profile.docs_table == "docs_axis_python_v1"
     assert profile.symbols_table == "symbols_axis_python_v1"
     assert profile.language_scope == "python"
-    assert profile.schema_version == 4
+    assert profile.schema_version == 5
 
 
 def test_active_profile_reads_environment(monkeypatch):

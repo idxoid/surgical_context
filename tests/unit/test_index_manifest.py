@@ -66,7 +66,7 @@ def test_build_index_manifest_records_index_profile():
     )
 
     assert m["index_profile"] == AXIS_PYTHON_V1_PROFILE
-    assert m["index_profile_schema_version"] == 4
+    assert m["index_profile_schema_version"] == 5
     assert m["index_profile_language_scope"] == "python"
     assert m["lancedb_docs_table"] == "docs_axis_python_v1"
     assert m["lancedb_symbols_table"] == "symbols_axis_python_v1"

@@ -142,6 +142,7 @@ AXIS_SYMBOLS_SCHEMA = pa.schema(
         pa.field("axis_evidence_json", pa.string()),
         pa.field("axis_container_kinds_json", pa.string()),
         pa.field("axis_contracts_json", pa.string()),
+        pa.field("file_tier", pa.string()),
     ]
 )
 
@@ -154,6 +155,7 @@ AXIS_SYMBOL_REQUIRED_COLUMNS = {
     "axis_evidence_json",
     "axis_container_kinds_json",
     "axis_contracts_json",
+    "file_tier",
 }
 
 
@@ -226,6 +228,7 @@ class LanceDBClient:
                 symbol.get("axis_container_kinds_json") or "[]"
             ),
             "axis_contracts_json": str(symbol.get("axis_contracts_json") or "[]"),
+            "file_tier": str(symbol.get("file_tier") or "core"),
         }
 
     def _open_or_reset_table(self, name: str, schema: pa.Schema, *, required_columns: set[str]):
