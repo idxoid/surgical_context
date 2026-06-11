@@ -334,8 +334,8 @@ questions:
   - v1
   - BaseModel
   expected_files:
-  - pydantic
-  - docs
+  - pydantic/_migration.py
+  - pydantic/v1
 - id: pydantic_q06
   repo: pydantic
   core12: false
@@ -1334,7 +1334,6 @@ questions:
   - receive_text
   - WebSocketDisconnect
   expected_files:
-  - fastapi/websockets.py
   - fastapi/routing.py
 - id: fastapi_new_q06
   repo: fastapi
