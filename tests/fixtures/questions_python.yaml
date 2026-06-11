@@ -1318,7 +1318,7 @@ questions:
   - add_middleware
   expected_files:
   - fastapi/applications.py
-  - fastapi/middleware/__init__.py
+  - fastapi/middleware/asyncexitstack.py
 - id: fastapi_new_q05
   repo: fastapi
   symbol: WebSocket
