@@ -80,6 +80,19 @@ class QuestionResult:
     retrieved_files: list[str] = field(default_factory=list)
     matched_files: list[str] = field(default_factory=list)
     file_recall: float = 0.0
+    # Three nested retrieval layers, each a recall metric over file paths:
+    #   seed_recall   — pure vector/role retrieval (no graph walk).
+    #   pool_recall   — after the pool expander (graph-walk passes).
+    #   file_recall   — after per-candidate context expansion (the bundle).
+    # Each layer can only add files, so seed ≤ pool ≤ bundle. Where a
+    # higher layer is full but a lower one is not, that layer is MASKING a
+    # retrieval miss the layer below it actually has.
+    seed_files: list[str] = field(default_factory=list)
+    seed_matched: list[str] = field(default_factory=list)
+    seed_recall: float = 0.0
+    pool_files: list[str] = field(default_factory=list)
+    pool_matched: list[str] = field(default_factory=list)
+    pool_recall: float = 0.0
     intent_top_role: str | None = None
     intent_top_similarity: float | None = None
     intent_matches: list[tuple[str, float]] = field(default_factory=list)
@@ -97,6 +110,12 @@ class QuestionResult:
             "retrieved_files": self.retrieved_files,
             "matched_files": self.matched_files,
             "file_recall": self.file_recall,
+            "seed_files": self.seed_files,
+            "seed_matched": self.seed_matched,
+            "seed_recall": self.seed_recall,
+            "pool_files": self.pool_files,
+            "pool_matched": self.pool_matched,
+            "pool_recall": self.pool_recall,
             "intent_top_role": self.intent_top_role,
             "intent_top_similarity": self.intent_top_similarity,
             "intent_matches": [
@@ -224,6 +243,16 @@ def run_question(
         prescanned=scanned,
     )
 
+    # Base-retrieval (seed) files — pure vector/role similarity, captured
+    # BEFORE any graph-walk pool expansion (lookahead is itself a pool
+    # pass). seed_recall is the honest embedding-only number; the gap to
+    # pool_recall is everything the pool expander adds (and may mask).
+    base_seed_files: set[str] = {
+        getattr(c, "file_path", "") or ""
+        for cands in raw_by_role.values()
+        for c in cands
+    }
+
     # Cross-role *lookahead*: walk K hops from each role's seed
     # candidates and inject neighbours whose container_kinds back any
     # *other* intent role. Restores recall when the intent classifier
@@ -255,6 +284,10 @@ def run_question(
         limit=per_role_limit,
         prescanned=scanned,
     )
+    base_seed_files |= {
+        getattr(c, "file_path", "") or ""
+        for c in raw_by_role.get("vector_seed", [])
+    }
 
     # File-level structural-neighbour pass via undirected AFFECTS.
     # Capped tightly — see ``expand_structural_neighbours`` docstring.
@@ -375,6 +408,34 @@ def run_question(
         candidates_for_context.extend(raw_by_role.get(role_key) or [])
 
     result.candidate_count = len(candidates_for_context)
+
+    # Layer 1 — seed (pure retrieval) recall, captured before any pool pass.
+    result.seed_files = sorted(f for f in base_seed_files if f)
+    seed_recall, seed_matched = _compute_recall(
+        result.expected_files, result.seed_files
+    )
+    result.seed_recall = seed_recall
+    result.seed_matched = seed_matched
+
+    # Layer 2 — pool (engine) recall: the candidate POOL's files BEFORE
+    # per-candidate context expansion. This is what the retrieval + the
+    # reactive pool passes actually selected; the gap to the bundle metric
+    # below is what the per-seed traversal in build_context_for_candidates
+    # adds (and may be masking).
+    pool_files_ordered: list[str] = []
+    seen_pool: set[str] = set()
+    for cand in candidates_for_context:
+        path = getattr(cand, "file_path", "") or ""
+        if path and path not in seen_pool:
+            seen_pool.add(path)
+            pool_files_ordered.append(path)
+    result.pool_files = pool_files_ordered
+    pool_recall, pool_matched = _compute_recall(
+        result.expected_files, result.pool_files
+    )
+    result.pool_recall = pool_recall
+    result.pool_matched = pool_matched
+
     bundles = build_context_for_candidates(
         candidates_for_context,
         workspace_id=workspace_id,
@@ -408,6 +469,46 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
     full_recall_count = sum(1 for r in scored if r.file_recall >= 1.0 - 1e-9)
     zero_recall_count = sum(1 for r in scored if r.file_recall == 0.0)
 
+    # Three-layer aggregates: seed (pure retrieval) ≤ pool (after the
+    # pool expander) ≤ bundle (after per-candidate context expansion).
+    # Two masking lists, one per expander layer — a question is "masked"
+    # by a layer when that layer scores it higher than the layer below,
+    # i.e. the layer is covering a miss the cheaper layer below actually
+    # has. They name exactly the files (and questions) a collapse of that
+    # layer would expose, so the gap can be moved down a layer first.
+    def _mean(attr: str) -> float:
+        return sum(getattr(r, attr) for r in scored) / len(scored) if scored else 0.0
+
+    overall_seed_recall = _mean("seed_recall")
+    seed_full_count = sum(1 for r in scored if r.seed_recall >= 1.0 - 1e-9)
+    seed_zero_count = sum(1 for r in scored if r.seed_recall == 0.0)
+    overall_pool_recall = _mean("pool_recall")
+    pool_full_count = sum(1 for r in scored if r.pool_recall >= 1.0 - 1e-9)
+    pool_zero_count = sum(1 for r in scored if r.pool_recall == 0.0)
+
+    masked_by_pool_expander = [
+        {
+            "question_id": r.question_id,
+            "repo": r.repo,
+            "seed_recall": round(r.seed_recall, 3),
+            "pool_recall": round(r.pool_recall, 3),
+            "added_files": sorted(set(r.pool_matched) - set(r.seed_matched)),
+        }
+        for r in scored
+        if r.pool_recall > r.seed_recall + 1e-9
+    ]
+    masked_by_context_expander = [
+        {
+            "question_id": r.question_id,
+            "repo": r.repo,
+            "pool_recall": round(r.pool_recall, 3),
+            "bundle_recall": round(r.file_recall, 3),
+            "added_files": sorted(set(r.matched_files) - set(r.pool_matched)),
+        }
+        for r in scored
+        if r.file_recall > r.pool_recall + 1e-9
+    ]
+
     by_repo: defaultdict[str, list[QuestionResult]] = defaultdict(list)
     for r in scored:
         by_repo[r.repo].append(r)
@@ -417,6 +518,14 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             "mean_recall": sum(r.file_recall for r in items) / len(items),
             "full_recall": sum(1 for r in items if r.file_recall >= 1.0 - 1e-9),
             "zero_recall": sum(1 for r in items if r.file_recall == 0.0),
+            "seed_mean_recall": sum(r.seed_recall for r in items) / len(items),
+            "seed_full_recall": sum(
+                1 for r in items if r.seed_recall >= 1.0 - 1e-9
+            ),
+            "pool_mean_recall": sum(r.pool_recall for r in items) / len(items),
+            "pool_full_recall": sum(
+                1 for r in items if r.pool_recall >= 1.0 - 1e-9
+            ),
         }
         for repo, items in sorted(by_repo.items())
     }
@@ -431,6 +540,14 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         "overall_mean_recall": overall_recall,
         "full_recall_questions": full_recall_count,
         "zero_recall_questions": zero_recall_count,
+        "overall_seed_mean_recall": overall_seed_recall,
+        "seed_full_recall_questions": seed_full_count,
+        "seed_zero_recall_questions": seed_zero_count,
+        "overall_pool_mean_recall": overall_pool_recall,
+        "pool_full_recall_questions": pool_full_count,
+        "pool_zero_recall_questions": pool_zero_count,
+        "masked_by_pool_expander": masked_by_pool_expander,
+        "masked_by_context_expander": masked_by_context_expander,
         "per_repo": by_repo_summary,
         "intent_top_role_counts": dict(by_intent),
         "skipped_reasons": Counter(r.skipped_reason for r in skipped),
@@ -443,20 +560,69 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
         "",
         f"- scored questions: **{summary['scored']}**",
         f"- skipped: {summary['skipped']}",
-        f"- overall mean file_recall: **{summary['overall_mean_recall']:.3f}**",
-        f"- full-recall questions: {summary['full_recall_questions']}",
-        f"- zero-recall questions: {summary['zero_recall_questions']}",
+        f"- mean **seed** recall (pure retrieval, no graph walk): "
+        f"**{summary.get('overall_seed_mean_recall', 0.0):.3f}** "
+        f"({summary.get('seed_full_recall_questions', 0)} full, "
+        f"{summary.get('seed_zero_recall_questions', 0)} zero)",
+        f"- mean **pool** recall (after pool expander): "
+        f"**{summary.get('overall_pool_mean_recall', 0.0):.3f}** "
+        f"({summary.get('pool_full_recall_questions', 0)} full, "
+        f"{summary.get('pool_zero_recall_questions', 0)} zero)",
+        f"- mean **bundle** recall (after context expansion): "
+        f"**{summary['overall_mean_recall']:.3f}** "
+        f"({summary['full_recall_questions']} full, "
+        f"{summary['zero_recall_questions']} zero)",
+        f"- masked by **pool expander** (pool>seed): "
+        f"**{len(summary.get('masked_by_pool_expander', []))}**  ·  "
+        f"masked by **context expander** (bundle>pool): "
+        f"**{len(summary.get('masked_by_context_expander', []))}**",
         "",
-        "## Per-repo",
+        "## Per-repo (seed → pool → bundle)",
         "",
-        "| repo | questions | mean_recall | full | zero |",
-        "|---|---|---|---|---|",
+        "| repo | q | seed | pool | bundle | seed_full | pool_full | bundle_full |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for repo, info in summary["per_repo"].items():
         lines.append(
-            f"| {repo} | {info['questions']} | {info['mean_recall']:.3f} | "
-            f"{info['full_recall']} | {info['zero_recall']} |"
+            f"| {repo} | {info['questions']} | "
+            f"{info.get('seed_mean_recall', 0.0):.3f} | "
+            f"{info.get('pool_mean_recall', 0.0):.3f} | "
+            f"{info['mean_recall']:.3f} | "
+            f"{info.get('seed_full_recall', 0)} | "
+            f"{info.get('pool_full_recall', 0)} | {info['full_recall']} |"
         )
+
+    def _masking_section(title: str, lower: str, upper: str, rows: list) -> None:
+        if not rows:
+            return
+        lines.extend([
+            "",
+            f"## {title}",
+            "",
+            f"{upper} covered these; {lower} missed them. The real engine "
+            f"gaps a collapse of this layer would expose — move the gap "
+            f"down a layer before trimming.",
+            "",
+            f"| id | repo | {lower} | {upper} | files only this layer found |",
+            "|---|---|---|---|---|",
+        ])
+        for m in sorted(rows, key=lambda x: (x["repo"], x["question_id"])):
+            files = ", ".join(m["added_files"]) or "—"
+            lo = m.get(f"{lower}_recall", 0.0)
+            up = m.get(f"{upper}_recall", 0.0)
+            lines.append(
+                f"| {m['question_id']} | {m['repo']} | {lo:.2f} | "
+                f"{up:.2f} | {files} |"
+            )
+
+    _masking_section(
+        "Masked by the pool expander", "seed", "pool",
+        summary.get("masked_by_pool_expander", []),
+    )
+    _masking_section(
+        "Masked by per-candidate context expansion", "pool", "bundle",
+        summary.get("masked_by_context_expander", []),
+    )
     lines.extend([
         "",
         "## Intent classifier — top role distribution",
@@ -465,13 +631,16 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
         "",
         "## Per-question detail",
         "",
-        "| id | repo | recall | matched/expected | intent | candidates |",
-        "|---|---|---|---|---|---|",
+        "`p⚠` = pool expander masks a seed miss · `c⚠` = context expander "
+        "masks a pool miss",
+        "",
+        "| id | repo | seed | pool | bundle | matched/expected | intent | cand |",
+        "|---|---|---|---|---|---|---|---|",
     ])
     for r in sorted(results, key=lambda x: (x.repo, x.question_id)):
         if r.skipped_reason:
             lines.append(
-                f"| {r.question_id} | {r.repo} | — | — | — | "
+                f"| {r.question_id} | {r.repo} | — | — | — | — | — | "
                 f"skipped: {r.skipped_reason} |"
             )
             continue
@@ -480,8 +649,14 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
             if r.intent_top_role
             else "(none)"
         )
+        marks = ""
+        if r.pool_recall > r.seed_recall + 1e-9:
+            marks += " p⚠"
+        if r.file_recall > r.pool_recall + 1e-9:
+            marks += " c⚠"
         lines.append(
-            f"| {r.question_id} | {r.repo} | {r.file_recall:.2f} | "
+            f"| {r.question_id} | {r.repo} | {r.seed_recall:.2f} | "
+            f"{r.pool_recall:.2f} | {r.file_recall:.2f}{marks} | "
             f"{len(r.matched_files)}/{len(r.expected_files)} | "
             f"{intent_str} | {r.candidate_count} |"
         )
@@ -494,8 +669,25 @@ def _print_comparison(prev_summary: dict[str, Any], summary: dict[str, Any]) -> 
     delta = curr_recall - prev_recall
     arrow = "↑" if delta > 0 else ("↓" if delta < 0 else "·")
     print(
-        f"\noverall mean file_recall: {prev_recall:.3f} → {curr_recall:.3f} "
+        f"\noverall mean bundle_recall: {prev_recall:.3f} → {curr_recall:.3f} "
         f"({arrow} {delta:+.3f})"
+    )
+    def _layer(label: str, key: str) -> tuple[float, float]:
+        p = float(prev_summary.get(key, 0.0))
+        c = float(summary.get(key, 0.0))
+        d = c - p
+        a = "↑" if d > 0 else ("↓" if d < 0 else "·")
+        print(f"overall mean {label:13} {p:.3f} → {c:.3f} ({a} {d:+.3f})")
+        return p, c
+
+    _, curr_seed = _layer("seed_recall:", "overall_seed_mean_recall")
+    _, curr_pool = _layer("pool_recall:", "overall_pool_mean_recall")
+    pool_masks = len(summary.get("masked_by_pool_expander", []))
+    ctx_masks = len(summary.get("masked_by_context_expander", []))
+    print(
+        f"layer gaps: pool−seed {curr_pool - curr_seed:+.3f} "
+        f"({pool_masks} masked)  ·  bundle−pool "
+        f"{curr_recall - curr_pool:+.3f} ({ctx_masks} masked)"
     )
 
 
@@ -556,29 +748,37 @@ def _print_progress_done(
     eta_seconds = (elapsed_seconds / completed) * remaining if completed else 0.0
     running_mean = recall_sum / scored_count if scored_count else 0.0
 
-    if result.skipped_reason:
-        detail = f"skipped={result.skipped_reason}"
-    else:
-        intent = result.intent_top_role or "(none)"
-        if result.intent_top_similarity is not None:
-            intent = f"{intent}({result.intent_top_similarity:.2f})"
-        detail = (
-            f"recall={result.file_recall:.3f} "
-            f"matched={len(result.matched_files)}/{len(result.expected_files)} "
-            f"candidates={result.candidate_count} intent={intent}"
-        )
-
-    print(
+    # Line 1 — progress / timing / running aggregate.
+    progress_line = (
         f"[axis {index}/{total}] done  {result.repo}/{result.question_id} "
-        f"{detail} "
         f"q={_format_duration(question_seconds)} "
         f"elapsed={_format_duration(elapsed_seconds)} "
         f"eta={_format_duration(eta_seconds)} "
         f"mean={running_mean:.3f} full={full_count} zero={zero_count} "
-        f"skipped={skipped_count}",
-        file=stream,
-        flush=True,
+        f"skipped={skipped_count}"
     )
+
+    # Line 2 (new line, indented) — this question's metrics, kept off the
+    # progress line so neither crowds the other.
+    if result.skipped_reason:
+        metrics_line = f"    skipped={result.skipped_reason}"
+    else:
+        intent = result.intent_top_role or "(none)"
+        if result.intent_top_similarity is not None:
+            intent = f"{intent}({result.intent_top_similarity:.2f})"
+        marks = ""
+        if result.pool_recall > result.seed_recall + 1e-9:
+            marks += " p⚠"
+        if result.file_recall > result.pool_recall + 1e-9:
+            marks += " c⚠"
+        metrics_line = (
+            f"    seed={result.seed_recall:.3f} pool={result.pool_recall:.3f} "
+            f"bundle={result.file_recall:.3f}{marks} "
+            f"matched={len(result.matched_files)}/{len(result.expected_files)} "
+            f"candidates={result.candidate_count} intent={intent}"
+        )
+
+    print(f"{progress_line}\n{metrics_line}", file=stream, flush=True)
 
 
 def main() -> None:
