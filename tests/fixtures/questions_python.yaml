@@ -502,7 +502,7 @@ questions:
   expected_files:
   - django/db/models/fields
   - django/db/models
-  - django/tests
+  - tests
 - id: flask_q01
   repo: flask
   core12: true
@@ -1720,7 +1720,7 @@ questions:
   - greenlet_spawn
   expected_files:
   - lib/sqlalchemy/ext/asyncio/session.py
-  - lib/sqlalchemy/util/_concurrency_py3k.py
+  - lib/sqlalchemy/util/concurrency.py
 - id: sqlalchemy_new_q06
   repo: sqlalchemy
   symbol: composite
@@ -1736,7 +1736,7 @@ questions:
   - MapperProperty
   expected_files:
   - lib/sqlalchemy/orm/properties.py
-  - lib/sqlalchemy/orm/composite.py
+  - lib/sqlalchemy/orm/descriptor_props.py
 - id: click_new_q01
   repo: click
   symbol: prompt
