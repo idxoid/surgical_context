@@ -152,3 +152,45 @@ def test_include_tests_keeps_test_files(monkeypatch):
         WORKSPACE, "q", embed_fn=lambda t: [0.0, 1.0], include_tests=True,
     )
     assert {c.uid for c in out} == {"u:src", "u:test"}
+
+
+def test_tier_weight_table():
+    assert rr._tier_weight("core", impact_mode=False) == 1.0
+    assert rr._tier_weight("example", impact_mode=False) == 0.2
+    assert rr._tier_weight(None, impact_mode=False) == 1.0  # default → core
+    assert rr._tier_weight("example", impact_mode=True) == 0.6  # demotion relaxed
+
+
+def _scan_with_tiers():
+    import numpy as np
+
+    # example sits CLOSER to the query (0.05) than core (0.15); only the
+    # tier demotion can pull core ahead.
+    rows = [
+        {"uid": "core", "name": "core", "file_path": "/pkg/core.py",
+         "file_tier": "core"},
+        {"uid": "ex", "name": "ex", "file_path": "/examples/app.py",
+         "file_tier": "example"},
+    ]
+    vectors = np.array([[0.15, 0.0], [0.05, 0.0]], dtype=float)
+    return rr.WorkspaceScan(rows=rows, vectors=vectors)
+
+
+def test_example_tier_demoted_below_core_in_seed_selection():
+    out = find_seeds_by_vector(
+        WORKSPACE, "q", embed_fn=lambda t: [0.0, 0.0], limit=1,
+        prescanned=_scan_with_tiers(),
+    )
+    # Despite being vectorially nearer, the example is demoted out of the
+    # single seed slot; core takes it.
+    assert [c.uid for c in out] == ["core"]
+
+
+def test_impact_mode_relaxes_example_demotion():
+    out = find_seeds_by_vector(
+        WORKSPACE, "q", embed_fn=lambda t: [0.0, 0.0], limit=1,
+        impact_mode=True, prescanned=_scan_with_tiers(),
+    )
+    # In impact mode the example is no longer demoted hard enough to lose
+    # its nearer distance — it stays the top seed.
+    assert [c.uid for c in out] == ["ex"]

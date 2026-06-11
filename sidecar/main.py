@@ -1797,6 +1797,10 @@ def ask_axis(
                 req.question,
                 embed_fn=_embed,
                 limit=req.per_role_limit,
+                impact_mode=any(
+                    m.role in {"impact_analysis", "trace_dependency"}
+                    for m in intent
+                ),
                 prescanned=axis_scanned,
             )
 

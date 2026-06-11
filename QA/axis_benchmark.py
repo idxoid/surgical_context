@@ -282,6 +282,7 @@ def run_question(
         result.question,
         embed_fn=_embed,
         limit=per_role_limit,
+        impact_mode=any(m.role in {"impact_analysis", "trace_dependency"} for m in intent),
         prescanned=scanned,
     )
     base_seed_files |= {

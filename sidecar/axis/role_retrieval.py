@@ -114,6 +114,38 @@ def _combined_score(
     return 0.5 * structural + 0.5 * semantic
 
 
+# Structural file-tier ranking weights (see docs/file_tier_signal.md). The
+# ``test`` tier never reaches the seed ranker — it is fenced out of the
+# scan (or routed to the impact pass) — so these tables cover only the
+# non-test tiers that DO compete for seed slots. ``core`` (the
+# answer-bearing default) is the anchor at 1.0; the rest are demoted so an
+# example app / re-export / stub cannot out-rank real library code in seed
+# retrieval. For impact / trace modes the demotion is relaxed: an
+# "what examples/docs are affected" question legitimately wants them.
+_TIER_WEIGHT_DEMOTE: dict[str, float] = {
+    "core": 1.0,
+    "reexport": 0.5,
+    "stub": 0.5,
+    "doc": 0.3,
+    "example": 0.2,
+    "test": 0.0,
+}
+_TIER_WEIGHT_MODE: dict[str, float] = {
+    "core": 1.0,
+    "reexport": 0.5,
+    "stub": 0.5,
+    "doc": 0.6,
+    "example": 0.6,
+    "test": 1.0,
+}
+_MODE_ROLES = frozenset({"impact_analysis", "trace_dependency"})
+
+
+def _tier_weight(tier: str | None, *, impact_mode: bool) -> float:
+    table = _TIER_WEIGHT_MODE if impact_mode else _TIER_WEIGHT_DEMOTE
+    return table.get(tier or "core", 1.0)
+
+
 @dataclass
 class WorkspaceScan:
     """One workspace's symbol rows from a single Lance scan.
@@ -262,6 +294,7 @@ def find_symbols_by_roles(
         idx = row.get("_idx")
         return None if idx is None else distances[idx]
 
+    impact_mode = bool(_MODE_ROLES & set(roles))
     out: dict[str, list[RoleCandidate]] = {}
     for role in roles:
         evidence = ROLE_EVIDENCE_MAP.get(role)
@@ -284,6 +317,7 @@ def find_symbols_by_roles(
                 total_kinds,
             )
             semantic = _semantic_score(distance)
+            tier_w = _tier_weight(row.get("file_tier"), impact_mode=impact_mode)
             candidates.append(
                 RoleCandidate(
                     uid=str(row.get("uid") or ""),
@@ -297,7 +331,8 @@ def find_symbols_by_roles(
                     vector_distance=(
                         float(distance) if distance is not None else None
                     ),
-                    score=_combined_score(structural, semantic, has_query),
+                    score=_combined_score(structural, semantic, has_query)
+                    * tier_w,
                 )
             )
         candidates.sort(key=lambda c: c.score, reverse=True)
@@ -355,6 +390,7 @@ def find_seeds_by_vector(
     limit: int = 12,
     lance_db_path: str = "./data/lancedb",
     include_tests: bool = False,
+    impact_mode: bool = False,
     prescanned: "WorkspaceScan | None" = None,
 ) -> list[RoleCandidate]:
     """Role-AGNOSTIC vector seed retrieval — top-``limit`` symbols by
@@ -394,14 +430,31 @@ def find_seeds_by_vector(
 
     n = len(scan.rows)
     k = min(limit, n)
-    # argpartition for the k nearest, then sort just those k.
-    nearest = np.argpartition(distances, k - 1)[:k] if k < n else np.arange(n)
-    nearest = nearest[np.argsort(distances[nearest])]
+    # Structural file-tier penalty BEFORE top-k selection: an example app
+    # or stub must not consume a seed slot a core file should hold. Inflate
+    # the effective distance by 1/tier_weight so demoted tiers fall back in
+    # the ranking; the true ``vector_distance`` is preserved for downstream.
+    weights = np.array(
+        [
+            _tier_weight(
+                str(scan.rows[i].get("file_tier") or "core"),
+                impact_mode=impact_mode,
+            )
+            for i in range(n)
+        ],
+        dtype=float,
+    )
+    weights = np.where(weights <= 0.0, 1e-6, weights)
+    adjusted = distances / weights
+    # argpartition for the k nearest by ADJUSTED distance, then sort those k.
+    nearest = np.argpartition(adjusted, k - 1)[:k] if k < n else np.arange(n)
+    nearest = nearest[np.argsort(adjusted[nearest])]
 
     out: list[RoleCandidate] = []
     for idx in nearest:
         row = scan.rows[int(idx)]
         distance = float(distances[int(idx)])
+        tier_w = float(weights[int(idx)])
         out.append(
             RoleCandidate(
                 uid=str(row.get("uid") or ""),
@@ -413,7 +466,7 @@ def find_seeds_by_vector(
                 contract_count=0,
                 kind_count=0,
                 vector_distance=distance,
-                score=_semantic_score(distance),
+                score=_semantic_score(distance) * tier_w,
             )
         )
     return out
