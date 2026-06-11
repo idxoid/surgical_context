@@ -8,7 +8,6 @@ from typing import Any
 from sidecar.axis.role_retrieval import RoleCandidate
 from sidecar.axis.sibling_shims import expand_sibling_shims
 
-
 WORKSPACE = "qa_repo/test@axis"
 
 
@@ -150,6 +149,23 @@ def test_max_shims_cap_respected():
         max_shims=3,
     )
     assert len(out) == 3
+
+
+def test_preserves_scan_order_without_question_ranking():
+    """Shim selection is topology-only until the indexer materializes a
+    RE_EXPORTS edge; file/name tokens must not reorder candidates."""
+    seed = _seed("u:routing", "/repo/fastapi/routing.py")
+    rows = [
+        _row("u:generic", "/repo/fastapi/a.py", kinds=[]),
+        _row("u:websocket", "/repo/fastapi/websockets.py", kinds=[]),
+    ]
+    out = expand_sibling_shims(
+        [seed],
+        lance=_FakeLance(rows),
+        workspace_id=WORKSPACE,
+        max_shims=2,
+    )
+    assert [c.uid for c in out] == ["u:generic", "u:websocket"]
 
 
 def test_seed_directory_only_no_cross_pollination():

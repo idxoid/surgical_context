@@ -1709,10 +1709,10 @@ def ask_axis(
     incrementally migrating UI surfaces off the legacy stack.
     """
 
+    from sidecar.axis.axis_phased import expand_phased
     from sidecar.axis.context_builder import build_context_for_candidates
     from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
     from sidecar.axis.impact_traversal import expand_impact_neighbourhood
-    from sidecar.axis.axis_phased import expand_phased
     from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
     from sidecar.axis.intent_classifier import classify_intent
     from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
@@ -1723,6 +1723,7 @@ def ask_axis(
     )
     from sidecar.axis.sibling_shims import expand_sibling_shims
     from sidecar.axis.structural_neighbours import expand_structural_neighbours
+    from sidecar.axis.trace_traversal import expand_trace_neighbourhood
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 
@@ -1832,8 +1833,6 @@ def ask_axis(
                 lance=lance,
                 workspace_id=workspace_id,
                 exclude_uids=[c.uid for c in affects_pool],
-                query_text=req.question,
-                embed_fn=_embed,
                 prescanned=axis_scanned,
             )
             # Upward inheritance walk: ``DEPENDS_ON`` between class
@@ -1879,13 +1878,10 @@ def ask_axis(
                 + list(phased_pool)
             )
 
-        # Impact-analysis pass — when the intent classifier flagged
-        # ``impact_analysis`` (a question-shape pseudo-role, no vector
-        # retrieval), run the blast-radius walk: reverse CALLS_*,
-        # forward AFFECTS, structural EXTENDS / INHERITED_API. Seeds
-        # are every concrete candidate already in the pool, so the
-        # impact closure is anchored on what the other roles already
-        # nominated.
+        # Mode passes — both anchor on every concrete candidate already
+        # nominated, but keep their traversal semantics separate:
+        # impact_analysis is blast-radius; trace_dependency is CALLS-only
+        # call-chain expansion.
         mode_intents_present = {
             m.role
             for m in intent
@@ -1899,18 +1895,26 @@ def ask_axis(
                 for c in cands
             ]
             if existing_pool:
-                with trace.stage("impact_traversal"):
-                    with db_session(user_id=user_id) as db:
-                        impacted = expand_impact_neighbourhood(
-                            existing_pool,
-                            db=db,
-                            workspace_id=workspace_id,
-                        )
-                # Both mode intents share the same blast-radius pool —
-                # the consumer reads either key under one synthesised
-                # entry under the surviving mode role.
-                for mode_role in mode_intents_present:
-                    raw_by_role[mode_role] = impacted
+                if "impact_analysis" in mode_intents_present:
+                    with trace.stage("impact_traversal"):
+                        with db_session(user_id=user_id) as db:
+                            raw_by_role["impact_analysis"] = (
+                                expand_impact_neighbourhood(
+                                    existing_pool,
+                                    db=db,
+                                    workspace_id=workspace_id,
+                                )
+                            )
+                if "trace_dependency" in mode_intents_present:
+                    with trace.stage("trace_traversal"):
+                        with db_session(user_id=user_id) as db:
+                            raw_by_role["trace_dependency"] = (
+                                expand_trace_neighbourhood(
+                                    existing_pool,
+                                    db=db,
+                                    workspace_id=workspace_id,
+                                )
+                            )
 
         # Multi-role *intersection* pass — when ≥2 intents fire we use
         # the weaker signals as STRUCTURAL CONSTRAINTS, not as a
