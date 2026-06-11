@@ -14,7 +14,7 @@ reason so the report is honest about coverage.
 Usage::
 
     python -m QA.axis_benchmark \\
-        --pack tests/fixtures/real_repo_question_pack.yaml \\
+        --pack tests/fixtures/questions_python.yaml \\
         --out /tmp/axis_benchmark
 
     # Comparison with a previous run:
@@ -33,11 +33,11 @@ from typing import Any
 
 import yaml
 
+from sidecar.axis.axis_phased import expand_phased
+from sidecar.axis.axis_ranking import apply_intent_axis_boost
 from sidecar.axis.context_builder import build_context_for_candidates
 from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
 from sidecar.axis.impact_traversal import expand_impact_neighbourhood
-from sidecar.axis.axis_phased import expand_phased
-from sidecar.axis.axis_ranking import apply_intent_axis_boost
 from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
 from sidecar.axis.intent_classifier import classify_intent
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
@@ -48,11 +48,11 @@ from sidecar.axis.role_retrieval import (
 )
 from sidecar.axis.sibling_shims import expand_sibling_shims
 from sidecar.axis.structural_neighbours import expand_structural_neighbours
+from sidecar.axis.trace_traversal import expand_trace_neighbourhood
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
-
 
 # Map ``repo`` from the question pack to the axis-profile workspace_id
 # we actually indexed. Repos not listed here are skipped with reason.
@@ -106,13 +106,26 @@ class QuestionResult:
         }
 
 
-def _load_pack(pack_path: Path) -> list[dict[str, Any]]:
-    payload = yaml.safe_load(pack_path.read_text(encoding="utf-8"))
+def _load_pack(pack_path: Path, *, _seen: set[Path] | None = None) -> list[dict[str, Any]]:
+    path = pack_path.resolve()
+    seen = _seen if _seen is not None else set()
+    if path in seen:
+        raise ValueError(f"Circular include in question packs: {path}")
+    seen.add(path)
+
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if isinstance(payload, list):
+        return [entry for entry in payload if isinstance(entry, dict)]
+    if not isinstance(payload, dict):
+        raise ValueError(f"Unsupported question pack format in {path}")
+
     questions: list[dict[str, Any]] = []
     for entry in payload.get("questions", []) or []:
         if not isinstance(entry, dict):
             continue
         questions.append(entry)
+    for include in payload.get("includes", []) or []:
+        questions.extend(_load_pack(path.parent / str(include), _seen=seen))
     return questions
 
 
@@ -260,8 +273,6 @@ def run_question(
             lance=lance,
             workspace_id=workspace_id,
             exclude_uids=[c.uid for c in affects_pool],
-            query_text=result.question,
-            embed_fn=_embed,
             prescanned=scanned,
         )
         # Upward inheritance walk via DEPENDS_ON — abstract bases of
@@ -297,10 +308,9 @@ def run_question(
             + list(phased_pool)
         )
 
-    # Impact-analysis pass — anchored on the existing candidate pool,
-    # walks reverse-CALLS, forward-AFFECTS, structural inheritors and
-    # API carriers. Fires only when the intent classifier explicitly
-    # gestures at "what's affected if this changes?".
+    # Mode passes — anchored on the existing candidate pool, but kept
+    # semantically separate: impact_analysis walks blast-radius edges;
+    # trace_dependency walks CALLS_* callers/callees only.
     mode_intents_present = {
         m.role
         for m in intent
@@ -314,11 +324,14 @@ def run_question(
             for c in cands
         ]
         if existing_pool:
-            impacted = expand_impact_neighbourhood(
-                existing_pool, db=db, workspace_id=workspace_id,
-            )
-            for mode_role in mode_intents_present:
-                raw_by_role[mode_role] = impacted
+            if "impact_analysis" in mode_intents_present:
+                raw_by_role["impact_analysis"] = expand_impact_neighbourhood(
+                    existing_pool, db=db, workspace_id=workspace_id,
+                )
+            if "trace_dependency" in mode_intents_present:
+                raw_by_role["trace_dependency"] = expand_trace_neighbourhood(
+                    existing_pool, db=db, workspace_id=workspace_id,
+                )
 
     # Multi-role *intersection* pass — when ≥2 intents fire we use the
     # weaker signals as structural constraints, dropping primary
@@ -498,11 +511,11 @@ def _print_comparison(prev_summary: dict[str, Any], summary: dict[str, Any]) -> 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Axis pipeline benchmark over the real_repo question pack",
+        description="Axis pipeline benchmark over the Python question pack",
     )
     parser.add_argument(
         "--pack",
-        default="tests/fixtures/real_repo_question_pack.yaml",
+        default="tests/fixtures/questions_python.yaml",
         type=Path,
     )
     parser.add_argument("--out", default="/tmp/axis_benchmark", type=Path)
