@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pyarrow as pa
 import pytest
 
 import sidecar.axis.role_retrieval as rr
@@ -10,13 +11,14 @@ from sidecar.axis.role_retrieval import find_seeds_by_vector
 
 WORKSPACE = "qa_repo/test@axis"
 
-
-class _Arrow:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def to_pylist(self):
-        return list(self._rows)
+_SCAN_COLS = [
+    "uid",
+    "name",
+    "file_path",
+    "axis_contracts_json",
+    "axis_container_kinds_json",
+    "workspace_id",
+]
 
 
 def _apply_ws_filter(rows, filter_str):
@@ -32,12 +34,24 @@ def _apply_ws_filter(rows, filter_str):
     return [r for r in rows if r.get("workspace_id") == ws]
 
 
+def _to_arrow(rows):
+    """Build a real pyarrow Table so the scan's .drop/.column/
+    combine_chunks/to_pylist path runs against genuine Arrow."""
+    data = {c: [r.get(c) for r in rows] for c in _SCAN_COLS}
+    dim = len(rows[0]["vector"]) if rows else 0
+    data["vector"] = pa.array(
+        [r["vector"] for r in rows],
+        type=pa.list_(pa.float32(), dim) if dim else pa.list_(pa.float32()),
+    )
+    return pa.table(data)
+
+
 class _Lance:
     def __init__(self, rows):
         self._rows = rows
 
     def to_table(self, columns=None, filter=None):
-        return _Arrow(_apply_ws_filter(self._rows, filter))
+        return _to_arrow(_apply_ws_filter(self._rows, filter))
 
 
 class _Table:
@@ -57,7 +71,15 @@ class _Conn:
 
 
 def _row(uid, path, vec, ws=WORKSPACE):
-    return {"uid": uid, "name": uid, "file_path": path, "vector": vec, "workspace_id": ws}
+    return {
+        "uid": uid,
+        "name": uid,
+        "file_path": path,
+        "axis_contracts_json": "[]",
+        "axis_container_kinds_json": "[]",
+        "workspace_id": ws,
+        "vector": vec,
+    }
 
 
 def _patch(monkeypatch, rows):

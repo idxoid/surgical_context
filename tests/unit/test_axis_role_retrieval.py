@@ -11,10 +11,33 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pyarrow as pa
 import pytest
 
 
 WORKSPACE = "qa_repo/test@axis"
+
+_SCAN_COLS = [
+    "uid",
+    "name",
+    "file_path",
+    "axis_contracts_json",
+    "axis_container_kinds_json",
+    "workspace_id",
+]
+
+
+def _rows_to_arrow(rows):
+    """Build a real pyarrow Table from stub rows so the scan's
+    ``.drop``/``.column``/``combine_chunks`` path runs on genuine
+    Arrow. Vectors are a nullable list column — when a row has no
+    vector (structural-only tests) the matrix extraction backs off and
+    distance is ``None``, exactly as those tests expect."""
+    data = {c: [r.get(c) for r in rows] for c in _SCAN_COLS}
+    data["vector"] = pa.array(
+        [r.get("vector") for r in rows], type=pa.list_(pa.float32())
+    )
+    return pa.table(data)
 
 
 @pytest.fixture
@@ -43,12 +66,7 @@ def fake_lance(monkeypatch):
                             rows = [
                                 r for r in rows if r.get("workspace_id") == ws
                             ]
-
-                    class _Arrow:
-                        def to_pylist(self_inner):
-                            return rows
-
-                    return _Arrow()
+                    return _rows_to_arrow(rows)
 
             return _LanceWrap()
 

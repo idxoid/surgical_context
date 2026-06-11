@@ -114,27 +114,43 @@ def _combined_score(
     return 0.5 * structural + 0.5 * semantic
 
 
+@dataclass
+class WorkspaceScan:
+    """One workspace's symbol rows from a single Lance scan.
+
+    ``rows`` are metadata-only dicts (NO vector) carrying pre-parsed
+    ``_contracts`` / ``_kinds`` sets and a ``_idx`` aligned to
+    ``vectors``. ``vectors`` is an ``(N, dim)`` numpy matrix (row ``i``
+    ↔ ``rows[i]``) or ``None`` when vectors were not requested. Keeping
+    the 384-dim vectors in a contiguous numpy matrix instead of Python
+    lists is the whole point — distance is one vectorised pass, not a
+    per-row Python loop, and ``to_pylist`` no longer materialises the
+    heavy column.
+    """
+
+    rows: list[dict]
+    vectors: Any | None  # np.ndarray | None — Any to avoid a hard numpy import at module scope
+
+
 def scan_workspace_rows(
     workspace_id: str,
     *,
     lance_db_path: str = "./data/lancedb",
     include_tests: bool = False,
     with_vector: bool = True,
-) -> list[dict]:
-    """One workspace-scoped Lance scan, JSON parsed once.
+) -> WorkspaceScan:
+    """One workspace-scoped Lance scan, JSON parsed once, vectors kept
+    in a numpy matrix.
 
-    The whole retrieval layer used to scan the *entire* symbol table
-    (every workspace) and filter in Python — once per role, three times
-    per question. For a 14k-symbol workspace inside a 43k-row table that
-    materialised 43k rows × the 384-dim vector column three times over.
-
-    This reads the workspace's rows in a single pass: the ``workspace_id``
-    equality is pushed down into Lance (a C++ bitmask, not a Python
-    loop), the test-file fence runs once, and each row's contracts/kinds
-    JSON is parsed once into ``_contracts`` / ``_kinds`` sets so every
-    downstream role match is a cheap set intersection. Pass the result
-    to ``find_symbols_by_roles`` and ``find_seeds_by_vector`` to serve
-    both off one scan.
+    The retrieval layer used to scan the *entire* symbol table (every
+    workspace, 384-dim vector column included) and filter in Python —
+    once per role, three+ times per question. This reads only the
+    workspace's rows (``workspace_id`` pushed down into Lance as a C++
+    bitmask), runs the test fence once, parses each row's
+    contracts/kinds JSON once into sets, and — critically — extracts
+    the vector column as a contiguous numpy matrix WITHOUT
+    materialising it into Python dicts. Metadata ``to_pylist`` then
+    touches only light columns.
     """
     table = lancedb.connect(lance_db_path).open_table("symbols_axis_python_v1")
     columns = [
@@ -153,8 +169,26 @@ def scan_workspace_rows(
     )
     from sidecar.axis.test_file_filter import is_test_path
 
-    out: list[dict] = []
-    for r in arrow.to_pylist():
+    # Extract the vector column as a numpy matrix without round-tripping
+    # it through Python objects; metadata to_pylist drops it.
+    vectors_all = None
+    if with_vector and "vector" in arrow.column_names and arrow.num_rows:
+        try:
+            import numpy as np
+
+            vcol = arrow.column("vector").combine_chunks()
+            vectors_all = np.asarray(
+                vcol.values.to_numpy(zero_copy_only=False)
+            ).reshape(arrow.num_rows, -1)
+        except Exception:
+            vectors_all = None
+        meta = arrow.drop(["vector"]).to_pylist()
+    else:
+        meta = arrow.to_pylist()
+
+    kept_rows: list[dict] = []
+    kept_idx: list[int] = []
+    for i, r in enumerate(meta):
         if not include_tests and is_test_path(str(r.get("file_path") or "")):
             continue
         try:
@@ -165,12 +199,16 @@ def scan_workspace_rows(
             kind_objs = json.loads(r.get("axis_container_kinds_json") or "[]")
         except json.JSONDecodeError:
             kind_objs = []
-        r["_contracts"] = {
-            str(c.get("contract") or "") for c in contract_objs
-        }
+        r["_contracts"] = {str(c.get("contract") or "") for c in contract_objs}
         r["_kinds"] = {str(k.get("kind") or "") for k in kind_objs}
-        out.append(r)
-    return out
+        r["_idx"] = len(kept_rows)
+        kept_rows.append(r)
+        kept_idx.append(i)
+
+    kept_vectors = None
+    if vectors_all is not None and kept_idx:
+        kept_vectors = vectors_all[kept_idx]
+    return WorkspaceScan(rows=kept_rows, vectors=kept_vectors)
 
 
 def find_symbols_by_roles(
@@ -182,7 +220,7 @@ def find_symbols_by_roles(
     lance_db_path: str = "./data/lancedb",
     embed_fn=None,
     include_tests: bool = False,
-    prescanned: list[dict] | None = None,
+    prescanned: "WorkspaceScan | None" = None,
 ) -> dict[str, list[RoleCandidate]]:
     """Batch role retrieval off a single scan.
 
@@ -191,7 +229,7 @@ def find_symbols_by_roles(
     distances across roles. Equivalent to calling ``find_symbols_by_role``
     per role but with one scan + one embed instead of N of each.
     """
-    rows = (
+    scan = (
         prescanned
         if prescanned is not None
         else scan_workspace_rows(
@@ -200,27 +238,19 @@ def find_symbols_by_roles(
             include_tests=include_tests,
         )
     )
+    rows = scan.rows
     has_query = bool(query_text and embed_fn is not None)
-    query_vec = None
-    if has_query:
-        query_vec = embed_fn(query_text)
-        if hasattr(query_vec, "tolist"):
-            query_vec = query_vec.tolist()
-    distance_cache: dict[str, float | None] = {}
+    # Vectorised distance: one numpy pass over the whole matrix, indexed
+    # by each row's ``_idx`` — no per-row Python distance loop.
+    distances = _vectorised_distances(
+        scan.vectors if has_query else None, query_text, embed_fn
+    )
 
     def _distance(row: dict) -> float | None:
-        uid = str(row.get("uid") or "")
-        if uid in distance_cache:
-            return distance_cache[uid]
-        d: float | None = None
-        if has_query:
-            vec = row.get("vector")
-            if vec is not None:
-                if hasattr(vec, "tolist"):
-                    vec = vec.tolist()
-                d = _l2_distance(query_vec, vec)
-        distance_cache[uid] = d
-        return d
+        if distances is None:
+            return None
+        idx = row.get("_idx")
+        return None if idx is None else distances[idx]
 
     out: dict[str, list[RoleCandidate]] = {}
     for role in roles:
@@ -315,7 +345,7 @@ def find_seeds_by_vector(
     limit: int = 12,
     lance_db_path: str = "./data/lancedb",
     include_tests: bool = False,
-    prescanned: list[dict] | None = None,
+    prescanned: "WorkspaceScan | None" = None,
 ) -> list[RoleCandidate]:
     """Role-AGNOSTIC vector seed retrieval — top-``limit`` symbols by
     embedding similarity, with NO role/kind filter.
@@ -329,13 +359,13 @@ def find_seeds_by_vector(
     regardless of role, and the reactive traversal + intent ranking take
     it from there.
 
-    Returns candidates tagged ``role="vector_seed"``; ``score`` is the
-    normalised semantic score so the consumer can rank them against
-    role-evidenced candidates.
+    Top-``limit`` is selected by ``argpartition`` over the workspace's
+    vector matrix — no per-row Python distance loop. Returns candidates
+    tagged ``role="vector_seed"``.
     """
     if not query_text or embed_fn is None:
         return []
-    rows = (
+    scan = (
         prescanned
         if prescanned is not None
         else scan_workspace_rows(
@@ -344,24 +374,24 @@ def find_seeds_by_vector(
             include_tests=include_tests,
         )
     )
-    if not rows:
+    if not scan.rows or scan.vectors is None:
         return []
-    query_vec = embed_fn(query_text)
-    if hasattr(query_vec, "tolist"):
-        query_vec = query_vec.tolist()
+    distances = _vectorised_distances(scan.vectors, query_text, embed_fn)
+    if distances is None:
+        return []
 
-    scored: list[tuple[float, dict]] = []
-    for row in rows:
-        vec = row.get("vector")
-        if vec is None:
-            continue
-        if hasattr(vec, "tolist"):
-            vec = vec.tolist()
-        scored.append((_l2_distance(query_vec, vec), row))
-    scored.sort(key=lambda t: t[0])
+    import numpy as np
+
+    n = len(scan.rows)
+    k = min(limit, n)
+    # argpartition for the k nearest, then sort just those k.
+    nearest = np.argpartition(distances, k - 1)[:k] if k < n else np.arange(n)
+    nearest = nearest[np.argsort(distances[nearest])]
 
     out: list[RoleCandidate] = []
-    for distance, row in scored[:limit]:
+    for idx in nearest:
+        row = scan.rows[int(idx)]
+        distance = float(distances[int(idx)])
         out.append(
             RoleCandidate(
                 uid=str(row.get("uid") or ""),
@@ -372,7 +402,7 @@ def find_seeds_by_vector(
                 satisfying_kinds=(),
                 contract_count=0,
                 kind_count=0,
-                vector_distance=float(distance),
+                vector_distance=distance,
                 score=_semantic_score(distance),
             )
         )
@@ -386,6 +416,25 @@ def _l2_distance(a, b) -> float:
     if a is None or b is None:
         return float("inf")
     return math.sqrt(sum((float(x) - float(y)) ** 2 for x, y in zip(a, b)))
+
+
+def _vectorised_distances(vectors, query_text, embed_fn):
+    """L2 distance from the query embedding to every row of the
+    ``(N, dim)`` matrix in one numpy pass. Returns a length-N float
+    array (row i = distance to ``vectors[i]``) or ``None`` when there is
+    no query / no matrix."""
+    if vectors is None or not query_text or embed_fn is None:
+        return None
+    try:
+        import numpy as np
+
+        qv = embed_fn(query_text)
+        if hasattr(qv, "tolist"):
+            qv = qv.tolist()
+        qv = np.asarray(qv, dtype=vectors.dtype)
+        return np.linalg.norm(vectors - qv, axis=1)
+    except Exception:
+        return None
 
 
 __all__ = [
