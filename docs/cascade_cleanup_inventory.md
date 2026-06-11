@@ -46,7 +46,7 @@ cascade wiring, which Phase 1–3 replaces).
 | mechanism_registry | indexer (2) | **answer-key, already INERT** (`determine_preloaded_mechanism` always `""`); indexer import is removable |
 | mechanism_packs/ | (tests only) | answer-key YAML fixtures (banned) |
 | intent_classifier (legacy) | main.py (`IntentClassifier`) | axis has its own `axis/intent_classifier`; delete after switch |
-| types (cascade part) | main.py (`PromptContext`/`SymbolContext`/`DocChunk`) | split — these are cascade types; `Subgraph`/`RESOLVER_VERSION` go to C |
+| prompt_compiler (`PromptCompiler`) | (via arbitrator) | **provider-side**, builds PromptContext from ranked candidates INSIDE arbitrator; deleted with cascade — but the axis provider needs its own ContextBundle→PromptContext adapter (Phase 1), NOT a full prompt rewrite |
 
 ## Class B — MIGRATE → `sidecar/indexer/`
 
@@ -65,33 +65,49 @@ Not cascade; the axis answer path needs them too.
 
 | module | importer | note |
 |---|---|---|
+| **types.`PromptContext`** | main.py (consumer seam) | **THE provider↔consumer CONTRACT** — `_resolve_ask_context()` returns it, consumers call `to_system_prompt()`. NOT cascade. KEEP. The migration swaps the PROVIDER behind this contract, not the contract. |
+| types.`to_system_prompt()` | (consumer) | consumer-side render on PromptContext; untouched |
+| types.`SymbolContext` / `DocChunk` | (part of PromptContext) | the context payload types PromptContext carries; KEEP with the contract |
 | overlay (`InMemoryOverlay`) | main.py | runtime uncommitted-edit overlay; relocate to `sidecar/overlay.py` or keep |
 | doc_resolver (`DocResolver`) | main.py (`/search`, doc context) | doc-chunk retrieval; axis answer path needs docs |
 | types.`Subgraph` | `cache/layered.py` | cache type; relocate to cache or a small shared types module |
 | types.`RESOLVER_VERSION` | main.py | version stamp; relocate |
 
-## `/ask` API contract (must be preserved by the axis replacement)
+## The provider↔consumer boundary (corrected understanding)
 
-`AskResponse` (what the VSCode extension consumes):
+The migration is NOT "add an LLM to axis". The context PROVIDER is
+isolated from the consumers by a fixed contract: **`PromptContext`**.
+
+- **Provider** builds a `PromptContext`. `_resolve_ask_context()`
+  already has FOUR providers behind this one contract — arbitrator
+  (cascade), file, workspace, direct. They are polymorphic at the seam.
+- **Consumers** (`ask`, and the impact/explain modes) call
+  `_resolve_ask_context()`, get a `PromptContext`, then do their own
+  thing — `ctx.to_system_prompt()` → `ai_engine` → answer. This is
+  ISOLATED from how the PromptContext was built.
+
+So the cascade→axis swap is: add a FIFTH provider — an axis one — that
+emits `PromptContext` from the axis pipeline's `ContextBundle`. The
+consumer side (to_system_prompt, ai_engine, answer, AskResponse) is
+untouched. `prompt_compiler.PromptCompiler` is provider-side (lives
+inside arbitrator) and dies with the cascade; the axis provider needs
+its own `ContextBundle → PromptContext` adapter — an adapter, not a
+prompt/LLM rewrite.
+
+`/ask/axis` returning context-only `AskAxisResponse` was a SEPARATE
+A/B-evidence endpoint, not the migration target. The migration target
+is the `_resolve_ask_context` seam.
+
+## `/ask` API contract (preserved automatically by keeping PromptContext)
+
+`AskResponse` (what the VSCode extension consumes) is produced by the
+CONSUMER from a `PromptContext` — so keeping the contract keeps the
+response shape for free:
 
 ```
-symbol: str
-answer: str                 # <- axis is context-only today; Phase 1 must add LLM answer
-context: dict[str, Any]
-user: str
-cloud: bool
-workspace_id: str
-trace_id: str
-feedback_token: str
-model_route: dict[str, Any]
-metrics: dict[str, Any]
-index_manifest_id / _schema_version: optional
+symbol, answer, context, user, cloud, workspace_id, trace_id,
+feedback_token, model_route, metrics, index_manifest_id/_schema_version
 ```
-
-`/ask/axis` today returns `AskAxisResponse{context_bundles, ...}` with
-**no `answer`** ("Returns structured retrieval evidence WITHOUT calling
-an LLM"). Phase 1 must add prompt-compilation from axis `ContextBundle`
-+ `ai_engine` call and emit `AskResponse` shape.
 
 ## Endpoints bound to cascade (to switch in Phase 3)
 
@@ -102,14 +118,17 @@ an LLM"). Phase 1 must add prompt-compilation from axis `ContextBundle`
 ## Phase order (gates)
 
 0. **Inventory** (this doc) — done.
-1. **Axis answer-completion** — add prompt+LLM to axis path, emit
-   AskResponse. BLOCKER. Needs an axis prompt-compiler (replacing
-   `prompt_compiler`).
-2. **Parallel + A/B** — `/ask` behind a flag routes to axis; A/B on real
-   questions (recall: axis 0.972 vs legacy; + answer-quality judge).
-   GATE: axis ≥ legacy.
-3. **Cutover** — `/ask`, `/ask/stream`, `/search/unified` → axis; legacy
-   behind flag for rollback.
+1. **Axis provider behind the PromptContext contract** — add a fifth
+   provider at the `_resolve_ask_context` seam: axis pipeline →
+   `ContextBundle → PromptContext` adapter. NOT an LLM/prompt rewrite —
+   the consumer (`to_system_prompt` → `ai_engine` → AskResponse) is
+   untouched. GATE: axis provider emits a valid PromptContext the
+   existing consumer renders.
+2. **Parallel + A/B** — `_resolve_ask_context` chooses axis-provider vs
+   arbitrator-provider behind a flag; A/B on real questions (recall:
+   axis 0.972 vs legacy; + answer-quality judge). GATE: axis ≥ legacy.
+3. **Cutover** — `_resolve_ask_context` defaults to the axis provider;
+   `/search/unified` similarly; arbitrator behind flag for rollback.
 4. **Indexer decouple** — migrate class B; drop mechanism_registry/packs
    (inert answer-key); relocate Subgraph. GATE: indexer imports no
    `sidecar.context`.
