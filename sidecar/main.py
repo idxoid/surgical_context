@@ -846,6 +846,44 @@ def _context_from_direct(question: str, token_budget: int) -> PromptContext:
     )
 
 
+def _context_from_axis(
+    question: str,
+    *,
+    workspace_id: str,
+    db: Any,
+    trace_id: str = "",
+) -> PromptContext | None:
+    """Axis-pipeline provider: canonical retrieval -> renderable PromptContext.
+
+    Runs ``run_axis_retrieval`` (the same pipeline the QA benchmark
+    validates) and adapts its ranked bundles through
+    ``axis_bundles_to_prompt_context``. Returns ``None`` when the pipeline
+    yields nothing renderable, so ``_resolve_ask_context`` can fall through
+    to the next provider. Nothing calls this yet — Phase 1d wires it behind a
+    flag.
+    """
+    from sidecar.axis.pipeline import run_axis_retrieval
+    from sidecar.axis.prompt_provider import axis_bundles_to_prompt_context
+    from sidecar.database.lancedb_client import LanceDBClient
+    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+
+    lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+    result = run_axis_retrieval(
+        question,
+        workspace_id=workspace_id,
+        db=db,
+        lance=lance,
+    )
+    intent = result.intent[0].role if result.intent else ""
+    return axis_bundles_to_prompt_context(
+        result.bundles,
+        question=question,
+        workspace_id=workspace_id,
+        intent=intent,
+        trace_id=trace_id,
+    )
+
+
 def _search_docs(query: str, limit: int, *, workspace_id: str) -> list[DocChunk]:
     try:
         return DocResolver(vector_db).search(query, limit=limit, workspace_id=workspace_id)
