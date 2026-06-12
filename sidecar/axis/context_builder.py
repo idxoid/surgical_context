@@ -94,16 +94,53 @@ def _fetch_codes(
     if not uids:
         return {}
     table = lance._sym_table  # noqa: SLF001
-    rows = (
-        table.to_lance()
-        .to_table(columns=["uid", "code", "workspace_id"])
-        .to_pylist()
-    )
-    return {
-        r["uid"]: r.get("code")
-        for r in rows
-        if r.get("workspace_id") == workspace_id and r.get("uid") in uids
-    }
+    columns = ["uid", "code", "workspace_id"]
+
+    def _quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    uid_filter = ", ".join(_quote(uid) for uid in sorted(uids))
+    filter_sql = f"workspace_id = {_quote(workspace_id)} AND uid IN ({uid_filter})"
+    lance_table = table.to_lance()
+    try:
+        arrow = lance_table.to_table(columns=columns, filter=filter_sql)
+    except TypeError:
+        arrow = lance_table.to_table(columns=columns)
+        try:
+            import pyarrow as pa
+            import pyarrow.compute as pc
+
+            uid_set = pa.array(list(uids), type=arrow["uid"].type)
+            mask = pc.and_(
+                pc.equal(
+                    arrow["workspace_id"],
+                    pa.scalar(workspace_id, type=arrow["workspace_id"].type),
+                ),
+                pc.is_in(arrow["uid"], value_set=uid_set),
+            )
+            arrow = arrow.filter(mask)
+        except Exception:
+            pass
+
+    try:
+        row_uids = arrow["uid"].to_pylist()
+        codes = arrow["code"].to_pylist()
+        workspace_ids = arrow["workspace_id"].to_pylist()
+    except Exception:
+        return {
+            r["uid"]: r.get("code")
+            for r in arrow.to_pylist()
+            if r.get("workspace_id") == workspace_id and r.get("uid") in uids
+        }
+
+    out: dict[str, str | None] = {}
+    for uid_raw, code, row_workspace_id in zip(row_uids, codes, workspace_ids):
+        if row_workspace_id != workspace_id:
+            continue
+        uid = str(uid_raw or "")
+        if uid in uids:
+            out[uid] = code
+    return out
 
 
 def build_context_for_candidates(
@@ -149,6 +186,7 @@ def build_context_for_candidates(
             edges=edges,
             direction=direction,
             max_hops=max_hops,
+            limit_per_seed=max_per_seed * 4,
         )
         for su, neighbours in grouped.items():
             bucket = hits_per_seed.get(su)

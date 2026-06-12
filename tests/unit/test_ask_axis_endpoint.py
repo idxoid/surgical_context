@@ -30,14 +30,22 @@ def patch_axis_pipeline(monkeypatch):
             ),
         ]
 
-    # The endpoint imports these modules at call time, so monkeypatching
-    # ``sidecar_main`` won't intercept — patch the source modules.
+    # The endpoint runs the pipeline (``run_axis_retrieval``), which reaches
+    # these stage functions through their source modules — so patch the
+    # source modules, not ``sidecar_main``.
+    import sidecar.axis.axis_ranking as _rank_mod
     import sidecar.axis.context_builder as _ctx_mod
     import sidecar.axis.intent_classifier as _intent_mod
     import sidecar.axis.role_retrieval as _retr_mod
     import sidecar.database.lancedb_client as _lance_mod
 
     monkeypatch.setattr(_intent_mod, "classify_intent", fake_classify)
+    # The pipeline always applies intent-axis ranking; neutralise it so the
+    # candidate scores assert against their pre-boost values (ranking has
+    # its own unit coverage).
+    monkeypatch.setattr(
+        _rank_mod, "apply_intent_axis_boost", lambda raw, roles, **_k: dict(raw)
+    )
 
     candidate = RoleCandidate(
         uid="u:app",

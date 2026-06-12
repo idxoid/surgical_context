@@ -29,7 +29,7 @@ This is read-only; no graph writes, no Lance mutations.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import lancedb
@@ -162,6 +162,15 @@ class WorkspaceScan:
 
     rows: list[dict]
     vectors: Any | None  # np.ndarray | None — Any to avoid a hard numpy import at module scope
+    rows_by_uid: dict[str, dict] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.rows_by_uid:
+            self.rows_by_uid = {
+                str(row.get("uid") or ""): row
+                for row in self.rows
+                if row.get("uid")
+            }
 
 
 def scan_workspace_rows(

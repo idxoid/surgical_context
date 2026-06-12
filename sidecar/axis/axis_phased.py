@@ -148,8 +148,9 @@ def expand_phased(
         direction="undirected",
         max_hops=max_hops,
         exclude_tests=not include_tests,
+        limit=max_discovery + len(excluded),
     )
-    discovery_uids = [n.uid for n in discovery if n.uid not in excluded]
+    discovery_uids = [n.uid for n in discovery if n.uid not in excluded][:max_discovery]
 
     # Phase 2: execution from seeds + discovery frontier along CONTROL.
     exec_seeds = list(seed_uids) + discovery_uids
@@ -159,6 +160,7 @@ def expand_phased(
         direction="undirected",
         max_hops=max_hops,
         exclude_tests=not include_tests,
+        limit=max_execution + len(excluded) + len(discovery_uids),
     )
 
     out: list[RoleCandidate] = []

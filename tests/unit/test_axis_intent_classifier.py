@@ -78,6 +78,39 @@ def _shared_axis_embedder(boosts: dict[str, str]) -> "callable":
     return embed
 
 
+def _similarity_embedder(query: str, scores_by_role: dict[str, float]) -> "callable":
+    """Embed ``query`` on axis 0 and each named role description at an
+    exact cosine similarity to it. Unnamed strings stay orthogonal.
+    """
+    string_to_axis: dict[str, int] = {}
+    dim = 64
+
+    def axis_for(text: str) -> int:
+        if text not in string_to_axis:
+            string_to_axis[text] = 2 + len(string_to_axis)
+        return string_to_axis[text]
+
+    def embed(text: str) -> list[float]:
+        if text == query:
+            vec = [0.0] * dim
+            vec[0] = 1.0
+            return vec
+        for role, score in scores_by_role.items():
+            if text == ROLE_INTENT_DESCRIPTIONS[role]:
+                vec = [0.0] * dim
+                vec[0] = score
+                vec[1] = math.sqrt(max(0.0, 1.0 - score * score))
+                return vec
+        idx = axis_for(text)
+        if idx >= dim:
+            raise RuntimeError("similarity embedder ran out of dimensions")
+        vec = [0.0] * dim
+        vec[idx] = 1.0
+        return vec
+
+    return embed
+
+
 @pytest.fixture(autouse=True)
 def _isolate_cache():
     clear_role_vector_cache()
@@ -181,3 +214,81 @@ def test_threshold_filters_low_similarity_matches():
 
     assert above and above[0].role == "dependency_solver"
     assert below == []
+
+
+def test_weak_runner_up_tail_is_pruned():
+    """Runner-ups barely above the broad floor should not fan out the
+    graph pipeline when the primary intent is much stronger.
+    """
+    query = "composite maps columns into a Python object"
+    matches = classify_intent(
+        query,
+        _similarity_embedder(
+            query,
+            {
+                "data_model_surface": 0.402,
+                "dependency_solver": 0.204,
+                "metadata_surface": 0.204,
+            },
+        ),
+        top_k=3,
+        threshold=0.20,
+    )
+
+    assert [m.role for m in matches] == ["data_model_surface"]
+
+
+def test_close_runner_up_survives_tail_pruning():
+    """Near ties stay multi-role even when both scores are low absolute
+    similarities.
+    """
+    query = "ambiguous but genuinely split question"
+    matches = classify_intent(
+        query,
+        _similarity_embedder(
+            query,
+            {
+                "routing_surface": 0.205,
+                "dispatch_surface": 0.202,
+            },
+        ),
+        top_k=3,
+        threshold=0.20,
+    )
+
+    assert [m.role for m in matches] == [
+        "routing_surface",
+        "dispatch_surface",
+    ]
+
+
+def test_weak_mode_tail_is_pruned_but_strong_mode_is_appended():
+    query = "route dispatch with weak impact wording"
+    weak = classify_intent(
+        query,
+        _similarity_embedder(
+            query,
+            {
+                "routing_surface": 0.40,
+                "impact_analysis": 0.202,
+            },
+        ),
+        top_k=1,
+        threshold=0.20,
+    )
+    clear_role_vector_cache()
+    strong = classify_intent(
+        query,
+        _similarity_embedder(
+            query,
+            {
+                "routing_surface": 0.40,
+                "impact_analysis": 0.30,
+            },
+        ),
+        top_k=1,
+        threshold=0.20,
+    )
+
+    assert [m.role for m in weak] == ["routing_surface"]
+    assert [m.role for m in strong] == ["routing_surface", "impact_analysis"]

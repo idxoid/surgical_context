@@ -35,21 +35,7 @@ from typing import Any, TextIO
 
 import yaml
 
-from sidecar.axis.axis_phased import expand_phased
-from sidecar.axis.axis_ranking import apply_intent_axis_boost
-from sidecar.axis.context_builder import build_context_for_candidates
-from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
-from sidecar.axis.impact_traversal import expand_impact_neighbourhood
-from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
-from sidecar.axis.intent_classifier import classify_intent
-from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
-from sidecar.axis.role_retrieval import (
-    find_seeds_by_vector,
-    find_symbols_by_roles,
-    scan_workspace_rows,
-)
-from sidecar.axis.structural_neighbours import expand_structural_neighbours
-from sidecar.axis.trace_traversal import expand_trace_neighbourhood
+from sidecar.axis.pipeline import run_axis_retrieval
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
@@ -216,202 +202,36 @@ def run_question(
         return result
     result.workspace_id = workspace_id
 
-    def _embed(text: str):
-        return lance._embed([text])[0]  # noqa: SLF001
-
-    intent = classify_intent(
+    # The whole read-side pipeline is the canonical ``run_axis_retrieval``
+    # — the same function the ``/ask/axis`` endpoint runs, so this
+    # benchmark validates that exact code. ``context_seeds_per_role=None``
+    # feeds the entire pool into context expansion (the historical
+    # benchmark behaviour); the seed / pool / bundle recall layers below
+    # read straight off the layered result.
+    retrieval = run_axis_retrieval(
         result.question,
-        _embed,
-        top_k=top_roles,
-        threshold=intent_threshold,
+        workspace_id=workspace_id,
+        db=db,
+        lance=lance,
+        top_roles=top_roles,
+        per_role_limit=per_role_limit,
+        intent_threshold=intent_threshold,
+        with_context=True,
+        context_per_seed=context_per_seed,
+        context_seeds_per_role=None,
     )
+
+    intent = retrieval.intent
     if intent:
         result.intent_top_role = intent[0].role
         result.intent_top_similarity = intent[0].similarity
         result.intent_matches = [(m.role, m.similarity) for m in intent]
 
-    # One workspace-scoped Lance scan serves every role retrieval AND
-    # the role-agnostic vector seeds — workspace predicate pushdown +
-    # parse-once instead of a full-table scan per role.
-    scanned = scan_workspace_rows(workspace_id)
-    raw_by_role: dict[str, list] = find_symbols_by_roles(
-        workspace_id,
-        [m.role for m in intent],
-        query_text=result.question,
-        embed_fn=_embed,
-        limit=per_role_limit,
-        prescanned=scanned,
-    )
-
-    # Base-retrieval (seed) files — pure vector/role similarity, captured
-    # BEFORE any graph-walk pool expansion (lookahead is itself a pool
-    # pass). seed_recall is the honest embedding-only number; the gap to
-    # pool_recall is everything the pool expander adds (and may mask).
-    base_seed_files: set[str] = {
-        getattr(c, "file_path", "") or ""
-        for cands in raw_by_role.values()
-        for c in cands
-    }
-
-    # Cross-role *lookahead*: walk K hops from each role's seed
-    # candidates and inject neighbours whose container_kinds back any
-    # *other* intent role. Restores recall when the intent classifier
-    # picks the right theme but the answer's role has shallow vector
-    # retrieval (e.g. flask ``current_app`` question primes
-    # proxy_mechanism, but the mechanism's implementation lives in
-    # ``dispatch_surface``-tagged dispatchers).
-    if len(intent) >= 2 and any(raw_by_role.values()):
-        raw_by_role = expand_candidates_via_neighbourhood(
-            [m.role for m in intent],
-            raw_by_role,
-            db=db,
-            lance=lance,
-            workspace_id=workspace_id,
-        )
-
-    # Role-AGNOSTIC vector seeds — added AFTER lookahead (which rebuilds
-    # the dict around intent roles only and would drop a non-intent
-    # key). The intent classifier no longer gates structure selection:
-    # ``find_symbols_by_role`` discards the right nodes when intent
-    # picks the wrong role, pure similarity does not. These seeds join
-    # the pool and anchor the phased walk, so a misrouted intent (click
-    # parse_args → proxy) still reaches its answer by topology. Intent
-    # stays a resource manager (ranking + depth), out of structure.
-    raw_by_role["vector_seed"] = find_seeds_by_vector(
-        workspace_id,
-        result.question,
-        embed_fn=_embed,
-        limit=per_role_limit,
-        impact_mode=any(m.role in {"impact_analysis", "trace_dependency"} for m in intent),
-        prescanned=scanned,
-    )
-    base_seed_files |= {
-        getattr(c, "file_path", "") or ""
-        for c in raw_by_role.get("vector_seed", [])
-    }
-
-    # File-level structural-neighbour pass via undirected AFFECTS.
-    # Capped tightly — see ``expand_structural_neighbours`` docstring.
-    existing_pool_for_struct = [
-        c
-        for role, cands in raw_by_role.items()
-        if role not in {"impact_analysis", "structural_neighbour"}
-        for c in cands
-    ]
-    if existing_pool_for_struct:
-        affects_pool = expand_structural_neighbours(
-            existing_pool_for_struct, db=db, workspace_id=workspace_id,
-        )
-        # Upward inheritance walk via DEPENDS_ON — abstract bases of
-        # the concrete implementations in the pool.
-        ancestor_pool = expand_inheritance_ancestors(
-            existing_pool_for_struct,
-            db=db,
-            workspace_id=workspace_id,
-            exclude_uids=[c.uid for c in affects_pool],
-        )
-        # Reactive phased walk (REGISTRY*→CONTROL) — start axis chosen
-        # by the seeds' kinds, not intent. Closes the case where intent
-        # picked the wrong role but the seeds still sit on a registry /
-        # router whose topology leads to the answer.
-        already = {
-            c.uid
-            for c in (list(affects_pool) + list(ancestor_pool))
-        }
-        phased_pool = expand_phased(
-            existing_pool_for_struct,
-            db=db,
-            lance=lance,
-            workspace_id=workspace_id,
-            exclude_uids=already,
-            prescanned=scanned,
-        )
-        raw_by_role["structural_neighbour"] = (
-            list(affects_pool)
-            + list(ancestor_pool)
-            + list(phased_pool)
-        )
-
-    # Mode passes — anchored on the existing candidate pool, but kept
-    # semantically separate: impact_analysis walks blast-radius edges;
-    # trace_dependency walks CALLS_* callers/callees only.
-    mode_intents_present = {
-        m.role
-        for m in intent
-        if m.role in {"impact_analysis", "trace_dependency"}
-    }
-    if mode_intents_present:
-        existing_pool = [
-            c
-            for role, cands in raw_by_role.items()
-            if role not in {"impact_analysis", "trace_dependency"}
-            for c in cands
-        ]
-        if existing_pool:
-            if "impact_analysis" in mode_intents_present:
-                raw_by_role["impact_analysis"] = expand_impact_neighbourhood(
-                    existing_pool, db=db, workspace_id=workspace_id,
-                )
-            if "trace_dependency" in mode_intents_present:
-                raw_by_role["trace_dependency"] = expand_trace_neighbourhood(
-                    existing_pool, db=db, workspace_id=workspace_id,
-                )
-
-    # Multi-role *intersection* pass — when ≥2 intents fire we use the
-    # weaker signals as structural constraints, dropping primary
-    # candidates that have no graph proximity to any secondary
-    # candidate. ``fallback_on_empty`` keeps the original primary list
-    # if no candidate intersects, so a single-role question never
-    # silently zeros out.
-    #
-    # Mode intents (``impact_analysis`` / ``trace_dependency``) signal
-    # broad exploratory traversal. Their secondary effect on
-    # intersection is harmful: an impact question is exactly the case
-    # where the "right" answer file may have no graph proximity to
-    # the other tangential intent candidates (e.g. celery's
-    # ``app/amqp.py`` is the publisher answer for an apply_async
-    # impact question, but has no proximity to the loaders/timer
-    # candidates the other weak intents nominate). Skip intersection
-    # when any mode intent is present so the wider pool reaches the
-    # impact / call-chain traversals downstream.
-    has_mode_intent = any(
-        m.role in {"impact_analysis", "trace_dependency"} for m in intent
-    )
-    if len(intent) >= 2 and not has_mode_intent:
-        for i, match in enumerate(intent):
-            primary = raw_by_role.get(match.role) or []
-            secondary = {
-                other.role: raw_by_role.get(other.role) or []
-                for j, other in enumerate(intent)
-                if j != i
-            }
-            raw_by_role[match.role] = intersect_by_cross_role_proximity(
-                primary, secondary, db=db, workspace_id=workspace_id,
-            )
-
-    # Intent-axis ranking — intent as a ranker (not a selector). Boost
-    # candidates whose kind-axes match the intent's axes; pools re-sort.
-    # Role-agnostic seeds (no kinds) pass through untouched.
-    raw_by_role = apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
-
-    # Iterate over every key in ``raw_by_role`` — the lookahead may
-    # have *promoted* a non-intent role into its own pool. Skipping those
-    # would discard the graph-evidenced candidates the lookahead produced.
-    candidates_for_context: list = []
-    seen_role_keys: set[str] = set()
-    intent_role_keys = [m.role for m in intent]
-    for role_key in intent_role_keys + [
-        r for r in raw_by_role if r not in set(intent_role_keys)
-    ]:
-        if role_key in seen_role_keys:
-            continue
-        seen_role_keys.add(role_key)
-        candidates_for_context.extend(raw_by_role.get(role_key) or [])
-
+    candidates_for_context = retrieval.candidates_for_context
     result.candidate_count = len(candidates_for_context)
 
     # Layer 1 — seed (pure retrieval) recall, captured before any pool pass.
-    result.seed_files = sorted(f for f in base_seed_files if f)
+    result.seed_files = retrieval.seed_files
     seed_recall, seed_matched = _compute_recall(
         result.expected_files, result.seed_files
     )
@@ -437,17 +257,10 @@ def run_question(
     result.pool_recall = pool_recall
     result.pool_matched = pool_matched
 
-    bundles = build_context_for_candidates(
-        candidates_for_context,
-        workspace_id=workspace_id,
-        db=db,
-        lance=lance,
-        max_per_seed=context_per_seed,
-    )
-
+    # Layer 3 — bundle recall: after per-candidate context expansion.
     retrieved_paths_ordered: list[str] = []
     seen: set[str] = set()
-    for bundle in bundles:
+    for bundle in retrieval.bundles:
         for sym in bundle.all_symbols():
             path = sym.file_path or ""
             if path and path not in seen:

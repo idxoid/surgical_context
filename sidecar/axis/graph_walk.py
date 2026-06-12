@@ -204,6 +204,7 @@ def walk_neighbours(
     anchor: Anchor = "seed",
     exclude_tests: bool = False,
     class_targets_only: bool = False,
+    limit: int | None = None,
 ) -> list[Neighbour]:
     """Workspace-scoped neighbour walk over ``edges``.
 
@@ -234,6 +235,8 @@ def walk_neighbours(
         return []
     rel = _safe_rel_pattern(edges)
     hops = _safe_max_hops(max_hops)
+    if limit is not None and (type(limit) is not int or limit < 1):
+        raise ValueError("limit must be an integer >= 1")
 
     # Build the directional relationship fragment between the anchor
     # symbol ``s`` (or ``cls``) and the neighbour ``n``.
@@ -273,6 +276,8 @@ def walk_neighbours(
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
+    limit_sql = "\n    LIMIT $limit" if limit is not None else ""
+
     cypher = f"""
     UNWIND $seed_uids AS su
     {anchor_match}
@@ -286,14 +291,18 @@ def walk_neighbours(
         fn.path AS file_path,
         depth AS depth,
         reach AS reach
-    ORDER BY depth ASC, reach DESC
+    ORDER BY depth ASC, reach DESC, uid ASC
+    {limit_sql}
     """
 
     out: list[Neighbour] = []
     try:
         with db.driver.session() as session:
             for rec in session.run(
-                cypher, seed_uids=list(seeds), workspace_id=workspace_id,
+                cypher,
+                seed_uids=list(seeds),
+                workspace_id=workspace_id,
+                limit=limit,
             ):
                 uid = str(rec.get("uid") or "")
                 if not uid:
@@ -320,6 +329,7 @@ def walk_neighbours_grouped(
     edges: Iterable[str],
     direction: Direction = "undirected",
     max_hops: int = 2,
+    limit_per_seed: int | None = None,
 ) -> dict[str, list[Neighbour]]:
     """Per-seed neighbour walk — ONE batched Cypher over the whole seed
     list, returning ``{seed_uid: [neighbours]}`` instead of the flat,
@@ -341,6 +351,10 @@ def walk_neighbours_grouped(
         return {}
     rel = _safe_rel_pattern(edges)
     hops = _safe_max_hops(max_hops)
+    if limit_per_seed is not None and (
+        type(limit_per_seed) is not int or limit_per_seed < 1
+    ):
+        raise ValueError("limit_per_seed must be an integer >= 1")
 
     if direction == "forward":
         edge_frag = f"(s)-[r:{rel}*1..{hops}]->(n:Symbol)"
@@ -349,6 +363,35 @@ def walk_neighbours_grouped(
     else:  # undirected
         edge_frag = f"(s)-[r:{rel}*1..{hops}]-(n:Symbol)"
 
+    if limit_per_seed is None:
+        limit_sql = """
+    RETURN
+        su AS seed_uid,
+        n.uid AS uid,
+        coalesce(n.name, '') AS name,
+        fn.path AS file_path,
+        depth AS depth
+    ORDER BY seed_uid ASC, depth ASC, uid ASC
+    """
+    else:
+        limit_sql = """
+    ORDER BY su ASC, depth ASC, n.uid ASC
+    WITH su, collect({
+        uid: n.uid,
+        name: coalesce(n.name, ''),
+        file_path: fn.path,
+        depth: depth
+    })[..$limit_per_seed] AS rows
+    UNWIND rows AS row
+    RETURN
+        su AS seed_uid,
+        row.uid AS uid,
+        row.name AS name,
+        row.file_path AS file_path,
+        row.depth AS depth
+    ORDER BY seed_uid ASC, depth ASC, uid ASC
+    """
+
     cypher = f"""
     UNWIND $seed_uids AS su
     MATCH (s:Symbol {{uid: su}})
@@ -356,20 +399,17 @@ def walk_neighbours_grouped(
     MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
     WHERE all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)
     WITH su, n, fn, min(size(r)) AS depth
-    RETURN
-        su AS seed_uid,
-        n.uid AS uid,
-        coalesce(n.name, '') AS name,
-        fn.path AS file_path,
-        depth AS depth
-    ORDER BY depth ASC, n.uid ASC
+    {limit_sql}
     """
 
     grouped: dict[str, list[Neighbour]] = {}
     try:
         with db.driver.session() as session:
             for rec in session.run(
-                cypher, seed_uids=list(seeds), workspace_id=workspace_id,
+                cypher,
+                seed_uids=list(seeds),
+                workspace_id=workspace_id,
+                limit_per_seed=limit_per_seed,
             ):
                 su = str(rec.get("seed_uid") or "")
                 uid = str(rec.get("uid") or "")

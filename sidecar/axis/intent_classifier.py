@@ -117,6 +117,13 @@ class IntentMatch:
 
 _ROLE_VECTOR_CACHE: dict[str, list[float]] = {}
 
+# Initial threshold says "is this role at all plausible?". The secondary
+# gate below says "is this runner-up strong enough to spend graph budget
+# on?". A close-tie escape hatch keeps genuinely ambiguous questions multi-role
+# even when every absolute score is low.
+_SECONDARY_ABSOLUTE_THRESHOLD = 0.21
+_SECONDARY_RELATIVE_TO_TOP = 0.92
+
 
 def _ensure_list(vector) -> list[float]:
     if hasattr(vector, "tolist"):
@@ -149,12 +156,49 @@ def clear_role_vector_cache() -> None:
     _ROLE_VECTOR_CACHE.clear()
 
 
+def _prune_weak_tail(
+    matches: list[IntentMatch],
+    *,
+    threshold: float,
+    secondary_threshold: float | None = None,
+    secondary_relative_to_top: float = _SECONDARY_RELATIVE_TO_TOP,
+) -> list[IntentMatch]:
+    """Keep the primary match, then drop weak low-margin runner-ups.
+
+    ``threshold`` remains the caller-controlled plausibility floor. This
+    second gate is a resource-management guard: additional roles trigger
+    cross-role lookahead, graph walks, and context expansion, so a role
+    barely above the floor should only survive when it is either
+    absolutely strong enough or a near-tie with the primary role.
+    """
+    if not matches:
+        return []
+    primary = matches[0]
+    if len(matches) == 1:
+        return list(matches)
+
+    secondary_floor = max(
+        threshold,
+        _SECONDARY_ABSOLUTE_THRESHOLD
+        if secondary_threshold is None
+        else secondary_threshold,
+    )
+    relative_floor = primary.similarity * secondary_relative_to_top
+    pruned = [primary]
+    for match in matches[1:]:
+        if match.similarity >= secondary_floor or match.similarity >= relative_floor:
+            pruned.append(match)
+    return pruned
+
+
 def classify_intent(
     question: str,
     embed_fn: Callable[[str], object],
     *,
     top_k: int = 3,
     threshold: float = 0.20,
+    secondary_threshold: float | None = None,
+    secondary_relative_to_top: float = _SECONDARY_RELATIVE_TO_TOP,
 ) -> list[IntentMatch]:
     """Return up to ``top_k`` roles whose canonical description embeds
     closest to ``question`` (cosine ≥ ``threshold``), sorted desc.
@@ -163,6 +207,10 @@ def classify_intent(
     decoupled from the concrete embedder. Production code should pass
     LanceDB's embedder so query / role / symbol vectors all share the
     same space; tests can pass any deterministic function.
+
+    The best match is always kept. Additional matches pass a secondary
+    tail gate so near-threshold noise does not fan out every downstream
+    graph pass; close ties survive via ``secondary_relative_to_top``.
     """
     if not question.strip():
         return []
@@ -180,6 +228,12 @@ def classify_intent(
                 )
             )
     matches.sort(key=lambda m: m.similarity, reverse=True)
+    matches = _prune_weak_tail(
+        matches,
+        threshold=threshold,
+        secondary_threshold=secondary_threshold,
+        secondary_relative_to_top=secondary_relative_to_top,
+    )
     # Cap to top-k *role* intents; ``impact_analysis`` and
     # ``trace_dependency`` are question-shape modes (no retrieval pool
     # of their own — see ``role_resolver.ROLE_EVIDENCE_MAP``) so they

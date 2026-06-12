@@ -1709,20 +1709,7 @@ def ask_axis(
     incrementally migrating UI surfaces off the legacy stack.
     """
 
-    from sidecar.axis.axis_phased import expand_phased
-    from sidecar.axis.context_builder import build_context_for_candidates
-    from sidecar.axis.cross_role_boost import intersect_by_cross_role_proximity
-    from sidecar.axis.impact_traversal import expand_impact_neighbourhood
-    from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
-    from sidecar.axis.intent_classifier import classify_intent
-    from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
-    from sidecar.axis.role_retrieval import (
-        find_seeds_by_vector,
-        find_symbols_by_roles,
-        scan_workspace_rows,
-    )
-    from sidecar.axis.structural_neighbours import expand_structural_neighbours
-    from sidecar.axis.trace_traversal import expand_trace_neighbourhood
+    from sidecar.axis.pipeline import run_axis_retrieval
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 
@@ -1734,214 +1721,44 @@ def ask_axis(
     try:
         lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
 
-        def _embed(text: str):
-            return lance._embed([text])[0]  # noqa: SLF001
-
-        with trace.stage("intent"):
-            intent = classify_intent(
+        # The whole read-side pipeline lives in one canonical function
+        # (``run_axis_retrieval``) that the QA benchmark validates and the
+        # axis->PromptContext provider also consumes — so the endpoint can
+        # never drift from the measured pipeline. One ``db_session`` spans
+        # every stage; ``trace`` keeps the per-stage spans.
+        with db_session(user_id=user_id) as db:
+            result = run_axis_retrieval(
                 req.question,
-                _embed,
-                top_k=req.top_roles,
-                threshold=req.intent_threshold,
+                workspace_id=workspace_id,
+                db=db,
+                lance=lance,
+                top_roles=req.top_roles,
+                per_role_limit=req.per_role_limit,
+                intent_threshold=req.intent_threshold,
+                with_context=req.with_context,
+                context_per_seed=req.context_per_seed,
+                context_seeds_per_role=req.context_seeds_per_role,
+                trace=trace,
             )
+
         intent_payload = [
             AxisIntentMatchResponse(
                 role=m.role,
                 similarity=m.similarity,
                 description=m.description,
             )
-            for m in intent
+            for m in result.intent
         ]
-
-        with trace.stage("retrieval"):
-            # One workspace-scoped scan (predicate pushdown + parse
-            # once) feeds every role retrieval and the vector seeds.
-            axis_scanned = scan_workspace_rows(workspace_id)
-            raw_by_role: dict[str, list] = find_symbols_by_roles(
-                workspace_id,
-                [m.role for m in intent],
-                query_text=req.question,
-                embed_fn=_embed,
-                limit=req.per_role_limit,
-                prescanned=axis_scanned,
-            )
-
-        # Cross-role *lookahead*: walk K hops from each role's vector
-        # candidates, inject neighbours whose container_kinds back a
-        # different intent role. Closes the case where the intent
-        # classifier picks the right *theme* (e.g. proxy_mechanism for
-        # "current_app") but the actual answer lives in a sibling role
-        # (e.g. dispatch_surface — Flask's ``wsgi_app`` /
-        # ``dispatch_request``). The lookahead is injection-only — it
-        # never displaces vector candidates.
-        if len(intent) >= 2 and any(raw_by_role.get(m.role) for m in intent):
-            with trace.stage("cross_role_lookahead"):
-                with db_session(user_id=user_id) as db:
-                    raw_by_role = expand_candidates_via_neighbourhood(
-                        [m.role for m in intent],
-                        raw_by_role,
-                        db=db,
-                        lance=lance,
-                        workspace_id=workspace_id,
-                    )
-
-        # Role-AGNOSTIC vector seeds — added AFTER lookahead (which
-        # rebuilds the dict around intent roles and would drop a
-        # non-intent key). The intent classifier no longer gates
-        # structure selection: ``find_symbols_by_role`` discards the
-        # right nodes when intent picks the wrong role, pure similarity
-        # does not. Intent stays a resource manager (ranking + depth).
-        with trace.stage("vector_seeds"):
-            raw_by_role["vector_seed"] = find_seeds_by_vector(
-                workspace_id,
-                req.question,
-                embed_fn=_embed,
-                limit=req.per_role_limit,
-                impact_mode=any(
-                    m.role in {"impact_analysis", "trace_dependency"}
-                    for m in intent
-                ),
-                prescanned=axis_scanned,
-            )
-
-        # Structural-neighbour pass — file-level adjacency via
-        # undirected AFFECTS. Surfaces files structurally entangled
-        # with the seeds even when no role kind, no shared external,
-        # and no contract hits them (e.g. ``fastapi/concurrency.py``
-        # reaching ``routing.py`` through the indexer's AFFECTS
-        # closure). Capped tightly so the file-level pool stays small
-        # next to vector retrieval.
-        existing_pool_for_struct = [
-            c
-            for role, cands in raw_by_role.items()
-            if role not in {"impact_analysis", "structural_neighbour"}
-            for c in cands
-        ]
-        if existing_pool_for_struct:
-            with trace.stage("structural_neighbours"):
-                with db_session(user_id=user_id) as db:
-                    affects_pool = expand_structural_neighbours(
-                        existing_pool_for_struct,
-                        db=db,
-                        workspace_id=workspace_id,
-                    )
-            # Upward inheritance walk: ``DEPENDS_ON`` between class
-            # symbols encodes inheritance. A concrete implementation
-            # in the pool (Celery's ``TaskPool`` carrying real CFG/DFG)
-            # implies its abstract base (``BasePool``) is relevant —
-            # but the base file has no axis bits to win retrieval on
-            # its own.
-            with db_session(user_id=user_id) as db:
-                ancestor_pool = expand_inheritance_ancestors(
-                    existing_pool_for_struct,
-                    db=db,
-                    workspace_id=workspace_id,
-                    exclude_uids=[c.uid for c in affects_pool],
-                )
-                # Reactive phased walk (REGISTRY*→CONTROL) — start axis
-                # from the seeds' kinds, not intent. Additive; closes
-                # cases where intent picked the wrong role but the seeds
-                # sit on a registry/router whose topology leads to the
-                # answer.
-                already = {
-                    c.uid
-                    for c in (list(affects_pool) + list(ancestor_pool))
-                }
-                phased_pool = expand_phased(
-                    existing_pool_for_struct,
-                    db=db,
-                    lance=lance,
-                    workspace_id=workspace_id,
-                    exclude_uids=already,
-                    prescanned=axis_scanned,
-                )
-            raw_by_role["structural_neighbour"] = (
-                list(affects_pool)
-                + list(ancestor_pool)
-                + list(phased_pool)
-            )
-
-        # Mode passes — both anchor on every concrete candidate already
-        # nominated, but keep their traversal semantics separate:
-        # impact_analysis is blast-radius; trace_dependency is CALLS-only
-        # call-chain expansion.
-        mode_intents_present = {
-            m.role
-            for m in intent
-            if m.role in {"impact_analysis", "trace_dependency"}
-        }
-        if mode_intents_present:
-            existing_pool = [
-                c
-                for role, cands in raw_by_role.items()
-                if role not in {"impact_analysis", "trace_dependency"}
-                for c in cands
-            ]
-            if existing_pool:
-                if "impact_analysis" in mode_intents_present:
-                    with trace.stage("impact_traversal"):
-                        with db_session(user_id=user_id) as db:
-                            raw_by_role["impact_analysis"] = (
-                                expand_impact_neighbourhood(
-                                    existing_pool,
-                                    db=db,
-                                    workspace_id=workspace_id,
-                                )
-                            )
-                if "trace_dependency" in mode_intents_present:
-                    with trace.stage("trace_traversal"):
-                        with db_session(user_id=user_id) as db:
-                            raw_by_role["trace_dependency"] = (
-                                expand_trace_neighbourhood(
-                                    existing_pool,
-                                    db=db,
-                                    workspace_id=workspace_id,
-                                )
-                            )
-
-        # Multi-role *intersection* pass — when ≥2 intents fire we use
-        # the weaker signals as STRUCTURAL CONSTRAINTS, not as a
-        # separate candidate pool. A primary candidate survives only if
-        # it has graph proximity to at least one secondary candidate.
-        # Surviving candidates keep a small per-role score boost so the
-        # consumer sees the intersection signal. If a role's
-        # intersection is empty, ``fallback_on_empty=True`` returns the
-        # original primary list so a too-narrow intent does not silently
-        # zero out a result.
-        candidates_by_role: dict[str, list[AxisCandidateResponse]] = {}
-        all_candidates_for_context: list = []
-        # Mode intents (impact / trace) signal exploratory traversal.
-        # Skip intersection in that mode so the wider candidate pool
-        # reaches the downstream blast-radius walk; see the parallel
-        # rationale in ``QA.axis_benchmark``.
-        has_mode_intent = any(
-            m.role in {"impact_analysis", "trace_dependency"} for m in intent
-        )
-        if len(intent) >= 2 and not has_mode_intent:
-            with trace.stage("cross_role_intersection"):
-                with db_session(user_id=user_id) as db:
-                    for i, match in enumerate(intent):
-                        primary = raw_by_role.get(match.role) or []
-                        secondary = {
-                            other.role: raw_by_role.get(other.role) or []
-                            for j, other in enumerate(intent)
-                            if j != i
-                        }
-                        raw_by_role[match.role] = (
-                            intersect_by_cross_role_proximity(
-                                primary,
-                                secondary,
-                                db=db,
-                                workspace_id=workspace_id,
-                            )
-                        )
 
         # ``raw_by_role`` may carry roles the intent classifier never
         # produced — see ``expand_candidates_via_neighbourhood`` auto-promote.
-        intent_role_order = [m.role for m in intent]
-        promoted_roles = [r for r in raw_by_role if r not in set(intent_role_order)]
+        candidates_by_role: dict[str, list[AxisCandidateResponse]] = {}
+        intent_role_order = [m.role for m in result.intent]
+        promoted_roles = [
+            r for r in result.raw_by_role if r not in set(intent_role_order)
+        ]
         for role in intent_role_order + promoted_roles:
-            candidates = raw_by_role.get(role) or []
+            candidates = result.raw_by_role.get(role) or []
             if not candidates:
                 continue
             candidates_by_role[role] = [
@@ -1959,32 +1776,18 @@ def ask_axis(
                 )
                 for c in candidates
             ]
-            all_candidates_for_context.extend(
-                candidates[: req.context_seeds_per_role]
-            )
 
-        bundles_payload: list[AxisContextBundleResponse] = []
-        if req.with_context and all_candidates_for_context:
-            with trace.stage("context"):
-                with db_session(user_id=user_id) as db:
-                    bundles = build_context_for_candidates(
-                        all_candidates_for_context,
-                        workspace_id=workspace_id,
-                        db=db,
-                        lance=lance,
-                        max_per_seed=req.context_per_seed,
-                    )
-            for bundle in bundles:
-                bundles_payload.append(
-                    AxisContextBundleResponse(
-                        role=bundle.role,
-                        seed=AxisContextSymbolResponse(**bundle.seed.to_dict()),
-                        related=[
-                            AxisContextSymbolResponse(**s.to_dict())
-                            for s in bundle.related
-                        ],
-                    )
-                )
+        bundles_payload: list[AxisContextBundleResponse] = [
+            AxisContextBundleResponse(
+                role=bundle.role,
+                seed=AxisContextSymbolResponse(**bundle.seed.to_dict()),
+                related=[
+                    AxisContextSymbolResponse(**s.to_dict())
+                    for s in bundle.related
+                ],
+            )
+            for bundle in result.bundles
+        ]
 
         logger.info(
             "trace_id=%s endpoint=/ask/axis status=ok roles=%d candidates=%d bundles=%d",

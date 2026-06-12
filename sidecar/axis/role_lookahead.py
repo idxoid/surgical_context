@@ -78,40 +78,106 @@ def _fetch_neighbour_kinds(
     lance,
     workspace_id: str,
     neighbour_uids: set[str],
+    prescanned=None,
 ) -> dict[str, tuple[str, str, tuple[str, ...]]]:
     """Read ``(name, file_path, container_kinds)`` for each requested
-    neighbour. One full-table scan per call — acceptable at L4 cardinalities
-    (≤ a few hundred neighbours per question). Workspace filtering is
-    enforced row-by-row so this is safe to call against the shared sym
-    table.
+    neighbour. Prefer the shared workspace scan (``_kinds`` already
+    parsed) over a fresh Lance materialisation.
     """
     if not neighbour_uids:
         return {}
+    if prescanned is not None:
+        out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+        rows_by_uid = getattr(prescanned, "rows_by_uid", {}) or {}
+        for uid in neighbour_uids:
+            row = rows_by_uid.get(uid)
+            if not row:
+                continue
+            kinds = set(row.get("_kinds") or set())
+            if not kinds:
+                continue
+            out[uid] = (
+                str(row.get("name") or ""),
+                str(row.get("file_path") or ""),
+                tuple(sorted(kinds)),
+            )
+        return out
+
     sym_table = lance._sym_table  # noqa: SLF001 — the field is the public hook
-    table = sym_table.to_lance().to_table(
-        columns=[
-            "uid",
-            "name",
-            "file_path",
-            "axis_container_kinds_json",
-            "workspace_id",
-        ]
-    )
-    out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
-    for row in table.to_pylist():
-        if row.get("workspace_id") != workspace_id:
-            continue
-        uid = str(row.get("uid") or "")
-        if uid not in neighbour_uids:
-            continue
-        kinds = _flat_kinds(row.get("axis_container_kinds_json"))
-        if not kinds:
-            continue
-        out[uid] = (
-            str(row.get("name") or ""),
-            str(row.get("file_path") or ""),
-            tuple(sorted(kinds)),
+    def _quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    columns = [
+        "uid",
+        "name",
+        "file_path",
+        "axis_container_kinds_json",
+        "workspace_id",
+    ]
+    lance_table = sym_table.to_lance()
+    uid_filter = ", ".join(_quote(uid) for uid in sorted(neighbour_uids))
+    filter_sql = f"workspace_id = {_quote(workspace_id)} AND uid IN ({uid_filter})"
+    try:
+        table = lance_table.to_table(
+            columns=columns,
+            filter=filter_sql,
         )
+    except TypeError:
+        table = lance_table.to_table(columns=columns)
+        try:
+            import pyarrow as pa
+            import pyarrow.compute as pc
+
+            uid_set = pa.array(list(neighbour_uids), type=table["uid"].type)
+            mask = pc.and_(
+                pc.equal(
+                    table["workspace_id"],
+                    pa.scalar(workspace_id, type=table["workspace_id"].type),
+                ),
+                pc.is_in(table["uid"], value_set=uid_set),
+            )
+            table = table.filter(mask)
+        except Exception:
+            pass
+    out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    try:
+        uids = table["uid"].to_pylist()
+        names = table["name"].to_pylist()
+        file_paths = table["file_path"].to_pylist()
+        kinds_jsons = table["axis_container_kinds_json"].to_pylist()
+        workspace_ids = table["workspace_id"].to_pylist()
+    except Exception:
+        for row in table.to_pylist():
+            if row.get("workspace_id") != workspace_id:
+                continue
+            uid = str(row.get("uid") or "")
+            if uid not in neighbour_uids:
+                continue
+            kinds = _flat_kinds(row.get("axis_container_kinds_json"))
+            if not kinds:
+                continue
+            out[uid] = (
+                str(row.get("name") or ""),
+                str(row.get("file_path") or ""),
+                tuple(sorted(kinds)),
+            )
+    else:
+        for uid_raw, name, file_path, kinds_json, row_workspace_id in zip(
+            uids, names, file_paths, kinds_jsons, workspace_ids
+        ):
+            if row_workspace_id != workspace_id:
+                continue
+            uid = str(uid_raw or "")
+            if uid not in neighbour_uids:
+                continue
+            kinds = _flat_kinds(kinds_json)
+            if not kinds:
+                continue
+            out[uid] = (
+                str(name or ""),
+                str(file_path or ""),
+                tuple(sorted(kinds)),
+            )
     return out
 
 
@@ -128,6 +194,7 @@ def expand_candidates_via_neighbourhood(
     auto_promote_min_hits: int = 3,
     auto_promote_role_pool: Iterable[str] | None = None,
     include_tests: bool = False,
+    prescanned=None,
 ) -> dict[str, list[RoleCandidate]]:
     """Walk K hops from every role's candidates and use the
     container_kinds of the reached neighbours two ways:
@@ -227,7 +294,7 @@ def expand_candidates_via_neighbourhood(
             continue
 
         kinds_by_uid = _fetch_neighbour_kinds(
-            lance, workspace_id, flat_neighbours,
+            lance, workspace_id, flat_neighbours, prescanned=prescanned,
         )
         per_target: dict[str, list[RoleCandidate]] = {}
         for uid, (name, file_path, kinds) in kinds_by_uid.items():
