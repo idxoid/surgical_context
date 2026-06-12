@@ -1264,13 +1264,27 @@ class Neo4jClient:
         tx.run(
             """
             UNWIND $inheritance_edges AS edge
-            MATCH (subclass:Symbol {uid: edge.subclass_uid})
-            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(superclass:Symbol {name: edge.superclass_name})
+            MATCH (subclass:Symbol {uid: edge.subclass_uid})<-[:CONTAINS]-(subfile:File {workspace_id: $workspace_id})
+            MATCH (supfile:File {workspace_id: $workspace_id})-[:CONTAINS]->(superclass:Symbol {name: edge.superclass_name})
+            // Resolve the base within the subclass file's OWN import scope: the
+            // superclass must be defined in the same file, or in a file the
+            // subclass's file imports — exactly how Python resolves the name.
+            // A bare-name workspace-wide match instead links the subclass to
+            // EVERY same-named class (a cartesian blow-up: Django ``tests/``
+            // carry 1068 ``Meta`` / 267 ``Model`` classes, so each
+            // ``class X(models.Model)`` fanned out to all 267 — millions of
+            // spurious DEPENDS_ON that make the *1..6 ancestor walk explode and
+            // poison the shared graph). Same-file / imported-file scoping
+            // collapses it to the one real base while preserving cross-file
+            // inheritance like celery ``TaskPool`` (prefork.py) -> ``BasePool``
+            // (base.py, which prefork.py imports).
+            WHERE superclass <> subclass
+              AND (supfile = subfile OR (subfile)-[:IMPORTS]->(supfile))
             MERGE (subclass)-[r:DEPENDS_ON {workspace_id: $workspace_id}]->(superclass)
             SET r.is_interface = edge.is_interface,
                 r.confidence = 0.9,
                 r.tier = 'scoped',
-                r.resolver = 'inheritance-v1'
+                r.resolver = 'inheritance-v2'
             """,
             inheritance_edges=rows,
             workspace_id=workspace_id,
