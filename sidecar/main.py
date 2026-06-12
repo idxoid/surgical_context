@@ -949,6 +949,30 @@ def _context_file_paths(ctx: PromptContext) -> list[str]:
     return paths
 
 
+def _ask_axis_first_enabled() -> bool:
+    """``ASK_AXIS_FIRST`` opts the /ask cascade into trying the axis pipeline
+    before the legacy symbol/file/workspace tiers. Default off — unset means
+    zero behaviour change."""
+    return os.environ.get("ASK_AXIS_FIRST", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _try_axis_context(
+    *, req: AskRequest, workspace_id: str, db: Any
+) -> PromptContext | None:
+    """Best-effort axis context. Any failure (missing axis index, db/Lance
+    error) degrades to ``None`` so the legacy cascade still answers."""
+    try:
+        return _context_from_axis(req.question, workspace_id=workspace_id, db=db)
+    except Exception:
+        logger.exception("ask_axis_first provider failed; falling through")
+        return None
+
+
 def _resolve_ask_context(
     *,
     req: AskRequest,
@@ -956,6 +980,15 @@ def _resolve_ask_context(
     workspace_id: str,
     db: Any,
 ) -> PromptContext:
+    # Axis-first (opt-in via ASK_AXIS_FIRST, default off): the canonical axis
+    # pipeline leads; on nothing-renderable / failure we fall straight through
+    # to the unchanged symbol -> file -> workspace -> direct cascade below.
+    if _ask_axis_first_enabled():
+        axis_ctx = _try_axis_context(req=req, workspace_id=workspace_id, db=db)
+        if axis_ctx is not None:
+            _context_budget(axis_ctx)["ask_level"] = "axis"
+            return axis_ctx
+
     symbol_error = ""
     if req.symbol:
         arb = _context_arbitrator(db, workspace_id, user_id)
