@@ -6,11 +6,6 @@ from sidecar.axis.contract_compiler import (
     AxisContractMatch,
     container_kind_matches_from_json,
 )
-from sidecar.axis.graph_traversal import (
-    AxisGraphHit,
-    AxisGraphTraversal,
-    render_axis_expansion_query,
-)
 from sidecar.axis.python_extractor import PythonAxisExtractor
 from sidecar.axis.query_plan import (
     AxisQueryPlan,
@@ -28,8 +23,6 @@ __all__ = [
     "AxisContractMatch",
     "AxisExtraction",
     "AxisFact",
-    "AxisGraphHit",
-    "AxisGraphTraversal",
     "AxisProfile",
     "AxisQueryPlan",
     "AxisQueryRequest",
@@ -38,6 +31,5 @@ __all__ = [
     "PythonAxisExtractor",
     "container_kind_matches_from_json",
     "compile_axis_query",
-    "render_axis_expansion_query",
     "render_lance_predicate",
 ]
