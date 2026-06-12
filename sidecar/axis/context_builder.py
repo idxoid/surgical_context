@@ -2,9 +2,10 @@
 
 The role-driven retrieval primitive returns ranked seed symbols. An
 ``/ask``-style consumer needs the *code* around those seeds — not just
-the seed name and uid. This module is the bridge: for each candidate,
-walk its structural neighbourhood via ``AxisGraphTraversal``, dedupe
-+ depth-rank the related symbols, and pull their ``code`` from Lance.
+the seed name and uid. This module is the bridge: walk every candidate's
+structural neighbourhood via the shared ``graph_walk`` core (one batched
+grouped walk per expansion step), dedupe + depth-rank the related
+symbols per seed, and pull their ``code`` from Lance.
 
 What "neighbourhood" means depends on the contract that satisfied the
 role. ``deferred_binding_flow`` (the only mode any current contract
@@ -20,13 +21,18 @@ consumer's choice (chat format, tool-use schema, etc.).
 
 from __future__ import annotations
 
+from collections import namedtuple
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sidecar.axis.graph_traversal import AxisGraphTraversal
-from sidecar.axis.query_plan import AxisQueryRequest, compile_axis_query
+from sidecar.axis.graph_walk import steps_for_mode, walk_neighbours_grouped
 from sidecar.axis.role_retrieval import RoleCandidate
+
+# One expansion hit: a neighbour reached from a seed, tagged with the
+# step that found it. Mirrors the fields the bundle builder reads off the
+# legacy ``AxisGraphHit``.
+_Hit = namedtuple("_Hit", "uid name file_path depth step")
 
 
 @dataclass(frozen=True)
@@ -126,27 +132,45 @@ def build_context_for_candidates(
     if not candidates:
         return []
 
-    traversal = AxisGraphTraversal(db, workspace_id)
-    request = AxisQueryRequest(
-        traversal_mode=traversal_mode,
-        limit=max(1, max_per_seed),
-    )
-    plan = compile_axis_query(request, workspace_id=workspace_id)
+    # One batched grouped walk per expansion step over ALL candidate uids,
+    # instead of a per-candidate traversal (N graph round-trips collapse to
+    # one per step). Each seed still gets its OWN neighbourhood —
+    # ``walk_neighbours_grouped`` returns ``{seed_uid: [neighbours]}`` — so
+    # the per-seed dedupe/fence/cap below is byte-identical to the old
+    # AxisGraphTraversal path. Steps run in order so a uid reached by an
+    # earlier step keeps its (shallower) label on a depth tie.
+    all_uids = [c.uid for c in candidates]
+    hits_per_seed: dict[str, list[_Hit]] = {u: [] for u in all_uids}
+    for step_name, edges, direction, max_hops in steps_for_mode(traversal_mode):
+        grouped = walk_neighbours_grouped(
+            db,
+            workspace_id,
+            all_uids,
+            edges=edges,
+            direction=direction,
+            max_hops=max_hops,
+        )
+        for su, neighbours in grouped.items():
+            bucket = hits_per_seed.get(su)
+            if bucket is None:
+                continue
+            for nb in neighbours:
+                bucket.append(
+                    _Hit(nb.uid, nb.name, nb.file_path, nb.depth, step_name)
+                )
 
-    # Expand each candidate independently — seeds shouldn't bleed into
-    # each other's neighbourhoods unintentionally.
     expansion_per_candidate: list[
         tuple[RoleCandidate, list]
     ] = []
     uids_to_fetch: set[str] = set()
     for cand in candidates:
         uids_to_fetch.add(cand.uid)
-        hits = traversal.expand([cand.uid], plan)
+        hits = hits_per_seed.get(cand.uid, [])
         # Dedupe by uid, keep the shallowest occurrence (closer wins).
         # The test-file fence applies after dedup: an expansion hit
         # that lands in a test surface is dropped unless the caller
         # opted in via ``include_tests``.
-        nearest_by_uid: dict[str, Any] = {}
+        nearest_by_uid: dict[str, _Hit] = {}
         for h in hits:
             if not include_tests and is_test_path(h.file_path or ""):
                 continue

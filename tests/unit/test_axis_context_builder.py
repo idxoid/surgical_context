@@ -279,21 +279,17 @@ def test_each_candidate_expands_independently():
     cand_b = _make_candidate("u:B", "B")
     db = _FakeDB(
         [
-            # A's binding step
+            # binding step — ONE batched grouped walk over all seeds; each
+            # seed's neighbour is grouped back by seed_uid.
             [
                 _hit_record(
                     "u:A", "u:Anbr", "Anbr", "/tmp/a.py", "binding_structure_expansion", 1
                 ),
-            ],
-            # A's runtime step
-            [],
-            # B's binding step
-            [
                 _hit_record(
                     "u:B", "u:Bnbr", "Bnbr", "/tmp/b.py", "binding_structure_expansion", 1
                 ),
             ],
-            # B's runtime step
+            # runtime step — batched, empty
             [],
         ]
     )

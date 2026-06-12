@@ -101,6 +101,55 @@ class EdgeProfile:
     STRUCTURAL_REVERSE: tuple[str, ...] = ("EXTENDS_EXTERNAL", "INHERITED_API")
     STRUCTURAL_FORWARD: tuple[str, ...] = ("HAS_API",)
 
+    # Deferred-binding edges: how a symbol is wired to what it defers to
+    # (decorators, type/dependency injection, handler registration, the
+    # API surface it carries). The ``deferred_binding_flow`` first hop —
+    # mirrors the legacy ``query_plan._STRUCTURAL_BINDING_EDGE_TYPES`` so
+    # the per-candidate ``AxisGraphTraversal`` can fold onto this core.
+    BINDING: tuple[str, ...] = (
+        "DECORATED_BY",
+        "USES_TYPE",
+        "INJECTS",
+        "HANDLES",
+        "REFERENCES",
+        "HAS_API",
+        "INHERITED_API",
+    )
+
+
+# Context-expansion traversal modes → ordered (edges, direction, max_hops)
+# steps over the shared walk core. This replaces the
+# ``query_plan.TraversalMode`` → ``GraphExpansionStep`` compilation that
+# only ``AxisGraphTraversal`` consumed: same edge sets, same depths,
+# directions mapped to the walk's vocabulary (out→forward, in→reverse,
+# both→undirected). ``build_context_for_candidates`` runs these steps with
+# one batched grouped walk each, instead of a per-candidate traversal.
+#: Each step is ``(name, edges, direction, max_hops)``. The names match the
+#: legacy ``query_plan`` step names so a hit's ``expansion_step`` label is
+#: byte-identical after the fold.
+_MODE_STEPS: dict[
+    str, tuple[tuple[str, tuple[str, ...], "Direction", int], ...]
+] = {
+    "immediate_control_flow": (
+        ("control_call_expansion", EdgeProfile.CALLS, "forward", 2),
+    ),
+    "deferred_binding_flow": (
+        ("binding_structure_expansion", EdgeProfile.BINDING, "undirected", 1),
+        ("deferred_runtime_dispatch", EdgeProfile.CALLS, "undirected", 2),
+    ),
+}
+
+
+def steps_for_mode(
+    mode: str,
+) -> tuple[tuple[str, tuple[str, ...], "Direction", int], ...]:
+    """Return the ordered ``(name, edges, direction, max_hops)`` expansion
+    steps for a context-traversal mode."""
+    try:
+        return _MODE_STEPS[mode]
+    except KeyError:
+        raise ValueError(f"Unknown traversal mode: {mode}") from None
+
 
 def _safe_rel_pattern(edge_types: Iterable[str]) -> str:
     """Concatenate edge types into a Cypher ``|``-pattern; reject
@@ -261,6 +310,83 @@ def walk_neighbours(
     except Exception:
         return []
     return out
+
+
+def walk_neighbours_grouped(
+    db,
+    workspace_id: str,
+    seed_uids: Sequence[str],
+    *,
+    edges: Iterable[str],
+    direction: Direction = "undirected",
+    max_hops: int = 2,
+) -> dict[str, list[Neighbour]]:
+    """Per-seed neighbour walk — ONE batched Cypher over the whole seed
+    list, returning ``{seed_uid: [neighbours]}`` instead of the flat,
+    seed-merged list ``walk_neighbours`` produces.
+
+    This is what lets the per-candidate context expansion fold onto the
+    shared core: ``build_context_for_candidates`` needs each seed's OWN
+    neighbourhood (so seeds don't bleed into each other and each gets its
+    own ``max_per_seed`` cap), which the merged ``reach`` form cannot give.
+    Mirrors ``AxisGraphTraversal.expand`` per step exactly — matches the
+    seed by uid (no File anchor), keeps the shallowest ``depth`` per
+    ``(seed, neighbour)`` via ``min(size(r))``, applies the same
+    per-relationship workspace filter, and does NOT exclude the seed from
+    its own neighbourhood. ``reach`` is set to 1 (per-seed, meaningless
+    here). Empty dict on any driver error — expansion is best-effort.
+    """
+    seeds = [u for u in seed_uids if u]
+    if not seeds:
+        return {}
+    rel = _safe_rel_pattern(edges)
+    hops = _safe_max_hops(max_hops)
+
+    if direction == "forward":
+        edge_frag = f"(s)-[r:{rel}*1..{hops}]->(n:Symbol)"
+    elif direction == "reverse":
+        edge_frag = f"(s)<-[r:{rel}*1..{hops}]-(n:Symbol)"
+    else:  # undirected
+        edge_frag = f"(s)-[r:{rel}*1..{hops}]-(n:Symbol)"
+
+    cypher = f"""
+    UNWIND $seed_uids AS su
+    MATCH (s:Symbol {{uid: su}})
+    MATCH {edge_frag}
+    MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
+    WHERE all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)
+    WITH su, n, fn, min(size(r)) AS depth
+    RETURN
+        su AS seed_uid,
+        n.uid AS uid,
+        coalesce(n.name, '') AS name,
+        fn.path AS file_path,
+        depth AS depth
+    ORDER BY depth ASC, n.uid ASC
+    """
+
+    grouped: dict[str, list[Neighbour]] = {}
+    try:
+        with db.driver.session() as session:
+            for rec in session.run(
+                cypher, seed_uids=list(seeds), workspace_id=workspace_id,
+            ):
+                su = str(rec.get("seed_uid") or "")
+                uid = str(rec.get("uid") or "")
+                if not su or not uid:
+                    continue
+                grouped.setdefault(su, []).append(
+                    Neighbour(
+                        uid=uid,
+                        name=str(rec.get("name") or ""),
+                        file_path=str(rec.get("file_path") or ""),
+                        depth=int(rec.get("depth") or 0),
+                        reach=1,
+                    )
+                )
+    except Exception:
+        return {}
+    return grouped
 
 
 # ---------------------------------------------------------------------------
