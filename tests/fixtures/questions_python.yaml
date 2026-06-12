@@ -544,7 +544,7 @@ questions:
   - register_blueprint
   - BlueprintSetupState
   expected_files:
-  - src/flask/blueprints.py
+  - src/flask/sansio/blueprints.py
 - id: flask_q03
   repo: flask
   core12: true
@@ -961,6 +961,7 @@ questions:
   expected_files:
   - src/dathund_core/plugins/chain_rules/catalog.py
   - src/dathund_core/engine/chain_engine.py
+  - src/dathund_core/engine/correlation.py
 - id: dathund_q06
   repo: dathund
   core12: false
