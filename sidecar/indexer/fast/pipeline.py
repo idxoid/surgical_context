@@ -882,7 +882,15 @@ def _embed_phase(
         # whether the module body is a pure re-export. Computed once per
         # file and stamped on every symbol row so the axis ranker can
         # demote noise tiers in seed retrieval (see file_tier.py).
-        file_reexport = is_pure_reexport_source(ex.source)
+        # Classify on the path RELATIVE to the indexed project root — the
+        # absolute path carries infra segments (e.g. ``QA/repos/...``) that
+        # would otherwise be mistaken for tier markers.
+        _tier_path = (
+            os.path.relpath(ex.path, project_path) if project_path else ex.path
+        )
+        file_tier_value = classify_file_tier(
+            _tier_path, pure_reexport=is_pure_reexport_source(ex.source)
+        )
         changed_set = {s.uid for s in diff.changed_symbols}
         axis_payloads = (
             _axis_payloads_for_extracted_file(
@@ -902,9 +910,7 @@ def _embed_phase(
                 "file_path": s.file_path,
                 "workspace_id": workspace_id,
                 "code": "\n".join(source_lines[s.start_line - 1 : s.end_line]),
-                "file_tier": classify_file_tier(
-                    s.file_path, pure_reexport=file_reexport
-                ),
+                "file_tier": file_tier_value,
             }
             row.update(axis_payloads.get(s.uid) or axis_payloads.get(s.qualified_name) or {})
             symbol_docs.append(row)
