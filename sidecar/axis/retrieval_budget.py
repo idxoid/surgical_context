@@ -71,7 +71,7 @@ class RetrievalBudget:
 # (97%+, sub-second); the CLI ``--max-walk-seeds`` overrides it for sweeps.
 ARCHITECTURE = RetrievalBudget(
     name="architecture",
-    max_walk_seeds=40,
+    max_walk_seeds=20,
     token_weight=12000,
     render_mode="hybrid",
 )

@@ -31,7 +31,8 @@ def test_profile_shapes():
     # same walk budget and differ in render granularity — architecture keeps
     # the core full (hybrid), impact is all-signatures for max breadth.
     assert ARCHITECTURE.max_walk_seeds >= 1
-    assert ARCHITECTURE.max_walk_seeds == IMPACT.max_walk_seeds
+    # simple "how does X" questions need fewer walks than impact analysis.
+    assert ARCHITECTURE.max_walk_seeds <= IMPACT.max_walk_seeds
     assert ARCHITECTURE.render_mode == "hybrid"
     assert IMPACT.render_mode == "signature_only"
 
