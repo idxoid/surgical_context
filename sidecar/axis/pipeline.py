@@ -110,6 +110,7 @@ def run_axis_retrieval(
     anchor_path: str | None = None,
     axis_split: bool = False,
     shallow_passive: bool = False,
+    hook_transparency: bool = False,
     trace: Any | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
@@ -382,6 +383,7 @@ def run_axis_retrieval(
                 db=db,
                 lance=lance,
                 max_per_seed=context_per_seed,
+                hook_transparency=hook_transparency,
                 token_budget=token_budget,
                 render_mode=render_mode,
             )

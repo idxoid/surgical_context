@@ -248,6 +248,57 @@ def _apply_render_and_budget(
     return out
 
 
+#: Hook-lifecycle archetype edges. Hop 1 reaches the registration/dispatch
+#: sites that name a declaration (the HOOK edges from ``link_hooks``); hop 2
+#: reaches the registration API surface those sites go through (the decorator
+#: that registers them). Both hops are named syntactic edges — no god-type
+#: ``USES_TYPE`` fan — so the two-hop chain stays precise.
+_HOOK_DECL_EDGES: tuple[str, ...] = ("HOOK_CONFIG", "HOOK_EXEC")
+_HOOK_REGISTER_API_EDGES: tuple[str, ...] = ("DECORATED_BY", "HANDLES")
+
+
+def _hook_transparency_hits(
+    db, workspace_id: str, seed_uids: list[str], *, limit: int
+) -> dict[str, list[_Hit]]:
+    """Open hook-DECLARATION seeds through their registration lifecycle.
+
+    A hook declaration (e.g. ``MapperEvents.before_insert``) is a documented
+    near-stub — reaching it renders a docstring, not the mechanism. The wiring
+    lives one archetype hop away. Walk the hook lifecycle two hops: the
+    declaration's incoming HOOK_CONFIG/HOOK_EXEC sites (who registers / fires
+    it), then those sites' DECORATED_BY/HANDLES surface (the registration API
+    they go through, e.g. ``event.listens_for``), and attribute that API surface
+    back to the declaration as a distance-2 ``hook_transparency`` hit.
+
+    Seeds with no incoming HOOK edge yield no sites, so this is inert for
+    non-hook seeds. The two short hops over named edges keep it precise — it is
+    the literal hook->registration archetype chain, not a blind binding widening.
+    """
+    sites_by_seed = walk_neighbours_grouped(
+        db, workspace_id, seed_uids,
+        edges=_HOOK_DECL_EDGES, direction="undirected",
+        max_hops=1, limit_per_seed=limit * 4,
+    )
+    site_to_seeds: dict[str, list[str]] = {}
+    for seed, sites in sites_by_seed.items():
+        for s in sites:
+            site_to_seeds.setdefault(s.uid, []).append(seed)
+    if not site_to_seeds:
+        return {}
+    api_by_site = walk_neighbours_grouped(
+        db, workspace_id, sorted(site_to_seeds),
+        edges=_HOOK_REGISTER_API_EDGES, direction="undirected",
+        max_hops=1, limit_per_seed=limit * 4,
+    )
+    out: dict[str, list[_Hit]] = {}
+    for site_uid, apis in api_by_site.items():
+        for seed in site_to_seeds.get(site_uid, ()):
+            bucket = out.setdefault(seed, [])
+            for a in apis:
+                bucket.append(_Hit(a.uid, a.name, a.file_path, 2, "hook_transparency"))
+    return out
+
+
 def build_context_for_candidates(
     candidates: Iterable[RoleCandidate],
     *,
@@ -260,6 +311,7 @@ def build_context_for_candidates(
     max_per_seed: int = 6,
     traversal_mode: str = "deferred_binding_flow",
     include_tests: bool = False,
+    hook_transparency: bool = False,
     token_budget: int | None = None,
     render_mode: str = "full",
 ) -> list[ContextBundle]:
@@ -320,6 +372,17 @@ def build_context_for_candidates(
                     _Hit(nb.uid, nb.name, nb.file_path, nb.depth, step_name)
                 )
 
+    # Hook transparency: open hook-DECLARATION seeds through their registration
+    # lifecycle (incoming HOOK sites -> the registration API they go through).
+    # Inert for non-hook seeds. See ``_hook_transparency_hits``.
+    if hook_transparency:
+        for su, extra in _hook_transparency_hits(
+            db, workspace_id, all_uids, limit=max_per_seed
+        ).items():
+            bucket = hits_per_seed.get(su)
+            if bucket is not None:
+                bucket.extend(extra)
+
     expansion_per_candidate: list[
         tuple[RoleCandidate, list]
     ] = []
@@ -340,7 +403,7 @@ def build_context_for_candidates(
                 nearest_by_uid[h.uid] = h
         ordered = sorted(
             nearest_by_uid.values(),
-            key=lambda h: (h.depth, (h.name or "").lower()),
+            key=lambda h: (h.depth, (h.name or "").lower(), h.uid),
         )[:max_per_seed]
         expansion_per_candidate.append((cand, ordered))
         for h in ordered:
@@ -375,7 +438,7 @@ def build_context_for_candidates(
                         )
         for su, bucket in p_buckets.items():
             ordered = sorted(
-                bucket.values(), key=lambda h: (h.depth, (h.name or "").lower())
+                bucket.values(), key=lambda h: (h.depth, (h.name or "").lower(), h.uid)
             )[:passive_shallow_limit]
             passive_hits[su] = ordered
             for h in ordered:

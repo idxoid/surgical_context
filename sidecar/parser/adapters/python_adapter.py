@@ -751,6 +751,134 @@ class PythonAdapter(TreeSitterAdapter):
                 )
         return out
 
+    def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        """HOOK_CONFIG / HOOK_EXEC facts — make named-hook boundaries transparent.
+
+        Two syntactic facts bind a *site* to the hook *declaration* it names:
+
+        * **config** — a registration call/decorator naming the hook by string
+          literal: ``event.listen(target, "before_insert", fn)`` or
+          ``@event.listens_for(target, "before_insert")``. The register site
+          (the decorated function, or the enclosing function of the call) is
+          bound to the declaration method ``before_insert``.
+        * **exec** — a dispatch invocation naming the hook by attribute:
+          ``obj.dispatch.before_insert(...)``. The invoke site is bound to the
+          declaration.
+
+        Like decorations these are syntactic facts (a string literal arg / a
+        ``.dispatch.`` attribute), so the edge is *derived*, not guessed — the
+        hook name is then resolved to a real declaration node by the linker
+        (name resolution, as for CALLS). The target type that would disambiguate
+        *which* event class lives behind a dynamic dispatch is not statically
+        available, so we emit the name only; the linker binds it solely when
+        unambiguous (precision over recall — see ``link_hooks``).
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        register_names = frozenset({"listen", "listens_for"})
+        out: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        def hook_name_from_args(call_node) -> str:
+            arg_list = call_node.child_by_field_name("arguments")
+            if arg_list is None:
+                return ""
+            for child in arg_list.named_children:
+                if child.type == "string":
+                    val = self._string_literal_text(child)
+                    if val.isidentifier():
+                        return val
+                elif child.type == "keyword_argument":
+                    break
+            return ""
+
+        def emit(site_uid: str, hook_name: str, kind: str) -> None:
+            if not site_uid or not hook_name:
+                return
+            key = (site_uid, hook_name, kind)
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(
+                {
+                    "site_uid": site_uid,
+                    "hook_name": hook_name,
+                    "kind": kind,
+                    "file_path": file_path,
+                }
+            )
+
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "call":
+                continue
+            fn = node.child_by_field_name("function")
+            if fn is None:
+                continue
+            if fn.type == "identifier":
+                base = _node_text(fn)
+            elif fn.type == "attribute":
+                tail = fn.child_by_field_name("attribute")
+                base = _node_text(tail) if tail is not None else ""
+            else:
+                base = ""
+
+            # --- config: ``listen`` / ``listens_for`` with a string-literal name
+            if base in register_names:
+                hook_name = hook_name_from_args(node)
+                if hook_name:
+                    # decorator form binds the decorated def; a plain call binds
+                    # its enclosing def. Module-level calls (no enclosing def)
+                    # are skipped for v1.
+                    site_node = self._hook_decorated_def(node) or self._enclosing_def_node(node)
+                    if site_node is not None:
+                        emit(
+                            self._uid_for_node(site_node, source_code, file_path),
+                            hook_name,
+                            "config",
+                        )
+                continue
+
+            # --- exec: ``<expr>.dispatch.<hook>(...)`` dispatch invocation
+            if fn.type == "attribute":
+                obj = fn.child_by_field_name("object")
+                tail = fn.child_by_field_name("attribute")
+                if (
+                    obj is not None
+                    and obj.type == "attribute"
+                    and tail is not None
+                    and tail.type == "identifier"
+                ):
+                    inner_attr = obj.child_by_field_name("attribute")
+                    if inner_attr is not None and _node_text(inner_attr) == "dispatch":
+                        hook_name = _node_text(tail)
+                        if hook_name.isidentifier():
+                            site_node = self._enclosing_def_node(node)
+                            if site_node is not None:
+                                emit(
+                                    self._uid_for_node(site_node, source_code, file_path),
+                                    hook_name,
+                                    "exec",
+                                )
+        return out
+
+    @staticmethod
+    def _hook_decorated_def(call_node):
+        """If ``call_node`` is a decorator expression, the def/class it decorates.
+
+        ``@event.listens_for(...)`` → the decorated definition node (so the hook
+        site is the handler being registered, not its outer scope).
+        """
+        parent = call_node.parent
+        if parent is None or parent.type != "decorator":
+            return None
+        deco_parent = parent.parent
+        if deco_parent is None or deco_parent.type != "decorated_definition":
+            return None
+        defn = deco_parent.child_by_field_name("definition")
+        if defn is not None and defn.type in ("function_definition", "class_definition"):
+            return defn
+        return None
+
     def extract_attr_accesses(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """READS_ATTR / WRITES_ATTR edges from a function to attribute Symbols.
 

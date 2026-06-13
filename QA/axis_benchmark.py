@@ -221,6 +221,7 @@ def run_question(
     ignore_anchor: bool = False,
     axis_split: bool = False,
     shallow_passive: bool = False,
+    hook_transparency: bool = False,
 ) -> QuestionResult:
     repo = str(question_entry.get("repo") or "")
     qid = str(question_entry.get("id") or "")
@@ -272,6 +273,7 @@ def run_question(
         ),
         axis_split=axis_split,
         shallow_passive=shallow_passive,
+        hook_transparency=hook_transparency,
         trace=timer,
     )
     # Post-processing cost: the ``context`` stage is the build_context graph
@@ -734,6 +736,17 @@ def main() -> None:
         "covered. Grows the candidate pool — tracked via rendered_tokens.",
     )
     parser.add_argument(
+        "--no-hook-transparency",
+        dest="hook_transparency",
+        action="store_false",
+        default=True,
+        help="Disable hook transparency (default ON). Hook transparency opens "
+        "hook-DECLARATION seeds through their registration lifecycle (incoming "
+        "HOOK sites -> the registration API they go through) — the "
+        "hook->registration archetype chain; inert for non-hook seeds. This "
+        "flag is the off-arm for an on/off A/B.",
+    )
+    parser.add_argument(
         "--compare",
         type=Path,
         default=None,
@@ -796,6 +809,7 @@ def main() -> None:
             ignore_anchor=args.no_proximity,
             axis_split=args.axis_split,
             shallow_passive=args.shallow_passive,
+            hook_transparency=args.hook_transparency,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started

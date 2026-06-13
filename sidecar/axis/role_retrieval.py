@@ -344,7 +344,10 @@ def find_symbols_by_roles(
                     * tier_w,
                 )
             )
-        candidates.sort(key=lambda c: c.score, reverse=True)
+        # uid breaks score ties so the per-role cap is reproducible — without
+        # it, equal-score candidates keep their Lance/dict input order, which is
+        # PYTHONHASHSEED-randomized per process and flips which survive ``[:limit]``.
+        candidates.sort(key=lambda c: (c.score, c.uid), reverse=True)
         out[role] = candidates[:limit]
     return out
 

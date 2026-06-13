@@ -76,7 +76,9 @@ def apply_intent_axis_boost(
                 )
             else:
                 boosted.append(c)
-        boosted.sort(key=lambda c: c.score, reverse=True)
+        # uid tiebreaker → reproducible order under the downstream cap
+        # (equal-score ties otherwise follow PYTHONHASHSEED-randomized input order).
+        boosted.sort(key=lambda c: (c.score, c.uid), reverse=True)
         out[role] = boosted
     return out
 

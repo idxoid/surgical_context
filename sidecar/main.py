@@ -886,6 +886,11 @@ def _context_from_axis(
         # to the uncapped recall ceiling (0.96 -> 0.99 on the bench) for +6.5%
         # tokens, sub-second. Provider-only; benchmark/endpoint stay default off.
         shallow_passive=True,
+        # Hook transparency: open hook-DECLARATION seeds through their
+        # registration lifecycle (the hook->registration archetype chain).
+        # Inert for non-hook seeds; closes the named-hook gap (sqlalchemy q03
+        # 0.5 -> 1.0) at the cost of two cheap walks when hook seeds are present.
+        hook_transparency=True,
     )
     intent = result.intent[0].role if result.intent else ""
     return axis_bundles_to_prompt_context(

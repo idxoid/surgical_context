@@ -28,6 +28,14 @@ _DEGREE_REL_PATTERN = (
 _CLASS_API_EDGE_WRITE_BATCH_SIZE = 1000
 _CLASS_API_EDGE_DELETE_BATCH_SIZE = 5000
 
+# Precision gate for HOOK_CONFIG / HOOK_EXEC resolution. A hook name binds to a
+# declaration by name (like CALLS); common verbs (``commit``/``append``/…) match
+# many methods, and the target type that would disambiguate which event class a
+# dynamic dispatch reaches is not statically available. Per precision-over-recall
+# we ABSTAIN when more than this many class-method declarations carry the name —
+# an ambiguous hook name is an honest gap, not a fan of guessed edges.
+HOOK_AMBIGUITY_MAX = 3
+
 
 def _batched_class_api_edges(
     edges: list[ClassApiEdge], batch_size: int = _CLASS_API_EDGE_WRITE_BATCH_SIZE
@@ -1626,6 +1634,66 @@ class Neo4jClient:
             """,
             decorators=decorators,
             workspace_id=workspace_id,
+        )
+
+    def link_hooks(
+        self,
+        hooks: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create HOOK_CONFIG / HOOK_EXEC edges from hook facts (site → declaration).
+
+        HOOK_CONFIG: a registration site (``listen``/``listens_for`` with a
+        string-literal name, or its decorator form) → the declaration method it
+        names. HOOK_EXEC: a ``.dispatch.<name>(...)`` invoke site → the same
+        kind of declaration. Both make the named-hook boundary *transparent* to
+        the structural walk: from a hook declaration you can see who registers
+        for it (CONFIG, incoming) and where it fires (EXEC, incoming).
+
+        Resolution is name → class-method declaration. Per precision over recall
+        the linker ABSTAINS when the name is ambiguous (more than
+        ``HOOK_AMBIGUITY_MAX`` class methods carry it) — an ambiguous hook name
+        is an honest gap, not a fan of guessed edges.
+        """
+        if not hooks:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_hook_relations, hooks, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_hook_relations(tx, hooks, workspace_id):
+        if not hooks:
+            return
+        tx.run(
+            """
+            UNWIND $hooks AS h
+            MATCH (site:Symbol {uid: h.site_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(decl:Symbol)
+            WHERE decl.name = h.hook_name AND coalesce(decl.kind, '') = 'function'
+            MATCH (cls:Symbol)-[:HAS_API]->(decl)
+            WHERE coalesce(cls.kind, '') IN ['class', 'interface']
+            WITH site, h, collect(DISTINCT decl) AS decls
+            WHERE size(decls) >= 1 AND size(decls) <= $ambig_max
+            UNWIND decls AS decl
+            WITH site, h, decl
+            WHERE site <> decl
+            FOREACH (_ IN CASE WHEN h.kind = 'config' THEN [1] ELSE [] END |
+                MERGE (site)-[r:HOOK_CONFIG {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'hook-v1')
+            FOREACH (_ IN CASE WHEN h.kind = 'exec' THEN [1] ELSE [] END |
+                MERGE (site)-[r:HOOK_EXEC {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'hook-v1')
+            """,
+            hooks=hooks,
+            workspace_id=workspace_id,
+            ambig_max=HOOK_AMBIGUITY_MAX,
         )
 
     def link_attr_accesses(

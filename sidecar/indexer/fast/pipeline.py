@@ -520,6 +520,47 @@ def _decorator_phase(
     return len(decorators)
 
 
+def _hook_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create HOOK_CONFIG / HOOK_EXEC edges (site → hook declaration).
+
+    Named-hook transparency: a registration (``listen``/``listens_for`` with a
+    string-literal hook name, incl. the decorator form) or a
+    ``.dispatch.<name>(...)`` invocation binds its site to the real declaration
+    node. Same syntactic-fact basis as decorators / type references, and the
+    same ``project_root_scope`` requirement so site uids match stored nodes.
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    link_hooks = getattr(db, "link_hooks", None)
+    reporter.stage_start("hooks", total=1)
+    hooks: list[dict] = []
+    if callable(link_hooks):
+        py_adapter = PythonAdapter()
+        extract = getattr(py_adapter, "extract_hooks", None)
+        if callable(extract):
+            with project_root_scope(project_path or None):
+                for diff in diffs:
+                    ex = diff.extracted
+                    if not ex.path.endswith((".py", ".pyi")):
+                        continue
+                    try:
+                        hooks.extend(extract(ex.source, ex.path))
+                    except Exception:
+                        continue
+            if hooks:
+                link_hooks(hooks, workspace_id=workspace_id)
+    reporter.step("hooks")
+    reporter.stage_end("hooks")
+    return len(hooks)
+
+
 def _attr_access_phase(
     diffs: list[FileDiff],
     db: Neo4jClient,
@@ -1604,6 +1645,16 @@ def run_fast_indexing(
             diffs, db, workspace_id, reporter, project_path
         )
         stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.669b: HOOK_CONFIG / HOOK_EXEC edges (named-hook transparency).
+        # Like DECORATED_BY, a syntactic fact (string-literal hook name /
+        # ``.dispatch.`` attribute) → declaration; kept out of materialized
+        # degree. Runs after decorators (same project_root_scope stage).
+        t_stage = time.perf_counter()
+        stats["hooks_linked"] = _hook_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["hooks"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.67: INJECTS edges (DI bindings). Like USES_TYPE, not in degree.
         t_stage = time.perf_counter()

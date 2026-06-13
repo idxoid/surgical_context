@@ -342,7 +342,7 @@ def expand_candidates_via_neighbourhood(
         for target_role, items in per_target.items():
             items_sorted = sorted(
                 items,
-                key=lambda c: neighbour_reach.get(c.uid, 0),
+                key=lambda c: (neighbour_reach.get(c.uid, 0), c.uid),
                 reverse=True,
             )
             out[target_role].extend(items_sorted[:max_injected_per_role])
@@ -352,9 +352,11 @@ def expand_candidates_via_neighbourhood(
         if len(uid_evidence) < auto_promote_min_hits:
             continue
         # Rank by reach across ALL source roles' walks combined.
+        # uid_evidence.keys() is dict-key order (PYTHONHASHSEED-randomized);
+        # the uid tiebreaker makes the reach-ranked auto-promotion cap reproducible.
         ranked_uids = sorted(
             uid_evidence.keys(),
-            key=lambda uid: aggregated_neighbour_reach.get(uid, 0),
+            key=lambda uid: (aggregated_neighbour_reach.get(uid, 0), uid),
             reverse=True,
         )
         injected: list[RoleCandidate] = []
