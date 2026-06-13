@@ -85,13 +85,20 @@ IMPACT = RetrievalBudget(
 _PROFILES = (ARCHITECTURE, IMPACT)
 _MIN_WEIGHT = min(p.token_weight for p in _PROFILES)
 
-# The echelon-2 token cut is a TAIL GUARD, not the primary economy lever
-# (signatures are). At base 96k the smallest profile gets 96k and architecture
-# 192k, which holds ~0.97 coverage / 0 zeros while clipping the pathological
-# tail (~450k -> ~190k). ``_context_from_axis`` floors the request budget at
-# this so the live /ask path matches the benchmarked config; a caller may raise
+# The echelon-2 token cut is a TAIL GUARD, not the primary economy lever:
+# signatures + the 20/40 active/passive split already cap the typical prompt
+# (~25k) and the tail (~147k token-off). The guard therefore sits ABOVE that
+# norm so it fires only on anomalies, not on real impact questions — base 160k
+# -> impact cap 160k (> the 147k norm), architecture cap 320k. At 96k the cut
+# was counterproductive (clipped impact questions, recall 0.963 -> 0.952).
+# ``_context_from_axis`` floors the request budget at this; a caller may raise
 # ``AskRequest.token_budget`` above it but not below.
-DEFAULT_BASE_TOKEN_BUDGET = 96000
+#
+# TODO(idxoid): PROVISIONAL — revisit. 160k is reasoned from the benchmark tail
+# (147k token-off max), not yet validated on live /ask traffic or a fresh full
+# reindex. Confirm the guard fires only on genuine anomalies and re-tune if the
+# live token distribution differs.
+DEFAULT_BASE_TOKEN_BUDGET = 160000
 
 
 def budget_for_intent(intent: Iterable) -> RetrievalBudget:
