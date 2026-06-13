@@ -1671,9 +1671,12 @@ class Neo4jClient:
     def _create_hook_relations(tx, hooks, workspace_id):
         if not hooks:
             return
+        # method-kind: string-literal hook name -> a class-method declaration
+        # (sqlalchemy ``listens_for``/``.dispatch.X``).
         tx.run(
             """
             UNWIND $hooks AS h
+            WITH h WHERE coalesce(h.target_kind, 'method') = 'method'
             MATCH (site:Symbol {uid: h.site_uid})
             MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(decl:Symbol)
             WHERE decl.name = h.hook_name AND coalesce(decl.kind, '') = 'function'
@@ -1690,6 +1693,36 @@ class Neo4jClient:
             FOREACH (_ IN CASE WHEN h.kind = 'exec' THEN [1] ELSE [] END |
                 MERGE (site)-[r:HOOK_EXEC {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
                 SET r.resolver = 'hook-v1')
+            """,
+            hooks=hooks,
+            workspace_id=workspace_id,
+            ambig_max=HOOK_AMBIGUITY_MAX,
+        )
+        # object-signal kind: the hook is an OBJECT reference (a Signal), not a
+        # literal. Resolve the name to a module-level variable that is structurally
+        # a signal instance — gated on an outgoing INSTANTIATES / INSTANTIATES_EXTERNAL
+        # edge (it is an instantiated module-level object, the registry shape) — so
+        # generic ``.connect``/``.send`` on non-signals (a DB connection, an HTTP
+        # client) does not resolve. Same abstain guard on ambiguity.
+        tx.run(
+            """
+            UNWIND $hooks AS h
+            WITH h WHERE coalesce(h.target_kind, 'method') = 'object'
+            MATCH (site:Symbol {uid: h.site_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(decl:Symbol)
+            WHERE decl.name = h.hook_name AND coalesce(decl.kind, '') = 'variable'
+            MATCH (decl)-[:INSTANTIATES|INSTANTIATES_EXTERNAL]->()
+            WITH site, h, collect(DISTINCT decl) AS decls
+            WHERE size(decls) >= 1 AND size(decls) <= $ambig_max
+            UNWIND decls AS decl
+            WITH site, h, decl
+            WHERE site <> decl
+            FOREACH (_ IN CASE WHEN h.kind = 'config' THEN [1] ELSE [] END |
+                MERGE (site)-[r:HOOK_CONFIG {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'hook-signal-v1')
+            FOREACH (_ IN CASE WHEN h.kind = 'exec' THEN [1] ELSE [] END |
+                MERGE (site)-[r:HOOK_EXEC {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'hook-signal-v1')
             """,
             hooks=hooks,
             workspace_id=workspace_id,

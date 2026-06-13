@@ -948,6 +948,7 @@ def _embed_phase(
             row = {
                 "uid": s.uid,
                 "name": s.name,
+                "qualified_name": s.qualified_name or "",
                 "file_path": s.file_path,
                 "workspace_id": workspace_id,
                 "code": "\n".join(source_lines[s.start_line - 1 : s.end_line]),

@@ -792,10 +792,37 @@ class PythonAdapter(TreeSitterAdapter):
                     break
             return ""
 
-        def emit(site_uid: str, hook_name: str, kind: str) -> None:
+        def first_arg_name(call_node) -> str:
+            """First positional arg as an object-signal name (identifier or
+            attribute leaf): ``@receiver(post_save)`` / ``@receiver(signals.x)``."""
+            arg_list = call_node.child_by_field_name("arguments")
+            if arg_list is None:
+                return ""
+            for child in arg_list.named_children:
+                if child.type == "identifier":
+                    return _node_text(child)
+                if child.type == "attribute":
+                    leaf = child.child_by_field_name("attribute")
+                    return _node_text(leaf) if leaf is not None else ""
+                break  # first positional is not a plain reference
+            return ""
+
+        def receiver_name(fn_attr) -> str:
+            """Leaf name of the receiver of ``<recv>.connect`` / ``<recv>.send``."""
+            recv = fn_attr.child_by_field_name("object")
+            if recv is None:
+                return ""
+            if recv.type == "identifier":
+                return _node_text(recv)
+            if recv.type == "attribute":
+                leaf = recv.child_by_field_name("attribute")
+                return _node_text(leaf) if leaf is not None else ""
+            return ""
+
+        def emit(site_uid: str, hook_name: str, kind: str, target_kind: str) -> None:
             if not site_uid or not hook_name:
                 return
-            key = (site_uid, hook_name, kind)
+            key = (site_uid, hook_name, kind, target_kind)
             if key in seen:
                 return
             seen.add(key)
@@ -804,8 +831,20 @@ class PythonAdapter(TreeSitterAdapter):
                     "site_uid": site_uid,
                     "hook_name": hook_name,
                     "kind": kind,
+                    "target_kind": target_kind,
                     "file_path": file_path,
                 }
+            )
+
+        def site_uid_for(node, *, decorated: bool) -> str:
+            site_node = (
+                (self._hook_decorated_def(node) if decorated else None)
+                or self._enclosing_def_node(node)
+            )
+            return (
+                self._uid_for_node(site_node, source_code, file_path)
+                if site_node is not None
+                else ""
             )
 
         for node in self._iter_nodes(tree.root_node):
@@ -822,23 +861,35 @@ class PythonAdapter(TreeSitterAdapter):
             else:
                 base = ""
 
-            # --- config: ``listen`` / ``listens_for`` with a string-literal name
+            # --- method-kind config: ``listen``/``listens_for`` string-literal name
             if base in register_names:
                 hook_name = hook_name_from_args(node)
                 if hook_name:
-                    # decorator form binds the decorated def; a plain call binds
-                    # its enclosing def. Module-level calls (no enclosing def)
-                    # are skipped for v1.
-                    site_node = self._hook_decorated_def(node) or self._enclosing_def_node(node)
-                    if site_node is not None:
-                        emit(
-                            self._uid_for_node(site_node, source_code, file_path),
-                            hook_name,
-                            "config",
-                        )
+                    emit(site_uid_for(node, decorated=True), hook_name, "config", "method")
                 continue
 
-            # --- exec: ``<expr>.dispatch.<hook>(...)`` dispatch invocation
+            # --- object-signal config: ``@receiver(<signal>)`` decorator. The
+            #     signal is an object reference, not a literal; the linker gates
+            #     it on the target being a module-level Signal instance.
+            if base == "receiver":
+                sig = first_arg_name(node)
+                if sig.isidentifier():
+                    site = self._hook_decorated_def(node)
+                    if site is not None:
+                        emit(self._uid_for_node(site, source_code, file_path),
+                             sig, "config", "object")
+                continue
+
+            # --- object-signal config/exec: ``<signal>.connect(..)`` registers,
+            #     ``<signal>.send(..)`` / ``.send_robust(..)`` emits.
+            if base in ("connect", "send", "send_robust") and fn.type == "attribute":
+                sig = receiver_name(fn)
+                if sig.isidentifier():
+                    kind = "config" if base == "connect" else "exec"
+                    emit(site_uid_for(node, decorated=True), sig, kind, "object")
+                continue
+
+            # --- method-kind exec: ``<expr>.dispatch.<hook>(...)`` dispatch
             if fn.type == "attribute":
                 obj = fn.child_by_field_name("object")
                 tail = fn.child_by_field_name("attribute")
@@ -852,13 +903,8 @@ class PythonAdapter(TreeSitterAdapter):
                     if inner_attr is not None and _node_text(inner_attr) == "dispatch":
                         hook_name = _node_text(tail)
                         if hook_name.isidentifier():
-                            site_node = self._enclosing_def_node(node)
-                            if site_node is not None:
-                                emit(
-                                    self._uid_for_node(site_node, source_code, file_path),
-                                    hook_name,
-                                    "exec",
-                                )
+                            emit(site_uid_for(node, decorated=False),
+                                 hook_name, "exec", "method")
         return out
 
     @staticmethod
