@@ -218,6 +218,7 @@ def run_question(
     base_token_budget: int = 4000,
     max_walk_seeds_override: int | None = None,
     render_mode_override: str | None = None,
+    ignore_anchor: bool = False,
 ) -> QuestionResult:
     repo = str(question_entry.get("repo") or "")
     qid = str(question_entry.get("id") or "")
@@ -264,6 +265,9 @@ def run_question(
         base_token_budget=base_token_budget,
         max_walk_seeds_override=max_walk_seeds_override,
         render_mode_override=render_mode_override,
+        anchor_path=(
+            None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)
+        ),
         trace=timer,
     )
     # Post-processing cost: the ``context`` stage is the build_context graph
@@ -706,6 +710,12 @@ def main() -> None:
         "(sweep knob). Unset = use each profile's own render_mode.",
     )
     parser.add_argument(
+        "--no-proximity",
+        action="store_true",
+        help="Ignore each question's `anchor` field (B_proximity OFF) — the "
+        "off-arm for an on/off comparison on an anchor pack.",
+    )
+    parser.add_argument(
         "--compare",
         type=Path,
         default=None,
@@ -765,6 +775,7 @@ def main() -> None:
             base_token_budget=args.token_budget,
             max_walk_seeds_override=args.max_walk_seeds,
             render_mode_override=args.render_mode,
+            ignore_anchor=args.no_proximity,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started

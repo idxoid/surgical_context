@@ -852,6 +852,7 @@ def _context_from_axis(
     workspace_id: str,
     db: Any,
     token_budget: int = 4000,
+    anchor_path: str | None = None,
     trace_id: str = "",
 ) -> PromptContext | None:
     """Axis-pipeline provider: canonical retrieval -> renderable PromptContext.
@@ -879,6 +880,7 @@ def _context_from_axis(
         lance=lance,
         intent_budget=True,
         base_token_budget=max(token_budget, DEFAULT_BASE_TOKEN_BUDGET),
+        anchor_path=anchor_path,
     )
     intent = result.intent[0].role if result.intent else ""
     return axis_bundles_to_prompt_context(
@@ -979,6 +981,7 @@ def _try_axis_context(
             workspace_id=workspace_id,
             db=db,
             token_budget=req.token_budget,
+            anchor_path=req.file_path,  # IDE open file = the ask anchor
         )
     except Exception:
         logger.exception("ask_axis_first provider failed; falling through")

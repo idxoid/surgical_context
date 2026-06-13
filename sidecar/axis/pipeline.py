@@ -54,6 +54,7 @@ from sidecar.axis import (
 )
 from sidecar.axis.context_builder import ContextBundle
 from sidecar.axis.intent_classifier import IntentMatch
+from sidecar.axis.proximity import proximity_boost
 from sidecar.axis.retrieval_budget import budget_for_intent
 from sidecar.axis.role_retrieval import RoleCandidate
 
@@ -106,6 +107,7 @@ def run_axis_retrieval(
     base_token_budget: int = 4000,
     max_walk_seeds_override: int | None = None,
     render_mode_override: str | None = None,
+    anchor_path: str | None = None,
     trace: Any | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
@@ -321,7 +323,16 @@ def run_axis_retrieval(
             if max_walk_seeds_override is None
             else max_walk_seeds_override
         )
-        ranked = sorted(candidates_for_context, key=lambda c: c.score, reverse=True)
+        # S_utility = score (S_vector × W_type, already in the candidate score)
+        # + B_proximity (path-locality from the ask anchor). The boost only
+        # reorders the active/passive split + packing priority; it does not
+        # mutate the candidate score the response/bundle carries. anchor_path
+        # is None -> boost 0 -> rank by score alone (no downside).
+        ranked = sorted(
+            candidates_for_context,
+            key=lambda c: c.score + proximity_boost(c.file_path, anchor_path),
+            reverse=True,
+        )
         active = ranked[:walk_cap]
         passive = ranked[walk_cap:]
         token_budget = budget.effective_tokens(base_token_budget)
