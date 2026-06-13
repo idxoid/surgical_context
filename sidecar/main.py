@@ -851,16 +851,16 @@ def _context_from_axis(
     *,
     workspace_id: str,
     db: Any,
+    token_budget: int = 4000,
     trace_id: str = "",
 ) -> PromptContext | None:
     """Axis-pipeline provider: canonical retrieval -> renderable PromptContext.
 
-    Runs ``run_axis_retrieval`` (the same pipeline the QA benchmark
-    validates) and adapts its ranked bundles through
-    ``axis_bundles_to_prompt_context``. Returns ``None`` when the pipeline
-    yields nothing renderable, so ``_resolve_ask_context`` can fall through
-    to the next provider. Nothing calls this yet — Phase 1d wires it behind a
-    flag.
+    Runs ``run_axis_retrieval`` with intent-driven budgeting on (echelon-1
+    seed cap + echelon-2 token/render budget, sized off ``token_budget``)
+    and adapts its ranked bundles through ``axis_bundles_to_prompt_context``.
+    Returns ``None`` when the pipeline yields nothing renderable, so
+    ``_resolve_ask_context`` can fall through to the next provider.
     """
     from sidecar.axis.pipeline import run_axis_retrieval
     from sidecar.axis.prompt_provider import axis_bundles_to_prompt_context
@@ -873,6 +873,8 @@ def _context_from_axis(
         workspace_id=workspace_id,
         db=db,
         lance=lance,
+        intent_budget=True,
+        base_token_budget=token_budget,
     )
     intent = result.intent[0].role if result.intent else ""
     return axis_bundles_to_prompt_context(
@@ -881,6 +883,7 @@ def _context_from_axis(
         workspace_id=workspace_id,
         intent=intent,
         trace_id=trace_id,
+        render_mode=result.render_mode,
     )
 
 
@@ -967,7 +970,12 @@ def _try_axis_context(
     """Best-effort axis context. Any failure (missing axis index, db/Lance
     error) degrades to ``None`` so the legacy cascade still answers."""
     try:
-        return _context_from_axis(req.question, workspace_id=workspace_id, db=db)
+        return _context_from_axis(
+            req.question,
+            workspace_id=workspace_id,
+            db=db,
+            token_budget=req.token_budget,
+        )
     except Exception:
         logger.exception("ask_axis_first provider failed; falling through")
         return None

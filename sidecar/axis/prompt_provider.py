@@ -27,7 +27,11 @@ from sidecar.context.types import PromptContext, SymbolContext
 
 
 def _to_symbol_context(
-    sym: ContextSymbol, *, relation: str, blended_score: float = 0.0
+    sym: ContextSymbol,
+    *,
+    relation: str,
+    blended_score: float = 0.0,
+    render_mode: str = "full",
 ) -> SymbolContext:
     return SymbolContext(
         symbol=sym.name,
@@ -37,7 +41,7 @@ def _to_symbol_context(
         kind="",
         depth=sym.distance_from_seed,
         blended_score=blended_score,
-        render_mode="full",
+        render_mode=render_mode,
         code=sym.code or "",
         provenance=[sym.expansion_step] if sym.expansion_step else [],
     )
@@ -51,11 +55,15 @@ def axis_bundles_to_prompt_context(
     intent: str = "",
     trace_id: str = "",
     mechanism: str = "",
+    render_mode: str = "full",
 ) -> PromptContext | None:
     """Adapt the axis pipeline's bundles into a renderable PromptContext.
 
     Returns ``None`` when there is nothing to render (no bundles / no
-    seed), so the caller can fall through to another provider.
+    seed), so the caller can fall through to another provider. ``render_mode``
+    labels every symbol with the granularity the pipeline actually produced
+    (``signature_only`` for the impact budget profile) — the code is already
+    trimmed upstream, this only keeps the metadata honest.
     """
     bundles = list(bundles)
     if not bundles:
@@ -65,7 +73,10 @@ def axis_bundles_to_prompt_context(
     # preserves the input order); the first seed is the primary target.
     primary_bundle = bundles[0]
     primary = _to_symbol_context(
-        primary_bundle.seed, relation="primary", blended_score=1.0
+        primary_bundle.seed,
+        relation="primary",
+        blended_score=1.0,
+        render_mode=render_mode,
     )
 
     graph_context: list[SymbolContext] = []
@@ -78,14 +89,20 @@ def axis_bundles_to_prompt_context(
         if rank > 0 and bundle.seed.uid not in seen:
             seen.add(bundle.seed.uid)
             graph_context.append(
-                _to_symbol_context(bundle.seed, relation=bundle.role or "related")
+                _to_symbol_context(
+                    bundle.seed,
+                    relation=bundle.role or "related",
+                    render_mode=render_mode,
+                )
             )
         for rel in bundle.related:
             if rel.uid in seen:
                 continue
             seen.add(rel.uid)
             graph_context.append(
-                _to_symbol_context(rel, relation=bundle.role or "related")
+                _to_symbol_context(
+                    rel, relation=bundle.role or "related", render_mode=render_mode
+                )
             )
 
     return PromptContext(

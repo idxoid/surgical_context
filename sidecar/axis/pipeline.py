@@ -54,6 +54,7 @@ from sidecar.axis import (
 )
 from sidecar.axis.context_builder import ContextBundle
 from sidecar.axis.intent_classifier import IntentMatch
+from sidecar.axis.retrieval_budget import budget_for_intent
 from sidecar.axis.role_retrieval import RoleCandidate
 
 # Question-shape pseudo-roles: modes, not retrieval roles. They drive the
@@ -86,6 +87,7 @@ class AxisRetrievalResult:
     seed_files: list[str]
     candidates_for_context: list[RoleCandidate]
     bundles: list[ContextBundle] = field(default_factory=list)
+    render_mode: str = "full"
 
 
 def run_axis_retrieval(
@@ -100,6 +102,8 @@ def run_axis_retrieval(
     with_context: bool = True,
     context_per_seed: int = 4,
     context_seeds_per_role: int | None = None,
+    intent_budget: bool = False,
+    base_token_budget: int = 4000,
     trace: Any | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
@@ -296,6 +300,18 @@ def run_axis_retrieval(
             cands = cands[:context_seeds_per_role]
         candidates_for_context.extend(cands)
 
+    # Intent-driven budgeting (opt-in; benchmark leaves it off -> uncapped).
+    # Echelon 1: cap the ranked pool to the profile's max_seeds so the
+    # per-seed context walk stays bounded. Echelon 2 (token_budget +
+    # render_mode) is handed to build_context below.
+    token_budget: int | None = None
+    render_mode = "full"
+    if intent_budget:
+        budget = budget_for_intent(intent)
+        candidates_for_context = candidates_for_context[: budget.max_seeds]
+        token_budget = budget.effective_tokens(base_token_budget)
+        render_mode = budget.render_mode
+
     bundles: list[ContextBundle] = []
     if with_context and candidates_for_context:
         with tr.stage("context"):
@@ -305,6 +321,8 @@ def run_axis_retrieval(
                 db=db,
                 lance=lance,
                 max_per_seed=context_per_seed,
+                token_budget=token_budget,
+                render_mode=render_mode,
             )
 
     return AxisRetrievalResult(
@@ -313,6 +331,7 @@ def run_axis_retrieval(
         seed_files=sorted(f for f in seed_files if f),
         candidates_for_context=candidates_for_context,
         bundles=list(bundles),
+        render_mode=render_mode,
     )
 
 

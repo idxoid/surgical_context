@@ -144,3 +144,43 @@ def test_runs_without_a_tracer(stub_stages):
     # trace=None must select the null tracer, not raise.
     result = _run(trace=None)
     assert result.bundles
+
+
+def test_intent_budget_off_leaves_build_context_unbudgeted(stub_stages, monkeypatch):
+    import sidecar.axis.context_builder as _ctx_mod
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _ctx_mod,
+        "build_context_for_candidates",
+        lambda candidates, **kw: captured.update(
+            token_budget=kw.get("token_budget"), render_mode=kw.get("render_mode")
+        )
+        or [],
+    )
+    result = _run()  # intent_budget defaults False -> benchmark behaviour
+    assert captured["token_budget"] is None
+    assert captured["render_mode"] == "full"
+    assert result.render_mode == "full"
+
+
+def test_intent_budget_on_applies_architecture_profile(stub_stages, monkeypatch):
+    import sidecar.axis.context_builder as _ctx_mod
+
+    captured: dict = {}
+
+    def _capture(candidates, **kw):
+        captured["n_seeds"] = len(list(candidates))
+        captured["token_budget"] = kw.get("token_budget")
+        captured["render_mode"] = kw.get("render_mode")
+        return []
+
+    monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
+
+    # stub intent is a plain role (routing_surface) -> architecture profile:
+    # max_seeds=10 (pool of 3 unaffected), full code, token_budget = 4000*2.
+    result = _run(intent_budget=True, base_token_budget=4000)
+    assert captured["render_mode"] == "full"
+    assert captured["token_budget"] == 8000
+    assert captured["n_seeds"] == 3
+    assert result.render_mode == "full"

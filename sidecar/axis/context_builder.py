@@ -23,11 +23,12 @@ from __future__ import annotations
 
 from collections import namedtuple
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sidecar.axis.graph_walk import steps_for_mode, walk_neighbours_grouped
 from sidecar.axis.role_retrieval import RoleCandidate
+from sidecar.observability.metrics import estimate_text_tokens
 
 # One expansion hit: a neighbour reached from a seed, tagged with the
 # step that found it. Mirrors the fields the bundle builder reads off the
@@ -143,6 +144,94 @@ def _fetch_codes(
     return out
 
 
+def _code_signature(code: str | None) -> str:
+    """Best-effort, parser-free trim of a symbol's code to its signature:
+    leading decorators plus the ``def``/``class`` header (through the line
+    ending in ``:``, so multi-line parameter lists survive). Non-callable
+    symbols (a module-level assignment, say) collapse to their first
+    non-empty line. Empty in, empty out."""
+    if not code:
+        return ""
+    lines = code.splitlines()
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n and lines[i].strip().startswith("@"):  # decorators
+        out.append(lines[i])
+        i += 1
+    started = False
+    while i < n:
+        line = lines[i]
+        stripped = line.strip()
+        if not started:
+            is_header = (
+                stripped.startswith("def ")
+                or stripped.startswith("async def ")
+                or stripped.startswith("class ")
+            )
+            if not is_header:
+                # Not a callable/class — first non-empty line is the "signature".
+                if stripped:
+                    out.append(line)
+                    break
+                i += 1
+                continue
+            started = True
+        out.append(line)
+        if stripped.endswith(":"):
+            break
+        i += 1
+    return "\n".join(out)
+
+
+def _apply_render_and_budget(
+    bundles: list[ContextBundle],
+    *,
+    token_budget: int | None,
+    render_mode: str,
+) -> list[ContextBundle]:
+    """Echelon 2: render-trim then token-pack the assembled bundles.
+
+    ``render_mode="signature_only"`` replaces each symbol's code with its
+    signature first (so many files fit cheaply). When ``token_budget`` is
+    set we then pack bundles in rank order — seed first, then its related
+    symbols — summing estimated tokens and dropping the tail once the budget
+    is hit. The first bundle's seed is always kept so there is a primary.
+    Cross-bundle duplicates are counted (not deduped here — the PromptContext
+    adapter dedups by uid), so the cut is conservative."""
+    if render_mode == "signature_only":
+        bundles = [
+            replace(
+                b,
+                seed=replace(b.seed, code=_code_signature(b.seed.code)),
+                related=tuple(
+                    replace(r, code=_code_signature(r.code)) for r in b.related
+                ),
+            )
+            for b in bundles
+        ]
+    if token_budget is None:
+        return bundles
+
+    used = 0
+    out: list[ContextBundle] = []
+    for bundle in bundles:
+        seed_tokens = estimate_text_tokens(bundle.seed.code or "")
+        if out and used + seed_tokens > token_budget:
+            break  # cannot fit this bundle's seed — stop
+        used += seed_tokens
+        kept: list[ContextSymbol] = []
+        for rel in bundle.related:
+            rel_tokens = estimate_text_tokens(rel.code or "")
+            if used + rel_tokens > token_budget:
+                break
+            used += rel_tokens
+            kept.append(rel)
+        out.append(replace(bundle, related=tuple(kept)))
+        if used >= token_budget:
+            break
+    return out
+
+
 def build_context_for_candidates(
     candidates: Iterable[RoleCandidate],
     *,
@@ -152,6 +241,8 @@ def build_context_for_candidates(
     max_per_seed: int = 6,
     traversal_mode: str = "deferred_binding_flow",
     include_tests: bool = False,
+    token_budget: int | None = None,
+    render_mode: str = "full",
 ) -> list[ContextBundle]:
     """Expand each candidate into a ``ContextBundle`` of related code.
 
@@ -163,6 +254,11 @@ def build_context_for_candidates(
     ``include_tests`` mirrors the retrieval-pass flag — by default,
     expansion hits that land in conventional test surfaces are
     dropped. Impact-style consumers can flip the flag to keep them.
+
+    ``render_mode`` / ``token_budget`` are the echelon-2 budget knobs
+    (default off = whole pool, full code = benchmark behaviour):
+    ``signature_only`` trims each symbol to its signature, and a non-None
+    ``token_budget`` packs bundles in rank order until the budget is spent.
     """
     from sidecar.axis.test_file_filter import is_test_path
     candidates = list(candidates)
@@ -251,7 +347,9 @@ def build_context_for_candidates(
         bundles.append(
             ContextBundle(role=cand.role, seed=seed, related=related)
         )
-    return bundles
+    return _apply_render_and_budget(
+        bundles, token_budget=token_budget, render_mode=render_mode
+    )
 
 
 __all__ = [
