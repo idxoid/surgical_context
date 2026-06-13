@@ -9,6 +9,24 @@ contract the replacement must honour.
 Measured 2026-06-11 by scanning `from sidecar.context.<mod>` across
 `sidecar/`, `QA/`, `tests/`.
 
+> **Re-scan 2026-06-13 (post Phase 1a–1f axis migration).** Production
+> importers of `sidecar.context` re-verified after the axis `/ask` provider
+> landed. Only NEW edge: `sidecar/axis/prompt_provider.py` now imports
+> `from sidecar.context.types import PromptContext, SymbolContext` — the axis
+> provider itself depends on `context/types.py`, which **confirms `types` as
+> class C (shared contract, never delete)**. No new edges into class A.
+> `main.py` still carries the full class-A cascade wiring (arbitrator,
+> doc_resolver, intent_classifier, overlay, ranker.candidate_pool) AND the new
+> axis path (`_context_from_axis` → `prompt_provider` + `pipeline`) side by
+> side — because axis is still behind `ASK_AXIS_FIRST` (default off), the
+> cascade is the live fallback. Class-A deletion stays gated on flipping axis
+> to default (Phase 3). Current production importer set:
+> `prompt_provider→types`(C), `cache/layered→types.Subgraph`(C),
+> `indexer/fast/pipeline→mechanism_registry,framework_hints`(B),
+> `indexer/role_clustering→mechanism_registry,ranker.signal_constants`(B),
+> `main.py→arbitrator,doc_resolver,intent_classifier,overlay,
+> ranker.candidate_pool,types`(A+C). The A/B/C tables below are unchanged.
+
 ## The border principle
 
 `sidecar/context/` is NOT all cascade. Only **class A** is deleted;
