@@ -108,6 +108,8 @@ def run_axis_retrieval(
     max_walk_seeds_override: int | None = None,
     render_mode_override: str | None = None,
     anchor_path: str | None = None,
+    axis_split: bool = False,
+    shallow_passive: bool = False,
     trace: Any | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
@@ -333,8 +335,37 @@ def run_axis_retrieval(
             key=lambda c: c.score + proximity_boost(c.file_path, anchor_path),
             reverse=True,
         )
-        active = ranked[:walk_cap]
-        passive = ranked[walk_cap:]
+        if axis_split and len(intent) >= 2:
+            # Per-axis walk split: multi-axis questions widen the pool and push
+            # the relational seed (whose 1-hop neighbour is the answer) into
+            # passive. Give each intent axis an equal, guaranteed share of the
+            # walk, +20% capacity per extra axis; then top up the remainder by
+            # score so role-agnostic vector_seed / structural (recall-critical)
+            # aren't squeezed out.
+            n_axes = len(intent)
+            walk_cap = round(walk_cap * (1 + 0.20 * (n_axes - 1)))
+            per_axis = max(1, walk_cap // n_axes)
+            active, seen = [], set()
+            for m in intent:
+                taken = 0
+                for c in ranked:
+                    if c.uid in seen or c.role != m.role:
+                        continue
+                    active.append(c)
+                    seen.add(c.uid)
+                    taken += 1
+                    if taken >= per_axis:
+                        break
+            for c in ranked:  # fill remainder by score (incl. vector_seed/structural)
+                if len(active) >= walk_cap:
+                    break
+                if c.uid not in seen:
+                    active.append(c)
+                    seen.add(c.uid)
+            passive = [c for c in ranked if c.uid not in seen]
+        else:
+            active = ranked[:walk_cap]
+            passive = ranked[walk_cap:]
         token_budget = budget.effective_tokens(base_token_budget)
         render_mode = (
             budget.render_mode if render_mode_override is None else render_mode_override
@@ -346,6 +377,7 @@ def run_axis_retrieval(
             bundles = context_builder.build_context_for_candidates(
                 active,
                 passive=passive,
+                passive_shallow_hops=1 if shallow_passive else 0,
                 workspace_id=workspace_id,
                 db=db,
                 lance=lance,

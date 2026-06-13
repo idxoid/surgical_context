@@ -205,3 +205,35 @@ def test_intent_budget_splits_active_and_passive(stub_stages, monkeypatch):
     # the full pool is preserved (pool recall unaffected — the cap is only on
     # the walk, not the candidate set).
     assert [c.uid for c in result.candidates_for_context] == ["a", "b", "c"]
+
+
+def test_shallow_passive_threads_hops(stub_stages, monkeypatch):
+    import sidecar.axis.context_builder as _ctx_mod
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _ctx_mod,
+        "build_context_for_candidates",
+        lambda active, **kw: captured.update(
+            hops=kw.get("passive_shallow_hops"),
+            passive=[c.uid for c in kw.get("passive", [])],
+        )
+        or [],
+    )
+    # shallow_passive on -> passive seeds get a 1-hop walk
+    _run(intent_budget=True, max_walk_seeds_override=2, shallow_passive=True)
+    assert captured["hops"] == 1
+    assert captured["passive"] == ["c"]
+
+
+def test_shallow_passive_off_by_default(stub_stages, monkeypatch):
+    import sidecar.axis.context_builder as _ctx_mod
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _ctx_mod,
+        "build_context_for_candidates",
+        lambda active, **kw: captured.update(hops=kw.get("passive_shallow_hops")) or [],
+    )
+    _run(intent_budget=True)  # default: no shallow passive walk
+    assert captured["hops"] == 0

@@ -255,6 +255,8 @@ def build_context_for_candidates(
     db,
     lance,
     passive: Iterable[RoleCandidate] = (),
+    passive_shallow_hops: int = 0,
+    passive_shallow_limit: int = 3,
     max_per_seed: int = 6,
     traversal_mode: str = "deferred_binding_flow",
     include_tests: bool = False,
@@ -344,6 +346,41 @@ def build_context_for_candidates(
         for h in ordered:
             uids_to_fetch.add(h.uid)
 
+    # Shallow walk for passive seeds (opt-in): fetch each passive seed's
+    # immediate neighbours so a relational answer (B = a 1-hop neighbour of a
+    # passive seed) is covered without the full active walk. Tight cap
+    # (passive_shallow_limit) + signature render keep the pool growth cheap.
+    passive_hits: dict[str, list[_Hit]] = {}
+    if passive and passive_shallow_hops > 0:
+        p_uids = [p.uid for p in passive]
+        p_buckets: dict[str, dict[str, _Hit]] = {u: {} for u in p_uids}
+        for step_name, edges, direction, _mh in steps_for_mode(traversal_mode):
+            grouped = walk_neighbours_grouped(
+                db, workspace_id, p_uids,
+                edges=edges, direction=direction,
+                max_hops=passive_shallow_hops,
+                limit_per_seed=passive_shallow_limit,
+            )
+            for su, neighbours in grouped.items():
+                bucket = p_buckets.get(su)
+                if bucket is None:
+                    continue
+                for nb in neighbours:
+                    if not include_tests and is_test_path(nb.file_path or ""):
+                        continue
+                    ex = bucket.get(nb.uid)
+                    if ex is None or nb.depth < ex.depth:
+                        bucket[nb.uid] = _Hit(
+                            nb.uid, nb.name, nb.file_path, nb.depth, step_name
+                        )
+        for su, bucket in p_buckets.items():
+            ordered = sorted(
+                bucket.values(), key=lambda h: (h.depth, (h.name or "").lower())
+            )[:passive_shallow_limit]
+            passive_hits[su] = ordered
+            for h in ordered:
+                uids_to_fetch.add(h.uid)
+
     for p in passive:
         uids_to_fetch.add(p.uid)
     code_by_uid = _fetch_codes(lance, workspace_id, uids_to_fetch)
@@ -375,10 +412,23 @@ def build_context_for_candidates(
             ContextBundle(role=cand.role, seed=seed, related=related)
         )
 
-    # Passive seeds: code-bearing context that skipped the walk. Rendered as
-    # signatures (cheap, but their file stays covered) and appended after the
-    # active bundles so the token budget fills active expansion first.
+    # Passive seeds: code-bearing context that skipped the (full) walk.
+    # Rendered as signatures (cheap, file stays covered), appended after the
+    # active bundles so the token budget fills active expansion first. With
+    # shallow-walk on, each carries its immediate neighbours (also signatures).
     for p in passive:
+        related = tuple(
+            ContextSymbol(
+                uid=h.uid,
+                name=h.name,
+                file_path=h.file_path,
+                role=p.role,
+                distance_from_seed=h.depth,
+                expansion_step=h.step,
+                code=_code_signature(code_by_uid.get(h.uid)),
+            )
+            for h in passive_hits.get(p.uid, [])
+        )
         bundles.append(
             ContextBundle(
                 role=p.role,
@@ -391,7 +441,7 @@ def build_context_for_candidates(
                     expansion_step=None,
                     code=_code_signature(code_by_uid.get(p.uid)),
                 ),
-                related=(),
+                related=related,
             )
         )
     return _apply_render_and_budget(

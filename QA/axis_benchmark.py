@@ -219,6 +219,8 @@ def run_question(
     max_walk_seeds_override: int | None = None,
     render_mode_override: str | None = None,
     ignore_anchor: bool = False,
+    axis_split: bool = False,
+    shallow_passive: bool = False,
 ) -> QuestionResult:
     repo = str(question_entry.get("repo") or "")
     qid = str(question_entry.get("id") or "")
@@ -268,6 +270,8 @@ def run_question(
         anchor_path=(
             None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)
         ),
+        axis_split=axis_split,
+        shallow_passive=shallow_passive,
         trace=timer,
     )
     # Post-processing cost: the ``context`` stage is the build_context graph
@@ -716,6 +720,20 @@ def main() -> None:
         "off-arm for an on/off comparison on an anchor pack.",
     )
     parser.add_argument(
+        "--axis-split",
+        action="store_true",
+        help="Per-axis walk split for multi-axis questions: each intent axis "
+        "gets an equal guaranteed share of the walk (+20%% capacity per extra "
+        "axis), remainder by score. Targets the multi-axis walk-cap misses.",
+    )
+    parser.add_argument(
+        "--shallow-passive",
+        action="store_true",
+        help="Give passive seeds a shallow 1-hop walk (signature-rendered) so "
+        "relational answers (B = a 1-hop neighbour of a passive seed) are "
+        "covered. Grows the candidate pool — tracked via rendered_tokens.",
+    )
+    parser.add_argument(
         "--compare",
         type=Path,
         default=None,
@@ -776,6 +794,8 @@ def main() -> None:
             max_walk_seeds_override=args.max_walk_seeds,
             render_mode_override=args.render_mode,
             ignore_anchor=args.no_proximity,
+            axis_split=args.axis_split,
+            shallow_passive=args.shallow_passive,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started

@@ -881,6 +881,11 @@ def _context_from_axis(
         intent_budget=True,
         base_token_budget=max(token_budget, DEFAULT_BASE_TOKEN_BUDGET),
         anchor_path=anchor_path,
+        # Shallow 1-hop walk for passive seeds: recovers relational answers
+        # (B = a 1-hop neighbour of a passive seed) — lifts the budgeted path
+        # to the uncapped recall ceiling (0.96 -> 0.99 on the bench) for +6.5%
+        # tokens, sub-second. Provider-only; benchmark/endpoint stay default off.
+        shallow_passive=True,
     )
     intent = result.intent[0].role if result.intent else ""
     return axis_bundles_to_prompt_context(
