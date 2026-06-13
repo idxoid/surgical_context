@@ -1695,6 +1695,25 @@ class Neo4jClient:
             workspace_id=workspace_id,
             ambig_max=HOOK_AMBIGUITY_MAX,
         )
+        # Replace the broad edge with the precise one: where a HOOK edge now
+        # captures a site->declaration pair, the parallel READS_ATTR /
+        # CALLS_DYNAMIC that the attr-access / call-resolution phases emitted for
+        # the same `.dispatch.<name>` access is a coarser duplicate — drop it so
+        # the relationship is carried only by the precise HOOK edge. READS_ATTR
+        # is out of materialized degree; CALLS_DYNAMIC is in it, but the degree
+        # recompute (stage 4.7) runs after this phase, so the count stays
+        # consistent. Walk coverage is unchanged (HOOK_* sit in the same
+        # BINDING/PROXIMITY profiles).
+        tx.run(
+            """
+            MATCH (site:Symbol)-[hk:HOOK_CONFIG|HOOK_EXEC]->(decl:Symbol)
+            WHERE coalesce(hk.workspace_id, $workspace_id) = $workspace_id
+            MATCH (site)-[r:READS_ATTR|CALLS_DYNAMIC]->(decl)
+            WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+            DELETE r
+            """,
+            workspace_id=workspace_id,
+        )
 
     def link_attr_accesses(
         self,
