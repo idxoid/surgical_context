@@ -29,6 +29,7 @@ import json
 import sys
 import time
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
@@ -40,6 +41,27 @@ from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+from sidecar.observability.metrics import estimate_text_tokens
+
+
+class _StageTimer:
+    """Minimal tracer for the pipeline's ``trace.stage(name)`` protocol —
+    accumulates wall-time per stage so the benchmark can read the
+    post-processing cost (the ``context`` stage = graph expansion + code
+    fetch) without the full observability trace."""
+
+    def __init__(self) -> None:
+        self.durations: dict[str, float] = {}
+
+    @contextmanager
+    def stage(self, name: str):
+        t0 = time.monotonic()
+        try:
+            yield
+        finally:
+            self.durations[name] = self.durations.get(name, 0.0) + (
+                time.monotonic() - t0
+            )
 
 # Map ``repo`` from the question pack to the axis-profile workspace_id
 # we actually indexed. Repos not listed here are skipped with reason.
@@ -84,6 +106,12 @@ class QuestionResult:
     intent_matches: list[tuple[str, float]] = field(default_factory=list)
     skipped_reason: str | None = None
     candidate_count: int = 0
+    # Post-processing cost (the expensive part — see the budget cost model):
+    # ``context_seconds`` is the build_context graph-expansion + code-fetch
+    # stage; ``rendered_tokens`` is the estimated token volume of the bundle
+    # code actually handed to the prompt.
+    context_seconds: float = 0.0
+    rendered_tokens: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +137,8 @@ class QuestionResult:
             ],
             "skipped_reason": self.skipped_reason,
             "candidate_count": self.candidate_count,
+            "context_seconds": self.context_seconds,
+            "rendered_tokens": self.rendered_tokens,
         }
 
 
@@ -184,6 +214,10 @@ def run_question(
     per_role_limit: int,
     intent_threshold: float,
     context_per_seed: int,
+    intent_budget: bool = False,
+    base_token_budget: int = 4000,
+    max_walk_seeds_override: int | None = None,
+    render_mode_override: str | None = None,
 ) -> QuestionResult:
     repo = str(question_entry.get("repo") or "")
     qid = str(question_entry.get("id") or "")
@@ -208,6 +242,13 @@ def run_question(
     # feeds the entire pool into context expansion (the historical
     # benchmark behaviour); the seed / pool / bundle recall layers below
     # read straight off the layered result.
+    #
+    # ``--intent-budget`` instead measures the PRODUCTION /ask path: the
+    # intent-driven budget (echelon-1 seed cap + echelon-2 token/signature
+    # trim) that ``_context_from_axis`` runs when ``ASK_AXIS_FIRST`` is on.
+    # The seed / pool layers are unaffected (budgeting lives in context
+    # expansion); only the bundle layer reflects the cost of the budget.
+    timer = _StageTimer()
     retrieval = run_axis_retrieval(
         result.question,
         workspace_id=workspace_id,
@@ -219,7 +260,28 @@ def run_question(
         with_context=True,
         context_per_seed=context_per_seed,
         context_seeds_per_role=None,
+        intent_budget=intent_budget,
+        base_token_budget=base_token_budget,
+        max_walk_seeds_override=max_walk_seeds_override,
+        render_mode_override=render_mode_override,
+        trace=timer,
     )
+    # Post-processing cost: the ``context`` stage is the build_context graph
+    # expansion + per-uid code fetch; rendered_tokens is the token volume of
+    # the DEDUPED bundle code (after any signature trim / budget cut) — i.e.
+    # the prompt the adapter actually hands the LLM, deduped by uid exactly as
+    # ``axis_bundles_to_prompt_context`` does (no double-counting shared
+    # neighbours across bundles).
+    result.context_seconds = round(timer.durations.get("context", 0.0), 4)
+    _seen_render: set[str] = set()
+    _render_tokens = 0
+    for _b in retrieval.bundles:
+        for _s in _b.all_symbols():
+            if _s.uid in _seen_render:
+                continue
+            _seen_render.add(_s.uid)
+            _render_tokens += estimate_text_tokens(_s.code or "")
+    result.rendered_tokens = _render_tokens
 
     intent = retrieval.intent
     if intent:
@@ -365,6 +427,11 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         "per_repo": by_repo_summary,
         "intent_top_role_counts": dict(by_intent),
         "skipped_reasons": Counter(r.skipped_reason for r in skipped),
+        # Post-processing cost (the expensive part of the budget cost model).
+        "overall_mean_context_seconds": _mean("context_seconds"),
+        "max_context_seconds": max((r.context_seconds for r in scored), default=0.0),
+        "overall_mean_rendered_tokens": _mean("rendered_tokens"),
+        "max_rendered_tokens": max((r.rendered_tokens for r in scored), default=0),
     }
 
 
@@ -610,6 +677,35 @@ def main() -> None:
     parser.add_argument("--intent-threshold", type=float, default=0.20)
     parser.add_argument("--context-per-seed", type=int, default=6)
     parser.add_argument(
+        "--intent-budget",
+        action="store_true",
+        help="Measure the production /ask path: apply the intent-driven "
+        "retrieval budget (echelon-1 seed cap + echelon-2 token/signature "
+        "trim) that ASK_AXIS_FIRST enables, instead of the uncapped pool.",
+    )
+    parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=4000,
+        help="Base token budget for --intent-budget (scaled per intent "
+        "profile). Mirrors AskRequest.token_budget. Default 4000.",
+    )
+    parser.add_argument(
+        "--max-walk-seeds",
+        type=int,
+        default=None,
+        help="Override the profile's echelon-1 active/walk cap for "
+        "--intent-budget (sweep knob): how many top-ranked seeds get a graph "
+        "walk; the rest stay passive. Unset = each profile's own max_walk_seeds.",
+    )
+    parser.add_argument(
+        "--render-mode",
+        choices=["full", "signature_only", "hybrid"],
+        default=None,
+        help="Override the profile's echelon-2 render mode for --intent-budget "
+        "(sweep knob). Unset = use each profile's own render_mode.",
+    )
+    parser.add_argument(
         "--compare",
         type=Path,
         default=None,
@@ -665,6 +761,10 @@ def main() -> None:
             per_role_limit=args.per_role_limit,
             intent_threshold=args.intent_threshold,
             context_per_seed=args.context_per_seed,
+            intent_budget=args.intent_budget,
+            base_token_budget=args.token_budget,
+            max_walk_seeds_override=args.max_walk_seeds,
+            render_mode_override=args.render_mode,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started

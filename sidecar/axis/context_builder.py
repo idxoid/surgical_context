@@ -188,24 +188,40 @@ def _apply_render_and_budget(
     *,
     token_budget: int | None,
     render_mode: str,
+    full_render_max_depth: int = 0,
 ) -> list[ContextBundle]:
     """Echelon 2: render-trim then token-pack the assembled bundles.
 
-    ``render_mode="signature_only"`` replaces each symbol's code with its
-    signature first (so many files fit cheaply). When ``token_budget`` is
-    set we then pack bundles in rank order — seed first, then its related
-    symbols — summing estimated tokens and dropping the tail once the budget
-    is hit. The first bundle's seed is always kept so there is a primary.
-    Cross-bundle duplicates are counted (not deduped here — the PromptContext
-    adapter dedups by uid), so the cut is conservative."""
-    if render_mode == "signature_only":
+    ``render_mode`` granularity (a symbol is trimmed to its signature when):
+      * ``"full"`` — never (whole pool, full code).
+      * ``"signature_only"`` — always (max breadth, every symbol a signature).
+      * ``"hybrid"`` — only when ``distance_from_seed > full_render_max_depth``
+        (default 0 → the seed stays full, every expanded neighbour collapses to
+        a signature). This is the architecture profile: full code on the
+        answer's primary symbol, cheap signatures for all its context. Keeping
+        even depth-1 deps full barely economizes (they dominate the volume), so
+        the default is seed-only.
+
+    When ``token_budget`` is set we then pack bundles in rank order — seed
+    first, then its related symbols — summing estimated tokens and dropping
+    the tail once the budget is hit. The first bundle's seed is always kept so
+    there is a primary. Cross-bundle duplicates are counted (not deduped here —
+    the PromptContext adapter dedups by uid), so the cut is conservative."""
+
+    def _trim(sym: ContextSymbol) -> ContextSymbol:
+        if render_mode == "signature_only" or (
+            render_mode == "hybrid"
+            and sym.distance_from_seed > full_render_max_depth
+        ):
+            return replace(sym, code=_code_signature(sym.code))
+        return sym
+
+    if render_mode in ("signature_only", "hybrid"):
         bundles = [
             replace(
                 b,
-                seed=replace(b.seed, code=_code_signature(b.seed.code)),
-                related=tuple(
-                    replace(r, code=_code_signature(r.code)) for r in b.related
-                ),
+                seed=_trim(b.seed),
+                related=tuple(_trim(r) for r in b.related),
             )
             for b in bundles
         ]
@@ -238,15 +254,23 @@ def build_context_for_candidates(
     workspace_id: str,
     db,
     lance,
+    passive: Iterable[RoleCandidate] = (),
     max_per_seed: int = 6,
     traversal_mode: str = "deferred_binding_flow",
     include_tests: bool = False,
     token_budget: int | None = None,
     render_mode: str = "full",
 ) -> list[ContextBundle]:
-    """Expand each candidate into a ``ContextBundle`` of related code.
+    """Expand each ACTIVE candidate into a ``ContextBundle`` of related code.
 
-    ``max_per_seed`` caps how many related symbols come back per seed
+    ``candidates`` are the *active* seeds — the only ones that get a graph
+    WALK (the expensive part). ``passive`` seeds skip the walk entirely: they
+    join the bundle list as code-bearing, signature-rendered, seed-only
+    bundles (no neighbours), so their files survive for the token budget at
+    near-zero cost. This is echelon 1's active/passive split — bound the walk,
+    keep the pool.
+
+    ``max_per_seed`` caps how many related symbols come back per active seed
     (depth-then-name ordering). ``traversal_mode`` picks the expansion
     pattern from ``AxisQueryPlan``; defaults to deferred-binding
     because every current contract uses it.
@@ -262,7 +286,8 @@ def build_context_for_candidates(
     """
     from sidecar.axis.test_file_filter import is_test_path
     candidates = list(candidates)
-    if not candidates:
+    passive = list(passive)
+    if not candidates and not passive:
         return []
 
     # One batched grouped walk per expansion step over ALL candidate uids,
@@ -319,6 +344,8 @@ def build_context_for_candidates(
         for h in ordered:
             uids_to_fetch.add(h.uid)
 
+    for p in passive:
+        uids_to_fetch.add(p.uid)
     code_by_uid = _fetch_codes(lance, workspace_id, uids_to_fetch)
 
     bundles: list[ContextBundle] = []
@@ -346,6 +373,26 @@ def build_context_for_candidates(
         )
         bundles.append(
             ContextBundle(role=cand.role, seed=seed, related=related)
+        )
+
+    # Passive seeds: code-bearing context that skipped the walk. Rendered as
+    # signatures (cheap, but their file stays covered) and appended after the
+    # active bundles so the token budget fills active expansion first.
+    for p in passive:
+        bundles.append(
+            ContextBundle(
+                role=p.role,
+                seed=ContextSymbol(
+                    uid=p.uid,
+                    name=p.name,
+                    file_path=p.file_path,
+                    role=p.role,
+                    distance_from_seed=0,
+                    expansion_step=None,
+                    code=_code_signature(code_by_uid.get(p.uid)),
+                ),
+                related=(),
+            )
         )
     return _apply_render_and_budget(
         bundles, token_budget=token_budget, render_mode=render_mode

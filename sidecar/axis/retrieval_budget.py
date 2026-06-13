@@ -45,9 +45,9 @@ _MODE_ROLES = frozenset({"impact_analysis", "trace_dependency"})
 @dataclass(frozen=True)
 class RetrievalBudget:
     name: str
-    max_seeds: int  # echelon 1: cap on seeds into the context walk
+    max_walk_seeds: int  # echelon 1: how many ranked seeds get a GRAPH WALK
     token_weight: int  # echelon 2: RELATIVE share, scaled by the caller's budget
-    render_mode: str  # "full" | "signature_only"
+    render_mode: str  # "full" | "signature_only" | "hybrid"
 
     def effective_tokens(self, base_token_budget: int) -> int:
         """Scale the caller's budget by this profile's share of the minimum
@@ -55,21 +55,43 @@ class RetrievalBudget:
         return max(1, round(base_token_budget * self.token_weight / _MIN_WEIGHT))
 
 
+# echelon 1 is NOT a hard cap on the candidate pool — that craters recall, since
+# the pool's breadth is where the long tail lives. It caps only the expensive
+# part: how many top-ranked seeds get a Neo4j WALK (active seeds). The rest stay
+# in the pool as passive, code-bearing context (no walk, no CPU) so their files
+# survive for the token budget. Seeds are cheap to carry (20 vs 200 ≈ same
+# time); only their expansion costs, so we bound the walk and keep the pool.
+# Render granularity (signatures) is the real token economy, not the walk cap.
+#
+# ``max_walk_seeds`` is the per-intent knob (the "auto mode"): empirically
+# walk=20 -> bundle 0.95 / 0 zeros / ~0.07s, walk=40 -> 0.974 / 0.11s. The plan
+# is to differentiate — simple "how does X work" questions need fewer walks
+# (~20), heavy impact/dependency analysis more (~40) — but that split waits
+# until the token budget is layered on. For now both sit at a generous 40
+# (97%+, sub-second); the CLI ``--max-walk-seeds`` overrides it for sweeps.
 ARCHITECTURE = RetrievalBudget(
     name="architecture",
-    max_seeds=10,
+    max_walk_seeds=40,
     token_weight=12000,
-    render_mode="full",
+    render_mode="hybrid",
 )
 IMPACT = RetrievalBudget(
     name="impact",
-    max_seeds=40,
+    max_walk_seeds=40,
     token_weight=6000,
     render_mode="signature_only",
 )
 
 _PROFILES = (ARCHITECTURE, IMPACT)
 _MIN_WEIGHT = min(p.token_weight for p in _PROFILES)
+
+# The echelon-2 token cut is a TAIL GUARD, not the primary economy lever
+# (signatures are). At base 96k the smallest profile gets 96k and architecture
+# 192k, which holds ~0.97 coverage / 0 zeros while clipping the pathological
+# tail (~450k -> ~190k). ``_context_from_axis`` floors the request budget at
+# this so the live /ask path matches the benchmarked config; a caller may raise
+# ``AskRequest.token_budget`` above it but not below.
+DEFAULT_BASE_TOKEN_BUDGET = 96000
 
 
 def budget_for_intent(intent: Iterable) -> RetrievalBudget:
@@ -80,4 +102,10 @@ def budget_for_intent(intent: Iterable) -> RetrievalBudget:
     return ARCHITECTURE
 
 
-__all__ = ["RetrievalBudget", "ARCHITECTURE", "IMPACT", "budget_for_intent"]
+__all__ = [
+    "RetrievalBudget",
+    "ARCHITECTURE",
+    "IMPACT",
+    "DEFAULT_BASE_TOKEN_BUDGET",
+    "budget_for_intent",
+]

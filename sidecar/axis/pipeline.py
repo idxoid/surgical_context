@@ -104,6 +104,8 @@ def run_axis_retrieval(
     context_seeds_per_role: int | None = None,
     intent_budget: bool = False,
     base_token_budget: int = 4000,
+    max_walk_seeds_override: int | None = None,
+    render_mode_override: str | None = None,
     trace: Any | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
@@ -300,23 +302,39 @@ def run_axis_retrieval(
             cands = cands[:context_seeds_per_role]
         candidates_for_context.extend(cands)
 
-    # Intent-driven budgeting (opt-in; benchmark leaves it off -> uncapped).
-    # Echelon 1: cap the ranked pool to the profile's max_seeds so the
-    # per-seed context walk stays bounded. Echelon 2 (token_budget +
-    # render_mode) is handed to build_context below.
+    # Intent-driven budgeting (opt-in; benchmark leaves it off -> walk all).
+    # Echelon 1 is the ACTIVE/PASSIVE split, not a hard pool cap: rank the
+    # whole pool by score, give only the top ``max_walk_seeds`` a graph WALK
+    # (active — the expensive part), and keep the rest as PASSIVE context
+    # (code-bearing, no walk) so their files survive for the token budget
+    # without spawning neighbours or eating CPU. ``candidates_for_context``
+    # stays the full pool (pool recall is unaffected — the cap is only on the
+    # walk). Echelon 2 (token_budget + render_mode) packs the union below.
     token_budget: int | None = None
     render_mode = "full"
+    active = candidates_for_context
+    passive: list[RoleCandidate] = []
     if intent_budget:
         budget = budget_for_intent(intent)
-        candidates_for_context = candidates_for_context[: budget.max_seeds]
+        walk_cap = (
+            budget.max_walk_seeds
+            if max_walk_seeds_override is None
+            else max_walk_seeds_override
+        )
+        ranked = sorted(candidates_for_context, key=lambda c: c.score, reverse=True)
+        active = ranked[:walk_cap]
+        passive = ranked[walk_cap:]
         token_budget = budget.effective_tokens(base_token_budget)
-        render_mode = budget.render_mode
+        render_mode = (
+            budget.render_mode if render_mode_override is None else render_mode_override
+        )
 
     bundles: list[ContextBundle] = []
-    if with_context and candidates_for_context:
+    if with_context and (active or passive):
         with tr.stage("context"):
             bundles = context_builder.build_context_for_candidates(
-                candidates_for_context,
+                active,
+                passive=passive,
                 workspace_id=workspace_id,
                 db=db,
                 lance=lance,

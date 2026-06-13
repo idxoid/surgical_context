@@ -27,9 +27,12 @@ def test_mode_role_selects_impact():
 
 
 def test_profile_shapes():
-    # architecture: few seeds, full code; impact: many seeds, signatures.
-    assert ARCHITECTURE.max_seeds < IMPACT.max_seeds
-    assert ARCHITECTURE.render_mode == "full"
+    # max_walk_seeds caps only the WALK (active seeds); both profiles use the
+    # same walk budget and differ in render granularity — architecture keeps
+    # the core full (hybrid), impact is all-signatures for max breadth.
+    assert ARCHITECTURE.max_walk_seeds >= 1
+    assert ARCHITECTURE.max_walk_seeds == IMPACT.max_walk_seeds
+    assert ARCHITECTURE.render_mode == "hybrid"
     assert IMPACT.render_mode == "signature_only"
 
 

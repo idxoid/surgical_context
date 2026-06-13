@@ -86,6 +86,29 @@ def test_token_budget_keeps_first_seed_drops_the_rest():
     assert out[0].related == ()
 
 
+def test_hybrid_keeps_seed_full_and_signatures_the_rest():
+    # Default full_render_max_depth=0: only the seed (depth 0) stays full;
+    # every expanded neighbour (depth >= 1) collapses to a signature.
+    def _at(uid, depth, code):
+        return ContextSymbol(
+            uid=uid, name=uid, file_path="/f.py", role="r",
+            distance_from_seed=depth, expansion_step=None, code=code,
+        )
+
+    bundle = ContextBundle(
+        role="r",
+        seed=_at("s", 0, "def seed(x):\n    return x\n"),
+        related=(
+            _at("near", 1, "def near(y):\n    return y\n"),
+            _at("far", 2, "def far(z):\n    return z\n"),
+        ),
+    )
+    out = _apply_render_and_budget([bundle], token_budget=None, render_mode="hybrid")
+    assert out[0].seed.code == "def seed(x):\n    return x\n"  # depth 0 full
+    assert out[0].related[0].code == "def near(y):"           # depth 1 signature
+    assert out[0].related[1].code == "def far(z):"            # depth 2 signature
+
+
 def test_generous_budget_keeps_everything():
     bundles = [_bundle("a", "x" * 40, [("b", "y" * 40)]), _bundle("c", "z" * 40)]
     out = _apply_render_and_budget(bundles, token_budget=10_000, render_mode="full")

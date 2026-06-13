@@ -178,9 +178,30 @@ def test_intent_budget_on_applies_architecture_profile(stub_stages, monkeypatch)
     monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
 
     # stub intent is a plain role (routing_surface) -> architecture profile:
-    # max_seeds=10 (pool of 3 unaffected), full code, token_budget = 4000*2.
+    # generous max_seeds (pool of 3 unaffected), hybrid render, token_budget = 4000*2.
     result = _run(intent_budget=True, base_token_budget=4000)
-    assert captured["render_mode"] == "full"
+    assert captured["render_mode"] == "hybrid"
     assert captured["token_budget"] == 8000
     assert captured["n_seeds"] == 3
-    assert result.render_mode == "full"
+    assert result.render_mode == "hybrid"
+
+
+def test_intent_budget_splits_active_and_passive(stub_stages, monkeypatch):
+    import sidecar.axis.context_builder as _ctx_mod
+
+    captured: dict = {}
+
+    def _capture(active, *, passive=(), **kw):
+        captured["active"] = [c.uid for c in active]
+        captured["passive"] = [c.uid for c in passive]
+        return []
+
+    monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
+
+    # pool of 3 equal-score seeds; walk cap 2 -> top-2 active, 1 passive.
+    result = _run(intent_budget=True, max_walk_seeds_override=2)
+    assert captured["active"] == ["a", "b"]
+    assert captured["passive"] == ["c"]
+    # the full pool is preserved (pool recall unaffected — the cap is only on
+    # the walk, not the candidate set).
+    assert [c.uid for c in result.candidates_for_context] == ["a", "b", "c"]
