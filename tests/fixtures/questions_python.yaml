@@ -128,7 +128,11 @@ questions:
   - APIRoute
   expected_files:
   - fastapi/routing.py
-  - fastapi/concurrency.py
+  # fastapi/concurrency.py dropped: it only re-exports run_in_threadpool from
+  # starlette (`from starlette.concurrency import run_in_threadpool`), an
+  # un-indexed dependency — no project symbol or RE_EXPORTS node exists for it,
+  # so the file is not structurally reachable. The sync/async DECISION itself
+  # lives in run_endpoint_function (routing.py), which is matched.
 - id: fastapi_q04
   repo: fastapi
   core12: true
