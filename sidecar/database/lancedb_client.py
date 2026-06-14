@@ -134,6 +134,7 @@ SYMBOLS_SCHEMA = pa.schema(
 AXIS_SYMBOLS_SCHEMA = pa.schema(
     [
         *SYMBOLS_SCHEMA,
+        pa.field("qualified_name", pa.string()),
         pa.field("ast_kind_bits", pa.list_(pa.string())),
         pa.field("cfg_bits", pa.list_(pa.string())),
         pa.field("dfg_bits", pa.list_(pa.string())),
@@ -147,6 +148,7 @@ AXIS_SYMBOLS_SCHEMA = pa.schema(
 )
 
 AXIS_SYMBOL_REQUIRED_COLUMNS = {
+    "qualified_name",
     "ast_kind_bits",
     "cfg_bits",
     "dfg_bits",
@@ -742,6 +744,7 @@ class LanceDBClient:
                     "uid": s["uid"],
                     "workspace_id": str(s.get("workspace_id") or workspace_id),
                     "name": s["name"],
+                    "qualified_name": str(s.get("qualified_name") or ""),
                     "file_path": s["file_path"],
                     "code": s["code"],
                     "vector": vec,
