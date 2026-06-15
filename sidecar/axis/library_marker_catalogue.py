@@ -108,13 +108,11 @@ _TASK_REGISTER: tuple[str, ...] = (
 # the target of co-occurrence-validated subscribe + publish edges — in
 # ``container_kind._classify_signal_register`` via ``graph_probe.is_event_signal``.
 
-# ---------------------------------------------------------------------------
-# Error dispatch tables: keyed map exception class → handler callable.
-# ---------------------------------------------------------------------------
-_ERROR_DISPATCH: tuple[str, ...] = (
-    "starlette.exceptions.ExceptionMiddleware",
-    "starlette.middleware.exceptions.ExceptionMiddleware",
-)
+# ``error_dispatch`` is no longer a name catalogue. Exception-handler registries
+# are derived structurally from ``keyed_write`` keys that resolve to exception
+# types (builtin hierarchy or ``inherits_builtin_exception`` on in-workspace
+# classes) — see ``container_kind._classify_error_dispatch`` and
+# ``error_dispatch_propagation.propagate_error_dispatch``.
 
 # ---------------------------------------------------------------------------
 # Proxy objects: objects whose attribute reads/writes resolve to a scoped
@@ -132,7 +130,6 @@ def _build_catalogue() -> dict[str, str]:
     for kind, qns in (
         ("web_route_register", _WEB_ROUTE_REGISTER),
         ("task_register", _TASK_REGISTER),
-        ("error_dispatch", _ERROR_DISPATCH),
         ("proxy_object", _PROXY_OBJECT),
     ):
         for qn in qns:

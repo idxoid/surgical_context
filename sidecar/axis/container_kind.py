@@ -102,6 +102,15 @@ class GraphContextProbe(Protocol):
         the graph-context proof that lets ``signal_register`` drop its
         library-marker dependency."""
 
+    def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
+        """True when ``key_name`` names an exception type — a builtin from the
+        standard hierarchy or an in-workspace class whose
+        ``inherits_builtin_exception`` marker was set at link time."""
+
+    def inherits_error_dispatch(self, symbol_uid: str) -> bool:
+        """True when ``symbol_uid`` structurally inherits ``error_dispatch``
+        from a ``DEPENDS_ON`` ancestor that already carries the kind."""
+
 
 class NullGraphProbe:
     """Default probe: no graph context available, every probe returns 'no'."""
@@ -129,6 +138,30 @@ class NullGraphProbe:
 
     def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
         return set()
+
+    def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
+        return False
+
+    def inherits_error_dispatch(self, symbol_uid: str) -> bool:
+        return False
+
+
+def _probe_is_error_model_type_name(
+    probe: GraphContextProbe,
+    key_name: str,
+    symbol_uid: str,
+) -> bool:
+    fn = getattr(probe, "is_error_model_type_name", None)
+    if not callable(fn):
+        return False
+    return bool(fn(key_name, symbol_uid))
+
+
+def _probe_inherits_error_dispatch(probe: GraphContextProbe, symbol_uid: str) -> bool:
+    fn = getattr(probe, "inherits_error_dispatch", None)
+    if not callable(fn):
+        return False
+    return bool(fn(symbol_uid))
 
 
 # ---------------------------------------------------------------------------
@@ -644,35 +677,49 @@ def _classify_error_dispatch(
 ) -> ContainerKindMatch | None:
     """Container mapping exception types to handler callables.
 
-    Distinguishing this kind from generic class-keyed registries requires
-    knowing that the keys are **exception classes** — a question about the
-    type hierarchy that lives in graph context, not in axis bits. The
-    ``keyed_write`` payload carries ``key_kind`` (e.g. ``"Name"``,
-    ``"Attribute"``), which tells us the key is a reference rather than a
-    literal, but cannot tell us whether the referenced class transitively
-    inherits ``BaseException``.
+    The discriminator is whether ``keyed_write`` keys resolve to *exception
+    types* — builtin roots from the standard hierarchy or in-workspace classes
+    marked ``inherits_builtin_exception`` at link time. That is graph context,
+    not a library-name catalogue entry.
 
-    Honest decision: marker-primary, no axis-only fallback. The catalogue of
-    library markers carries the
-    ``starlette.exceptions.ExceptionMiddleware`` /
-    ``flask.app.Flask.errorhandler`` / ``django.middleware.MiddlewareMixin``
-    mapping. When no marker says ``error_dispatch``, this predicate returns
-    ``None`` and the question reaches the contract compiler with the kind
-    unproven. That diagnostic is correct — the local axis fingerprint is
-    indistinguishable from a generic class-keyed registry without the type
-    hierarchy.
+    A second channel is structural inheritance: a class whose ``DEPENDS_ON``
+    ancestry reaches an ``error_dispatch`` carrier (workspace propagation
+    pass tags these after embed).
     """
-    library_kinds = probe.library_marker_kinds(profile.symbol_uid)
-    if "error_dispatch" not in library_kinds:
-        return None
-    return ContainerKindMatch(
-        kind="error_dispatch",
-        symbol_uid=profile.symbol_uid,
-        qualified_name=profile.qualified_name,
-        evidence_bits=(),
-        evidence_probes=("library_marker:error_dispatch",),
-        payload={"via": "library_marker"},
-    )
+    exception_keys: list[str] = []
+    for fact in _dfg(profile, "keyed_write"):
+        if str(fact.payload.get("key_kind") or "") != "Name":
+            continue
+        key = str(fact.payload.get("key") or "").strip()
+        if not key:
+            continue
+        if _probe_is_error_model_type_name(probe, key, profile.symbol_uid):
+            exception_keys.append(key)
+
+    if exception_keys:
+        matched = sorted(set(exception_keys))
+        return ContainerKindMatch(
+            kind="error_dispatch",
+            symbol_uid=profile.symbol_uid,
+            qualified_name=profile.qualified_name,
+            evidence_bits=(("dfg", "keyed_write"),),
+            evidence_probes=(
+                f"exception_keyed_registry:{','.join(matched[:5])}",
+            ),
+            payload={"exception_keys": matched[:8]},
+        )
+
+    if _probe_inherits_error_dispatch(probe, profile.symbol_uid):
+        return ContainerKindMatch(
+            kind="error_dispatch",
+            symbol_uid=profile.symbol_uid,
+            qualified_name=profile.qualified_name,
+            evidence_bits=(("struct", "class_def"),) if profile.symbol_kind == "class" else (),
+            evidence_probes=("graph_context:inherited_error_dispatch",),
+            payload={"via": "inheritance"},
+        )
+
+    return None
 
 
 @register_kind("di_container")

@@ -12,6 +12,9 @@ from typing import Any
 
 from sidecar.axis.container_kind import GraphContextProbe
 from sidecar.axis.library_marker_catalogue import kind_for_external_qualified_name
+from sidecar.indexer.fast.error_dispatch_propagation import (
+    is_builtin_exception_type_name,
+)
 
 _CONTROL_EDGE_TYPES = (
     "CALLS",
@@ -78,6 +81,82 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         self.workspace_id = workspace_id
         self._marker_cache: dict[str, set[str]] = {}
         self._dispersion_cache: dict[str, float] = {}
+        self._exception_key_cache: dict[str, bool] = {}
+        self._inherits_error_dispatch_cache: dict[str, bool] = {}
+
+    def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
+        if not key_name:
+            return False
+        if is_builtin_exception_type_name(key_name):
+            return True
+        cached = self._exception_key_cache.get(key_name)
+        if cached is not None:
+            return cached
+        query = """
+        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(c:Symbol {name: $key_name, kind: 'class'})
+        WHERE coalesce(c.inherits_builtin_exception, false) = true
+        RETURN count(c) AS n
+        """
+        try:
+            with self.db.driver.session() as session:
+                record = session.run(
+                    query,
+                    key_name=key_name,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            self._exception_key_cache[key_name] = False
+            return False
+        hit = int((record and record.get("n")) or 0) > 0
+        self._exception_key_cache[key_name] = hit
+        return hit
+
+    def inherits_error_dispatch(self, symbol_uid: str) -> bool:
+        cached = self._inherits_error_dispatch_cache.get(symbol_uid)
+        if cached is not None:
+            return cached
+        query = """
+        MATCH (s:Symbol {uid: $symbol_uid})-[:DEPENDS_ON*1..6 {workspace_id: $workspace_id}]->(anc:Symbol {kind: 'class'})
+        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(anc)
+        WHERE anc.uid <> $symbol_uid
+        RETURN collect(DISTINCT anc.uid) AS ancestor_uids
+        """
+        try:
+            with self.db.driver.session() as session:
+                record = session.run(
+                    query,
+                    symbol_uid=symbol_uid,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            self._inherits_error_dispatch_cache[symbol_uid] = False
+            return False
+        ancestor_uids = [
+            str(uid) for uid in ((record and record.get("ancestor_uids")) or []) if uid
+        ]
+        if not ancestor_uids:
+            self._inherits_error_dispatch_cache[symbol_uid] = False
+            return False
+        try:
+            import lancedb
+
+            table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
+            rows = table.to_lance().to_table(
+                columns=["uid", "container_kinds", "workspace_id"],
+            ).to_pylist()
+        except Exception:
+            self._inherits_error_dispatch_cache[symbol_uid] = False
+            return False
+        error_dispatch_ancestors = {
+            str(r["uid"])
+            for r in rows
+            if r.get("workspace_id") == self.workspace_id
+            and str(r.get("uid")) in ancestor_uids
+            and "error_dispatch" in (r.get("container_kinds") or [])
+        }
+        hit = bool(error_dispatch_ancestors)
+        self._inherits_error_dispatch_cache[symbol_uid] = hit
+        return hit
 
     def outgoing_kind_edges(
         self,

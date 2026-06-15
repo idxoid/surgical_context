@@ -1709,6 +1709,9 @@ def run_fast_indexing(
         # detected per-file.
         if profile.name == AXIS_PYTHON_V1_PROFILE:
             t_stage = time.perf_counter()
+            from sidecar.indexer.fast.error_dispatch_propagation import (
+                propagate_error_dispatch,
+            )
             from sidecar.indexer.fast.registry_class_inheritance import (
                 propagate_error_model_via_inheritance,
                 propagate_registry_class_via_inheritance,
@@ -1731,6 +1734,16 @@ def run_fast_indexing(
                 project_path=project_path,
             )
             stats["error_model_propagated"] = error_models
+            # Registry symbols whose keyed writes target exception types, plus
+            # descendants that inherit the kind — closes the class-level gap
+            # where registration methods live on the class API, not the class
+            # profile itself (``ExceptionMiddleware`` and similar).
+            error_dispatch = propagate_error_dispatch(
+                db,
+                lance,
+                workspace_id,
+            )
+            stats["error_dispatch_propagated"] = error_dispatch
             stats["timings_sec"]["registry_class_inheritance"] = round(
                 time.perf_counter() - t_stage, 3
             )

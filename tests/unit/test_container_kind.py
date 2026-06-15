@@ -50,15 +50,25 @@ class _StubProbe:
         driver: bool = False,
         kind_edges: int = 0,
         peer_kinds_by_prefix: dict[str, set[str]] | None = None,
+        exception_type_keys: set[str] | None = None,
+        inherits_error_dispatch: bool = False,
     ) -> None:
         self._marker_kinds = marker_kinds or set()
         self._dispersion = dispersion
         self._driver = driver
         self._kind_edges = kind_edges
         self._peer_kinds_by_prefix = peer_kinds_by_prefix or {}
+        self._exception_type_keys = exception_type_keys or set()
+        self._inherits_error_dispatch = inherits_error_dispatch
 
     def library_marker_kinds(self, symbol_uid: str) -> set[str]:
         return set(self._marker_kinds)
+
+    def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
+        return key_name in self._exception_type_keys
+
+    def inherits_error_dispatch(self, symbol_uid: str) -> bool:
+        return self._inherits_error_dispatch
 
     def is_event_signal(self, symbol_uid: str) -> bool:
         # signal_register is derived from EVENT pub/sub topology now; a stub that
@@ -644,20 +654,75 @@ def test_proxy_object_marker_does_not_drag_into_signal_or_data():
 # ---------------------------------------------------------------------------
 
 
-def test_error_dispatch_via_library_marker():
-    profile = _profile([_fact("struct", "class_def")])
-    classifier = ContainerKindClassifier(_StubProbe(marker_kinds={"error_dispatch"}))
+def test_error_dispatch_via_exception_keyed_registry():
+    profile = _profile(
+        [
+            _fact(
+                "dfg",
+                "keyed_write",
+                payload={
+                    "container": "self._handlers",
+                    "key": "HTTPException",
+                    "key_kind": "Name",
+                    "value_kind": "Name",
+                },
+            ),
+        ]
+    )
+    classifier = ContainerKindClassifier(
+        _StubProbe(exception_type_keys={"HTTPException"}),
+    )
     matches = [m for m in classifier.classify(profile) if m.kind == "error_dispatch"]
     assert matches
-    assert matches[0].payload.get("via") == "library_marker"
+    assert matches[0].payload.get("exception_keys") == ["HTTPException"]
+    assert any("exception_keyed_registry:" in p for p in matches[0].evidence_probes)
 
 
-def test_error_dispatch_has_no_axis_only_fallback():
-    """Without a library marker, error_dispatch is intentionally unprovable.
-    Local axis bits cannot tell apart a class-keyed exception registry from
-    a generic class-keyed registry — the discriminator is the type
-    hierarchy of the keys, which is graph context, not axis content.
-    """
+def test_error_dispatch_via_builtin_exception_key_without_probe_db():
+    profile = _profile(
+        [
+            _fact(
+                "dfg",
+                "keyed_write",
+                payload={
+                    "container": "self._handlers",
+                    "key": "ValueError",
+                    "key_kind": "Name",
+                },
+            ),
+        ]
+    )
+    classifier = ContainerKindClassifier(
+        _StubProbe(exception_type_keys={"ValueError"}),
+    )
+    kinds = {m.kind for m in classifier.classify(profile)}
+    assert "error_dispatch" in kinds
+
+
+def test_error_dispatch_rejects_literal_string_keys():
+    """Route-style literal keys are not exception types."""
+    profile = _profile(
+        [
+            _fact(
+                "dfg",
+                "keyed_write",
+                payload={
+                    "key": "/users",
+                    "key_kind": "Constant",
+                    "key_literal": "/users",
+                },
+            ),
+        ]
+    )
+    classifier = ContainerKindClassifier(
+        _StubProbe(exception_type_keys={"/users"}),
+    )
+    assert "error_dispatch" not in {m.kind for m in classifier.classify(profile)}
+
+
+def test_error_dispatch_unproven_without_exception_key_resolution():
+    """Generic class-keyed registries stay unproven when keys do not resolve
+    to exception types."""
     profile = _profile(
         [
             _fact(
@@ -678,9 +743,17 @@ def test_error_dispatch_has_no_axis_only_fallback():
     assert "error_dispatch" not in {m.kind for m in classifier.classify(profile)}
 
 
-def test_error_dispatch_marker_excludes_signal_register():
+def test_error_dispatch_via_inherited_kind():
+    profile = _profile([_fact("struct", "class_def")])
+    classifier = ContainerKindClassifier(_StubProbe(inherits_error_dispatch=True))
+    matches = [m for m in classifier.classify(profile) if m.kind == "error_dispatch"]
+    assert matches
+    assert matches[0].payload.get("via") == "inheritance"
+
+
+def test_error_dispatch_inheritance_excludes_signal_register():
     """error_dispatch is in signal_register's yield list — a symbol with the
-    shared four-bit fingerprint that also carries error_dispatch marker must
+    shared four-bit fingerprint that also carries error_dispatch must
     not also pick up signal_register."""
     profile = _profile(
         [
@@ -690,7 +763,7 @@ def test_error_dispatch_marker_excludes_signal_register():
             _fact("cfg", "value_call"),
         ]
     )
-    classifier = ContainerKindClassifier(_StubProbe(marker_kinds={"error_dispatch"}))
+    classifier = ContainerKindClassifier(_StubProbe(inherits_error_dispatch=True))
     kinds = {m.kind for m in classifier.classify(profile)}
     assert "error_dispatch" in kinds
     assert "signal_register" not in kinds

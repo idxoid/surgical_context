@@ -137,6 +137,17 @@ def test_neo4j_probe_dispersion_falls_back_to_zero_without_qualified_names():
     assert probe.caller_package_dispersion("u:target") == 0.0
 
 
+def test_neo4j_probe_resolves_in_workspace_exception_class_key():
+    db = _Db([{"n": 1}])
+    probe = Neo4jGraphContextProbe(db, "ws")
+
+    assert probe.is_error_model_type_name("HTTPException", "u:meth") is True
+    assert probe.is_error_model_type_name("PlainModel", "u:meth") is False
+    # Builtin roots resolve without a DB round-trip.
+    assert probe.is_error_model_type_name("ValueError", "u:meth") is True
+    assert len(db.driver.session_obj.runs) == 2
+
+
 def test_neo4j_probe_does_not_infer_cfg_driver_from_plain_graph_context():
     db = _Db([])
     probe = Neo4jGraphContextProbe(db, "ws")

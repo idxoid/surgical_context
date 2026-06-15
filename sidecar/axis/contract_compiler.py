@@ -398,7 +398,7 @@ def _compile_configuration_carrier(
     )
 
 
-# Marker-only kinds (web_route_register / task_register / error_dispatch) come
+# Marker-only kinds (web_route_register / task_register) come
 # from the catalogue via INSTANTIATES_EXTERNAL / EXTENDS_EXTERNAL on a Variable
 # Symbol. The marker alone proves the *shape* (this object is a registry); the
 # ``dfg.registered_callable`` fact — emitted on the stub profile when the
