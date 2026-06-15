@@ -1115,7 +1115,7 @@ def render_markdown(report: dict, output: Path) -> None:
 def _default_pack_paths() -> list[Path]:
     base = PROJECT_ROOT / "tests" / "fixtures"
     return [
-        base / "real_repo_question_pack.yaml",
+        base / "questions_python.yaml",
         base / "click_questions.yaml",
         base / "celery_questions.yaml",
         base / "publick_repo_question_pack_2.yaml",

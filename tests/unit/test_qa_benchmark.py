@@ -92,7 +92,7 @@ def test_expected_file_matches_extensionless_source_file_hints():
 
 
 def test_load_question_pack_reads_real_repo_metadata():
-    pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+    pack_path = Path(__file__).parent.parent / "fixtures" / "questions_python.yaml"
 
     pack = load_question_pack(str(pack_path))
 
@@ -174,7 +174,7 @@ def test_load_click_question_pack_standalone():
 
 
 def test_load_questions_filters_real_repo_core12_subset():
-    pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+    pack_path = Path(__file__).parent.parent / "fixtures" / "questions_python.yaml"
 
     questions = load_questions(str(pack_path), repo="fastapi", core12_only=True)
 
@@ -192,17 +192,17 @@ def test_resolve_questions_path_defaults_to_fixture_pack():
 def test_resolve_questions_path_defaults_to_real_repo_pack_for_repo_filters():
     resolved = resolve_questions_path(None, repo="fastapi")
 
-    assert resolved.endswith("tests/fixtures/real_repo_question_pack.yaml")
+    assert resolved.endswith("tests/fixtures/questions_python.yaml")
 
 
 def test_resolve_questions_path_defaults_to_real_repo_pack_for_project_paths():
     resolved = resolve_questions_path(None, project_path="/tmp/fastapi")
 
-    assert resolved.endswith("tests/fixtures/real_repo_question_pack.yaml")
+    assert resolved.endswith("tests/fixtures/questions_python.yaml")
 
 
 def test_run_benchmark_rejects_empty_question_selection():
-    pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+    pack_path = Path(__file__).parent.parent / "fixtures" / "questions_python.yaml"
 
     with pytest.raises(ValueError, match="No benchmark questions matched"):
         run_benchmark(
@@ -213,7 +213,7 @@ def test_run_benchmark_rejects_empty_question_selection():
 
 
 def test_load_repository_meta_returns_selected_repo():
-    pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+    pack_path = Path(__file__).parent.parent / "fixtures" / "questions_python.yaml"
 
     repo = load_repository_meta(str(pack_path), "pydantic")
 
@@ -271,7 +271,7 @@ def test_resolve_repo_docs_path_falls_back_to_docs_root(tmp_path):
 
 
 def test_ensure_repo_checkout_uses_existing_default_checkout():
-    pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+    pack_path = Path(__file__).parent.parent / "fixtures" / "questions_python.yaml"
     expected_path = default_repo_checkout_path("fastapi")
 
     with patch("QA.qa_benchmark.Path.exists", return_value=True):
@@ -281,7 +281,7 @@ def test_ensure_repo_checkout_uses_existing_default_checkout():
 
 
 def test_ensure_repo_checkout_clones_when_missing(tmp_path):
-    pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+    pack_path = Path(__file__).parent.parent / "fixtures" / "questions_python.yaml"
 
     with patch("QA.qa_benchmark.subprocess.run") as run_mock:
         checkout_path = ensure_repo_checkout(

@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 QA = ROOT / "QA"
-QUESTIONS = ROOT / "tests/fixtures/real_repo_question_pack.yaml"
+QUESTIONS = ROOT / "tests/fixtures/questions_python.yaml"
 OUT_DIR = QA / "baselines/reindex_2026-05-30"
 COMBINED = QA / "baseline_reindex_2026-05-30.json"
 BASELINES_JSONL = QA / "baselines.jsonl"

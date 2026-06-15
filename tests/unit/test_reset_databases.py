@@ -32,7 +32,7 @@ def test_resolve_reset_target_prefers_explicit_project_and_workspace(tmp_path):
         fixture=False,
         repo="fastapi",
         questions_path=str(
-            Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+            Path(__file__).parent.parent / "fixtures" / "questions_python.yaml"
         ),
         project_path=str(tmp_path),
         docs_path=None,
@@ -59,7 +59,7 @@ def test_resolve_reset_target_requires_existing_checkout():
 
 
 def test_resolve_reset_target_uses_pack_project_path_for_dogfood_repo():
-    pack_path = Path(__file__).parent.parent / "fixtures" / "real_repo_question_pack.yaml"
+    pack_path = Path(__file__).parent.parent / "fixtures" / "questions_python.yaml"
     project_root = Path(__file__).resolve().parents[2]
 
     workspace_id, project_path, docs_path = resolve_reset_target(

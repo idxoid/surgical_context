@@ -16,7 +16,7 @@ from QA.qa_benchmark import (
 from sidecar.workspace import DEFAULT_WORKSPACE_ID, WorkspaceResolver
 
 _DEFAULT_REAL_REPO_PACK = (
-    Path(__file__).parent.parent / "tests" / "fixtures" / "real_repo_question_pack.yaml"
+    Path(__file__).parent.parent / "tests" / "fixtures" / "questions_python.yaml"
 )
 
 
