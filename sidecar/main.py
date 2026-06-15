@@ -18,11 +18,8 @@ from sidecar.ai.engine import AIEngine
 from sidecar.api.sse import format_sse
 from sidecar.auth import AuditLog, UserAuth
 from sidecar.cache.layered import default_cache
-from sidecar.context.arbitrator import ContextArbitrator
 from sidecar.context.doc_resolver import DocResolver
-from sidecar.context.intent_classifier import IntentClassifier
 from sidecar.context.overlay import InMemoryOverlay
-from sidecar.context.ranker.candidate_pool import VectorSearcher
 from sidecar.context.types import RESOLVER_VERSION, DocChunk, PromptContext, SymbolContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
@@ -64,6 +61,12 @@ TOKEN_BUDGET_MAX = 32_000
 app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
 vector_db = LanceDBClient()
+
+# Intent label stamped on the non-axis fallback PromptContexts (file/workspace/
+# direct). The legacy keyword IntentClassifier died with the cascade (Phase 5);
+# these are deep fallbacks (axis is the default provider and classifies real
+# intent), so a fixed label matching the legacy default is sufficient metadata.
+_FALLBACK_INTENT = "exploration"
 ai_engine = AIEngine(model_preference=MODEL_PREFERENCE, allow_cloud_llm=ALLOW_CLOUD_LLM)
 if MODEL_PREFERENCE in {"auto", "claude"} and not ALLOW_CLOUD_LLM:
     logger.info(
@@ -80,21 +83,6 @@ history_provider = build_history_provider(
     db_path=os.getenv("HISTORY_DB_PATH", "./data/history/surgical_context.sqlite3"),
     retention_days=parse_retention_days(os.getenv("HISTORY_RETENTION_DAYS", "")),
 )
-
-
-def _context_arbitrator(
-    db: Any, workspace_id: str, user_id: str = "anonymous"
-) -> ContextArbitrator:
-    """Workspace- and user-scoped graph + vector retrieval with explicit provider wiring."""
-    return ContextArbitrator(
-        db,
-        overlay,
-        vector_db,
-        workspace_id=workspace_id,
-        user_id=user_id,
-        workspace_meta=neo4j_workspace_meta(db),
-        vector_search=VectorSearcher(vector_db),
-    )
 
 
 class IndexRequest(BaseModel):
@@ -778,7 +766,7 @@ def _context_from_file(
     if not code:
         return None
 
-    intent = IntentClassifier.classify_intent(question)
+    intent = _FALLBACK_INTENT
     ctx = PromptContext(
         primary_source=SymbolContext(
             symbol=os.path.basename(file_path) or file_path,
@@ -792,7 +780,7 @@ def _context_from_file(
         graph_context=[],
         documentation=_search_docs(f"{file_path} {question}", limit=3, workspace_id=workspace_id),
         mode="file",
-        intent=intent.value,
+        intent=intent,
         tier_tokens={"code": estimate_text_tokens(code)},
     )
     ctx.tier_tokens.update(_doc_tier_tokens(ctx.documentation))
@@ -807,7 +795,7 @@ def _context_from_workspace(
     if not docs and not symbols:
         return None
 
-    intent = IntentClassifier.classify_intent(question)
+    intent = _FALLBACK_INTENT
     ctx = PromptContext(
         primary_source=SymbolContext(
             symbol="workspace",
@@ -819,7 +807,7 @@ def _context_from_workspace(
         graph_context=symbols,
         documentation=docs,
         mode="workspace",
-        intent=intent.value,
+        intent=intent,
         tier_tokens={"cross_refs": sum(estimate_text_tokens(sym.symbol) for sym in symbols)},
     )
     ctx.tier_tokens.update(_doc_tier_tokens(docs))
@@ -828,7 +816,7 @@ def _context_from_workspace(
 
 
 def _context_from_direct(question: str, token_budget: int) -> PromptContext:
-    intent = IntentClassifier.classify_intent(question)
+    intent = _FALLBACK_INTENT
     return PromptContext(
         primary_source=SymbolContext(
             symbol="direct",
@@ -840,7 +828,7 @@ def _context_from_direct(question: str, token_budget: int) -> PromptContext:
         graph_context=[],
         documentation=[],
         mode="direct",
-        intent=intent.value,
+        intent=intent,
         tier_tokens={},
         budget={"token_budget": token_budget},
     )
@@ -995,17 +983,20 @@ def _axis_token_credit_enabled() -> bool:
 
 
 def _try_axis_context(
-    *, req: AskRequest, workspace_id: str, db: Any
+    *, req: AskRequest, workspace_id: str, db: Any, anchor_path: str | None = None
 ) -> PromptContext | None:
     """Best-effort axis context. Any failure (missing axis index, db/Lance
-    error) degrades to ``None`` so the legacy cascade still answers."""
+    error) degrades to ``None`` so the legacy cascade still answers.
+
+    ``anchor_path`` is the already-sandboxed IDE open file (the ask anchor) —
+    callers must sandbox it before passing it in."""
     try:
         return _context_from_axis(
             req.question,
             workspace_id=workspace_id,
             db=db,
             token_budget=req.token_budget,
-            anchor_path=req.file_path,  # IDE open file = the ask anchor
+            anchor_path=anchor_path,
         )
     except Exception:
         logger.exception("ask_axis_first provider failed; falling through")
@@ -1019,35 +1010,32 @@ def _resolve_ask_context(
     workspace_id: str,
     db: Any,
 ) -> PromptContext:
+    # Sandbox the IDE anchor file UP FRONT (Phase 5): it feeds BOTH the axis
+    # anchor and the file-tier fallback, so an out-of-workspace path must be
+    # rejected before either provider uses it (_sandbox_path raises 403).
+    safe_file_path = ""
+    if req.file_path:
+        safe_file_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
+
     # Axis is the default provider (Phase 3 cutover; ASK_AXIS_FIRST=0 rolls back):
     # the canonical axis pipeline leads; on nothing-renderable / failure we fall
-    # straight through to the symbol -> file -> workspace -> direct cascade below,
-    # which stays as the safety net + rollback path until Phase 5 deletes it.
+    # straight through to the file -> workspace -> direct providers below.
     if _ask_axis_first_enabled():
-        axis_ctx = _try_axis_context(req=req, workspace_id=workspace_id, db=db)
+        axis_ctx = _try_axis_context(
+            req=req, workspace_id=workspace_id, db=db, anchor_path=safe_file_path or None
+        )
         if axis_ctx is not None:
             _context_budget(axis_ctx)["ask_level"] = "axis"
             return axis_ctx
 
-    symbol_error = ""
-    if req.symbol:
-        arb = _context_arbitrator(db, workspace_id, user_id)
-        ctx = arb.get_context_for_symbol(
-            req.symbol,
-            question=req.question,
-            token_budget=req.token_budget,
-        )
-        if not isinstance(ctx, str):
-            _context_budget(ctx)["ask_level"] = "symbol"
-            return ctx
-        symbol_error = ctx
-
+    # Cascade dead (Phase 5): the symbol-tier ContextArbitrator is gone; axis (the
+    # default above) owns symbol retrieval. When a symbol was requested but axis
+    # rendered nothing, mark it not-found so the fallback ladder reports it — the
+    # same /ask contract the old arbitrator tier produced.
+    symbol_error = (
+        f"Error: Symbol '{req.symbol}' not found in graph." if req.symbol else ""
+    )
     if req.file_path:
-        safe_file_path = _sandbox_path(
-            req.file_path,
-            workspace_id=workspace_id,
-            db=db,
-        )
         file_ctx = _context_from_file(
             file_path=safe_file_path,
             question=req.question,
@@ -1589,39 +1577,10 @@ def unified_search(
                     }
                 )
 
-        if req.include_graph and req.symbol:
-            with trace.stage("graph_neighbors"):
-                with db_session(user_id=user_id) as db:
-                    arb = _context_arbitrator(db, workspace_id, user_id)
-                    ctx = arb.get_context_for_symbol(
-                        req.symbol,
-                        question=req.query,
-                        token_budget=req.token_budget,
-                    )
-            if not isinstance(ctx, str):
-                retrieval_trace_payload = ctx.retrieval_trace
-                graph_symbols: list[tuple[SymbolContext, str]] = [
-                    (ctx.primary_source, "graph:primary"),
-                    *[(dep, "graph:neighbor") for dep in ctx.graph_context],
-                ]
-                for graph_symbol, provenance in graph_symbols:
-                    results.append(
-                        {
-                            "type": "symbol",
-                            "title": graph_symbol.symbol,
-                            "file_path": graph_symbol.file_path,
-                            "content": graph_symbol.code,
-                            "score": graph_symbol.relevance_score,
-                            "scores": {"relevance": graph_symbol.relevance_score},
-                            "provenance": [provenance],
-                            "metadata": {
-                                "relation": graph_symbol.relation,
-                                "direction": graph_symbol.direction,
-                                "depth": graph_symbol.depth,
-                                "is_dirty": graph_symbol.is_dirty,
-                            },
-                        }
-                    )
+        # /search/unified graph-neighbor enrichment removed with the cascade
+        # (Phase 5): it used the ContextArbitrator. ``include_graph`` no longer
+        # adds arbitrator-derived neighbors; an axis-based graph adapter can
+        # restore it later. retrieval_trace_payload stays None.
 
         ranked = dedupe_and_rank(results, req.limit)
         trace.token_counts["query"] = estimate_text_tokens(req.query)

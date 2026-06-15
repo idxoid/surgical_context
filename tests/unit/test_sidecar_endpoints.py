@@ -179,7 +179,13 @@ def import_main_with_fakes(monkeypatch):
     monkeypatch.setitem(sys.modules, "sidecar.ai.engine", fake_engine)
 
     main = importlib.import_module("sidecar.main")
-    monkeypatch.setattr(main, "ContextArbitrator", FakeContextArbitrator)
+    # Cascade dead (Phase 5): the legacy ContextArbitrator is gone; /ask uses the
+    # axis provider by default. Fake the axis seam so endpoint tests get a
+    # deterministic context; fallback tests override it to return None.
+    def fake_context_from_axis(question, *, workspace_id="", db=None, token_budget=4000, anchor_path=None):
+        return FakeCtx()
+
+    monkeypatch.setattr(main, "_context_from_axis", fake_context_from_axis)
     monkeypatch.setattr(main, "db_session", fake_db_session)
 
     class FakeIndexQueue:
@@ -529,6 +535,7 @@ def test_ask_stream_emits_trace_event_on_l3_cache_hit(monkeypatch):
 
 def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "_context_from_axis", lambda *a, **k: None)
 
     body = main.ask(main.AskRequest(symbol="missing", question="Where?"))
 
@@ -556,6 +563,7 @@ def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
 def test_ask_endpoint_uses_file_fallback_before_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "_context_from_axis", lambda *a, **k: None)
     source_file = tmp_path / "checkout.py"
     source_file.write_text("def checkout():\n    return 'ok'\n", encoding="utf-8")
 
@@ -577,6 +585,7 @@ def test_ask_endpoint_uses_file_fallback_before_workspace(monkeypatch, tmp_path)
 
 def test_ask_endpoint_falls_back_to_direct_llm_when_no_context(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "_context_from_axis", lambda *a, **k: None)
 
     class EmptyVectorDb:
         def search(self, query, limit=5):
@@ -619,7 +628,7 @@ def test_metrics_endpoint_renders_prometheus_text(monkeypatch):
     assert 'endpoint="/ask"' in response.body.decode()
 
 
-def test_unified_search_blends_docs_symbols_and_graph(monkeypatch):
+def test_unified_search_blends_docs_and_symbols(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
     body = main.unified_search(
@@ -628,9 +637,10 @@ def test_unified_search_blends_docs_symbols_and_graph(monkeypatch):
     )
 
     assert body["trace_id"] == "search-trace"
-    assert body["total"] >= 3
+    # Cascade dead (Phase 5): arbitrator-based graph-neighbor enrichment removed;
+    # /search blends docs + vector symbols only (no graph:neighbor provenance).
+    assert body["total"] >= 2
     assert {result["type"] for result in body["results"]} == {"doc", "symbol"}
-    assert any("graph:neighbor" in result["provenance"] for result in body["results"])
 
 
 def test_auth_required_accepts_valid_bearer_token(monkeypatch):
