@@ -1,5 +1,14 @@
 # Cascade cleanup — Phase 0 inventory & dependency map
 
+> **✅ DONE 2026-06-15.** The migration described below is complete. axis is the
+> default `/ask` provider (`ASK_AXIS_FIRST=0` rolls back); class A was deleted
+> (commits 8d430dc cutover → 75985cb indexer decouple → 6429811 main.py decouple
+> → eb3da79 delete, ~19.5k LOC). Kept (class C): `sidecar/context/{types,
+> doc_resolver, overlay}`. `reset_databases` re-pointed (f0f7e52); `/search`
+> graph neighbors restored via the axis walk (04d16b4). `role_cascade` is the
+> KEPT structural role engine (misnomer — not the ranking cascade). This doc is
+> retained as the migration record; the plan below is historical.
+
 Migration of the legacy ranking cascade (`sidecar/context/`) to the axis
 pipeline (`sidecar/axis/`). This is the Phase 0 deliverable: the exact
 A/B/C classification of every `sidecar/context` module by its
