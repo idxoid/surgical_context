@@ -438,9 +438,15 @@ Return downstream symbols and files affected by changing a symbol.
 ---
 
 ### POST /auth/token
-Generate a signed bearer token for a user id.
+Generate a signed bearer token.
 
 **Query param:** `user_id=alice`
+
+When `AUTH_REQUIRED=false` (local default), this endpoint is the explicit
+local bootstrap/dev token issuer. When `AUTH_REQUIRED=true`, callers must
+already present a valid `Authorization: Bearer <token>` header and may only
+mint a replacement token for the authenticated user. Requests for another
+`user_id` return `403`.
 
 **Response:**
 ```json
@@ -475,9 +481,12 @@ Report Aura/fallback health from a request-scoped DB session.
 ---
 
 ### GET /audit/actions
-Return recent audit log entries.
+Return recent audit log entries for the authenticated/request user.
 
-**Query params:** `user_id` optional, `limit` default `100`.
+**Query params:** `user_id` optional self-filter, `limit` default `100`.
+
+Omitting `user_id` returns only the requester's actions. Supplying another
+user id returns `403`; the endpoint never returns all users' audit entries.
 
 **Response:**
 ```json
@@ -492,7 +501,10 @@ Return recent audit log entries.
 
 Neo4j access goes through `db_session(...)`, which creates a request-scoped client and closes it after the endpoint finishes. This avoids mutating shared request identity on the global database object.
 
-Protected endpoints accept local `X-User-Id` identity by default for development. Set `AUTH_REQUIRED=true` to require signed bearer tokens from `/auth/token`.
+Protected endpoints accept local `X-User-Id` identity by default for development.
+Issue bootstrap tokens while `AUTH_REQUIRED=false`, then set
+`AUTH_REQUIRED=true` to require signed bearer tokens. In protected mode,
+`/auth/token` only refreshes the authenticated user's own token.
 
 Graph endpoints accept `X-Workspace: tenant/repo@ref`. Neo4j `File`, `CONTAINS`, call, and `AFFECTS` operations are scoped by that workspace id.
 

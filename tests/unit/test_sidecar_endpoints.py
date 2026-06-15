@@ -943,19 +943,32 @@ def test_cloud_status_uses_request_user_for_db_session(monkeypatch):
 
 def test_audit_actions_endpoint_returns_actions(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
+    seen: dict[str, object] = {}
 
     class FakeAuditLog:
         def get_recent_actions(self, user_id=None, limit=100):
+            seen["user_id"] = user_id
+            seen["limit"] = limit
             return [{"user_id": user_id or "alice", "action": "query"}]
 
     monkeypatch.setattr(main, "audit_log", FakeAuditLog())
 
-    body = main.audit_actions(user_id="alice", limit=1)
+    body = main.audit_actions(limit=1, x_user_id="Alice")
 
     assert body == {
         "actions": [{"user_id": "alice", "action": "query"}],
         "total": 1,
     }
+    assert seen == {"user_id": "alice", "limit": 1}
+
+
+def test_audit_actions_endpoint_rejects_cross_user_reads(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.audit_actions(user_id="bob", x_user_id="Alice")
+
+    assert exc_info.value.status_code == 403
 
 
 def test_auth_token_endpoint_returns_token(monkeypatch):
@@ -966,3 +979,35 @@ def test_auth_token_endpoint_returns_token(monkeypatch):
     assert body["user_id"] == "alice"
     assert body["token"]
     assert body["expires_in_hours"] == 24
+
+
+def test_auth_token_requires_bearer_when_auth_required(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.auth_token(user_id="Alice")
+
+    assert exc_info.value.status_code == 401
+
+
+def test_auth_token_allows_self_refresh_when_auth_required(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+    token = main.user_auth.generate_token("Alice")
+
+    body = main.auth_token(user_id="Alice", authorization=f"Bearer {token}")
+
+    assert body["user_id"] == "alice"
+    assert body["token"]
+
+
+def test_auth_token_rejects_cross_user_mint_when_auth_required(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+    token = main.user_auth.generate_token("Alice")
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.auth_token(user_id="Bob", authorization=f"Bearer {token}")
+
+    assert exc_info.value.status_code == 403

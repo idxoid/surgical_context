@@ -363,6 +363,11 @@ def _header_value(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _canonical_user_id(value: str | None) -> str:
+    """Canonicalize an explicit user id without creating/updating a user record."""
+    return str(value or "").lower().strip()
+
+
 def _resolve_request_user(
     x_user_id: Any = None,
     authorization: Any = None,
@@ -2365,12 +2370,29 @@ def impact(
 
 
 @app.post("/auth/token", response_model=AuthTokenResponse)
-def auth_token(user_id: str = None):  # type: ignore
-    """Generate JWT token for multi-user mode."""
-    user_id = user_auth.identify_user(user_id)
-    token = user_auth.generate_token(user_id)
-    logger.info(f"✅ Token issued for user: {user_id}")
-    return {"token": token, "user_id": user_id, "expires_in_hours": 24}
+def auth_token(
+    user_id: str = None,  # type: ignore
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
+    """Generate a signed token.
+
+    With AUTH_REQUIRED=false this is a local bootstrap/dev endpoint. With
+    AUTH_REQUIRED=true an existing bearer token is required, and callers may
+    only mint a replacement token for themselves.
+    """
+    if AUTH_REQUIRED:
+        requester = _resolve_request_user(x_user_id, authorization, require_auth=True)
+        requested_user = _canonical_user_id(user_id) or requester
+        if requested_user != requester:
+            raise HTTPException(status_code=403, detail="Cannot issue token for another user")
+        token_user = requester
+    else:
+        token_user = user_auth.identify_user(user_id)
+
+    token = user_auth.generate_token(token_user)
+    logger.info(f"✅ Token issued for user: {token_user}")
+    return {"token": token, "user_id": token_user, "expires_in_hours": 24}
 
 
 @app.get("/auth/users", response_model=UsersResponse)
@@ -2402,8 +2424,11 @@ def audit_actions(
     authorization: str = Header(None),
 ):
     """Get recent audit log entries."""
-    _resolve_request_user(x_user_id, authorization)
-    actions = audit_log.get_recent_actions(user_id=user_id, limit=limit)
+    requester = _resolve_request_user(x_user_id, authorization)
+    requested_user = _canonical_user_id(user_id)
+    if requested_user and requested_user != requester:
+        raise HTTPException(status_code=403, detail="Cannot read audit actions for another user")
+    actions = audit_log.get_recent_actions(user_id=requester, limit=limit)
     return {"actions": actions, "total": len(actions)}
 
 
