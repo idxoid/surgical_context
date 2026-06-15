@@ -867,6 +867,7 @@ def test_ask_rejects_file_path_outside_workspace_root(monkeypatch, tmp_path):
 
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
+    seen_session_users: list[str] = []
 
     class FakeDriverDb(FakeDb):
         def get_symbol_uid_by_name(self, name, workspace_id="local/surgical_context@main"):
@@ -877,6 +878,7 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
 
     @contextmanager
     def impact_db_session(user_id="anonymous"):
+        seen_session_users.append(user_id)
         yield FakeDriverDb()
 
     fake_affects = types.ModuleType("sidecar.indexer.affects")
@@ -899,11 +901,44 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     monkeypatch.setitem(sys.modules, "sidecar.indexer.affects", fake_affects)
     monkeypatch.setattr(main, "db_session", impact_db_session)
 
-    body = main.impact(symbol="process_payment")
+    body = main.impact(symbol="process_payment", x_user_id="Alice")
 
     assert body["symbol_uid"] == "symbol-1"
     assert body["affected_count"] == 1
     assert body["affected_files"] == ["/repo/caller.py"]
+    assert seen_session_users == ["alice"]
+
+
+def test_cloud_status_uses_request_user_for_db_session(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    seen_session_users: list[str] = []
+
+    class FakeCloudDb(FakeDb):
+        def health_check(self):
+            return {"status": "ok"}
+
+        def is_cloud(self):
+            return True
+
+        def is_fallback(self):
+            return False
+
+    @contextmanager
+    def cloud_db_session(user_id="anonymous"):
+        seen_session_users.append(user_id)
+        yield FakeCloudDb()
+
+    monkeypatch.setattr(main, "db_session", cloud_db_session)
+
+    body = main.cloud_status(x_user_id="Alice")
+
+    assert body == {
+        "cloud_enabled": True,
+        "using_aura": True,
+        "using_fallback": False,
+        "health": {"status": "ok"},
+    }
+    assert seen_session_users == ["alice"]
 
 
 def test_audit_actions_endpoint_returns_actions(monkeypatch):

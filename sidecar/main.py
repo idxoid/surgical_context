@@ -2333,9 +2333,9 @@ def impact(
     x_workspace: str = Header(None),
 ):
     """Return downstream dependents affected by a change to the given symbol."""
-    _resolve_request_user(x_user_id, authorization)
+    user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
-    with db_session() as db:
+    with db_session(user_id=user_id) as db:
         from sidecar.indexer.affects import AFFECTSIndexer
 
         symbol_uid = db.get_symbol_uid_by_name(symbol, workspace_id=workspace_id)
@@ -2383,8 +2383,8 @@ def list_users(x_user_id: str = Header(None), authorization: str = Header(None))
 @app.get("/status/cloud", response_model=CloudStatusResponse)
 def cloud_status(x_user_id: str = Header(None), authorization: str = Header(None)):
     """Get cloud (Aura) connection status."""
-    _resolve_request_user(x_user_id, authorization)
-    with db_session() as db:
+    user_id = _resolve_request_user(x_user_id, authorization)
+    with db_session(user_id=user_id) as db:
         health = db.health_check()
         return {
             "cloud_enabled": True,
