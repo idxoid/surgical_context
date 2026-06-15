@@ -637,10 +637,36 @@ def test_unified_search_blends_docs_and_symbols(monkeypatch):
     )
 
     assert body["trace_id"] == "search-trace"
-    # Cascade dead (Phase 5): arbitrator-based graph-neighbor enrichment removed;
-    # /search blends docs + vector symbols only (no graph:neighbor provenance).
     assert body["total"] >= 2
     assert {result["type"] for result in body["results"]} == {"doc", "symbol"}
+
+
+def test_unified_search_includes_axis_graph_neighbors(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    # The real graph walk needs a live graph; here we mock the axis adapter to
+    # assert the wiring (include_graph + symbol -> adapter -> graph:neighbor rows).
+    monkeypatch.setattr(
+        main,
+        "_axis_graph_neighbors",
+        lambda **kw: [
+            {
+                "type": "symbol",
+                "title": "validate_amount",
+                "file_path": "/repo/payment.py",
+                "content": "",
+                "score": 0.5,
+                "scores": {"graph": 0.5},
+                "provenance": ["graph:neighbor"],
+                "metadata": {"uid": "u:validate_amount", "depth": 1, "reach": 1},
+            }
+        ],
+    )
+
+    body = main.unified_search(
+        main.UnifiedSearchRequest(query="payment", symbol="process_payment", limit=5),
+    )
+
+    assert any("graph:neighbor" in r["provenance"] for r in body["results"])
 
 
 def test_auth_required_accepts_valid_bearer_token(monkeypatch):

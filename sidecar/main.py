@@ -1524,6 +1524,58 @@ def search(
     return {"results": _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)}
 
 
+def _axis_graph_neighbors(
+    *, symbol: str, workspace_id: str, user_id: str, limit: int
+) -> list[dict[str, Any]]:
+    """Axis replacement for the deleted arbitrator graph-neighbor enrichment in
+    /search/unified: resolve ``symbol`` to its workspace uid(s), then return its
+    structural neighbours (one-hop PROXIMITY walk) as ``symbol`` search results
+    tagged ``graph:neighbor``. Best-effort — empty on any error (never fatal to
+    the search)."""
+    from sidecar.axis.graph_walk import EdgeProfile, walk_neighbours
+
+    try:
+        with db_session(user_id=user_id) as db:
+            with db.driver.session() as session:
+                rec = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $ws})-[:CONTAINS]->(s:Symbol {name: $name})
+                    RETURN collect(DISTINCT s.uid) AS uids
+                    """,
+                    ws=workspace_id,
+                    name=symbol,
+                ).single()
+            seed_uids = (rec and rec.get("uids")) or []
+            if not seed_uids:
+                return []
+            neighbours = walk_neighbours(
+                db,
+                workspace_id,
+                seed_uids,
+                edges=EdgeProfile.PROXIMITY,
+                direction="undirected",
+                max_hops=1,
+                limit=limit,
+            )
+    except Exception:
+        logger.exception("/search axis graph-neighbor adapter failed; skipping graph results")
+        return []
+
+    return [
+        {
+            "type": "symbol",
+            "title": n.name,
+            "file_path": n.file_path,
+            "content": "",
+            "score": float(1.0 / (n.depth + 1)),
+            "scores": {"graph": float(1.0 / (n.depth + 1))},
+            "provenance": ["graph:neighbor"],
+            "metadata": {"uid": n.uid, "depth": n.depth, "reach": n.reach},
+        }
+        for n in neighbours
+    ]
+
+
 @app.post("/search/unified", response_model=UnifiedSearchResponse)
 def unified_search(
     req: UnifiedSearchRequest,
@@ -1577,10 +1629,18 @@ def unified_search(
                     }
                 )
 
-        # /search/unified graph-neighbor enrichment removed with the cascade
-        # (Phase 5): it used the ContextArbitrator. ``include_graph`` no longer
-        # adds arbitrator-derived neighbors; an axis-based graph adapter can
-        # restore it later. retrieval_trace_payload stays None.
+        # Graph-neighbor enrichment via the axis graph walk (replaces the deleted
+        # arbitrator path): one-hop PROXIMITY neighbours of req.symbol, best-effort.
+        if req.include_graph and req.symbol:
+            with trace.stage("graph_neighbors"):
+                results.extend(
+                    _axis_graph_neighbors(
+                        symbol=req.symbol,
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        limit=req.limit,
+                    )
+                )
 
         ranked = dedupe_and_rank(results, req.limit)
         trace.token_counts["query"] = estimate_text_tokens(req.query)
