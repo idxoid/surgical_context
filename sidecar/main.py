@@ -970,10 +970,13 @@ def _context_file_paths(ctx: PromptContext) -> list[str]:
 
 
 def _ask_axis_first_enabled() -> bool:
-    """``ASK_AXIS_FIRST`` opts the /ask cascade into trying the axis pipeline
-    before the legacy symbol/file/workspace tiers. Default off — unset means
-    zero behaviour change."""
-    return os.environ.get("ASK_AXIS_FIRST", "").strip().lower() in {
+    """The axis pipeline is the DEFAULT /ask provider (Phase 3 cutover).
+
+    Unset / truthy ``ASK_AXIS_FIRST`` → axis leads; the legacy ranking cascade
+    remains only as the safety-net fall-through (when axis renders nothing) and
+    as an explicit ROLLBACK: ``ASK_AXIS_FIRST=0`` (or false/no/off) forces the
+    pre-axis cascade. Deleting the cascade is Phase 5, gated on this cutover."""
+    return os.environ.get("ASK_AXIS_FIRST", "1").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -1016,9 +1019,10 @@ def _resolve_ask_context(
     workspace_id: str,
     db: Any,
 ) -> PromptContext:
-    # Axis-first (opt-in via ASK_AXIS_FIRST, default off): the canonical axis
-    # pipeline leads; on nothing-renderable / failure we fall straight through
-    # to the unchanged symbol -> file -> workspace -> direct cascade below.
+    # Axis is the default provider (Phase 3 cutover; ASK_AXIS_FIRST=0 rolls back):
+    # the canonical axis pipeline leads; on nothing-renderable / failure we fall
+    # straight through to the symbol -> file -> workspace -> direct cascade below,
+    # which stays as the safety net + rollback path until Phase 5 deletes it.
     if _ask_axis_first_enabled():
         axis_ctx = _try_axis_context(req=req, workspace_id=workspace_id, db=db)
         if axis_ctx is not None:
