@@ -27,11 +27,11 @@ This folder contains the current product and technical documentation for the `co
 - **[spec_doc_anchor.md](docs/spec_doc_anchor.md)** — FROM/COVERS relationships
 
 **Context Assembly:**
-- **[spec_arbitrator.md](docs/spec_arbitrator.md)** — current orchestrator contract: unified ranking path, graph-only fallback, and prompt-contract assembly
-- **[spec_intent_classifier.md](docs/spec_intent_classifier.md)** — query intent → content tier ranking (Phase 6 design)
-- **[spec_token_budget_bfs.md](docs/spec_token_budget_bfs.md)** — BFS with token constraints
-- **[spec_context_deduplicator.md](docs/spec_context_deduplicator.md)** — remove redundant symbols
-- **[spec_unified_ranking.md](docs/spec_unified_ranking.md)** — current graph + semantic ranker, role backfill, and score blending
+- **[architectura.md](docs/architectura.md)** — current end-to-end architecture and retrieval flow
+- **[axis_terminology.md](docs/axis_terminology.md)** — vocabulary for axis retrieval, roles, and traversal layers
+- **[spec_context_retrieval_layers.md](docs/spec_context_retrieval_layers.md)** — layered retrieval model and graph/vector boundaries
+- **[retrieval_kernel.md](docs/retrieval_kernel.md)** — retrieval provider contracts and kernel direction
+- **[spec_prompt_contract_observability.md](docs/spec_prompt_contract_observability.md)** — prompt contract fields, trace metadata, and observability
 
 **APIs & Infrastructure:**
 - **[spec_sidecar_api.md](docs/spec_sidecar_api.md)** — FastAPI endpoints
@@ -67,13 +67,13 @@ The product is now described more narrowly than before:
 - **not** a general AI coding platform
 - **yes** a local-first, model-agnostic context engine for code understanding and change impact
 
-The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/context modules, a workspace-scoped unified ranker, canonical role taxonomy normalization, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
+The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/axis retrieval modules, structural role retrieval, prompt-context adapters, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
 
 Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, package/module fallback targets for workspace-level questions such as `pydantic.v1`, trace-dependency recovery hardening for sparse import topology (runtime symbol seeding + sibling-directory expansion with explicit recovery provenance), TypeScript `object_api` indexing with cross-language `SEMANTIC_HINT` HTTP route hints (`ts_http_route_hints`), a relaxed `trace_dependency` benchmark gate for near-perfect single-axis recall, **workspace path sandboxing** (API + graph-resolved reads under indexed `project_path`; queued `/index` registers root immediately), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_sidecar_api.md](docs/spec_sidecar_api.md) and [road_map.md](docs/road_map.md).
 
 The local setup and smoke-test path live in **[local_development.md](docs/local_development.md)** and `scripts/local_dev.py`. The most important open gaps are broader real-repo benchmark coverage beyond the current FastAPI, Redux Toolkit, and Pydantic baselines, continued precision work on broad/doc-heavy retrieval paths, doc-anchor confidence/type scoring, consistent workspace/branch metadata in the prompt contract, and extension synchronization/accessibility polish. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](docs/road_map.md)** for the canonical backlog in this branch.
 
-**Related experiments (external repos, not submodules):** [context-deduplicator](https://github.com/idxoid/context-deduplicator) and [marginal-utility-selector](https://github.com/idxoid/marginal-utility-selector) were early standalone prototypes. Production logic lives in `sidecar/context/` (`PromptCompiler`, `BudgetPruner`, `sidecar/context/deduplicator.py`).
+**Related experiments (external repos, not submodules):** [context-deduplicator](https://github.com/idxoid/context-deduplicator) and [marginal-utility-selector](https://github.com/idxoid/marginal-utility-selector) were early standalone prototypes. Production retrieval now lives in `sidecar/axis/`, with the shared prompt contract in `sidecar/context_types.py`.
 
 ---
 

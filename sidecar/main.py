@@ -18,11 +18,10 @@ from sidecar.ai.engine import AIEngine
 from sidecar.api.sse import format_sse
 from sidecar.auth import AuditLog, UserAuth
 from sidecar.cache.layered import default_cache
-from sidecar.doc_resolver import DocResolver
-from sidecar.overlay import InMemoryOverlay
 from sidecar.context_types import RESOLVER_VERSION, DocChunk, PromptContext, SymbolContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
+from sidecar.doc_resolver import DocResolver
 from sidecar.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
 from sidecar.history import build_history_provider, hash_history_text, parse_retention_days
 from sidecar.indexer.job_log import IndexJobLog
@@ -34,7 +33,7 @@ from sidecar.observability import (
     estimate_text_tokens,
     new_trace_id,
 )
-from sidecar.retrieval import neo4j_workspace_meta
+from sidecar.overlay import InMemoryOverlay
 from sidecar.search import UnifiedSearchResult, dedupe_and_rank
 from sidecar.workspace import WorkspaceResolver
 
@@ -960,10 +959,9 @@ def _context_file_paths(ctx: PromptContext) -> list[str]:
 def _ask_axis_first_enabled() -> bool:
     """The axis pipeline is the DEFAULT /ask provider (Phase 3 cutover).
 
-    Unset / truthy ``ASK_AXIS_FIRST`` → axis leads; the legacy ranking cascade
-    remains only as the safety-net fall-through (when axis renders nothing) and
-    as an explicit ROLLBACK: ``ASK_AXIS_FIRST=0`` (or false/no/off) forces the
-    pre-axis cascade. Deleting the cascade is Phase 5, gated on this cutover."""
+    Unset / truthy ``ASK_AXIS_FIRST`` means axis leads. False values disable
+    the symbol-tier axis provider and leave only the file/workspace/direct
+    fallback ladder; the old ranking cascade is gone."""
     return os.environ.get("ASK_AXIS_FIRST", "1").strip().lower() in {
         "1",
         "true",
@@ -986,7 +984,7 @@ def _try_axis_context(
     *, req: AskRequest, workspace_id: str, db: Any, anchor_path: str | None = None
 ) -> PromptContext | None:
     """Best-effort axis context. Any failure (missing axis index, db/Lance
-    error) degrades to ``None`` so the legacy cascade still answers.
+    error) degrades to ``None`` so the remaining fallback ladder can answer.
 
     ``anchor_path`` is the already-sandboxed IDE open file (the ask anchor) —
     callers must sandbox it before passing it in."""
@@ -1017,9 +1015,8 @@ def _resolve_ask_context(
     if req.file_path:
         safe_file_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
 
-    # Axis is the default provider (Phase 3 cutover; ASK_AXIS_FIRST=0 rolls back):
-    # the canonical axis pipeline leads; on nothing-renderable / failure we fall
-    # straight through to the file -> workspace -> direct providers below.
+    # Axis is the default symbol-tier provider. On nothing-renderable / failure
+    # we fall straight through to the file -> workspace -> direct providers below.
     if _ask_axis_first_enabled():
         axis_ctx = _try_axis_context(
             req=req, workspace_id=workspace_id, db=db, anchor_path=safe_file_path or None
@@ -1028,13 +1025,10 @@ def _resolve_ask_context(
             _context_budget(axis_ctx)["ask_level"] = "axis"
             return axis_ctx
 
-    # Cascade dead (Phase 5): the symbol-tier ContextArbitrator is gone; axis (the
-    # default above) owns symbol retrieval. When a symbol was requested but axis
-    # rendered nothing, mark it not-found so the fallback ladder reports it — the
-    # same /ask contract the old arbitrator tier produced.
-    symbol_error = (
-        f"Error: Symbol '{req.symbol}' not found in graph." if req.symbol else ""
-    )
+    # Axis owns symbol retrieval. When a symbol was requested but axis rendered
+    # nothing, mark it not-found so the fallback ladder preserves the /ask
+    # not-found contract.
+    symbol_error = f"Error: Symbol '{req.symbol}' not found in graph." if req.symbol else ""
     if req.file_path:
         file_ctx = _context_from_file(
             file_path=safe_file_path,
@@ -1833,10 +1827,9 @@ def ask_axis(
     """Axis-pipeline answer: intent → roles → ranked candidates → context.
 
     Returns structured retrieval evidence WITHOUT calling an LLM. Caller
-    plugs ``context_bundles`` into its own prompt. Useful for A/B
-    comparing against the legacy ``/ask`` cascade, for headless
-    retrieval consumers (CI gates, indexers, tests), and for
-    incrementally migrating UI surfaces off the legacy stack.
+    plugs ``context_bundles`` into its own prompt. Useful for headless
+    retrieval consumers (CI gates, indexers, tests) and UI surfaces that
+    need retrieval evidence without answer generation.
     """
 
     from sidecar.axis.pipeline import run_axis_retrieval
@@ -1884,9 +1877,7 @@ def ask_axis(
         # produced — see ``expand_candidates_via_neighbourhood`` auto-promote.
         candidates_by_role: dict[str, list[AxisCandidateResponse]] = {}
         intent_role_order = [m.role for m in result.intent]
-        promoted_roles = [
-            r for r in result.raw_by_role if r not in set(intent_role_order)
-        ]
+        promoted_roles = [r for r in result.raw_by_role if r not in set(intent_role_order)]
         for role in intent_role_order + promoted_roles:
             candidates = result.raw_by_role.get(role) or []
             if not candidates:
@@ -1911,10 +1902,7 @@ def ask_axis(
             AxisContextBundleResponse(
                 role=bundle.role,
                 seed=AxisContextSymbolResponse(**bundle.seed.to_dict()),
-                related=[
-                    AxisContextSymbolResponse(**s.to_dict())
-                    for s in bundle.related
-                ],
+                related=[AxisContextSymbolResponse(**s.to_dict()) for s in bundle.related],
             )
             for bundle in result.bundles
         ]

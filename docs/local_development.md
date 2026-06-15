@@ -97,7 +97,7 @@ that workspace. The root is set when you run `POST /index` (manifest field
 | Incremental index / file fallback before first full index | `400` |
 
 Relative paths in API requests are resolved under the project root. The smoke
-test and `local_dev.py` index `sidecar/context` (or the full repo in
+test and `local_dev.py` index `sidecar/axis` (or the full repo in
 `--full-repo` mode) so the default workspace has a registered root.
 
 With `AUTH_REQUIRED=false` (local default), this prevents other local processes
@@ -159,11 +159,11 @@ The smoke test checks the local daily-driver path:
 - local Neo4j starts through Docker Compose unless `--skip-storage` is passed
 - sidecar `/health` responds; if no sidecar is running, the smoke test starts a temporary sidecar and stops it at the end
 - graph provider status responds
-- code indexing works against the fast default slice: `sidecar/context`
+- code indexing works against the fast default slice: `sidecar/axis`
 - docs indexing works against the fast default fixture: `tests/fixtures/smoke_docs`
 - unified search returns a valid response
 - `/ask` returns context and trace metadata
-- `/impact` responds for the smoke symbol
+- `/impact` responds for the smoke symbol (`run_axis_retrieval` by default)
 - `/metrics` returns dashboard-ready sidecar metrics
 
 The default smoke test is intentionally small. Use the full repo mode only when you want a heavier verification pass:

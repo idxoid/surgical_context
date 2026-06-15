@@ -88,26 +88,6 @@ class FakeDb:
         self.closed = True
 
 
-class FakeContextArbitrator:
-    def __init__(
-        self,
-        db,
-        overlay=None,
-        vector_db=None,
-        workspace_id="local/surgical_context@main",
-        **kwargs,
-    ):
-        self.db = db
-        self.overlay = overlay
-        self.vector_db = vector_db
-        self.workspace_id = workspace_id
-
-    def get_context_for_symbol(self, symbol, question="", token_budget=4000):
-        if symbol == "missing":
-            return "Error: Symbol 'missing' not found in graph."
-        return FakeCtx()
-
-
 @contextmanager
 def fake_db_session(user_id="anonymous"):
     db = FakeDb()
@@ -179,10 +159,12 @@ def import_main_with_fakes(monkeypatch):
     monkeypatch.setitem(sys.modules, "sidecar.ai.engine", fake_engine)
 
     main = importlib.import_module("sidecar.main")
-    # Cascade dead (Phase 5): the legacy ContextArbitrator is gone; /ask uses the
-    # axis provider by default. Fake the axis seam so endpoint tests get a
-    # deterministic context; fallback tests override it to return None.
-    def fake_context_from_axis(question, *, workspace_id="", db=None, token_budget=4000, anchor_path=None):
+
+    # /ask uses the axis provider by default. Fake that seam so endpoint tests
+    # get a deterministic context; fallback tests override it to return None.
+    def fake_context_from_axis(
+        question, *, workspace_id="", db=None, token_budget=4000, anchor_path=None
+    ):
         return FakeCtx()
 
     monkeypatch.setattr(main, "_context_from_axis", fake_context_from_axis)

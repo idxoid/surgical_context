@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_DIR = ROOT / "extension"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
-SMOKE_PROJECT_DIR = ROOT / "sidecar" / "context"
+SMOKE_PROJECT_DIR = ROOT / "sidecar" / "axis"
 SMOKE_DOCS_DIR = ROOT / "tests" / "fixtures" / "smoke_docs"
 
 LOCAL_DIRS = [
@@ -718,7 +718,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument(
         "--project-path",
         default="",
-        help="Code path to index. Defaults to sidecar/context for a fast smoke test.",
+        help="Code path to index. Defaults to sidecar/axis for a fast smoke test.",
     )
     smoke_parser.add_argument(
         "--docs-path",
@@ -730,8 +730,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the full repo and docs/ as smoke index targets.",
     )
-    smoke_parser.add_argument("--symbol", default="ContextArbitrator")
-    smoke_parser.add_argument("--question", default="How does dirty state work?")
+    smoke_parser.add_argument("--symbol", default="run_axis_retrieval")
+    smoke_parser.add_argument(
+        "--question",
+        default="How does the axis retrieval pipeline assemble context?",
+    )
     smoke_parser.add_argument("--token-budget", type=int, default=2000)
     smoke_parser.add_argument("--timeout", type=float, default=10.0)
     smoke_parser.add_argument("--long-timeout", type=float, default=180.0)

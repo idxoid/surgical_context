@@ -11,13 +11,13 @@ Modes
       python run_demo.py --no-index
 
   Non-interactive, symbol + question supplied:
-      python run_demo.py --symbol ContextArbitrator --question "How does dirty state work?"
+      python run_demo.py --symbol run_axis_retrieval --question "How does the axis retrieval pipeline assemble context?"
 
   Symbol only — question asked interactively:
-      python run_demo.py --symbol ContextArbitrator
+      python run_demo.py --symbol run_axis_retrieval
 
   Question only — symbol asked interactively:
-      python run_demo.py --question "How does dirty state work?"
+      python run_demo.py --question "How does the axis retrieval pipeline assemble context?"
 
   Print assembled prompt, skip LLM:
       python run_demo.py --no-llm
@@ -42,6 +42,12 @@ NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+WORKSPACE_ID = os.getenv("DEFAULT_WORKSPACE_ID", "local/surgical_context@main")
+DEFAULT_SYMBOL = "run_axis_retrieval"
+DEFAULT_QUESTION = "How does the axis retrieval pipeline assemble context?"
+
+os.environ.setdefault("LANCEDB_PATH", LANCEDB_PATH)
+os.environ.setdefault("INDEX_PROFILE", "axis_python_v1")
 
 SEP = "=" * 70
 SEP2 = "-" * 70
@@ -79,42 +85,67 @@ def clean_dbs():
 
 
 def index_code():
-    from sidecar.indexer.code import run_indexing
+    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+    from sidecar.indexer.fast import run_fast_indexing
 
     for rel in ["sidecar"]:
         abs_p = os.path.join(ROOT, rel)
         if os.path.isdir(abs_p):
             print(f"  Indexing code: {abs_p}")
-            run_indexing(abs_p)
+            run_fast_indexing(
+                abs_p,
+                workspace_id=WORKSPACE_ID,
+                index_profile=AXIS_PYTHON_V1_PROFILE,
+            )
         else:
             print(f"  Skipping (not found): {abs_p}")
 
 
 def index_docs():
+    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
     from sidecar.indexer.docs import index_docs as _index_docs
 
     abs_p = os.path.join(ROOT, "docs")
+    workspace_id = resolve_index_profile(AXIS_PYTHON_V1_PROFILE).workspace_id(WORKSPACE_ID)
     print(f"  Indexing docs: {abs_p}")
-    _index_docs(abs_p)
+    _index_docs(abs_p, workspace_id=workspace_id)
 
 
 def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"):
-    from sidecar.context.arbitrator import ContextArbitrator
-    from sidecar.context.types import DocChunk
+    from sidecar.axis.pipeline import run_axis_retrieval
+    from sidecar.axis.prompt_provider import axis_bundles_to_prompt_context
+    from sidecar.context_types import DocChunk
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.database.neo4j_client import Neo4jClient
+    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-    lance = LanceDBClient()
+    lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+    workspace_id = resolve_index_profile(AXIS_PYTHON_V1_PROFILE).workspace_id(WORKSPACE_ID)
+    retrieval_question = f"{symbol}: {question}" if symbol else question
 
     try:
-        arb = ContextArbitrator(db)
-        ctx = arb.get_context_for_symbol(symbol)
-        if isinstance(ctx, str):
-            print(f"\n  ERROR: {ctx}")
+        result = run_axis_retrieval(
+            retrieval_question,
+            workspace_id=workspace_id,
+            db=db,
+            lance=lance,
+            with_context=True,
+            intent_budget=True,
+        )
+        intent = ", ".join(match.role for match in result.intent)
+        ctx = axis_bundles_to_prompt_context(
+            result.bundles,
+            question=retrieval_question,
+            workspace_id=workspace_id,
+            intent=intent,
+            render_mode=result.render_mode,
+        )
+        if ctx is None:
+            print("\n  ERROR: axis retrieval returned no renderable context.")
             return
 
-        raw_chunks = lance.search(f"{symbol} {question}", limit=3)
+        raw_chunks = lance.search(retrieval_question, limit=3, workspace_id=workspace_id)
         ctx.documentation = [
             DocChunk(
                 source_file=d["file_path"],
@@ -211,8 +242,8 @@ def main():
     first = True
     while True:
         if first:
-            symbol = args.symbol or _prompt("Symbol", "ContextArbitrator")
-            question = args.question or _prompt("Question", "How does dirty state work?")
+            symbol = args.symbol or _prompt("Symbol", DEFAULT_SYMBOL)
+            question = args.question or _prompt("Question", DEFAULT_QUESTION)
             first = False
         else:
             print(f"\n{SEP2}")

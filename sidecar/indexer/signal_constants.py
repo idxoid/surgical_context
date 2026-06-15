@@ -1,4 +1,4 @@
-"""Shared constants for UnifiedRanker scoring and pruning heuristics."""
+"""Shared constants for structural scoring and pruning heuristics."""
 
 NOISE_PATH_PATTERNS = (
     "/tests/",
