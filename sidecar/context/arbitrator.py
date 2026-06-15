@@ -13,7 +13,7 @@ from sidecar.context.intent_classifier import (
     IntentSignal,
 )
 from sidecar.context.prompt_compiler import PromptCompiler
-from sidecar.context.ranker.signal_constants import NOISE_PATH_PATTERNS
+from sidecar.indexer.signal_constants import NOISE_PATH_PATTERNS
 from sidecar.context.role_taxonomy import normalize_roles
 from sidecar.context.types import PromptContext, SubgraphNode
 from sidecar.context.unified_ranker import (

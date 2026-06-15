@@ -53,25 +53,25 @@ from sidecar.context.ranker.candidate_pool import (
 from sidecar.context.ranker.pruning import BudgetPruner
 from sidecar.context.ranker.role_fulfilment import RoleFulfilment
 from sidecar.context.ranker.scoring import RankerScoring
-from sidecar.context.ranker.signal_constants import (
+from sidecar.indexer.signal_constants import (
     EXPLORATION_NOISE_FACTOR as _EXPLORATION_NOISE_FACTOR,
 )
-from sidecar.context.ranker.signal_constants import (
+from sidecar.indexer.signal_constants import (
     IMPACT_TOPIC_STOPWORDS as _IMPACT_TOPIC_STOPWORDS,
 )
-from sidecar.context.ranker.signal_constants import (
+from sidecar.indexer.signal_constants import (
     LOW_SIGNAL_DOC_PATH_PATTERNS as _LOW_SIGNAL_DOC_PATH_PATTERNS,
 )
-from sidecar.context.ranker.signal_constants import (
+from sidecar.indexer.signal_constants import (
     NOISE_FACTOR as _NOISE_FACTOR,
 )
-from sidecar.context.ranker.signal_constants import (
+from sidecar.indexer.signal_constants import (
     NOISE_NAME_PREFIXES as _NOISE_NAME_PREFIXES,
 )
-from sidecar.context.ranker.signal_constants import (
+from sidecar.indexer.signal_constants import (
     NOISE_NAME_SUBSTRINGS as _NOISE_NAME_SUBSTRINGS,
 )
-from sidecar.context.ranker.signal_constants import (
+from sidecar.indexer.signal_constants import (
     NOISE_PATH_PATTERNS as _NOISE_PATH_PATTERNS,
 )
 from sidecar.context.role_taxonomy import normalize_roles

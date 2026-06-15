@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from sidecar.context.intent_classifier import Intent
 
 from .candidate_pool import Candidate
-from .signal_constants import FOCUS_QUERY_STOPWORDS
+from sidecar.indexer.signal_constants import FOCUS_QUERY_STOPWORDS
 
 if TYPE_CHECKING:
     from sidecar.context.types import SubgraphNode

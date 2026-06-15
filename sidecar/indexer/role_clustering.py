@@ -16,8 +16,7 @@ from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sidecar.context.mechanism_registry import merge_preloaded_mechanisms_into_role_catalog
-from sidecar.context.ranker.signal_constants import NOISE_PATH_PATTERNS
+from sidecar.indexer.signal_constants import NOISE_PATH_PATTERNS
 from sidecar.indexer.external_boundary import EXTERNAL_INTEGRATION_PLUMBING_ROOTS
 from sidecar.indexer.role_cascade import (
     SymbolRoleAssignment,
@@ -922,7 +921,6 @@ def persist_role_taxonomy(
     """Save assignment summary + catalog on Workspace and roles on Symbol nodes."""
     payload = json.dumps(summary.to_dict(), sort_keys=True)
     catalog_dict = build_role_catalog(present_roles or summary.present_roles).to_dict()
-    catalog_dict = merge_preloaded_mechanisms_into_role_catalog(catalog_dict)
     catalog_payload = json.dumps(catalog_dict, sort_keys=True)
     with db.driver.session() as session:
         session.run(

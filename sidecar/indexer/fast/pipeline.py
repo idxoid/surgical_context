@@ -37,7 +37,7 @@ sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 )
 
-from sidecar.context.framework_hints import FrameworkHintsIndexer
+from sidecar.indexer.framework_hints import FrameworkHintsIndexer
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.index_profile import (
@@ -1767,10 +1767,6 @@ def run_fast_indexing(
         # Universal replacement for the hand-curated role heuristics that
         # still exist as fallbacks in mechanism_registry / unified_ranker.
         t_stage = time.perf_counter()
-        from sidecar.context.mechanism_registry import (
-            ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY,
-            preloaded_mechanism_catalog_extensions,
-        )
         from sidecar.indexer.role_clustering import (
             derive_and_persist_role_taxonomy,
         )
@@ -1786,10 +1782,8 @@ def run_fast_indexing(
             "filtered_sample_size": summary.filtered_sample_size,
             "present_role_count": len(summary.present_roles),
         }
-        _preloaded_mech = preloaded_mechanism_catalog_extensions()
         stats["role_catalog"] = {
             "present_roles": len(summary.present_roles),
-            "preloaded_mechanisms": len(_preloaded_mech[ROLE_CATALOG_MECHANISM_REQUIRED_ROLES_KEY]),
         }
 
         _use_repository_profile(

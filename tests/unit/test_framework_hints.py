@@ -1,4 +1,4 @@
-from sidecar.context.framework_hints import (
+from sidecar.indexer.framework_hints import (
     FrameworkHintsIndexer,
     _matches_call_argument_rule,
     _matches_callee_qualified_gate,
