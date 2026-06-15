@@ -752,26 +752,29 @@ class PythonAdapter(TreeSitterAdapter):
         return out
 
     def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
-        """HOOK_CONFIG / HOOK_EXEC facts — make named-hook boundaries transparent.
+        """Hook/event facts — make named-hook & pub/sub boundaries transparent.
 
-        Two syntactic facts bind a *site* to the hook *declaration* it names:
+        Each fact carries ``kind`` (config==subscribe / exec==publish),
+        ``target_kind`` (the topic shape: ``method`` literal name / ``object``
+        signal) and ``via`` (the api token). The linker turns one fact into up to
+        two edges — an EVENT edge to the *topic* and a HOOK edge to the *api
+        wrapper* (see ``link_hooks``):
 
-        * **config** — a registration call/decorator naming the hook by string
-          literal: ``event.listen(target, "before_insert", fn)`` or
-          ``@event.listens_for(target, "before_insert")``. The register site
-          (the decorated function, or the enclosing function of the call) is
-          bound to the declaration method ``before_insert``.
-        * **exec** — a dispatch invocation naming the hook by attribute:
-          ``obj.dispatch.before_insert(...)``. The invoke site is bound to the
-          declaration.
+        * **config** — a registration call/decorator: ``event.listen(target,
+          "before_insert", fn)``, ``@event.listens_for(target, "before_insert")``,
+          ``@receiver(post_save)``, ``signal.connect(fn)``. The register site
+          (decorated function, or enclosing function of the call) subscribes to
+          the topic via the api wrapper.
+        * **exec** — a dispatch/publish: ``obj.dispatch.before_insert(...)`` or
+          ``signal.send(...)``. The invoke site publishes to the topic.
 
         Like decorations these are syntactic facts (a string literal arg / a
-        ``.dispatch.`` attribute), so the edge is *derived*, not guessed — the
-        hook name is then resolved to a real declaration node by the linker
-        (name resolution, as for CALLS). The target type that would disambiguate
-        *which* event class lives behind a dynamic dispatch is not statically
-        available, so we emit the name only; the linker binds it solely when
-        unambiguous (precision over recall — see ``link_hooks``).
+        signal object / a ``.dispatch.``/``.send`` attribute), so the edge is
+        *derived*, not guessed — names are resolved to real declaration nodes by
+        the linker (name resolution, as for CALLS). The target type that would
+        disambiguate *which* event class lives behind a dynamic dispatch is not
+        statically available, so we emit the name only; the linker binds it solely
+        when unambiguous (precision over recall — see ``link_hooks``).
         """
         if tree is None:
             tree = self._parse(source_code)
@@ -819,10 +822,10 @@ class PythonAdapter(TreeSitterAdapter):
                 return _node_text(leaf) if leaf is not None else ""
             return ""
 
-        def emit(site_uid: str, hook_name: str, kind: str, target_kind: str) -> None:
+        def emit(site_uid: str, hook_name: str, kind: str, target_kind: str, via: str) -> None:
             if not site_uid or not hook_name:
                 return
-            key = (site_uid, hook_name, kind, target_kind)
+            key = (site_uid, hook_name, kind, target_kind, via)
             if key in seen:
                 return
             seen.add(key)
@@ -832,6 +835,7 @@ class PythonAdapter(TreeSitterAdapter):
                     "hook_name": hook_name,
                     "kind": kind,
                     "target_kind": target_kind,
+                    "via": via,
                     "file_path": file_path,
                 }
             )
@@ -865,28 +869,32 @@ class PythonAdapter(TreeSitterAdapter):
             if base in register_names:
                 hook_name = hook_name_from_args(node)
                 if hook_name:
-                    emit(site_uid_for(node, decorated=True), hook_name, "config", "method")
+                    emit(site_uid_for(node, decorated=True), hook_name, "config", "method", base)
                 continue
 
             # --- object-signal config: ``@receiver(<signal>)`` decorator. The
-            #     signal is an object reference, not a literal; the linker gates
-            #     it on the target being a module-level Signal instance.
+            #     ``receiver`` idiom is unambiguously signal-specific, so the
+            #     linker admits it without the connect+send co-occurrence check.
             if base == "receiver":
                 sig = first_arg_name(node)
                 if sig.isidentifier():
                     site = self._hook_decorated_def(node)
                     if site is not None:
                         emit(self._uid_for_node(site, source_code, file_path),
-                             sig, "config", "object")
+                             sig, "config", "object", "receiver")
                 continue
 
             # --- object-signal config/exec: ``<signal>.connect(..)`` registers,
-            #     ``<signal>.send(..)`` / ``.send_robust(..)`` emits.
+            #     ``<signal>.send(..)`` / ``.send_robust(..)`` emits. ``connect``/
+            #     ``send`` are generic verbs (a DB connection, a websocket manager
+            #     also ``.connect``), so ``via`` is threaded and the linker keeps
+            #     the edge only when the target is BOTH connected and sent-from.
             if base in ("connect", "send", "send_robust") and fn.type == "attribute":
                 sig = receiver_name(fn)
                 if sig.isidentifier():
                     kind = "config" if base == "connect" else "exec"
-                    emit(site_uid_for(node, decorated=True), sig, kind, "object")
+                    via = "connect" if base == "connect" else "send"
+                    emit(site_uid_for(node, decorated=True), sig, kind, "object", via)
                 continue
 
             # --- method-kind exec: ``<expr>.dispatch.<hook>(...)`` dispatch
@@ -904,7 +912,7 @@ class PythonAdapter(TreeSitterAdapter):
                         hook_name = _node_text(tail)
                         if hook_name.isidentifier():
                             emit(site_uid_for(node, decorated=False),
-                                 hook_name, "exec", "method")
+                                 hook_name, "exec", "method", "dispatch")
         return out
 
     @staticmethod

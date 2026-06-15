@@ -82,8 +82,8 @@ class EdgeProfile:
         "READS_ATTR",
         "WRITES_ATTR",
         "RESOLVES_ATTR",
-        "HOOK_CONFIG",
-        "HOOK_EXEC",
+        "EVENT_SUB",
+        "EVENT_PUB",
     )
 
     # Reverse-CALLS for "who calls X". Same set as CALLS — direction is
@@ -116,8 +116,8 @@ class EdgeProfile:
         "REFERENCES",
         "HAS_API",
         "INHERITED_API",
-        "HOOK_CONFIG",
-        "HOOK_EXEC",
+        "EVENT_SUB",
+        "EVENT_PUB",
     )
 
 

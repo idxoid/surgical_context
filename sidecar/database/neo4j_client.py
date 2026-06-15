@@ -28,12 +28,14 @@ _DEGREE_REL_PATTERN = (
 _CLASS_API_EDGE_WRITE_BATCH_SIZE = 1000
 _CLASS_API_EDGE_DELETE_BATCH_SIZE = 5000
 
-# Precision gate for HOOK_CONFIG / HOOK_EXEC resolution. A hook name binds to a
-# declaration by name (like CALLS); common verbs (``commit``/``append``/…) match
-# many methods, and the target type that would disambiguate which event class a
-# dynamic dispatch reaches is not statically available. Per precision-over-recall
-# we ABSTAIN when more than this many class-method declarations carry the name —
-# an ambiguous hook name is an honest gap, not a fan of guessed edges.
+# Precision gate for both resolution layers in ``link_hooks`` — the EVENT
+# channel (name -> topic) and the HOOK wrapper (api token -> registration
+# declaration). A name binds to a declaration by name (like CALLS); common verbs
+# (``commit``/``append``/``send``/``connect``/…) match many declarations, and the
+# target type that would disambiguate which event class a dynamic dispatch
+# reaches is not statically available. Per precision-over-recall we ABSTAIN when
+# more than this many declarations carry the name — an ambiguous name is an
+# honest gap, not a fan of guessed edges.
 HOOK_AMBIGUITY_MAX = 3
 
 
@@ -469,7 +471,6 @@ class Neo4jClient:
             MERGE (f:File {path: $path, workspace_id: $id})
             SET f.hash = $hash,
                 f.last_indexed = timestamp()
-            MERGE (f)-[:IN_WORKSPACE]->(w)
             """,
             path=file_path,
             hash=file_hash,
@@ -481,10 +482,10 @@ class Neo4jClient:
         tx.run(
             """
             MATCH (f:File {path: $file_path, workspace_id: $workspace_id})
-            MATCH (w:Workspace {id: $workspace_id})
             UNWIND $symbols AS symbol
             MERGE (s:Symbol {uid: symbol.uid})
-            SET s.name = symbol.name,
+            SET s.workspace_id = $workspace_id,
+                s.name = symbol.name,
                 s.kind = symbol.kind,
                 s.hash = symbol.content_hash,
                 s.range = [symbol.start, symbol.end],
@@ -500,7 +501,6 @@ class Neo4jClient:
                 s.returns_constructed_type = symbol.returns_constructed_type,
                 s.iterates_attr_call = symbol.iterates_attr_call,
                 s.assembles_mapping_in_loop = symbol.assembles_mapping_in_loop
-            MERGE (s)-[:IN_WORKSPACE]->(w)
             MERGE (f)-[c:CONTAINS {workspace_id: $workspace_id}]->(s)
             SET c.range = [symbol.start, symbol.end],
                 c.start_line = symbol.start,
@@ -875,14 +875,12 @@ class Neo4jClient:
         if roots:
             tx.run(
                 """
-                MATCH (w:Workspace {id: $workspace_id})
                 UNWIND $roots AS root
                 MERGE (e:ExternalPkg {uid: root.uid, workspace_id: $workspace_id})
                 SET e.name = root.name,
                     e.root = root.name,
                     e.qualified_name = root.name,
                     e.is_external = true
-                MERGE (e)-[:IN_WORKSPACE]->(w)
                 """,
                 workspace_id=workspace_id,
                 roots=[
@@ -1392,7 +1390,8 @@ class Neo4jClient:
             UNWIND $bindings AS b
             MATCH (f:File {path: b.file_path, workspace_id: $workspace_id})
             MERGE (p:Symbol {uid: b.proxy_uid})
-            SET p.name = b.proxy_name,
+            SET p.workspace_id = $workspace_id,
+                p.name = b.proxy_name,
                 p.kind = 'proxy_binding',
                 p.qualified_name = b.proxy_qualified_name,
                 p.context_var = coalesce(b.context_var, ''),
@@ -1641,19 +1640,28 @@ class Neo4jClient:
         hooks: list[dict],
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ):
-        """Create HOOK_CONFIG / HOOK_EXEC edges from hook facts (site → declaration).
+        """Create the EVENT channel + HOOK wrapper edges from hook facts.
 
-        HOOK_CONFIG: a registration site (``listen``/``listens_for`` with a
-        string-literal name, or its decorator form) → the declaration method it
-        names. HOOK_EXEC: a ``.dispatch.<name>(...)`` invoke site → the same
-        kind of declaration. Both make the named-hook boundary *transparent* to
-        the structural walk: from a hook declaration you can see who registers
-        for it (CONFIG, incoming) and where it fires (EXEC, incoming).
+        Two ORTHOGONAL, nested-but-separate layers come out of the same facts
+        (see ``extract_hooks``):
 
-        Resolution is name → class-method declaration. Per precision over recall
-        the linker ABSTAINS when the name is ambiguous (more than
-        ``HOOK_AMBIGUITY_MAX`` class methods carry it) — an ambiguous hook name
-        is an honest gap, not a fan of guessed edges.
+        * **EVENT (channel)** — ``EVENT_SUB`` / ``EVENT_PUB`` wire a site to the
+          TOPIC it subscribes / publishes to (the event method declaration, or a
+          module-level Signal object). This is the pub/sub channel: subscriber
+          and publisher meet only at the topic. ``config`` == subscribe,
+          ``exec`` == publish.
+        * **HOOK (wrapper)** — ``HOOK_CONFIG`` / ``HOOK_EXEC`` wire the same site
+          to the registration / dispatch API it goes THROUGH (the opaque
+          wrapper: ``listens_for``/``receiver``/``connect`` for config,
+          ``dispatch``/``send`` for exec). A hook *creates* a subscription, so a
+          subscribe site carries BOTH an EVENT_SUB (to the topic) and a
+          HOOK_CONFIG (to the wrapper); a pure publish has only EVENT_PUB unless
+          its dispatch api resolves.
+
+        Resolution is name → declaration in both layers. Per precision over
+        recall the linker ABSTAINS when the name is ambiguous (more than
+        ``HOOK_AMBIGUITY_MAX`` carriers) — an ambiguous name is an honest gap,
+        not a fan of guessed edges.
         """
         if not hooks:
             return
@@ -1671,8 +1679,12 @@ class Neo4jClient:
     def _create_hook_relations(tx, hooks, workspace_id):
         if not hooks:
             return
-        # method-kind: string-literal hook name -> a class-method declaration
-        # (sqlalchemy ``listens_for``/``.dispatch.X``).
+        # EVENT channel, declared-method topic: a string-literal hook name -> the
+        # event-method declaration that IS the topic (sqlalchemy
+        # ``listens_for``/``.dispatch.X``). config == subscribe -> EVENT_SUB,
+        # exec == publish -> EVENT_PUB; the wrapper they go through is the
+        # separate HOOK layer below. The class-method gate is already precise, so
+        # no co-occurrence prune applies to this subtype.
         tx.run(
             """
             UNWIND $hooks AS h
@@ -1688,22 +1700,23 @@ class Neo4jClient:
             WITH site, h, decl
             WHERE site <> decl
             FOREACH (_ IN CASE WHEN h.kind = 'config' THEN [1] ELSE [] END |
-                MERGE (site)-[r:HOOK_CONFIG {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
-                SET r.resolver = 'hook-v1')
+                MERGE (site)-[r:EVENT_SUB {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'event-method-v1', r.via = coalesce(h.via, ''))
             FOREACH (_ IN CASE WHEN h.kind = 'exec' THEN [1] ELSE [] END |
-                MERGE (site)-[r:HOOK_EXEC {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
-                SET r.resolver = 'hook-v1')
+                MERGE (site)-[r:EVENT_PUB {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'event-method-v1', r.via = coalesce(h.via, ''))
             """,
             hooks=hooks,
             workspace_id=workspace_id,
             ambig_max=HOOK_AMBIGUITY_MAX,
         )
-        # object-signal kind: the hook is an OBJECT reference (a Signal), not a
-        # literal. Resolve the name to a module-level variable that is structurally
-        # a signal instance — gated on an outgoing INSTANTIATES / INSTANTIATES_EXTERNAL
-        # edge (it is an instantiated module-level object, the registry shape) — so
-        # generic ``.connect``/``.send`` on non-signals (a DB connection, an HTTP
-        # client) does not resolve. Same abstain guard on ambiguity.
+        # event/pub-sub kind: the hook is an OBJECT reference (a Signal), not a
+        # literal — a DISTINCT class from declared hooks. Subscribe sites
+        # (``@receiver``/``.connect``) emit EVENT_SUB, publish sites (``.send``)
+        # emit EVENT_PUB. Resolve the name to a module-level variable gated on an
+        # outgoing INSTANTIATES / INSTANTIATES_EXTERNAL edge (an instantiated
+        # module-level object). ``via`` records the idiom for the co-occurrence
+        # prune below.
         tx.run(
             """
             UNWIND $hooks AS h
@@ -1718,28 +1731,87 @@ class Neo4jClient:
             WITH site, h, decl
             WHERE site <> decl
             FOREACH (_ IN CASE WHEN h.kind = 'config' THEN [1] ELSE [] END |
-                MERGE (site)-[r:HOOK_CONFIG {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
-                SET r.resolver = 'hook-signal-v1')
+                MERGE (site)-[r:EVENT_SUB {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'event-signal-v1', r.via = coalesce(h.via, ''))
             FOREACH (_ IN CASE WHEN h.kind = 'exec' THEN [1] ELSE [] END |
-                MERGE (site)-[r:HOOK_EXEC {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
-                SET r.resolver = 'hook-signal-v1')
+                MERGE (site)-[r:EVENT_PUB {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'event-signal-v1', r.via = coalesce(h.via, ''))
             """,
             hooks=hooks,
             workspace_id=workspace_id,
             ambig_max=HOOK_AMBIGUITY_MAX,
         )
-        # Replace the broad edge with the precise one: where a HOOK edge now
-        # captures a site->declaration pair, the parallel READS_ATTR /
-        # CALLS_DYNAMIC that the attr-access / call-resolution phases emitted for
-        # the same `.dispatch.<name>` access is a coarser duplicate — drop it so
-        # the relationship is carried only by the precise HOOK edge. READS_ATTR
+        # pub/sub co-occurrence prune: ``.connect``/``.send`` are generic verbs, so
+        # an event target is kept only when it has the signal shape — subscribed
+        # via ``@receiver`` (idiom is signal-specific), OR both connect-ed AND
+        # sent-from (subscribed AND published). A target only ``.connect``-ed and
+        # never ``.send``-from (a DB connection proxy, a websocket
+        # ConnectionManager) is dropped. Runs BEFORE the supersede so a pruned pair
+        # keeps its original READS_ATTR/CALLS_DYNAMIC.
+        tx.run(
+            """
+            MATCH (s)-[h:EVENT_SUB|EVENT_PUB]->(decl:Symbol)
+            WHERE h.resolver = 'event-signal-v1'
+              AND coalesce(h.workspace_id, $workspace_id) = $workspace_id
+            WITH decl, collect(DISTINCT (type(h) + ':' + coalesce(h.via, ''))) AS sigs
+            WITH decl,
+                 ('EVENT_SUB:receiver' IN sigs) AS has_receiver,
+                 ('EVENT_SUB:connect' IN sigs) AS has_connect,
+                 ('EVENT_PUB:send' IN sigs) AS has_send
+            WHERE NOT (has_receiver OR (has_connect AND has_send))
+            MATCH (s2)-[bad:EVENT_SUB|EVENT_PUB]->(decl)
+            WHERE bad.resolver = 'event-signal-v1'
+              AND coalesce(bad.workspace_id, $workspace_id) = $workspace_id
+            DELETE bad
+            """,
+            workspace_id=workspace_id,
+        )
+        # HOOK wrapper layer (DISTINCT from the EVENT channel above). EVENT_* wire
+        # a site to the TOPIC; a HOOK edge wires the SAME site to the
+        # registration / dispatch API it goes THROUGH — the opaque wrapper
+        # (``listens_for``/``receiver``/``connect``/``listen`` for config,
+        # ``dispatch``/``send`` for exec). Hook and event are nested but separate:
+        # a subscribe site gets BOTH EVENT_SUB (topic) and HOOK_CONFIG (wrapper).
+        # ``via`` is the api token; resolution is name -> declaration, ABSTAINING
+        # past ambig_max — so common verbs (``send``/``connect``/``dispatch``)
+        # stay an honest gap while rare names (``listens_for``) resolve. The edge
+        # targets the api, so it has no parallel READS_ATTR/CALLS_DYNAMIC to
+        # supersede below.
+        tx.run(
+            """
+            UNWIND $hooks AS h
+            WITH h WHERE coalesce(h.via, '') <> ''
+            MATCH (site:Symbol {uid: h.site_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(api:Symbol)
+            WHERE api.name = h.via AND coalesce(api.kind, '') = 'function'
+            WITH site, h, collect(DISTINCT api) AS apis
+            WHERE size(apis) >= 1 AND size(apis) <= $ambig_max
+            UNWIND apis AS api
+            WITH site, h, api
+            WHERE site <> api
+            FOREACH (_ IN CASE WHEN h.kind = 'config' THEN [1] ELSE [] END |
+                MERGE (site)-[r:HOOK_CONFIG {workspace_id: $workspace_id}]->(api)
+                SET r.resolver = 'hook-api-v1', r.via = h.via)
+            FOREACH (_ IN CASE WHEN h.kind = 'exec' THEN [1] ELSE [] END |
+                MERGE (site)-[r:HOOK_EXEC {workspace_id: $workspace_id}]->(api)
+                SET r.resolver = 'hook-api-v1', r.via = h.via)
+            """,
+            hooks=hooks,
+            workspace_id=workspace_id,
+            ambig_max=HOOK_AMBIGUITY_MAX,
+        )
+        # Replace the broad edge with the precise one: where an EVENT edge now
+        # captures a site->topic pair, the parallel READS_ATTR / CALLS_DYNAMIC
+        # that the attr-access / call-resolution phases emitted for the same
+        # `.dispatch.<name>` access is a coarser duplicate — drop it so the
+        # relationship is carried only by the precise EVENT edge. READS_ATTR
         # is out of materialized degree; CALLS_DYNAMIC is in it, but the degree
         # recompute (stage 4.7) runs after this phase, so the count stays
-        # consistent. Walk coverage is unchanged (HOOK_* sit in the same
+        # consistent. Walk coverage is unchanged (EVENT_* sit in the same
         # BINDING/PROXIMITY profiles).
         tx.run(
             """
-            MATCH (site:Symbol)-[hk:HOOK_CONFIG|HOOK_EXEC]->(decl:Symbol)
+            MATCH (site:Symbol)-[hk:EVENT_SUB|EVENT_PUB]->(decl:Symbol)
             WHERE coalesce(hk.workspace_id, $workspace_id) = $workspace_id
             MATCH (site)-[r:READS_ATTR|CALLS_DYNAMIC]->(decl)
             WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id

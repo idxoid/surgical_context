@@ -103,17 +103,10 @@ _TASK_REGISTER: tuple[str, ...] = (
     "arq.connections.ArqRedis",
 )
 
-# ---------------------------------------------------------------------------
-# Signal hubs: bidirectional callable storage (receivers attached, later
-# iterated and called) with no web/task/data fingerprint.
-# ---------------------------------------------------------------------------
-_SIGNAL_REGISTER: tuple[str, ...] = (
-    "blinker.Signal",
-    "blinker.Namespace",
-    "django.dispatch.Signal",
-    "django.dispatch.dispatcher.Signal",
-    "celery.utils.dispatch.Signal",
-)
+# Signal hubs are no longer a name catalogue. ``signal_register`` is derived
+# structurally from the EVENT_SUB/EVENT_PUB pub/sub topology — a symbol that is
+# the target of co-occurrence-validated subscribe + publish edges — in
+# ``container_kind._classify_signal_register`` via ``graph_probe.is_event_signal``.
 
 # ---------------------------------------------------------------------------
 # Error dispatch tables: keyed map exception class → handler callable.
@@ -139,7 +132,6 @@ def _build_catalogue() -> dict[str, str]:
     for kind, qns in (
         ("web_route_register", _WEB_ROUTE_REGISTER),
         ("task_register", _TASK_REGISTER),
-        ("signal_register", _SIGNAL_REGISTER),
         ("error_dispatch", _ERROR_DISPATCH),
         ("proxy_object", _PROXY_OBJECT),
     ):

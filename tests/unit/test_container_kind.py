@@ -60,6 +60,11 @@ class _StubProbe:
     def library_marker_kinds(self, symbol_uid: str) -> set[str]:
         return set(self._marker_kinds)
 
+    def is_event_signal(self, symbol_uid: str) -> bool:
+        # signal_register is derived from EVENT pub/sub topology now; a stub that
+        # carries the signal_register hint stands in for that graph proof.
+        return "signal_register" in self._marker_kinds
+
     def caller_package_dispersion(self, symbol_uid: str) -> float:
         return self._dispersion
 

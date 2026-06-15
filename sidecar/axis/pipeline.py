@@ -111,6 +111,7 @@ def run_axis_retrieval(
     axis_split: bool = False,
     shallow_passive: bool = False,
     hook_transparency: bool = False,
+    token_credit: bool = False,
     trace: Any | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
@@ -319,6 +320,7 @@ def run_axis_retrieval(
     render_mode = "full"
     active = candidates_for_context
     passive: list[RoleCandidate] = []
+    utility_score_fn = None
     if intent_budget:
         budget = budget_for_intent(intent)
         walk_cap = (
@@ -336,6 +338,11 @@ def run_axis_retrieval(
             key=lambda c: c.score + proximity_boost(c.file_path, anchor_path),
             reverse=True,
         )
+
+        def _budget_utility_score(c: RoleCandidate) -> float:
+            return c.score + proximity_boost(c.file_path, anchor_path)
+
+        utility_score_fn = _budget_utility_score
         if axis_split and len(intent) >= 2:
             # Per-axis walk split: multi-axis questions widen the pool and push
             # the relational seed (whose 1-hop neighbour is the answer) into
@@ -386,6 +393,8 @@ def run_axis_retrieval(
                 hook_transparency=hook_transparency,
                 token_budget=token_budget,
                 render_mode=render_mode,
+                token_credit=token_credit,
+                utility_score_fn=utility_score_fn,
             )
 
     return AxisRetrievalResult(

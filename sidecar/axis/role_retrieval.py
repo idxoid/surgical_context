@@ -53,6 +53,7 @@ class RoleCandidate:
     kind_count: int
     vector_distance: float | None
     score: float
+    qualified_name: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +67,7 @@ class RoleCandidate:
             "kind_count": self.kind_count,
             "vector_distance": self.vector_distance,
             "score": self.score,
+            "qualified_name": self.qualified_name,
         }
 
 
@@ -202,6 +204,12 @@ def scan_workspace_rows(
         "axis_container_kinds_json",
         "workspace_id",
     ]
+    try:
+        _have_qualified_name = "qualified_name" in set(table.schema.names)
+    except Exception:
+        _have_qualified_name = False
+    if _have_qualified_name:
+        columns.append("qualified_name")
     # ``file_tier`` is materialised at index time (schema v5+). Request it
     # only when the table actually carries the column, so the scan still
     # works against an index written before the tier landed (pre-reindex);
@@ -271,7 +279,7 @@ def find_symbols_by_roles(
     lance_db_path: str = "./data/lancedb",
     embed_fn=None,
     include_tests: bool = False,
-    prescanned: "WorkspaceScan | None" = None,
+    prescanned: WorkspaceScan | None = None,
 ) -> dict[str, list[RoleCandidate]]:
     """Batch role retrieval off a single scan.
 
@@ -331,6 +339,7 @@ def find_symbols_by_roles(
                 RoleCandidate(
                     uid=str(row.get("uid") or ""),
                     name=str(row.get("name") or ""),
+                    qualified_name=str(row.get("qualified_name") or ""),
                     file_path=str(row.get("file_path") or ""),
                     role=role,
                     satisfying_contracts=tuple(matched_contracts),
@@ -403,7 +412,7 @@ def find_seeds_by_vector(
     lance_db_path: str = "./data/lancedb",
     include_tests: bool = False,
     impact_mode: bool = False,
-    prescanned: "WorkspaceScan | None" = None,
+    prescanned: WorkspaceScan | None = None,
 ) -> list[RoleCandidate]:
     """Role-AGNOSTIC vector seed retrieval — top-``limit`` symbols by
     embedding similarity, with NO role/kind filter.
@@ -471,6 +480,7 @@ def find_seeds_by_vector(
             RoleCandidate(
                 uid=str(row.get("uid") or ""),
                 name=str(row.get("name") or ""),
+                qualified_name=str(row.get("qualified_name") or ""),
                 file_path=str(row.get("file_path") or ""),
                 role="vector_seed",
                 satisfying_contracts=(),
@@ -490,7 +500,7 @@ def _l2_distance(a, b) -> float:
 
     if a is None or b is None:
         return float("inf")
-    return math.sqrt(sum((float(x) - float(y)) ** 2 for x, y in zip(a, b)))
+    return math.sqrt(sum((float(x) - float(y)) ** 2 for x, y in zip(a, b, strict=False)))
 
 
 def _vectorised_distances(vectors, query_text, embed_fn):

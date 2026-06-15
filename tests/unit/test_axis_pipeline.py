@@ -237,3 +237,42 @@ def test_shallow_passive_off_by_default(stub_stages, monkeypatch):
     )
     _run(intent_budget=True)  # default: no shallow passive walk
     assert captured["hops"] == 0
+
+
+def test_token_credit_flag_threads_to_context_builder(stub_stages, monkeypatch):
+    import sidecar.axis.context_builder as _ctx_mod
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        _ctx_mod,
+        "build_context_for_candidates",
+        lambda active, **kw: captured.update(token_credit=kw.get("token_credit"))
+        or [],
+    )
+
+    _run(intent_budget=True, token_credit=True)
+
+    assert captured["token_credit"] is True
+
+
+def test_intent_budget_threads_proximity_utility_to_context_builder(
+    stub_stages, monkeypatch
+):
+    import sidecar.axis.context_builder as _ctx_mod
+
+    captured: dict = {}
+
+    def _capture(active, *, utility_score_fn=None, **kw):
+        captured["utility_score_fn"] = utility_score_fn
+        return []
+
+    monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
+
+    _run(intent_budget=True, anchor_path="/x/open.py")
+
+    utility_score_fn = captured["utility_score_fn"]
+    assert utility_score_fn is not None
+    assert utility_score_fn(_cand("near", "/x/near.py", score=0.5)) == pytest.approx(
+        0.65
+    )
+    assert utility_score_fn(_cand("far", "/elsewhere/far.py", score=0.5)) == 0.5

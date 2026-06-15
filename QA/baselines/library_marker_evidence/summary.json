@@ -6,9 +6,6 @@
     "proxy_object": {
       "absent": 3
     },
-    "signal_register": {
-      "absent": 5
-    },
     "task_register": {
       "absent": 4,
       "structurally_backed": 1
@@ -19,8 +16,8 @@
     }
   },
   "by_status": {
-    "absent": 22,
+    "absent": 17,
     "structurally_backed": 5
   },
-  "total": 27
+  "total": 22
 }

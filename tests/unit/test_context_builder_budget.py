@@ -14,7 +14,6 @@ from sidecar.axis.context_builder import (
     _code_signature,
 )
 
-
 # --- _code_signature -------------------------------------------------------
 
 
@@ -44,7 +43,7 @@ def test_signature_empty_in_empty_out():
 # --- _apply_render_and_budget ---------------------------------------------
 
 
-def _sym(uid: str, code: str) -> ContextSymbol:
+def _sym(uid: str, code: str, *, qualified_name: str = "") -> ContextSymbol:
     return ContextSymbol(
         uid=uid,
         name=uid,
@@ -53,6 +52,7 @@ def _sym(uid: str, code: str) -> ContextSymbol:
         distance_from_seed=0,
         expansion_step=None,
         code=code,
+        qualified_name=qualified_name,
     )
 
 
@@ -114,3 +114,138 @@ def test_generous_budget_keeps_everything():
     out = _apply_render_and_budget(bundles, token_budget=10_000, render_mode="full")
     assert [b.seed.uid for b in out] == ["a", "c"]
     assert [r.uid for r in out[0].related] == ["b"]
+
+
+def test_fold_groups_class_members_and_signatures_siblings():
+    seed = _sym(
+        "target",
+        "    def target(self):\n        value = self.helper()\n        return value\n",
+        qualified_name="pkg.mod.Service.target",
+    )
+    sibling = ContextSymbol(
+        uid="helper",
+        name="helper",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code="    def helper(self):\n        return 1\n",
+        qualified_name="pkg.mod.Service.helper",
+    )
+    bundle = ContextBundle(role="r", seed=seed, related=(sibling,))
+
+    [out] = _apply_render_and_budget([bundle], token_budget=None, render_mode="fold")
+
+    assert out.seed.name == "Service"
+    assert out.seed.qualified_name == "pkg.mod.Service"
+    assert out.related == ()
+    assert out.seed.code == (
+        "class Service:\n"
+        "    def target(self):\n"
+        "        value = self.helper()\n"
+        "        return value\n"
+        "    def helper(self):"
+    )
+
+
+def test_fold_leaves_ambiguous_single_method_alone():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym(
+            "target",
+            "def target():\n    return 1\n",
+            qualified_name="pkg.mod.target",
+        ),
+        related=(),
+    )
+
+    [out] = _apply_render_and_budget([bundle], token_budget=None, render_mode="fold")
+
+    assert out == bundle
+
+
+def test_token_credit_downgrades_oversized_full_candidate_to_signature():
+    code = "def large():\n" + ("    x = 1\n" * 200)
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym("large", code, qualified_name="pkg.mod.large"),
+        related=(),
+        utility_score=1.0,
+    )
+
+    [out] = _apply_render_and_budget(
+        [bundle],
+        token_budget=100,
+        render_mode="full",
+        token_credit=True,
+    )
+
+    assert out.render_mode == "signature_only"
+    assert out.seed.code == "def large():"
+
+
+def test_token_credit_upgrades_passive_when_surplus_remains():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym("passive", "def passive():\n    return 1\n"),
+        related=(),
+        utility_score=0.5,
+        passive=True,
+    )
+
+    [out] = _apply_render_and_budget(
+        [bundle],
+        token_budget=100,
+        render_mode="full",
+        token_credit=True,
+    )
+
+    assert out.render_mode == "full"
+    assert out.seed.code == "def passive():\n    return 1\n"
+
+
+def test_fold_aggregation_bonus_ranks_class_block_above_single_symbol():
+    # A 2-member class block with LOWER base utility than a lone symbol.
+    fold_bundle = ContextBundle(
+        role="r",
+        seed=_sym(
+            "b_target",
+            "    def target(self):\n        return 1\n",
+            qualified_name="pkg.mod.Service.target",
+        ),
+        related=(
+            ContextSymbol(
+                uid="b_helper",
+                name="helper",
+                file_path="/f.py",
+                role="r",
+                distance_from_seed=1,
+                expansion_step="binding",
+                code="    def helper(self):\n        return 2\n",
+                qualified_name="pkg.mod.Service.helper",
+            ),
+        ),
+        utility_score=0.50,
+    )
+    single = ContextBundle(
+        role="r",
+        seed=_sym(
+            "a_alone",
+            "def alone():\n    return 0\n",
+            qualified_name="pkg.mod.alone",
+        ),
+        related=(),
+        utility_score=0.55,
+    )
+
+    # Input order puts the higher-base-utility single first; the credit queue
+    # emits in rank order, so the class block leads only if its aggregation
+    # bonus (0.50 + 0.1 for the extra member) overtakes the single (0.55).
+    out = _apply_render_and_budget(
+        [single, fold_bundle],
+        token_budget=10_000,
+        render_mode="full",
+        token_credit=True,
+    )
+
+    assert [b.seed.uid for b in out] == ["b_target", "a_alone"]

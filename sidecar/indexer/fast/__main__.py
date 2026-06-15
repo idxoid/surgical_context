@@ -85,7 +85,10 @@ def _wipe_workspace(workspace_id: str, index_profile: str | None) -> None:
     lance.delete_workspace(workspace_id)
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     with db.driver.session() as session:
-        for label in ("Symbol", "File", "FileHash"):
+        # Every workspace-scoped label now carries workspace_id (symbols too,
+        # since uids are workspace-scoped), so a per-label delete is exact — no
+        # orphan leak the way the old Symbol-by-workspace_id no-op left behind.
+        for label in ("Symbol", "File", "FileHash", "ExternalSymbol", "ExternalPkg", "DocAnchor"):
             session.run(
                 f"MATCH (n:{label} {{workspace_id: $ws}}) DETACH DELETE n",
                 ws=workspace_id,

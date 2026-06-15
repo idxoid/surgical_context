@@ -891,6 +891,7 @@ def _context_from_axis(
         # Inert for non-hook seeds; closes the named-hook gap (sqlalchemy q03
         # 0.5 -> 1.0) at the cost of two cheap walks when hook seeds are present.
         hook_transparency=True,
+        token_credit=_axis_token_credit_enabled(),
     )
     intent = result.intent[0].role if result.intent else ""
     return axis_bundles_to_prompt_context(
@@ -973,6 +974,16 @@ def _ask_axis_first_enabled() -> bool:
     before the legacy symbol/file/workspace tiers. Default off — unset means
     zero behaviour change."""
     return os.environ.get("ASK_AXIS_FIRST", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _axis_token_credit_enabled() -> bool:
+    """Opt-in render-level token credit budgeting for the axis provider."""
+    return os.environ.get("AXIS_TOKEN_CREDIT", "").strip().lower() in {
         "1",
         "true",
         "yes",

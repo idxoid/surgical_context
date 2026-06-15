@@ -46,7 +46,6 @@ def test_no_duplicate_qns_with_conflicting_kinds():
     [
         ("starlette.routing.Router", "web_route_register"),
         ("celery.app.base.Celery", "task_register"),
-        ("blinker.Signal", "signal_register"),
         ("werkzeug.local.LocalProxy", "proxy_object"),
     ],
 )

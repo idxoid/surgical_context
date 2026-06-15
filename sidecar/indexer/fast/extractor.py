@@ -96,9 +96,10 @@ class ExtractedFile:
 class FastExtractor:
     """Stateless-looking facade backed by thread-local adapters."""
 
-    def __init__(self, project_root: str | None = None):
+    def __init__(self, project_root: str | None = None, workspace_id: str | None = None):
         self._adapters = _ThreadLocalAdapters()
         self.project_root = project_root
+        self.workspace_id = workspace_id
 
     def _resolve_language(self, file_path: str) -> str:
         # Language detection is a pure dict lookup, safe to hit the
@@ -135,7 +136,7 @@ class FastExtractor:
         # One-shot extraction via the adapter's extract_all method. For
         # tree-sitter adapters this means a single parse; for other
         # adapters it falls back to the four legacy methods (no regression).
-        with project_root_scope(self.project_root):
+        with project_root_scope(self.project_root, self.workspace_id):
             symbols, calls, imports, inheritance = adapter.extract_all(source, file_path)
         for sym in symbols:
             # Matches baseline's coarse 8-tokens-per-line estimate.

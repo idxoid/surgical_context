@@ -11,6 +11,11 @@ class _MarkerProbe(NullGraphProbe):
     def library_marker_kinds(self, symbol_uid: str) -> set[str]:
         return set(self._marker_kinds)
 
+    def is_event_signal(self, symbol_uid: str) -> bool:
+        # signal_register is derived from EVENT pub/sub topology now, not the
+        # library marker; a probe that "knows this is a signal" answers yes.
+        return "signal_register" in self._marker_kinds
+
 
 def _profile(source: str, qualified_name: str):
     extraction = PythonAxisExtractor().extract(textwrap.dedent(source), "pkg/tasks.py")

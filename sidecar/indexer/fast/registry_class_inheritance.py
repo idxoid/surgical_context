@@ -341,7 +341,7 @@ def propagate_error_model_via_inheritance(
     needed_local_qns: set[str] = set()
     alias_targets: dict[str, list[str]] = {}
     cached_bindings: dict[str, dict[str, str]] = {}
-    with project_root_scope(project_path):
+    with project_root_scope(project_path, workspace_id):
         for r in rows:
             base_names = parsed_bases_by_uid.get(r["class_uid"], [])
             if not base_names:
@@ -491,7 +491,7 @@ def propagate_registry_class_via_inheritance(
 
     # First pass: enumerate candidate local QNs (so we batch-resolve to uids).
     alias_targets: dict[str, list[str]] = {}
-    with project_root_scope(project_path):
+    with project_root_scope(project_path, workspace_id):
         for r in rows:
             base_names = list(r.get("parsed_base_names") or [])
             if not base_names:

@@ -187,7 +187,7 @@ def _parse_phase(
     reporter: ProgressReporter,
 ) -> list[FileDiff]:
     """Parallel extraction + diff computation."""
-    extractor = FastExtractor(project_root=project_path)
+    extractor = FastExtractor(project_root=project_path, workspace_id=workspace_id)
     results: list[FileDiff] = []
 
     def _task(path: str) -> FileDiff | None:
@@ -488,7 +488,7 @@ def _decorator_phase(
     if callable(link_deco):
         py_adapter = PythonAdapter()
         ts_adapter = TypeScriptAdapter()
-        with project_root_scope(project_path or None):
+        with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
                 if ex.path.endswith((".py", ".pyi")):
@@ -527,13 +527,14 @@ def _hook_phase(
     reporter: ProgressReporter,
     project_path: str = "",
 ) -> int:
-    """Create HOOK_CONFIG / HOOK_EXEC edges (site → hook declaration).
+    """Create the EVENT channel + HOOK wrapper edges from hook facts.
 
-    Named-hook transparency: a registration (``listen``/``listens_for`` with a
-    string-literal hook name, incl. the decorator form) or a
-    ``.dispatch.<name>(...)`` invocation binds its site to the real declaration
-    node. Same syntactic-fact basis as decorators / type references, and the
-    same ``project_root_scope`` requirement so site uids match stored nodes.
+    Named-hook/event transparency: a registration (``listen``/``listens_for``,
+    ``@receiver``, ``.connect``) or a dispatch (``.dispatch.<name>(...)``,
+    ``.send``) binds its site to (a) the EVENT topic it sub/pub-s and (b) the
+    HOOK api wrapper it goes through. Same syntactic-fact basis as decorators /
+    type references, and the same ``project_root_scope`` requirement so site
+    uids match stored nodes. See ``Neo4jClient.link_hooks`` for the two layers.
     """
     from sidecar.parser.adapters.python_adapter import PythonAdapter
     from sidecar.parser.uid import project_root_scope
@@ -545,7 +546,7 @@ def _hook_phase(
         py_adapter = PythonAdapter()
         extract = getattr(py_adapter, "extract_hooks", None)
         if callable(extract):
-            with project_root_scope(project_path or None):
+            with project_root_scope(project_path or None, workspace_id):
                 for diff in diffs:
                     ex = diff.extracted
                     if not ex.path.endswith((".py", ".pyi")):
@@ -583,7 +584,7 @@ def _attr_access_phase(
     accesses: list[dict] = []
     if callable(link_attr):
         py_adapter = PythonAdapter()
-        with project_root_scope(project_path or None):
+        with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
                 if not ex.path.endswith((".py", ".pyi")):
@@ -619,7 +620,7 @@ def _type_reference_phase(
     reporter.stage_start("type_refs", total=1)
     references: list[dict] = []
     if callable(link_types):
-        with project_root_scope(project_path or None):
+        with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
                 try:
@@ -663,7 +664,7 @@ def _symbol_alias_phase(
     linked = 0
     touched: set[str] = set()
     if callable(link_aliases):
-        with project_root_scope(project_path or None):
+        with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
                 try:
@@ -718,7 +719,7 @@ def _reexport_phase(
     reexports: list[dict] = []
     if callable(link_reexports):
         adapter = PythonAdapter()
-        with project_root_scope(project_path or None):
+        with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
                 if not ex.path.endswith((".py", ".pyi")):
@@ -757,7 +758,7 @@ def _instantiation_phase(
     instantiations: list[dict] = []
     if callable(link_inst):
         adapter = PythonAdapter()
-        with project_root_scope(project_path or None):
+        with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
                 if not ex.path.endswith((".py", ".pyi")):
@@ -795,7 +796,7 @@ def _injection_phase(
     injections: list[dict] = []
     if callable(link_inj):
         adapter = PythonAdapter()
-        with project_root_scope(project_path or None):
+        with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
                 if not ex.path.endswith((".py", ".pyi")):
@@ -841,7 +842,7 @@ def _property_api_phase(
     linked = 0
     touched: set[str] = set()
     if callable(link_api):
-        with project_root_scope(project_path or None):
+        with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
                 try:
@@ -1028,6 +1029,11 @@ class _PeerAwarePeerProbe:
         if self._base is None:
             return False
         return self._base.is_cfg_driver(symbol_uid)
+
+    def is_event_signal(self, symbol_uid):
+        if self._base is None:
+            return False
+        return self._base.is_event_signal(symbol_uid)
 
     def outgoing_handles_count(self, symbol_uid):
         if self._base is None:
@@ -1647,10 +1653,11 @@ def run_fast_indexing(
         )
         stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
 
-        # Stage 4.669b: HOOK_CONFIG / HOOK_EXEC edges (named-hook transparency).
-        # Like DECORATED_BY, a syntactic fact (string-literal hook name /
-        # ``.dispatch.`` attribute) → declaration; kept out of materialized
-        # degree. Runs after decorators (same project_root_scope stage).
+        # Stage 4.669b: EVENT channel (site→topic) + HOOK wrapper (site→api)
+        # edges. Like DECORATED_BY, a syntactic fact (string-literal hook name /
+        # signal object / ``.dispatch.``/``.send`` attribute) → declaration; kept
+        # out of materialized degree. Runs after decorators (same
+        # project_root_scope stage).
         t_stage = time.perf_counter()
         stats["hooks_linked"] = _hook_phase(
             diffs, db, workspace_id, reporter, project_path

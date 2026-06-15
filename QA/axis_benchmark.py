@@ -1,6 +1,6 @@
 """A/B benchmark for the axis pipeline (read-side).
 
-Replays ``tests/fixtures/real_repo_question_pack.yaml`` against the
+Replays ``tests/fixtures/questions_python.yaml`` against the
 axis pipeline (intent → role retrieval → context expansion) and
 measures file_recall: how many of each question's ``expected_files``
 appear in the retrieved file_paths. The legacy ``/ask`` cascade is
@@ -222,6 +222,7 @@ def run_question(
     axis_split: bool = False,
     shallow_passive: bool = False,
     hook_transparency: bool = False,
+    token_credit: bool = False,
 ) -> QuestionResult:
     repo = str(question_entry.get("repo") or "")
     qid = str(question_entry.get("id") or "")
@@ -274,6 +275,7 @@ def run_question(
         axis_split=axis_split,
         shallow_passive=shallow_passive,
         hook_transparency=hook_transparency,
+        token_credit=token_credit,
         trace=timer,
     )
     # Post-processing cost: the ``context`` stage is the build_context graph
@@ -710,7 +712,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--render-mode",
-        choices=["full", "signature_only", "hybrid"],
+        choices=["full", "signature_only", "hybrid", "fold"],
         default=None,
         help="Override the profile's echelon-2 render mode for --intent-budget "
         "(sweep knob). Unset = use each profile's own render_mode.",
@@ -734,6 +736,13 @@ def main() -> None:
         help="Give passive seeds a shallow 1-hop walk (signature-rendered) so "
         "relational answers (B = a 1-hop neighbour of a passive seed) are "
         "covered. Grows the candidate pool — tracked via rendered_tokens.",
+    )
+    parser.add_argument(
+        "--token-credit",
+        action="store_true",
+        help="Enable Token Credit System v1 for echelon-2 rendering: utility "
+        "queue, per-transaction cap, full/fold/signature downgrade, and "
+        "passive surplus upgrades. Default off; requires --intent-budget.",
     )
     parser.add_argument(
         "--no-hook-transparency",
@@ -810,6 +819,7 @@ def main() -> None:
             axis_split=args.axis_split,
             shallow_passive=args.shallow_passive,
             hook_transparency=args.hook_transparency,
+            token_credit=args.token_credit,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started

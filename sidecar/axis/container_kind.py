@@ -95,6 +95,13 @@ class GraphContextProbe(Protocol):
         its same-file methods carry — the structural floor under
         ``registry_class``. The default probe knows no peers (empty set)."""
 
+    def is_event_signal(self, symbol_uid: str) -> bool:
+        """True when ``symbol_uid`` is the target of an EVENT_SUB / EVENT_PUB
+        edge — a pub/sub signal channel proven by structural co-occurrence
+        (subscribed via ``@receiver``, or both connected AND sent-from). This is
+        the graph-context proof that lets ``signal_register`` drop its
+        library-marker dependency."""
+
 
 class NullGraphProbe:
     """Default probe: no graph context available, every probe returns 'no'."""
@@ -116,6 +123,9 @@ class NullGraphProbe:
 
     def outgoing_injects_count(self, symbol_uid: str) -> int:
         return 0
+
+    def is_event_signal(self, symbol_uid: str) -> bool:
+        return False
 
     def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
         return set()
@@ -526,13 +536,15 @@ def _classify_signal_register(
 ) -> ContainerKindMatch | None:
     """Bidirectional callable storage: receivers attached and later invoked.
 
-    Axis-only shape overlaps exactly with generic middleware/callback chains.
-    Therefore this kind is marker/probe-only until graph context can prove a
-    signal-specific topology. Without such proof, returning no match is the
-    correct precision-preserving answer.
+    Axis-only shape overlaps exactly with generic middleware/callback chains, so
+    this kind needs graph context to prove a signal-specific topology — formerly
+    a library-marker dependency. The structural proof now is the EVENT_SUB /
+    EVENT_PUB pub/sub edges, which ``link_hooks`` keeps only for a
+    co-occurrence-validated channel (subscribed via ``@receiver``, or both
+    connected AND sent-from). A symbol that is the target of an EVENT edge IS the
+    signal channel (the transmit node); without that proof, no match.
     """
-    library_kinds = probe.library_marker_kinds(profile.symbol_uid)
-    if "signal_register" not in library_kinds:
+    if not probe.is_event_signal(profile.symbol_uid):
         return None
     return ContainerKindMatch(
         kind="signal_register",
@@ -543,8 +555,8 @@ def _classify_signal_register(
             ("dfg", "iteration_source"),
             ("cfg", "value_call"),
         ),
-        evidence_probes=("library_marker:signal_register",),
-        payload={"via": "library_marker"},
+        evidence_probes=("graph_context:event_pubsub",),
+        payload={"via": "event_topology"},
     )
 
 

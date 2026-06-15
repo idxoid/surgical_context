@@ -31,19 +31,35 @@ _KNOWN_TYPE_NAMES = {
     "tuple",
 }
 _DEFAULT_PROJECT_ROOT: ContextVar[str | None] = ContextVar("default_project_root", default=None)
+_DEFAULT_WORKSPACE: ContextVar[str | None] = ContextVar("default_workspace", default=None)
 
 
 @contextmanager
-def project_root_scope(project_root: str | None):
+def project_root_scope(project_root: str | None, workspace_id: str | None = None):
+    """Establish the indexing scope for UID computation.
+
+    ``project_root`` relativises module names (machine-independent). ``workspace_id``
+    is mixed into the symbol UID (see :func:`compute_uid`) so identical code
+    indexed under different workspaces yields DISTINCT nodes — symbols are
+    workspace-scoped, not deduplicated/shared across workspaces. ``workspace_id``
+    is optional: the legacy code-indexer has no workspace and keeps producing
+    workspace-less uids (it never shares a workspace with the fast/axis path).
+    """
     token = _DEFAULT_PROJECT_ROOT.set(project_root)
+    ws_token = _DEFAULT_WORKSPACE.set(workspace_id)
     try:
         yield
     finally:
         _DEFAULT_PROJECT_ROOT.reset(token)
+        _DEFAULT_WORKSPACE.reset(ws_token)
 
 
 def current_project_root() -> str | None:
     return _DEFAULT_PROJECT_ROOT.get()
+
+
+def current_workspace() -> str | None:
+    return _DEFAULT_WORKSPACE.get()
 
 
 def module_name_from_path(file_path: str, project_root: str | None = None) -> str:
@@ -70,10 +86,17 @@ def module_name_from_path(file_path: str, project_root: str | None = None) -> st
 
 
 def compute_uid(qualified_name: str, signature: str | None, language: str = "python") -> str:
-    """Return a 16-hex-char stable UID from qualified name and signature."""
+    """Return a 16-hex-char stable UID from workspace + qualified name + signature.
+
+    The workspace id (from the active :func:`project_root_scope`) is mixed in so
+    identical code under different workspaces yields distinct nodes — symbols are
+    workspace-scoped, not shared. Empty when no scope is set (legacy
+    code-indexer). The workspace id is a logical, machine-independent id, so uids
+    stay portable across machines (no absolute paths)."""
     signature_text = signature if signature is not None else UNRESOLVED_SIGNATURE
     normalized = normalize_signature(signature_text, language)
-    payload = f"{language}:{qualified_name}|{normalized}"
+    workspace = _DEFAULT_WORKSPACE.get() or ""
+    payload = f"{workspace}|{language}:{qualified_name}|{normalized}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 

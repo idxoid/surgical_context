@@ -4,15 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
-from sidecar.axis.context_builder import (
-    ContextBundle,
-    ContextSymbol,
-    build_context_for_candidates,
-)
+from sidecar.axis.context_builder import build_context_for_candidates
 from sidecar.axis.role_retrieval import RoleCandidate
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -86,10 +79,12 @@ def _make_candidate(
     name: str,
     role: str = "binding_surface",
     score: float = 1.0,
+    qualified_name: str = "",
 ) -> RoleCandidate:
     return RoleCandidate(
         uid=uid,
         name=name,
+        qualified_name=qualified_name,
         file_path=f"/tmp/{name}.py",
         role=role,
         satisfying_contracts=("registry_binding_inferred",),
@@ -101,8 +96,13 @@ def _make_candidate(
     )
 
 
-def _lance_row(uid: str, code: str) -> dict[str, Any]:
-    return {"uid": uid, "code": code, "workspace_id": WORKSPACE}
+def _lance_row(uid: str, code: str, qualified_name: str = "") -> dict[str, Any]:
+    return {
+        "uid": uid,
+        "code": code,
+        "qualified_name": qualified_name,
+        "workspace_id": WORKSPACE,
+    }
 
 
 def _hit_record(
@@ -325,4 +325,59 @@ def test_to_dict_round_trip_keeps_all_fields():
     assert d["seed"]["uid"] == "u:seed"
     assert d["seed"]["distance_from_seed"] == 0
     assert d["seed"]["code"] == "code"
+    assert d["seed"]["qualified_name"] == ""
     assert d["related"] == []
+
+
+def test_build_context_threads_qualified_name_for_fold_render():
+    candidate = _make_candidate(
+        "u:target",
+        "target",
+        role="binding_surface",
+        qualified_name="pkg.mod.Service.target",
+    )
+    db = _FakeDB(
+        [
+            [
+                _hit_record(
+                    "u:target",
+                    "u:helper",
+                    "helper",
+                    "/tmp/service.py",
+                    "binding_structure_expansion",
+                    1,
+                )
+            ],
+            [],
+        ]
+    )
+    lance = _FakeLance(
+        [
+            _lance_row(
+                "u:target",
+                "    def target(self):\n        return self.helper()\n",
+                "pkg.mod.Service.target",
+            ),
+            _lance_row(
+                "u:helper",
+                "    def helper(self):\n        return 1\n",
+                "pkg.mod.Service.helper",
+            ),
+        ]
+    )
+
+    [bundle] = build_context_for_candidates(
+        [candidate],
+        workspace_id=WORKSPACE,
+        db=db,
+        lance=lance,
+        render_mode="fold",
+    )
+
+    assert bundle.seed.name == "Service"
+    assert bundle.seed.qualified_name == "pkg.mod.Service"
+    assert bundle.related == ()
+    assert "def target(self):" in (bundle.seed.code or "")
+    assert "return self.helper()" in (bundle.seed.code or "")
+    assert "def helper(self):" in (bundle.seed.code or "")
+    assert "return 1" not in (bundle.seed.code or "")

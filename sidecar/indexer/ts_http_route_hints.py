@@ -165,10 +165,9 @@ class TsHttpRouteHintsIndexer:
         route_path: str,
     ) -> bool:
         query = """
-        MATCH (w:Workspace {id: $workspace_id})
-        MATCH (source:Symbol {name: $source_name})-[:IN_WORKSPACE]->(w)
+        MATCH (source:Symbol {name: $source_name, workspace_id: $workspace_id})
         MATCH (sf:File {path: $source_file, workspace_id: $workspace_id})-[:CONTAINS]->(source)
-        MATCH (target:Symbol {name: $target_name})-[:IN_WORKSPACE]->(w)
+        MATCH (target:Symbol {name: $target_name, workspace_id: $workspace_id})
         MATCH (tf:File {path: $target_file, workspace_id: $workspace_id})-[:CONTAINS]->(target)
         MERGE (source)-[r:SEMANTIC_HINT {
             workspace_id: $workspace_id,

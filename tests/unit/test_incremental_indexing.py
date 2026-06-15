@@ -552,6 +552,9 @@ class Settings:
             def peer_container_kinds_for(self, qualified_name_prefix):
                 return set()
 
+            def is_event_signal(self, symbol_uid):
+                return False
+
         lance = FakeLance()
 
         _embed_phase(

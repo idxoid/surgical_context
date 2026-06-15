@@ -253,6 +253,32 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             return 0
         return int((record and record.get("n")) or 0)
 
+    def is_event_signal(self, symbol_uid: str) -> bool:
+        """True when ``symbol_uid`` is the target of an EVENT_SUB / EVENT_PUB edge.
+
+        The pub/sub-co-occurrence prune in ``link_hooks`` keeps an EVENT edge only
+        for a real signal channel (subscribed via ``@receiver``, or both
+        connected AND sent-from), so an incoming EVENT_SUB/EVENT_PUB is the
+        graph-context proof of signal topology — the discriminator the
+        marker-only ``signal_register`` classifier was waiting for. Hook/event
+        phase (4.669b) materialises these before the axis classify (stage 5).
+        """
+        query = """
+        MATCH (s:Symbol {uid: $symbol_uid})<-[r:EVENT_SUB|EVENT_PUB]-(:Symbol)
+        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+        RETURN count(r) AS n
+        """
+        try:
+            with self.db.driver.session() as session:
+                record = session.run(
+                    query,
+                    symbol_uid=symbol_uid,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            return False
+        return int((record and record.get("n")) or 0) > 0
+
     def outgoing_injects_count(self, symbol_uid: str) -> int:
         """Count outgoing ``INJECTS`` edges out of ``symbol_uid``.
 
