@@ -46,7 +46,7 @@ def test_axis_profile_from_lance_row_uses_persisted_bits_and_kind_qualified_name
                 symbol_uid="u:x",
                 qualified_name="pkg.proxy",
                 evidence_bits=(),
-                evidence_probes=("library_marker:proxy_object",),
+                evidence_probes=("graph_context:proxy_topology",),
                 payload={},
             )
         ),
@@ -209,7 +209,7 @@ def test_build_report_filters_plain_rows_without_kinds_or_contracts():
                     symbol_uid="proxy",
                     qualified_name="pkg.proxy",
                     evidence_bits=(),
-                    evidence_probes=("library_marker:proxy_object",),
+                    evidence_probes=("graph_context:proxy_topology",),
                     payload={},
                 )
             ),
@@ -237,7 +237,7 @@ def test_write_axis_contract_report_outputs_jsonl_and_markdown(tmp_path):
                     symbol_uid="proxy",
                     qualified_name="pkg.proxy",
                     evidence_bits=(),
-                    evidence_probes=("library_marker:proxy_object",),
+                    evidence_probes=("graph_context:proxy_topology",),
                     payload={},
                 )
             ),
@@ -280,7 +280,7 @@ def test_summarize_axis_contract_report_counts_rows_and_drift():
                     symbol_uid="proxy",
                     qualified_name="pkg.proxy",
                     evidence_bits=(),
-                    evidence_probes=("library_marker:proxy_object",),
+                    evidence_probes=("graph_context:proxy_topology",),
                     payload={},
                 )
             ),

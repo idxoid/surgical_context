@@ -114,23 +114,17 @@ _TASK_REGISTER: tuple[str, ...] = (
 # classes) — see ``container_kind._classify_error_dispatch`` and
 # ``error_dispatch_propagation.propagate_error_dispatch``.
 
-# ---------------------------------------------------------------------------
-# Proxy objects: objects whose attribute reads/writes resolve to a scoped
-# target via ``__getattr__`` / context lookup.
-# ---------------------------------------------------------------------------
-_PROXY_OBJECT: tuple[str, ...] = (
-    "werkzeug.local.LocalProxy",
-    "werkzeug.local.Local",
-    "werkzeug.local.LocalStack",
-)
-
+# ``proxy_object`` is no longer a name catalogue. Lazy-resolution carriers
+# are derived from ``proxy_binding`` / ``PROXY_OF`` / ``RESOLVES_ATTR`` graph
+# topology and delegated-attribute method propagation — see
+# ``container_kind._classify_proxy_object`` and
+# ``proxy_object_propagation.propagate_proxy_object``.
 
 def _build_catalogue() -> dict[str, str]:
     out: dict[str, str] = {}
     for kind, qns in (
         ("web_route_register", _WEB_ROUTE_REGISTER),
         ("task_register", _TASK_REGISTER),
-        ("proxy_object", _PROXY_OBJECT),
     ):
         for qn in qns:
             if qn in out and out[qn] != kind:

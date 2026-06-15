@@ -83,6 +83,79 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         self._dispersion_cache: dict[str, float] = {}
         self._exception_key_cache: dict[str, bool] = {}
         self._inherits_error_dispatch_cache: dict[str, bool] = {}
+        self._proxy_topology_cache: dict[str, bool] = {}
+        self._inherits_proxy_object_cache: dict[str, bool] = {}
+
+    def has_proxy_object_topology(self, symbol_uid: str) -> bool:
+        cached = self._proxy_topology_cache.get(symbol_uid)
+        if cached is not None:
+            return cached
+        query = """
+        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: $symbol_uid})
+        OPTIONAL MATCH (s)-[proxy_rel:PROXY_OF|RESOLVES_ATTR]->(:Symbol)
+        WHERE coalesce(proxy_rel.workspace_id, $workspace_id) = $workspace_id
+        RETURN s.kind AS symbol_kind, count(proxy_rel) AS proxy_rel_count
+        """
+        try:
+            with self.db.driver.session() as session:
+                record = session.run(
+                    query,
+                    symbol_uid=symbol_uid,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            self._proxy_topology_cache[symbol_uid] = False
+            return False
+        symbol_kind = str((record and record.get("symbol_kind")) or "")
+        proxy_rel_count = int((record and record.get("proxy_rel_count")) or 0)
+        hit = symbol_kind == "proxy_binding" or proxy_rel_count > 0
+        self._proxy_topology_cache[symbol_uid] = hit
+        return hit
+
+    def inherits_proxy_object(self, symbol_uid: str) -> bool:
+        cached = self._inherits_proxy_object_cache.get(symbol_uid)
+        if cached is not None:
+            return cached
+        query = """
+        MATCH (s:Symbol {uid: $symbol_uid})-[:DEPENDS_ON*1..6 {workspace_id: $workspace_id}]->(anc:Symbol {kind: 'class'})
+        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(anc)
+        WHERE anc.uid <> $symbol_uid
+        RETURN collect(DISTINCT anc.uid) AS ancestor_uids
+        """
+        try:
+            with self.db.driver.session() as session:
+                record = session.run(
+                    query,
+                    symbol_uid=symbol_uid,
+                    workspace_id=self.workspace_id,
+                ).single()
+        except Exception:
+            self._inherits_proxy_object_cache[symbol_uid] = False
+            return False
+        ancestor_uids = [
+            str(uid) for uid in ((record and record.get("ancestor_uids")) or []) if uid
+        ]
+        if not ancestor_uids:
+            self._inherits_proxy_object_cache[symbol_uid] = False
+            return False
+        try:
+            import lancedb
+
+            table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
+            rows = table.to_lance().to_table(
+                columns=["uid", "container_kinds", "workspace_id"],
+            ).to_pylist()
+        except Exception:
+            self._inherits_proxy_object_cache[symbol_uid] = False
+            return False
+        hit = any(
+            str(r.get("uid")) in ancestor_uids
+            and r.get("workspace_id") == self.workspace_id
+            and "proxy_object" in (r.get("container_kinds") or [])
+            for r in rows
+        )
+        self._inherits_proxy_object_cache[symbol_uid] = hit
+        return hit
 
     def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
         if not key_name:
@@ -208,32 +281,10 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             return set(cached)
         kinds: set[str] = set()
 
-        # 1) Symbol-local proxy marker (existing path). A symbol that the
-        #    parser already flagged as ``proxy_binding`` or that resolves
-        #    through PROXY_OF / RESOLVES_ATTR carries ``proxy_object``
-        #    independently of any external import surface.
-        proxy_query = """
-        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: $symbol_uid})
-        OPTIONAL MATCH (s)-[proxy_rel:PROXY_OF|RESOLVES_ATTR]->(:Symbol)
-        WHERE coalesce(proxy_rel.workspace_id, $workspace_id) = $workspace_id
-        RETURN s.kind AS symbol_kind, count(proxy_rel) AS proxy_rel_count
-        """
-        try:
-            with self.db.driver.session() as session:
-                record = session.run(
-                    proxy_query,
-                    symbol_uid=symbol_uid,
-                    workspace_id=self.workspace_id,
-                ).single()
-        except Exception:
-            record = None
-        if record:
-            symbol_kind = str(record.get("symbol_kind") or "")
-            proxy_rel_count = int(record.get("proxy_rel_count") or 0)
-            if symbol_kind == "proxy_binding" or proxy_rel_count > 0:
-                kinds.add("proxy_object")
+        if self.has_proxy_object_topology(symbol_uid):
+            kinds.add("proxy_object")
 
-        # 2) Catalogue lookup via the symbol's EXTENDS_EXTERNAL and
+        # Catalogue lookup via the symbol's EXTENDS_EXTERNAL and
         #    INSTANTIATES_EXTERNAL edges. Both are structural proofs:
         #     - EXTENDS_EXTERNAL: ``class C(Marker):`` — subclass inherits
         #       from an upstream catalogue class.

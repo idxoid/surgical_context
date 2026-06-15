@@ -1744,6 +1744,16 @@ def run_fast_indexing(
                 workspace_id,
             )
             stats["error_dispatch_propagated"] = error_dispatch
+            from sidecar.indexer.fast.proxy_object_propagation import (
+                propagate_proxy_object,
+            )
+
+            proxy_objects = propagate_proxy_object(
+                db,
+                lance,
+                workspace_id,
+            )
+            stats["proxy_object_propagated"] = proxy_objects
             stats["timings_sec"]["registry_class_inheritance"] = round(
                 time.perf_counter() - t_stage, 3
             )

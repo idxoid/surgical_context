@@ -52,6 +52,8 @@ class _StubProbe:
         peer_kinds_by_prefix: dict[str, set[str]] | None = None,
         exception_type_keys: set[str] | None = None,
         inherits_error_dispatch: bool = False,
+        has_proxy_topology: bool = False,
+        inherits_proxy_object: bool = False,
     ) -> None:
         self._marker_kinds = marker_kinds or set()
         self._dispersion = dispersion
@@ -60,9 +62,17 @@ class _StubProbe:
         self._peer_kinds_by_prefix = peer_kinds_by_prefix or {}
         self._exception_type_keys = exception_type_keys or set()
         self._inherits_error_dispatch = inherits_error_dispatch
+        self._has_proxy_topology = has_proxy_topology
+        self._inherits_proxy_object = inherits_proxy_object
 
     def library_marker_kinds(self, symbol_uid: str) -> set[str]:
         return set(self._marker_kinds)
+
+    def has_proxy_object_topology(self, symbol_uid: str) -> bool:
+        return self._has_proxy_topology
+
+    def inherits_proxy_object(self, symbol_uid: str) -> bool:
+        return self._inherits_proxy_object
 
     def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
         return key_name in self._exception_type_keys
@@ -595,12 +605,20 @@ def test_config_carrier_rejects_bare_annotations_without_defaults():
 # ---------------------------------------------------------------------------
 
 
-def test_proxy_object_via_library_marker():
+def test_proxy_object_via_proxy_topology():
     profile = _profile([_fact("struct", "class_def")])
-    classifier = ContainerKindClassifier(_StubProbe(marker_kinds={"proxy_object"}))
+    classifier = ContainerKindClassifier(_StubProbe(has_proxy_topology=True))
     matches = [m for m in classifier.classify(profile) if m.kind == "proxy_object"]
     assert matches
-    assert matches[0].payload.get("via") == "library_marker"
+    assert matches[0].payload.get("via") == "proxy_topology"
+
+
+def test_proxy_object_via_inherited_kind():
+    profile = _profile([_fact("struct", "class_def")])
+    classifier = ContainerKindClassifier(_StubProbe(inherits_proxy_object=True))
+    matches = [m for m in classifier.classify(profile) if m.kind == "proxy_object"]
+    assert matches
+    assert matches[0].payload.get("via") == "inheritance"
 
 
 def test_proxy_object_has_no_axis_only_fallback():
@@ -621,8 +639,8 @@ def test_proxy_object_has_no_axis_only_fallback():
     assert "proxy_object" not in {m.kind for m in classifier.classify(profile)}
 
 
-def test_proxy_object_marker_does_not_drag_into_signal_or_data():
-    """A proxy_object marker on a symbol with overlapping bits must not also
+def test_proxy_object_topology_excludes_signal_or_data():
+    """A proxy topology proof on a symbol with overlapping bits must not also
         pick up signal_register or data_model."""
     profile = _profile(
         [
@@ -642,7 +660,7 @@ def test_proxy_object_marker_does_not_drag_into_signal_or_data():
         qn="pkg.LocalProxy",
         kind="class",
     )
-    classifier = ContainerKindClassifier(_StubProbe(marker_kinds={"proxy_object"}))
+    classifier = ContainerKindClassifier(_StubProbe(has_proxy_topology=True))
     kinds = {m.kind for m in classifier.classify(profile)}
     assert "proxy_object" in kinds
     assert "signal_register" not in kinds

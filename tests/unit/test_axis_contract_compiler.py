@@ -146,15 +146,15 @@ def test_di_container_compiles_to_provider_default_binding_contract():
     assert contracts[0].to_query_request().container_kinds == ("di_container",)
 
 
-def test_proxy_object_compiles_to_marker_backed_indirection_contract():
+def test_proxy_object_compiles_to_topology_backed_indirection_contract():
     profile = _profile([_fact("struct", "module_scope")], uid="u:p", qn="pkg.proxy")
     marker = ContainerKindMatch(
         kind="proxy_object",
         symbol_uid="u:p",
         qualified_name="pkg.proxy",
         evidence_bits=(),
-        evidence_probes=("library_marker:proxy_object",),
-        payload={"via": "library_marker"},
+        evidence_probes=("graph_context:proxy_topology",),
+        payload={"via": "proxy_topology"},
     )
 
     contracts = AxisContractCompiler().compile(profile, [marker])

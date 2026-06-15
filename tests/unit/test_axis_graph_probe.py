@@ -77,13 +77,13 @@ def test_neo4j_probe_catalogue_query_walks_extends_and_instantiates_external():
     # a catalogue entry produces the same marker as a class that EXTENDS it.
     db = _Db([
         {"symbol_kind": "variable", "proxy_rel_count": 0},
-        {"qns": ["werkzeug.local.LocalProxy"]},
+        {"qns": ["fastapi.applications.FastAPI"]},
     ])
     probe = Neo4jGraphContextProbe(db, "ws")
 
     kinds = probe.library_marker_kinds("u:var")
 
-    assert kinds == {"proxy_object"}
+    assert kinds == {"web_route_register"}
     # The catalogue query is the 2nd DB call; confirm it joins both edge
     # types in a single MATCH instead of issuing two separate queries.
     queries = [call[0] for call in db.driver.session_obj.runs]
@@ -97,7 +97,9 @@ def test_neo4j_probe_returns_union_when_file_imports_multiple_marker_packages():
     ])
     probe = Neo4jGraphContextProbe(db, "ws")
 
-    assert probe.library_marker_kinds("u:cls") == {"task_register", "proxy_object"}
+    # ``werkzeug.local.LocalProxy`` is no longer a catalogue entry — only the
+    # structural celery marker survives the external-edge union.
+    assert probe.library_marker_kinds("u:cls") == {"task_register"}
 
 
 def test_neo4j_probe_ignores_unknown_external_qualified_names():
@@ -146,6 +148,14 @@ def test_neo4j_probe_resolves_in_workspace_exception_class_key():
     # Builtin roots resolve without a DB round-trip.
     assert probe.is_error_model_type_name("ValueError", "u:meth") is True
     assert len(db.driver.session_obj.runs) == 2
+
+
+def test_neo4j_probe_has_proxy_object_topology_for_proxy_binding():
+    db = _Db([{"symbol_kind": "proxy_binding", "proxy_rel_count": 0}])
+    probe = Neo4jGraphContextProbe(db, "ws")
+
+    assert probe.has_proxy_object_topology("u:proxy") is True
+    assert len(db.driver.session_obj.runs) == 1
 
 
 def test_neo4j_probe_does_not_infer_cfg_driver_from_plain_graph_context():

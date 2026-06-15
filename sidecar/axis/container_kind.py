@@ -111,6 +111,16 @@ class GraphContextProbe(Protocol):
         """True when ``symbol_uid`` structurally inherits ``error_dispatch``
         from a ``DEPENDS_ON`` ancestor that already carries the kind."""
 
+    def has_proxy_object_topology(self, symbol_uid: str) -> bool:
+        """True when graph topology proves lazy proxy resolution on ``symbol_uid``.
+
+        Covers ``proxy_binding`` symbols and any symbol with outgoing
+        ``PROXY_OF`` / ``RESOLVES_ATTR`` edges."""
+
+    def inherits_proxy_object(self, symbol_uid: str) -> bool:
+        """True when ``symbol_uid`` inherits ``proxy_object`` from a
+        ``DEPENDS_ON`` ancestor that already carries the kind."""
+
 
 class NullGraphProbe:
     """Default probe: no graph context available, every probe returns 'no'."""
@@ -144,6 +154,26 @@ class NullGraphProbe:
 
     def inherits_error_dispatch(self, symbol_uid: str) -> bool:
         return False
+
+    def has_proxy_object_topology(self, symbol_uid: str) -> bool:
+        return False
+
+    def inherits_proxy_object(self, symbol_uid: str) -> bool:
+        return False
+
+
+def _probe_has_proxy_object_topology(probe: GraphContextProbe, symbol_uid: str) -> bool:
+    fn = getattr(probe, "has_proxy_object_topology", None)
+    if not callable(fn):
+        return False
+    return bool(fn(symbol_uid))
+
+
+def _probe_inherits_proxy_object(probe: GraphContextProbe, symbol_uid: str) -> bool:
+    fn = getattr(probe, "inherits_proxy_object", None)
+    if not callable(fn):
+        return False
+    return bool(fn(symbol_uid))
 
 
 def _probe_is_error_model_type_name(
@@ -639,35 +669,32 @@ def _classify_proxy_object(
 ) -> ContainerKindMatch | None:
     """Object whose attribute reads/writes resolve to a scoped target.
 
-    Two flavours match this kind, both arriving through the graph-context
-    probe rather than from a local axis fingerprint:
-
-    1. **Graph-level proxy_binding marker**: the indexer already detects the
-       ``x = LocalProxy(lambda: ...)`` pattern and stores ``is_proxy_binding``
-       on the symbol. The probe surfaces this as the ``proxy_object`` kind.
-    2. **External library marker**: ``werkzeug.local.LocalProxy``,
-       ``contextvars.ContextVar`` and similar external proxy types carry the
-       kind in the marker catalogue. Inheritance/instantiation from one of
-       them propagates the classification to the local symbol.
-
-    Why no axis-only fallback: the proxy fingerprint at axis level is
-    ``__getattr__`` / ``__getattribute__`` overrides plus a context lookup
-    inside those methods. Those methods are separate symbols, so the proof
-    crosses symbol boundaries — that is graph context. Trying to match it
-    locally would either need name patterns on dunders or string matching
-    on call expressions, both forbidden by axis-layer discipline.
+    Proof is graph topology only — ``proxy_binding`` markers,
+    ``PROXY_OF`` / ``RESOLVES_ATTR`` edges, or inheritance from a carrier
+    already tagged by the workspace propagation pass. No werkzeug name
+    catalogue.
     """
-    library_kinds = probe.library_marker_kinds(profile.symbol_uid)
-    if "proxy_object" not in library_kinds:
-        return None
-    return ContainerKindMatch(
-        kind="proxy_object",
-        symbol_uid=profile.symbol_uid,
-        qualified_name=profile.qualified_name,
-        evidence_bits=(),
-        evidence_probes=("library_marker:proxy_object",),
-        payload={"via": "library_marker"},
-    )
+    if _probe_has_proxy_object_topology(probe, profile.symbol_uid):
+        return ContainerKindMatch(
+            kind="proxy_object",
+            symbol_uid=profile.symbol_uid,
+            qualified_name=profile.qualified_name,
+            evidence_bits=(),
+            evidence_probes=("graph_context:proxy_topology",),
+            payload={"via": "proxy_topology"},
+        )
+
+    if _probe_inherits_proxy_object(probe, profile.symbol_uid):
+        return ContainerKindMatch(
+            kind="proxy_object",
+            symbol_uid=profile.symbol_uid,
+            qualified_name=profile.qualified_name,
+            evidence_bits=(("struct", "class_def"),) if profile.symbol_kind == "class" else (),
+            evidence_probes=("graph_context:inherited_proxy_object",),
+            payload={"via": "inheritance"},
+        )
+
+    return None
 
 
 @register_kind("error_dispatch")
