@@ -220,6 +220,11 @@ export interface IndexFileResponse {
   reason?: string;
 }
 
+export interface AskStreamHandle {
+  controller: AbortController;
+  done: Promise<void>;
+}
+
 export interface IndexFilesResponse {
   status: string;
   workspace_id: string;
@@ -325,40 +330,42 @@ export const SidecarClient = {
     });
   },
 
-  async askStream(
+  askStream(
     symbol: string | undefined,
     question: string,
     callbacks: SSECallbacks,
     tokenBudget = getTokenBudget(),
     filePath?: string
-  ): Promise<AbortController> {
+  ): AskStreamHandle {
     const controller = new AbortController();
 
-    try {
-      const res = await fetch(`${getBaseUrl()}/ask/stream`, {
-        method: 'POST',
-        headers: await getHeaders(),
-        body: JSON.stringify({
-          symbol: symbol || null,
-          question,
-          token_budget: tokenBudget,
-          file_path: filePath || null,
-        }),
-        signal: controller.signal,
-      });
+    const done = (async () => {
+      try {
+        const res = await fetch(`${getBaseUrl()}/ask/stream`, {
+          method: 'POST',
+          headers: await getHeaders(),
+          body: JSON.stringify({
+            symbol: symbol || null,
+            question,
+            token_budget: tokenBudget,
+            file_path: filePath || null,
+          }),
+          signal: controller.signal,
+        });
 
-      if (!res.ok) {
-        throw new Error(`Sidecar /ask/stream → ${res.status}`);
+        if (!res.ok) {
+          throw new Error(`Sidecar /ask/stream → ${res.status}`);
+        }
+
+        await parseSSEStream(res, callbacks);
+      } catch (error) {
+        if (!(error instanceof Error && error.name === 'AbortError')) {
+          callbacks.onError?.(error instanceof Error ? error.message : 'Unknown error');
+        }
       }
+    })();
 
-      await parseSSEStream(res, callbacks);
-    } catch (error) {
-      if (!(error instanceof Error && error.name === 'AbortError')) {
-        callbacks.onError?.(error instanceof Error ? error.message : 'Unknown error');
-      }
-    }
-
-    return controller;
+    return { controller, done };
   },
 
   impact(symbol: string): Promise<ImpactResponse> {
