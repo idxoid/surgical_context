@@ -11,7 +11,7 @@ from contextlib import contextmanager
 import pytest
 from fastapi import HTTPException
 
-from sidecar.context.types import SymbolContext
+from sidecar.context_types import SymbolContext
 from sidecar.history import DisabledHistoryProvider
 from sidecar.indexer.job_log import IndexJobLog
 

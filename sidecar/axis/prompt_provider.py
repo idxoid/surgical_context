@@ -1,7 +1,7 @@
 """Axis -> PromptContext adapter (cascade migration, Phase 1).
 
 The ``/ask`` consumer is isolated from how context is *built* by a fixed
-contract: ``PromptContext`` (``sidecar.context.types``). Today four
+contract: ``PromptContext`` (``sidecar.context_types``). Today four
 providers sit behind ``_resolve_ask_context`` (arbitrator/file/workspace/
 direct); this module is the FIFTH — it turns the axis pipeline's
 ``ContextBundle`` list into a ``PromptContext`` the existing
@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from sidecar.axis.context_builder import ContextBundle, ContextSymbol
-from sidecar.context.types import PromptContext, SymbolContext
+from sidecar.context_types import PromptContext, SymbolContext
 
 
 def _to_symbol_context(

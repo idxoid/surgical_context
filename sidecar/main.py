@@ -18,9 +18,9 @@ from sidecar.ai.engine import AIEngine
 from sidecar.api.sse import format_sse
 from sidecar.auth import AuditLog, UserAuth
 from sidecar.cache.layered import default_cache
-from sidecar.context.doc_resolver import DocResolver
-from sidecar.context.overlay import InMemoryOverlay
-from sidecar.context.types import RESOLVER_VERSION, DocChunk, PromptContext, SymbolContext
+from sidecar.doc_resolver import DocResolver
+from sidecar.overlay import InMemoryOverlay
+from sidecar.context_types import RESOLVER_VERSION, DocChunk, PromptContext, SymbolContext
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.session import db_session
 from sidecar.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot

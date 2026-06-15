@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidecar.context.overlay import InMemoryOverlay
+from sidecar.overlay import InMemoryOverlay
 
 
 class TestInMemoryOverlay:

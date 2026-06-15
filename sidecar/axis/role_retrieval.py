@@ -4,10 +4,9 @@ Sits between L4 roles and the actual `/ask`-style consumer. Given a role
 name (and optionally a free-text query), returns ranked candidate
 symbols from a workspace whose persisted L3 contracts satisfy that role.
 
-Today the legacy ``unified_ranker`` answers ``/ask``. This module is the
-first cleanly-shaped entry point for the axis pipeline so future
-ranker / endpoint integration has something to call without untangling
-``sidecar/context``. The ranking is intentionally simple — vector
+The axis pipeline is the default ``/ask`` provider (the legacy
+``unified_ranker`` / ranking cascade was removed 2026-06-15). This module is
+the axis role-retrieval entry point. The ranking is intentionally simple — vector
 distance for semantic narrowing plus a small structural boost when more
 contracts in the role fire on the symbol — so the role-match dimension
 is observable in the result ordering instead of buried inside a black

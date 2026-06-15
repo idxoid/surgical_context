@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sidecar.ai.engine import AIEngine
-from sidecar.context.types import DocChunk, PromptContext, SymbolContext
+from sidecar.context_types import DocChunk, PromptContext, SymbolContext
 
 
 @pytest.fixture

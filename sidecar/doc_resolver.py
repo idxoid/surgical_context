@@ -1,6 +1,6 @@
 """DocResolver — LanceDB semantic retrieval."""
 
-from sidecar.context.types import DocChunk
+from sidecar.context_types import DocChunk
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 

@@ -11,7 +11,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from time import time
 
-from sidecar.context.types import Subgraph
+from sidecar.context_types import Subgraph
 from sidecar.observability.metrics import default_metrics
 
 
