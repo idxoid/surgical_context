@@ -873,17 +873,11 @@ def _context_from_axis(
         intent_budget=True,
         base_token_budget=max(token_budget, DEFAULT_BASE_TOKEN_BUDGET),
         anchor_path=anchor_path,
-        # Shallow 1-hop walk for passive seeds: recovers relational answers
-        # (B = a 1-hop neighbour of a passive seed) — lifts the budgeted path
-        # to the uncapped recall ceiling (0.96 -> 0.99 on the bench) for +6.5%
-        # tokens, sub-second. Provider-only; benchmark/endpoint stay default off.
-        shallow_passive=True,
         # Hook transparency: open hook-DECLARATION seeds through their
         # registration lifecycle (the hook->registration archetype chain).
         # Inert for non-hook seeds; closes the named-hook gap (sqlalchemy q03
         # 0.5 -> 1.0) at the cost of two cheap walks when hook seeds are present.
         hook_transparency=True,
-        token_credit=_axis_token_credit_enabled(),
     )
     intent = result.intent[0].role if result.intent else ""
     return axis_bundles_to_prompt_context(
@@ -968,16 +962,6 @@ def _ask_axis_first_enabled() -> bool:
     the symbol-tier axis provider and leave only the file/workspace/direct
     fallback ladder; the old ranking cascade is gone."""
     return os.environ.get("ASK_AXIS_FIRST", "1").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _axis_token_credit_enabled() -> bool:
-    """Opt-in render-level token credit budgeting for the axis provider."""
-    return os.environ.get("AXIS_TOKEN_CREDIT", "").strip().lower() in {
         "1",
         "true",
         "yes",

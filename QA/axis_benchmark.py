@@ -216,13 +216,9 @@ def run_question(
     context_per_seed: int,
     intent_budget: bool = False,
     base_token_budget: int = 4000,
-    max_walk_seeds_override: int | None = None,
     render_mode_override: str | None = None,
     ignore_anchor: bool = False,
-    axis_split: bool = False,
-    shallow_passive: bool = False,
     hook_transparency: bool = False,
-    token_credit: bool = False,
 ) -> QuestionResult:
     repo = str(question_entry.get("repo") or "")
     qid = str(question_entry.get("id") or "")
@@ -249,10 +245,10 @@ def run_question(
     # read straight off the layered result.
     #
     # ``--intent-budget`` instead measures the PRODUCTION /ask path: the
-    # intent-driven budget (echelon-1 seed cap + echelon-2 token/signature
-    # trim) that ``_context_from_axis`` runs when ``ASK_AXIS_FIRST`` is on.
-    # The seed / pool layers are unaffected (budgeting lives in context
-    # expansion); only the bundle layer reflects the cost of the budget.
+    # intent-driven Token Credit budget (full ranked scope, then the echelon-2
+    # marginal token-credit packer) that ``_context_from_axis`` runs when
+    # ``ASK_AXIS_FIRST`` is on. The seed / pool layers are unaffected (budgeting
+    # lives in context expansion); only the bundle layer reflects the cost.
     timer = _StageTimer()
     retrieval = run_axis_retrieval(
         result.question,
@@ -267,15 +263,11 @@ def run_question(
         context_seeds_per_role=None,
         intent_budget=intent_budget,
         base_token_budget=base_token_budget,
-        max_walk_seeds_override=max_walk_seeds_override,
         render_mode_override=render_mode_override,
         anchor_path=(
             None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)
         ),
-        axis_split=axis_split,
-        shallow_passive=shallow_passive,
         hook_transparency=hook_transparency,
-        token_credit=token_credit,
         trace=timer,
     )
     # Post-processing cost: the ``context`` stage is the build_context graph
@@ -691,9 +683,9 @@ def main() -> None:
     parser.add_argument(
         "--intent-budget",
         action="store_true",
-        help="Measure the production /ask path: apply the intent-driven "
-        "retrieval budget (echelon-1 seed cap + echelon-2 token/signature "
-        "trim) that ASK_AXIS_FIRST enables, instead of the uncapped pool.",
+        help="Measure the production /ask path: apply the intent-driven Token "
+        "Credit budget (full ranked scope + the echelon-2 marginal token-credit "
+        "packer) that ASK_AXIS_FIRST enables, instead of the uncapped pool.",
     )
     parser.add_argument(
         "--token-budget",
@@ -703,16 +695,15 @@ def main() -> None:
         "profile). Mirrors AskRequest.token_budget. Default 4000.",
     )
     parser.add_argument(
-        "--max-walk-seeds",
-        type=int,
-        default=None,
-        help="Override the profile's echelon-1 active/walk cap for "
-        "--intent-budget (sweep knob): how many top-ranked seeds get a graph "
-        "walk; the rest stay passive. Unset = each profile's own max_walk_seeds.",
-    )
-    parser.add_argument(
         "--render-mode",
-        choices=["full", "signature_only", "hybrid", "fold"],
+        choices=[
+            "full",
+            "signature_only",
+            "hybrid",
+            "hybrid_compact",
+            "fold",
+            "fold_compact",
+        ],
         default=None,
         help="Override the profile's echelon-2 render mode for --intent-budget "
         "(sweep knob). Unset = use each profile's own render_mode.",
@@ -722,27 +713,6 @@ def main() -> None:
         action="store_true",
         help="Ignore each question's `anchor` field (B_proximity OFF) — the "
         "off-arm for an on/off comparison on an anchor pack.",
-    )
-    parser.add_argument(
-        "--axis-split",
-        action="store_true",
-        help="Per-axis walk split for multi-axis questions: each intent axis "
-        "gets an equal guaranteed share of the walk (+20%% capacity per extra "
-        "axis), remainder by score. Targets the multi-axis walk-cap misses.",
-    )
-    parser.add_argument(
-        "--shallow-passive",
-        action="store_true",
-        help="Give passive seeds a shallow 1-hop walk (signature-rendered) so "
-        "relational answers (B = a 1-hop neighbour of a passive seed) are "
-        "covered. Grows the candidate pool — tracked via rendered_tokens.",
-    )
-    parser.add_argument(
-        "--token-credit",
-        action="store_true",
-        help="Enable Token Credit System v1 for echelon-2 rendering: utility "
-        "queue, per-transaction cap, full/fold/signature downgrade, and "
-        "passive surplus upgrades. Default off; requires --intent-budget.",
     )
     parser.add_argument(
         "--no-hook-transparency",
@@ -813,13 +783,9 @@ def main() -> None:
             context_per_seed=args.context_per_seed,
             intent_budget=args.intent_budget,
             base_token_budget=args.token_budget,
-            max_walk_seeds_override=args.max_walk_seeds,
             render_mode_override=args.render_mode,
             ignore_anchor=args.no_proximity,
-            axis_split=args.axis_split,
-            shallow_passive=args.shallow_passive,
             hook_transparency=args.hook_transparency,
-            token_credit=args.token_credit,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started

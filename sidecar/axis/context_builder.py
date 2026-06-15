@@ -21,14 +21,27 @@ consumer's choice (chat format, tool-use schema, etc.).
 
 from __future__ import annotations
 
+import heapq
+import math
 from collections import namedtuple
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import Any
 
 from sidecar.axis.graph_walk import steps_for_mode, walk_neighbours_grouped
 from sidecar.axis.role_retrieval import RoleCandidate
+from sidecar.axis.test_file_filter import is_test_path
 from sidecar.observability.metrics import estimate_text_tokens
+
+_RENDER_LADDER: tuple[str, ...] = (
+    "signature_only",
+    "fold_compact",
+    "fold",
+    "hybrid_compact",
+    "hybrid",
+    "full",
+)
 
 # One expansion hit: a neighbour reached from a seed, tagged with the
 # step that found it. Mirrors the fields the bundle builder reads off the
@@ -222,6 +235,86 @@ def _code_signature(code: str | None) -> str:
     return "\n".join(out)
 
 
+def _collapse_long_line(line: str, *, limit: int = 140) -> str:
+    stripped = line.rstrip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[: limit - 4].rstrip() + " ..."
+
+
+def _looks_like_assignment(stripped: str) -> bool:
+    if "==" in stripped or "!=" in stripped or "<=" in stripped or ">=" in stripped:
+        return False
+    return "=" in stripped
+
+
+def _keep_compact_body_line(stripped: str) -> bool:
+    if not stripped or stripped.startswith("#"):
+        return False
+    prefixes = (
+        "if ",
+        "elif ",
+        "else:",
+        "for ",
+        "async for ",
+        "while ",
+        "try:",
+        "except ",
+        "finally:",
+        "with ",
+        "async with ",
+        "match ",
+        "case ",
+        "return ",
+        "yield ",
+        "yield from ",
+        "raise ",
+        "import ",
+        "from ",
+        "assert ",
+    )
+    if stripped.startswith(prefixes):
+        return True
+    if _looks_like_assignment(stripped):
+        return True
+    return "(" in stripped and ")" in stripped
+
+
+def _code_compact(code: str | None, *, max_body_lines: int = 24) -> str:
+    """Parser-light body compaction: signature + structural/call-bearing lines."""
+    signature = _code_signature(code)
+    if not code or not signature:
+        return signature
+    lines = code.splitlines()
+    signature_lines = signature.splitlines()
+    if not signature_lines or len(signature_lines) >= len(lines):
+        return signature
+
+    out = list(signature_lines)
+    kept = 0
+    in_docstring = False
+    for line in lines[len(signature_lines):]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(('"""', "'''")):
+            if stripped.count('"""') == 1 or stripped.count("'''") == 1:
+                in_docstring = not in_docstring
+            continue
+        if in_docstring:
+            continue
+        if not _keep_compact_body_line(stripped):
+            continue
+        out.append(_collapse_long_line(line))
+        kept += 1
+        if kept >= max_body_lines:
+            out.append("    ...")
+            break
+    if kept == 0:
+        out.append("    ...")
+    return "\n".join(out)
+
+
 def _class_parent_from_qualified_name(sym: ContextSymbol) -> str | None:
     """Return the parent class qualified name for callable class members.
 
@@ -271,7 +364,11 @@ def _indent_block(code: str) -> str:
     return "\n".join(out)
 
 
-def _fold_class_symbols(symbols: list[ContextSymbol]) -> list[ContextSymbol]:
+def _fold_class_symbols(
+    symbols: list[ContextSymbol],
+    *,
+    compact: bool = False,
+) -> list[ContextSymbol]:
     """Fold already-selected class members into synthetic class blocks.
 
     No graph lookup occurs here: the group is built only from symbols that are
@@ -320,8 +417,11 @@ def _fold_class_symbols(symbols: list[ContextSymbol]) -> list[ContextSymbol]:
             sig = _code_signature(member.code).lstrip()
             if sig.startswith("class ") and member.qualified_name == parent:
                 continue
-            keep_full = member.distance_from_seed == 0 or member.name == "__init__"
-            body_blocks.append(_indent_block(member.code if keep_full else sig))
+            if compact:
+                body_blocks.append(_indent_block(sig))
+            else:
+                keep_full = member.distance_from_seed == 0 or member.name == "__init__"
+                body_blocks.append(_indent_block(member.code if keep_full else sig))
         code = "\n".join([class_header, *(body_blocks or ["    ..."])])
         first = min(members, key=lambda m: (m.distance_from_seed, m.uid))
         out.append(
@@ -337,10 +437,14 @@ def _fold_class_symbols(symbols: list[ContextSymbol]) -> list[ContextSymbol]:
     return out
 
 
-def _apply_fold_render(bundles: list[ContextBundle]) -> list[ContextBundle]:
+def _apply_fold_render(
+    bundles: list[ContextBundle],
+    *,
+    compact: bool = False,
+) -> list[ContextBundle]:
     folded: list[ContextBundle] = []
     for bundle in bundles:
-        symbols = _fold_class_symbols(bundle.all_symbols())
+        symbols = _fold_class_symbols(bundle.all_symbols(), compact=compact)
         if not symbols:
             folded.append(bundle)
             continue
@@ -356,10 +460,13 @@ def _trim_symbol_for_mode(
     *,
     full_render_max_depth: int,
 ) -> ContextSymbol:
-    if render_mode == "signature_only" or (
-        render_mode == "hybrid"
-        and sym.distance_from_seed > full_render_max_depth
-    ):
+    if render_mode == "signature_only":
+        return replace(sym, code=_code_signature(sym.code))
+    if render_mode == "hybrid_compact":
+        if sym.distance_from_seed <= full_render_max_depth:
+            return replace(sym, code=_code_compact(sym.code))
+        return replace(sym, code=_code_signature(sym.code))
+    if render_mode == "hybrid" and sym.distance_from_seed > full_render_max_depth:
         return replace(sym, code=_code_signature(sym.code))
     return sym
 
@@ -370,11 +477,14 @@ def _render_bundle(
     *,
     full_render_max_depth: int = 0,
 ) -> ContextBundle:
-    if render_mode == "fold":
-        rendered = _apply_fold_render([bundle])[0]
+    if render_mode in ("fold", "fold_compact"):
+        rendered = _apply_fold_render(
+            [bundle],
+            compact=render_mode == "fold_compact",
+        )[0]
         if rendered == bundle:
             return bundle
-    elif render_mode in ("signature_only", "hybrid"):
+    elif render_mode in ("signature_only", "hybrid", "hybrid_compact"):
         rendered = replace(
             bundle,
             seed=_trim_symbol_for_mode(
@@ -401,11 +511,10 @@ def _bundle_token_count(bundle: ContextBundle) -> int:
 
 
 def _render_modes_for_credit(initial_mode: str) -> tuple[str, ...]:
-    if initial_mode == "signature_only":
-        return ("signature_only",)
-    if initial_mode == "fold":
-        return ("fold", "signature_only")
-    return (initial_mode, "fold", "signature_only")
+    if initial_mode not in _RENDER_LADDER:
+        return (initial_mode, "fold", "signature_only")
+    idx = _RENDER_LADDER.index(initial_mode)
+    return tuple(reversed(_RENDER_LADDER[: idx + 1]))
 
 
 def _render_with_transaction_limit(
@@ -414,8 +523,16 @@ def _render_with_transaction_limit(
     *,
     per_transaction_limit: int,
     full_render_max_depth: int,
+    render_cache: dict | None = None,
 ) -> tuple[ContextBundle, int]:
+    # Within one budget pass per_transaction_limit/full_render_max_depth are
+    # constant, so (bundle, initial_mode) fully determines the render. The
+    # upgrade loop re-asks for the same modes across repeated pushes; memoise.
+    key = (id(bundle), initial_mode) if render_cache is not None else None
+    if key is not None and key in render_cache:
+        return render_cache[key]
     last: tuple[ContextBundle, int] | None = None
+    result: tuple[ContextBundle, int] | None = None
     for mode in _render_modes_for_credit(initial_mode):
         rendered = _render_bundle(
             bundle,
@@ -425,9 +542,14 @@ def _render_with_transaction_limit(
         cost = _bundle_token_count(rendered)
         last = (rendered, cost)
         if cost <= per_transaction_limit or mode == "signature_only":
-            return rendered, cost
-    assert last is not None
-    return last
+            result = (rendered, cost)
+            break
+    if result is None:
+        assert last is not None
+        result = last
+    if key is not None:
+        render_cache[key] = result
+    return result
 
 
 #: Utility added per extra class-member a bundle folds into a class block.
@@ -437,6 +559,54 @@ def _render_with_transaction_limit(
 #: is indexed (no qn -> no fold grouping -> no bonus), so it stays graceful
 #: pre-reindex.
 FOLD_AGGREGATION_BONUS = 0.1
+
+_MODE_ROLES = frozenset({"impact_analysis", "trace_dependency"})
+_EXAMPLE_SEGMENTS = frozenset(
+    {
+        "benchmarks",
+        "codemods",
+        "demo",
+        "demos",
+        "docs_src",
+        "example",
+        "examples",
+        "sample",
+        "samples",
+        "tutorial",
+        "tutorials",
+    }
+)
+_DOC_SEGMENTS = frozenset({"doc", "docs", "documentation"})
+_CORE_TIER_WEIGHT = {
+    "core": 1.0,
+    "stub": 0.5,
+    "doc": 0.35,
+    "example": 0.25,
+    "test": 0.15,
+}
+_MODE_TIER_WEIGHT = {
+    "core": 1.0,
+    "stub": 0.5,
+    "doc": 0.6,
+    "example": 0.6,
+    "test": 1.0,
+}
+_STRUCTURAL_BRIDGE_STEP_BONUS = {
+    "deferred_runtime_dispatch": 0.45,
+    "hook_transparency": 1.50,
+}
+_IMPACT_SURFACE_TIER_BONUS = {
+    "test": 2.00,
+}
+
+
+@dataclass
+class _FileEvidence:
+    occurrences: int = 0
+    seed_count: int = 0
+    related_count: int = 0
+    roles: set[str] = field(default_factory=set)
+    steps: set[str] = field(default_factory=set)
 
 
 def _fold_aggregation_bonus(bundle: ContextBundle, *, per_member: float) -> float:
@@ -456,6 +626,195 @@ def _fold_aggregation_bonus(bundle: ContextBundle, *, per_member: float) -> floa
     return per_member * extra
 
 
+def _bundle_files(bundle: ContextBundle) -> set[str]:
+    return {sym.file_path for sym in bundle.all_symbols() if sym.file_path}
+
+
+def _bundle_steps(bundle: ContextBundle) -> set[str]:
+    return {sym.expansion_step for sym in bundle.all_symbols() if sym.expansion_step}
+
+
+def _structural_bridge_bonus(bundle: ContextBundle) -> float:
+    primary = _primary_file(bundle)
+    if not primary:
+        return 0.0
+    bonus = 0.0
+    seen: set[tuple[str, str]] = set()
+    impact_mode = _bundle_impact_mode(bundle)
+    for sym in bundle.related:
+        step = sym.expansion_step
+        if not step or not sym.file_path:
+            continue
+        if sym.file_path == primary:
+            continue
+        key = (step, sym.file_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        step_bonus = _STRUCTURAL_BRIDGE_STEP_BONUS.get(step, 0.08)
+        bonus += step_bonus * _tier_weight_for_path(sym.file_path, impact_mode=impact_mode)
+    return bonus
+
+
+def _primary_file(bundle: ContextBundle) -> str:
+    return bundle.seed.file_path or ""
+
+
+def _base_credit_utility(bundle: ContextBundle) -> float:
+    return max(0.0, bundle.utility_score) + _fold_aggregation_bonus(
+        bundle, per_member=FOLD_AGGREGATION_BONUS
+    )
+
+
+@lru_cache(maxsize=4096)
+def _file_tier_from_path(path: str) -> str:
+    if not path:
+        return "core"
+    norm = path.replace("\\", "/").lower()
+    if is_test_path(norm):
+        return "test"
+    parts = [p for p in norm.split("/") if p]
+    if any(part in _EXAMPLE_SEGMENTS for part in parts):
+        return "example"
+    if any(part in _DOC_SEGMENTS for part in parts):
+        return "doc"
+    if norm.endswith(".pyi"):
+        return "stub"
+    return "core"
+
+
+def _tier_weight_for_path(path: str, *, impact_mode: bool) -> float:
+    table = _MODE_TIER_WEIGHT if impact_mode else _CORE_TIER_WEIGHT
+    return table.get(_file_tier_from_path(path), 1.0)
+
+
+def _bundle_impact_mode(bundle: ContextBundle) -> bool:
+    return bundle.role in _MODE_ROLES
+
+
+def _bundle_tier_weight(bundle: ContextBundle) -> float:
+    files = _bundle_files(bundle)
+    if not files:
+        return 1.0
+    impact_mode = _bundle_impact_mode(bundle)
+    weights = [_tier_weight_for_path(path, impact_mode=impact_mode) for path in files]
+    primary = _primary_file(bundle)
+    if primary:
+        weights.append(_tier_weight_for_path(primary, impact_mode=impact_mode))
+    return max(weights)
+
+
+def _impact_surface_bonus(bundle: ContextBundle, files: Iterable[str]) -> float:
+    if not _bundle_impact_mode(bundle):
+        return 0.0
+    seen_tiers: set[str] = set()
+    bonus = 0.0
+    for path in files:
+        tier = _file_tier_from_path(path)
+        if tier in seen_tiers:
+            continue
+        seen_tiers.add(tier)
+        bonus += _IMPACT_SURFACE_TIER_BONUS.get(tier, 0.0)
+    return bonus
+
+
+def _build_file_evidence(bundles: list[ContextBundle]) -> dict[str, _FileEvidence]:
+    evidence: dict[str, _FileEvidence] = {}
+    for bundle in bundles:
+        for idx, sym in enumerate(bundle.all_symbols()):
+            path = sym.file_path or ""
+            if not path:
+                continue
+            item = evidence.setdefault(path, _FileEvidence())
+            item.occurrences += 1
+            if idx == 0:
+                item.seed_count += 1
+            else:
+                item.related_count += 1
+            item.roles.add(bundle.role)
+            if sym.expansion_step:
+                item.steps.add(sym.expansion_step)
+    return evidence
+
+
+def _initial_credit_render(
+    bundle: ContextBundle,
+    *,
+    transaction_limit: int,
+    full_render_max_depth: int,
+) -> tuple[ContextBundle, int]:
+    """Cheap coverage render: signatures everywhere, compact fold when cheap.
+
+    A compact fold block is still a cheap coverage artifact, but it carries
+    class topology that a plain signature loses. Passive seeds stay
+    signature-first; they are the breadth reservoir and can be upgraded later.
+    """
+    signature = _render_bundle(
+        bundle,
+        "signature_only",
+        full_render_max_depth=full_render_max_depth,
+    )
+    signature_cost = _bundle_token_count(signature)
+    if bundle.passive:
+        return signature, signature_cost
+    folded = _render_bundle(
+        bundle,
+        "fold_compact",
+        full_render_max_depth=full_render_max_depth,
+    )
+    if folded.render_mode != "fold_compact":
+        return signature, signature_cost
+    folded_cost = _bundle_token_count(folded)
+    if folded_cost <= transaction_limit:
+        return folded, folded_cost
+    return signature, signature_cost
+
+
+def _target_credit_modes(bundle: ContextBundle, render_mode: str) -> tuple[str, ...]:
+    del bundle, render_mode
+    return _RENDER_LADDER
+
+
+def _next_upgrade_render(
+    bundle: ContextBundle,
+    *,
+    current_mode: str,
+    current_cost: int,
+    render_mode: str,
+    transaction_limit: int,
+    full_render_max_depth: int,
+    render_cache: dict | None = None,
+) -> tuple[ContextBundle, int] | None:
+    modes = _target_credit_modes(bundle, render_mode)
+    try:
+        start = modes.index(current_mode) + 1
+    except ValueError:
+        start = 0
+    for mode in modes[start:]:
+        rendered, cost = _render_with_transaction_limit(
+            bundle,
+            mode,
+            per_transaction_limit=transaction_limit,
+            full_render_max_depth=full_render_max_depth,
+            render_cache=render_cache,
+        )
+        if mode.startswith("fold") and rendered.render_mode != mode:
+            continue
+        if rendered.render_mode == current_mode or cost < current_cost:
+            continue
+        return rendered, cost
+    return None
+
+
+#: Selection-independent per-bundle inputs to the coverage/upgrade gains.
+#: Computed once per budget pass so the lazy-greedy heap re-evaluations reuse the
+#: expensive structural rollups instead of recomputing them on every pop.
+_BundleStatic = namedtuple(
+    "_BundleStatic",
+    "files steps tier_weight impact_mode base_utility structural_bridge",
+)
+
+
 def _apply_token_credit_budget(
     bundles: list[ContextBundle],
     *,
@@ -464,74 +823,221 @@ def _apply_token_credit_budget(
     full_render_max_depth: int,
     per_transaction_share: float = 0.10,
 ) -> list[ContextBundle]:
-    """Token Credit System v1: utility queue + tariffs + anti-oligarch cap.
+    """Token Credit System v2 prototype: coverage-first marginal transactions.
 
-    This replaces greedy "render then cut tail" when explicitly enabled. Every
-    bundle buys a render mode from the same capital pool. Active bundles start
-    at the profile render mode; passive bundles start at signatures. If a
-    transaction exceeds its per-bundle limit, it downgrades full/hybrid -> fold
-    -> signature instead of dropping the candidate. After the first pass, any
-    surplus upgrades passive bundles toward full in utility order.
+    Phase 1 buys cheap coverage artifacts (signature, or compact fold when a
+    coherent class block is available cheaply). Phase 2 spends surplus on the
+    tariff ladder ``signature -> fold_compact -> fold -> hybrid_compact ->
+    hybrid -> full``, ordered by marginal utility per additional token. The
+    stateful gains favor new files / roles / edge steps and softly saturate
+    files that already consumed budget, so the packer buys the next useful fact
+    instead of the next whole bundle.
     """
     if token_budget <= 0:
         return bundles
 
     transaction_limit = max(1, int(token_budget * per_transaction_share))
-    # Sort by utility + fold-aggregation bonus: a bundle whose class members
-    # fold into a block stands for several symbols cheaply, so it outranks a lone
-    # symbol of equal base utility. uid/index tiebreak keeps the order
-    # deterministic (PYTHONHASHSEED-independent).
-    queue = sorted(
-        enumerate(bundles),
-        key=lambda item: (
-            item[1].utility_score
-            + _fold_aggregation_bonus(item[1], per_member=FOLD_AGGREGATION_BONUS),
-            -item[0],
-        ),
-        reverse=True,
-    )
-    selected: list[dict[str, object]] = []
-    used = 0
+    file_soft_cap = max(1, int(token_budget * 0.25))
+    covered_files: set[str] = set()
+    covered_roles: set[str] = set()
+    covered_steps: set[str] = set()
+    file_counts: dict[str, int] = {}
+    file_tokens: dict[str, int] = {}
+    file_evidence = _build_file_evidence(bundles)
+    render_cache: dict[tuple[int, str], tuple[ContextBundle, int]] = {}
+    static = [
+        _BundleStatic(
+            files=_bundle_files(b),
+            steps=_bundle_steps(b),
+            tier_weight=_bundle_tier_weight(b),
+            impact_mode=_bundle_impact_mode(b),
+            base_utility=_base_credit_utility(b),
+            structural_bridge=_structural_bridge_bonus(b),
+        )
+        for b in bundles
+    ]
 
-    for _, bundle in queue:
-        initial_mode = "signature_only" if bundle.passive else render_mode
-        rendered, cost = _render_with_transaction_limit(
+    def _file_saturation_penalty(bundle: ContextBundle) -> float:
+        primary = _primary_file(bundle)
+        if not primary:
+            return 0.0
+        return min(0.5, file_tokens.get(primary, 0) / file_soft_cap)
+
+    def _coverage_gain(idx: int, bundle: ContextBundle) -> float:
+        st = static[idx]
+        files = st.files
+        new_files = files - covered_files
+        new_steps = st.steps - covered_steps
+        tier_weight = st.tier_weight
+        impact_mode = st.impact_mode
+        gain = st.base_utility * tier_weight
+        if new_files:
+            new_file_weight = max(
+                _tier_weight_for_path(path, impact_mode=impact_mode)
+                for path in new_files
+            )
+            gain += (0.35 + 0.08 * max(0, len(new_files) - 1)) * new_file_weight
+            gain += _impact_surface_bonus(bundle, new_files)
+        if bundle.role not in covered_roles:
+            gain += 0.20
+        gain += 0.10 * len(new_steps)
+        gain += st.structural_bridge * tier_weight
+        for path in files:
+            evidence = file_evidence.get(path)
+            if evidence is None:
+                continue
+            centrality = math.log1p(evidence.occurrences) * 0.035
+            centrality += math.log1p(evidence.seed_count) * 0.035
+            centrality += 0.025 * max(0, len(evidence.roles) - 1)
+            centrality += 0.020 * len(evidence.steps)
+            gain += centrality * _tier_weight_for_path(
+                path, impact_mode=impact_mode
+            )
+        gain += 0.05 if not bundle.passive else -0.03
+        gain -= 0.15 * sum(file_counts.get(path, 0) for path in files)
+        gain -= _file_saturation_penalty(bundle)
+        return max(0.001, gain)
+
+    def _record_selection(bundle: ContextBundle, cost: int) -> None:
+        files = _bundle_files(bundle)
+        covered_files.update(files)
+        covered_roles.add(bundle.role)
+        covered_steps.update(_bundle_steps(bundle))
+        for path in files:
+            file_counts[path] = file_counts.get(path, 0) + 1
+        primary = _primary_file(bundle)
+        if primary:
+            file_tokens[primary] = file_tokens.get(primary, 0) + cost
+
+    initial: list[tuple[float, int, int, ContextBundle]] = []
+    for idx, bundle in enumerate(bundles):
+        rendered, cost = _initial_credit_render(
             bundle,
-            initial_mode,
-            per_transaction_limit=transaction_limit,
+            transaction_limit=transaction_limit,
             full_render_max_depth=full_render_max_depth,
         )
-        if selected and used + cost > token_budget:
+        st = static[idx]
+        optimistic_gain = st.base_utility + 0.35 + 0.20
+        optimistic_gain *= st.tier_weight
+        optimistic_gain += 0.10 * len(st.steps)
+        optimistic_gain += st.structural_bridge * st.tier_weight
+        optimistic_gain += _impact_surface_bonus(bundle, st.files)
+        if not bundle.passive:
+            optimistic_gain += 0.05
+        value = optimistic_gain / max(1, cost)
+        heapq.heappush(initial, (-value, idx, cost, rendered))
+
+    selected: list[dict[str, object]] = []
+    selected_indices: set[int] = set()
+    skipped_indices: set[int] = set()
+    used = 0
+
+    while initial:
+        _neg_value, idx, cost, rendered = heapq.heappop(initial)
+        if idx in selected_indices or idx in skipped_indices:
             continue
-        selected.append({"source": bundle, "rendered": rendered, "cost": cost})
+        source = bundles[idx]
+        current_value = _coverage_gain(idx, source) / max(1, cost)
+        best_competing = -initial[0][0] if initial else -1.0
+        if current_value + 1e-12 < best_competing:
+            heapq.heappush(initial, (-current_value, idx, cost, rendered))
+            continue
+        if selected and used + cost > token_budget:
+            skipped_indices.add(idx)
+            continue
+        selected.append({
+            "index": idx,
+            "source": source,
+            "rendered": rendered,
+            "cost": cost,
+        })
+        selected_indices.add(idx)
         used += cost
+        _record_selection(source, cost)
         if used >= token_budget:
             break
 
-    # Surplus loop: passive candidates paid the cheap signature tariff first.
-    # Upgrade the highest-utility passive entries while capital remains.
-    for entry in selected:
-        if used >= token_budget:
-            break
+    def _upgrade_gain(
+        st: _BundleStatic, bundle: ContextBundle, rendered: ContextBundle
+    ) -> float:
+        mode_bonus = {
+            "fold_compact": 0.18,
+            "fold": 0.22,
+            "hybrid_compact": 0.25,
+            "hybrid": 0.28,
+            "full": 0.38,
+        }.get(rendered.render_mode, 0.10)
+        gain = 0.35 * st.base_utility * st.tier_weight
+        gain += mode_bonus
+        primary = _primary_file(bundle)
+        if primary:
+            evidence = file_evidence.get(primary)
+            if evidence is not None:
+                gain += 0.03 * math.log1p(evidence.occurrences)
+        gain += 0.05 if not bundle.passive else 0.03
+        gain -= _file_saturation_penalty(bundle)
+        return max(0.001, gain)
+
+    upgrade_heap: list[tuple[float, int, int, ContextBundle, int]] = []
+
+    def _push_upgrade(entry_index: int) -> None:
+        entry = selected[entry_index]
         source = entry["source"]
-        if not isinstance(source, ContextBundle) or not source.passive:
-            continue
         current = entry["rendered"]
         current_cost = entry["cost"]
         if not isinstance(current, ContextBundle) or not isinstance(current_cost, int):
-            continue
-        upgraded, upgraded_cost = _render_with_transaction_limit(
+            return
+        if not isinstance(source, ContextBundle):
+            return
+        bundle_index = entry["index"]
+        if not isinstance(bundle_index, int):
+            return
+        candidate = _next_upgrade_render(
             source,
-            "full",
-            per_transaction_limit=transaction_limit,
+            current_mode=current.render_mode,
+            current_cost=current_cost,
+            render_mode=render_mode,
+            transaction_limit=transaction_limit,
             full_render_max_depth=full_render_max_depth,
+            render_cache=render_cache,
         )
+        if candidate is None:
+            return
+        upgraded, upgraded_cost = candidate
         delta = upgraded_cost - current_cost
-        if delta <= 0 or used + delta > token_budget:
+        if delta < 0:
+            return
+        priority = _upgrade_gain(static[bundle_index], source, upgraded) / max(1, delta)
+        heapq.heappush(
+            upgrade_heap,
+            (-priority, entry_index, current_cost, upgraded, upgraded_cost),
+        )
+
+    for entry_index in range(len(selected)):
+        _push_upgrade(entry_index)
+
+    while upgrade_heap and used < token_budget:
+        _neg_priority, entry_index, expected_cost, upgraded, upgraded_cost = (
+            heapq.heappop(upgrade_heap)
+        )
+        entry = selected[entry_index]
+        current_cost = entry["cost"]
+        if current_cost != expected_cost:
+            continue
+        if not isinstance(current_cost, int):
+            continue
+        delta = upgraded_cost - current_cost
+        if delta < 0 or used + delta > token_budget:
             continue
         entry["rendered"] = upgraded
         entry["cost"] = upgraded_cost
         used += delta
+        source = entry["source"]
+        if isinstance(source, ContextBundle):
+            primary = _primary_file(source)
+            if primary:
+                file_tokens[primary] = file_tokens.get(primary, 0) + delta
+        _push_upgrade(entry_index)
 
     return [
         entry["rendered"]
@@ -546,27 +1052,25 @@ def _apply_render_and_budget(
     token_budget: int | None,
     render_mode: str,
     full_render_max_depth: int = 0,
-    token_credit: bool = False,
 ) -> list[ContextBundle]:
     """Echelon 2: render-trim then token-pack the assembled bundles.
 
-    ``render_mode`` granularity (a symbol is trimmed to its signature when):
-      * ``"full"`` — never (whole pool, full code).
-      * ``"signature_only"`` — always (max breadth, every symbol a signature).
-      * ``"hybrid"`` — only when ``distance_from_seed > full_render_max_depth``
+    With ``token_budget`` set the Token Credit System packs the full pool in
+    marginal-utility order, buying the minimal render context per bundle along
+    its own render ladder — so ``render_mode`` is the ceiling, not a pre-trim,
+    and the packer does its own rendering.
+
+    With no budget we just apply ``render_mode`` to every bundle:
+      * ``"full"`` — never trims (whole pool, full code).
+      * ``"signature_only"`` — every symbol collapses to its signature.
+      * ``"hybrid"`` — only neighbours past ``full_render_max_depth`` collapse
         (default 0 → the seed stays full, every expanded neighbour collapses to
-        a signature). This is the architecture profile: full code on the
-        answer's primary symbol, cheap signatures for all its context. Keeping
-        even depth-1 deps full barely economizes (they dominate the volume), so
-        the default is seed-only.
+        a signature). Keeping even depth-1 deps full barely economizes (they
+        dominate the volume), so the default is seed-only.
+      * ``"fold"`` — group each bundle's class members into a folded block.
+    """
 
-    When ``token_budget`` is set we then pack bundles in rank order — seed
-    first, then its related symbols — summing estimated tokens and dropping
-    the tail once the budget is hit. The first bundle's seed is always kept so
-    there is a primary. Cross-bundle duplicates are counted (not deduped here —
-    the PromptContext adapter dedups by uid), so the cut is conservative."""
-
-    if token_credit and token_budget is not None:
+    if token_budget is not None:
         return _apply_token_credit_budget(
             bundles,
             token_budget=token_budget,
@@ -574,45 +1078,18 @@ def _apply_render_and_budget(
             full_render_max_depth=full_render_max_depth,
         )
 
-    if render_mode == "fold":
+    if render_mode in (
+        "fold",
+        "fold_compact",
+        "signature_only",
+        "hybrid",
+        "hybrid_compact",
+    ):
         bundles = [
-            _render_bundle(
-                b,
-                "fold",
-                full_render_max_depth=full_render_max_depth,
-            )
+            _render_bundle(b, render_mode, full_render_max_depth=full_render_max_depth)
             for b in bundles
         ]
-    if render_mode in ("signature_only", "hybrid"):
-        bundles = [
-            _render_bundle(
-                b,
-                render_mode,
-                full_render_max_depth=full_render_max_depth,
-            )
-            for b in bundles
-        ]
-    if token_budget is None:
-        return bundles
-
-    used = 0
-    out: list[ContextBundle] = []
-    for bundle in bundles:
-        seed_tokens = estimate_text_tokens(bundle.seed.code or "")
-        if out and used + seed_tokens > token_budget:
-            break  # cannot fit this bundle's seed — stop
-        used += seed_tokens
-        kept: list[ContextSymbol] = []
-        for rel in bundle.related:
-            rel_tokens = estimate_text_tokens(rel.code or "")
-            if used + rel_tokens > token_budget:
-                break
-            used += rel_tokens
-            kept.append(rel)
-        out.append(replace(bundle, related=tuple(kept)))
-        if used >= token_budget:
-            break
-    return out
+    return bundles
 
 
 #: Hook/event archetype edges. Hop 1 crosses the EVENT channel from a topic to
@@ -689,7 +1166,6 @@ def build_context_for_candidates(
     hook_transparency: bool = False,
     token_budget: int | None = None,
     render_mode: str = "full",
-    token_credit: bool = False,
     utility_score_fn: Callable[[RoleCandidate], float] | None = None,
 ) -> list[ContextBundle]:
     """Expand each ACTIVE candidate into a ``ContextBundle`` of related code.
@@ -911,7 +1387,6 @@ def build_context_for_candidates(
         bundles,
         token_budget=token_budget,
         render_mode=render_mode,
-        token_credit=token_credit,
     )
 
 

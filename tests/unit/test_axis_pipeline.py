@@ -186,7 +186,7 @@ def test_intent_budget_on_applies_architecture_profile(stub_stages, monkeypatch)
     assert result.render_mode == "hybrid"
 
 
-def test_intent_budget_splits_active_and_passive(stub_stages, monkeypatch):
+def test_intent_budget_walks_full_scope_no_passive_split(stub_stages, monkeypatch):
     import sidecar.axis.context_builder as _ctx_mod
 
     captured: dict = {}
@@ -198,61 +198,13 @@ def test_intent_budget_splits_active_and_passive(stub_stages, monkeypatch):
 
     monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
 
-    # pool of 3 equal-score seeds; walk cap 2 -> top-2 active, 1 passive.
-    result = _run(intent_budget=True, max_walk_seeds_override=2)
-    assert captured["active"] == ["a", "b"]
-    assert captured["passive"] == ["c"]
-    # the full pool is preserved (pool recall unaffected — the cap is only on
-    # the walk, not the candidate set).
+    # The Token Credit System IS the budget: the whole ranked pool is active
+    # (no walk cap, no active/passive split) and the packer trims downstream.
+    result = _run(intent_budget=True)
+
+    assert captured["active"] == ["a", "b", "c"]
+    assert captured["passive"] == []
     assert [c.uid for c in result.candidates_for_context] == ["a", "b", "c"]
-
-
-def test_shallow_passive_threads_hops(stub_stages, monkeypatch):
-    import sidecar.axis.context_builder as _ctx_mod
-
-    captured: dict = {}
-    monkeypatch.setattr(
-        _ctx_mod,
-        "build_context_for_candidates",
-        lambda active, **kw: captured.update(
-            hops=kw.get("passive_shallow_hops"),
-            passive=[c.uid for c in kw.get("passive", [])],
-        )
-        or [],
-    )
-    # shallow_passive on -> passive seeds get a 1-hop walk
-    _run(intent_budget=True, max_walk_seeds_override=2, shallow_passive=True)
-    assert captured["hops"] == 1
-    assert captured["passive"] == ["c"]
-
-
-def test_shallow_passive_off_by_default(stub_stages, monkeypatch):
-    import sidecar.axis.context_builder as _ctx_mod
-
-    captured: dict = {}
-    monkeypatch.setattr(
-        _ctx_mod,
-        "build_context_for_candidates",
-        lambda active, **kw: captured.update(hops=kw.get("passive_shallow_hops")) or [],
-    )
-    _run(intent_budget=True)  # default: no shallow passive walk
-    assert captured["hops"] == 0
-
-
-def test_token_credit_flag_threads_to_context_builder(stub_stages, monkeypatch):
-    import sidecar.axis.context_builder as _ctx_mod
-
-    captured: dict = {}
-    monkeypatch.setattr(
-        _ctx_mod,
-        "build_context_for_candidates",
-        lambda active, **kw: captured.update(token_credit=kw.get("token_credit"))
-        or [],
-    )
-
-    _run(intent_budget=True, token_credit=True)
-
-    assert captured["token_credit"] is True
 
 
 def test_intent_budget_threads_proximity_utility_to_context_builder(

@@ -105,13 +105,9 @@ def run_axis_retrieval(
     context_seeds_per_role: int | None = None,
     intent_budget: bool = False,
     base_token_budget: int = 4000,
-    max_walk_seeds_override: int | None = None,
     render_mode_override: str | None = None,
     anchor_path: str | None = None,
-    axis_split: bool = False,
-    shallow_passive: bool = False,
     hook_transparency: bool = False,
-    token_credit: bool = False,
     trace: Any | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
@@ -309,31 +305,23 @@ def run_axis_retrieval(
         candidates_for_context.extend(cands)
 
     # Intent-driven budgeting (opt-in; benchmark leaves it off -> walk all).
-    # Echelon 1 is the ACTIVE/PASSIVE split, not a hard pool cap: rank the
-    # whole pool by score, give only the top ``max_walk_seeds`` a graph WALK
-    # (active — the expensive part), and keep the rest as PASSIVE context
-    # (code-bearing, no walk) so their files survive for the token budget
-    # without spawning neighbours or eating CPU. ``candidates_for_context``
-    # stays the full pool (pool recall is unaffected — the cap is only on the
-    # walk). Echelon 2 (token_budget + render_mode) packs the union below.
+    # The Token Credit System IS the budget: walk the full ranked scope (no
+    # pre-cut), then let the marginal token-credit packer (echelon 2) buy the
+    # minimal render context per bundle. Pre-cutting the walk would only let the
+    # token budget post-process an already truncated scope, so there is no
+    # active/passive split — the whole pool is active.
     token_budget: int | None = None
     render_mode = "full"
     active = candidates_for_context
-    passive: list[RoleCandidate] = []
     utility_score_fn = None
     if intent_budget:
         budget = budget_for_intent(intent)
-        walk_cap = (
-            budget.max_walk_seeds
-            if max_walk_seeds_override is None
-            else max_walk_seeds_override
-        )
         # S_utility = score (S_vector × W_type, already in the candidate score)
         # + B_proximity (path-locality from the ask anchor). The boost only
-        # reorders the active/passive split + packing priority; it does not
-        # mutate the candidate score the response/bundle carries. anchor_path
-        # is None -> boost 0 -> rank by score alone (no downside).
-        ranked = sorted(
+        # reorders the packing priority; it does not mutate the candidate score
+        # the response/bundle carries. anchor_path is None -> boost 0 -> rank by
+        # score alone (no downside).
+        active = sorted(
             candidates_for_context,
             key=lambda c: c.score + proximity_boost(c.file_path, anchor_path),
             reverse=True,
@@ -343,49 +331,16 @@ def run_axis_retrieval(
             return c.score + proximity_boost(c.file_path, anchor_path)
 
         utility_score_fn = _budget_utility_score
-        if axis_split and len(intent) >= 2:
-            # Per-axis walk split: multi-axis questions widen the pool and push
-            # the relational seed (whose 1-hop neighbour is the answer) into
-            # passive. Give each intent axis an equal, guaranteed share of the
-            # walk, +20% capacity per extra axis; then top up the remainder by
-            # score so role-agnostic vector_seed / structural (recall-critical)
-            # aren't squeezed out.
-            n_axes = len(intent)
-            walk_cap = round(walk_cap * (1 + 0.20 * (n_axes - 1)))
-            per_axis = max(1, walk_cap // n_axes)
-            active, seen = [], set()
-            for m in intent:
-                taken = 0
-                for c in ranked:
-                    if c.uid in seen or c.role != m.role:
-                        continue
-                    active.append(c)
-                    seen.add(c.uid)
-                    taken += 1
-                    if taken >= per_axis:
-                        break
-            for c in ranked:  # fill remainder by score (incl. vector_seed/structural)
-                if len(active) >= walk_cap:
-                    break
-                if c.uid not in seen:
-                    active.append(c)
-                    seen.add(c.uid)
-            passive = [c for c in ranked if c.uid not in seen]
-        else:
-            active = ranked[:walk_cap]
-            passive = ranked[walk_cap:]
         token_budget = budget.effective_tokens(base_token_budget)
         render_mode = (
             budget.render_mode if render_mode_override is None else render_mode_override
         )
 
     bundles: list[ContextBundle] = []
-    if with_context and (active or passive):
+    if with_context and active:
         with tr.stage("context"):
             bundles = context_builder.build_context_for_candidates(
                 active,
-                passive=passive,
-                passive_shallow_hops=1 if shallow_passive else 0,
                 workspace_id=workspace_id,
                 db=db,
                 lance=lance,
@@ -393,7 +348,6 @@ def run_axis_retrieval(
                 hook_transparency=hook_transparency,
                 token_budget=token_budget,
                 render_mode=render_mode,
-                token_credit=token_credit,
                 utility_score_fn=utility_score_fn,
             )
 
