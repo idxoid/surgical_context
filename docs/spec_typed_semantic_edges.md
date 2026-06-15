@@ -1,5 +1,8 @@
 # Spec — Typed Semantic Edges (Phase 5)
 
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+
+
 > **Status:** Implemented for typed call edges and ranker traversal. The graph now supports and consumes `CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`, and `CALLS_GUESS`; legacy `CALLS` is still accepted as a compatibility fallback. `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, and `SEMANTIC_HINT` are supported by traversal/scoring, but parser emission is uneven: inheritance currently writes `DEPENDS_ON` with metadata, not dedicated `IMPLEMENTS`/`OVERRIDES` edges, and `REFERENCES` is schema/ranker-ready but not broadly emitted.
 
 ## 1. Problem

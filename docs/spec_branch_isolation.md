@@ -1,5 +1,8 @@
 # Spec — Branch / Workspace Isolation (Phase 8)
 
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+
+
 > **Status:** Implemented for graph reads/writes and dirty overlay isolation. Closes the SaaS correctness gap: the Phase 7 shared Aura graph collapses all branches and users into a single symbol set, guaranteeing drift across workspaces.
 
 ## 1. Problem

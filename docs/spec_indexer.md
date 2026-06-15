@@ -195,10 +195,15 @@ extract_symbol_rows()
 
 Output:
 - `RoleAssignmentSummary` on `Workspace` — `method`, `sample_size`, `filtered_sample_size`, `present_roles`, `l1_distribution` (`role_taxonomy_schema_version = 3`).
-- `RoleCatalog` — `present_roles` only (`role_catalog_schema_version = 3`); mechanism overlay keys merged from `mechanism_registry` as before.
+- `RoleCatalog` — `present_roles` only (`role_catalog_schema_version = 3`).
 - per-symbol `derived_primary_role`, `derived_supporting_roles_json`, plus structural fan fields for ranker diagnostics.
 
-**Mechanism profiles in the catalog.** On each persist, the indexer merges `mechanism_required_roles` and `mechanism_role_backfill` into `role_catalog_json` from `mechanism_registry.preloaded_mechanism_catalog_extensions()`. Built-in Python tables are intentionally empty; **ad-hoc per-repo tuning** uses optional YAML **mechanism packs** loaded only when `MECHANISM_PACK_PATH` points at one or more files (bundled templates such as `sidecar/context/mechanism_packs/bundled/flask_registration.yaml` are **not** loaded implicitly). The merged overlay is persisted on the `Workspace` and consumed at retrieval time by `UnifiedRanker._role_backfill_candidates()`. Operational workflow for benchmark-driven tuning: [spec_eval_harness.md §4.6](spec_eval_harness.md).
+**Mechanism profiles in the catalog — REMOVED (2026-06-15).** The indexer no
+longer merges `mechanism_registry` extensions into `role_catalog_json`: the merge
+was inert (built-in tables empty; YAML `MECHANISM_PACK_PATH` packs were an opt-in
+answer-key) and `mechanism_registry` + `mechanism_packs/` were deleted with the
+cascade (the consumer `UnifiedRanker` is gone too). The role catalog is now pure
+Pass-1 structural roles. See `cascade_cleanup_inventory.md`.
 
 **Persistence.**
 

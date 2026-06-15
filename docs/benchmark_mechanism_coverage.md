@@ -1,5 +1,8 @@
 # Benchmark Findings: Mechanism Coverage vs. Question Pass Rate
 
+> **Historical snapshot.** This document predates the cascade removal (2026-06-15): the legacy ranking cascade it references is gone — axis is the sole context path (see `cascade_cleanup_inventory.md`). Kept as a dated record; the findings/benchmarks below are as-of their date.
+
+
 > **Status:** Historical analysis of an early benchmark debugging pass, updated to reflect the current generic retrieval architecture. Keep it for the framing, not for the exact outcomes.
 
 ## Current Snapshot

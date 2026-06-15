@@ -25,7 +25,7 @@ The active gap list now lives in [road_map.md](road_map.md), under **Canonical B
 - [spec_uid_stability.md](spec_uid_stability.md) - stable symbol identity.
 - [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md) - scoped call resolver.
 - [spec_branch_isolation.md](spec_branch_isolation.md) - workspace and branch boundaries.
-- [spec_unified_ranking.md](spec_unified_ranking.md) - graph plus semantic ranking.
+- spec_unified_ranking.md (removed) - graph plus semantic ranking.
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) - scores, provenance, pruning, and trace metadata.
 - [spec_retrieval_cache.md](spec_retrieval_cache.md) - cache layers after correctness keys stabilize.
 - [spec_learning_loop.md](spec_learning_loop.md) - feedback and learning loop after observability exists.

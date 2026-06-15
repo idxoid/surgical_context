@@ -1,5 +1,8 @@
 # Spec — LanceDB Embedding Versioning (Phase 4)
 
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+
+
 > **Status:** Proposed. Prevents silent quality degradation when embedding models are upgraded or swapped. Prerequisite for any multi-model or cross-version search.
 
 ## 1. Problem

@@ -63,14 +63,15 @@ weight, **not** a query→file map:
 
 `test` stays a hard fence for non-mode intents to preserve current
 behaviour exactly; the soft demotions (`example`/`doc`/`stub`/`reexport`)
-are the new lever. Weights echo the cascade's existing `NOISE_FACTOR`
+are the new lever. Weights echo the legacy `NOISE_FACTOR`
 (0.15) / `EXPLORATION_NOISE_FACTOR` (0.3) — tune empirically.
 
 ## Subsumes (3 → 1)
 
 - `axis/test_file_filter.is_test_path` → the `test` tier, now native.
-- **`context/ranker/signal_constants.NOISE_PATH_PATTERNS` (cascade
-  class B)** → its path patterns become the `example`/`doc` derivation.
+- **`sidecar/indexer/signal_constants.NOISE_PATH_PATTERNS`** (class B, moved
+  out of the deleted cascade into the indexer, 2026-06-15) → its path patterns
+  become the `example`/`doc` derivation.
   This *closes the class-B migration item* — the indexer is its home.
 - Scattered checks (`indexer/anchor.py` `/examples/`·`/tutorial/`,
   `ts_http_route_hints` `test/QA`) → one derive.

@@ -228,5 +228,5 @@ they bridge.
 
 - [spec_uid_stability.md](spec_uid_stability.md) — resolver targets UIDs; stable UIDs are a hard prerequisite.
 - [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md) — edge-type taxonomy this pipeline populates.
-- [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — `confidence` flows into the BFS scoring function as `relation_prior`.
+- spec_token_budget_bfs.md (removed) — `confidence` flows into the BFS scoring function as `relation_prior`.
 - [spec_language_adapter.md](spec_language_adapter.md) — resolver registry lives alongside language adapters.

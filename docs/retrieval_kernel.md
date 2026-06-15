@@ -1,8 +1,11 @@
 # Retrieval kernel (target architecture)
 
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+
+
 Surgical Context retrieval today spans `unified_ranker`, `ContextArbitrator`, graph expansion, LanceDB, and prompt assembly. This note fixes the **target boundary**: an explicit **retrieval kernel**, **provider protocols**, **mechanism overlays vs scoring**, and **index manifests** — without rewriting production behavior in one step.
 
-Related: [spec_unified_ranking](spec_unified_ranking.md), [spec_prompt_contract_observability](spec_prompt_contract_observability.md), [project_gap_analysis](project_gap_analysis.md).
+Related: spec_unified_ranking (removed), [spec_prompt_contract_observability](spec_prompt_contract_observability.md), [project_gap_analysis](project_gap_analysis.md).
 
 ## Goals
 

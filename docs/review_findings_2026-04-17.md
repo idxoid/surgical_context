@@ -1,6 +1,9 @@
 # Review Findings — 2026-04-17
 
-> **Context:** External review of the Surgical Context project at the end of Phase 2. Captures the standout strengths, honest risks, and six concrete recommendations surfaced during the review. Deep-dive specs exist for recommendations #1 and #2 ([spec_eval_harness.md](spec_eval_harness.md), [spec_token_budget_bfs.md](spec_token_budget_bfs.md)).
+> **Historical snapshot.** This document predates the cascade removal (2026-06-15): the legacy ranking cascade it references is gone — axis is the sole context path (see `cascade_cleanup_inventory.md`). Kept as a dated record; the findings/benchmarks below are as-of their date.
+
+
+> **Context:** External review of the Surgical Context project at the end of Phase 2. Captures the standout strengths, honest risks, and six concrete recommendations surfaced during the review. Deep-dive specs exist for recommendations #1 and #2 ([spec_eval_harness.md](spec_eval_harness.md), spec_token_budget_bfs.md (removed)).
 
 ## Current Disposition
 
@@ -40,7 +43,7 @@ Pick 30–50 real questions from open repos (Django, FastAPI, VS Code), measure 
 
 Replace hardcoded `*1..2` with a best-first traversal: expand by relevance score until cumulative token cost hits the caller's budget. Depth becomes an outcome, not an input.
 
-**→ Deep dive: [spec_token_budget_bfs.md](spec_token_budget_bfs.md).** Includes the scoring function, algorithm, Cypher shape, contract additions (`direction`, `depth`, `relevance_score`, `budget` block), and tuning protocol.
+**→ Deep dive: spec_token_budget_bfs.md (removed).** Includes the scoring function, algorithm, Cypher shape, contract additions (`direction`, `depth`, `relevance_score`, `budget` block), and tuning protocol.
 
 ### 3. Add `IMPORTS` and `INHERITS` edges before more languages ✅ largely implemented
 

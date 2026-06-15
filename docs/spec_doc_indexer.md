@@ -98,7 +98,7 @@ This enables rich knowledge graph queries: given a code symbol, find all doc chu
 | `primary_bias` | `1.0` for a single/focal symbol, lower for secondary symbols in multi-symbol chunks |
 | `resolver` | `identifier`, `semantic`, or `pending_identifier` |
 
-UnifiedRanker consumes these properties when giving vector-retrieved doc chunks graph overlap credit and when using DocAnchor co-mentions as semantic bridge edges.
+The context ranker (axis; legacy `UnifiedRanker` removed 2026-06-15) consumes these properties when giving vector-retrieved doc chunks graph overlap credit and when using DocAnchor co-mentions as semantic bridge edges.
 
 ---
 

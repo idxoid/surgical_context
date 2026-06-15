@@ -1,5 +1,12 @@
 # Surgical Context — Architecture
 
+> **Context-path migration (2026-06-15).** The `/ask` + `/search` context path
+> moved from the legacy ranking cascade (`ContextArbitrator`, `UnifiedRanker`,
+> the keyword `IntentClassifier`) to the **axis pipeline** (`sidecar/axis/`),
+> now the default and only provider; the cascade was deleted. Flow steps below
+> that still name the arbitrator/cascade are superseded by the axis path — see
+> `cascade_cleanup_inventory.md`.
+
 > **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, intent-aware prompt assembly, unified graph+semantic ranking, canonical role normalization, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. Recent retrieval hardening includes trace-dependency recovery for sparse import topology (runtime symbol seeding, sibling-directory expansion, explicit recovery provenance) and qualified-callee gating for DI hint edges. The main open gaps are extension product polish, setup/smoke-test hardening, broader real-repo benchmark coverage (Flask/Django/Express tails), impact-analysis precision/doc-noise control, and provider boundaries around the local defaults. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 >
 > **Future layer:** tenant-level API contract graph. Each project indexes and publishes its own safe service/API facts; the tenant graph links those facts across projects and systems without scanning neighboring repositories. This is Team/Enterprise horizon work, not a dependency for the local single-tenant release. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
@@ -257,7 +264,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`. When `file_path` is present, it is resolved under the workspace project root before any disk read.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
-3. **Intent classification** (`IntentClassifier`): detect query intent (navigation, debugging, refactor, exploration, new feature, design question, **impact_analysis**) → choose tier priority order. Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking (Phase 6 + Phase 4 enhancements).
+3. **Intent classification** (axis `classify_intent`): detect query intent (the structural intent role[s]) → drive retrieval. (The legacy 7-label keyword `IntentClassifier` was removed with the cascade.) Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking (Phase 6 + Phase 4 enhancements).
 4. **Mechanism determination** (Phase 4): if intent = `impact_analysis`, classify the code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`) → informs role backfill strategy and impact-analysis precision controls.
 5. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
 6. **Unified graph + semantic ranking** (`UnifiedRanker` — Phase 9.1): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Mechanism-aware role backfill, query-sensitive mechanism routing, duplicate-target disambiguation, package/module fallback targets, and canonical role normalization run inside this layer. Thin wrapper APIs can also satisfy capability roles from their own implementation body when nested helpers are not indexed as standalone symbols. Selection is constrained by token budget + intent-aware noise filtering and returns candidates with graph, semantic, blended scores, and anchor confidence (Phase 9.3).
@@ -282,7 +289,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 4.3. Version Arbitration (Dirty State)
 Scenario: user edits `process_payment`, hasn't saved.
 1. VS Code sends `POST /overlay` with file content on every keypress.
-2. On `POST /ask`, `ContextArbitrator` detects overlay for this file.
+2. On `POST /ask`, the sidecar detects overlay for this file.
 3. Reads dirty symbol body from memory; all other dependencies from stable Neo4j graph.
 4. LLM sees current work-in-progress surrounded by stable project structure.
 
@@ -383,7 +390,7 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
 
 **Planned metadata:** `tenant_api_context`, `api_direction`, `tenant_link_depth`, service/contract provenance, and tenant API candidate scores. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
-**Known gap:** project/workspace/branch metadata is not yet populated consistently from the arbitrator. Doc-anchor type/confidence is implemented for graph-overlap docs; vector-only docs still carry empty/zero anchor defaults.
+**Known gap:** project/workspace/branch metadata is not yet populated consistently from the context provider. Doc-anchor type/confidence is implemented for graph-overlap docs; vector-only docs still carry empty/zero anchor defaults.
 
 ### 5.4. BFS Retrieval Cypher
 
@@ -463,7 +470,7 @@ Intent + context-size classifier routes requests to appropriate model tier in `s
 ## ADR-005: LanguageAdapter Protocol
 **Status:** Accepted and implemented for Python/TypeScript adapters
 
-All language-specific logic (tree-sitter queries, call resolution, identifier conventions) lives behind a `LanguageAdapter` protocol. New languages (Go, Rust, Java) are added by implementing the protocol — no edits to the indexer, arbitrator, or extractor core.
+All language-specific logic (tree-sitter queries, call resolution, identifier conventions) lives behind a `LanguageAdapter` protocol. New languages (Go, Rust, Java) are added by implementing the protocol — no edits to the indexer, axis pipeline, or extractor core.
 
 Required methods:
 - `extract_symbols(tree, source) -> list[Symbol]`

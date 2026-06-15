@@ -1,5 +1,8 @@
 # All-repos context comparison (index)
 
+> **Historical snapshot.** This document predates the cascade removal (2026-06-15): the legacy ranking cascade it references is gone — axis is the sole context path (see `cascade_cleanup_inventory.md`). Kept as a dated record; the findings/benchmarks below are as-of their date.
+
+
 > **Status:** Index only. Detailed tables live in linked docs below.
 
 This filename is kept for bookmarks and older notes. The comparison content was split into:

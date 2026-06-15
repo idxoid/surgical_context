@@ -1,5 +1,8 @@
 # Surgical Context - Road Map
 
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+
+
 > **Status:** This branch (`context-engine-refocus`) treats Surgical Context as a **local-first, model-agnostic context engine for code understanding and change impact**.
 >
 > **Release target:** a Local Developer Product in VS Code with the Python sidecar, local graph/vector/history defaults, and a trustworthy `Ask / Inspect / Impact` loop.
@@ -300,7 +303,7 @@ Goal: Connect the semantic layer via documentation.
 ## Phase 3.5: Arbitration & Indexing Robustness ✅ COMPLETE
 Goal: Make retrieval correct and fast on a live developer's laptop. This is what separates "demo" from "daily driver." Token-budget BFS is tuned against the eval harness from Phase 2.5 (now complete).
 
-> **Spec:** [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — best-first traversal replacing hardcoded `*1..2`, with scoring function, algorithm, contract additions, and tuning protocol.
+> **Spec:** spec_token_budget_bfs.md (removed) — best-first traversal replacing hardcoded `*1..2`, with scoring function, algorithm, contract additions, and tuning protocol.
 
 ### Context Budgeting & Ranking ✅ COMPLETE (Token-Budget BFS)
 - [x] Token budget parameter on `/ask` (default 4000)
@@ -342,7 +345,7 @@ Goal: Reduce token overhead and prepare for multi-model / multi-user environment
 > **Reference:** [architectural_review.md](architectural_review.md#phase-4-near-term-wins) — detailed evaluation of all improvement ideas by impact/effort.
 
 ### Context Deduplication ✅ COMPLETE
-> **Spec:** [spec_context_deduplicator.md](spec_context_deduplicator.md) — insertion point, dedup rules, budget recalculation, test matrix.
+> **Spec:** spec_context_deduplicator.md (removed) — insertion point, dedup rules, budget recalculation, test matrix.
 - [x] Implement `ContextDeduplicator` — pure transform between GraphExpander and PromptCompiler
 - [x] Normalize symbol identity by UID; keep lowest-depth copy on duplicates
 - [x] Collapse overlapping line ranges within same file
@@ -421,7 +424,7 @@ Goal: Classify function calls by confidence; enable cascade-aware incremental re
 ## Phase 6: Intent Classification & Graceful Degradation ✅ COMPLETE
 Goal: Adaptive context assembly based on query type; fallback to standard LLM mode when no surgical context available.
 
-> **Specs:** [spec_intent_classifier.md](spec_intent_classifier.md) — design spec complete; implementation ongoing.
+> **Specs:** spec_intent_classifier.md (removed) — design spec complete; implementation ongoing.
 
 ### Phase 6.1: Intent Classifier ✅ COMPLETE
 - [x] `IntentClassifier` class with keyword-based intent detection (heuristics, ML upgrade in Phase 7)
@@ -540,7 +543,7 @@ Goal: Fix the load-bearing identity, resolution, and isolation gaps before retri
 ## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1, 9.2 initial routing, 9.3 ✅; 9.4 ~90%)
 Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
 
-> **Specs:** [spec_unified_ranking.md](spec_unified_ranking.md), [spec_multi_label_intent.md](spec_multi_label_intent.md), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
+> **Specs:** spec_unified_ranking.md (removed), spec_multi_label_intent.md (removed), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
 >
 > **Current status:** 9.1 (unified ranker), initial 9.2 routing-policy consumption, and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is mostly shipped; remaining work is calibrating mixed-intent policy on real repos and deciding whether hard per-tier budget buckets beat the current soft policy. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
 
@@ -734,8 +737,8 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | **Unbounded API limits** | **Medium** | Huge `token_budget` / `limit` → local DoS and cloud cost spikes. | Pydantic bounds on request models (`tests/unit/test_api_bounds.py`) | ✅ Resolved |
 | **Retired Claude Sonnet 4.0 model ID** | **Medium** | Hardcoded `claude-sonnet-4-20250514` fails after 2026-06-15 retirement. | Default `claude-sonnet-4-6` + `ANTHROPIC_MODEL` env | ✅ Resolved |
 | **Overlay cross-user leakage** | **Medium** | Shared overlay keys could expose unsaved buffers across users in one workspace. | Overlay keyed by `(workspace_id, user_id, file_path)` | ✅ Resolved |
-| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is precision/file-recall telemetry and long-tail export/framework shapes ([spec_unified_ranking.md](spec_unified_ranking.md)) | 🟡 Mitigated |
-| Primary-intent routing | High | Mixed queries (e.g. debugging+refactor) can be under-served if secondary intent evidence is not seated. | Initial `IntentPolicy` consumes `intent.distribution` for active/secondary intents, weighted tier order, supplemental roles, blended priors, doc-first mode, and weighted ranker floor; remaining work is real-repo calibration and hard per-tier budget evaluation ([spec_multi_label_intent.md](spec_multi_label_intent.md)) | 🟡 Mitigated |
+| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is precision/file-recall telemetry and long-tail export/framework shapes (spec_unified_ranking.md (removed)) | 🟡 Mitigated |
+| Primary-intent routing | High | Mixed queries (e.g. debugging+refactor) can be under-served if secondary intent evidence is not seated. | Initial `IntentPolicy` consumes `intent.distribution` for active/secondary intents, weighted tier order, supplemental roles, blended priors, doc-first mode, and weighted ranker floor; remaining work is real-repo calibration and hard per-tier budget evaluation (spec_multi_label_intent.md (removed)) | 🟡 Mitigated |
 | Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3 implemented: per-edge `anchor_type`, `confidence`, `primary_bias`, and resolver-aware ranker consumption ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ✅ Resolved |
 | Retrieval observability polish | High | Contract fields exist, but extension/debug surfaces still need to make the ranker story easy to inspect. | Phase 9.4 surfaces selected scores/provenance, ranker weights, `pruned[]`, intent metadata, and `intent_policy`; remaining gap is UI consistency ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 Mitigated |
 | Cache multi-instance gap | Medium | Local cache exists, but multi-instance deployments would need a shared backend. | Phase 10.1 local three-layer cache is implemented and surfaces `metadata.assembly.cache_hits`; Redis/multi-instance cache remains future ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ✅ Resolved for local |

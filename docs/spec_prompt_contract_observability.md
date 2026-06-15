@@ -1,5 +1,8 @@
 # Spec — Prompt Contract Observability (Phase 9)
 
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+
+
 > **Status:** Partially implemented. Ranking scores, provenance, pruning details, intent metadata, and ranker metadata are already present in the current prompt contract. Remaining gaps are consistent workspace/branch population, doc-anchor type/confidence, and richer stage timing coverage.
 
 ## 1. Problem
@@ -121,7 +124,7 @@ Without scores in the contract:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `intent_details.distribution` | dict | Multi-label signal ([spec_multi_label_intent.md](spec_multi_label_intent.md)) |
+| `intent_details.distribution` | dict | Multi-label signal (spec_multi_label_intent.md (removed)) |
 | `intent_details.confidence` | float | Distinguishes strong vs. weak classification |
 | `metadata.assembly.trace_id` | str | Correlate with server logs, OpenTelemetry |
 | `metadata.assembly.workspace_id` | str | Which workspace this context came from ([spec_branch_isolation.md](spec_branch_isolation.md)) |
@@ -249,8 +252,8 @@ if assembly["latency_ms"] > 200:
 
 ## 7. Related
 
-- [spec_unified_ranking.md](spec_unified_ranking.md) — produces the scores this exposes.
-- [spec_multi_label_intent.md](spec_multi_label_intent.md) — source of `intent.distribution`.
+- spec_unified_ranking.md (removed) — produces the scores this exposes.
+- spec_multi_label_intent.md (removed) — source of `intent.distribution`.
 - [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md) — source of `edge_confidence` / `edge_tier`.
 - [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md) — source of `anchor_type` / `anchor_confidence`.
 - [spec_learning_loop.md](spec_learning_loop.md) — consumer of scores + `feedback_token`.

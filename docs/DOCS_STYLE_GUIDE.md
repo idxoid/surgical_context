@@ -387,7 +387,7 @@ Before submitting a doc, ask:
 
 ## Examples in This Repo
 
-- **Spec example:** [spec_intent_classifier.md](spec_intent_classifier.md) — 6 intent types with priority orderings
+- **Spec example:** spec_intent_classifier.md (removed) — 6 intent types with priority orderings
 - **Architecture example:** [architectura.md](architectura.md) — Section 3 data pipelines + Section 4 workflows
 - **Concept example:** [concept.md](concept.md) — surgical code retrieval rationale
 - **Limitation + Extension:** [spec_doc_anchor.md](spec_doc_anchor.md#limitations-current) — current gaps + roadmap

@@ -1,5 +1,8 @@
 # Benchmark: ContextArbitrator vs Direct File Read (LLM Judgment)
 
+> **Historical snapshot.** This document predates the cascade removal (2026-06-15): the legacy ranking cascade it references is gone — axis is the sole context path (see `cascade_cleanup_inventory.md`). Kept as a dated record; the findings/benchmarks below are as-of their date.
+
+
 Evaluation of context quality and answer quality across 65 real-repo questions comparing two retrieval strategies.
 
 | | |

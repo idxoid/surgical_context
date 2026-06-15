@@ -1,5 +1,8 @@
 # Spec — Evaluation Harness (Phase 2.5)
 
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+
+
 > **Status:** Implemented locally and used actively for retrieval tuning. The remaining gap is CI automation of benchmark deltas; the harness, reports, real-repo pack, and baseline appends already exist in the repo.
 
 ## 1. Purpose
@@ -325,6 +328,6 @@ Current repo truth: CI runs the unit suite only; benchmark-diff automation remai
 ## 9. Related
 
 - [road_map.md](road_map.md) — Phase 2.5 checklist.
-- [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — depends on this harness for tuning.
+- spec_token_budget_bfs.md (removed) — depends on this harness for tuning.
 - [architectura.md §2.4](architectura.md) — observability requirements this harness satisfies.
 - ADR-006 — the blocking rationale.

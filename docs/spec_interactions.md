@@ -1,5 +1,8 @@
 # Cross-Module Interactions — Spec
 
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+
+
 ## Module Map
 
 ```

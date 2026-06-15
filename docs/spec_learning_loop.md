@@ -194,6 +194,6 @@ requests.post("/feedback", json={
 ## 7. Related
 
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — `feedback_token` and score snapshots originate here.
-- [spec_unified_ranking.md](spec_unified_ranking.md) — consumer of learned weights.
-- [spec_multi_label_intent.md](spec_multi_label_intent.md) — the ML classifier retrained in the slow loop replaces keyword heuristics.
+- spec_unified_ranking.md (removed) — consumer of learned weights.
+- spec_multi_label_intent.md (removed) — the ML classifier retrained in the slow loop replaces keyword heuristics.
 - [spec_eval_harness.md](spec_eval_harness.md) — harness is the gatekeeper; no learned weights ship without passing it.

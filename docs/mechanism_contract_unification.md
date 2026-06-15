@@ -1,5 +1,8 @@
 # Mechanism contract tables — post-mortem
 
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+
+
 ## What was removed
 
 Four hardcoded contract table groups in `signal_constants.py` and four corresponding recovery methods in `recovery.py`:

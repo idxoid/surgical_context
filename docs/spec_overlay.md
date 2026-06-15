@@ -1,5 +1,8 @@
 # In-Memory Overlay — Spec
 
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+
+
 ## Overview
 
 `sidecar/overlay.py` — holds unsaved file content in memory and re-parses symbols on demand. Enables the arbitrator to answer questions about code the user is currently editing, before it hits disk.

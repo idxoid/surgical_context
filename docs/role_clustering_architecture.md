@@ -165,7 +165,7 @@ first and better serves the second.
   persisted Pass-1 assignments.
 
 ### M2 — Query intent: mechanically unchanged, better served
-- **what:** `IntentDistribution` ([spec_multi_label_intent.md](spec_multi_label_intent.md))
+- **what:** `IntentDistribution` (spec_multi_label_intent.md (removed))
   is query-side and does not change.
 - **why better:** a mixed intent (e.g. debugging 0.6 + refactor 0.3) demands
   roles from different intents; `candidate_matches_any_role` now matches against a
@@ -214,5 +214,5 @@ partial: `serializer_handle` / `validator_handle` (F21), builder-class
 ## Related
 - [role_catalog.md](role_catalog.md) — role vocabulary and discriminators.
 - [role_signature_findings.md](role_signature_findings.md) — the collisions that motivate this.
-- [spec_unified_ranking.md](spec_unified_ranking.md) — consumes derived roles.
-- [spec_multi_label_intent.md](spec_multi_label_intent.md) — query-side multi-label.
+- spec_unified_ranking.md (removed) — consumes derived roles.
+- spec_multi_label_intent.md (removed) — query-side multi-label.

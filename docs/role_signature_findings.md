@@ -1,5 +1,8 @@
 # Role signature findings — feature duplication & discriminator collisions
 
+> **Historical snapshot.** This document predates the cascade removal (2026-06-15): the legacy ranking cascade it references is gone — axis is the sole context path (see `cascade_cleanup_inventory.md`). Kept as a dated record; the findings/benchmarks below are as-of their date.
+
+
 Session findings on the role vocabulary in [role_catalog.md](role_catalog.md):
 where a single structural feature serves several roles, where a discriminator is
 weak, and where the catalog text runs ahead of the code. Companion to
@@ -619,4 +622,4 @@ return-shape AST markers as a foundation, but not value-flow. Re-validate with
 ## Related
 - [role_catalog.md](role_catalog.md) — the role vocabulary and per-role signatures.
 - [role_clustering_architecture.md](role_clustering_architecture.md) — pipeline decision.
-- [spec_unified_ranking.md](spec_unified_ranking.md) — consumer of derived roles.
+- spec_unified_ranking.md (removed) — consumer of derived roles.

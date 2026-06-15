@@ -158,7 +158,7 @@ for node in subgraph.nodes:
 
 ## 8. Related
 
-- [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — subgraph shape cached at L2.
+- spec_token_budget_bfs.md (removed) — subgraph shape cached at L2.
 - [spec_branch_isolation.md](spec_branch_isolation.md) — workspace ID must be in every L2/L3 key.
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — cache hits surface in `metadata.assembly.cache_hits`.
-- [spec_arbitrator.md](spec_arbitrator.md) — arbitrator is the cache integration point.
+- spec_arbitrator.md (removed) — arbitrator is the cache integration point.

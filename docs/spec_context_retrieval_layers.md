@@ -1,5 +1,8 @@
 # Context retrieval — layered truth model
 
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+
+
 ## Status
 
 Draft — design contract. Implementation today is split across the indexer, `framework_hints`, LanceDB, Pass 1 role catalog, and `UnifiedRanker`; this document names the **intended boundaries** so framework-specific or ranker-only fixes do not stand in for missing graph truth.
@@ -120,5 +123,5 @@ flowchart TB
 ## Related docs
 
 - [spec_storage.md](spec_storage.md) — Neo4j / LanceDB split
-- [spec_unified_ranking.md](spec_unified_ranking.md) — ranker behavior
+- spec_unified_ranking.md (removed) — ranker behavior
 - [spec_indexer.md](spec_indexer.md) — indexing passes

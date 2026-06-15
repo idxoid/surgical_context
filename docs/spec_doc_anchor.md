@@ -86,7 +86,7 @@ DocAnchor nodes store **only** `chunk_id`. File path is navigable via `[:FROM]->
 When a chunk contains inline references to other project docs (markdown links or bare filenames like `spec_arbitrator.md`, `architectura.md`), `_link_related_docs()` creates typed FROM edges:
 
 ```python
-# In chunk text: "see [spec_arbitrator.md](docs/spec_arbitrator.md) for details"
+# In chunk text: "see spec_arbitrator.md (removed) for details"
 (DocAnchor)-[:FROM {type: "spec"}]->(File {path: "docs/spec_arbitrator.md"})
 ```
 

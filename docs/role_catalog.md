@@ -484,8 +484,8 @@ an intermediate identity node · 🔴 needs analysis (dataflow), not an edge.
 #### 🟢 `RAISES` / `CATCHES`
 `function -[RAISES]-> exception type` (raise site) and `function -[CATCHES]->
 exception type` (except clause).
-- **unblocks:** the `error_surface` role — present in `role_taxonomy.py`
-  (`error_model`/`error_handling → error_surface`) but with **no structural edge
+- **unblocks:** the `error_surface` role — present in the role catalog
+  (`role_cascade.py`; `error_model`/`error_handling → error_surface`) but with **no structural edge
   today**, so it is inferred from nothing; plus the *debugging* intent (where does
   an error propagate) and impact analysis.
 - **why invisible now:** `raise`/`except` are control-flow inside a body, neither

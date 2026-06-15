@@ -126,8 +126,8 @@ compute_uid("sidecar.indexer.code.run_indexing", "run_indexing(str,bool)->None")
 
 # Python — method
 compute_uid(
-    "sidecar.context.arbitrator.ContextArbitrator.get_context_for_symbol",
-    "get_context_for_symbol(str,str)->PromptContext",
+    "sidecar.database.neo4j_client.Neo4jClient.link_hooks",
+    "link_hooks(list,str)->None",
 )
 # → "1b3e8c02af47d9e1"
 

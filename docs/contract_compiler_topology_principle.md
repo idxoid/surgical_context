@@ -1,5 +1,8 @@
 # Contract compiler: topology over frameworks
 
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+
+
 Companion to [python_ast_axes_and_traversal_modes.md](python_ast_axes_and_traversal_modes.md)
 and [python_ast_axis_fact_gap_analysis.md](python_ast_axis_fact_gap_analysis.md). This
 note captures principles for the layer above the axis-fact extractor — what
