@@ -702,92 +702,93 @@ questions:
 - id: surgical_context_q01
   repo: surgical_context
   core12: true
-  symbol: ContextArbitrator
-  question: How does ContextArbitrator assemble symbol context from intent classification through ranking to PromptContext?
+  symbol: run_axis_retrieval
+  question: How does the axis pipeline assemble symbol context from intent classification through ranking to a PromptContext?
   difficulty: medium
   intent: explain_behavior
   expected_mode: symbol
-  mechanism: surgical_context_unified_context_assembly
+  mechanism: surgical_context_axis_context_assembly
   required_roles:
   - public_entrypoint
   - handler_or_lifecycle
   - orchestrator
   - route_object
   expected_symbols:
-  - ContextArbitrator
-  - get_context_for_symbol
-  - UnifiedRanker
-  - PromptCompiler
+  - run_axis_retrieval
+  - build_context_for_candidates
+  - axis_bundles_to_prompt_context
   expected_files:
-  - sidecar/context/arbitrator.py
-  - sidecar/context/unified_ranker.py
-  - sidecar/context/prompt_compiler.py
+  - sidecar/axis/pipeline.py
+  - sidecar/axis/context_builder.py
+  - sidecar/axis/prompt_provider.py
 - id: surgical_context_q02
   repo: surgical_context
   core12: true
-  symbol: UnifiedRanker
-  question: How does UnifiedRanker.rank merge graph BFS candidates, vector hits, and doc bridges before budget pruning?
+  symbol: find_symbols_by_roles
+  question: How does the axis pipeline fuse role/vector seeds and graph-walk neighbours into ranked candidates before the token budget?
   difficulty: hard
   intent: trace_dependency
   expected_mode: symbol
-  mechanism: surgical_context_ranker_fusion
+  mechanism: surgical_context_axis_ranking
   required_roles:
   - public_entrypoint
   - orchestrator
   - composition_surface
   - handler_or_lifecycle
   expected_symbols:
-  - UnifiedRanker
-  - rank
-  - _fuse
-  - _graph_candidates
-  - BudgetPruner
+  - find_symbols_by_roles
+  - walk_neighbours
+  - apply_intent_axis_boost
+  - build_context_for_candidates
   expected_files:
-  - sidecar/context/unified_ranker.py
-  - sidecar/context/ranker/pruning.py
+  - sidecar/axis/role_retrieval.py
+  - sidecar/axis/graph_walk.py
+  - sidecar/axis/axis_ranking.py
+  - sidecar/axis/context_builder.py
 - id: surgical_context_q03
   repo: surgical_context
   core12: true
-  symbol: IntentClassifier
-  question: How does IntentClassifier map a natural-language question to content tier priority for context assembly?
+  symbol: classify_intent
+  question: How does the axis intent classifier map a natural-language question to the intent roles that drive retrieval?
   difficulty: medium
   intent: explain_behavior
   expected_mode: symbol
-  mechanism: surgical_context_intent_tiers
+  mechanism: surgical_context_axis_intent
   required_roles:
   - public_entrypoint
   - marker_or_config
   - handler_or_lifecycle
   - docs_or_concept
   expected_symbols:
-  - IntentClassifier
-  - classify_with_metadata
-  - IntentConfig
-  - IntentResolution
+  - classify_intent
+  - IntentMatch
+  - intent_axes
   expected_files:
-  - sidecar/context/intent_classifier.py
+  - sidecar/axis/intent_classifier.py
+  - sidecar/axis/axis_ranking.py
 - id: surgical_context_q04
   repo: surgical_context
   core12: false
-  symbol: UnifiedRanker
-  question: How does UnifiedRanker build the candidate pool from graph BFS and vector search before budget selection?
+  symbol: scan_workspace_rows
+  question: How does the axis pipeline build the candidate pool from role/vector seeds and graph-walk expansion?
   difficulty: hard
   intent: trace_dependency
   expected_mode: symbol
-  mechanism: surgical_context_ranker_fusion
+  mechanism: surgical_context_axis_pool
   required_roles:
   - public_entrypoint
   - marker_or_config
   - handler_or_lifecycle
   - docs_or_concept
   expected_symbols:
-  - UnifiedRanker
-  - _graph_candidates
-  - _fuse
-  - rank
+  - scan_workspace_rows
+  - find_symbols_by_roles
+  - walk_neighbours
+  - run_axis_retrieval
   expected_files:
-  - sidecar/context/unified_ranker.py
-  - sidecar/context/ranker/scoring.py
+  - sidecar/axis/role_retrieval.py
+  - sidecar/axis/graph_walk.py
+  - sidecar/axis/pipeline.py
 - id: surgical_context_q05
   repo: surgical_context
   core12: false
@@ -810,29 +811,27 @@ questions:
   - _embed_phase
   expected_files:
   - sidecar/indexer/fast/pipeline.py
-  - sidecar/indexer/code.py
 - id: surgical_context_q06
   repo: surgical_context
   core12: false
-  symbol: UnifiedRanker
-  question: If UnifiedRanker blending weights change, which tests and benchmark harness paths are most likely to break?
+  symbol: build_context_for_candidates
+  question: If the axis ranking and token-budget weights change, which tests and benchmark paths are most likely to break?
   difficulty: hard
   intent: impact_analysis
   expected_mode: symbol
-  mechanism: surgical_context_ranker_weight_impact
+  mechanism: surgical_context_axis_ranking_weight_impact
   required_roles:
   - impact_runtime
   - impact_public_api
   - impact_test_surface
   expected_symbols:
-  - UnifiedRanker
-  - RankerWeights
-  - DEFAULT_WEIGHTS
-  - ContextArbitrator
+  - build_context_for_candidates
+  - _apply_token_credit_budget
+  - _apply_render_and_budget
   expected_files:
-  - sidecar/context/unified_ranker.py
-  - tests/unit/test_unified_ranker.py
-  - QA/qa_benchmark.py
+  - sidecar/axis/context_builder.py
+  - tests/unit/test_context_builder_budget.py
+  - QA/axis_benchmark.py
 - id: surgical_context_q07
   repo: surgical_context
   core12: false
@@ -855,6 +854,7 @@ questions:
   expected_files:
   - extension/src/sidecarClient.ts
   - extension/src/providers/SurgicalContextViewProvider.ts
+  - extension/src/extension.ts
   - sidecar/main.py
 - id: dathund_q01
   repo: dathund
