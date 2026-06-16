@@ -335,6 +335,52 @@ def walk_neighbours(
     return out
 
 
+def call_fan_in(
+    db,
+    workspace_id: str,
+    uids: Sequence[str],
+    *,
+    edges: Iterable[str] = EdgeProfile.CALLS,
+) -> dict[str, int]:
+    """Global in-degree over ``edges`` (distinct in-workspace callers) for
+    each uid.
+
+    A shared-utility hub (``warn``, ``maybe_list``, a logging helper) is
+    called from everywhere, so reverse-walking from it to find "what is
+    impacted" drags in the whole repo. The impact pass uses this to size
+    each forward-closure node's fan-in *relative to the closure's own
+    median* and keep hubs out of the test-reverse anchor set — a purely
+    structural (call-graph topology) signal, no name matching.
+
+    Best-effort: empty dict on any driver error.
+    """
+    from sidecar.axis import graph_walk_inproc
+
+    targets = [u for u in uids if u]
+    if not targets:
+        return {}
+    if graph_walk_inproc.enabled():
+        return graph_walk_inproc.call_fan_in(db, workspace_id, targets, edges=edges)
+    rel = _safe_rel_pattern(edges)
+    cypher = f"""
+    UNWIND $uids AS tu
+    MATCH (caller:Symbol)-[r:{rel}]->(t:Symbol {{uid: tu}})
+    WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+    MATCH (cf:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(caller)
+    RETURN tu AS uid, count(DISTINCT caller) AS fanin
+    """
+    out: dict[str, int] = {}
+    try:
+        with db.driver.session() as session:
+            for rec in session.run(cypher, uids=targets, workspace_id=workspace_id):
+                uid = str(rec.get("uid") or "")
+                if uid:
+                    out[uid] = int(rec.get("fanin") or 0)
+    except Exception:
+        return {}
+    return out
+
+
 def walk_neighbours_grouped(
     db,
     workspace_id: str,

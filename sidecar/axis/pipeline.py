@@ -134,6 +134,14 @@ def run_axis_retrieval(
             threshold=intent_threshold,
         )
 
+    # Impact questions explicitly ask "what tests are affected". Tests reach
+    # the pool ONLY through the dedicated, hub-gated ``impacted_tests`` walk in
+    # ``impact_traversal`` (and the context render of what it finds) — never via
+    # Lance seeds (test rows drown production symbols in vector top-k) nor via
+    # the broad structural / lookahead / phased passes (a test flood there
+    # displaces production neighbours unrelated to the change).
+    include_tests_in_walks = any(m.role == "impact_analysis" for m in intent)
+
     with tr.stage("retrieval"):
         # One workspace-scoped scan (predicate pushdown + parse once)
         # feeds every role retrieval and the vector seeds.
@@ -235,6 +243,7 @@ def run_axis_retrieval(
                         existing_pool,
                         db=db,
                         workspace_id=workspace_id,
+                        include_tests=include_tests_in_walks,
                     )
             if "trace_dependency" in mode_intents_present:
                 with tr.stage("trace_traversal"):
@@ -329,6 +338,7 @@ def run_axis_retrieval(
                 token_budget=token_budget,
                 render_mode=render_mode,
                 utility_score_fn=utility_score_fn,
+                include_tests=include_tests_in_walks,
             )
 
     return AxisRetrievalResult(

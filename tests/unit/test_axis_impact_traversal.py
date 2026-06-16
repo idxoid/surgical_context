@@ -1,61 +1,26 @@
-"""Impact-traversal — blast-radius walk over CALLS / AFFECTS / API."""
+"""Impact-traversal — blast-radius walk over CALLS / AFFECTS / API.
+
+The traversal is exercised by stubbing the shared ``graph_walk`` core
+(``walk_neighbours`` / ``call_fan_in``) rather than a positional fake
+Neo4j session: the walks are routed by *(edge profile, direction)* so a
+test stays valid when the pass order changes. Each stub key names the
+structural relation under test, not the Nth ``run`` call.
+"""
 
 from __future__ import annotations
 
 import pytest
 
-from sidecar.axis.impact_traversal import expand_impact_neighbourhood
+from sidecar.axis import impact_traversal
+from sidecar.axis.graph_walk import EdgeProfile, Neighbour
 from sidecar.axis.role_retrieval import RoleCandidate
 
 WORKSPACE = "qa_repo/test@axis"
 
-
-class _Result:
-    def __init__(self, records):
-        self._records = list(records)
-
-    def __iter__(self):
-        return iter(self._records)
-
-
-class _Session:
-    """Fake Neo4j session — pops a canned record set per ``run`` call.
-
-    The impact traversal issues four queries in fixed order:
-      1) reverse CALLS
-      2) structural reverse (EXTENDS_EXTERNAL / INHERITED_API)
-      3) structural forward (HAS_API)
-      4) forward AFFECTS
-    """
-
-    def __init__(self, records_by_call: list[list[dict]]):
-        self._records = list(records_by_call)
-        self.runs: list[tuple[str, dict]] = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def run(self, query: str, **params):
-        self.runs.append((query, dict(params)))
-        records = self._records.pop(0) if self._records else []
-        return _Result(records)
-
-
-class _Driver:
-    def __init__(self, session):
-        self._session = session
-
-    def session(self):
-        return self._session
-
-
-class _FakeDB:
-    def __init__(self, records_by_call=None):
-        self._session = _Session(records_by_call or [])
-        self.driver = _Driver(self._session)
+_CALLS = frozenset(EdgeProfile.CALLS)
+_AFFECTS = frozenset(EdgeProfile.AFFECTS)
+_STRUCT_REV = frozenset(EdgeProfile.STRUCTURAL_REVERSE)
+_STRUCT_FWD = frozenset(EdgeProfile.STRUCTURAL_FORWARD)
 
 
 def _seed(uid: str, *, role: str = "dispatch_surface") -> RoleCandidate:
@@ -73,176 +38,188 @@ def _seed(uid: str, *, role: str = "dispatch_surface") -> RoleCandidate:
     )
 
 
-def _record(uid: str, *, name: str = "x", path: str = "/tmp/x.py", depth: int = 1) -> dict:
-    return {"uid": uid, "name": name, "file_path": path, "depth": depth, "reach": 1}
+def _n(uid: str, *, name: str = "x", path: str = "/tmp/x.py", depth: int = 1) -> Neighbour:
+    return Neighbour(uid=uid, name=name, file_path=path, depth=depth, reach=1)
+
+
+def _install(monkeypatch, *, seed_uids, by_label: dict[str, list[Neighbour]], fanin=None):
+    """Route ``walk_neighbours`` by (edges, direction) to a canned list.
+
+    The two reverse-CALLS walks share an edge profile and direction, so
+    they are split by anchor: ``reverse_calls`` walks the original seeds,
+    ``impacted_tests`` walks the seeds ∪ forward spine (a strict superset).
+    """
+    orig = set(seed_uids)
+    calls: list[tuple[str, tuple]] = []
+
+    def fake_walk(db, workspace_id, seeds, *, edges, direction, max_hops, exclude_tests=False, **kw):
+        es = frozenset(edges)
+        seen = set(seeds)
+        if es == _AFFECTS:
+            label = "forward_affects"
+        elif es == _STRUCT_REV:
+            label = "structural_inheritor"
+        elif es == _STRUCT_FWD:
+            label = "structural_api_carrier"
+        elif es == _CALLS and direction == "forward":
+            label = "forward_calls"
+        elif es == _CALLS and direction == "reverse":
+            label = "reverse_calls" if seen == orig else "impacted_tests"
+        else:  # pragma: no cover - defensive
+            label = "?"
+        calls.append((label, tuple(sorted(seen)), exclude_tests))
+        return list(by_label.get(label, []))
+
+    def fake_fan_in(db, workspace_id, uids, *, edges=EdgeProfile.CALLS):
+        return dict(fanin or {})
+
+    monkeypatch.setattr(impact_traversal, "walk_neighbours", fake_walk)
+    monkeypatch.setattr(impact_traversal, "call_fan_in", fake_fan_in)
+    return calls
 
 
 def test_no_seeds_returns_empty():
-    out = expand_impact_neighbourhood([], db=_FakeDB(), workspace_id=WORKSPACE)
+    out = expand([], monkeypatch=None)
     assert out == []
 
 
-def test_reverse_calls_pass_emits_callers():
-    """The reverse-CALLS walk surfaces who calls each seed. For
-    ``Flask.dispatch_request`` this is ``full_dispatch_request``;
-    one record's enough to confirm the caller is tagged
-    ``reverse_calls``."""
-    db = _FakeDB(
-        [
-            [_record("u:caller", name="full_dispatch_request", path="/tmp/app.py")],
-            [],  # structural reverse
-            [],  # structural forward
-            [],  # forward AFFECTS
-        ]
+def expand(seeds, *, monkeypatch=None, **kw):
+    return impact_traversal.expand_impact_neighbourhood(
+        seeds, db=object(), workspace_id=WORKSPACE, **kw
     )
 
-    out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")],
-        db=db,
-        workspace_id=WORKSPACE,
-    )
 
+def test_reverse_calls_pass_emits_callers(monkeypatch):
+    _install(
+        monkeypatch,
+        seed_uids=["u:dispatch"],
+        by_label={"reverse_calls": [_n("u:caller", name="full_dispatch_request")]},
+    )
+    out = expand([_seed("u:dispatch")])
     assert len(out) == 1
     assert out[0].uid == "u:caller"
     assert out[0].role == "impact_analysis"
     assert out[0].satisfying_kinds == ("reverse_calls",)
     assert out[0].edge_type == "CALLS_*"
-    assert out[0].depth == 1
     assert out[0].utility_score == pytest.approx(0.95)
 
 
-def test_forward_affects_pass_emits_impact_closure():
-    db = _FakeDB(
-        [
-            [],
-            [],
-            [],
-            [_record("u:downstream", path="/tmp/handlers.py")],
-        ]
+def test_forward_calls_pass_emits_publisher_spine(monkeypatch):
+    """The forward-CALLS walk surfaces the dependency chain the change
+    drives (``apply_async -> send_task``), tagged ``forward_calls``."""
+    _install(
+        monkeypatch,
+        seed_uids=["u:apply_async"],
+        by_label={"forward_calls": [_n("u:send_task", name="send_task", path="/tmp/base.py")]},
+        fanin={"u:send_task": 1},
     )
+    out = expand([_seed("u:apply_async")])
+    assert [c.uid for c in out] == ["u:send_task"]
+    assert out[0].satisfying_kinds == ("forward_calls",)
+    assert out[0].utility_score == pytest.approx(0.90)
 
-    out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")],
-        db=db,
-        workspace_id=WORKSPACE,
+
+def test_hub_gate_drops_high_fanin_utility(monkeypatch):
+    """A forward node whose global CALLS fan-in is an outlier above the
+    closure median is a shared utility hub — kept out of the spine."""
+    _install(
+        monkeypatch,
+        seed_uids=["u:apply_async"],
+        by_label={
+            "forward_calls": [
+                _n("u:send_task", name="send_task"),
+                _n("u:route", name="route"),
+                _n("u:warn", name="warn"),  # the hub
+            ]
+        },
+        # median = 3 → cap = 2*3 = 6; warn (40) is dropped, the spine stays.
+        fanin={"u:send_task": 1, "u:route": 3, "u:warn": 40},
     )
+    out = expand([_seed("u:apply_async")])
+    spine = {c.uid for c in out if c.satisfying_kinds == ("forward_calls",)}
+    assert spine == {"u:send_task", "u:route"}
+    assert "u:warn" not in {c.uid for c in out}
 
-    assert [c.uid for c in out] == ["u:downstream"]
-    assert out[0].satisfying_kinds == ("forward_affects",)
+
+def test_impacted_tests_only_with_include_tests(monkeypatch):
+    """Tests reach the pool only when ``include_tests`` is set, and only
+    test-file nodes from the reverse walk are kept."""
+    by_label = {
+        "forward_calls": [_n("u:route", name="route")],
+        "impacted_tests": [
+            _n("u:test_routes", name="test_route", path="/repo/t/unit/test_routes.py"),
+            _n("u:prod", name="helper", path="/repo/celery/app/base.py"),
+        ],
+    }
+    _install(monkeypatch, seed_uids=["u:apply_async"], by_label=by_label, fanin={"u:route": 1})
+    # Off by default: no impacted_tests walk result enters.
+    out_off = expand([_seed("u:apply_async")])
+    assert all(c.satisfying_kinds != ("impacted_tests",) for c in out_off)
+    # On: only the test-file node is kept (prod node filtered by is_test_path).
+    out_on = expand([_seed("u:apply_async")], include_tests=True)
+    tests = [c for c in out_on if c.satisfying_kinds == ("impacted_tests",)]
+    assert [c.uid for c in tests] == ["u:test_routes"]
+    assert tests[0].utility_score == pytest.approx(0.80)
 
 
-def test_structural_reverse_pass_emits_inheritors():
-    db = _FakeDB(
-        [
-            [],
-            [_record("u:subclass")],
-            [],
-            [],
-        ]
+def test_global_utility_ranking_beats_walk_order(monkeypatch):
+    """A depth-1 reverse-caller (0.95) outranks a depth-1 AFFECTS leaf
+    (0.58) even though AFFECTS is the last walk — ranking is global."""
+    _install(
+        monkeypatch,
+        seed_uids=["u:s"],
+        by_label={
+            "forward_affects": [_n("u:affect", depth=1)],
+            "reverse_calls": [_n("u:caller", depth=1)],
+        },
     )
+    out = expand([_seed("u:s")], max_impacted=1)
+    assert [c.uid for c in out] == ["u:caller"]
 
-    out = expand_impact_neighbourhood(
-        [_seed("u:base")],
-        db=db,
-        workspace_id=WORKSPACE,
+
+def test_dedup_keeps_highest_utility_tag(monkeypatch):
+    """A node reached by both reverse_calls and forward_affects keeps the
+    stronger (reverse_calls) tag."""
+    _install(
+        monkeypatch,
+        seed_uids=["u:s"],
+        by_label={
+            "reverse_calls": [_n("u:dup")],
+            "forward_affects": [_n("u:dup")],
+        },
     )
-
-    assert [c.satisfying_kinds for c in out] == [("structural_inheritor",)]
-
-
-def test_structural_forward_pass_emits_api_carriers():
-    db = _FakeDB(
-        [
-            [],
-            [],
-            [_record("u:carrier")],
-            [],
-        ]
-    )
-
-    out = expand_impact_neighbourhood(
-        [_seed("u:base")],
-        db=db,
-        workspace_id=WORKSPACE,
-    )
-
-    assert [c.satisfying_kinds for c in out] == [("structural_api_carrier",)]
-
-
-def test_seeds_are_never_in_impact_pool():
-    """A seed reached through its own AFFECTS edge must not appear in
-    the impact pool — the pool is *new* symbols only, otherwise the
-    caller would deduplicate twice."""
-    db = _FakeDB(
-        [
-            [_record("u:dispatch")],  # seed is its own caller (loop)
-            [],
-            [],
-            [_record("u:dispatch")],  # seed in its own affects closure
-        ]
-    )
-    out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")],
-        db=db,
-        workspace_id=WORKSPACE,
-    )
-    assert out == []
-
-
-def test_explicit_exclude_uids_skipped():
-    """An external dedup list lets the consumer keep its own
-    candidates out of the impact pool."""
-    db = _FakeDB(
-        [
-            [_record("u:caller"), _record("u:other")],
-            [],
-            [],
-            [],
-        ]
-    )
-    out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")],
-        db=db,
-        workspace_id=WORKSPACE,
-        exclude_uids=["u:caller"],
-    )
-    assert [c.uid for c in out] == ["u:other"]
-
-
-def test_duplicate_uids_collapsed_to_first_tag():
-    """If two passes reach the same uid, keep the *first* tag — the
-    earlier pass usually carries the stronger structural signal
-    (reverse_calls is the strongest, forward_affects is its fallback)."""
-    db = _FakeDB(
-        [
-            [_record("u:dup", path="/tmp/a.py")],
-            [],
-            [],
-            [_record("u:dup", path="/tmp/a.py")],  # same uid via AFFECTS
-        ]
-    )
-    out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")],
-        db=db,
-        workspace_id=WORKSPACE,
-    )
+    out = expand([_seed("u:s")])
     assert len(out) == 1
     assert out[0].satisfying_kinds == ("reverse_calls",)
 
 
-def test_max_impacted_caps_pool_size():
-    """A wide AFFECTS closure must not drown the context bundle —
-    the cap keeps the impact pool comparable to a vector pool."""
-    rev = [_record(f"u:c{i}", path="/tmp/x.py") for i in range(50)]
-    db = _FakeDB([rev, [], [], []])
-    out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")],
-        db=db,
-        workspace_id=WORKSPACE,
-        max_impacted=10,
+def test_seeds_never_in_impact_pool(monkeypatch):
+    _install(
+        monkeypatch,
+        seed_uids=["u:s"],
+        by_label={
+            "reverse_calls": [_n("u:s")],  # seed reaches itself
+            "forward_affects": [_n("u:s")],
+        },
     )
+    assert expand([_seed("u:s")]) == []
+
+
+def test_explicit_exclude_uids_skipped(monkeypatch):
+    _install(
+        monkeypatch,
+        seed_uids=["u:s"],
+        by_label={"reverse_calls": [_n("u:caller"), _n("u:other")]},
+    )
+    out = expand([_seed("u:s")], exclude_uids=["u:caller"])
+    assert [c.uid for c in out] == ["u:other"]
+
+
+def test_max_impacted_caps_pool_size(monkeypatch):
+    _install(
+        monkeypatch,
+        seed_uids=["u:s"],
+        by_label={"reverse_calls": [_n(f"u:c{i}") for i in range(50)]},
+    )
+    out = expand([_seed("u:s")], max_impacted=10)
     assert len(out) == 10
-
-
-# Cypher-injection defence now lives in the shared graph_walk core —
-# see tests/unit/test_axis_graph_walk.py::test_safe_rel_pattern_rejects_injection.

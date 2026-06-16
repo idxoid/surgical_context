@@ -1258,8 +1258,15 @@ questions:
   - _create_task_sender
   expected_files:
   - celery/app/task.py
+  - celery/app/base.py
+  - celery/app/routes.py
+  - celery/canvas.py
   - celery/app/amqp.py
+  - t/unit/app/test_app.py
+  - t/unit/app/test_amqp.py
   - t/unit/app/test_routes.py
+  - t/unit/tasks/test_canvas.py
+  - t/unit/tasks/test_tasks.py
 - id: fastapi_new_q01
   repo: fastapi
   symbol: RequestValidationError

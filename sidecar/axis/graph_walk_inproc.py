@@ -237,6 +237,27 @@ def _decode_edges(raw: object) -> dict[str, set[str]]:
     return decoded
 
 
+def call_fan_in(db, workspace_id: str, uids, *, edges) -> dict[str, int]:
+    """In-proc twin of ``graph_walk.call_fan_in`` — distinct in-workspace
+    callers over ``edges`` per uid, read straight off the cached reverse
+    adjacency. Callers are restricted to workspace symbols (``adj.meta``)
+    to match the Neo4j File-CONTAINS scoping."""
+    adj = load_adjacency(db, workspace_id)
+    rels = frozenset(edges)
+    meta = adj.meta
+    out: dict[str, int] = {}
+    for u in uids:
+        if not u:
+            continue
+        by_type = adj.in_.get(u)
+        callers: set[str] = set()
+        if by_type:
+            for t in rels:
+                callers |= {c for c in by_type.get(t, frozenset()) if c in meta}
+        out[u] = len(callers)
+    return out
+
+
 def _neighbours_fn(adj: _Adjacency, rels: frozenset[str], direction: Direction):
     # (rels, direction) are fixed for the whole walk, so neigh(u) is
     # deterministic — memoise it across the call. A multi-seed walk

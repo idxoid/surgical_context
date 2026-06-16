@@ -8,6 +8,7 @@ from sidecar.axis.graph_walk import (
     EdgeProfile,
     Neighbour,
     _safe_rel_pattern,
+    call_fan_in,
     cap_by_file,
     walk_neighbours,
 )
@@ -259,3 +260,37 @@ def test_cap_preserves_input_order():
     nbs = [_nb("u:hi", "/a.py", reach=9), _nb("u:lo", "/b.py", reach=1)]
     out = cap_by_file(nbs, max_per_file=1, max_total=99)
     assert [n.uid for n in out] == ["u:hi", "u:lo"]
+
+
+# --- call_fan_in -----------------------------------------------------------
+
+
+def test_call_fan_in_empty_uids_skips_query():
+    db = _FakeDB([])
+    assert call_fan_in(db, WORKSPACE, []) == {}
+    assert db.session_obj.runs == []
+
+
+def test_call_fan_in_counts_distinct_callers():
+    db = _FakeDB([{"uid": "u:a", "fanin": 7}, {"uid": "u:b", "fanin": 0}])
+    out = call_fan_in(db, WORKSPACE, ["u:a", "u:b"])
+    assert out == {"u:a": 7, "u:b": 0}
+
+
+def test_call_fan_in_query_is_workspace_scoped_caller_count():
+    db = _FakeDB([])
+    call_fan_in(db, WORKSPACE, ["u:a"])
+    q = db.session_obj.runs[0][0]
+    assert "count(DISTINCT caller) AS fanin" in q
+    assert "coalesce(r.workspace_id, $workspace_id) = $workspace_id" in q
+    assert "(cf:File {workspace_id: $workspace_id})-[:CONTAINS]->(caller)" in q
+
+
+def test_call_fan_in_driver_error_returns_empty():
+    class _BoomSession(_Session):
+        def run(self, query, **params):
+            raise RuntimeError("boom")
+
+    db = _FakeDB()
+    db.driver = _Driver(_BoomSession([]))
+    assert call_fan_in(db, WORKSPACE, ["u:a"]) == {}
