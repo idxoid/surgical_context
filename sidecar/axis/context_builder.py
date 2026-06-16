@@ -22,7 +22,6 @@ consumer's choice (chat format, tool-use schema, etc.).
 from __future__ import annotations
 
 import heapq
-import math
 from collections import namedtuple
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -558,6 +557,9 @@ def _render_with_transaction_limit(
 #: utility (the design's fold aggregation bonus). It is 0 until ``qualified_name``
 #: is indexed (no qn -> no fold grouping -> no bonus), so it stays graceful
 #: pre-reindex.
+#: Kept deliberately even though it is file_recall-neutral in ablation: the
+#: bonus optimizes fold PACKING DENSITY (a coherent class block per token), which
+#: file_recall cannot measure — recall-neutral here does not mean useless.
 FOLD_AGGREGATION_BONUS = 0.1
 
 _MODE_ROLES = frozenset({"impact_analysis", "trace_dependency"})
@@ -595,18 +597,6 @@ _STRUCTURAL_BRIDGE_STEP_BONUS = {
     "deferred_runtime_dispatch": 0.45,
     "hook_transparency": 1.50,
 }
-_IMPACT_SURFACE_TIER_BONUS = {
-    "test": 2.00,
-}
-
-
-@dataclass
-class _FileEvidence:
-    occurrences: int = 0
-    seed_count: int = 0
-    related_count: int = 0
-    roles: set[str] = field(default_factory=set)
-    steps: set[str] = field(default_factory=set)
 
 
 def _fold_aggregation_bonus(bundle: ContextBundle, *, per_member: float) -> float:
@@ -702,39 +692,6 @@ def _bundle_tier_weight(bundle: ContextBundle) -> float:
     if primary:
         weights.append(_tier_weight_for_path(primary, impact_mode=impact_mode))
     return max(weights)
-
-
-def _impact_surface_bonus(bundle: ContextBundle, files: Iterable[str]) -> float:
-    if not _bundle_impact_mode(bundle):
-        return 0.0
-    seen_tiers: set[str] = set()
-    bonus = 0.0
-    for path in files:
-        tier = _file_tier_from_path(path)
-        if tier in seen_tiers:
-            continue
-        seen_tiers.add(tier)
-        bonus += _IMPACT_SURFACE_TIER_BONUS.get(tier, 0.0)
-    return bonus
-
-
-def _build_file_evidence(bundles: list[ContextBundle]) -> dict[str, _FileEvidence]:
-    evidence: dict[str, _FileEvidence] = {}
-    for bundle in bundles:
-        for idx, sym in enumerate(bundle.all_symbols()):
-            path = sym.file_path or ""
-            if not path:
-                continue
-            item = evidence.setdefault(path, _FileEvidence())
-            item.occurrences += 1
-            if idx == 0:
-                item.seed_count += 1
-            else:
-                item.related_count += 1
-            item.roles.add(bundle.role)
-            if sym.expansion_step:
-                item.steps.add(sym.expansion_step)
-    return evidence
 
 
 def _initial_credit_render(
@@ -843,7 +800,6 @@ def _apply_token_credit_budget(
     covered_steps: set[str] = set()
     file_counts: dict[str, int] = {}
     file_tokens: dict[str, int] = {}
-    file_evidence = _build_file_evidence(bundles)
     render_cache: dict[tuple[int, str], tuple[ContextBundle, int]] = {}
     static = [
         _BundleStatic(
@@ -877,22 +833,10 @@ def _apply_token_credit_budget(
                 for path in new_files
             )
             gain += (0.35 + 0.08 * max(0, len(new_files) - 1)) * new_file_weight
-            gain += _impact_surface_bonus(bundle, new_files)
         if bundle.role not in covered_roles:
             gain += 0.20
         gain += 0.10 * len(new_steps)
         gain += st.structural_bridge * tier_weight
-        for path in files:
-            evidence = file_evidence.get(path)
-            if evidence is None:
-                continue
-            centrality = math.log1p(evidence.occurrences) * 0.035
-            centrality += math.log1p(evidence.seed_count) * 0.035
-            centrality += 0.025 * max(0, len(evidence.roles) - 1)
-            centrality += 0.020 * len(evidence.steps)
-            gain += centrality * _tier_weight_for_path(
-                path, impact_mode=impact_mode
-            )
         gain += 0.05 if not bundle.passive else -0.03
         gain -= 0.15 * sum(file_counts.get(path, 0) for path in files)
         gain -= _file_saturation_penalty(bundle)
@@ -921,7 +865,6 @@ def _apply_token_credit_budget(
         optimistic_gain *= st.tier_weight
         optimistic_gain += 0.10 * len(st.steps)
         optimistic_gain += st.structural_bridge * st.tier_weight
-        optimistic_gain += _impact_surface_bonus(bundle, st.files)
         if not bundle.passive:
             optimistic_gain += 0.05
         value = optimistic_gain / max(1, cost)
@@ -969,11 +912,6 @@ def _apply_token_credit_budget(
         }.get(rendered.render_mode, 0.10)
         gain = 0.35 * st.base_utility * st.tier_weight
         gain += mode_bonus
-        primary = _primary_file(bundle)
-        if primary:
-            evidence = file_evidence.get(primary)
-            if evidence is not None:
-                gain += 0.03 * math.log1p(evidence.occurrences)
         gain += 0.05 if not bundle.passive else 0.03
         gain -= _file_saturation_penalty(bundle)
         return max(0.001, gain)
@@ -1157,9 +1095,6 @@ def build_context_for_candidates(
     workspace_id: str,
     db,
     lance,
-    passive: Iterable[RoleCandidate] = (),
-    passive_shallow_hops: int = 0,
-    passive_shallow_limit: int = 3,
     max_per_seed: int = 6,
     traversal_mode: str = "deferred_binding_flow",
     include_tests: bool = False,
@@ -1168,16 +1103,13 @@ def build_context_for_candidates(
     render_mode: str = "full",
     utility_score_fn: Callable[[RoleCandidate], float] | None = None,
 ) -> list[ContextBundle]:
-    """Expand each ACTIVE candidate into a ``ContextBundle`` of related code.
+    """Expand each candidate into a ``ContextBundle`` of related code.
 
-    ``candidates`` are the *active* seeds — the only ones that get a graph
-    WALK (the expensive part). ``passive`` seeds skip the walk entirely: they
-    join the bundle list as code-bearing, signature-rendered, seed-only
-    bundles (no neighbours), so their files survive for the token budget at
-    near-zero cost. This is echelon 1's active/passive split — bound the walk,
-    keep the pool.
+    Every candidate gets a graph WALK (the expensive part); the Token Credit
+    budget downstream packs the full pool, so there is no active/passive split
+    to bound the walk here.
 
-    ``max_per_seed`` caps how many related symbols come back per active seed
+    ``max_per_seed`` caps how many related symbols come back per seed
     (depth-then-name ordering). ``traversal_mode`` picks the expansion
     pattern from ``AxisQueryPlan``; defaults to deferred-binding
     because every current contract uses it.
@@ -1189,12 +1121,12 @@ def build_context_for_candidates(
     ``render_mode`` / ``token_budget`` are the echelon-2 budget knobs
     (default off = whole pool, full code = benchmark behaviour):
     ``signature_only`` trims each symbol to its signature, and a non-None
-    ``token_budget`` packs bundles in rank order until the budget is spent.
+    ``token_budget`` hands the pool to the Token Credit packer, which buys the
+    minimal render per bundle by marginal utility per token.
     """
     from sidecar.axis.test_file_filter import is_test_path
     candidates = list(candidates)
-    passive = list(passive)
-    if not candidates and not passive:
+    if not candidates:
         return []
 
     def _utility_score(candidate: RoleCandidate) -> float:
@@ -1267,43 +1199,6 @@ def build_context_for_candidates(
         for h in ordered:
             uids_to_fetch.add(h.uid)
 
-    # Shallow walk for passive seeds (opt-in): fetch each passive seed's
-    # immediate neighbours so a relational answer (B = a 1-hop neighbour of a
-    # passive seed) is covered without the full active walk. Tight cap
-    # (passive_shallow_limit) + signature render keep the pool growth cheap.
-    passive_hits: dict[str, list[_Hit]] = {}
-    if passive and passive_shallow_hops > 0:
-        p_uids = [p.uid for p in passive]
-        p_buckets: dict[str, dict[str, _Hit]] = {u: {} for u in p_uids}
-        for step_name, edges, direction, _mh in steps_for_mode(traversal_mode):
-            grouped = walk_neighbours_grouped(
-                db, workspace_id, p_uids,
-                edges=edges, direction=direction,
-                max_hops=passive_shallow_hops,
-                limit_per_seed=passive_shallow_limit,
-            )
-            for su, neighbours in grouped.items():
-                bucket = p_buckets.get(su)
-                if bucket is None:
-                    continue
-                for nb in neighbours:
-                    if not include_tests and is_test_path(nb.file_path or ""):
-                        continue
-                    ex = bucket.get(nb.uid)
-                    if ex is None or nb.depth < ex.depth:
-                        bucket[nb.uid] = _Hit(
-                            nb.uid, nb.name, nb.file_path, nb.depth, step_name
-                        )
-        for su, bucket in p_buckets.items():
-            ordered = sorted(
-                bucket.values(), key=lambda h: (h.depth, (h.name or "").lower(), h.uid)
-            )[:passive_shallow_limit]
-            passive_hits[su] = ordered
-            for h in ordered:
-                uids_to_fetch.add(h.uid)
-
-    for p in passive:
-        uids_to_fetch.add(p.uid)
     payload_by_uid = _fetch_symbol_payloads(lance, workspace_id, uids_to_fetch)
 
     def _code(uid: str) -> str | None:
@@ -1343,46 +1238,9 @@ def build_context_for_candidates(
                 seed=seed,
                 related=related,
                 utility_score=_utility_score(cand),
-                passive=False,
             )
         )
 
-    # Passive seeds: code-bearing context that skipped the (full) walk.
-    # Rendered as signatures (cheap, file stays covered), appended after the
-    # active bundles so the token budget fills active expansion first. With
-    # shallow-walk on, each carries its immediate neighbours (also signatures).
-    for p in passive:
-        related = tuple(
-            ContextSymbol(
-                uid=h.uid,
-                name=h.name,
-                file_path=h.file_path,
-                role=p.role,
-                distance_from_seed=h.depth,
-                expansion_step=h.step,
-                code=_code_signature(_code(h.uid)),
-                qualified_name=_qualified_name(h.uid),
-            )
-            for h in passive_hits.get(p.uid, [])
-        )
-        bundles.append(
-            ContextBundle(
-                role=p.role,
-                utility_score=_utility_score(p),
-                passive=True,
-                seed=ContextSymbol(
-                    uid=p.uid,
-                    name=p.name,
-                    file_path=p.file_path,
-                    role=p.role,
-                    distance_from_seed=0,
-                    expansion_step=None,
-                    code=_code_signature(_code(p.uid)),
-                    qualified_name=p.qualified_name or _qualified_name(p.uid),
-                ),
-                related=related,
-            )
-        )
     return _apply_render_and_budget(
         bundles,
         token_budget=token_budget,

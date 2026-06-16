@@ -341,47 +341,6 @@ def test_token_credit_coverage_demotes_example_tier_against_core():
     assert [b.seed.uid for b in out] == ["core"]
 
 
-def test_token_credit_impact_analysis_reserves_test_surface():
-    example = ContextBundle(
-        role="impact_analysis",
-        seed=_sym(
-            "example",
-            "app = FastAPI()\n",
-            file_path="/repo/docs_src/tutorial001.py",
-        ),
-        related=(),
-        utility_score=0.55,
-    )
-    test = ContextBundle(
-        role="impact_analysis",
-        seed=_sym(
-            "test_surface",
-            "def test_surface():\n    assert encode(value)\n",
-            file_path="/repo/tests/test_encoder.py",
-        ),
-        related=(
-            ContextSymbol(
-                uid="core_encoder",
-                name="core_encoder",
-                file_path="/repo/pkg/encoder.py",
-                role="impact_analysis",
-                distance_from_seed=1,
-                expansion_step="deferred_runtime_dispatch",
-                code="def encode(value):\n    return value\n",
-            ),
-        ),
-        utility_score=0.35,
-    )
-
-    out = _apply_render_and_budget(
-        [example, test],
-        token_budget=7,
-        render_mode="full",
-    )
-
-    assert [b.seed.uid for b in out] == ["test_surface"]
-
-
 def test_token_credit_coverage_prefers_structural_bridge_related_file():
     local = ContextBundle(
         role="r",
