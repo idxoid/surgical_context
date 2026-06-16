@@ -23,10 +23,7 @@ import {
   resizeComposerToFit,
 } from './shared/layout';
 import {
-  renderActionButtonRow,
-  renderAffectsGroup,
-  renderFilesGroup,
-  renderSymbolSummaryCard,
+  renderImpactWorkspace,
 } from './shared/impactLayout';
 import {
   renderDocumentationTab,
@@ -438,30 +435,11 @@ class MainSurface {
         ${this.renderChrome()}
         <div class="surface-title">Impact Analysis</div>
         <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-        ${renderSymbolSummaryCard({
+        ${renderImpactWorkspace(
+          this.currentImpact,
           symbol,
-          filePath: this.currentImpact.file_path || 'unknown',
-          uid: this.currentImpact.symbol_uid || symbol,
-          affectedCount: this.currentImpact.affected_count || this.currentImpact.affected_symbols?.length || 0,
-          fileCount: this.currentImpact.affected_file_count || this.currentImpact.affected_files?.length || 0,
-          maxDepth: this.currentImpact.max_depth || 0,
-          sourceLabel: this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph',
-        })}
-        ${renderActionButtonRow()}
-        <div class="impact-groups">
-          ${renderAffectsGroup(
-            this.currentImpact.affected_symbols || [],
-            this.currentImpactSource === 'prompt' ? 'Selected Prompt Context' : 'Affects',
-            true
-          )}
-          ${renderFilesGroup(this.currentImpact.affected_files || [], false)}
-        </div>
-        <div class="impact-legend">
-          <span><span class="legend-dot direct"></span> direct</span>
-          <span><span class="legend-dot indirect"></span> indirect</span>
-          <span><span class="legend-dot conditional"></span> conditional</span>
-          <span><span class="legend-dot type"></span> via type</span>
-        </div>
+          this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph'
+        )}
         <div class="surface-footer">
           <span>${this.currentImpactSource === 'prompt' ? 'From selected ask' : 'Graph built just now'}</span>
           <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
@@ -673,6 +651,9 @@ class MainSurface {
         break;
       case 'openFile':
         this.openFileFromImpact(target);
+        break;
+      case 'showMoreImpact':
+        this.showMoreImpactRows(target);
         break;
       case 'create-refactor-plan':
         this.switchSurface('chat');
@@ -1179,7 +1160,11 @@ class MainSurface {
       file_path: symbol.file_path,
       relation: symbol.relation,
       direction: symbol.direction,
+      role: symbol.role,
+      kind: symbol.kind,
+      edge_type: symbol.edge_type,
       depth: symbol.depth,
+      utility_score: symbol.utility_score,
       relevance_score: symbol.relevance_score,
       is_dirty: symbol.is_dirty,
     }));
@@ -1264,6 +1249,15 @@ class MainSurface {
     header.setAttribute('aria-expanded', String(!expanded));
     group.classList.toggle('expanded', !expanded);
     content.toggleAttribute('hidden', expanded);
+  }
+
+  private showMoreImpactRows(target: HTMLElement): void {
+    const group = target.closest('.impact-group');
+    const overflow = group?.querySelector('.impact-overflow');
+    if (!overflow) return;
+
+    overflow.removeAttribute('hidden');
+    target.remove();
   }
 
   private openFileFromImpact(target: HTMLElement): void {

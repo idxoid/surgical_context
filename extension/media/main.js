@@ -283,6 +283,35 @@
     };
     return text.replace(/[&<>"']/g, (m) => map[m]);
   }
+  function renderImpactWorkspace(impact, symbol, sourceLabel = "live graph") {
+    const model = buildImpactModel(impact);
+    return `
+    ${renderSymbolSummaryCard({
+      symbol,
+      filePath: impact.file_path || "unknown",
+      uid: impact.symbol_uid || symbol,
+      affectedCount: impact.affected_count || impact.affected_symbols?.length || 0,
+      fileCount: impact.affected_file_count || impact.affected_files?.length || 0,
+      maxDepth: impact.max_depth || 0,
+      sourceLabel
+    })}
+    ${renderImpactSummary(model)}
+    ${renderFocusGraph(symbol, model.items)}
+    ${renderActionButtonRow()}
+    <div class="impact-groups">
+      ${renderImpactZone("Direct Impact", model.direct, "No direct callers or first-hop consumers returned.", true)}
+      ${renderImpactZone("Architectural Reach", model.reach, "No hook, event, config, data, or API reach returned.", true)}
+      ${renderImpactZone("Hidden Risks", model.risks, "No cross-repo or coverage risks returned.", model.risks.length > 0)}
+      ${renderFilesGroup(impact.affected_files || [], false, "Dependencies")}
+    </div>
+    <div class="impact-legend">
+      <span><span class="legend-dot high"></span> high</span>
+      <span><span class="legend-dot medium"></span> medium</span>
+      <span><span class="legend-dot low"></span> low</span>
+      <span><span class="legend-dot type"></span> focus walk</span>
+    </div>
+  `;
+  }
   function renderSymbolSummaryCard(symbolInfo) {
     return `
     <div class="impact-symbol-card">
@@ -310,6 +339,217 @@
       <strong>${Number.isFinite(value) ? value : 0}</strong>
       <span>${escapeHtml2(label)}</span>
     </span>
+  `;
+  }
+  function buildImpactModel(impact) {
+    const symbols = impact.affected_symbols || [];
+    const items = symbols.map(toImpactItem);
+    const affectedFiles = Array.from(new Set((impact.affected_files || []).filter(Boolean)));
+    const sourceFile = impact.file_path || "";
+    const hasTests = [...affectedFiles, ...items.map((item) => item.filePath), sourceFile].some(isTestFile);
+    if (!hasTests && (items.length > 0 || affectedFiles.length > 0)) {
+      items.push({
+        source: {},
+        symbolName: "No returned test coverage",
+        filePath: sourceFile || "workspace",
+        relation: "coverage_gap",
+        category: "coverage",
+        zone: "risk",
+        severity: "high",
+        utilityScore: 0.93,
+        line: 1,
+        synthetic: true
+      });
+    }
+    items.sort((a, b) => b.utilityScore - a.utilityScore);
+    const direct = items.filter((item) => item.zone === "direct");
+    const reach = items.filter((item) => item.zone === "reach");
+    const risks = items.filter((item) => item.zone === "risk");
+    return {
+      items,
+      direct,
+      reach,
+      risks,
+      summary: {
+        endpoints: items.filter((item) => item.category === "api").length,
+        hooks: items.filter((item) => item.category === "event").length,
+        tests: items.filter((item) => item.category === "test").length,
+        high: items.filter((item) => item.severity === "high").length,
+        medium: items.filter((item) => item.severity === "medium").length,
+        low: items.filter((item) => item.severity === "low").length,
+        files: affectedFiles.length
+      }
+    };
+  }
+  function toImpactItem(sym) {
+    const filePath = stringField(sym, "file_path", "path", "source_file") || "unknown";
+    const symbolName = stringField(sym, "symbol", "name", "title") || "unknown";
+    const relation = stringField(sym, "relation", "direction", "edge_type", "kind", "role") || "affected";
+    const depth = numberField(sym, "depth", "distance", "hops");
+    const rawScore = numberField(sym, "utility_score", "relevance_score", "score");
+    const category = classifyCategory(sym, filePath, relation);
+    const severity = classifySeverity(category, depth, filePath);
+    const zone = classifyZone(category, depth, filePath);
+    return {
+      source: sym,
+      symbolName,
+      filePath,
+      relation,
+      category,
+      zone,
+      severity,
+      utilityScore: rawScore ?? fallbackUtility(severity, category, depth),
+      depth,
+      line: lineFromSymbol(sym)
+    };
+  }
+  function classifyCategory(sym, filePath, relation) {
+    const text = [
+      relation,
+      stringField(sym, "role", "edge_role", "edge_kind", "kind", "type"),
+      arrayField(sym, "provenance").join(" "),
+      filePath
+    ].join(" ").toLowerCase();
+    if (/\b(test|spec|fixture)\b|(^|[/.])(tests?|specs?)([/.]|$)/.test(text)) return "test";
+    if (/\b(hook|hook_exec|event|event_pub|listener|subscriber|signal)\b/.test(text)) return "event";
+    if (/\b(config|setting|settings|env|option|feature_flag)\b/.test(text)) return "config";
+    if (/\b(model|schema|serializer|pydantic|sqlalchemy|orm|migration)\b/.test(text)) return "data";
+    if (/\b(api|endpoint|route|router|controller|view)\b/.test(text)) return "api";
+    if (/\b(repo|workspace|service|package|contract)\b/.test(text)) return "cross_repo";
+    return "caller";
+  }
+  function classifySeverity(category, depth, filePath) {
+    if (category === "test" || isDocFile(filePath)) return "low";
+    if (category === "event" || category === "config") return "medium";
+    if (category === "api" || category === "data" || category === "cross_repo") return "high";
+    return depth === void 0 || depth <= 1 ? "high" : "medium";
+  }
+  function classifyZone(category, depth, filePath) {
+    if (category === "test" || category === "cross_repo" || isDocFile(filePath)) return "risk";
+    if (category === "event" || category === "config" || category === "data" || category === "api") {
+      return "reach";
+    }
+    return depth === void 0 || depth <= 1 ? "direct" : "reach";
+  }
+  function fallbackUtility(severity, category, depth) {
+    const base = severity === "high" ? 0.88 : severity === "medium" ? 0.66 : 0.42;
+    const categoryBoost = category === "api" || category === "data" ? 0.08 : category === "event" ? 0.05 : 0;
+    const depthPenalty = typeof depth === "number" ? Math.min(depth, 4) * 0.04 : 0;
+    return Math.max(0.15, Math.min(0.99, base + categoryBoost - depthPenalty));
+  }
+  function renderImpactSummary(model) {
+    return `
+    <div class="impact-risk-summary" aria-label="Impact summary">
+      <div class="impact-risk-title">
+        <strong>Change touches ${model.summary.endpoints} endpoints, ${model.summary.hooks} hooks, ${model.summary.tests} tests</strong>
+        <span>${model.summary.high} high / ${model.summary.medium} medium / ${model.summary.low} low</span>
+      </div>
+      <div class="impact-severity-strip">
+        ${renderSeverityChip("High", model.summary.high, "high")}
+        ${renderSeverityChip("Medium", model.summary.medium, "medium")}
+        ${renderSeverityChip("Low", model.summary.low, "low")}
+        ${renderSeverityChip("Files", model.summary.files, "neutral")}
+      </div>
+    </div>
+  `;
+  }
+  function renderSeverityChip(label, count, tone) {
+    return `
+    <span class="impact-severity-chip ${escapeHtml2(tone)}">
+      <strong>${count}</strong>
+      <span>${escapeHtml2(label)}</span>
+    </span>
+  `;
+  }
+  function renderFocusGraph(symbol, items) {
+    const focusItems = items.filter((item) => !item.synthetic).slice(0, 6);
+    if (focusItems.length === 0) {
+      return `
+      <div class="impact-focus-card">
+        <div class="impact-focus-center">${escapeHtml2(symbol)}</div>
+        <div class="impact-focus-empty">No high-utility neighbours returned.</div>
+      </div>
+    `;
+    }
+    return `
+    <div class="impact-focus-card">
+      <div class="impact-focus-center" title="${escapeHtml2(symbol)}">${escapeHtml2(symbol)}</div>
+      <div class="impact-focus-grid">
+        ${focusItems.map(renderFocusNode).join("")}
+      </div>
+    </div>
+  `;
+  }
+  function renderFocusNode(item) {
+    return `
+    <button
+      type="button"
+      class="impact-focus-node ${item.severity}"
+      data-action="openFile"
+      data-file-path="${escapeHtml2(item.filePath)}"
+      data-line="${item.line}"
+      title="Open ${escapeHtml2(item.symbolName)}"
+    >
+      <span>${escapeHtml2(item.symbolName)}</span>
+      <small>${Math.round(item.utilityScore * 100)}%</small>
+    </button>
+  `;
+  }
+  function renderImpactZone(title, items, emptyText, expanded) {
+    const visible = items.slice(0, 6);
+    const overflow = items.slice(6);
+    if (items.length === 0) {
+      return `
+      <div class="impact-group">
+        <div class="group-header">${escapeHtml2(title)}</div>
+        <div class="group-content empty">${escapeHtml2(emptyText)}</div>
+      </div>
+    `;
+    }
+    return `
+    <div class="impact-group ${expanded ? "expanded" : ""}">
+      <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
+        <span aria-hidden="true">\u203A</span>
+        <strong>${escapeHtml2(title)}</strong>
+        <span>(${items.length})</span>
+      </button>
+      <div class="group-content" ${expanded ? "" : "hidden"}>
+        ${visible.map(renderImpactItemRow).join("")}
+        ${overflow.length ? renderOverflowRows(overflow) : ""}
+      </div>
+    </div>
+  `;
+  }
+  function renderOverflowRows(items) {
+    return `
+    <div class="impact-overflow" hidden>
+      ${items.map(renderImpactItemRow).join("")}
+    </div>
+    <button class="impact-show-more" data-action="showMoreImpact">
+      Show ${items.length} more
+    </button>
+  `;
+  }
+  function renderImpactItemRow(item) {
+    const disabled = item.synthetic ? "disabled" : "";
+    const title = item.synthetic ? item.symbolName : `Open ${item.symbolName}`;
+    return `
+    <button
+      type="button"
+      class="impact-row ${item.synthetic ? "impact-risk-row" : ""}"
+      data-action="${item.synthetic ? "noop" : "openFile"}"
+      data-file-path="${escapeHtml2(item.filePath)}"
+      data-line="${item.line}"
+      title="${escapeHtml2(title)}"
+      ${disabled}
+    >
+      <span class="impact-chevron" aria-hidden="true">\u203A</span>
+      <span class="impact-symbol">${escapeHtml2(item.symbolName)}</span>
+      <span class="impact-file">${escapeHtml2(item.filePath)}</span>
+      <span class="impact-tag ${item.severity}">${escapeHtml2(item.severity)}</span>
+      <span class="impact-tag indirect">${Math.round(item.utilityScore * 100)}%</span>
+      <span class="impact-tag ${item.category === "event" || item.category === "config" ? "conditional" : "direct"}">${escapeHtml2(item.category)}</span>
+    </button>
   `;
   }
   function renderAffectsGroup(affectedSymbols, title = "Affects", expanded = true) {
@@ -374,10 +614,35 @@
     }
     return 1;
   }
-  function renderFilesGroup(filePaths, expanded = false) {
+  function stringField(sym, ...keys) {
+    for (const key of keys) {
+      const value = sym[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  }
+  function numberField(sym, ...keys) {
+    for (const key of keys) {
+      const value = sym[key];
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+    }
+    return void 0;
+  }
+  function arrayField(sym, key) {
+    const value = sym[key];
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => String(item)).filter(Boolean);
+  }
+  function isTestFile(filePath) {
+    return /(^|[/.])(tests?|specs?|__tests__)([/.]|$)|(\.|_)(test|spec)\.[jt]sx?$|test_.*\.py$|_test\.py$/.test(filePath.toLowerCase());
+  }
+  function isDocFile(filePath) {
+    return /\.(md|mdx|rst|txt)$/i.test(filePath);
+  }
+  function renderFilesGroup(filePaths, expanded = false, title = "Files") {
     const uniquePaths = Array.from(new Set(filePaths.filter(Boolean)));
     if (uniquePaths.length === 0) {
-      return renderAffectsGroup([], "Files", expanded);
+      return renderAffectsGroup([], title, expanded);
     }
     const rows = uniquePaths.map((filePath) => `
       <button
@@ -398,7 +663,7 @@
     <div class="impact-group ${expanded ? "expanded" : ""}">
       <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
         <span aria-hidden="true">\u203A</span>
-        <strong>Files</strong>
+        <strong>${escapeHtml2(title)}</strong>
         <span>(${uniquePaths.length})</span>
       </button>
       <div class="group-content" ${expanded ? "" : "hidden"}>
@@ -1218,30 +1483,11 @@ ${doc.content}`);
         ${this.renderChrome()}
         <div class="surface-title">Impact Analysis</div>
         <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-        ${renderSymbolSummaryCard({
+        ${renderImpactWorkspace(
+        this.currentImpact,
         symbol,
-        filePath: this.currentImpact.file_path || "unknown",
-        uid: this.currentImpact.symbol_uid || symbol,
-        affectedCount: this.currentImpact.affected_count || this.currentImpact.affected_symbols?.length || 0,
-        fileCount: this.currentImpact.affected_file_count || this.currentImpact.affected_files?.length || 0,
-        maxDepth: this.currentImpact.max_depth || 0,
-        sourceLabel: this.currentImpactSource === "prompt" ? "prompt context" : "live graph"
-      })}
-        ${renderActionButtonRow()}
-        <div class="impact-groups">
-          ${renderAffectsGroup(
-        this.currentImpact.affected_symbols || [],
-        this.currentImpactSource === "prompt" ? "Selected Prompt Context" : "Affects",
-        true
+        this.currentImpactSource === "prompt" ? "prompt context" : "live graph"
       )}
-          ${renderFilesGroup(this.currentImpact.affected_files || [], false)}
-        </div>
-        <div class="impact-legend">
-          <span><span class="legend-dot direct"></span> direct</span>
-          <span><span class="legend-dot indirect"></span> indirect</span>
-          <span><span class="legend-dot conditional"></span> conditional</span>
-          <span><span class="legend-dot type"></span> via type</span>
-        </div>
         <div class="surface-footer">
           <span>${this.currentImpactSource === "prompt" ? "From selected ask" : "Graph built just now"}</span>
           <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
@@ -1434,6 +1680,9 @@ ${doc.content}`);
           break;
         case "openFile":
           this.openFileFromImpact(target);
+          break;
+        case "showMoreImpact":
+          this.showMoreImpactRows(target);
           break;
         case "create-refactor-plan":
           this.switchSurface("chat");
@@ -1862,7 +2111,11 @@ ${doc.content}`);
         file_path: symbol.file_path,
         relation: symbol.relation,
         direction: symbol.direction,
+        role: symbol.role,
+        kind: symbol.kind,
+        edge_type: symbol.edge_type,
         depth: symbol.depth,
+        utility_score: symbol.utility_score,
         relevance_score: symbol.relevance_score,
         is_dirty: symbol.is_dirty
       }));
@@ -1932,6 +2185,13 @@ ${doc.content}`);
       header.setAttribute("aria-expanded", String(!expanded));
       group.classList.toggle("expanded", !expanded);
       content.toggleAttribute("hidden", expanded);
+    }
+    showMoreImpactRows(target) {
+      const group = target.closest(".impact-group");
+      const overflow = group?.querySelector(".impact-overflow");
+      if (!overflow) return;
+      overflow.removeAttribute("hidden");
+      target.remove();
     }
     openFileFromImpact(target) {
       const filePath = target.getAttribute("data-file-path");

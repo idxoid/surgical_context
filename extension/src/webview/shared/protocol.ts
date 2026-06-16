@@ -148,6 +148,10 @@ export interface ContextSymbol {
   file_path: string;
   relation?: string;
   direction?: string;
+  role?: string;
+  kind?: string;
+  edge_type?: string;
+  utility_score?: number;
   depth?: number;
   relevance_score?: number;
   scores?: Record<string, number | null>;

@@ -151,23 +151,18 @@ The per-question console line now prints role diagnostics explicitly:
 Use `missing_roles` as the pass-gate indicator. Treat raw trailing `missing:` as
 internal telemetry for tuning recovery and role-planning behavior.
 
-### 4.5 Optional LLM judge matrix (`--judge`)
+### 4.5 Optional LLM judge matrix
 
 Retrieval gates (`role_recall`, `file_recall`, pass/warn) remain the primary CI signal. Optional answer-quality judgment runs via **local CLI bridges** (not Anthropic HTTP):
 
-```bash
-PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py \
-  --questions tests/fixtures/click_questions.yaml \
-  --repo click --no-index \
-  --judge all
-```
+The current axis benchmark does not run judges by default. Harnesses that need answer-quality evidence should call `QA.llm_judge.judge_question_matrix()` with the rendered axis context packet for one question.
 
-| Flag | Behavior |
+| Argument | Behavior |
 |---|---|
-| `--judge all` | Six parallel judges: `claude` + `codex` × `low` / `medium` / `high` effort tiers |
-| `--judge low` \| `medium` \| `high` | Two parallel judges for that tier only |
+| `efforts=("low", "medium", "high")` | Runs the requested effort tiers |
+| `providers=("claude", "codex")` | Runs available local bridge providers |
 
-Requires `claude` and/or `codex` on `PATH`. Per-question JSON stores full `judge.matrix[effort][provider]` cells (answer, `answer_quality`, `context_sufficiency`, model, latency, errors). Summary prints one row per cell.
+Requires `claude` and/or `codex` on `PATH`. Per-question JSON stores full `judge.matrix[effort][provider]` cells: answer, `verdict`, `correctness`, `grounding`, `completeness`, `context_sufficient`, legacy `answer_quality` / `context_sufficiency`, citations, covered evidence roles, model, latency, and errors.
 
 Model overrides: `QA_JUDGE_CLAUDE_MODEL_HIGH`, `QA_JUDGE_CODEX_MODEL_MEDIUM`, etc. Default tier map lives in `QA/llm_judge.py`.
 

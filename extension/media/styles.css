@@ -768,6 +768,155 @@ button {
   color: var(--sc-link);
 }
 
+.impact-risk-summary,
+.impact-focus-card {
+  margin: 0 var(--sc-impact-inset) 14px;
+  padding: 12px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius);
+  background: var(--sc-card);
+}
+
+.impact-risk-title {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.impact-risk-title strong {
+  color: var(--sc-text);
+  font-size: 13px;
+}
+
+.impact-risk-title span {
+  color: var(--sc-muted);
+  font-size: 12px;
+}
+
+.impact-severity-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.impact-severity-chip {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius);
+  color: var(--sc-muted);
+  background: color-mix(in srgb, var(--sc-text) 4%, transparent);
+}
+
+.impact-severity-chip strong {
+  color: var(--sc-text);
+  font-size: 15px;
+  line-height: 1.1;
+}
+
+.impact-severity-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.impact-severity-chip.high {
+  border-color: color-mix(in srgb, var(--sc-bad) 48%, var(--sc-border));
+}
+
+.impact-severity-chip.medium {
+  border-color: color-mix(in srgb, var(--sc-warn) 48%, var(--sc-border));
+}
+
+.impact-severity-chip.low {
+  border-color: color-mix(in srgb, var(--sc-good) 38%, var(--sc-border));
+}
+
+.impact-focus-card {
+  display: grid;
+  gap: 10px;
+}
+
+.impact-focus-center {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--sc-link) 52%, var(--sc-border));
+  border-radius: var(--sc-radius);
+  color: var(--sc-text);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.impact-focus-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.impact-focus-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius);
+  background: transparent;
+  color: var(--sc-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.impact-focus-node::before {
+  content: "";
+  position: absolute;
+  top: -9px;
+  left: 18px;
+  width: 1px;
+  height: 8px;
+  background: var(--sc-border);
+}
+
+.impact-focus-node:hover {
+  border-color: var(--sc-border-strong);
+  background: color-mix(in srgb, var(--sc-blue) 10%, transparent);
+}
+
+.impact-focus-node span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.impact-focus-node small {
+  color: var(--sc-muted);
+}
+
+.impact-focus-node.high {
+  border-color: color-mix(in srgb, var(--sc-bad) 48%, var(--sc-border));
+}
+
+.impact-focus-node.medium {
+  border-color: color-mix(in srgb, var(--sc-warn) 48%, var(--sc-border));
+}
+
+.impact-focus-node.low {
+  border-color: color-mix(in srgb, var(--sc-good) 38%, var(--sc-border));
+}
+
+.impact-focus-empty {
+  color: var(--sc-muted);
+  font-size: 12px;
+}
+
 .impact-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -858,6 +1007,47 @@ button {
   color: var(--sc-warn);
 }
 
+.impact-tag.high {
+  color: var(--sc-bad);
+}
+
+.impact-tag.medium {
+  color: var(--sc-warn);
+}
+
+.impact-tag.low {
+  color: var(--sc-good);
+}
+
+.impact-risk-row {
+  cursor: default;
+}
+
+.impact-risk-row:disabled {
+  opacity: .92;
+}
+
+.impact-overflow[hidden] {
+  display: none;
+}
+
+.impact-show-more {
+  width: 100%;
+  min-height: 32px;
+  margin-top: 8px;
+  border: 1px dashed var(--sc-border);
+  border-radius: var(--sc-radius);
+  background: transparent;
+  color: var(--sc-muted);
+  cursor: pointer;
+}
+
+.impact-show-more:hover {
+  border-color: var(--sc-border-strong);
+  color: var(--sc-text);
+  background: color-mix(in srgb, var(--sc-blue) 8%, transparent);
+}
+
 .impact-legend,
 .surface-footer {
   display: flex;
@@ -886,6 +1076,18 @@ button {
 
 .legend-dot.direct {
   color: var(--sc-link);
+}
+
+.legend-dot.high {
+  color: var(--sc-bad);
+}
+
+.legend-dot.medium {
+  color: var(--sc-warn);
+}
+
+.legend-dot.low {
+  color: var(--sc-good);
 }
 
 .legend-dot.indirect {
@@ -1625,6 +1827,11 @@ button {
 
   .impact-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .impact-severity-strip,
+  .impact-focus-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .impact-source-chip {
