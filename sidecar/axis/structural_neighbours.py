@@ -31,8 +31,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sidecar.axis.graph_walk import EdgeProfile, cap_by_file, walk_neighbours
+from sidecar.axis.axis_profiles import Axis, edges_for_axes
+from sidecar.axis.graph_walk import cap_by_file, walk_neighbours
 from sidecar.axis.role_retrieval import RoleCandidate
+
+# File-bridge walk runs on the DATAFLOW axis (the AFFECTS parameter/return
+# impact closure). Kept kind-agnostic (whole pool) — same edges as the legacy
+# ``EdgeProfile.AFFECTS``, now named in the canonical axis vocabulary.
+_DATAFLOW_EDGES = edges_for_axes(frozenset({Axis.DATAFLOW}))
 
 
 def expand_structural_neighbours(
@@ -65,7 +71,7 @@ def expand_structural_neighbours(
 
     neighbours = walk_neighbours(
         db, workspace_id, seed_uids,
-        edges=EdgeProfile.AFFECTS,
+        edges=_DATAFLOW_EDGES,
         direction="undirected",
         max_hops=max_hops,
         exclude_tests=not include_tests,

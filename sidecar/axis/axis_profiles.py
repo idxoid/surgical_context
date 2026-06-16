@@ -42,17 +42,19 @@ class Axis:
     REGISTRY = "registry"
     STRUCTURAL = "structural"
     COMPOSITION = "composition"
+    DATAFLOW = "dataflow"
 
 
 ALL_AXES: frozenset[str] = frozenset(
-    {Axis.CONTROL, Axis.REGISTRY, Axis.STRUCTURAL, Axis.COMPOSITION}
+    {Axis.CONTROL, Axis.REGISTRY, Axis.STRUCTURAL, Axis.COMPOSITION, Axis.DATAFLOW}
 )
 
 
-# Each axis → the relationship whitelist that realises it. CONTROL reuses
-# the shared CALLS profile; STRUCTURAL merges the inheritance + API edges;
-# REGISTRY and COMPOSITION name their own sets. Widening an axis here
-# reaches every reactive walk at once.
+# Each axis → the relationship whitelist that realises it. The two FLOW axes
+# (CONTROL=call flow via CALLS, DATAFLOW=value flow via the AFFECTS
+# parameter/return impact closure) pair against the three STRUCTURE axes
+# (REGISTRY/STRUCTURAL/COMPOSITION). Widening an axis here reaches every
+# reactive walk at once.
 AXIS_EDGES: dict[str, tuple[str, ...]] = {
     Axis.CONTROL: EdgeProfile.CALLS,
     Axis.REGISTRY: ("DECORATED_BY", "HANDLES", "INSTANTIATES"),
@@ -63,6 +65,7 @@ AXIS_EDGES: dict[str, tuple[str, ...]] = {
         "HAS_API",
     ),
     Axis.COMPOSITION: ("READS_ATTR", "WRITES_ATTR", "RESOLVES_ATTR"),
+    Axis.DATAFLOW: ("AFFECTS",),
 }
 
 
@@ -135,7 +138,13 @@ def edges_for_axes(axes: frozenset[str] | set[str] | tuple[str, ...]) -> tuple[s
     """Flatten a set of axes into the deduplicated relationship list to
     hand a graph walk. Order is stable for deterministic Cypher."""
     seen: list[str] = []
-    for axis in (Axis.CONTROL, Axis.REGISTRY, Axis.STRUCTURAL, Axis.COMPOSITION):
+    for axis in (
+        Axis.CONTROL,
+        Axis.REGISTRY,
+        Axis.STRUCTURAL,
+        Axis.COMPOSITION,
+        Axis.DATAFLOW,
+    ):
         if axis in axes:
             for rel in AXIS_EDGES[axis]:
                 if rel not in seen:
