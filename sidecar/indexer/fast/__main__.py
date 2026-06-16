@@ -73,16 +73,17 @@ def _wipe_workspace(workspace_id: str, index_profile: str | None) -> None:
     when not given (the only profile the post-passes target)."""
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.database.neo4j_client import Neo4jClient
-    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
     from sidecar.indexer.fast.pipeline import (
         NEO4J_PASSWORD,
         NEO4J_URI,
         NEO4J_USER,
     )
 
-    profile_name = index_profile or AXIS_PYTHON_V1_PROFILE
-    lance = LanceDBClient(index_profile=profile_name)
-    lance.delete_workspace(workspace_id)
+    profile = resolve_index_profile(index_profile or AXIS_PYTHON_V1_PROFILE)
+    resolved_workspace_id = profile.workspace_id(workspace_id)
+    lance = LanceDBClient(index_profile=profile)
+    lance.delete_workspace(resolved_workspace_id)
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     with db.driver.session() as session:
         # Every workspace-scoped label now carries workspace_id (symbols too,
@@ -91,9 +92,9 @@ def _wipe_workspace(workspace_id: str, index_profile: str | None) -> None:
         for label in ("Symbol", "File", "FileHash", "ExternalSymbol", "ExternalPkg", "DocAnchor"):
             session.run(
                 f"MATCH (n:{label} {{workspace_id: $ws}}) DETACH DELETE n",
-                ws=workspace_id,
+                ws=resolved_workspace_id,
             )
-    print(f"🧹 wiped workspace {workspace_id}")
+    print(f"🧹 wiped workspace {resolved_workspace_id}")
 
 
 if __name__ == "__main__":

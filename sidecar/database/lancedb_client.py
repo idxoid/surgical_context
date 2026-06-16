@@ -160,6 +160,7 @@ SYMBOLS_SCHEMA = pa.schema(
 AXIS_SYMBOLS_SCHEMA = pa.schema(
     [
         *SYMBOLS_SCHEMA,
+        pa.field("symbol_kind", pa.string()),
         pa.field("qualified_name", pa.string()),
         pa.field("ast_kind_bits", pa.list_(pa.string())),
         pa.field("cfg_bits", pa.list_(pa.string())),
@@ -174,6 +175,7 @@ AXIS_SYMBOLS_SCHEMA = pa.schema(
 )
 
 AXIS_SYMBOL_REQUIRED_COLUMNS = {
+    "symbol_kind",
     "qualified_name",
     "ast_kind_bits",
     "cfg_bits",
@@ -271,6 +273,7 @@ class LanceDBClient:
         if not self._symbol_axis_columns:
             return {}
         return {
+            "symbol_kind": str(symbol.get("symbol_kind") or ""),
             "ast_kind_bits": list(symbol.get("ast_kind_bits") or []),
             "cfg_bits": list(symbol.get("cfg_bits") or []),
             "dfg_bits": list(symbol.get("dfg_bits") or []),

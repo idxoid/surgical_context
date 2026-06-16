@@ -942,6 +942,7 @@ def _embed_phase(
             row = {
                 "uid": s.uid,
                 "name": s.name,
+                "symbol_kind": s.kind,
                 "qualified_name": s.qualified_name or "",
                 "file_path": s.file_path,
                 "workspace_id": workspace_id,
