@@ -209,7 +209,10 @@ def _hub_gate(
     """
     if not forward:
         return []
-    fanin = call_fan_in(db, workspace_id, [n.uid for n in forward])
+    # Production-only fan-in: a routing/API node hammered by the test suite
+    # (``route``, ``Router.prepare``) is not a god utility — counting test
+    # callers would clip the very dispatch spine the impact walk needs.
+    fanin = call_fan_in(db, workspace_id, [n.uid for n in forward], exclude_tests=True)
     if not fanin:
         return list(forward)
     med = median(fanin.values())

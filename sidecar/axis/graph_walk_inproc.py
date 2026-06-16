@@ -237,14 +237,23 @@ def _decode_edges(raw: object) -> dict[str, set[str]]:
     return decoded
 
 
-def call_fan_in(db, workspace_id: str, uids, *, edges) -> dict[str, int]:
+def call_fan_in(db, workspace_id: str, uids, *, edges, exclude_tests: bool = False) -> dict[str, int]:
     """In-proc twin of ``graph_walk.call_fan_in`` — distinct in-workspace
     callers over ``edges`` per uid, read straight off the cached reverse
     adjacency. Callers are restricted to workspace symbols (``adj.meta``)
-    to match the Neo4j File-CONTAINS scoping."""
+    to match the Neo4j File-CONTAINS scoping. ``exclude_tests`` drops callers
+    that live in test files, so a function's production fan-in is not inflated
+    by the suite that exercises it."""
     adj = load_adjacency(db, workspace_id)
     rels = frozenset(edges)
     meta = adj.meta
+
+    def _keep(caller_uid: str) -> bool:
+        m = meta.get(caller_uid)
+        if m is None:
+            return False
+        return not (exclude_tests and is_test_path(m[1] or ""))
+
     out: dict[str, int] = {}
     for u in uids:
         if not u:
@@ -253,7 +262,7 @@ def call_fan_in(db, workspace_id: str, uids, *, edges) -> dict[str, int]:
         callers: set[str] = set()
         if by_type:
             for t in rels:
-                callers |= {c for c in by_type.get(t, frozenset()) if c in meta}
+                callers |= {c for c in by_type.get(t, frozenset()) if _keep(c)}
         out[u] = len(callers)
     return out
 

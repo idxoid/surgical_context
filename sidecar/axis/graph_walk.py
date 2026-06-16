@@ -341,6 +341,7 @@ def call_fan_in(
     uids: Sequence[str],
     *,
     edges: Iterable[str] = EdgeProfile.CALLS,
+    exclude_tests: bool = False,
 ) -> dict[str, int]:
     """Global in-degree over ``edges`` (distinct in-workspace callers) for
     each uid.
@@ -352,6 +353,13 @@ def call_fan_in(
     median* and keep hubs out of the test-reverse anchor set — a purely
     structural (call-graph topology) signal, no name matching.
 
+    ``exclude_tests`` counts only PRODUCTION callers. A routing/API function
+    exercised by a dozen unit tests (``route``, ``Router.prepare``) otherwise
+    looks like a hub purely because the suite hammers it — its production
+    fan-in is tiny. Excluding test callers separates "API the tests cover"
+    from "god utility called everywhere in the code", so the gate stops
+    clipping the very spine the impact walk needs.
+
     Best-effort: empty dict on any driver error.
     """
     from sidecar.axis import graph_walk_inproc
@@ -360,13 +368,20 @@ def call_fan_in(
     if not targets:
         return {}
     if graph_walk_inproc.enabled():
-        return graph_walk_inproc.call_fan_in(db, workspace_id, targets, edges=edges)
+        return graph_walk_inproc.call_fan_in(
+            db, workspace_id, targets, edges=edges, exclude_tests=exclude_tests
+        )
     rel = _safe_rel_pattern(edges)
+    where = ["coalesce(r.workspace_id, $workspace_id) = $workspace_id"]
+    if exclude_tests:
+        from sidecar.axis.test_file_filter import cypher_test_exclusion_clause
+
+        where.append(cypher_test_exclusion_clause("cf"))
     cypher = f"""
     UNWIND $uids AS tu
     MATCH (caller:Symbol)-[r:{rel}]->(t:Symbol {{uid: tu}})
-    WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
     MATCH (cf:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(caller)
+    WHERE {" AND ".join(where)}
     RETURN tu AS uid, count(DISTINCT caller) AS fanin
     """
     out: dict[str, int] = {}

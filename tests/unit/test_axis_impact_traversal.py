@@ -70,7 +70,7 @@ def _install(monkeypatch, *, seed_uids, by_label: dict[str, list[Neighbour]], fa
         calls.append((label, tuple(sorted(seen)), exclude_tests))
         return list(by_label.get(label, []))
 
-    def fake_fan_in(db, workspace_id, uids, *, edges=EdgeProfile.CALLS):
+    def fake_fan_in(db, workspace_id, uids, *, edges=EdgeProfile.CALLS, exclude_tests=False):
         return dict(fanin or {})
 
     monkeypatch.setattr(impact_traversal, "walk_neighbours", fake_walk)
@@ -117,6 +117,28 @@ def test_forward_calls_pass_emits_publisher_spine(monkeypatch):
     assert [c.uid for c in out] == ["u:send_task"]
     assert out[0].satisfying_kinds == ("forward_calls",)
     assert out[0].utility_score == pytest.approx(0.90)
+
+
+def test_hub_gate_uses_production_only_fan_in(monkeypatch):
+    """The hub gate must count PRODUCTION callers only — a routing/API node
+    hammered by the test suite is not a god utility, and counting test
+    callers would clip the dispatch spine the impact walk needs."""
+    seen = {}
+
+    def capture_fan_in(db, workspace_id, uids, *, edges=EdgeProfile.CALLS, exclude_tests=False):
+        seen["exclude_tests"] = exclude_tests
+        return {u: 1 for u in uids}
+
+    monkeypatch.setattr(impact_traversal, "call_fan_in", capture_fan_in)
+
+    def fake_walk(db, ws, seeds, *, edges, direction, max_hops, exclude_tests=False, **kw):
+        if frozenset(edges) == _CALLS and direction == "forward":
+            return [_n("u:route", name="route")]
+        return []
+
+    monkeypatch.setattr(impact_traversal, "walk_neighbours", fake_walk)
+    expand([_seed("u:apply_async")])
+    assert seen.get("exclude_tests") is True
 
 
 def test_hub_gate_drops_high_fanin_utility(monkeypatch):
