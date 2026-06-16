@@ -210,6 +210,96 @@ def run():
         send = next((c for c in calls if c["callee_name"] == "send_task"), None)
         assert send is None or "callee_qualified_name" not in send
 
+    def test_attr_access_excludes_call_callees(self, adapter):
+        # ``obj.method(...)`` is a call, not a data-shape attribute read — the
+        # call resolver owns it. The attribute-access pass must NOT emit a
+        # parallel READS_ATTR for the callee position (which, on an ambiguous
+        # method name, mis-binds to the wrong same-named symbol). The receiver
+        # of an outer access (``self.config`` in ``self.config.get()``) and a
+        # plain value read (``self.config.value``) still emit.
+        source = """
+class Task:
+    def apply_async(self, args=None, **options):
+        app = self._get_app()
+        return app.send_task(self.name, args, **options)
+
+    def reader(self):
+        x = self.config.get('k')
+        return self.config.value
+"""
+        acc = adapter.extract_attr_accesses(source, "pkg/task.py")
+        triples = {(a["accessor_name"], a["attr_name"], a["kind"]) for a in acc}
+        # callees excluded
+        assert ("apply_async", "send_task", "read") not in triples
+        assert ("apply_async", "_get_app", "read") not in triples
+        assert ("reader", "get", "read") not in triples
+        # genuine reads kept
+        assert ("reader", "config", "read") in triples
+        assert ("reader", "value", "read") in triples
+        assert ("apply_async", "name", "read") in triples
+
+    def test_self_method_proxy_call_relink_candidate(self, adapter):
+        # ``app = self._get_app(); app.send_task(...)`` where ``_get_app``
+        # returns an imported global (a lazy proxy at graph time): emit a
+        # points-to relink candidate carrying the returned global's qn. The
+        # proxy → class hop is resolved later at graph time.
+        source = """
+from celery import current_app
+
+class Task:
+    _app = None
+
+    @classmethod
+    def _get_app(cls):
+        if cls._app is None:
+            cls._app = current_app
+        return cls._app
+
+    def apply_async(self, args=None, **options):
+        app = self._get_app()
+        if app.conf.task_always_eager:
+            return self.apply(args)
+        return app.send_task(self.name, args, **options)
+"""
+        cands = adapter.extract_self_method_proxy_calls(source, "celery/app/task.py")
+        send = next((c for c in cands if c["callee_name"] == "send_task"), None)
+        assert send is not None
+        assert send["returns_global_qn"] == "celery.current_app"
+
+    def test_self_method_proxy_call_skips_reassigned_local(self, adapter):
+        # Precision: if the proxy-returning local is reassigned, its type is no
+        # longer known — drop the candidate rather than guess.
+        source = """
+from celery import current_app
+
+class T:
+    @classmethod
+    def _ga(cls):
+        return current_app
+
+    def m(self):
+        a = self._ga()
+        a = something_else()
+        return a.send_task()
+"""
+        cands = adapter.extract_self_method_proxy_calls(source, "p/t.py")
+        assert not any(c["callee_name"] == "send_task" for c in cands)
+
+    def test_self_method_proxy_call_skips_non_proxy_return_method(self, adapter):
+        # The source method must return an imported global; a plain helper
+        # (no return-of-global) produces no candidate.
+        source = """
+class T:
+    def helper(self):
+        return self._make()
+
+    def m(self):
+        x = self.helper()
+        return x.thing()
+"""
+        cands = adapter.extract_self_method_proxy_calls(source, "p/t.py")
+        assert not any(c["callee_name"] == "thing" for c in cands)
+
     def test_proxy_binding_extracted_for_annotated_lazy_proxy(self, adapter):
         # `name: ProxyType = SomeProxy(...)` (Flask current_app shape): emit a proxy
         # binding to ProxyType. Cross-file call forwarding happens at index time

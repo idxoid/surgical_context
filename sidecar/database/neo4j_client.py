@@ -1508,6 +1508,78 @@ class Neo4jClient:
         except Exception:
             return 0
 
+    def resolve_proxy_return_calls(
+        self,
+        candidates: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> int:
+        """Wire ``L.method()`` → ``C.method`` where ``L = self.M()`` and ``M``
+        returns a lazy-proxy global whose ``PROXY_OF`` target is class ``C``.
+
+        Sibling of :meth:`resolve_proxy_calls`: that one forwards a *direct*
+        proxy-var call (``current_app.x()``); this one closes the case where the
+        proxy is reached through a method return (``app = self._get_app();
+        app.x()``). ``candidates`` carry ``returns_global_qn`` (the global the
+        method returns) and ``callee_name`` (the method invoked on the local).
+        We match the proxy binding by the global's trailing var name (prefix-
+        agnostic, like the sibling), follow ``PROXY_OF`` to ``C``, resolve
+        ``C.callee_name`` (direct or via ``INHERITED_API``), and wire a
+        ``CALLS_DYNAMIC`` edge (in the AFFECTS rel set, so the impact closure
+        picks it up). The ``via_proxy_return`` property marks the hop.
+        """
+        if not candidates:
+            return 0
+        rows = []
+        for c in candidates:
+            qn = c.get("returns_global_qn") or ""
+            proxy_var = qn.rpartition(".")[2]
+            method = c.get("callee_name")
+            if not proxy_var or not method or not c.get("caller_uid"):
+                continue
+            rows.append(
+                {
+                    "caller_uid": c["caller_uid"],
+                    "proxy_var": proxy_var,
+                    "method": method,
+                    "call_site_line": c.get("call_site_line") or 0,
+                }
+            )
+        if not rows:
+            return 0
+        query = """
+        UNWIND $rows AS row
+        MATCH (caller:Symbol {uid: row.caller_uid})
+        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(p:Symbol {kind: 'proxy_binding', name: row.proxy_var})
+        MATCH (p)-[:PROXY_OF {workspace_id: $workspace_id}]->(t:Symbol)
+        OPTIONAL MATCH (t)-[:HAS_API|INHERITED_API]->(direct:Symbol {name: row.method})
+        OPTIONAL MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(own:Symbol {name: row.method})
+        WHERE own.qualified_name STARTS WITH t.qualified_name + '.'
+        WITH caller, row, coalesce(direct, own) AS callee
+        WHERE callee IS NOT NULL AND caller <> callee
+        MERGE (caller)-[r:CALLS_DYNAMIC {workspace_id: $workspace_id,
+                                        call_site_line: row.call_site_line}]->(callee)
+        SET r.confidence = 0.7,
+            r.tier = 'proxy_return',
+            r.resolver = 'proxyreturn-v1',
+            r.via_proxy_return = row.proxy_var
+        RETURN count(r) AS created
+        """
+        try:
+            with self.driver.session() as session:
+                rec = session.run(query, rows=rows, workspace_id=workspace_id).single()
+                created = int(rec["created"]) if rec else 0
+                if created:
+                    session.run(
+                        """
+                        MATCH (w:Workspace {id: $workspace_id})
+                        SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                        """,
+                        workspace_id=workspace_id,
+                    )
+                return created
+        except Exception:
+            return 0
+
     def delete_proxy_bindings_for_file(
         self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
     ):
@@ -1865,6 +1937,14 @@ class Neo4jClient:
         for rel_type, rows in (("READS_ATTR", reads), ("WRITES_ATTR", writes)):
             if not rows:
                 continue
+            # Resolution tiers, in order of strength:
+            #   1. qualified-name exact match (``ClassName.attr``) — strong.
+            #   2. workspace-unique name match — fires ONLY when exactly one
+            #      Symbol carries the name. A non-unique bare name (e.g.
+            #      ``send_task`` defined on several classes) is genuinely
+            #      ambiguous without receiver type, so it binds to NOTHING
+            #      rather than guessing the shortest-qn candidate (which would
+            #      be an arbitrary, often wrong, target). Precision over recall.
             tx.run(
                 f"""
                 UNWIND $rows AS a
@@ -1872,11 +1952,17 @@ class Neo4jClient:
                 MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(attr:Symbol)
                 WHERE attr.qualified_name = a.attr_qualified_name
                    OR attr.name = a.attr_name
-                WITH accessor, a, attr
-                ORDER BY
-                  CASE WHEN attr.qualified_name = a.attr_qualified_name THEN 0 ELSE 1 END,
-                  size(attr.qualified_name) ASC
-                WITH accessor, a, collect(attr)[0] AS attr
+                WITH accessor, a,
+                     [x IN collect(attr)
+                        WHERE x.qualified_name = a.attr_qualified_name] AS qn_exact,
+                     [x IN collect(attr)
+                        WHERE x.qualified_name <> a.attr_qualified_name] AS name_only
+                WITH accessor, a,
+                     CASE
+                       WHEN size(qn_exact) >= 1 THEN qn_exact[0]
+                       WHEN size(name_only) = 1 THEN name_only[0]
+                       ELSE null
+                     END AS attr
                 WHERE attr IS NOT NULL AND accessor <> attr
                 MERGE (accessor)-[r:{rel_type} {{workspace_id: $workspace_id}}]->(attr)
                 SET r.resolver = 'attr-access-v1',

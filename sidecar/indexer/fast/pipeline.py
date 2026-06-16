@@ -396,27 +396,38 @@ def _proxy_binding_phase(
     db: Neo4jClient,
     workspace_id: str,
     reporter: ProgressReporter,
+    project_path: str | None = None,
 ) -> int:
     """Create ProxyBinding nodes + PROXY_OF edges for lazy-proxy module vars.
 
     Runs after `_apply_graph` so the target types (e.g. FlaskProxy) already exist.
     Proxy detection is per-file in the adapter; we gather across all diffs here.
+
+    Must run under the same ``project_root_scope`` as symbol extraction: the
+    proxy node's qualified_name / uid derive from ``module_name_from_path``,
+    which falls back to ``cwd`` (yielding a filesystem-path-prefixed module like
+    ``QA.repos.celery.celery._state``) when no project root is set. Without the
+    scope the ProxyBinding's qn diverges from the canonical module qn of the
+    same variable, orphaning the ``PROXY_OF`` anchor from the imports /
+    re-exports that resolve to the variable node.
     """
     from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
 
     link_proxy = getattr(db, "link_proxy_bindings", None)
     reporter.stage_start("proxy_bindings", total=1)
     bindings: list[dict] = []
     if callable(link_proxy):
         adapter = PythonAdapter()
-        for diff in diffs:
-            ex = diff.extracted
-            if not ex.path.endswith((".py", ".pyi")):
-                continue
-            try:
-                bindings.extend(adapter.extract_proxy_bindings(ex.source, ex.path))
-            except Exception:
-                continue
+        with project_root_scope(project_path or None, workspace_id):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    bindings.extend(adapter.extract_proxy_bindings(ex.source, ex.path))
+                except Exception:
+                    continue
         if bindings:
             link_proxy(bindings, workspace_id=workspace_id)
     reporter.step("proxy_bindings")
@@ -455,6 +466,52 @@ def _proxy_call_resolution_phase(
             created = resolve(proxy_calls, workspace_id=workspace_id)
     reporter.step("proxy_calls")
     reporter.stage_end("proxy_calls")
+    return created
+
+
+def _proxy_return_call_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str | None = None,
+) -> int:
+    """Relink ``L = self.M(); L.x()`` calls through a method-returned proxy.
+
+    Sibling of :func:`_proxy_call_resolution_phase`. Where that forwards a direct
+    ``proxyvar.x()`` call, this closes the case where the proxy is reached via a
+    method return (``app = self._get_app(); app.send_task(...)``). The per-file
+    adapter pass emits ``{caller_uid, callee_name, returns_global_qn}`` points-to
+    candidates; the linker follows ``returns_global_qn`` → ``PROXY_OF`` → ``C``
+    and wires ``caller -[CALLS_DYNAMIC{via_proxy_return}]-> C.callee_name``. Runs
+    after proxy bindings exist (so ``PROXY_OF`` anchors are present) and before
+    the AFFECTS rebuild (so the new call edge enters the impact closure). Under
+    ``project_root_scope`` so the caller uid matches the stored node.
+    """
+    from sidecar.parser.adapters.python_adapter import PythonAdapter
+    from sidecar.parser.uid import project_root_scope
+
+    resolve = getattr(db, "resolve_proxy_return_calls", None)
+    reporter.stage_start("proxy_return_calls", total=1)
+    created = 0
+    if callable(resolve):
+        adapter = PythonAdapter()
+        candidates: list[dict] = []
+        with project_root_scope(project_path or None, workspace_id):
+            for diff in diffs:
+                ex = diff.extracted
+                if not ex.path.endswith((".py", ".pyi")):
+                    continue
+                try:
+                    candidates.extend(
+                        adapter.extract_self_method_proxy_calls(ex.source, ex.path)
+                    )
+                except Exception:
+                    continue
+        if candidates:
+            created = resolve(candidates, workspace_id=workspace_id)
+    reporter.step("proxy_return_calls")
+    reporter.stage_end("proxy_return_calls")
     return created
 
 
@@ -1627,10 +1684,13 @@ def run_fast_indexing(
         # edges, then forward proxy-var calls (current_app.x) through to the real
         # type. Must precede degree so the forwarded edges are counted.
         t_stage = time.perf_counter()
-        proxy_uids = _proxy_binding_phase(diffs, db, workspace_id, reporter)
+        proxy_uids = _proxy_binding_phase(diffs, db, workspace_id, reporter, project_path)
         stats["proxy_bindings"] = len(proxy_uids)
         stats["proxy_calls_resolved"] = _proxy_call_resolution_phase(
             diffs, db, workspace_id, reporter
+        )
+        stats["proxy_return_calls_resolved"] = _proxy_return_call_phase(
+            diffs, db, workspace_id, reporter, project_path
         )
         stats["timings_sec"]["proxy"] = round(time.perf_counter() - t_stage, 3)
         # Proxy nodes/edges are created after the degree snapshot, so fold the new

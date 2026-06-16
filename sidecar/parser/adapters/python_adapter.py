@@ -726,6 +726,207 @@ class PythonAdapter(TreeSitterAdapter):
             )
         return out
 
+    def extract_self_method_proxy_calls(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """Relink candidates for ``L = self.M(); L.attr(...)`` where ``M``
+        returns a lazy-proxy global.
+
+        The receiver ``L`` has no statically visible type (it is the result of a
+        method whose return value flows from a module-global proxy), so the call
+        ``L.attr(...)`` is dropped by the normal call resolver. But the chain is
+        structural and recoverable once the graph holds the proxy anchor:
+
+            app = self._get_app()      # _get_app: return cls._app; cls._app = current_app
+            app.send_task(...)         # current_app -PROXY_OF-> Celery  ⇒  Celery.send_task
+
+        This per-file pass emits one candidate per such call site —
+        ``{caller_uid, callee_name, returns_global_qn, call_site_line}`` — where
+        ``returns_global_qn`` is the import-resolved qualified name of the global
+        that ``M`` returns. The proxy hop (``returns_global_qn`` → ``PROXY_OF`` →
+        class ``C`` → ``C.callee_name``) is resolved at graph time, where the
+        cross-file ``PROXY_OF`` anchor lives. Precision is gated structurally:
+        the candidate fires ONLY when (a) ``M`` is a method in the same class
+        with an unambiguous return-of-imported-global, and (b) ``L`` is assigned
+        exactly once, directly from ``self.M()`` / ``cls.M()``.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        import_bindings = self._extract_import_bindings(source_code, file_path)
+
+        out: list[dict] = []
+        for cls in self._iter_nodes(tree.root_node):
+            if cls.type != "class_definition":
+                continue
+            body = cls.child_by_field_name("body")
+            if body is None:
+                continue
+            methods: dict[str, object] = {}
+            for child in body.children:
+                fn = child
+                if child.type == "decorated_definition":
+                    fn = child.child_by_field_name("definition")
+                if fn is None or fn.type != "function_definition":
+                    continue
+                fn_name = fn.child_by_field_name("name")
+                if fn_name is not None:
+                    methods[_node_text(fn_name)] = fn
+
+            # Phase 1: which methods return an imported global (directly or via a
+            # self/cls attribute alias assigned in the method body)?
+            returns_global: dict[str, str] = {}
+            for mname, fn in methods.items():
+                g = self._method_returns_imported_global(fn, import_bindings)
+                if g:
+                    returns_global[mname] = g
+            if not returns_global:
+                continue
+
+            # Phase 2: in every method, find ``L = self.M()`` (M a proxy-return
+            # method) then member calls ``L.attr(...)``.
+            for fn in methods.values():
+                caller_uid = self._uid_for_node(fn, source_code, file_path)
+                fn_body = fn.child_by_field_name("body")
+                if fn_body is None:
+                    continue
+                # local -> proxy-return method M (only single, direct binding)
+                local_src: dict[str, str] = {}
+                reassigned: set[str] = set()
+                for assign in self._iter_body_nodes(fn_body):
+                    if assign.type != "assignment":
+                        continue
+                    left = assign.child_by_field_name("left")
+                    right = assign.child_by_field_name("right")
+                    if left is None or left.type != "identifier":
+                        continue
+                    lname = _node_text(left)
+                    m = self._self_method_call_name(right)
+                    if m is not None and m in returns_global:
+                        if lname in local_src or lname in reassigned:
+                            # ambiguous: assigned more than once — drop it
+                            local_src.pop(lname, None)
+                            reassigned.add(lname)
+                        else:
+                            local_src[lname] = m
+                    else:
+                        # any other binding to the same name poisons it
+                        if lname in local_src:
+                            local_src.pop(lname, None)
+                        reassigned.add(lname)
+                if not local_src:
+                    continue
+                seen_sites: set[tuple[str, int]] = set()
+                for call in self._iter_body_nodes(fn_body):
+                    if call.type != "call":
+                        continue
+                    func = call.child_by_field_name("function")
+                    if func is None or func.type != "attribute":
+                        continue
+                    obj = func.child_by_field_name("object")
+                    attr = func.child_by_field_name("attribute")
+                    if obj is None or obj.type != "identifier" or attr is None:
+                        continue
+                    recv = _node_text(obj)
+                    if recv not in local_src:
+                        continue
+                    callee_name = _node_text(attr)
+                    line = call.start_point[0] + 1
+                    key = (callee_name, line)
+                    if key in seen_sites:
+                        continue
+                    seen_sites.add(key)
+                    out.append(
+                        {
+                            "caller_uid": caller_uid,
+                            "callee_name": callee_name,
+                            "returns_global_qn": returns_global[local_src[recv]],
+                            "call_site_line": line,
+                            "file_path": file_path,
+                        }
+                    )
+        return out
+
+    def _iter_body_nodes(self, body):
+        """Yield nodes under ``body`` but NOT inside a nested function/class —
+        so a method's own statements are scanned while a closure's are not."""
+        stack = list(body.children)
+        while stack:
+            node = stack.pop()
+            if node.type in ("function_definition", "class_definition"):
+                continue
+            yield node
+            stack.extend(node.children)
+
+    def _self_method_call_name(self, node) -> str | None:
+        """If ``node`` is a call ``self.M()`` / ``cls.M()`` with no arguments
+        that matter, return ``M``; else ``None``."""
+        if node is None or node.type != "call":
+            return None
+        func = node.child_by_field_name("function")
+        if func is None or func.type != "attribute":
+            return None
+        obj = func.child_by_field_name("object")
+        attr = func.child_by_field_name("attribute")
+        if obj is None or obj.type != "identifier" or attr is None:
+            return None
+        if _node_text(obj) not in ("self", "cls"):
+            return None
+        return _node_text(attr)
+
+    def _method_returns_imported_global(self, fn, import_bindings: dict[str, str]) -> str:
+        """Qualified name of the imported global a method returns, else ''.
+
+        Handles ``return G`` (G an imported name) and ``return self.X`` /
+        ``return cls.X`` where ``X`` is assigned an imported global ``G`` in the
+        method body (``cls._app = current_app``). Returns '' on ambiguity (more
+        than one distinct global) — precision over recall.
+        """
+        body = fn.child_by_field_name("body")
+        if body is None:
+            return ""
+
+        # Attribute aliases assigned an imported global: ``self.X = G`` / ``cls.X = G``.
+        attr_alias: dict[str, str] = {}
+        name_alias: dict[str, str] = {}
+        for assign in self._iter_body_nodes(body):
+            if assign.type != "assignment":
+                continue
+            left = assign.child_by_field_name("left")
+            right = assign.child_by_field_name("right")
+            if left is None or right is None or right.type != "identifier":
+                continue
+            g = import_bindings.get(_node_text(right))
+            if not g:
+                continue
+            if left.type == "attribute":
+                lo = left.child_by_field_name("object")
+                la = left.child_by_field_name("attribute")
+                if lo is not None and la is not None and _node_text(lo) in ("self", "cls"):
+                    attr_alias[_node_text(la)] = g
+            elif left.type == "identifier":
+                name_alias[_node_text(left)] = g
+
+        found: set[str] = set()
+        for ret in self._iter_body_nodes(body):
+            if ret.type != "return_statement":
+                continue
+            expr = ret.named_children[0] if ret.named_children else None
+            if expr is None:
+                continue
+            if expr.type == "identifier":
+                name = _node_text(expr)
+                g = import_bindings.get(name) or name_alias.get(name)
+                if g:
+                    found.add(g)
+            elif expr.type == "attribute":
+                lo = expr.child_by_field_name("object")
+                la = expr.child_by_field_name("attribute")
+                if lo is not None and la is not None and _node_text(lo) in ("self", "cls"):
+                    g = attr_alias.get(_node_text(la))
+                    if g:
+                        found.add(g)
+        return next(iter(found)) if len(found) == 1 else ""
+
     def extract_decorators(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Decoration relations: ``@deco\\ndef f`` → ``f`` is DECORATED_BY ``deco``.
 
@@ -1090,10 +1291,23 @@ class PythonAdapter(TreeSitterAdapter):
                 attr = node.child_by_field_name("attribute")
                 if obj is None or attr is None or attr.type != "identifier":
                     continue
+                # Skip the callee position of a call: ``obj.method(...)`` — the
+                # ``obj.method`` attribute is the call's ``function``, a method
+                # *invocation*, not a data-shape attribute read. The call
+                # resolver owns it (as a CALLS_* edge); emitting a parallel
+                # READS_ATTR here only duplicates the site and, when the method
+                # name is workspace-ambiguous, name-binds it to the wrong
+                # Symbol. The receiver ``obj.attr`` of an outer access (e.g.
+                # ``self.config`` in ``self.config.get()``) still emits, since
+                # only the directly-called attribute is the ``function`` node.
+                parent = node.parent
+                if parent is not None and parent.type == "call":
+                    fn_node = parent.child_by_field_name("function")
+                    if fn_node is not None and fn_node.id == node.id:
+                        continue
                 # Skip ``self.x`` on the *write* side; the assignment loop
                 # below handles writes. A read embedded in an assignment
                 # right-hand side still shows up here as a separate node.
-                parent = node.parent
                 if parent is not None and parent.type == "assignment":
                     lhs = parent.child_by_field_name("left")
                     if lhs is not None and lhs.start_byte == node.start_byte:
