@@ -283,8 +283,9 @@
     };
     return text.replace(/[&<>"']/g, (m) => map[m]);
   }
-  function renderImpactWorkspace(impact, symbol, sourceLabel = "live graph") {
+  function renderImpactWorkspace(impact, symbol, sourceLabel = "live graph", options = {}) {
     const model = buildImpactModel(impact);
+    const depth = clampDepth(options.depth ?? impact.max_depth ?? 3, options);
     return `
     ${renderSymbolSummaryCard({
       symbol,
@@ -295,6 +296,7 @@
       maxDepth: impact.max_depth || 0,
       sourceLabel
     })}
+    ${renderImpactDepthControl(depth, options)}
     ${renderImpactSummary(model)}
     ${renderFocusGraph(symbol, model.items)}
     ${renderActionButtonRow()}
@@ -311,6 +313,32 @@
       <span><span class="legend-dot type"></span> focus walk</span>
     </div>
   `;
+  }
+  function renderImpactDepthControl(depth, options) {
+    const minDepth = options.minDepth ?? 1;
+    const maxDepth = options.maxDepth ?? 4;
+    return `
+    <div class="impact-depth-control">
+      <label for="impact-depth-slider">Depth</label>
+      <input
+        id="impact-depth-slider"
+        type="range"
+        min="${minDepth}"
+        max="${maxDepth}"
+        step="1"
+        value="${depth}"
+        data-impact-depth
+        aria-label="Impact depth"
+      />
+      <output for="impact-depth-slider">d${depth}</output>
+    </div>
+  `;
+  }
+  function clampDepth(depth, options) {
+    const minDepth = options.minDepth ?? 1;
+    const maxDepth = options.maxDepth ?? 4;
+    if (!Number.isFinite(depth)) return 3;
+    return Math.max(minDepth, Math.min(maxDepth, Math.round(depth)));
   }
   function renderSymbolSummaryCard(symbolInfo) {
     return `
@@ -1165,6 +1193,7 @@ ${doc.content}`);
       this.currentImpact = null;
       this.currentImpactSymbol = null;
       this.currentImpactSource = null;
+      this.currentImpactDepth = 3;
       this.impactError = null;
       this.impactLoading = false;
       this.historyCollapsed = true;
@@ -1254,6 +1283,7 @@ ${doc.content}`);
             this.impactLoading = false;
             this.currentImpactSymbol = message.symbol;
             this.currentImpact = message.impact;
+            this.currentImpactDepth = this.clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
             this.currentImpactSource = "graph";
             this.impactError = null;
             this.render();
@@ -1486,7 +1516,8 @@ ${doc.content}`);
         ${renderImpactWorkspace(
         this.currentImpact,
         symbol,
-        this.currentImpactSource === "prompt" ? "prompt context" : "live graph"
+        this.currentImpactSource === "prompt" ? "prompt context" : "live graph",
+        { depth: this.currentImpactDepth }
       )}
         <div class="surface-footer">
           <span>${this.currentImpactSource === "prompt" ? "From selected ask" : "Graph built just now"}</span>
@@ -1608,6 +1639,10 @@ ${doc.content}`);
           }
         });
       }
+      document.querySelectorAll("[data-impact-depth]").forEach((slider) => {
+        slider.addEventListener("input", (event) => this.previewImpactDepth(event));
+        slider.addEventListener("change", (event) => this.changeImpactDepth(event));
+      });
       sendBtn?.addEventListener("click", () => this.askAboutSymbol());
       if (!this.keyboardListenerAttached) {
         document.addEventListener("keydown", (event) => {
@@ -1752,8 +1787,30 @@ ${doc.content}`);
       const selectedSymbol = this.currentPromptContext?.primary_source.symbol || this.state?.workspace.selectedSymbol || void 0;
       this.postMessage({
         type: "action.showImpact",
-        symbol: selectedSymbol
+        symbol: selectedSymbol,
+        maxDepth: this.currentImpactDepth
       });
+    }
+    previewImpactDepth(event) {
+      const slider = event.currentTarget;
+      if (!slider) return;
+      const output = slider.closest(".impact-depth-control")?.querySelector("output");
+      const depth = this.clampImpactDepth(Number(slider.value));
+      if (output) {
+        output.textContent = `d${depth}`;
+      }
+    }
+    changeImpactDepth(event) {
+      const slider = event.currentTarget;
+      if (!slider) return;
+      const depth = this.clampImpactDepth(Number(slider.value));
+      if (depth === this.currentImpactDepth && this.currentImpactSource === "graph") return;
+      this.currentImpactDepth = depth;
+      this.requestImpactForActiveSymbol();
+    }
+    clampImpactDepth(depth) {
+      if (!Number.isFinite(depth)) return 3;
+      return Math.max(1, Math.min(4, Math.round(depth)));
     }
     openRelatedImpactFiles() {
       const filePaths = Array.from(new Set(this.currentImpact?.affected_files || [])).filter(Boolean).slice(0, 12);
@@ -1868,6 +1925,7 @@ ${doc.content}`);
       this.currentImpact = null;
       this.currentImpactSymbol = symbol || null;
       this.currentImpactSource = null;
+      this.currentImpactDepth = 3;
       this.impactError = null;
       const prompt = this.pendingPrompt || "Ask about current symbol";
       this.pendingPrompt = null;
@@ -1974,6 +2032,7 @@ ${doc.content}`);
         this.currentContextSummary = null;
         this.currentImpact = null;
         this.currentImpactSource = null;
+        this.currentImpactDepth = 3;
         this.showToast("Prompt is still waiting for context.", "info");
       }
       this.historyCollapsed = true;
@@ -2003,6 +2062,7 @@ ${doc.content}`);
       this.currentImpact = null;
       this.currentImpactSymbol = null;
       this.currentImpactSource = null;
+      this.currentImpactDepth = 3;
       this.impactError = null;
       this.impactLoading = false;
       this.historyCollapsed = true;
@@ -2026,6 +2086,7 @@ ${doc.content}`);
         this.currentImpact = null;
         this.currentImpactSymbol = null;
         this.currentImpactSource = null;
+        this.currentImpactDepth = 3;
         this.impactError = null;
       }
       this.historyCollapsed = true;
@@ -2078,6 +2139,7 @@ ${doc.content}`);
       this.currentImpact = this.impactFromContext(context);
       this.currentImpactSymbol = context.primary_source.symbol;
       this.currentImpactSource = "prompt";
+      this.currentImpactDepth = this.clampImpactDepth(this.currentImpact.max_depth || this.currentImpactDepth);
       this.impactError = null;
       this.syncSelectedRequestToHost(requestId, context);
     }

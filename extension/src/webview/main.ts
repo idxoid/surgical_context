@@ -65,6 +65,7 @@ class MainSurface {
   private currentImpact: ImpactResponse | null = null;
   private currentImpactSymbol: string | null = null;
   private currentImpactSource: 'prompt' | 'graph' | null = null;
+  private currentImpactDepth = 3;
   private impactError: string | null = null;
   private impactLoading = false;
   private historyCollapsed = true;
@@ -171,6 +172,7 @@ class MainSurface {
           this.impactLoading = false;
           this.currentImpactSymbol = message.symbol;
           this.currentImpact = message.impact;
+          this.currentImpactDepth = this.clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
           this.currentImpactSource = 'graph';
           this.impactError = null;
           this.render();
@@ -438,7 +440,8 @@ class MainSurface {
         ${renderImpactWorkspace(
           this.currentImpact,
           symbol,
-          this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph'
+          this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph',
+          { depth: this.currentImpactDepth }
         )}
         <div class="surface-footer">
           <span>${this.currentImpactSource === 'prompt' ? 'From selected ask' : 'Graph built just now'}</span>
@@ -575,6 +578,11 @@ class MainSurface {
         }
       });
     }
+
+    document.querySelectorAll('[data-impact-depth]').forEach(slider => {
+      slider.addEventListener('input', event => this.previewImpactDepth(event));
+      slider.addEventListener('change', event => this.changeImpactDepth(event));
+    });
     sendBtn?.addEventListener('click', () => this.askAboutSymbol());
 
     if (!this.keyboardListenerAttached) {
@@ -733,7 +741,32 @@ class MainSurface {
     this.postMessage({
       type: 'action.showImpact',
       symbol: selectedSymbol,
+      maxDepth: this.currentImpactDepth,
     });
+  }
+
+  private previewImpactDepth(event: Event): void {
+    const slider = event.currentTarget as HTMLInputElement | null;
+    if (!slider) return;
+    const output = slider.closest('.impact-depth-control')?.querySelector('output');
+    const depth = this.clampImpactDepth(Number(slider.value));
+    if (output) {
+      output.textContent = `d${depth}`;
+    }
+  }
+
+  private changeImpactDepth(event: Event): void {
+    const slider = event.currentTarget as HTMLInputElement | null;
+    if (!slider) return;
+    const depth = this.clampImpactDepth(Number(slider.value));
+    if (depth === this.currentImpactDepth && this.currentImpactSource === 'graph') return;
+    this.currentImpactDepth = depth;
+    this.requestImpactForActiveSymbol();
+  }
+
+  private clampImpactDepth(depth: number): number {
+    if (!Number.isFinite(depth)) return 3;
+    return Math.max(1, Math.min(4, Math.round(depth)));
   }
 
   private openRelatedImpactFiles(): void {
@@ -867,6 +900,7 @@ class MainSurface {
     this.currentImpact = null;
     this.currentImpactSymbol = symbol || null;
     this.currentImpactSource = null;
+    this.currentImpactDepth = 3;
     this.impactError = null;
 
     const prompt = this.pendingPrompt || 'Ask about current symbol';
@@ -990,6 +1024,7 @@ class MainSurface {
       this.currentContextSummary = null;
       this.currentImpact = null;
       this.currentImpactSource = null;
+      this.currentImpactDepth = 3;
       this.showToast('Prompt is still waiting for context.', 'info');
     }
 
@@ -1022,6 +1057,7 @@ class MainSurface {
     this.currentImpact = null;
     this.currentImpactSymbol = null;
     this.currentImpactSource = null;
+    this.currentImpactDepth = 3;
     this.impactError = null;
     this.impactLoading = false;
     this.historyCollapsed = true;
@@ -1050,6 +1086,7 @@ class MainSurface {
       this.currentImpact = null;
       this.currentImpactSymbol = null;
       this.currentImpactSource = null;
+      this.currentImpactDepth = 3;
       this.impactError = null;
     }
 
@@ -1121,6 +1158,7 @@ class MainSurface {
     this.currentImpact = this.impactFromContext(context);
     this.currentImpactSymbol = context.primary_source.symbol;
     this.currentImpactSource = 'prompt';
+    this.currentImpactDepth = this.clampImpactDepth(this.currentImpact.max_depth || this.currentImpactDepth);
     this.impactError = null;
     this.syncSelectedRequestToHost(requestId, context);
   }

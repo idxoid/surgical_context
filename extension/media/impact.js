@@ -11,8 +11,9 @@
     };
     return text.replace(/[&<>"']/g, (m) => map[m]);
   }
-  function renderImpactWorkspace(impact, symbol, sourceLabel = "live graph") {
+  function renderImpactWorkspace(impact, symbol, sourceLabel = "live graph", options = {}) {
     const model = buildImpactModel(impact);
+    const depth = clampDepth(options.depth ?? impact.max_depth ?? 3, options);
     return `
     ${renderSymbolSummaryCard({
       symbol,
@@ -23,6 +24,7 @@
       maxDepth: impact.max_depth || 0,
       sourceLabel
     })}
+    ${renderImpactDepthControl(depth, options)}
     ${renderImpactSummary(model)}
     ${renderFocusGraph(symbol, model.items)}
     ${renderActionButtonRow()}
@@ -39,6 +41,32 @@
       <span><span class="legend-dot type"></span> focus walk</span>
     </div>
   `;
+  }
+  function renderImpactDepthControl(depth, options) {
+    const minDepth = options.minDepth ?? 1;
+    const maxDepth = options.maxDepth ?? 4;
+    return `
+    <div class="impact-depth-control">
+      <label for="impact-depth-slider">Depth</label>
+      <input
+        id="impact-depth-slider"
+        type="range"
+        min="${minDepth}"
+        max="${maxDepth}"
+        step="1"
+        value="${depth}"
+        data-impact-depth
+        aria-label="Impact depth"
+      />
+      <output for="impact-depth-slider">d${depth}</output>
+    </div>
+  `;
+  }
+  function clampDepth(depth, options) {
+    const minDepth = options.minDepth ?? 1;
+    const maxDepth = options.maxDepth ?? 4;
+    if (!Number.isFinite(depth)) return 3;
+    return Math.max(minDepth, Math.min(maxDepth, Math.round(depth)));
   }
   function renderSymbolSummaryCard(symbolInfo) {
     return `
@@ -422,6 +450,7 @@
     constructor() {
       this.currentSymbol = null;
       this.currentImpact = null;
+      this.currentDepth = 3;
       this.isLoading = false;
       this.initializeMessageListener();
       this.initializeUI();
@@ -436,6 +465,7 @@
           case "impact.loaded":
             this.currentSymbol = message.symbol || null;
             this.currentImpact = message.impact || null;
+            this.currentDepth = this.clampDepth(message.impact?.max_depth || this.currentDepth);
             this.render();
             break;
           case "impact.loadFailed":
@@ -454,7 +484,8 @@
           if (this.currentSymbol) {
             vscode.postMessage({
               type: "action.showImpact",
-              symbol: this.currentSymbol
+              symbol: this.currentSymbol,
+              maxDepth: this.currentDepth
             });
           }
         });
@@ -480,7 +511,8 @@
         this.currentSymbol = symbol;
         vscode.postMessage({
           type: "action.showImpact",
-          symbol
+          symbol,
+          maxDepth: this.currentDepth
         });
       }
     }
@@ -505,7 +537,9 @@
       }
       root.innerHTML = `
       <div class="impact-container">
-        ${renderImpactWorkspace(this.currentImpact, this.currentSymbol, "live graph")}
+        ${renderImpactWorkspace(this.currentImpact, this.currentSymbol, "live graph", {
+        depth: this.currentDepth
+      })}
       </div>
     `;
       this.attachEventListeners();
@@ -545,6 +579,25 @@
           target.remove();
         });
       });
+      document.querySelectorAll("[data-impact-depth]").forEach((slider) => {
+        slider.addEventListener("input", (e) => {
+          const target = e.currentTarget;
+          const depth = this.clampDepth(Number(target.value));
+          const output = target.closest(".impact-depth-control")?.querySelector("output");
+          if (output) output.textContent = `d${depth}`;
+        });
+        slider.addEventListener("change", (e) => {
+          const target = e.currentTarget;
+          this.currentDepth = this.clampDepth(Number(target.value));
+          if (this.currentSymbol) {
+            vscode.postMessage({
+              type: "action.showImpact",
+              symbol: this.currentSymbol,
+              maxDepth: this.currentDepth
+            });
+          }
+        });
+      });
       const askFollowUpBtn = document.querySelector('[data-action="ask-followup"]');
       if (askFollowUpBtn && this.currentSymbol) {
         askFollowUpBtn.addEventListener("click", () => {
@@ -563,6 +616,10 @@
           });
         });
       }
+    }
+    clampDepth(depth) {
+      if (!Number.isFinite(depth)) return 3;
+      return Math.max(1, Math.min(4, Math.round(depth)));
     }
   };
   if (document.readyState === "loading") {

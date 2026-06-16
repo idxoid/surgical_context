@@ -10,7 +10,7 @@ import os
 from collections.abc import Generator
 from typing import Any, cast
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -56,6 +56,8 @@ SEARCH_LIMIT_MIN = 1
 SEARCH_LIMIT_MAX = 50
 TOKEN_BUDGET_MIN = 400
 TOKEN_BUDGET_MAX = 32_000
+IMPACT_DEPTH_MIN = 1
+IMPACT_DEPTH_MAX = 4
 
 app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
@@ -2317,6 +2319,7 @@ def history_request_bundle(
 @app.get("/impact", response_model=ImpactResponse)
 def impact(
     symbol: str,
+    max_depth: int = Query(default=3, ge=IMPACT_DEPTH_MIN, le=IMPACT_DEPTH_MAX),
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
@@ -2338,6 +2341,7 @@ def impact(
             symbol_name=symbol,
             file_path=symbol_file,
             workspace_id=workspace_id,
+            max_depth=max_depth,
         )
         affected_symbols = surface["affected_symbols"]
         affected_files = surface["affected_files"]

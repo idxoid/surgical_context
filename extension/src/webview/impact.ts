@@ -14,6 +14,7 @@ import {
 class ImpactPanel {
   private currentSymbol: string | null = null;
   private currentImpact: ImpactResponse | null = null;
+  private currentDepth = 3;
   private isLoading: boolean = false;
 
   constructor() {
@@ -33,6 +34,7 @@ class ImpactPanel {
         case 'impact.loaded':
           this.currentSymbol = message.symbol || null;
           this.currentImpact = message.impact || null;
+          this.currentDepth = this.clampDepth(message.impact?.max_depth || this.currentDepth);
           this.render();
           break;
 
@@ -55,6 +57,7 @@ class ImpactPanel {
           vscode.postMessage({
             type: 'action.showImpact',
             symbol: this.currentSymbol,
+            maxDepth: this.currentDepth,
           });
         }
       });
@@ -84,6 +87,7 @@ class ImpactPanel {
       vscode.postMessage({
         type: 'action.showImpact',
         symbol,
+        maxDepth: this.currentDepth,
       });
     }
   }
@@ -112,7 +116,9 @@ class ImpactPanel {
 
     root.innerHTML = `
       <div class="impact-container">
-        ${renderImpactWorkspace(this.currentImpact, this.currentSymbol, 'live graph')}
+        ${renderImpactWorkspace(this.currentImpact, this.currentSymbol, 'live graph', {
+          depth: this.currentDepth,
+        })}
       </div>
     `;
 
@@ -159,6 +165,26 @@ class ImpactPanel {
       });
     });
 
+    document.querySelectorAll('[data-impact-depth]').forEach(slider => {
+      slider.addEventListener('input', (e: Event) => {
+        const target = e.currentTarget as HTMLInputElement;
+        const depth = this.clampDepth(Number(target.value));
+        const output = target.closest('.impact-depth-control')?.querySelector('output');
+        if (output) output.textContent = `d${depth}`;
+      });
+      slider.addEventListener('change', (e: Event) => {
+        const target = e.currentTarget as HTMLInputElement;
+        this.currentDepth = this.clampDepth(Number(target.value));
+        if (this.currentSymbol) {
+          vscode.postMessage({
+            type: 'action.showImpact',
+            symbol: this.currentSymbol,
+            maxDepth: this.currentDepth,
+          });
+        }
+      });
+    });
+
     // Attach ask-follow-up button
     const askFollowUpBtn = document.querySelector('[data-action="ask-followup"]');
     if (askFollowUpBtn && this.currentSymbol) {
@@ -179,6 +205,11 @@ class ImpactPanel {
         });
       });
     }
+  }
+
+  private clampDepth(depth: number): number {
+    if (!Number.isFinite(depth)) return 3;
+    return Math.max(1, Math.min(4, Math.round(depth)));
   }
 }
 

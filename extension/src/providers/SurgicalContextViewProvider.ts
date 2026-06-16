@@ -89,7 +89,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  public async showImpact(symbol?: string): Promise<void> {
+  public async showImpact(symbol?: string, maxDepth = 3): Promise<void> {
     // Priority: explicit symbol > lastRequest.symbol > editor cursor > fail
     let targetSymbol = symbol;
 
@@ -110,7 +110,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    await this.loadImpact(targetSymbol);
+    await this.loadImpact(targetSymbol, maxDepth);
   }
 
   public showSettings(): void {
@@ -215,7 +215,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'action.showImpact':
-        await this.showImpact(message.symbol);
+        await this.showImpact(message.symbol, message.maxDepth);
         break;
 
       case 'action.openChat':
@@ -500,10 +500,10 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     return editor ? this.overlayManager.getSymbolAtCursor(editor) : null;
   }
 
-  private async loadImpact(symbol: string): Promise<void> {
+  private async loadImpact(symbol: string, maxDepth = 3): Promise<void> {
     try {
       this.postMessage({ type: 'impact.loading' });
-      const impact = await SidecarClient.impact(symbol);
+      const impact = await SidecarClient.impact(symbol, maxDepth);
       this.postMessage({
         type: 'impact.loaded',
         symbol,

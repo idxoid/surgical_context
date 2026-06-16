@@ -44,6 +44,12 @@ interface ImpactModel {
   };
 }
 
+interface ImpactWorkspaceOptions {
+  depth?: number;
+  minDepth?: number;
+  maxDepth?: number;
+}
+
 export interface SymbolInfo {
   symbol: string;
   filePath: string;
@@ -57,9 +63,11 @@ export interface SymbolInfo {
 export function renderImpactWorkspace(
   impact: ImpactResponse,
   symbol: string,
-  sourceLabel = 'live graph'
+  sourceLabel = 'live graph',
+  options: ImpactWorkspaceOptions = {}
 ): string {
   const model = buildImpactModel(impact);
+  const depth = clampDepth(options.depth ?? impact.max_depth ?? 3, options);
   return `
     ${renderSymbolSummaryCard({
       symbol,
@@ -70,6 +78,7 @@ export function renderImpactWorkspace(
       maxDepth: impact.max_depth || 0,
       sourceLabel,
     })}
+    ${renderImpactDepthControl(depth, options)}
     ${renderImpactSummary(model)}
     ${renderFocusGraph(symbol, model.items)}
     ${renderActionButtonRow()}
@@ -86,6 +95,34 @@ export function renderImpactWorkspace(
       <span><span class="legend-dot type"></span> focus walk</span>
     </div>
   `;
+}
+
+function renderImpactDepthControl(depth: number, options: ImpactWorkspaceOptions): string {
+  const minDepth = options.minDepth ?? 1;
+  const maxDepth = options.maxDepth ?? 4;
+  return `
+    <div class="impact-depth-control">
+      <label for="impact-depth-slider">Depth</label>
+      <input
+        id="impact-depth-slider"
+        type="range"
+        min="${minDepth}"
+        max="${maxDepth}"
+        step="1"
+        value="${depth}"
+        data-impact-depth
+        aria-label="Impact depth"
+      />
+      <output for="impact-depth-slider">d${depth}</output>
+    </div>
+  `;
+}
+
+function clampDepth(depth: number, options: ImpactWorkspaceOptions): number {
+  const minDepth = options.minDepth ?? 1;
+  const maxDepth = options.maxDepth ?? 4;
+  if (!Number.isFinite(depth)) return 3;
+  return Math.max(minDepth, Math.min(maxDepth, Math.round(depth)));
 }
 
 export function renderSymbolSummaryCard(symbolInfo: SymbolInfo): string {

@@ -891,6 +891,7 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
         symbol_name,
         file_path,
         workspace_id,
+        max_depth,
     ):
         seen_surface_args.append(
             {
@@ -898,6 +899,7 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
                 "symbol_name": symbol_name,
                 "file_path": file_path,
                 "workspace_id": workspace_id,
+                "max_depth": max_depth,
                 "db": db,
             }
         )
@@ -920,7 +922,7 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     monkeypatch.setattr(impact_surface, "build_impact_surface", fake_build_impact_surface)
     monkeypatch.setattr(main, "db_session", impact_db_session)
 
-    body = main.impact(symbol="process_payment", x_user_id="Alice")
+    body = main.impact(symbol="process_payment", max_depth=2, x_user_id="Alice")
 
     assert body["symbol_uid"] == "symbol-1"
     assert body["affected_count"] == 1
@@ -930,6 +932,7 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     assert seen_surface_args[0]["symbol_uid"] == "symbol-1"
     assert seen_surface_args[0]["symbol_name"] == "process_payment"
     assert seen_surface_args[0]["file_path"] == "/repo/app.py"
+    assert seen_surface_args[0]["max_depth"] == 2
     assert seen_session_users == ["alice"]
 
 

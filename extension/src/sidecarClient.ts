@@ -368,8 +368,12 @@ export const SidecarClient = {
     return { controller, done };
   },
 
-  impact(symbol: string): Promise<ImpactResponse> {
-    return get(`/impact?symbol=${encodeURIComponent(symbol)}`);
+  impact(symbol: string, maxDepth = 3): Promise<ImpactResponse> {
+    const params = new URLSearchParams({
+      symbol,
+      max_depth: String(maxDepth),
+    });
+    return get(`/impact?${params.toString()}`);
   },
 
   cloudStatus(): Promise<CloudStatusResponse> {

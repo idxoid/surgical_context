@@ -12,7 +12,8 @@ from typing import Any
 from sidecar.axis.impact_traversal import expand_impact_neighbourhood
 from sidecar.axis.role_retrieval import RoleCandidate
 
-MAX_IMPACT_SURFACE_DEPTH = 3
+DEFAULT_IMPACT_SURFACE_DEPTH = 3
+MAX_IMPACT_SURFACE_DEPTH = 4
 MAX_IMPACT_SURFACE_ITEMS = 50
 
 
@@ -23,6 +24,7 @@ def build_impact_surface(
     symbol_name: str,
     file_path: str,
     workspace_id: str,
+    max_depth: int = DEFAULT_IMPACT_SURFACE_DEPTH,
     max_items: int = MAX_IMPACT_SURFACE_ITEMS,
 ) -> dict[str, Any]:
     """Return structured impact rows for one resolved symbol.
@@ -31,6 +33,7 @@ def build_impact_surface(
     seed-local evidence to broad closure: reverse callers, structural API /
     inheritance, and only then AFFECTS fallback.
     """
+    walk_depth = max(1, min(int(max_depth), MAX_IMPACT_SURFACE_DEPTH))
     seed = RoleCandidate(
         uid=symbol_uid,
         name=symbol_name,
@@ -50,7 +53,7 @@ def build_impact_surface(
         [seed],
         db=db,
         workspace_id=workspace_id,
-        max_hops=MAX_IMPACT_SURFACE_DEPTH,
+        max_hops=walk_depth,
         max_impacted=max_items,
     )
     rows = [_row_from_candidate(candidate) for candidate in candidates]
@@ -63,7 +66,7 @@ def build_impact_surface(
                 if row.get("file_path") and row["file_path"] != "<unknown>"
             }
         ),
-        "max_depth": MAX_IMPACT_SURFACE_DEPTH,
+        "max_depth": walk_depth,
     }
 
 
@@ -110,4 +113,8 @@ def _edge_type_for_kind(kind: str) -> str:
     }.get(kind, "IMPACT")
 
 
-__all__ = ["MAX_IMPACT_SURFACE_DEPTH", "build_impact_surface"]
+__all__ = [
+    "DEFAULT_IMPACT_SURFACE_DEPTH",
+    "MAX_IMPACT_SURFACE_DEPTH",
+    "build_impact_surface",
+]

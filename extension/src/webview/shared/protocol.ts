@@ -24,7 +24,7 @@ export type WebviewToHostMessage =
   | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down'; feedbackToken?: string }
   | { type: 'action.openInspector' }
   | { type: 'action.openSettings' }
-  | { type: 'action.showImpact'; symbol?: string }
+  | { type: 'action.showImpact'; symbol?: string; maxDepth?: number }
   | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'action.openDashboard' }
   | { type: 'link.openFile'; filePath: string; line?: number }
