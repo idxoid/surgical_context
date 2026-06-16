@@ -101,19 +101,32 @@ def load_adjacency(db, workspace_id: str) -> _Adjacency:
 
 
 def _neighbours_fn(adj: _Adjacency, rels: frozenset[str], direction: Direction):
-    def neigh(u: str) -> set[str]:
+    # (rels, direction) are fixed for the whole walk, so neigh(u) is
+    # deterministic — memoise it across the call. A multi-seed walk
+    # (role_lookahead: 8 seeds; grouped: 128) otherwise recomputes the same
+    # node's union once per seed BFS that reaches it.
+    fwd = direction in ("forward", "undirected")
+    rev = direction in ("reverse", "undirected")
+    cache: dict[str, frozenset[str]] = {}
+
+    def neigh(u: str) -> frozenset[str]:
+        hit = cache.get(u)
+        if hit is not None:
+            return hit
         res: set[str] = set()
-        if direction in ("forward", "undirected"):
+        if fwd:
             d = adj.out.get(u)
             if d:
                 for t in rels:
                     res |= d.get(t, frozenset())
-        if direction in ("reverse", "undirected"):
+        if rev:
             d = adj.in_.get(u)
             if d:
                 for t in rels:
                     res |= d.get(t, frozenset())
-        return res
+        frozen = frozenset(res)
+        cache[u] = frozen
+        return frozen
 
     return neigh
 
