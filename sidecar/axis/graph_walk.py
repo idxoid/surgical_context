@@ -234,6 +234,21 @@ def walk_neighbours(
     depth then reach-descending. Empty list on any driver error —
     expansion is best-effort, never fatal to retrieval.
     """
+    from sidecar.axis import graph_walk_inproc
+
+    if graph_walk_inproc.enabled():
+        return graph_walk_inproc.walk_neighbours(
+            db,
+            workspace_id,
+            seed_uids,
+            edges=edges,
+            direction=direction,
+            max_hops=max_hops,
+            anchor=anchor,
+            exclude_tests=exclude_tests,
+            class_targets_only=class_targets_only,
+            limit=limit,
+        )
     seeds = [u for u in seed_uids if u]
     if not seeds:
         return []
@@ -350,6 +365,18 @@ def walk_neighbours_grouped(
     its own neighbourhood. ``reach`` is set to 1 (per-seed, meaningless
     here). Empty dict on any driver error — expansion is best-effort.
     """
+    from sidecar.axis import graph_walk_inproc
+
+    if graph_walk_inproc.enabled():
+        return graph_walk_inproc.walk_neighbours_grouped(
+            db,
+            workspace_id,
+            seed_uids,
+            edges=edges,
+            direction=direction,
+            max_hops=max_hops,
+            limit_per_seed=limit_per_seed,
+        )
     seeds = [u for u in seed_uids if u]
     if not seeds:
         return {}
