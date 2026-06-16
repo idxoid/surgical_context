@@ -260,6 +260,8 @@ def run_axis_retrieval(
                         db=db,
                         workspace_id=workspace_id,
                         include_tests=include_tests_in_walks,
+                        intent_roles=[m.role for m in intent],
+                        intent_similarities={m.role: m.similarity for m in intent},
                     )
             if "trace_dependency" in mode_intents_present:
                 with tr.stage("trace_traversal"):

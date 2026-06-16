@@ -199,6 +199,45 @@ def test_global_utility_ranking_beats_walk_order(monkeypatch):
     assert [c.uid for c in out] == ["u:caller"]
 
 
+def test_publisher_spine_boosts_forward_over_reverse(monkeypatch):
+    """When a publisher-axis intent role is present, depth-1 forward spine
+    nodes outrank depth-1 reverse callers."""
+    _install(
+        monkeypatch,
+        seed_uids=["u:s"],
+        by_label={
+            "forward_calls": [_n("u:route", name="route", depth=1)],
+            "reverse_calls": [_n("u:caller", depth=1)],
+        },
+        fanin={"u:route": 1},
+    )
+    out = expand(
+        [_seed("u:s")],
+        max_impacted=1,
+        intent_roles=["routing_surface", "impact_analysis"],
+        intent_similarities={"routing_surface": 0.30, "impact_analysis": 0.28},
+    )
+    assert [c.uid for c in out] == ["u:route"]
+    assert out[0].satisfying_kinds == ("forward_calls",)
+    assert out[0].utility_score == pytest.approx(0.95)
+
+
+def test_publisher_spine_from_intent():
+    assert impact_traversal.publisher_spine_from_intent(
+        ["routing_surface"],
+        intent_similarities={"routing_surface": 0.29, "impact_analysis": 0.288},
+    )
+    assert not impact_traversal.publisher_spine_from_intent(
+        ["routing_surface", "impact_analysis"],
+        intent_similarities={"routing_surface": 0.237, "impact_analysis": 0.355},
+    )
+    assert not impact_traversal.publisher_spine_from_intent(["dependency_solver"])
+    assert impact_traversal.publisher_spine_from_intent(
+        ["dependency_solver", "routing_surface"],
+        intent_similarities={"routing_surface": 0.29, "impact_analysis": 0.288},
+    )
+
+
 def test_dedup_keeps_highest_utility_tag(monkeypatch):
     """A node reached by both reverse_calls and forward_affects keeps the
     stronger (reverse_calls) tag."""

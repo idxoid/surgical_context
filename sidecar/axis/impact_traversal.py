@@ -41,6 +41,44 @@ from sidecar.axis.graph_walk import EdgeProfile, Neighbour, call_fan_in, walk_ne
 from sidecar.axis.role_retrieval import RoleCandidate
 from sidecar.axis.test_file_filter import is_test_path
 
+# Intent roles whose canonical question shape asks about registration,
+# routing, binding, or task publishing — the downstream dispatch spine,
+# not "who calls this". When a publisher-axis role is at least as salient
+# as the impact question-shape, forward CALLS outrank reverse CALLS.
+_PUBLISHER_SPINE_INTENT_ROLES = frozenset(
+    {
+        "binding_surface",
+        "dispatch_surface",
+        "routing_surface",
+        "task_surface",
+    }
+)
+
+
+def publisher_spine_from_intent(
+    intent_roles: Iterable[str] = (),
+    *,
+    intent_similarities: dict[str, float] | None = None,
+) -> bool:
+    """True when publisher-axis intent is at least as strong as impact shape.
+
+    A test-surface impact question (``impact_analysis`` dominates) keeps the
+    default reverse-first ranking so ``impacted_tests`` can compete; a
+    publisher-chain question (``routing_surface`` / ``dispatch_surface`` ≥
+    ``impact_analysis``) flips forward spine ahead of reverse callers.
+    """
+    roles = set(intent_roles)
+    if intent_similarities is not None:
+        publisher_best = max(
+            (intent_similarities[r] for r in _PUBLISHER_SPINE_INTENT_ROLES if r in intent_similarities),
+            default=0.0,
+        )
+        if publisher_best <= 0.0:
+            return False
+        impact_sim = intent_similarities.get("impact_analysis", 0.0)
+        return publisher_best >= impact_sim
+    return bool(_PUBLISHER_SPINE_INTENT_ROLES.intersection(roles))
+
 
 def expand_impact_neighbourhood(
     seed_candidates: Iterable[RoleCandidate],
@@ -54,6 +92,8 @@ def expand_impact_neighbourhood(
     include_tests: bool = False,
     hub_fanin_factor: float = 2.0,
     test_reverse_hops: int = 2,
+    intent_roles: Iterable[str] = (),
+    intent_similarities: dict[str, float] | None = None,
 ) -> list[RoleCandidate]:
     """Run the blast-radius walks from the given seeds and return a
     deduplicated list of impacted ``RoleCandidate``s tagged
@@ -70,9 +110,15 @@ def expand_impact_neighbourhood(
     pass stays on the production fence. ``hub_fanin_factor`` is the
     *relative* outlier multiple over the forward closure's median CALLS
     fan-in above which a node is treated as a shared utility hub and kept
-    out of the test-reverse anchor set.
+    out of the test-reverse anchor set. ``intent_roles`` carries the
+    classifier's role list; when a publisher-axis role is present the
+    forward dispatch spine outranks reverse callers in utility ranking.
     """
     seeds_list = list(seed_candidates)
+    publisher_spine = publisher_spine_from_intent(
+        intent_roles,
+        intent_similarities=intent_similarities,
+    )
     if not seeds_list:
         return []
     seed_uids = [c.uid for c in seeds_list]
@@ -167,7 +213,7 @@ def expand_impact_neighbourhood(
         for n in neighbours:
             if n.uid in excluded:
                 continue
-            utility = _impact_utility(tag, n.depth)
+            utility = _impact_utility(tag, n.depth, publisher_spine=publisher_spine)
             prior = best.get(n.uid)
             if prior is not None and (prior.utility_score or 0.0) >= utility:
                 continue
@@ -220,16 +266,29 @@ def _hub_gate(
     return [n for n in forward if fanin.get(n.uid, 0) <= cap]
 
 
-def _impact_utility(tag: str, depth: int) -> float:
-    base = {
-        "reverse_calls": 0.95,
-        "forward_calls": 0.90,
-        "impacted_tests": 0.80,
-        "structural_api_carrier": 0.86,
-        "structural_inheritor": 0.82,
-        "forward_affects": 0.58,
-    }.get(tag, 0.50)
+def _impact_utility(tag: str, depth: int, *, publisher_spine: bool = False) -> float:
+    if publisher_spine:
+        base = {
+            "forward_calls": 0.95,
+            "reverse_calls": 0.90,
+            "impacted_tests": 0.80,
+            "structural_api_carrier": 0.86,
+            "structural_inheritor": 0.82,
+            "forward_affects": 0.58,
+        }.get(tag, 0.50)
+    else:
+        base = {
+            "reverse_calls": 0.95,
+            "forward_calls": 0.90,
+            "impacted_tests": 0.80,
+            "structural_api_carrier": 0.86,
+            "structural_inheritor": 0.82,
+            "forward_affects": 0.58,
+        }.get(tag, 0.50)
     return max(0.10, round(base - max(depth - 1, 0) * 0.08, 3))
 
 
-__all__ = ["expand_impact_neighbourhood"]
+__all__ = [
+    "expand_impact_neighbourhood",
+    "publisher_spine_from_intent",
+]
