@@ -203,3 +203,79 @@ def test_impact_mode_relaxes_example_demotion():
     # In impact mode the example is no longer demoted hard enough to lose
     # its nearer distance — it stays the top seed.
     assert [c.uid for c in out] == ["ex"]
+
+
+# --- dual-facet (signature) retrieval --------------------------------------
+
+
+def test_signature_facet_pulls_body_diluted_symbol_into_seeds():
+    """A symbol whose BODY vector is far but whose SIGNATURE vector is near
+    the query must win the seed slot — the min-of-facets is the whole point
+    of the signature facet (a large body otherwise dilutes the match)."""
+    import numpy as np
+
+    rows = [
+        {"uid": "near_body", "name": "near_body", "file_path": "/a.py"},
+        {"uid": "diluted", "name": "diluted", "file_path": "/b.py"},
+    ]
+    # query = [0, 1]; "diluted" body is far (0.2,0) but its signature is the
+    # exact query → dual-facet distance 0 beats near_body's body distance.
+    body = np.array([[0.0, 0.9], [0.2, 0.0]], dtype=float)
+    sig = np.array([[0.0, 0.5], [0.0, 1.0]], dtype=float)
+    scan = rr.WorkspaceScan(rows=rows, vectors=body, signature_vectors=sig)
+    out = find_seeds_by_vector(
+        WORKSPACE, "q", embed_fn=lambda t: [0.0, 1.0], limit=1, prescanned=scan
+    )
+    assert [c.uid for c in out] == ["diluted"]
+
+
+def test_scan_distances_falls_back_to_body_without_signature_facet():
+    import numpy as np
+
+    rows = [{"uid": "a", "name": "a", "file_path": "/a.py"}]
+    scan = rr.WorkspaceScan(rows=rows, vectors=np.array([[0.0, 1.0]], dtype=float))
+    d = rr._scan_distances(scan, "q", lambda t: [0.0, 1.0])
+    assert d is not None and abs(float(d[0])) < 1e-6  # body match, no facet needed
+
+
+def test_scan_distances_is_elementwise_min():
+    import numpy as np
+
+    rows = [{"uid": "a", "name": "a", "file_path": "/a.py"}]
+    body = np.array([[1.0, 0.0]], dtype=float)  # far from query [0,1]
+    sig = np.array([[0.0, 1.0]], dtype=float)  # exact
+    scan = rr.WorkspaceScan(rows=rows, vectors=body, signature_vectors=sig)
+    d = rr._scan_distances(scan, "q", lambda t: [0.0, 1.0])
+    assert d is not None and abs(float(d[0])) < 1e-6  # min picked the signature
+
+
+# --- signature-facet text builder -----------------------------------------
+
+
+def test_symbol_signature_text_keeps_multiline_def_header_drops_body():
+    from sidecar.database.lancedb_client import symbol_signature_text
+
+    code = (
+        "    def apply_async(self, args=None, kwargs=None,\n"
+        "                    task_id=None, **options):\n"
+        '        """Apply tasks asynchronously."""\n'
+        "        app = self._get_app()\n"
+        "        return app.send_task(...)\n"
+    )
+    sig = symbol_signature_text(code)
+    assert "def apply_async" in sig
+    assert "task_id=None, **options):" in sig
+    assert "send_task" not in sig  # body excluded
+    assert "Apply tasks" not in sig  # docstring excluded
+
+
+def test_symbol_signature_text_class_header():
+    from sidecar.database.lancedb_client import symbol_signature_text
+
+    assert symbol_signature_text("class Task(BaseTask):\n    x = 1\n") == "class Task(BaseTask):"
+
+
+def test_symbol_signature_text_constant_first_line():
+    from sidecar.database.lancedb_client import symbol_signature_text
+
+    assert symbol_signature_text("DEFAULT_TIMEOUT = 30\n") == "DEFAULT_TIMEOUT = 30"

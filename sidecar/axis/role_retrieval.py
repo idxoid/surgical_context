@@ -169,6 +169,7 @@ class WorkspaceScan:
 
     rows: list[dict]
     vectors: Any | None  # np.ndarray | None — Any to avoid a hard numpy import at module scope
+    signature_vectors: Any | None = None  # np.ndarray | None — optional signature facet
     rows_by_uid: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -223,28 +224,45 @@ def scan_workspace_rows(
         _have_tier = False
     if _have_tier:
         columns.append("file_tier")
+    # ``signature_vector`` is the optional signature facet (schema-gated like
+    # ``file_tier``). Present → dual-facet retrieval; absent → body-only.
+    try:
+        _have_sig_vec = "signature_vector" in set(table.schema.names)
+    except Exception:
+        _have_sig_vec = False
     if with_vector:
         columns.append("vector")
+        if _have_sig_vec:
+            columns.append("signature_vector")
     ws_quoted = workspace_id.replace("'", "''")
     arrow = table.to_lance().to_table(columns=columns, filter=f"workspace_id = '{ws_quoted}'")
     from sidecar.axis.test_file_filter import is_test_path
 
-    # Extract the vector column as a numpy matrix without round-tripping
-    # it through Python objects; metadata to_pylist drops it.
-    vectors_all = None
-    if with_vector and "vector" in arrow.column_names and arrow.num_rows:
+    def _matrix(col_name: str):
+        if col_name not in arrow.column_names or not arrow.num_rows:
+            return None
         try:
             import numpy as np
 
-            vcol = arrow.column("vector").combine_chunks()
-            vectors_all = np.asarray(vcol.values.to_numpy(zero_copy_only=False)).reshape(
+            col = arrow.column(col_name).combine_chunks()
+            return np.asarray(col.values.to_numpy(zero_copy_only=False)).reshape(
                 arrow.num_rows, -1
             )
         except Exception:
-            vectors_all = None
-        meta = arrow.drop(["vector"]).to_pylist()
-    else:
-        meta = arrow.to_pylist()
+            return None
+
+    # Extract the vector columns as numpy matrices without round-tripping
+    # them through Python objects; metadata to_pylist drops them.
+    vectors_all = None
+    signature_vectors_all = None
+    drop_cols: list[str] = []
+    if with_vector and "vector" in arrow.column_names and arrow.num_rows:
+        vectors_all = _matrix("vector")
+        drop_cols.append("vector")
+        if _have_sig_vec and "signature_vector" in arrow.column_names:
+            signature_vectors_all = _matrix("signature_vector")
+            drop_cols.append("signature_vector")
+    meta = arrow.drop(drop_cols).to_pylist() if drop_cols else arrow.to_pylist()
 
     kept_rows: list[dict] = []
     kept_idx: list[int] = []
@@ -268,7 +286,12 @@ def scan_workspace_rows(
     kept_vectors = None
     if vectors_all is not None and kept_idx:
         kept_vectors = vectors_all[kept_idx]
-    return WorkspaceScan(rows=kept_rows, vectors=kept_vectors)
+    kept_sig_vectors = None
+    if signature_vectors_all is not None and kept_idx:
+        kept_sig_vectors = signature_vectors_all[kept_idx]
+    return WorkspaceScan(
+        rows=kept_rows, vectors=kept_vectors, signature_vectors=kept_sig_vectors
+    )
 
 
 def find_symbols_by_roles(
@@ -301,8 +324,10 @@ def find_symbols_by_roles(
     rows = scan.rows
     has_query = bool(query_text and embed_fn is not None)
     # Vectorised distance: one numpy pass over the whole matrix, indexed
-    # by each row's ``_idx`` — no per-row Python distance loop.
-    distances = _vectorised_distances(scan.vectors if has_query else None, query_text, embed_fn)
+    # by each row's ``_idx`` — no per-row Python distance loop. Dual-facet:
+    # min(body, signature) so a signature-shaped query reaches body-diluted
+    # symbols.
+    distances = _scan_distances(scan, query_text, embed_fn) if has_query else None
 
     def _distance(row: dict) -> float | None:
         if distances is None:
@@ -439,7 +464,7 @@ def find_seeds_by_vector(
     )
     if not scan.rows or scan.vectors is None:
         return []
-    distances = _vectorised_distances(scan.vectors, query_text, embed_fn)
+    distances = _scan_distances(scan, query_text, embed_fn)
     if distances is None:
         return []
 
@@ -514,6 +539,33 @@ def _vectorised_distances(vectors, query_text, embed_fn):
             qv = qv.tolist()
         qv = np.asarray(qv, dtype=vectors.dtype)
         return np.linalg.norm(vectors - qv, axis=1)
+    except Exception:
+        return None
+
+
+def _scan_distances(scan: WorkspaceScan, query_text, embed_fn):
+    """Dual-facet L2 distance: the element-wise MINIMUM of the body-vector
+    distance and the signature-vector distance, embedding the query once.
+
+    A symbol matches if EITHER its body or its signature is close to the
+    query — so a signature/API-shaped question reaches a symbol whose large
+    body diluted the body vector, without weakening behavioural matches.
+    Falls back to the body distance when the signature facet is absent
+    (pre-facet index)."""
+    if scan.vectors is None or not query_text or embed_fn is None:
+        return None
+    try:
+        import numpy as np
+
+        qv = embed_fn(query_text)
+        if hasattr(qv, "tolist"):
+            qv = qv.tolist()
+        qv = np.asarray(qv, dtype=scan.vectors.dtype)
+        body = np.linalg.norm(scan.vectors - qv, axis=1)
+        sig = scan.signature_vectors
+        if sig is not None and getattr(sig, "shape", (0,))[0] == body.shape[0]:
+            return np.minimum(body, np.linalg.norm(sig - qv, axis=1))
+        return body
     except Exception:
         return None
 

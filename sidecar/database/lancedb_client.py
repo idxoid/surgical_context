@@ -171,6 +171,14 @@ AXIS_SYMBOLS_SCHEMA = pa.schema(
         pa.field("axis_container_kinds_json", pa.string()),
         pa.field("axis_contracts_json", pa.string()),
         pa.field("file_tier", pa.string()),
+        # Signature facet: a SECOND embedding of the symbol's header
+        # (def/class signature) alone. A large body dilutes the body vector
+        # so a signature/API-shaped query (e.g. "the routing options in
+        # apply_async") loses the symbol; the signature vector restores it.
+        # Retrieval takes the min distance across the two facets, so this
+        # only ever ADDS match opportunities — never displaces the body
+        # match. Optional column (absent on pre-facet indexes → body-only).
+        pa.field("signature_vector", pa.list_(pa.float32(), 384)),
     ]
 )
 
@@ -187,6 +195,30 @@ AXIS_SYMBOL_REQUIRED_COLUMNS = {
     "axis_contracts_json",
     "file_tier",
 }
+# ``signature_vector`` is intentionally NOT required: an index built before
+# the facet landed keeps working (retrieval falls back to the body vector),
+# and the column is added by a backfill or the next reindex — never by a
+# destructive table reset on open.
+
+
+def symbol_signature_text(code: str) -> str:
+    """Header-only view of a symbol for the signature-facet embedding.
+
+    For a ``def`` / ``class`` this is the lines through the one that ends the
+    signature (the ``:``), decorators included; for a module-level constant
+    or expression (no header colon) it is the first non-empty line. The point
+    is to embed the high-signal API surface WITHOUT the body that dilutes it.
+    """
+    lines = code.splitlines()
+    header: list[str] = []
+    for line in lines:
+        header.append(line)
+        if line.rstrip().endswith(":"):
+            return "\n".join(header)
+    for line in lines:
+        if line.strip():
+            return line.strip()
+    return code.strip()
 
 AXIS_ADJACENCY_SCHEMA = pa.schema(
     [
@@ -882,34 +914,44 @@ class LanceDBClient:
         vectors = self._embed(codes, progress_callback=progress_callback)
         if progress_callback:
             progress_callback(f"embed done in {time.perf_counter() - t0:.2f}s")
+        # Signature-facet vectors — axis profile only (the column lives on the
+        # axis schema). Embedded from the header alone so a large body cannot
+        # dilute the API surface; cache dedups identical signatures.
+        signature_vectors: list[list[float]] | None = None
+        if self._symbol_axis_columns:
+            signature_vectors = self._embed(
+                [symbol_signature_text(s["code"]) for s in symbols],
+                progress_callback=progress_callback,
+            )
         rows = []
-        for s, vec in zip(symbols, vectors, strict=False):
+        for idx, (s, vec) in enumerate(zip(symbols, vectors, strict=False)):
             metadata = EmbeddingMetadata(
                 model_name=EMBED_MODEL,
                 model_version=self._model_metadata.version,
                 chunk_hash=compute_chunk_hash(s["code"]),
                 embedding_hash=compute_embedding_hash(vec),
             )
-            rows.append(
-                {
-                    "uid": s["uid"],
-                    "workspace_id": str(s.get("workspace_id") or workspace_id),
-                    "name": s["name"],
-                    "qualified_name": str(s.get("qualified_name") or ""),
-                    "file_path": s["file_path"],
-                    "code": s["code"],
-                    "vector": vec,
-                    "embedding_metadata": json.dumps(
-                        {
-                            "model_name": metadata.model_name,
-                            "model_version": metadata.model_version,
-                            "chunk_hash": metadata.chunk_hash,
-                            "embedding_hash": metadata.embedding_hash,
-                        }
-                    ),
-                    **self._axis_symbol_payload(s),
-                }
-            )
+            row = {
+                "uid": s["uid"],
+                "workspace_id": str(s.get("workspace_id") or workspace_id),
+                "name": s["name"],
+                "qualified_name": str(s.get("qualified_name") or ""),
+                "file_path": s["file_path"],
+                "code": s["code"],
+                "vector": vec,
+                "embedding_metadata": json.dumps(
+                    {
+                        "model_name": metadata.model_name,
+                        "model_version": metadata.model_version,
+                        "chunk_hash": metadata.chunk_hash,
+                        "embedding_hash": metadata.embedding_hash,
+                    }
+                ),
+                **self._axis_symbol_payload(s),
+            }
+            if signature_vectors is not None:
+                row["signature_vector"] = signature_vectors[idx]
+            rows.append(row)
         uids = [s["uid"] for s in symbols]
         existing = self.count_symbols_workspace(workspace_id)
         bulk_replace = (
