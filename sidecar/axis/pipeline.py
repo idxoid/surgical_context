@@ -62,6 +62,10 @@ from sidecar.axis.role_retrieval import RoleCandidate
 # blast-radius / call-chain passes and are excluded from the pools that
 # *anchor* those passes.
 _MODE_ROLES = frozenset({"impact_analysis", "trace_dependency"})
+# Seed-budget multiplier for mode (impact / trace) intents — their answer
+# surface is a blast radius and the seed layer now feeds a multi-stage pool,
+# so the seeds must carry more than a point-lookup's ``per_role_limit``.
+_MODE_SEED_LIMIT_FACTOR = 2
 
 
 class _NullTrace:
@@ -142,6 +146,18 @@ def run_axis_retrieval(
     # displaces production neighbours unrelated to the change).
     include_tests_in_walks = any(m.role == "impact_analysis" for m in intent)
 
+    # Seed budget. ``per_role_limit`` was tuned for the original two-stage
+    # pipeline (seed -> walker). The seed layer now feeds a MULTI-stage pool
+    # (cross-role lookahead, structural neighbours, phased — each a 1-hop
+    # axis expansion) before the mode walker, and a mode question's answer
+    # surface is a blast radius, not a point. Both widen what the seeds must
+    # carry, so a budget sized for seed->walker starves the real seeds (the
+    # changed symbol ranks just outside the cut and never anchors the impact
+    # walk). Widen the seed budget for mode intents — a relative ×factor over
+    # the caller's ``per_role_limit``, not an absolute cap.
+    impact_mode = any(m.role in _MODE_ROLES for m in intent)
+    seed_limit = per_role_limit * _MODE_SEED_LIMIT_FACTOR if impact_mode else per_role_limit
+
     with tr.stage("retrieval"):
         # One workspace-scoped scan (predicate pushdown + parse once)
         # feeds every role retrieval and the vector seeds.
@@ -151,7 +167,7 @@ def run_axis_retrieval(
             [m.role for m in intent],
             query_text=question,
             embed_fn=_embed,
-            limit=per_role_limit,
+            limit=seed_limit,
             prescanned=scanned,
         )
 
@@ -186,8 +202,8 @@ def run_axis_retrieval(
             workspace_id,
             question,
             embed_fn=_embed,
-            limit=per_role_limit,
-            impact_mode=any(m.role in _MODE_ROLES for m in intent),
+            limit=seed_limit,
+            impact_mode=impact_mode,
             prescanned=scanned,
         )
     seed_files |= {getattr(c, "file_path", "") or "" for c in raw_by_role.get("vector_seed", [])}
