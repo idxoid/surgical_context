@@ -85,7 +85,7 @@ questions:
     repo: celery
     core12: false
     symbol: Task.apply_async
-    question: "If I modify the signature or default routing options in apply_async, what publisher components and tests are affected?"
+    question: "If I modify the signature or default routing options in apply_async, what publisher components are affected?"
     difficulty: hard
     intent: impact_analysis
     expected_mode: symbol
@@ -101,6 +101,22 @@ questions:
       - celery/app/routes.py
       - celery/canvas.py
       - celery/app/amqp.py
+    
+  - id: celery_q06
+    repo: celery
+    core12: false
+    symbol: Task.apply_async
+    question: "If I modify the signature or default routing options in apply_async, what publisher test files are affected?"
+    difficulty: hard
+    intent: impact_analysis
+    expected_mode: symbol
+    mechanism: celery_apply_async_impact
+    required_roles_canonical:
+      - impact_runtime
+      - impact_public_api
+      - impact_test_surface
+    expected_symbols: [Task, apply_async, send_task, Router, _create_task_sender]
+    expected_files:
       - t/unit/app/test_app.py
       - t/unit/tasks/test_tasks.py
       - t/unit/app/test_amqp.py
