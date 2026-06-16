@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import Counter, defaultdict
@@ -39,7 +40,7 @@ import yaml
 from sidecar.axis.pipeline import run_axis_retrieval
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 from sidecar.observability.metrics import estimate_text_tokens
 
@@ -63,17 +64,23 @@ class _StageTimer:
                 time.monotonic() - t0
             )
 
-# Map ``repo`` from the question pack to the axis-profile workspace_id
-# we actually indexed. Repos not listed here are skipped with reason.
+# Map ``repo`` from the question pack to the axis-profile workspace_id we
+# actually indexed. Env-driven so a new index can be built while an old one is
+# kept for A/B: ``AXIS_BENCH_TENANT`` (default ``qa_repo``) / ``AXIS_BENCH_REF``
+# (default ``main``) compose ``{tenant}/{repo}@{ref}``; the active index profile
+# then appends its ``+axis_python_v1`` suffix. The legacy manual base was
+# ``@axis-v4`` — set ``AXIS_BENCH_REF=axis-v4`` to point back at it.
+# Repos not present in the DB are skipped with reason.
+_BENCH_TENANT = os.getenv("AXIS_BENCH_TENANT", "qa_repo")
+_BENCH_REF = os.getenv("AXIS_BENCH_REF", "main")
+_BENCH_PROFILE = resolve_index_profile(AXIS_PYTHON_V1_PROFILE)
+_BENCH_REPOS = (
+    "fastapi", "flask", "celery", "click",
+    "pydantic", "sqlalchemy", "django", "dathund",
+)
 REPO_TO_WORKSPACE: dict[str, str] = {
-    "fastapi":    "qa_repo/fastapi@axis-v4+axis_python_v1",
-    "flask":      "qa_repo/flask@axis-v4+axis_python_v1",
-    "celery":     "qa_repo/celery@axis-v4+axis_python_v1",
-    "click":      "qa_repo/click@axis-v4+axis_python_v1",
-    "pydantic":   "qa_repo/pydantic@axis-v4+axis_python_v1",
-    "sqlalchemy": "qa_repo/sqlalchemy@axis-v4+axis_python_v1",
-    "django":     "qa_repo/django@axis-v4+axis_python_v1",
-    "dathund":    "qa_repo/dathund@axis-v4+axis_python_v1",
+    repo: _BENCH_PROFILE.workspace_id(f"{_BENCH_TENANT}/{repo}@{_BENCH_REF}")
+    for repo in _BENCH_REPOS
 }
 
 
