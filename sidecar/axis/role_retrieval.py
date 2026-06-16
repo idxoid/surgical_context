@@ -53,6 +53,9 @@ class RoleCandidate:
     vector_distance: float | None
     score: float
     qualified_name: str = ""
+    depth: int | None = None
+    edge_type: str = ""
+    utility_score: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +70,9 @@ class RoleCandidate:
             "vector_distance": self.vector_distance,
             "score": self.score,
             "qualified_name": self.qualified_name,
+            "depth": self.depth,
+            "edge_type": self.edge_type,
+            "utility_score": self.utility_score,
         }
 
 

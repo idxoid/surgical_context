@@ -2325,21 +2325,22 @@ def impact(
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
     with db_session(user_id=user_id) as db:
-        from sidecar.indexer.affects import AFFECTSIndexer
+        from sidecar.axis.impact_surface import build_impact_surface
 
         symbol_uid = db.get_symbol_uid_by_name(symbol, workspace_id=workspace_id)
         if not symbol_uid:
             raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
 
-        indexer = AFFECTSIndexer(db)
-        affected_symbols = indexer.get_affected_symbols(symbol_uid, workspace_id=workspace_id)
         symbol_file = db.get_file_path_for_symbol(symbol_uid, workspace_id=workspace_id)
-
-        # Get affected files
-        if symbol_file != "<unknown>":
-            affected_files = indexer.get_affected_files(symbol_file, workspace_id=workspace_id)
-        else:
-            affected_files = []
+        surface = build_impact_surface(
+            db=db,
+            symbol_uid=symbol_uid,
+            symbol_name=symbol,
+            file_path=symbol_file,
+            workspace_id=workspace_id,
+        )
+        affected_symbols = surface["affected_symbols"]
+        affected_files = surface["affected_files"]
 
         return {
             "symbol": symbol,
@@ -2349,7 +2350,7 @@ def impact(
             "affected_files": affected_files,
             "affected_count": len(affected_symbols),
             "affected_file_count": len(affected_files),
-            "max_depth": AFFECTSIndexer.MAX_AFFECTS_DEPTH,
+            "max_depth": surface["max_depth"],
         }
 
 

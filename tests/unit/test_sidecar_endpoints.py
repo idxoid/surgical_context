@@ -867,7 +867,10 @@ def test_ask_rejects_file_path_outside_workspace_root(monkeypatch, tmp_path):
 
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
+    from sidecar.axis import impact_surface
+
     seen_session_users: list[str] = []
+    seen_surface_args: list[dict] = []
 
     class FakeDriverDb(FakeDb):
         def get_symbol_uid_by_name(self, name, workspace_id="local/surgical_context@main"):
@@ -881,24 +884,40 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
         seen_session_users.append(user_id)
         yield FakeDriverDb()
 
-    fake_affects = types.ModuleType("sidecar.indexer.affects")
+    def fake_build_impact_surface(
+        *,
+        db,
+        symbol_uid,
+        symbol_name,
+        file_path,
+        workspace_id,
+    ):
+        seen_surface_args.append(
+            {
+                "symbol_uid": symbol_uid,
+                "symbol_name": symbol_name,
+                "file_path": file_path,
+                "workspace_id": workspace_id,
+                "db": db,
+            }
+        )
+        return {
+            "affected_symbols": [
+                {
+                    "uid": "affected-1",
+                    "name": "caller",
+                    "file_path": "/repo/caller.py",
+                    "depth": 1,
+                    "kind": "reverse_calls",
+                    "edge_type": "CALLS_*",
+                    "utility_score": 0.95,
+                }
+            ],
+            "affected_files": ["/repo/caller.py"],
+            "max_depth": 3,
+        }
 
-    class FakeAffectsIndexer:
-        MAX_AFFECTS_DEPTH = 4
-
-        def __init__(self, db):
-            self.db = db
-
-        def get_affected_symbols(self, symbol_uid, workspace_id="local/surgical_context@main"):
-            return [
-                {"uid": "affected-1", "name": "caller", "file_path": "/repo/caller.py", "depth": 1}
-            ]
-
-        def get_affected_files(self, file_path, workspace_id="local/surgical_context@main"):
-            return ["/repo/caller.py"]
-
-    fake_affects.AFFECTSIndexer = FakeAffectsIndexer
-    monkeypatch.setitem(sys.modules, "sidecar.indexer.affects", fake_affects)
+    monkeypatch.setattr(impact_surface, "build_impact_surface", fake_build_impact_surface)
     monkeypatch.setattr(main, "db_session", impact_db_session)
 
     body = main.impact(symbol="process_payment", x_user_id="Alice")
@@ -906,6 +925,11 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     assert body["symbol_uid"] == "symbol-1"
     assert body["affected_count"] == 1
     assert body["affected_files"] == ["/repo/caller.py"]
+    assert body["max_depth"] == 3
+    assert body["affected_symbols"][0]["edge_type"] == "CALLS_*"
+    assert seen_surface_args[0]["symbol_uid"] == "symbol-1"
+    assert seen_surface_args[0]["symbol_name"] == "process_payment"
+    assert seen_surface_args[0]["file_path"] == "/repo/app.py"
     assert seen_session_users == ["alice"]
 
 

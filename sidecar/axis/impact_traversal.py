@@ -9,13 +9,13 @@ expands them through four directional walks over the shared
 
   1. **Reverse CFG** — every caller that reaches a seed via
      ``CALLS_*`` within ``max_hops``. "Who calls X".
-  2. **Forward impact closure** — the indexer's pre-computed
-     ``AFFECTS`` edges walked outward; already merges return-,
-     parameter- and attribute-flow.
-  3. **Structural inheritors** — incoming ``EXTENDS_EXTERNAL`` /
+  2. **Structural inheritors** — incoming ``EXTENDS_EXTERNAL`` /
      ``INHERITED_API`` ("who implements / inherits from X").
-  4. **Structural API carriers** — outgoing ``HAS_API`` ("what API
+  3. **Structural API carriers** — outgoing ``HAS_API`` ("what API
      surface X carries through").
+  4. **Forward impact closure** — the indexer's pre-computed
+     ``AFFECTS`` edges walked outward; broad fallback after the more
+     precise seed-local walks.
 
 Each walk is workspace-scoped through the ``File-CONTAINS-Symbol``
 join. Results carry the synthetic role ``impact_analysis`` and a
@@ -46,8 +46,8 @@ def expand_impact_neighbourhood(
     ``impact_analysis``.
 
     Walk priority is preserved in the output order: reverse-callers
-    first, then the forward AFFECTS closure, then structural
-    inheritors and API carriers. ``exclude_uids`` keeps the result
+    first, then structural inheritors and API carriers, then the
+    broader forward AFFECTS closure. ``exclude_uids`` keeps the result
     disjoint from the input pool.
     """
     seeds_list = list(seed_candidates)
@@ -59,44 +59,60 @@ def expand_impact_neighbourhood(
     # Four walks, each tagged with the structural reason. Order of the
     # list sets the cap priority: a reverse-caller outranks a node only
     # reachable through the broad forward closure.
-    walks: list[tuple[str, list[Neighbour]]] = [
+    walks: list[tuple[str, str, list[Neighbour]]] = [
         (
             "reverse_calls",
+            "CALLS_*",
             walk_neighbours(
-                db, workspace_id, seed_uids,
+                db,
+                workspace_id,
+                seed_uids,
                 edges=EdgeProfile.REVERSE_CALL,
-                direction="reverse", max_hops=max_hops,
-            ),
-        ),
-        (
-            "forward_affects",
-            walk_neighbours(
-                db, workspace_id, seed_uids,
-                edges=EdgeProfile.AFFECTS,
-                direction="forward", max_hops=max_hops,
+                direction="reverse",
+                max_hops=max_hops,
             ),
         ),
         (
             "structural_inheritor",
+            "EXTENDS_EXTERNAL|INHERITED_API",
             walk_neighbours(
-                db, workspace_id, seed_uids,
+                db,
+                workspace_id,
+                seed_uids,
                 edges=EdgeProfile.STRUCTURAL_REVERSE,
-                direction="reverse", max_hops=max_hops,
+                direction="reverse",
+                max_hops=max_hops,
             ),
         ),
         (
             "structural_api_carrier",
+            "HAS_API",
             walk_neighbours(
-                db, workspace_id, seed_uids,
+                db,
+                workspace_id,
+                seed_uids,
                 edges=EdgeProfile.STRUCTURAL_FORWARD,
-                direction="forward", max_hops=max_hops,
+                direction="forward",
+                max_hops=max_hops,
+            ),
+        ),
+        (
+            "forward_affects",
+            "AFFECTS",
+            walk_neighbours(
+                db,
+                workspace_id,
+                seed_uids,
+                edges=EdgeProfile.AFFECTS,
+                direction="forward",
+                max_hops=max_hops,
             ),
         ),
     ]
 
     seen: set[str] = set()
     out: list[RoleCandidate] = []
-    for tag, neighbours in walks:
+    for tag, edge_type, neighbours in walks:
         for n in neighbours:
             if n.uid in excluded or n.uid in seen:
                 continue
@@ -113,11 +129,24 @@ def expand_impact_neighbourhood(
                     kind_count=1,
                     vector_distance=None,
                     score=base_score,
+                    depth=n.depth,
+                    edge_type=edge_type,
+                    utility_score=_impact_utility(tag, n.depth),
                 )
             )
             if len(out) >= max_impacted:
                 return out
     return out
+
+
+def _impact_utility(tag: str, depth: int) -> float:
+    base = {
+        "reverse_calls": 0.95,
+        "structural_api_carrier": 0.86,
+        "structural_inheritor": 0.82,
+        "forward_affects": 0.58,
+    }.get(tag, 0.50)
+    return max(0.10, round(base - max(depth - 1, 0) * 0.08, 3))
 
 
 __all__ = ["expand_impact_neighbourhood"]

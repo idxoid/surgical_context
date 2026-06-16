@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from sidecar.axis.impact_traversal import expand_impact_neighbourhood
 from sidecar.axis.role_retrieval import RoleCandidate
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -26,9 +23,9 @@ class _Session:
 
     The impact traversal issues four queries in fixed order:
       1) reverse CALLS
-      2) forward AFFECTS
-      3) structural reverse (EXTENDS_EXTERNAL / INHERITED_API)
-      4) structural forward (HAS_API)
+      2) structural reverse (EXTENDS_EXTERNAL / INHERITED_API)
+      3) structural forward (HAS_API)
+      4) forward AFFECTS
     """
 
     def __init__(self, records_by_call: list[list[dict]]):
@@ -76,14 +73,12 @@ def _seed(uid: str, *, role: str = "dispatch_surface") -> RoleCandidate:
     )
 
 
-def _record(uid: str, *, name: str = "x", path: str = "/tmp/x.py") -> dict:
-    return {"uid": uid, "name": name, "file_path": path}
+def _record(uid: str, *, name: str = "x", path: str = "/tmp/x.py", depth: int = 1) -> dict:
+    return {"uid": uid, "name": name, "file_path": path, "depth": depth, "reach": 1}
 
 
 def test_no_seeds_returns_empty():
-    out = expand_impact_neighbourhood(
-        [], db=_FakeDB(), workspace_id=WORKSPACE
-    )
+    out = expand_impact_neighbourhood([], db=_FakeDB(), workspace_id=WORKSPACE)
     assert out == []
 
 
@@ -95,34 +90,41 @@ def test_reverse_calls_pass_emits_callers():
     db = _FakeDB(
         [
             [_record("u:caller", name="full_dispatch_request", path="/tmp/app.py")],
-            [],  # forward AFFECTS
             [],  # structural reverse
             [],  # structural forward
+            [],  # forward AFFECTS
         ]
     )
 
     out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:dispatch")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
 
     assert len(out) == 1
     assert out[0].uid == "u:caller"
     assert out[0].role == "impact_analysis"
     assert out[0].satisfying_kinds == ("reverse_calls",)
+    assert out[0].edge_type == "CALLS_*"
+    assert out[0].depth == 1
+    assert out[0].utility_score == pytest.approx(0.95)
 
 
 def test_forward_affects_pass_emits_impact_closure():
     db = _FakeDB(
         [
             [],
+            [],
+            [],
             [_record("u:downstream", path="/tmp/handlers.py")],
-            [],
-            [],
         ]
     )
 
     out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:dispatch")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
 
     assert [c.uid for c in out] == ["u:downstream"]
@@ -133,14 +135,16 @@ def test_structural_reverse_pass_emits_inheritors():
     db = _FakeDB(
         [
             [],
-            [],
             [_record("u:subclass")],
+            [],
             [],
         ]
     )
 
     out = expand_impact_neighbourhood(
-        [_seed("u:base")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:base")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
 
     assert [c.satisfying_kinds for c in out] == [("structural_inheritor",)]
@@ -151,13 +155,15 @@ def test_structural_forward_pass_emits_api_carriers():
         [
             [],
             [],
-            [],
             [_record("u:carrier")],
+            [],
         ]
     )
 
     out = expand_impact_neighbourhood(
-        [_seed("u:base")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:base")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
 
     assert [c.satisfying_kinds for c in out] == [("structural_api_carrier",)]
@@ -170,13 +176,15 @@ def test_seeds_are_never_in_impact_pool():
     db = _FakeDB(
         [
             [_record("u:dispatch")],  # seed is its own caller (loop)
+            [],
+            [],
             [_record("u:dispatch")],  # seed in its own affects closure
-            [],
-            [],
         ]
     )
     out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:dispatch")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
     assert out == []
 
@@ -208,13 +216,15 @@ def test_duplicate_uids_collapsed_to_first_tag():
     db = _FakeDB(
         [
             [_record("u:dup", path="/tmp/a.py")],
+            [],
+            [],
             [_record("u:dup", path="/tmp/a.py")],  # same uid via AFFECTS
-            [],
-            [],
         ]
     )
     out = expand_impact_neighbourhood(
-        [_seed("u:dispatch")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:dispatch")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
     assert len(out) == 1
     assert out[0].satisfying_kinds == ("reverse_calls",)
