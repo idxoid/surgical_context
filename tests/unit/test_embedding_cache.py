@@ -383,3 +383,193 @@ def test_lancedb_client_search_axis_symbols_embeds_query_text():
         plan,
         threshold=0.7,
     ) == [{"uid": "u"}]
+
+
+def test_lancedb_incident_adjacency_uids_covers_cross_file_edges():
+    client = object.__new__(LanceDBClient)
+    client._axis_adjacency_table = object()
+    client._scan_table_by_workspace = lambda table, workspace_id, columns=None: [
+        {
+            "uid": "u:a",
+            "out_edges_json": '{"CALLS_DIRECT":["u:b"]}',
+            "in_edges_json": "{}",
+        },
+        {
+            "uid": "u:b",
+            "out_edges_json": "{}",
+            "in_edges_json": '{"CALLS_DIRECT":["u:a"]}',
+        },
+        {
+            "uid": "u:c",
+            "out_edges_json": "{}",
+            "in_edges_json": "{}",
+        },
+    ]
+
+    incident = client.find_incident_axis_adjacency_uids("ws", {"u:b"})
+
+    assert incident == {"u:a", "u:b"}
+
+
+def test_lancedb_upsert_axis_adjacency_rows_replaces_selected_uids():
+    class FakeTable:
+        def __init__(self):
+            self.deleted = []
+            self.added = []
+
+        def delete(self, predicate: str):
+            self.deleted.append(predicate)
+
+        def add(self, rows: list[dict]):
+            self.added.append(rows)
+
+    client = object.__new__(LanceDBClient)
+    client._axis_adjacency_table = FakeTable()
+
+    rows = [
+        {
+            "workspace_id": "ws",
+            "uid": "u:a",
+            "name": "A",
+            "file_path": "/repo/a.py",
+            "kind": "function",
+            "out_edges_json": "{}",
+            "in_edges_json": "{}",
+        }
+    ]
+    client.upsert_axis_adjacency_rows(rows, workspace_id="ws")
+
+    assert client._axis_adjacency_table.deleted == ["(workspace_id = 'ws' AND uid = 'u:a')"]
+    assert client._axis_adjacency_table.added == [rows]
+
+
+def test_lancedb_delete_path_prefixes_uses_partial_axis_reset(monkeypatch):
+    class FakeTable:
+        def __init__(self):
+            self.predicates = []
+
+        def delete(self, predicate: str):
+            self.predicates.append(predicate)
+
+    client = object.__new__(LanceDBClient)
+    client._table = FakeTable()
+    client._sym_table = FakeTable()
+    client._axis_adjacency_table = FakeTable()
+    client.list_symbol_uids_by_prefixes = lambda workspace_id, prefixes: {"u:b"}
+    client.find_incident_axis_adjacency_uids = lambda workspace_id, target_uids: {"u:a", "u:b"}
+    client.count_axis_adjacency_workspace = lambda workspace_id: 100
+    deleted_uids = []
+
+    def _delete_uids(workspace_id, uids):
+        deleted_uids.append((workspace_id, set(uids)))
+
+    client.delete_axis_adjacency_uids = _delete_uids
+
+    touched = []
+
+    def _invalidate_uids(workspace_id, uids):
+        touched.append((workspace_id, set(uids)))
+
+    monkeypatch.setattr(
+        lancedb_client_module,
+        "LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO",
+        0.25,
+    )
+    monkeypatch.setattr(lancedb_client_module, "graph_walk_inproc", None, raising=False)
+    from sidecar.axis import graph_walk_inproc
+
+    monkeypatch.setattr(graph_walk_inproc, "invalidate_adjacency_uids", _invalidate_uids)
+    monkeypatch.setattr(
+        graph_walk_inproc,
+        "invalidate_adjacency",
+        lambda workspace_id=None: touched.append(("full", set())),
+    )
+
+    client.delete_path_prefixes("ws", ["/repo/sub"])
+
+    assert deleted_uids == [("ws", {"u:a", "u:b"})]
+    assert touched == [("ws", {"u:a", "u:b"})]
+    assert client._axis_adjacency_table.predicates == []
+
+
+def test_lancedb_delete_path_prefixes_rematerializes_survivors_when_db_provided(monkeypatch):
+    class FakeTable:
+        def __init__(self):
+            self.predicates = []
+
+        def delete(self, predicate: str):
+            self.predicates.append(predicate)
+
+    rematerialized = []
+
+    class FakeDb:
+        pass
+
+    client = object.__new__(LanceDBClient)
+    client._table = FakeTable()
+    client._sym_table = FakeTable()
+    client._axis_adjacency_table = FakeTable()
+    client.list_symbol_uids_by_prefixes = lambda workspace_id, prefixes: {"u:b"}
+    client.find_incident_axis_adjacency_uids = lambda workspace_id, target_uids: {"u:a", "u:b"}
+    client.count_axis_adjacency_workspace = lambda workspace_id: 100
+    client.delete_axis_adjacency_uids = lambda workspace_id, uids: None
+
+    def _subset(db, lance, workspace_id, survivors):
+        rematerialized.append((workspace_id, set(survivors)))
+
+    monkeypatch.setattr(
+        lancedb_client_module,
+        "LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO",
+        0.25,
+    )
+    import sidecar.indexer.fast.adjacency_materialization as adjacency_materialization
+
+    monkeypatch.setattr(
+        adjacency_materialization,
+        "materialize_axis_adjacency_subset",
+        _subset,
+    )
+
+    client.delete_path_prefixes("ws", ["/repo/sub"], db=FakeDb())
+
+    assert rematerialized == [("ws", {"u:a"})]
+
+
+def test_lancedb_delete_path_prefixes_falls_back_to_full_axis_reset(monkeypatch):
+    class FakeTable:
+        def __init__(self):
+            self.predicates = []
+
+        def delete(self, predicate: str):
+            self.predicates.append(predicate)
+
+    client = object.__new__(LanceDBClient)
+    client._table = FakeTable()
+    client._sym_table = FakeTable()
+    client._axis_adjacency_table = FakeTable()
+    client.list_symbol_uids_by_prefixes = lambda workspace_id, prefixes: {"u:b"}
+    client.find_incident_axis_adjacency_uids = lambda workspace_id, target_uids: {"u:a", "u:b", "u:c"}
+    client.count_axis_adjacency_workspace = lambda workspace_id: 4
+    client.delete_axis_adjacency_uids = lambda workspace_id, uids: (_ for _ in ()).throw(
+        AssertionError("partial delete must not be used")
+    )
+
+    invalidations = []
+    monkeypatch.setattr(
+        lancedb_client_module,
+        "LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO",
+        0.25,
+    )
+    from sidecar.axis import graph_walk_inproc
+
+    monkeypatch.setattr(graph_walk_inproc, "invalidate_adjacency_uids", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        graph_walk_inproc,
+        "invalidate_adjacency",
+        lambda workspace_id=None: invalidations.append(workspace_id),
+    )
+
+    client.delete_path_prefixes("ws", ["/repo/sub"])
+
+    assert client._axis_adjacency_table.predicates == ["workspace_id = 'ws'"]
+    assert invalidations == ["ws"]

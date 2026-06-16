@@ -164,7 +164,7 @@ def _fetch_neighbour_kinds(
             )
     else:
         for uid_raw, name, file_path, kinds_json, row_workspace_id in zip(
-            uids, names, file_paths, kinds_jsons, workspace_ids
+            uids, names, file_paths, kinds_jsons, workspace_ids, strict=False
         ):
             if row_workspace_id != workspace_id:
                 continue

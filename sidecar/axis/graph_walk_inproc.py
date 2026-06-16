@@ -56,6 +56,39 @@ def invalidate_adjacency(workspace_id: str | None = None) -> None:
         _CACHE.pop(workspace_id, None)
 
 
+def invalidate_adjacency_uids(workspace_id: str, uids: set[str]) -> None:
+    """Drop selected uids and their incident links from cached adjacency."""
+    if not uids:
+        return
+    adj = _CACHE.get(workspace_id)
+    if adj is None:
+        return
+    # Remove references from every cached adjacency bucket first.
+    for mapping in (adj.out, adj.in_):
+        for source_uid, by_type in list(mapping.items()):
+            if source_uid in uids:
+                continue
+            for edge_type, neighbours in list(by_type.items()):
+                remaining = set(neighbours) - uids
+                if remaining:
+                    by_type[edge_type] = remaining
+                else:
+                    by_type.pop(edge_type, None)
+            if not by_type:
+                mapping.pop(source_uid, None)
+    # Remove target nodes themselves from all indices.
+    for uid in uids:
+        adj.out.pop(uid, None)
+        adj.in_.pop(uid, None)
+        meta = adj.meta.pop(uid, None)
+        if meta:
+            path = meta[1]
+            if path in adj.file_classes:
+                adj.file_classes[path] = [cu for cu in adj.file_classes[path] if cu != uid]
+                if not adj.file_classes[path]:
+                    adj.file_classes.pop(path, None)
+
+
 def load_adjacency(db, workspace_id: str) -> _Adjacency:
     cached = _CACHE.get(workspace_id)
     if cached is not None:

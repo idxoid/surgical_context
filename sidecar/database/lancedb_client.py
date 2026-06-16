@@ -5,7 +5,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import lancedb
 import pyarrow as pa
@@ -47,6 +47,9 @@ EMBED_LOW_PRIORITY = os.getenv("EMBED_LOW_PRIORITY", "false").lower() in {
 }
 EMBED_LOW_PRIORITY_THROTTLE_MS = int(os.getenv("EMBED_LOW_PRIORITY_THROTTLE_MS", "25"))
 LANCEDB_DELETE_BATCH_SIZE = int(os.getenv("LANCEDB_DELETE_BATCH_SIZE", "256"))
+LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO = float(
+    os.getenv("LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO", "0.25")
+)
 # Bulk-replace workspace symbols when upserting this many rows and the batch
 # covers most of the workspace (cold/full reindex). Delta updates stay per-uid.
 LANCEDB_SYMBOL_BULK_REPLACE_MIN = int(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_MIN", "512"))
@@ -106,6 +109,28 @@ def _l2_to_score(distance: float) -> float:
     """
     cos = 1.0 - (distance * distance) / 2.0
     return max(0.0, min(1.0, (1.0 + cos) / 2.0))
+
+
+def _decode_edges_json(raw: object) -> dict[str, set[str]]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        payload = raw
+    else:
+        try:
+            payload = json.loads(str(raw))
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    if not isinstance(payload, dict):
+        return {}
+    decoded: dict[str, set[str]] = {}
+    for edge_type, uids in payload.items():
+        if not isinstance(edge_type, str):
+            continue
+        if not isinstance(uids, list):
+            continue
+        decoded[edge_type] = {str(uid) for uid in uids if uid}
+    return decoded
 
 
 DOCS_SCHEMA = pa.schema(
@@ -344,6 +369,90 @@ class LanceDBClient:
                 "in_edges_json",
             ],
         )
+
+    def list_symbol_uids_by_prefixes(self, workspace_id: str, prefixes: list[str]) -> set[str]:
+        """Return Symbol uids whose file_path is exactly/under any prefix."""
+        if not prefixes:
+            return set()
+        prefixes_resolved = [str(Path(prefix).resolve()) for prefix in prefixes]
+        rows = self._scan_table_by_workspace(
+            self._sym_table,
+            workspace_id,
+            columns=["uid", "file_path"],
+        )
+        out: set[str] = set()
+        for row in rows:
+            uid = str(row.get("uid") or "")
+            file_path = str(row.get("file_path") or "")
+            if not uid or not file_path:
+                continue
+            if any(file_path == pref or file_path.startswith(f"{pref}/") for pref in prefixes_resolved):
+                out.add(uid)
+        return out
+
+    def find_incident_axis_adjacency_uids(
+        self,
+        workspace_id: str,
+        target_uids: set[str],
+    ) -> set[str]:
+        """Return target uids and neighbours connected in adjacency snapshot."""
+        if not target_uids:
+            return set()
+        incident = set(target_uids)
+        rows = self._scan_table_by_workspace(
+            self._axis_adjacency_table,
+            workspace_id,
+            columns=["uid", "out_edges_json", "in_edges_json"],
+        )
+        for row in rows:
+            uid = str(row.get("uid") or "")
+            if not uid:
+                continue
+            out_edges = _decode_edges_json(row.get("out_edges_json"))
+            in_edges = _decode_edges_json(row.get("in_edges_json"))
+            out_neighbours = {v for values in out_edges.values() for v in values}
+            in_neighbours = {v for values in in_edges.values() for v in values}
+            if uid in target_uids or (out_neighbours & target_uids) or (in_neighbours & target_uids):
+                incident.add(uid)
+                incident.update(out_neighbours & target_uids)
+                incident.update(in_neighbours & target_uids)
+        return incident
+
+    def delete_axis_adjacency_uids(self, workspace_id: str, uids: set[str]) -> None:
+        """Delete axis adjacency rows for selected uids in one workspace."""
+        if not uids:
+            return
+        self._delete_axis_adjacency_rows(sorted(uids), workspace_id)
+
+    def _delete_axis_adjacency_rows(
+        self,
+        uids: list[str],
+        workspace_id: str,
+    ) -> None:
+        if not uids:
+            return
+        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
+        total = len(uids)
+        for start in range(0, total, batch_size):
+            batch = uids[start : start + batch_size]
+            predicate = " OR ".join(
+                (
+                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                    f"AND uid = '{self._quote_delete_value(uid)}')"
+                )
+                for uid in batch
+            )
+            try:
+                self._axis_adjacency_table.delete(predicate)
+            except Exception:
+                for uid in batch:
+                    try:
+                        self._axis_adjacency_table.delete(
+                            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                            f"AND uid = '{self._quote_delete_value(uid)}')"
+                        )
+                    except Exception:
+                        pass
 
     def _delete_doc_rows(
         self,
@@ -874,6 +983,19 @@ class LanceDBClient:
         if rows:
             self._axis_adjacency_table.add(rows)
 
+    def upsert_axis_adjacency_rows(
+        self,
+        rows: list[dict],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> None:
+        """Patch selected adjacency rows without replacing the whole workspace."""
+        if not rows:
+            return
+        uids = [str(row["uid"]) for row in rows if row.get("uid")]
+        self._delete_axis_adjacency_rows(uids, workspace_id)
+        self._axis_adjacency_table.add(rows)
+
     def count_axis_adjacency_workspace(self, workspace_id: str) -> int:
         """Row count for one workspace in the materialized adjacency table."""
         ws = self._quote_delete_value(workspace_id)
@@ -909,6 +1031,7 @@ class LanceDBClient:
         prefixes: list[str],
         *,
         progress_callback: Callable[[str], None] | None = None,
+        db: Any | None = None,
     ) -> None:
         """Delete rows whose file_path equals or lives under any prefix (no full-table scan)."""
         if not prefixes:
@@ -921,6 +1044,15 @@ class LanceDBClient:
             path_clauses.append(f"file_path LIKE '{escaped}/%'")
         path_predicate = " OR ".join(path_clauses)
         predicate = f"workspace_id = '{ws}' AND ({path_predicate})"
+
+        target_uids = self.list_symbol_uids_by_prefixes(workspace_id, prefixes)
+        incident_uids = self.find_incident_axis_adjacency_uids(workspace_id, target_uids)
+        total_rows = self.count_axis_adjacency_workspace(workspace_id)
+        use_full_reset = (
+            total_rows > 0
+            and len(incident_uids) / total_rows > LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO
+        )
+
         if progress_callback:
             progress_callback(f"delete docs paths={len(prefixes)}")
         try:
@@ -933,8 +1065,36 @@ class LanceDBClient:
             self._sym_table.delete(predicate)
         except Exception:
             pass
+
+        if use_full_reset:
+            try:
+                self._axis_adjacency_table.delete(f"workspace_id = '{ws}'")
+            except Exception:
+                pass
+        else:
+            self.delete_axis_adjacency_uids(workspace_id, incident_uids)
+
+        if not use_full_reset and db is not None:
+            survivors = incident_uids - target_uids
+            if survivors:
+                try:
+                    from sidecar.indexer.fast.adjacency_materialization import (
+                        materialize_axis_adjacency_subset,
+                    )
+
+                    materialize_axis_adjacency_subset(db, self, workspace_id, survivors)
+                except Exception:
+                    pass
+                else:
+                    return
+
         try:
-            self._axis_adjacency_table.delete(f"workspace_id = '{ws}'")
+            from sidecar.axis import graph_walk_inproc
+
+            if use_full_reset:
+                graph_walk_inproc.invalidate_adjacency(workspace_id)
+            else:
+                graph_walk_inproc.invalidate_adjacency_uids(workspace_id, incident_uids)
         except Exception:
             pass
 

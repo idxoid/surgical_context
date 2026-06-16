@@ -136,15 +136,17 @@ def main() -> int:
     }
     ok = [r for r in rows if "error" not in r and r.get("questions")]
     if ok:
-        w = lambda key: sum(r[key] * r["questions"] for r in ok) / totals["questions"]
+        def weighted_avg(key: str) -> float:
+            return sum(r[key] * r["questions"] for r in ok) / totals["questions"]
+
         aggregate = {
             "pass_rate": totals["pass_count"] / totals["questions"] if totals["questions"] else 0,
-            "recall_at_5": w("recall_at_5"),
-            "precision_at_5": w("precision_at_5"),
-            "precision_at_5_prompt_order": w("precision_at_5_prompt_order"),
-            "context_precision": w("context_precision"),
-            "file_recall": w("file_recall"),
-            "role_recall": w("role_recall"),
+            "recall_at_5": weighted_avg("recall_at_5"),
+            "precision_at_5": weighted_avg("precision_at_5"),
+            "precision_at_5_prompt_order": weighted_avg("precision_at_5_prompt_order"),
+            "context_precision": weighted_avg("context_precision"),
+            "file_recall": weighted_avg("file_recall"),
+            "role_recall": weighted_avg("role_recall"),
         }
     else:
         aggregate = {}

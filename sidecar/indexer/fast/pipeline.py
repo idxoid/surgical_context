@@ -1241,12 +1241,22 @@ def _adjacency_materialization_phase(
     lance: LanceDBClient,
     workspace_id: str,
     reporter: ProgressReporter,
+    seed_uids: set[str] | None = None,
 ) -> int:
     """Snapshot workspace graph-walk adjacency into LanceDB."""
-    from sidecar.indexer.fast.adjacency_materialization import materialize_axis_adjacency
+    from sidecar.indexer.fast.adjacency_materialization import (
+        materialize_axis_adjacency,
+        materialize_axis_adjacency_subset,
+    )
 
     reporter.stage_start("axis_adjacency", total=1)
-    rows = materialize_axis_adjacency(db, lance, workspace_id)
+    seeds = {uid for uid in (seed_uids or set()) if uid}
+    count_rows = getattr(lance, "count_axis_adjacency_workspace", None)
+    existing = int(count_rows(workspace_id)) if callable(count_rows) and seeds else 0
+    if existing > 0 and seeds:
+        rows = materialize_axis_adjacency_subset(db, lance, workspace_id, seeds)
+    else:
+        rows = materialize_axis_adjacency(db, lance, workspace_id)
     reporter.step("axis_adjacency")
     reporter.stage_end("axis_adjacency")
     return rows
@@ -1806,6 +1816,7 @@ def run_fast_indexing(
             lance,
             workspace_id,
             reporter,
+            seed_uids=degree_seeds - degree_removed,
         )
         stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
 

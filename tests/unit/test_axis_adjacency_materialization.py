@@ -1,7 +1,10 @@
 import json
 
 from sidecar.axis import graph_walk_inproc
-from sidecar.indexer.fast.adjacency_materialization import materialize_axis_adjacency
+from sidecar.indexer.fast.adjacency_materialization import (
+    materialize_axis_adjacency,
+    materialize_axis_adjacency_subset,
+)
 
 WORKSPACE = "acme/repo@main+axis_python_v1"
 
@@ -69,10 +72,20 @@ class _Lance:
     def __init__(self):
         self.rows = []
         self.workspace_id = ""
+        self.upserted = []
+        self.existing_rows = 100
 
     def replace_axis_adjacency(self, rows, *, workspace_id):
         self.rows = rows
         self.workspace_id = workspace_id
+
+    def upsert_axis_adjacency_rows(self, rows, *, workspace_id):
+        self.upserted.append((workspace_id, rows))
+        self.rows = rows
+        self.workspace_id = workspace_id
+
+    def count_axis_adjacency_workspace(self, workspace_id):
+        return self.existing_rows
 
 
 def test_materialize_axis_adjacency_writes_workspace_rows():
@@ -127,3 +140,64 @@ def test_inproc_walk_uses_materialized_lance_rows(monkeypatch):
     assert [(n.uid, n.name, n.file_path, n.depth, n.reach) for n in out] == [
         ("u:callee", "Callee", "/repo/models.py", 1, 1)
     ]
+
+
+def test_invalidate_adjacency_uids_drops_target_and_cross_refs():
+    rows = [
+        {
+            "uid": "u:a",
+            "name": "A",
+            "file_path": "/repo/a.py",
+            "kind": "function",
+            "out_edges_json": json.dumps({"CALLS_DIRECT": ["u:b"]}),
+            "in_edges_json": "{}",
+        },
+        {
+            "uid": "u:b",
+            "name": "B",
+            "file_path": "/repo/b.py",
+            "kind": "class",
+            "out_edges_json": "{}",
+            "in_edges_json": json.dumps({"CALLS_DIRECT": ["u:a"]}),
+        },
+    ]
+    graph_walk_inproc.invalidate_adjacency()
+    graph_walk_inproc._CACHE[WORKSPACE] = graph_walk_inproc._adjacency_from_lance_rows(rows)
+
+    graph_walk_inproc.invalidate_adjacency_uids(WORKSPACE, {"u:b"})
+
+    cached = graph_walk_inproc._CACHE[WORKSPACE]
+    assert "u:b" not in cached.meta
+    assert "u:b" not in cached.out
+    assert "u:b" not in cached.in_
+    assert cached.out.get("u:a", {}).get("CALLS_DIRECT", set()) == set()
+
+
+def test_materialize_axis_adjacency_subset_upserts_incident_closure():
+    db = _Db()
+    lance = _Lance()
+    lance.existing_rows = 100
+
+    count = materialize_axis_adjacency_subset(db, lance, WORKSPACE, {"u:caller"})
+
+    assert count == 2
+    assert lance.upserted
+    workspace_id, rows = lance.upserted[0]
+    assert workspace_id == WORKSPACE
+    by_uid = {row["uid"]: row for row in rows}
+    assert set(by_uid) == {"u:caller", "u:callee"}
+    assert json.loads(by_uid["u:caller"]["out_edges_json"]) == {"CALLS_DIRECT": ["u:callee"]}
+    assert json.loads(by_uid["u:callee"]["in_edges_json"]) == {"CALLS_DIRECT": ["u:caller"]}
+
+
+def test_materialize_axis_adjacency_subset_falls_back_when_closure_too_large():
+    db = _Db()
+    lance = _Lance()
+    lance.existing_rows = 3
+
+    count = materialize_axis_adjacency_subset(db, lance, WORKSPACE, {"u:caller"})
+
+    assert count == 2
+    assert lance.workspace_id == WORKSPACE
+    assert lance.upserted == []
+    assert len(lance.rows) == 2
