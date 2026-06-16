@@ -54,32 +54,20 @@ def test_reexport_needs_body_signal() -> None:
     # Without the body signal a plain .py is core...
     assert classify_file_tier("fastapi/websockets.py") == TIER_CORE
     # ...with it, it is a re-export surface.
-    assert (
-        classify_file_tier("fastapi/websockets.py", pure_reexport=True)
-        == TIER_REEXPORT
-    )
+    assert classify_file_tier("fastapi/websockets.py", pure_reexport=True) == TIER_REEXPORT
 
 
 def test_path_tier_beats_shape_tier() -> None:
     # A re-export living under examples/ is still example (path wins).
-    assert (
-        classify_file_tier("examples/app/__init__.py", pure_reexport=True)
-        == TIER_EXAMPLE
-    )
+    assert classify_file_tier("examples/app/__init__.py", pure_reexport=True) == TIER_EXAMPLE
     # A .pyi under tests/ is still test.
     assert classify_file_tier("tests/stubs/foo.pyi") == TIER_TEST
 
 
 def test_is_pure_reexport_source() -> None:
-    assert is_pure_reexport_source(
-        "from starlette.websockets import WebSocket as WebSocket\n"
-    )
-    assert is_pure_reexport_source(
-        '"""docstring."""\nfrom x import a as a\n__all__ = ["a"]\n'
-    )
-    assert not is_pure_reexport_source(
-        "from x import a\n\ndef foo():\n    return a()\n"
-    )
+    assert is_pure_reexport_source("from starlette.websockets import WebSocket as WebSocket\n")
+    assert is_pure_reexport_source('"""docstring."""\nfrom x import a as a\n__all__ = ["a"]\n')
+    assert not is_pure_reexport_source("from x import a\n\ndef foo():\n    return a()\n")
     assert not is_pure_reexport_source("x = 1\n")
     assert not is_pure_reexport_source("")
     assert not is_pure_reexport_source("def (:\n")  # syntax error → not a reexport

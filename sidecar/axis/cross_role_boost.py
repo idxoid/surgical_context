@@ -126,9 +126,7 @@ def intersect_by_cross_role_proximity(
     if not primary:
         return list(primary)
     secondary_role_uids = {
-        role: {c.uid for c in cands}
-        for role, cands in secondary_by_role.items()
-        if cands
+        role: {c.uid for c in cands} for role, cands in secondary_by_role.items() if cands
     }
     if not secondary_role_uids:
         return list(primary)
@@ -144,9 +142,7 @@ def intersect_by_cross_role_proximity(
         roles_hit = proximity.get(cand.uid, set())
         if not roles_hit:
             continue
-        new_score = min(
-            score_ceiling, cand.score + boost_per_role * len(roles_hit)
-        )
+        new_score = min(score_ceiling, cand.score + boost_per_role * len(roles_hit))
         intersected.append(replace(cand, score=new_score))
     if not intersected and fallback_on_empty:
         return list(primary)
@@ -174,9 +170,7 @@ def boost_by_cross_role_proximity(
     if not primary:
         return list(primary)
     secondary_role_uids = {
-        role: {c.uid for c in cands}
-        for role, cands in secondary_by_role.items()
-        if cands
+        role: {c.uid for c in cands} for role, cands in secondary_by_role.items() if cands
     }
     if not secondary_role_uids:
         return list(primary)
@@ -193,9 +187,7 @@ def boost_by_cross_role_proximity(
         if not roles_hit:
             boosted.append(cand)
             continue
-        new_score = min(
-            score_ceiling, cand.score + boost_per_role * len(roles_hit)
-        )
+        new_score = min(score_ceiling, cand.score + boost_per_role * len(roles_hit))
         boosted.append(replace(cand, score=new_score))
     boosted.sort(key=lambda c: c.score, reverse=True)
     return boosted

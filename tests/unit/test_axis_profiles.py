@@ -5,8 +5,8 @@ from __future__ import annotations
 from sidecar.axis.axis_profiles import (
     ALL_AXES,
     AXIS_EDGES,
-    Axis,
     KIND_AXES,
+    Axis,
     axes_for_kinds,
     edges_for_axes,
 )
@@ -81,6 +81,4 @@ def test_data_model_is_structural_only():
 def test_error_model_spans_structure_and_control():
     """error_model: defined by hierarchy (STRUCTURAL), raised/handled by
     reaching code (CONTROL)."""
-    assert KIND_AXES["error_model"] == frozenset(
-        {Axis.STRUCTURAL, Axis.CONTROL}
-    )
+    assert KIND_AXES["error_model"] == frozenset({Axis.STRUCTURAL, Axis.CONTROL})

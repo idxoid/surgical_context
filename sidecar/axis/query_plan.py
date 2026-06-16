@@ -125,12 +125,8 @@ class AxisQueryPlan:
     def to_dict(self) -> dict[str, object]:
         return {
             "traversal_mode": self.traversal_mode,
-            "required_bits": [
-                {"axis": req.axis, "bit": req.bit} for req in self.required_bits
-            ],
-            "optional_bits": [
-                {"axis": req.axis, "bit": req.bit} for req in self.optional_bits
-            ],
+            "required_bits": [{"axis": req.axis, "bit": req.bit} for req in self.required_bits],
+            "optional_bits": [{"axis": req.axis, "bit": req.bit} for req in self.optional_bits],
             "container_kinds": list(self.container_kinds),
             "target_node_kinds": list(self.target_node_kinds),
             "expansion_steps": [step.to_dict() for step in self.expansion_steps],
@@ -170,9 +166,7 @@ def render_lance_predicate(
 
     clauses = [f"workspace_id = {_quote_lance_string(workspace_id)}"]
     clauses.extend(_axis_bit_predicate(req) for req in sorted(set(required_bits)))
-    clauses.extend(
-        _container_kind_predicate(kind) for kind in sorted(set(container_kinds))
-    )
+    clauses.extend(_container_kind_predicate(kind) for kind in sorted(set(container_kinds)))
     return " AND ".join(clauses)
 
 

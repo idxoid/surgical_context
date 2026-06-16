@@ -150,9 +150,7 @@ def run_axis_retrieval(
     # Seed layer — pure vector/role retrieval, captured BEFORE any
     # graph-walk pool expansion (lookahead is itself a pool pass).
     seed_files: set[str] = {
-        getattr(c, "file_path", "") or ""
-        for cands in raw_by_role.values()
-        for c in cands
+        getattr(c, "file_path", "") or "" for cands in raw_by_role.values() for c in cands
     }
 
     # Cross-role *lookahead*: walk K hops from each role's vector
@@ -184,10 +182,7 @@ def run_axis_retrieval(
             impact_mode=any(m.role in _MODE_ROLES for m in intent),
             prescanned=scanned,
         )
-    seed_files |= {
-        getattr(c, "file_path", "") or ""
-        for c in raw_by_role.get("vector_seed", [])
-    }
+    seed_files |= {getattr(c, "file_path", "") or "" for c in raw_by_role.get("vector_seed", [])}
 
     # Structural-neighbour pass — file-level adjacency via undirected
     # AFFECTS, plus the upward inheritance walk and the reactive phased
@@ -231,29 +226,22 @@ def run_axis_retrieval(
     mode_intents_present = {m.role for m in intent if m.role in _MODE_ROLES}
     if mode_intents_present:
         existing_pool = [
-            c
-            for role, cands in raw_by_role.items()
-            if role not in _MODE_ROLES
-            for c in cands
+            c for role, cands in raw_by_role.items() if role not in _MODE_ROLES for c in cands
         ]
         if existing_pool:
             if "impact_analysis" in mode_intents_present:
                 with tr.stage("impact_traversal"):
-                    raw_by_role["impact_analysis"] = (
-                        impact_traversal.expand_impact_neighbourhood(
-                            existing_pool,
-                            db=db,
-                            workspace_id=workspace_id,
-                        )
+                    raw_by_role["impact_analysis"] = impact_traversal.expand_impact_neighbourhood(
+                        existing_pool,
+                        db=db,
+                        workspace_id=workspace_id,
                     )
             if "trace_dependency" in mode_intents_present:
                 with tr.stage("trace_traversal"):
-                    raw_by_role["trace_dependency"] = (
-                        trace_traversal.expand_trace_neighbourhood(
-                            existing_pool,
-                            db=db,
-                            workspace_id=workspace_id,
-                        )
+                    raw_by_role["trace_dependency"] = trace_traversal.expand_trace_neighbourhood(
+                        existing_pool,
+                        db=db,
+                        workspace_id=workspace_id,
                     )
 
     # Multi-role *intersection* — weaker signals act as structural
@@ -269,30 +257,24 @@ def run_axis_retrieval(
                     for j, other in enumerate(intent)
                     if j != i
                 }
-                raw_by_role[match.role] = (
-                    cross_role_boost.intersect_by_cross_role_proximity(
-                        primary,
-                        secondary,
-                        db=db,
-                        workspace_id=workspace_id,
-                    )
+                raw_by_role[match.role] = cross_role_boost.intersect_by_cross_role_proximity(
+                    primary,
+                    secondary,
+                    db=db,
+                    workspace_id=workspace_id,
                 )
 
     # Intent-axis ranking — intent as a ranker (not a selector). Boost
     # candidates whose kind-axes match the intent's axes; pools re-sort.
     # Role-agnostic seeds (no kinds) pass through untouched.
-    raw_by_role = axis_ranking.apply_intent_axis_boost(
-        raw_by_role, [m.role for m in intent]
-    )
+    raw_by_role = axis_ranking.apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
 
     # Flatten in intent-role order, then any lookahead-promoted roles.
     # ``raw_by_role`` may carry roles the intent classifier never produced
     # (see ``expand_candidates_via_neighbourhood`` auto-promote); skipping
     # them would discard graph-evidenced candidates.
     intent_role_keys = [m.role for m in intent]
-    ordered_keys = intent_role_keys + [
-        r for r in raw_by_role if r not in set(intent_role_keys)
-    ]
+    ordered_keys = intent_role_keys + [r for r in raw_by_role if r not in set(intent_role_keys)]
     candidates_for_context: list[RoleCandidate] = []
     seen_keys: set[str] = set()
     for key in ordered_keys:
@@ -332,9 +314,7 @@ def run_axis_retrieval(
 
         utility_score_fn = _budget_utility_score
         token_budget = budget.effective_tokens(base_token_budget)
-        render_mode = (
-            budget.render_mode if render_mode_override is None else render_mode_override
-        )
+        render_mode = budget.render_mode if render_mode_override is None else render_mode_override
 
     bundles: list[ContextBundle] = []
     if with_context and active:

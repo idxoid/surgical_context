@@ -224,9 +224,7 @@ current_app: FlaskProxy = LocalProxy(_cv_app, "app")
         assert b["proxy_qualified_name"] == "pkg.globals.current_app"
         assert b["target_type"] == "pkg.globals.FlaskProxy"
 
-    def test_proxy_binding_extracts_context_attr_binding_for_local_proxy(
-        self, adapter
-    ):
+    def test_proxy_binding_extracts_context_attr_binding_for_local_proxy(self, adapter):
         source = """
 from contextvars import ContextVar
 from werkzeug.local import LocalProxy

@@ -429,9 +429,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
             add(match.group(1), match.group(2), match.group(2))
         return edges
 
-    def extract_symbol_aliases(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_symbol_aliases(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Extract static symbol-level aliases from CommonJS export surfaces."""
         module_name = module_name_from_path(file_path)
         import_bindings = self._extract_import_bindings(source_code, file_path)

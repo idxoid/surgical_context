@@ -49,17 +49,13 @@ app.init = function init() {
         calls = adapter.extract_calls_from_source(source, "application.js")
         call = next(call for call in calls if call.get("callee_name") == "Router")
 
-        assert call["caller_uid"] == adapter._property_method_uid(
-            "application.js", "app", "init"
-        )
+        assert call["caller_uid"] == adapter._property_method_uid("application.js", "app", "init")
         assert call["rel_type"] == "CALLS_IMPORTED"
         assert call["tier"] == "imported"
         assert call["callee_qualified_name"] == "router"
         assert call["call_kind"] == "construct"
 
-    def test_extract_calls_attributes_unindexed_nested_callback_to_indexed_owner(
-        self, adapter
-    ):
+    def test_extract_calls_attributes_unindexed_nested_callback_to_indexed_owner(self, adapter):
         source = """
 var Router = require('router');
 
@@ -74,9 +70,7 @@ app.init = function init() {
         calls = adapter.extract_calls_from_source(source, "application.js")
         call = next(call for call in calls if call.get("callee_name") == "Router")
 
-        assert call["caller_uid"] == adapter._property_method_uid(
-            "application.js", "app", "init"
-        )
+        assert call["caller_uid"] == adapter._property_method_uid("application.js", "app", "init")
         assert call["rel_type"] == "CALLS_IMPORTED"
         assert call["callee_qualified_name"] == "router"
         assert call["call_kind"] == "construct"
@@ -160,9 +154,7 @@ app.handle = (req, res) => req && res;
         names = {symbol.name for symbol in symbols}
         assert "handle" in names
 
-    def test_extract_symbol_aliases_links_export_to_required_module_symbol(
-        self, adapter, tmp_path
-    ):
+    def test_extract_symbol_aliases_links_export_to_required_module_symbol(self, adapter, tmp_path):
         lib = tmp_path / "lib"
         lib.mkdir()
         (lib / "response.js").write_text("var res = {};\nmodule.exports = res;\n")

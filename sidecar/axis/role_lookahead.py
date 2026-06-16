@@ -104,6 +104,7 @@ def _fetch_neighbour_kinds(
         return out
 
     sym_table = lance._sym_table  # noqa: SLF001 — the field is the public hook
+
     def _quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
@@ -222,17 +223,14 @@ def expand_candidates_via_neighbourhood(
     ``binding_surface`` umbrella inflation).
     """
     promote_pool: set[str] = set(
-        auto_promote_role_pool
-        if auto_promote_role_pool is not None
-        else ROLE_EVIDENCE_MAP.keys()
+        auto_promote_role_pool if auto_promote_role_pool is not None else ROLE_EVIDENCE_MAP.keys()
     )
     relevant_roles = set(intent_roles) | promote_pool
     kind_to_roles = _build_kind_to_roles(relevant_roles)
     intent_set = set(intent_roles)
 
     out: dict[str, list[RoleCandidate]] = {
-        role: list(candidates_by_role.get(role) or [])
-        for role in intent_roles
+        role: list(candidates_by_role.get(role) or []) for role in intent_roles
     }
     if not kind_to_roles:
         return out
@@ -261,9 +259,7 @@ def expand_candidates_via_neighbourhood(
         # Seed by *original* vector candidates only — keeps the
         # lookahead one hop of indirection deep, not a recursive
         # expansion.
-        seed_uids = [
-            c.uid for c in (candidates_by_role.get(source_role) or [])
-        ]
+        seed_uids = [c.uid for c in (candidates_by_role.get(source_role) or [])]
         if not seed_uids:
             continue
 
@@ -276,7 +272,9 @@ def expand_candidates_via_neighbourhood(
         # from a single seed, and must beat lance-scan insertion order
         # when the ``max_injected_per_role`` cap selects winners.
         neighbours = walk_neighbours(
-            db, workspace_id, seed_uids,
+            db,
+            workspace_id,
+            seed_uids,
             edges=EdgeProfile.PROXIMITY,
             direction="undirected",
             max_hops=max_hops,
@@ -294,7 +292,10 @@ def expand_candidates_via_neighbourhood(
             continue
 
         kinds_by_uid = _fetch_neighbour_kinds(
-            lance, workspace_id, flat_neighbours, prescanned=prescanned,
+            lance,
+            workspace_id,
+            flat_neighbours,
+            prescanned=prescanned,
         )
         per_target: dict[str, list[RoleCandidate]] = {}
         for uid, (name, file_path, kinds) in kinds_by_uid.items():
@@ -303,9 +304,8 @@ def expand_candidates_via_neighbourhood(
                 for target_role in kind_to_roles.get(kind, ()):
                     if target_role == source_role:
                         continue
-                    if (
-                        target_role in intent_set
-                        and uid in existing_uids_by_role.get(target_role, set())
+                    if target_role in intent_set and uid in existing_uids_by_role.get(
+                        target_role, set()
                     ):
                         continue
                     matched_targets.setdefault(target_role, set()).add(kind)

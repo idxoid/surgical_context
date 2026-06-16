@@ -209,7 +209,7 @@ class ContainerKindMatch:
     symbol_uid: str
     qualified_name: str
     evidence_bits: tuple[tuple[str, str], ...]  # list of (axis, bit)
-    evidence_probes: tuple[str, ...]            # human-readable probe outcomes
+    evidence_probes: tuple[str, ...]  # human-readable probe outcomes
     payload: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
@@ -317,9 +317,7 @@ def _classify_registry_class(
             symbol_uid=profile.symbol_uid,
             qualified_name=profile.qualified_name,
             evidence_bits=(("struct", "class_def"),),
-            evidence_probes=(
-                f"peer_method_kinds:{','.join(sorted(matched))}",
-            ),
+            evidence_probes=(f"peer_method_kinds:{','.join(sorted(matched))}",),
             payload={"registry_method_kinds": sorted(matched)},
         )
 
@@ -329,22 +327,17 @@ def _classify_registry_class(
         # presence is the consumer-derived proof that this variable acts
         # as a registry — no catalogue lookup needed.
         registered_facts = [
-            f for f in profile.facts
-            if f.axis == "dfg" and f.bit == "registered_callable"
+            f for f in profile.facts if f.axis == "dfg" and f.bit == "registered_callable"
         ]
         if not registered_facts:
             return None
-        registered_count = sum(
-            int((f.payload or {}).get("count") or 0) for f in registered_facts
-        )
+        registered_count = sum(int((f.payload or {}).get("count") or 0) for f in registered_facts)
         return ContainerKindMatch(
             kind="registry_class",
             symbol_uid=profile.symbol_uid,
             qualified_name=profile.qualified_name,
             evidence_bits=(("dfg", "registered_callable"),),
-            evidence_probes=(
-                f"consumer_derived:registered_handler_count={registered_count}",
-            ),
+            evidence_probes=(f"consumer_derived:registered_handler_count={registered_count}",),
             payload={"registered_callable_count": registered_count},
         )
 
@@ -638,14 +631,12 @@ def _classify_config_carrier(
     """
     if profile.symbol_kind != "class":
         return None
-    annotated_attrs = [f for f in _struct(profile, "class_attribute") if f.payload.get("annotation")]
+    annotated_attrs = [
+        f for f in _struct(profile, "class_attribute") if f.payload.get("annotation")
+    ]
     if len(annotated_attrs) < 2:
         return None
-    defaulted_attrs = [
-        f
-        for f in annotated_attrs
-        if str(f.payload.get("value") or "").strip()
-    ]
+    defaulted_attrs = [f for f in annotated_attrs if str(f.payload.get("value") or "").strip()]
     if not defaulted_attrs:
         return None
     return ContainerKindMatch(
@@ -730,9 +721,7 @@ def _classify_error_dispatch(
             symbol_uid=profile.symbol_uid,
             qualified_name=profile.qualified_name,
             evidence_bits=(("dfg", "keyed_write"),),
-            evidence_probes=(
-                f"exception_keyed_registry:{','.join(matched[:5])}",
-            ),
+            evidence_probes=(f"exception_keyed_registry:{','.join(matched[:5])}",),
             payload={"exception_keys": matched[:8]},
         )
 
@@ -798,9 +787,9 @@ def _classify_di_container(
         ),
         evidence_probes=(),
         payload={
-            "call_default_parameters": [
-                str(f.payload.get("name") or "") for f in call_defaults
-            ][:8],
+            "call_default_parameters": [str(f.payload.get("name") or "") for f in call_defaults][
+                :8
+            ],
             "call_default_count": len(call_defaults),
         },
     )

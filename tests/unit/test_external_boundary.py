@@ -217,8 +217,7 @@ def test_apply_external_boundary_for_file_passes_symbol_imports_through_db_stub(
 
     assert db.received_symbol_imports is not None
     assert any(
-        row["qualified_name"] == "starlette.routing.Router"
-        for row in db.received_symbol_imports
+        row["qualified_name"] == "starlette.routing.Router" for row in db.received_symbol_imports
     )
 
 

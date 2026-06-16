@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
 from sidecar.axis.role_retrieval import RoleCandidate
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -74,12 +71,7 @@ def _row(uid: str, name: str, file_path: str, depth: int = 1) -> dict:
 
 
 def test_no_seeds_returns_empty():
-    assert (
-        expand_inheritance_ancestors(
-            [], db=_FakeDB(), workspace_id=WORKSPACE
-        )
-        == []
-    )
+    assert expand_inheritance_ancestors([], db=_FakeDB(), workspace_id=WORKSPACE) == []
 
 
 def test_surfaces_ancestor_in_different_file():
@@ -90,13 +82,17 @@ def test_surfaces_ancestor_in_different_file():
     db = _FakeDB(
         [
             _row(
-                "u:basepool", "BasePool",
-                "/repo/celery/concurrency/base.py", depth=1,
+                "u:basepool",
+                "BasePool",
+                "/repo/celery/concurrency/base.py",
+                depth=1,
             )
         ]
     )
     out = expand_inheritance_ancestors(
-        [seed], db=db, workspace_id=WORKSPACE,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
     )
     assert len(out) == 1
     c = out[0]
@@ -113,40 +109,45 @@ def test_skips_ancestor_in_seed_file():
     db = _FakeDB(
         [
             _row(
-                "u:also_in_prefork", "Helper",
-                "/repo/celery/concurrency/prefork.py", depth=1,
+                "u:also_in_prefork",
+                "Helper",
+                "/repo/celery/concurrency/prefork.py",
+                depth=1,
             )
         ]
     )
     out = expand_inheritance_ancestors(
-        [seed], db=db, workspace_id=WORKSPACE,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
     )
     assert out == []
 
 
 def test_max_files_caps_distinct_file_count():
     seed = _seed("u:concrete", "/repo/celery/concurrency/prefork.py")
-    rows = [
-        _row(f"u:base{i}", f"Base{i}", f"/repo/celery/base_{i}.py", depth=1)
-        for i in range(8)
-    ]
+    rows = [_row(f"u:base{i}", f"Base{i}", f"/repo/celery/base_{i}.py", depth=1) for i in range(8)]
     db = _FakeDB(rows)
     out = expand_inheritance_ancestors(
-        [seed], db=db, workspace_id=WORKSPACE, max_files=3, max_total=10,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
+        max_files=3,
+        max_total=10,
     )
     assert len({c.file_path for c in out}) == 3
 
 
 def test_max_total_caps_pool_size():
     seed = _seed("u:concrete", "/repo/celery/concurrency/prefork.py")
-    rows = [
-        _row(f"u:base{i}", f"Base{i}", f"/repo/celery/base_{i}.py", depth=1)
-        for i in range(20)
-    ]
+    rows = [_row(f"u:base{i}", f"Base{i}", f"/repo/celery/base_{i}.py", depth=1) for i in range(20)]
     db = _FakeDB(rows)
     out = expand_inheritance_ancestors(
-        [seed], db=db, workspace_id=WORKSPACE,
-        max_files=50, max_total=4,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
+        max_files=50,
+        max_total=4,
     )
     assert len(out) == 4
 

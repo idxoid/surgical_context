@@ -32,7 +32,6 @@ from sidecar.axis.axis_profiles import Axis, axes_for_kinds, edges_for_axes
 from sidecar.axis.graph_walk import walk_neighbours
 from sidecar.axis.role_retrieval import RoleCandidate
 
-
 # Discovery axes: how the walk reaches the entities a seed *organises*
 # before execution falls into CONTROL. REGISTRY (decorated entrypoints),
 # STRUCTURAL (type hierarchy), and COMPOSITION (collaborators held in
@@ -41,9 +40,7 @@ from sidecar.axis.role_retrieval import RoleCandidate
 # is composition-natural (proxy_object / config_carrier /
 # metadata_carrier), so the dense attribute edges are not walked from
 # arbitrary seeds.
-_DISCOVERY_AXES = frozenset(
-    {Axis.REGISTRY, Axis.STRUCTURAL, Axis.COMPOSITION}
-)
+_DISCOVERY_AXES = frozenset({Axis.REGISTRY, Axis.STRUCTURAL, Axis.COMPOSITION})
 
 
 def _flat_kinds(raw) -> set[str]:
@@ -64,9 +61,7 @@ def _flat_kinds(raw) -> set[str]:
     return out
 
 
-def _fetch_kinds(
-    lance, workspace_id: str, uids: set[str], prescanned=None
-) -> dict[str, set[str]]:
+def _fetch_kinds(lance, workspace_id: str, uids: set[str], prescanned=None) -> dict[str, set[str]]:
     """Container kinds per uid. Prefers the shared workspace scan
     (``_kinds`` already parsed) over a fresh full-table scan."""
     if not uids:
@@ -80,9 +75,11 @@ def _fetch_kinds(
     sym = getattr(lance, "_sym_table", None)
     if sym is None:
         return {}
-    rows = sym.to_lance().to_table(
-        columns=["uid", "axis_container_kinds_json", "workspace_id"]
-    ).to_pylist()
+    rows = (
+        sym.to_lance()
+        .to_table(columns=["uid", "axis_container_kinds_json", "workspace_id"])
+        .to_pylist()
+    )
     out: dict[str, set[str]] = {}
     for r in rows:
         if r.get("workspace_id") != workspace_id:
@@ -128,9 +125,7 @@ def expand_phased(
     excluded = set(exclude_uids) | seed_uid_set
 
     # Reactive start axis: union of the seeds' kinds → discovery axes.
-    seed_kinds = _fetch_kinds(
-        lance, workspace_id, seed_uid_set, prescanned=prescanned
-    )
+    seed_kinds = _fetch_kinds(lance, workspace_id, seed_uid_set, prescanned=prescanned)
     all_seed_kinds: set[str] = set()
     for ks in seed_kinds.values():
         all_seed_kinds |= ks
@@ -143,7 +138,9 @@ def expand_phased(
 
     # Phase 1: discovery.
     discovery = walk_neighbours(
-        db, workspace_id, seed_uids,
+        db,
+        workspace_id,
+        seed_uids,
         edges=edges_for_axes(discovery_axes),
         direction="undirected",
         max_hops=max_hops,
@@ -155,7 +152,9 @@ def expand_phased(
     # Phase 2: execution from seeds + discovery frontier along CONTROL.
     exec_seeds = list(seed_uids) + discovery_uids
     execution = walk_neighbours(
-        db, workspace_id, exec_seeds,
+        db,
+        workspace_id,
+        exec_seeds,
         edges=edges_for_axes(frozenset({Axis.CONTROL})),
         direction="undirected",
         max_hops=max_hops,

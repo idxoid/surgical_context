@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-import pytest
-
 from sidecar.axis.role_retrieval import RoleCandidate
 from sidecar.axis.structural_neighbours import expand_structural_neighbours
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -76,12 +71,7 @@ def _row(uid: str, name: str, file_path: str, depth: int = 1) -> dict:
 
 
 def test_no_seeds_returns_empty():
-    assert (
-        expand_structural_neighbours(
-            [], db=_FakeDB(), workspace_id=WORKSPACE
-        )
-        == []
-    )
+    assert expand_structural_neighbours([], db=_FakeDB(), workspace_id=WORKSPACE) == []
 
 
 def test_reaches_new_file_via_affects():
@@ -93,13 +83,17 @@ def test_reaches_new_file_via_affects():
     db = _FakeDB(
         [
             _row(
-                "u:ctx", "contextmanager_in_threadpool",
-                "/repo/fastapi/concurrency.py", depth=4,
+                "u:ctx",
+                "contextmanager_in_threadpool",
+                "/repo/fastapi/concurrency.py",
+                depth=4,
             ),
         ]
     )
     out = expand_structural_neighbours(
-        [seed], db=db, workspace_id=WORKSPACE,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
     )
     assert len(out) == 1
     c = out[0]
@@ -120,21 +114,24 @@ def test_skips_symbols_in_seed_files():
         ]
     )
     out = expand_structural_neighbours(
-        [seed], db=db, workspace_id=WORKSPACE,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
     )
     assert [c.uid for c in out] == ["u:elsewhere"]
 
 
 def test_max_files_caps_distinct_file_count():
     seed = _seed("u:run", file_path="/repo/a.py")
-    rows = [
-        _row(f"u:n{i}", f"n{i}", f"/repo/file_{i}.py", depth=i + 1)
-        for i in range(8)
-    ]
+    rows = [_row(f"u:n{i}", f"n{i}", f"/repo/file_{i}.py", depth=i + 1) for i in range(8)]
     db = _FakeDB(rows)
     out = expand_structural_neighbours(
-        [seed], db=db, workspace_id=WORKSPACE,
-        max_files=3, max_per_file=1, max_total=20,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
+        max_files=3,
+        max_per_file=1,
+        max_total=20,
     )
     assert len({c.file_path for c in out}) == 3
 
@@ -142,27 +139,28 @@ def test_max_files_caps_distinct_file_count():
 def test_max_per_file_caps_symbols_per_file():
     seed = _seed("u:run", file_path="/repo/a.py")
     # Five symbols all reached in same neighbour file.
-    rows = [
-        _row(f"u:n{i}", f"n{i}", "/repo/shared.py", depth=i + 1)
-        for i in range(5)
-    ]
+    rows = [_row(f"u:n{i}", f"n{i}", "/repo/shared.py", depth=i + 1) for i in range(5)]
     db = _FakeDB(rows)
     out = expand_structural_neighbours(
-        [seed], db=db, workspace_id=WORKSPACE, max_per_file=2,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
+        max_per_file=2,
     )
     assert len(out) == 2
 
 
 def test_max_total_caps_pool_size():
     seed = _seed("u:run", file_path="/repo/a.py")
-    rows = [
-        _row(f"u:n{i}", f"n{i}", f"/repo/file_{i}.py", depth=1)
-        for i in range(20)
-    ]
+    rows = [_row(f"u:n{i}", f"n{i}", f"/repo/file_{i}.py", depth=1) for i in range(20)]
     db = _FakeDB(rows)
     out = expand_structural_neighbours(
-        [seed], db=db, workspace_id=WORKSPACE,
-        max_files=50, max_per_file=1, max_total=5,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
+        max_files=50,
+        max_per_file=1,
+        max_total=5,
     )
     assert len(out) == 5
 
@@ -176,7 +174,9 @@ def test_exclude_uids_dropped():
         ]
     )
     out = expand_structural_neighbours(
-        [seed], db=db, workspace_id=WORKSPACE,
+        [seed],
+        db=db,
+        workspace_id=WORKSPACE,
         exclude_uids=["u:dup"],
     )
     assert [c.uid for c in out] == ["u:other"]

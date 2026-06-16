@@ -37,7 +37,6 @@ sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 )
 
-from sidecar.indexer.framework_hints import FrameworkHintsIndexer
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.index_profile import (
@@ -54,6 +53,7 @@ from sidecar.indexer.fast.collector import collect_files
 from sidecar.indexer.fast.extractor import ExtractedFile, FastExtractor, hash_file
 from sidecar.indexer.fast.schema import ensure_fast_indexes
 from sidecar.indexer.file_tier import classify_file_tier, is_pure_reexport_source
+from sidecar.indexer.framework_hints import FrameworkHintsIndexer
 from sidecar.indexer.job_log import IndexJobLog
 from sidecar.indexer.repository_profile import (
     RepositoryProfileInputs,
@@ -256,10 +256,7 @@ def _apply_graph(
         db.link_imports(all_imports, workspace_id=workspace_id)
 
     all_inheritance = [
-        edge
-        for diff in diffs
-        for edge in diff.extracted.inheritance
-        if diff.edge_refresh_uids
+        edge for diff in diffs for edge in diff.extracted.inheritance if diff.edge_refresh_uids
     ]
     if all_inheritance:
         db.link_inheritance(all_inheritance, workspace_id=workspace_id)
@@ -764,9 +761,7 @@ def _instantiation_phase(
                 if not ex.path.endswith((".py", ".pyi")):
                     continue
                 try:
-                    instantiations.extend(
-                        adapter.extract_instantiations(ex.source, ex.path)
-                    )
+                    instantiations.extend(adapter.extract_instantiations(ex.source, ex.path))
                 except Exception:
                     continue
         if instantiations:
@@ -927,9 +922,7 @@ def _embed_phase(
         # Classify on the path RELATIVE to the indexed project root — the
         # absolute path carries infra segments (e.g. ``QA/repos/...``) that
         # would otherwise be mistaken for tier markers.
-        _tier_path = (
-            os.path.relpath(ex.path, project_path) if project_path else ex.path
-        )
+        _tier_path = os.path.relpath(ex.path, project_path) if project_path else ex.path
         file_tier_value = classify_file_tier(
             _tier_path, pure_reexport=is_pure_reexport_source(ex.source)
         )
@@ -997,7 +990,7 @@ class _PeerAwarePeerProbe:
 
     def __init__(
         self,
-        base: "GraphContextProbe | None",
+        base: GraphContextProbe | None,
         peer_kinds_by_qn: dict[str, set[str]],
     ) -> None:
         self._base = base
@@ -1107,9 +1100,7 @@ def _axis_payloads_for_extracted_file(
         # contracts like ``route_register_binding`` need to prove the marker
         # is real, not just instantiated.
         handles_count = (
-            graph_probe.outgoing_handles_count(sym.uid)
-            if graph_probe is not None
-            else 0
+            graph_probe.outgoing_handles_count(sym.uid) if graph_probe is not None else 0
         )
         if handles_count > 0:
             stub.add_fact(
@@ -1243,6 +1234,38 @@ def _affects_phase(
     )
     reporter.stage_end("affects")
     return len(union)
+
+
+def _adjacency_materialization_phase(
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Snapshot workspace graph-walk adjacency into LanceDB."""
+    from sidecar.indexer.fast.adjacency_materialization import materialize_axis_adjacency
+
+    reporter.stage_start("axis_adjacency", total=1)
+    rows = materialize_axis_adjacency(db, lance, workspace_id)
+    reporter.step("axis_adjacency")
+    reporter.stage_end("axis_adjacency")
+    return rows
+
+
+def _ensure_adjacency_materialized(
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    count_rows = getattr(lance, "count_axis_adjacency_workspace", None)
+    if callable(count_rows):
+        try:
+            if int(count_rows(workspace_id)) > 0:
+                return 0
+        except Exception:
+            return 0
+    return _adjacency_materialization_phase(db, lance, workspace_id, reporter)
 
 
 def _build_profile_from_diffs(
@@ -1390,6 +1413,7 @@ def run_fast_indexing(
         "symbols_removed": 0,
         "framework_hints_applied": 0,
         "affects_rebuilt": 0,
+        "axis_adjacency_materialized": 0,
         # Doc indexing is done by the caller (qa_benchmark calls
         # sidecar.indexer.docs.index_docs separately). We pre-seed these
         # keys so consumers can always read them without KeyError; the
@@ -1481,6 +1505,18 @@ def run_fast_indexing(
                     workspace_id,
                 )
             print(f"   readiness={summarize_repository_profile(stats['repository_profile'])}")
+            t_stage = time.perf_counter()
+            stats["axis_adjacency_materialized"] = _ensure_adjacency_materialized(
+                db,
+                lance,
+                workspace_id,
+                reporter,
+            )
+            if stats["axis_adjacency_materialized"]:
+                print(
+                    f"🕸️  Axis adjacency: materialized {stats['axis_adjacency_materialized']} rows"
+                )
+            stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
             print("✅ All files up-to-date, nothing to re-index.")
             persist_index_manifest(
                 stats=stats,
@@ -1532,9 +1568,7 @@ def run_fast_indexing(
         # ExternalSymbol's local_alias gets an EXTENDS_EXTERNAL edge. The
         # library marker probe reads exactly this edge.
         t_stage = time.perf_counter()
-        stats["extends_external_edges"] = _extends_external_phase(
-            db, workspace_id, reporter
-        )
+        stats["extends_external_edges"] = _extends_external_phase(db, workspace_id, reporter)
         stats["timings_sec"]["extends_external"] = round(time.perf_counter() - t_stage, 3)
 
         # File-level integration coref: pairs of files sharing >=2 non-plumbing
@@ -1625,9 +1659,7 @@ def run_fast_indexing(
         # Stage 4.665: RE_EXPORTS edges (package __init__ -> surfaced symbol). Like
         # USES_TYPE, a low-weight derived relation, not in materialized degree.
         t_stage = time.perf_counter()
-        stats["reexports_linked"] = _reexport_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
+        stats["reexports_linked"] = _reexport_phase(diffs, db, workspace_id, reporter, project_path)
         stats["timings_sec"]["reexports"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.668: INSTANTIATES edges (caller -> constructed class). Like
@@ -1659,9 +1691,7 @@ def run_fast_indexing(
         # out of materialized degree. Runs after decorators (same
         # project_root_scope stage).
         t_stage = time.perf_counter()
-        stats["hooks_linked"] = _hook_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
+        stats["hooks_linked"] = _hook_phase(diffs, db, workspace_id, reporter, project_path)
         stats["timings_sec"]["hooks"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.67: INJECTS edges (DI bindings). Like USES_TYPE, not in degree.
@@ -1769,6 +1799,15 @@ def run_fast_indexing(
             t_stage = time.perf_counter()
             stats["affects_rebuilt"] = _affects_phase(diffs, db, workspace_id, reporter)
             stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
+
+        t_stage = time.perf_counter()
+        stats["axis_adjacency_materialized"] = _adjacency_materialization_phase(
+            db,
+            lance,
+            workspace_id,
+            reporter,
+        )
+        stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 7: resolve pending DocAnchors (unchanged)
         t_stage = time.perf_counter()

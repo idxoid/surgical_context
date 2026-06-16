@@ -11,11 +11,11 @@ RESOLVER_VERSION = "context-arbitrator-v2"
 # reads it as a single typed value instead of re-parsing provenance strings.
 # Higher number = sorts earlier inside the same caller group.
 CHAIN_PRIORITY: dict[str, int] = {
-    "mandatory":    4,
-    "query_seed":   3,
+    "mandatory": 4,
+    "query_seed": 3,
     "registration": 2,
-    "api_callee":   2,
-    "relay":        1,
+    "api_callee": 2,
+    "relay": 1,
 }
 
 
@@ -23,7 +23,9 @@ def upgrade_chain_kind(current: str, candidate: str) -> str:
     """Return whichever chain_kind has higher CHAIN_PRIORITY (current wins on tie)."""
     if not candidate:
         return current
-    return candidate if CHAIN_PRIORITY.get(candidate, 0) > CHAIN_PRIORITY.get(current, 0) else current
+    return (
+        candidate if CHAIN_PRIORITY.get(candidate, 0) > CHAIN_PRIORITY.get(current, 0) else current
+    )
 
 
 @dataclass

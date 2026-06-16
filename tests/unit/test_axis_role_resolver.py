@@ -58,9 +58,7 @@ def test_resolve_roles_with_evidence_carries_satisfying_contracts():
         "registry_binding_inferred",
     }
     # routing_surface satisfied only by route_register_binding.
-    assert by_role["routing_surface"].satisfying_contracts == (
-        "route_register_binding",
-    )
+    assert by_role["routing_surface"].satisfying_contracts == ("route_register_binding",)
 
 
 @pytest.mark.parametrize(

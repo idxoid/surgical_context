@@ -62,7 +62,9 @@ def expand_inheritance_ancestors(
     # ``seed_files`` to the cap is defense-in-depth for the same
     # invariant.
     neighbours = walk_neighbours(
-        db, workspace_id, seed_uids,
+        db,
+        workspace_id,
+        seed_uids,
         edges=EdgeProfile.INHERITANCE,
         direction="forward",
         max_hops=max_hops,

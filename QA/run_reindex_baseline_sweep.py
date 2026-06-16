@@ -7,7 +7,7 @@ import json
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -125,7 +125,7 @@ def run_repo(repo: str, *, skip_existing: bool = True) -> dict:
 def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     started = time.time()
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows: list[dict] = []
     for repo in REPOS:
         rows.append(run_repo(repo))

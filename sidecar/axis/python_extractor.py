@@ -40,7 +40,9 @@ class PythonAxisExtractor:
 
     language = "python"
 
-    def extract(self, source: str, file_path: str, *, project_root: str | None = None) -> AxisExtraction:
+    def extract(
+        self, source: str, file_path: str, *, project_root: str | None = None
+    ) -> AxisExtraction:
         tree = ast.parse(source, filename=file_path)
         parents: dict[ast.AST, ast.AST] = {}
         for parent in ast.walk(tree):
@@ -382,7 +384,9 @@ class _AxisVisitor(ast.NodeVisitor):
             self._emit("dfg", "subscript_read", node, payload=payload)
             self._emit("dfg", "container_read_key", node, payload=payload)
             self._emit("dfg", "keyed_read", node, payload=payload)
-            self._emit_literal_key(node.slice, context="subscript_read", container=_unparse(node.value))
+            self._emit_literal_key(
+                node.slice, context="subscript_read", container=_unparse(node.value)
+            )
         self.generic_visit(node)
 
     def visit_Dict(self, node: ast.Dict) -> None:
@@ -430,7 +434,9 @@ class _AxisVisitor(ast.NodeVisitor):
             self._maybe_emit_callable_value(elt, source="collection_value")
         self.generic_visit(node)
 
-    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, *, async_function: bool) -> None:
+    def _visit_function(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, *, async_function: bool
+    ) -> None:
         self.current_callable_bindings.add(node.name)
         scope = self._function_scope(node)
         self._emit(
@@ -568,7 +574,9 @@ class _AxisVisitor(ast.NodeVisitor):
                     value,
                     payload=_constructed_output_payload(value, destination="assignment"),
                 )
-        if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)):
+        if isinstance(
+            value, (ast.Dict, ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)
+        ):
             self._emit("dfg", "collection_assembly", value, payload={"shape": _shape_name(value)})
 
     def _emit_call_argument_facts(self, node: ast.Call) -> None:
@@ -696,7 +704,9 @@ class _AxisVisitor(ast.NodeVisitor):
             elif isinstance(leaf, ast.Subscript):
                 payload = {"target": _unparse(leaf), **_subscript_key_payload(leaf)}
                 self._emit("dfg", "subscript_write", leaf, payload=payload)
-                self._emit_literal_key(leaf.slice, context="subscript_write", container=_unparse(leaf.value))
+                self._emit_literal_key(
+                    leaf.slice, context="subscript_write", container=_unparse(leaf.value)
+                )
                 if value is not None:
                     write_payload = {
                         **payload,
@@ -708,7 +718,9 @@ class _AxisVisitor(ast.NodeVisitor):
                         "dfg",
                         "keyed_write",
                         leaf,
-                        payload=_keyed_write_payload(key=leaf.slice, value=value, container=_unparse(leaf.value)),
+                        payload=_keyed_write_payload(
+                            key=leaf.slice, value=value, container=_unparse(leaf.value)
+                        ),
                     )
                     self._maybe_emit_callable_value(
                         value,
@@ -726,7 +738,12 @@ class _AxisVisitor(ast.NodeVisitor):
     def _emit_binding_targets(self, target: ast.AST, source_kind: str) -> None:
         for leaf in _flatten_targets(target):
             if isinstance(leaf, ast.Name):
-                self._emit("dfg", "assignment_binding", leaf, payload={"target": leaf.id, "source_kind": source_kind})
+                self._emit(
+                    "dfg",
+                    "assignment_binding",
+                    leaf,
+                    payload={"target": leaf.id, "source_kind": source_kind},
+                )
 
     def _emit_iteration_source(
         self,
@@ -941,7 +958,11 @@ def _read_expression_payloads(node: ast.AST) -> list[dict[str, object]]:
     seen: set[tuple[str, str]] = set()
     for child in ast.walk(node):
         if isinstance(child, ast.Subscript) and isinstance(child.ctx, ast.Load):
-            payload = {"read_kind": "subscript", **_expr_payload(child), **_subscript_key_payload(child)}
+            payload = {
+                "read_kind": "subscript",
+                **_expr_payload(child),
+                **_subscript_key_payload(child),
+            }
         elif isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load):
             payload = {"read_kind": "attribute", **_expr_payload(child)}
         elif isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
@@ -983,7 +1004,9 @@ def _return_shape_payload(value: ast.AST | None) -> dict[str, object]:
     if value is None:
         return {"shape_kind": "none", "expression": "", "expression_kind": "None"}
     payload = {"shape_kind": _return_shape_kind(value), **_expr_payload(value)}
-    if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)):
+    if isinstance(
+        value, (ast.Dict, ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)
+    ):
         payload["collection_shape"] = _shape_name(value)
     return payload
 

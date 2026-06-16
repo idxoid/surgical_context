@@ -1195,9 +1195,7 @@ class Neo4jClient:
         ).single()
         if not rec:
             return 0, set()
-        return int(rec["created"] or 0), {
-            str(uid) for uid in (rec["touched"] or []) if uid
-        }
+        return int(rec["created"] or 0), {str(uid) for uid in (rec["touched"] or []) if uid}
 
     @staticmethod
     def _create_class_api_relations(tx, edges: list[ClassApiEdge], workspace_id: str):
@@ -1840,9 +1838,7 @@ class Neo4jClient:
         if not accesses:
             return
         with self.driver.session() as session:
-            session.execute_write(
-                self._create_attr_access_relations, accesses, workspace_id
-            )
+            session.execute_write(self._create_attr_access_relations, accesses, workspace_id)
             session.run(
                 """
                 MATCH (w:Workspace {id: $workspace_id})
@@ -1861,7 +1857,11 @@ class Neo4jClient:
         # Symbol carries that name. Reads and writes are split into two
         # MERGEs by edge type.
         reads = [a for a in accesses if a.get("kind") == "read"]
-        writes = [a for a in accesses if a.get("kind") in ("write", "write_subscript", "write_subscript_local")]
+        writes = [
+            a
+            for a in accesses
+            if a.get("kind") in ("write", "write_subscript", "write_subscript_local")
+        ]
         for rel_type, rows in (("READS_ATTR", reads), ("WRITES_ATTR", writes)):
             if not rows:
                 continue
@@ -2222,9 +2222,7 @@ class Neo4jClient:
             workspace_id=workspace_id,
         )
 
-    def delete_reexports_for_file(
-        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
-    ):
+    def delete_reexports_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
         """Clear RE_EXPORTS edges from a package __init__ before relinking."""
         with self.driver.session() as session:
             session.run(
@@ -2409,9 +2407,7 @@ class Neo4jClient:
             workspace_id=workspace_id,
         )
 
-    def delete_injections_for_file(
-        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
-    ):
+    def delete_injections_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
         """Clear INJECTS edges from a file's symbols before relinking."""
         with self.driver.session() as session:
             session.run(
@@ -2642,21 +2638,62 @@ def _monorepo_package_import_paths(module_name: str) -> list[str]:
 # cascade derive `error_surface` from a real AST fact (`class X(..., ValueError)`).
 _BUILTIN_EXCEPTION_BASES: frozenset[str] = frozenset(
     {
-        "BaseException", "Exception", "ArithmeticError", "AssertionError",
-        "AttributeError", "BufferError", "EOFError", "ImportError",
-        "ModuleNotFoundError", "LookupError", "IndexError", "KeyError",
-        "MemoryError", "NameError", "UnboundLocalError", "OSError", "IOError",
-        "FileNotFoundError", "FileExistsError", "PermissionError",
-        "NotADirectoryError", "IsADirectoryError", "InterruptedError",
-        "ConnectionError", "BrokenPipeError", "ConnectionResetError",
-        "ConnectionAbortedError", "ConnectionRefusedError", "TimeoutError",
-        "ReferenceError", "RuntimeError", "NotImplementedError", "RecursionError",
-        "StopIteration", "StopAsyncIteration", "SyntaxError", "IndentationError",
-        "TabError", "SystemError", "TypeError", "ValueError", "UnicodeError",
-        "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeTranslateError",
-        "Warning", "DeprecationWarning", "UserWarning", "RuntimeWarning",
-        "FloatingPointError", "OverflowError", "ZeroDivisionError",
-        "EnvironmentError", "GeneratorExit", "KeyboardInterrupt", "SystemExit",
+        "BaseException",
+        "Exception",
+        "ArithmeticError",
+        "AssertionError",
+        "AttributeError",
+        "BufferError",
+        "EOFError",
+        "ImportError",
+        "ModuleNotFoundError",
+        "LookupError",
+        "IndexError",
+        "KeyError",
+        "MemoryError",
+        "NameError",
+        "UnboundLocalError",
+        "OSError",
+        "IOError",
+        "FileNotFoundError",
+        "FileExistsError",
+        "PermissionError",
+        "NotADirectoryError",
+        "IsADirectoryError",
+        "InterruptedError",
+        "ConnectionError",
+        "BrokenPipeError",
+        "ConnectionResetError",
+        "ConnectionAbortedError",
+        "ConnectionRefusedError",
+        "TimeoutError",
+        "ReferenceError",
+        "RuntimeError",
+        "NotImplementedError",
+        "RecursionError",
+        "StopIteration",
+        "StopAsyncIteration",
+        "SyntaxError",
+        "IndentationError",
+        "TabError",
+        "SystemError",
+        "TypeError",
+        "ValueError",
+        "UnicodeError",
+        "UnicodeDecodeError",
+        "UnicodeEncodeError",
+        "UnicodeTranslateError",
+        "Warning",
+        "DeprecationWarning",
+        "UserWarning",
+        "RuntimeWarning",
+        "FloatingPointError",
+        "OverflowError",
+        "ZeroDivisionError",
+        "EnvironmentError",
+        "GeneratorExit",
+        "KeyboardInterrupt",
+        "SystemExit",
     }
 )
 

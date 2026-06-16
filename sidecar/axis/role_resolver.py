@@ -50,7 +50,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-
 # ---------------------------------------------------------------------------
 # The mapping — small, structural, hand-curated.
 # ---------------------------------------------------------------------------
@@ -75,30 +74,34 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
     # can dispatch them later" umbrella role — every deferred-binding
     # shape qualifies, regardless of subtype.
     "binding_surface": RoleEvidence(
-        contracts=frozenset({
-            "route_register_binding",
-            "task_register_binding",
-            "error_dispatch_binding",
-            "registry_binding_inferred",
-            "callable_container_dispatch",
-            "metadata_key_roundtrip",
-            "provider_default_binding",
-            "dependency_injection_binding",
-            "proxy_indirection",
-        }),
-        kinds=frozenset({
-            "registry_class",
-            "web_route_register",
-            "task_register",
-            "error_dispatch",
-            "signal_register",
-            "proxy_object",
-            "di_container",
-            "middleware_chain",
-            "keyed_dispatch_callable",
-            "keyed_register_callable",
-            "metadata_carrier",
-        }),
+        contracts=frozenset(
+            {
+                "route_register_binding",
+                "task_register_binding",
+                "error_dispatch_binding",
+                "registry_binding_inferred",
+                "callable_container_dispatch",
+                "metadata_key_roundtrip",
+                "provider_default_binding",
+                "dependency_injection_binding",
+                "proxy_indirection",
+            }
+        ),
+        kinds=frozenset(
+            {
+                "registry_class",
+                "web_route_register",
+                "task_register",
+                "error_dispatch",
+                "signal_register",
+                "proxy_object",
+                "di_container",
+                "middleware_chain",
+                "keyed_dispatch_callable",
+                "keyed_register_callable",
+                "metadata_carrier",
+            }
+        ),
     ),
     # ``routing_surface`` is specifically web route binding —
     # registration *or* dispatch. ``keyed_register_callable`` covers
@@ -134,10 +137,12 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
     ),
     # ``dependency_solver`` covers the provider→consumer wiring role.
     "dependency_solver": RoleEvidence(
-        contracts=frozenset({
-            "provider_default_binding",
-            "dependency_injection_binding",
-        }),
+        contracts=frozenset(
+            {
+                "provider_default_binding",
+                "dependency_injection_binding",
+            }
+        ),
         kinds=frozenset({"di_container"}),
     ),
     # ``data_model_surface`` is the data_shape_declaration shape.
@@ -163,11 +168,13 @@ ROLE_EVIDENCE_MAP: dict[str, RoleEvidence] = {
     # honest reading of the role.
     "dispatch_surface": RoleEvidence(
         contracts=frozenset({"callable_container_dispatch"}),
-        kinds=frozenset({
-            "middleware_chain",
-            "signal_register",
-            "keyed_dispatch_callable",
-        }),
+        kinds=frozenset(
+            {
+                "middleware_chain",
+                "signal_register",
+                "keyed_dispatch_callable",
+            }
+        ),
     ),
     # ``impact_analysis`` is a *question-shape* pseudo-role, not a
     # retrieval role: it has no contracts or kinds because no symbol

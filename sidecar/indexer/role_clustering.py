@@ -16,7 +16,6 @@ from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sidecar.indexer.signal_constants import NOISE_PATH_PATTERNS
 from sidecar.indexer.external_boundary import EXTERNAL_INTEGRATION_PLUMBING_ROOTS
 from sidecar.indexer.role_cascade import (
     SymbolRoleAssignment,
@@ -24,6 +23,7 @@ from sidecar.indexer.role_cascade import (
     detect_present_roles,
     role_catalog_roles,
 )
+from sidecar.indexer.signal_constants import NOISE_PATH_PATTERNS
 
 ROLE_TAXONOMY_SCHEMA_VERSION = 3
 ROLE_CATALOG_SCHEMA_VERSION = 3
@@ -495,12 +495,7 @@ def assemble_symbol_rows(
     for caller, callee, rel_type, _conf, kind in _iter_structural_edges(call_edges):
         if rel_type in {"HAS_API", "INHERITED_API"} and caller in info and callee in info:
             api_owner_of[callee].add(caller)
-        elif (
-            rel_type == "USES_TYPE"
-            and kind == "return"
-            and caller in info
-            and callee in info
-        ):
+        elif rel_type == "USES_TYPE" and kind == "return" and caller in info and callee in info:
             method_return_type[caller].add(callee)
     fluent_self_return_count: dict[str, int] = defaultdict(int)
     for method_uid, return_types in method_return_type.items():
@@ -622,9 +617,7 @@ def _depth_from_public_full_graph(
 
     graph_nodes = set(full_call_fan_in) | set(full_call_out)
     public_uids = {
-        uid
-        for uid in graph_nodes
-        if full_call_fan_in[uid] <= _EPS and full_call_out[uid]
+        uid for uid in graph_nodes if full_call_fan_in[uid] <= _EPS and full_call_out[uid]
     }
     depths = _bfs_depths(full_call_out, public_uids)
     unreachable_depth = max(depths.values()) + 1 if depths else 0
@@ -666,7 +659,9 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
     )
 
 
-def _query_symbols(db, workspace_id: str) -> list[tuple[str, str, str, bool, bool, bool, bool, bool]]:
+def _query_symbols(
+    db, workspace_id: str
+) -> list[tuple[str, str, str, bool, bool, bool, bool, bool]]:
     with db.driver.session() as session:
         result = session.run(
             """

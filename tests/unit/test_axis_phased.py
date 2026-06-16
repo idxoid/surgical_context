@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from sidecar.axis.axis_phased import expand_phased
 from sidecar.axis.role_retrieval import RoleCandidate
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -75,9 +73,16 @@ class _FakeLance:
 
 def _seed(uid, kinds=()):
     return RoleCandidate(
-        uid=uid, name=uid.split(":")[-1], file_path=f"/r/{uid}.py",
-        role="?", satisfying_contracts=(), satisfying_kinds=tuple(kinds),
-        contract_count=0, kind_count=0, vector_distance=None, score=1.0,
+        uid=uid,
+        name=uid.split(":")[-1],
+        file_path=f"/r/{uid}.py",
+        role="?",
+        satisfying_contracts=(),
+        satisfying_kinds=tuple(kinds),
+        contract_count=0,
+        kind_count=0,
+        vector_distance=None,
+        score=1.0,
     )
 
 
@@ -103,12 +108,17 @@ def test_two_phases_tagged():
     seed = _seed("u:router")
     lance = _FakeLance([_lance_kind_row("u:router", ["web_route_register"])])
     # call 1 = discovery walk, call 2 = execution walk
-    db = _FakeDB([
-        [_wrow("u:handler", "handler", "/r/routing.py")],
-        [_wrow("u:logic", "logic", "/r/deps.py")],
-    ])
+    db = _FakeDB(
+        [
+            [_wrow("u:handler", "handler", "/r/routing.py")],
+            [_wrow("u:logic", "logic", "/r/deps.py")],
+        ]
+    )
     out = expand_phased(
-        [seed], db=db, lance=lance, workspace_id=WORKSPACE,
+        [seed],
+        db=db,
+        lance=lance,
+        workspace_id=WORKSPACE,
     )
     tags = {c.uid: c.satisfying_kinds[0] for c in out}
     assert tags["u:handler"] == "phase_discovery"
@@ -144,10 +154,12 @@ def test_execution_walks_control_from_seed_and_frontier():
     it can fall past the entrypoint into called code."""
     seed = _seed("u:router")
     lance = _FakeLance([_lance_kind_row("u:router", ["web_route_register"])])
-    db = _FakeDB([
-        [_wrow("u:handler")],   # discovery frontier
-        [_wrow("u:called")],    # execution
-    ])
+    db = _FakeDB(
+        [
+            [_wrow("u:handler")],  # discovery frontier
+            [_wrow("u:called")],  # execution
+        ]
+    )
     expand_phased([seed], db=db, lance=lance, workspace_id=WORKSPACE)
     exec_q = db.s.queries[1]
     assert "CALLS" in exec_q  # control axis
@@ -156,13 +168,19 @@ def test_execution_walks_control_from_seed_and_frontier():
 def test_caps_respected_per_phase():
     seed = _seed("u:router")
     lance = _FakeLance([_lance_kind_row("u:router", ["web_route_register"])])
-    db = _FakeDB([
-        [_wrow(f"u:d{i}", path=f"/r/d{i}.py") for i in range(20)],
-        [_wrow(f"u:e{i}", path=f"/r/e{i}.py") for i in range(20)],
-    ])
+    db = _FakeDB(
+        [
+            [_wrow(f"u:d{i}", path=f"/r/d{i}.py") for i in range(20)],
+            [_wrow(f"u:e{i}", path=f"/r/e{i}.py") for i in range(20)],
+        ]
+    )
     out = expand_phased(
-        [seed], db=db, lance=lance, workspace_id=WORKSPACE,
-        max_discovery=3, max_execution=4,
+        [seed],
+        db=db,
+        lance=lance,
+        workspace_id=WORKSPACE,
+        max_discovery=3,
+        max_execution=4,
     )
     disc = [c for c in out if c.satisfying_kinds == ("phase_discovery",)]
     exe = [c for c in out if c.satisfying_kinds == ("phase_execution",)]
@@ -172,9 +190,11 @@ def test_caps_respected_per_phase():
 def test_seeds_excluded_from_output():
     seed = _seed("u:router")
     lance = _FakeLance([_lance_kind_row("u:router", ["web_route_register"])])
-    db = _FakeDB([
-        [_wrow("u:router")],  # discovery returns the seed itself
-        [_wrow("u:other")],
-    ])
+    db = _FakeDB(
+        [
+            [_wrow("u:router")],  # discovery returns the seed itself
+            [_wrow("u:other")],
+        ]
+    )
     out = expand_phased([seed], db=db, lance=lance, workspace_id=WORKSPACE)
     assert "u:router" not in {c.uid for c in out}

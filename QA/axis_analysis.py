@@ -395,9 +395,7 @@ class ContractRequirement:
 # Listed here so the coverage report distinguishes them from genuinely weak
 # fallback contracts. A negative-space contract is honest evidence of
 # "structurally inconspicuous runtime node" — not a fallback.
-NEGATIVE_SPACE_CONTRACTS: frozenset[str] = frozenset(
-    {"dispersed_runtime_position"}
-)
+NEGATIVE_SPACE_CONTRACTS: frozenset[str] = frozenset({"dispersed_runtime_position"})
 
 # Contracts whose required bits are themselves weakly-discriminating (just
 # "reachable on a runtime path"). Questions whose only contract is one of these
@@ -572,8 +570,7 @@ CONTRACTS: dict[str, ContractRequirement] = {
         dfg=(),
         struct=(),
         container_kind="error_dispatch",
-        notes="Raise value and / or except type. Dispatch container optional "
-        "when only thrown.",
+        notes="Raise value and / or except type. Dispatch container optional when only thrown.",
     ),
     "external_integration_boundary": ContractRequirement(
         name="external_integration_boundary",
@@ -631,7 +628,14 @@ CONTAINER_KINDS: dict[str, ContainerKindSpec] = {
             "USES_TYPE / external import root in {starlette.routing, werkzeug.routing, fastapi.routing}",
             "keyed_write keys include HTTP method literals or URL patterns",
         ),
-        expected_frameworks=("Flask", "FastAPI", "Django (URLconf)", "Starlette", "Express", "NestJS"),
+        expected_frameworks=(
+            "Flask",
+            "FastAPI",
+            "Django (URLconf)",
+            "Starlette",
+            "Express",
+            "NestJS",
+        ),
     ),
     "task_register": ContainerKindSpec(
         name="task_register",
@@ -677,7 +681,14 @@ CONTAINER_KINDS: dict[str, ContainerKindSpec] = {
             "methods returning constructed value of the same class",
             "validators / serializers referencing the same class",
         ),
-        expected_frameworks=("Pydantic Model", "Django Model", "SQLAlchemy declarative_base", "msgspec", "attrs", "dataclass"),
+        expected_frameworks=(
+            "Pydantic Model",
+            "Django Model",
+            "SQLAlchemy declarative_base",
+            "msgspec",
+            "attrs",
+            "dataclass",
+        ),
     ),
     "di_container": ContainerKindSpec(
         name="di_container",
@@ -692,7 +703,12 @@ CONTAINER_KINDS: dict[str, ContainerKindSpec] = {
             "call site resolves provider into the argument slot",
             "no route/task fingerprint",
         ),
-        expected_frameworks=("FastAPI Depends", "Click context", "NestJS provider", "pytest fixture"),
+        expected_frameworks=(
+            "FastAPI Depends",
+            "Click context",
+            "NestJS provider",
+            "pytest fixture",
+        ),
     ),
     "middleware_chain": ContainerKindSpec(
         name="middleware_chain",
@@ -707,7 +723,12 @@ CONTAINER_KINDS: dict[str, ContainerKindSpec] = {
             "iteration_source over the container drives sequential invocation",
             "each callable receives the next callable as argument (wrapper continuation)",
         ),
-        expected_frameworks=("ASGI/WSGI middleware stack", "Express app.use", "Django MIDDLEWARE", "NestJS interceptors"),
+        expected_frameworks=(
+            "ASGI/WSGI middleware stack",
+            "Express app.use",
+            "Django MIDDLEWARE",
+            "NestJS interceptors",
+        ),
     ),
     "config_carrier": ContainerKindSpec(
         name="config_carrier",
@@ -736,7 +757,11 @@ CONTAINER_KINDS: dict[str, ContainerKindSpec] = {
             "literal key in container is an exception class",
             "value read at runtime and invoked from raise path",
         ),
-        expected_frameworks=("FastAPI exception_handlers", "Flask errorhandler", "Django middleware"),
+        expected_frameworks=(
+            "FastAPI exception_handlers",
+            "Flask errorhandler",
+            "Django middleware",
+        ),
     ),
     "proxy_object": ContainerKindSpec(
         name="proxy_object",
@@ -763,7 +788,12 @@ CONTAINER_KINDS: dict[str, ContainerKindSpec] = {
             "write and read share literal key identity",
             "key set is small, fixed at declaration time",
         ),
-        expected_frameworks=("Pydantic field info", "SQLAlchemy mapper info", "NestJS metadata reflection", "dataclass __init_subclass__"),
+        expected_frameworks=(
+            "Pydantic field info",
+            "SQLAlchemy mapper info",
+            "NestJS metadata reflection",
+            "dataclass __init_subclass__",
+        ),
     ),
     # registry_kind is an *abstract* parameter for contracts that take any
     # registry-shaped container. The concrete kind is one of the above (web /
@@ -923,9 +953,7 @@ def analyze_question(
 
     notes: list[str] = []
     if impossible:
-        notes.append(
-            "roles without contract mapping yet: " + ", ".join(sorted(set(impossible)))
-        )
+        notes.append("roles without contract mapping yet: " + ", ".join(sorted(set(impossible))))
     if not expected:
         notes.append("no expected_roles in question — coverage cannot be measured")
 
@@ -1007,7 +1035,9 @@ def coverage_report(
             "questions_with_impossible_roles": sum(1 for g in gaps if g.impossible_roles),
             "questions_with_unmodeled_kinds": sum(1 for g in gaps if g.container_kinds_unmodeled),
             "questions_with_only_weak_role_contracts": sum(1 for g in gaps if g.weak_only_roles),
-            "questions_with_only_negative_space_role_contracts": sum(1 for g in gaps if g.negative_space_only_roles),
+            "questions_with_only_negative_space_role_contracts": sum(
+                1 for g in gaps if g.negative_space_only_roles
+            ),
         },
         "role_demand": role_freq.most_common(),
         "impossible_roles": impossible_roles.most_common(),
@@ -1040,16 +1070,32 @@ def render_markdown(report: dict, output: Path) -> None:
     )
     lines.append("## Summary\n\n")
     lines.append(f"- total questions: **{s['total_questions']}**\n")
-    lines.append(f"- with all required bit types modeled: **{s['questions_with_all_required_bit_types_modeled']}**\n")
-    lines.append(f"- with at least one unmodeled required bit type: **{s['questions_with_unmodeled_required_bit_types']}**\n")
-    lines.append("- note: this is inventory coverage only, not proof that a specific benchmark symbol actually has those bits.\n")
+    lines.append(
+        f"- with all required bit types modeled: **{s['questions_with_all_required_bit_types_modeled']}**\n"
+    )
+    lines.append(
+        f"- with at least one unmodeled required bit type: **{s['questions_with_unmodeled_required_bit_types']}**\n"
+    )
+    lines.append(
+        "- note: this is inventory coverage only, not proof that a specific benchmark symbol actually has those bits.\n"
+    )
     lines.append(f"- with unmodeled container kinds: **{s['questions_with_unmodeled_kinds']}**\n")
-    lines.append(f"- with at least one role that has no contract mapping yet: **{s['questions_with_impossible_roles']}**\n")
-    lines.append(f"- with at least one role mapped only to weakly-discriminating contracts: **{s.get('questions_with_only_weak_role_contracts', 0)}**\n")
-    lines.append(f"- with at least one role mapped only to negative-space contracts: **{s.get('questions_with_only_negative_space_role_contracts', 0)}**\n\n")
+    lines.append(
+        f"- with at least one role that has no contract mapping yet: **{s['questions_with_impossible_roles']}**\n"
+    )
+    lines.append(
+        f"- with at least one role mapped only to weakly-discriminating contracts: **{s.get('questions_with_only_weak_role_contracts', 0)}**\n"
+    )
+    lines.append(
+        f"- with at least one role mapped only to negative-space contracts: **{s.get('questions_with_only_negative_space_role_contracts', 0)}**\n\n"
+    )
     if WEAK_CONTRACTS:
-        lines.append(f"`WEAK_CONTRACTS = {{ {', '.join(sorted(WEAK_CONTRACTS))} }}` — required bits are themselves background facts (e.g. just `cfg.call_site`). A role mapped only to weak contracts technically counts as covered but cannot drive discrimination at the role resolver. L3 has to grade contract strength.\n\n")
-    lines.append(f"`NEGATIVE_SPACE_CONTRACTS = {{ {', '.join(sorted(NEGATIVE_SPACE_CONTRACTS))} }}` — positive contracts whose proof is built on absence: structurally inconspicuous runtime nodes (low edge density to kind-classified containers; dispersion of callers across packages; not a CFG driver). The L1 axis-bit content is permissive; the discriminator lives in L2/L3 graph-context predicates. NOT a fallback — honest evidence of background runtime position.\n\n")
+        lines.append(
+            f"`WEAK_CONTRACTS = {{ {', '.join(sorted(WEAK_CONTRACTS))} }}` — required bits are themselves background facts (e.g. just `cfg.call_site`). A role mapped only to weak contracts technically counts as covered but cannot drive discrimination at the role resolver. L3 has to grade contract strength.\n\n"
+        )
+    lines.append(
+        f"`NEGATIVE_SPACE_CONTRACTS = {{ {', '.join(sorted(NEGATIVE_SPACE_CONTRACTS))} }}` — positive contracts whose proof is built on absence: structurally inconspicuous runtime nodes (low edge density to kind-classified containers; dispersion of callers across packages; not a CFG driver). The L1 axis-bit content is permissive; the discriminator lives in L2/L3 graph-context predicates. NOT a fallback — honest evidence of background runtime position.\n\n"
+    )
 
     lines.append("## Top role demand\n\n")
     lines.append("| role | questions |\n|---|---|\n")
@@ -1059,14 +1105,18 @@ def render_markdown(report: dict, output: Path) -> None:
 
     if report["impossible_roles"]:
         lines.append("## Roles without contract mapping (analyst gap)\n\n")
-        lines.append("These roles appear in question packs but are not yet wired to any contract family. Either the role is too generic (should be split into mechanism-specific contracts) or the mapping in `QA.axis_analysis.ROLE_CONTRACTS` is incomplete.\n\n")
+        lines.append(
+            "These roles appear in question packs but are not yet wired to any contract family. Either the role is too generic (should be split into mechanism-specific contracts) or the mapping in `QA.axis_analysis.ROLE_CONTRACTS` is incomplete.\n\n"
+        )
         lines.append("| role | questions |\n|---|---|\n")
         for role, count in report["impossible_roles"]:
             lines.append(f"| `{role}` | {count} |\n")
         lines.append("\n")
 
     lines.append("## Bit demand vs supply\n\n")
-    lines.append("Each row: a bit referenced by a contract that satisfies some expected role. ``demand`` is questions that would need it; ``supplied`` is whether the extractor currently emits it.\n\n")
+    lines.append(
+        "Each row: a bit referenced by a contract that satisfies some expected role. ``demand`` is questions that would need it; ``supplied`` is whether the extractor currently emits it.\n\n"
+    )
     lines.append("| axis.bit | demand | supplied by extractor |\n|---|---|---|\n")
     for key, demand in sorted(report["bit_demand"]["all"].items(), key=lambda x: -x[1]):
         supplied = "✅" if key not in report["bit_demand"]["missing"] else "❌"
@@ -1076,14 +1126,14 @@ def render_markdown(report: dict, output: Path) -> None:
     if report["bit_demand"]["missing"]:
         lines.append("### Bits in demand but NOT emitted (P0 extractor gap)\n\n")
         lines.append("| axis.bit | demand |\n|---|---|\n")
-        for key, demand in sorted(
-            report["bit_demand"]["missing"].items(), key=lambda x: -x[1]
-        ):
+        for key, demand in sorted(report["bit_demand"]["missing"].items(), key=lambda x: -x[1]):
             lines.append(f"| `{key}` | {demand} |\n")
         lines.append("\n")
 
     lines.append("## Container kinds in demand\n\n")
-    lines.append("Container kind is the L2 dependency of each contract. ``demand`` is questions whose chosen contract names this kind. ``modeled`` is whether `QA.axis_analysis.CONTAINER_KINDS` carries a fingerprint sketch for it.\n\n")
+    lines.append(
+        "Container kind is the L2 dependency of each contract. ``demand`` is questions whose chosen contract names this kind. ``modeled`` is whether `QA.axis_analysis.CONTAINER_KINDS` carries a fingerprint sketch for it.\n\n"
+    )
     lines.append("| container_kind | demand | modeled |\n|---|---|---|\n")
     for kind, demand in report["container_kind_demand"]:
         modeled = "✅" if kind in CONTAINER_KINDS else "❌"
@@ -1132,9 +1182,7 @@ def run(
     inventory = inventory_extractor_bits()
     questions = load_packs(pack_paths)
     report = coverage_report(questions, inventory)
-    (out_dir / "axis_coverage.json").write_text(
-        json.dumps(report, indent=2, sort_keys=False)
-    )
+    (out_dir / "axis_coverage.json").write_text(json.dumps(report, indent=2, sort_keys=False))
     render_markdown(report, out_dir / "axis_coverage.md")
     return report
 

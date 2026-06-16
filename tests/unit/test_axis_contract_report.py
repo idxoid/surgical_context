@@ -88,9 +88,7 @@ def test_compile_contract_report_row_includes_contract_and_query_plan():
     report_row = compile_contract_report_row(row, workspace_id="ws")
 
     assert report_row.container_kinds == ("metadata_carrier",)
-    assert [contract.contract for contract in report_row.contracts] == [
-        "metadata_key_roundtrip"
-    ]
+    assert [contract.contract for contract in report_row.contracts] == ["metadata_key_roundtrip"]
     assert report_row.diagnostics == ()
     assert report_row.persisted_contracts == ()
     assert report_row.contract_drift is False
@@ -161,7 +159,7 @@ def test_contract_report_marks_persisted_contract_drift():
         "cfg_bits": [],
         "dfg_bits": ["keyed_write", "keyed_read"],
         "struct_bits": ["literal_key"],
-        "axis_contracts_json": "[{\"contract\": \"stale_contract\"}]",
+        "axis_contracts_json": '[{"contract": "stale_contract"}]',
         "axis_container_kinds_json": _kind_json(
             ContainerKindMatch(
                 kind="metadata_carrier",
@@ -180,9 +178,7 @@ def test_contract_report_marks_persisted_contract_drift():
 
     report_row = compile_contract_report_row(row, workspace_id="ws")
 
-    assert [contract.contract for contract in report_row.contracts] == [
-        "metadata_key_roundtrip"
-    ]
+    assert [contract.contract for contract in report_row.contracts] == ["metadata_key_roundtrip"]
     assert report_row.persisted_contracts == ("stale_contract",)
     assert report_row.contract_drift is True
 
@@ -295,7 +291,7 @@ def test_summarize_axis_contract_report_counts_rows_and_drift():
             "cfg_bits": [],
             "dfg_bits": ["keyed_write", "keyed_read"],
             "struct_bits": ["literal_key"],
-            "axis_contracts_json": "[{\"contract\": \"stale_contract\"}]",
+            "axis_contracts_json": '[{"contract": "stale_contract"}]',
             "axis_container_kinds_json": _kind_json(
                 ContainerKindMatch(
                     kind="metadata_carrier",

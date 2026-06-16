@@ -122,7 +122,9 @@ def collect_external_call_links(
         root = external_root_from_qualified_name(qn)
         if classify_external_root(root, boundary, project_external_roots) != "external":
             continue
-        member = qn[len(root) + 1 :] if qn.startswith(f"{root}.") and len(qn) > len(root) + 1 else ""
+        member = (
+            qn[len(root) + 1 :] if qn.startswith(f"{root}.") and len(qn) > len(root) + 1 else ""
+        )
         line = int(call.get("call_site_line") or 0)
         key = (caller_uid, root, line)
         if key in seen:
@@ -263,7 +265,7 @@ def _named_imports_from_source(
                 add_link(module, name, alias)
             continue
         if line.startswith("import "):
-            body = line[len("import "):].strip().strip("()").strip()
+            body = line[len("import ") :].strip().strip("()").strip()
             for chunk in body.split(","):
                 item = chunk.strip()
                 if not item:
@@ -343,12 +345,8 @@ def external_symbol_import_rows(
                 "name": link.name,
                 "local_alias": link.local_alias,
                 "external_root": _module_root(link.module),
-                "external_pkg_uid": external_pkg_uid(
-                    workspace_id, _module_root(link.module)
-                ),
-                "external_symbol_uid": external_symbol_uid(
-                    workspace_id, link.qualified_name
-                ),
+                "external_pkg_uid": external_pkg_uid(workspace_id, _module_root(link.module)),
+                "external_symbol_uid": external_symbol_uid(workspace_id, link.qualified_name),
             }
         )
     return rows
@@ -392,7 +390,5 @@ def apply_external_boundary_for_file(
         external_call_link_rows(call_links, workspace_id),
         external_import_link_rows(import_links, workspace_id),
         workspace_id=workspace_id,
-        symbol_import_links=external_symbol_import_rows(
-            symbol_import_links, workspace_id
-        ),
+        symbol_import_links=external_symbol_import_rows(symbol_import_links, workspace_id),
     )

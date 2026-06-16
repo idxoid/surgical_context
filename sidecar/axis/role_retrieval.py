@@ -174,9 +174,7 @@ class WorkspaceScan:
     def __post_init__(self) -> None:
         if not self.rows_by_uid:
             self.rows_by_uid = {
-                str(row.get("uid") or ""): row
-                for row in self.rows
-                if row.get("uid")
+                str(row.get("uid") or ""): row for row in self.rows if row.get("uid")
             }
 
 
@@ -228,9 +226,7 @@ def scan_workspace_rows(
     if with_vector:
         columns.append("vector")
     ws_quoted = workspace_id.replace("'", "''")
-    arrow = table.to_lance().to_table(
-        columns=columns, filter=f"workspace_id = '{ws_quoted}'"
-    )
+    arrow = table.to_lance().to_table(columns=columns, filter=f"workspace_id = '{ws_quoted}'")
     from sidecar.axis.test_file_filter import is_test_path
 
     # Extract the vector column as a numpy matrix without round-tripping
@@ -241,9 +237,9 @@ def scan_workspace_rows(
             import numpy as np
 
             vcol = arrow.column("vector").combine_chunks()
-            vectors_all = np.asarray(
-                vcol.values.to_numpy(zero_copy_only=False)
-            ).reshape(arrow.num_rows, -1)
+            vectors_all = np.asarray(vcol.values.to_numpy(zero_copy_only=False)).reshape(
+                arrow.num_rows, -1
+            )
         except Exception:
             vectors_all = None
         meta = arrow.drop(["vector"]).to_pylist()
@@ -306,9 +302,7 @@ def find_symbols_by_roles(
     has_query = bool(query_text and embed_fn is not None)
     # Vectorised distance: one numpy pass over the whole matrix, indexed
     # by each row's ``_idx`` — no per-row Python distance loop.
-    distances = _vectorised_distances(
-        scan.vectors if has_query else None, query_text, embed_fn
-    )
+    distances = _vectorised_distances(scan.vectors if has_query else None, query_text, embed_fn)
 
     def _distance(row: dict) -> float | None:
         if distances is None:
@@ -351,11 +345,8 @@ def find_symbols_by_roles(
                     satisfying_kinds=tuple(matched_kinds),
                     contract_count=len(matched_contracts),
                     kind_count=len(matched_kinds),
-                    vector_distance=(
-                        float(distance) if distance is not None else None
-                    ),
-                    score=_combined_score(structural, semantic, has_query)
-                    * tier_w,
+                    vector_distance=(float(distance) if distance is not None else None),
+                    score=_combined_score(structural, semantic, has_query) * tier_w,
                 )
             )
         # uid breaks score ties so the per-role cap is reproducible — without

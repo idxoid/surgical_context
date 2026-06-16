@@ -100,9 +100,7 @@ def axis_bundles_to_prompt_context(
                 continue
             seen.add(rel.uid)
             graph_context.append(
-                _to_symbol_context(
-                    rel, relation=bundle.role or "related", render_mode=render_mode
-                )
+                _to_symbol_context(rel, relation=bundle.role or "related", render_mode=render_mode)
             )
 
     return PromptContext(

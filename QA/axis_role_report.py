@@ -37,7 +37,8 @@ def load_rows(workspace_id: str) -> list[dict[str, Any]]:
     table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
     return [
         r
-        for r in table.to_lance().to_table(
+        for r in table.to_lance()
+        .to_table(
             columns=[
                 "uid",
                 "name",
@@ -46,7 +47,8 @@ def load_rows(workspace_id: str) -> list[dict[str, Any]]:
                 "axis_container_kinds_json",
                 "workspace_id",
             ],
-        ).to_pylist()
+        )
+        .to_pylist()
         if r.get("workspace_id") == workspace_id
     ]
 
@@ -93,9 +95,7 @@ def report_workspace(workspace_id: str) -> dict[str, Any]:
         "rows_with_contracts": total_with_contracts,
         "rows_with_no_role": no_role_count,
         "role_symbol_count": dict(role_symbol_count),
-        "role_contract_count": {
-            role: dict(counts) for role, counts in role_contract_count.items()
-        },
+        "role_contract_count": {role: dict(counts) for role, counts in role_contract_count.items()},
         "sample": symbol_role_sample,
     }
 
@@ -113,22 +113,17 @@ def print_workspace_report(report: dict[str, Any]) -> None:
     if not role_counts:
         print("    (no roles satisfied in this workspace)")
         for role in sorted(ROLE_CONTRACT_MAP):
-            print(f"    {role:25s}  0  (contracts in scope: "
-                  f"{sorted(ROLE_CONTRACT_MAP[role])})")
+            print(f"    {role:25s}  0  (contracts in scope: {sorted(ROLE_CONTRACT_MAP[role])})")
     for role in sorted(role_counts, key=lambda r: -role_counts[r]):
         evidence = report["role_contract_count"].get(role, {})
-        evidence_str = ", ".join(
-            f"{c}={n}" for c, n in sorted(evidence.items())
-        )
+        evidence_str = ", ".join(f"{c}={n}" for c, n in sorted(evidence.items()))
         print(f"    {role:25s}  {role_counts[role]:4d}  via [{evidence_str}]")
 
     if report["sample"]:
         print("\n  sample symbols (≤8):")
         for s in report["sample"]:
             short_path = (s["file_path"] or "").split("/")[-1]
-            print(
-                f"    {s['name']:18s} ({short_path}) → roles={s['roles']}"
-            )
+            print(f"    {s['name']:18s} ({short_path}) → roles={s['roles']}")
 
 
 def main() -> None:

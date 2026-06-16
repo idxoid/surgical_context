@@ -32,11 +32,7 @@ def test_bare_base_path_falls_back_to_bare_name():
 
 
 def test_dotted_base_keeps_module_attr_chain():
-    source = (
-        "from starlette import routing\n"
-        "class APIRouter(routing.Router):\n"
-        "    pass\n"
-    )
+    source = "from starlette import routing\nclass APIRouter(routing.Router):\n    pass\n"
 
     bases = _bases(source)
 
@@ -49,11 +45,7 @@ def test_dotted_base_keeps_module_attr_chain():
 
 
 def test_two_segment_dotted_base_is_preserved():
-    source = (
-        "import a.b\n"
-        "class C(a.b.Base):\n"
-        "    pass\n"
-    )
+    source = "import a.b\nclass C(a.b.Base):\n    pass\n"
 
     bases = _bases(source)
 

@@ -151,8 +151,12 @@ def test_walk_rejects_unsafe_max_hops(bad_hops):
 def test_file_classes_anchor_starts_at_classes_and_excludes_same_file():
     db = _FakeDB([])
     walk_neighbours(
-        db, WORKSPACE, ["u:s"],
-        edges=EdgeProfile.INHERITANCE, direction="forward", anchor="file_classes",
+        db,
+        WORKSPACE,
+        ["u:s"],
+        edges=EdgeProfile.INHERITANCE,
+        direction="forward",
+        anchor="file_classes",
     )
     q = db.session_obj.runs[0][0]
     assert "(seed_file)-[:CONTAINS]->(cls:Symbol)" in q
@@ -163,8 +167,11 @@ def test_file_classes_anchor_starts_at_classes_and_excludes_same_file():
 def test_class_targets_only_filters_neighbour_kind():
     db = _FakeDB([])
     walk_neighbours(
-        db, WORKSPACE, ["u:s"],
-        edges=EdgeProfile.INHERITANCE, class_targets_only=True,
+        db,
+        WORKSPACE,
+        ["u:s"],
+        edges=EdgeProfile.INHERITANCE,
+        class_targets_only=True,
     )
     assert "n.kind = 'class'" in db.session_obj.runs[0][0]
 
@@ -172,7 +179,11 @@ def test_class_targets_only_filters_neighbour_kind():
 def test_exclude_tests_injects_fence_clause():
     db = _FakeDB([])
     walk_neighbours(
-        db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS, exclude_tests=True,
+        db,
+        WORKSPACE,
+        ["u:s"],
+        edges=EdgeProfile.AFFECTS,
+        exclude_tests=True,
     )
     q = db.session_obj.runs[0][0]
     assert "/tests/" in q and "fn.path" in q
@@ -181,7 +192,11 @@ def test_exclude_tests_injects_fence_clause():
 def test_no_exclude_tests_has_no_fence():
     db = _FakeDB([])
     walk_neighbours(
-        db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS, exclude_tests=False,
+        db,
+        WORKSPACE,
+        ["u:s"],
+        edges=EdgeProfile.AFFECTS,
+        exclude_tests=False,
     )
     assert "/tests/" not in db.session_obj.runs[0][0]
 

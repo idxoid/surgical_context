@@ -5,11 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pytest
-
 from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
 from sidecar.axis.role_retrieval import RoleCandidate
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -119,9 +116,7 @@ def _lance_row(uid: str, *, kinds: list[str], name: str = "n") -> dict[str, Any]
         "uid": uid,
         "name": name,
         "file_path": f"/tmp/{name}.py",
-        "axis_container_kinds_json": json.dumps(
-            [{"kind": k} for k in kinds]
-        ),
+        "axis_container_kinds_json": json.dumps([{"kind": k} for k in kinds]),
         "workspace_id": WORKSPACE,
     }
 
@@ -189,9 +184,7 @@ def test_neighbour_already_in_target_role_is_not_duplicated():
         "dispatch_surface": [pre_existing],
     }
     db = _FakeDB([_wrows(["u:dispatcher"])])
-    lance = _FakeLance(
-        [_lance_row("u:dispatcher", kinds=["keyed_dispatch_callable"])]
-    )
+    lance = _FakeLance([_lance_row("u:dispatcher", kinds=["keyed_dispatch_callable"])])
 
     out = expand_candidates_via_neighbourhood(
         ["proxy_mechanism", "dispatch_surface"],
@@ -277,9 +270,7 @@ def test_max_injected_per_role_cap_respected():
     cands = {"proxy_mechanism": [seed], "dispatch_surface": []}
     neighbours = [f"u:n{i}" for i in range(20)]
     db = _FakeDB([_wrows(neighbours)])
-    lance = _FakeLance(
-        [_lance_row(u, kinds=["middleware_chain"]) for u in neighbours]
-    )
+    lance = _FakeLance([_lance_row(u, kinds=["middleware_chain"]) for u in neighbours])
 
     out = expand_candidates_via_neighbourhood(
         ["proxy_mechanism", "dispatch_surface"],
@@ -304,9 +295,7 @@ def test_workspace_isolation_blocks_neighbour_kind_lookup():
         "uid": "u:other_ws",
         "name": "x",
         "file_path": "/tmp/x.py",
-        "axis_container_kinds_json": json.dumps(
-            [{"kind": "keyed_dispatch_callable"}]
-        ),
+        "axis_container_kinds_json": json.dumps([{"kind": "keyed_dispatch_callable"}]),
         "workspace_id": "some_other_workspace",
     }
     lance = _FakeLance([row])
@@ -368,9 +357,7 @@ def test_auto_promote_threshold_blocks_weak_evidence():
     seed = _candidate("u:proxy", role="proxy_mechanism")
     cands = {"proxy_mechanism": [seed]}
     db = _FakeDB([_wrows(["u:single"])])
-    lance = _FakeLance(
-        [_lance_row("u:single", kinds=["keyed_dispatch_callable"])]
-    )
+    lance = _FakeLance([_lance_row("u:single", kinds=["keyed_dispatch_callable"])])
 
     out = expand_candidates_via_neighbourhood(
         ["proxy_mechanism"],
@@ -389,16 +376,9 @@ def test_auto_promote_pool_filter_restricts_eligible_roles():
     avoid e.g. ``binding_surface`` umbrella inflation."""
     seed = _candidate("u:proxy", role="proxy_mechanism")
     cands = {"proxy_mechanism": [seed]}
-    db = _FakeDB(
-        [
-            _wrows(["u:d1", "u:d2", "u:d3"])
-        ]
-    )
+    db = _FakeDB([_wrows(["u:d1", "u:d2", "u:d3"])])
     lance = _FakeLance(
-        [
-            _lance_row(u, kinds=["keyed_dispatch_callable"])
-            for u in ("u:d1", "u:d2", "u:d3")
-        ]
+        [_lance_row(u, kinds=["keyed_dispatch_callable"]) for u in ("u:d1", "u:d2", "u:d3")]
     )
 
     out = expand_candidates_via_neighbourhood(

@@ -43,9 +43,7 @@ def patch_axis_pipeline(monkeypatch):
     # The pipeline always applies intent-axis ranking; neutralise it so the
     # candidate scores assert against their pre-boost values (ranking has
     # its own unit coverage).
-    monkeypatch.setattr(
-        _rank_mod, "apply_intent_axis_boost", lambda raw, roles, **_k: dict(raw)
-    )
+    monkeypatch.setattr(_rank_mod, "apply_intent_axis_boost", lambda raw, roles, **_k: dict(raw))
 
     candidate = RoleCandidate(
         uid="u:app",
@@ -116,12 +114,8 @@ def patch_axis_pipeline(monkeypatch):
             return False
 
     monkeypatch.setattr(sidecar_main, "db_session", lambda **_: _NoopCtx())
-    monkeypatch.setattr(
-        sidecar_main, "_resolve_request_user", lambda *a, **k: "test-user"
-    )
-    monkeypatch.setattr(
-        sidecar_main, "_resolve_workspace", lambda _: "test-workspace"
-    )
+    monkeypatch.setattr(sidecar_main, "_resolve_request_user", lambda *a, **k: "test-user")
+    monkeypatch.setattr(sidecar_main, "_resolve_workspace", lambda _: "test-workspace")
     return candidate, bundle
 
 

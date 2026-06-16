@@ -36,7 +36,7 @@ class _ContractSpec:
 
     contract: str
     container_kinds: tuple[str, ...]
-    required_bits: tuple["AxisRequirement", ...]
+    required_bits: tuple[AxisRequirement, ...]
     payload_rule_name: str | None = None
     payload_rule: Callable[[AxisProfile], bool] | None = None
 
@@ -128,9 +128,7 @@ class AxisContractDiagnostic:
             "qualified_name": self.qualified_name,
             "container_kind": self.container_kind,
             "missing": list(self.missing),
-            "present_bits": [
-                {"axis": req.axis, "bit": req.bit} for req in self.present_bits
-            ],
+            "present_bits": [{"axis": req.axis, "bit": req.bit} for req in self.present_bits],
         }
 
 
@@ -170,12 +168,8 @@ class AxisContractMatch:
             "contract": self.contract,
             "symbol_uid": self.symbol_uid,
             "qualified_name": self.qualified_name,
-            "required_bits": [
-                {"axis": req.axis, "bit": req.bit} for req in self.required_bits
-            ],
-            "evidence_bits": [
-                {"axis": req.axis, "bit": req.bit} for req in self.evidence_bits
-            ],
+            "required_bits": [{"axis": req.axis, "bit": req.bit} for req in self.required_bits],
+            "evidence_bits": [{"axis": req.axis, "bit": req.bit} for req in self.evidence_bits],
             "container_kind": self.container_kind,
             "evidence_probes": list(self.evidence_probes),
             "traversal_mode": self.traversal_mode,
@@ -208,15 +202,17 @@ def _match_from_kind(
     )
 
 
-_register_spec(_ContractSpec(
-    contract="metadata_key_roundtrip",
-    container_kinds=("metadata_carrier",),
-    required_bits=(
-        AxisRequirement("dfg", "keyed_write"),
-        AxisRequirement("dfg", "keyed_read"),
-        AxisRequirement("struct", "literal_key"),
-    ),
-))
+_register_spec(
+    _ContractSpec(
+        contract="metadata_key_roundtrip",
+        container_kinds=("metadata_carrier",),
+        required_bits=(
+            AxisRequirement("dfg", "keyed_write"),
+            AxisRequirement("dfg", "keyed_read"),
+            AxisRequirement("struct", "literal_key"),
+        ),
+    )
+)
 
 
 @register_contract("metadata_key_roundtrip")
@@ -240,21 +236,22 @@ def _compile_metadata_key_roundtrip(
     )
 
 
-_register_spec(_ContractSpec(
-    contract="callable_container_dispatch",
-    container_kinds=("middleware_chain", "signal_register"),
-    required_bits=(
-        AxisRequirement("dfg", "callable_value"),
-        AxisRequirement("dfg", "container_write_value"),
-        AxisRequirement("dfg", "iteration_source"),
-        AxisRequirement("cfg", "value_call"),
-    ),
-    payload_rule_name=(
-        "payload_identity:container_write_value.container"
-        "==iteration_source.iterable"
-    ),
-    payload_rule=lambda profile: _shared_write_iteration_container(profile) is not None,
-))
+_register_spec(
+    _ContractSpec(
+        contract="callable_container_dispatch",
+        container_kinds=("middleware_chain", "signal_register"),
+        required_bits=(
+            AxisRequirement("dfg", "callable_value"),
+            AxisRequirement("dfg", "container_write_value"),
+            AxisRequirement("dfg", "iteration_source"),
+            AxisRequirement("cfg", "value_call"),
+        ),
+        payload_rule_name=(
+            "payload_identity:container_write_value.container==iteration_source.iterable"
+        ),
+        payload_rule=lambda profile: _shared_write_iteration_container(profile) is not None,
+    )
+)
 
 
 @register_contract("callable_container_dispatch")
@@ -283,15 +280,17 @@ def _compile_callable_container_dispatch(
     )
 
 
-_register_spec(_ContractSpec(
-    contract="provider_default_binding",
-    container_kinds=("di_container",),
-    required_bits=(
-        AxisRequirement("struct", "parameter_default"),
-        AxisRequirement("dfg", "parameter_default_value"),
-        AxisRequirement("dfg", "callable_value"),
-    ),
-))
+_register_spec(
+    _ContractSpec(
+        contract="provider_default_binding",
+        container_kinds=("di_container",),
+        required_bits=(
+            AxisRequirement("struct", "parameter_default"),
+            AxisRequirement("dfg", "parameter_default_value"),
+            AxisRequirement("dfg", "callable_value"),
+        ),
+    )
+)
 
 
 @register_contract("provider_default_binding")
@@ -315,11 +314,13 @@ def _compile_provider_default_binding(
     )
 
 
-_register_spec(_ContractSpec(
-    contract="proxy_indirection",
-    container_kinds=("proxy_object",),
-    required_bits=(),
-))
+_register_spec(
+    _ContractSpec(
+        contract="proxy_indirection",
+        container_kinds=("proxy_object",),
+        required_bits=(),
+    )
+)
 
 
 @register_contract("proxy_indirection")
@@ -343,11 +344,13 @@ def _compile_proxy_indirection(
     )
 
 
-_register_spec(_ContractSpec(
-    contract="data_shape_declaration",
-    container_kinds=("data_model",),
-    required_bits=(),
-))
+_register_spec(
+    _ContractSpec(
+        contract="data_shape_declaration",
+        container_kinds=("data_model",),
+        required_bits=(),
+    )
+)
 
 
 @register_contract("data_shape_declaration")
@@ -366,15 +369,17 @@ def _compile_data_shape_declaration(
     )
 
 
-_register_spec(_ContractSpec(
-    contract="configuration_carrier",
-    container_kinds=("config_carrier",),
-    required_bits=(
-        AxisRequirement("struct", "class_def"),
-        AxisRequirement("struct", "class_attribute"),
-        AxisRequirement("struct", "annotation"),
-    ),
-))
+_register_spec(
+    _ContractSpec(
+        contract="configuration_carrier",
+        container_kinds=("config_carrier",),
+        required_bits=(
+            AxisRequirement("struct", "class_def"),
+            AxisRequirement("struct", "class_attribute"),
+            AxisRequirement("struct", "annotation"),
+        ),
+    )
+)
 
 
 @register_contract("configuration_carrier")
@@ -408,11 +413,13 @@ def _compile_configuration_carrier(
 # registry-without-handlers case rather than overclaiming.
 
 
-_register_spec(_ContractSpec(
-    contract="route_register_binding",
-    container_kinds=("web_route_register",),
-    required_bits=(AxisRequirement("dfg", "registered_callable"),),
-))
+_register_spec(
+    _ContractSpec(
+        contract="route_register_binding",
+        container_kinds=("web_route_register",),
+        required_bits=(AxisRequirement("dfg", "registered_callable"),),
+    )
+)
 
 
 @register_contract("route_register_binding")
@@ -432,11 +439,13 @@ def _compile_route_register_binding(
     )
 
 
-_register_spec(_ContractSpec(
-    contract="task_register_binding",
-    container_kinds=("task_register",),
-    required_bits=(AxisRequirement("dfg", "registered_callable"),),
-))
+_register_spec(
+    _ContractSpec(
+        contract="task_register_binding",
+        container_kinds=("task_register",),
+        required_bits=(AxisRequirement("dfg", "registered_callable"),),
+    )
+)
 
 
 @register_contract("task_register_binding")
@@ -456,11 +465,13 @@ def _compile_task_register_binding(
     )
 
 
-_register_spec(_ContractSpec(
-    contract="error_dispatch_binding",
-    container_kinds=("error_dispatch",),
-    required_bits=(AxisRequirement("dfg", "registered_callable"),),
-))
+_register_spec(
+    _ContractSpec(
+        contract="error_dispatch_binding",
+        container_kinds=("error_dispatch",),
+        required_bits=(AxisRequirement("dfg", "registered_callable"),),
+    )
+)
 
 
 @register_contract("error_dispatch_binding")
@@ -495,11 +506,13 @@ def _compile_error_dispatch_binding(
 # catalogue does not list.
 
 
-_register_spec(_ContractSpec(
-    contract="registry_binding_inferred",
-    container_kinds=("registry_class",),
-    required_bits=(AxisRequirement("dfg", "registered_callable"),),
-))
+_register_spec(
+    _ContractSpec(
+        contract="registry_binding_inferred",
+        container_kinds=("registry_class",),
+        required_bits=(AxisRequirement("dfg", "registered_callable"),),
+    )
+)
 
 
 @register_contract("registry_binding_inferred")
@@ -530,16 +543,18 @@ def _compile_registry_binding_inferred(
 # unresolved (e.g. ``Depends(undefined_thing)``).
 
 
-_register_spec(_ContractSpec(
-    contract="dependency_injection_binding",
-    container_kinds=("di_container",),
-    required_bits=(
-        AxisRequirement("struct", "parameter_default"),
-        AxisRequirement("dfg", "parameter_default_value"),
-        AxisRequirement("dfg", "callable_value"),
-        AxisRequirement("dfg", "injected_dependency"),
-    ),
-))
+_register_spec(
+    _ContractSpec(
+        contract="dependency_injection_binding",
+        container_kinds=("di_container",),
+        required_bits=(
+            AxisRequirement("struct", "parameter_default"),
+            AxisRequirement("dfg", "parameter_default_value"),
+            AxisRequirement("dfg", "callable_value"),
+            AxisRequirement("dfg", "injected_dependency"),
+        ),
+    )
+)
 
 
 @register_contract("dependency_injection_binding")
@@ -631,9 +646,7 @@ class AxisContractCompiler:
                 missing.append(spec.payload_rule_name)
             if not missing:
                 missing.append(f"contract_predicate_returned_none:{spec.contract}")
-            present = tuple(
-                req for req in spec.required_bits if profile.has(req.axis, req.bit)
-            )
+            present = tuple(req for req in spec.required_bits if profile.has(req.axis, req.bit))
             diagnostics.append(
                 AxisContractDiagnostic(
                     contract=spec.contract,
@@ -647,7 +660,9 @@ class AxisContractCompiler:
         return diagnostics
 
 
-def container_kind_matches_from_json(raw: str | list[dict[str, object]]) -> list[ContainerKindMatch]:
+def container_kind_matches_from_json(
+    raw: str | list[dict[str, object]],
+) -> list[ContainerKindMatch]:
     """Parse persisted ``axis_container_kinds_json`` rows back into L2 matches."""
 
     if isinstance(raw, str):

@@ -292,7 +292,7 @@ def _code_compact(code: str | None, *, max_body_lines: int = 24) -> str:
     out = list(signature_lines)
     kept = 0
     in_docstring = False
-    for line in lines[len(signature_lines):]:
+    for line in lines[len(signature_lines) :]:
         stripped = line.strip()
         if not stripped:
             continue
@@ -332,7 +332,11 @@ def _class_parent_from_qualified_name(sym: ContextSymbol) -> str | None:
     if not (signature.startswith("def ") or signature.startswith("async def ")):
         return None
     header_line = next(
-        (line for line in raw_signature.splitlines() if line.strip() and not line.strip().startswith("@")),
+        (
+            line
+            for line in raw_signature.splitlines()
+            if line.strip() and not line.strip().startswith("@")
+        ),
         "",
     )
     if not header_line[:1].isspace():
@@ -829,8 +833,7 @@ def _apply_token_credit_budget(
         gain = st.base_utility * tier_weight
         if new_files:
             new_file_weight = max(
-                _tier_weight_for_path(path, impact_mode=impact_mode)
-                for path in new_files
+                _tier_weight_for_path(path, impact_mode=impact_mode) for path in new_files
             )
             gain += (0.35 + 0.08 * max(0, len(new_files) - 1)) * new_file_weight
         if bundle.role not in covered_roles:
@@ -888,21 +891,21 @@ def _apply_token_credit_budget(
         if selected and used + cost > token_budget:
             skipped_indices.add(idx)
             continue
-        selected.append({
-            "index": idx,
-            "source": source,
-            "rendered": rendered,
-            "cost": cost,
-        })
+        selected.append(
+            {
+                "index": idx,
+                "source": source,
+                "rendered": rendered,
+                "cost": cost,
+            }
+        )
         selected_indices.add(idx)
         used += cost
         _record_selection(source, cost)
         if used >= token_budget:
             break
 
-    def _upgrade_gain(
-        st: _BundleStatic, bundle: ContextBundle, rendered: ContextBundle
-    ) -> float:
+    def _upgrade_gain(st: _BundleStatic, bundle: ContextBundle, rendered: ContextBundle) -> float:
         mode_bonus = {
             "fold_compact": 0.18,
             "fold": 0.22,
@@ -955,8 +958,8 @@ def _apply_token_credit_budget(
         _push_upgrade(entry_index)
 
     while upgrade_heap and used < token_budget:
-        _neg_priority, entry_index, expected_cost, upgraded, upgraded_cost = (
-            heapq.heappop(upgrade_heap)
+        _neg_priority, entry_index, expected_cost, upgraded, upgraded_cost = heapq.heappop(
+            upgrade_heap
         )
         entry = selected[entry_index]
         current_cost = entry["cost"]
@@ -978,9 +981,7 @@ def _apply_token_credit_budget(
         _push_upgrade(entry_index)
 
     return [
-        entry["rendered"]
-        for entry in selected
-        if isinstance(entry.get("rendered"), ContextBundle)
+        entry["rendered"] for entry in selected if isinstance(entry.get("rendered"), ContextBundle)
     ]
 
 
@@ -1065,9 +1066,13 @@ def _hook_transparency_hits(
     the literal channel->wrapper archetype chain, not a blind binding widening.
     """
     sites_by_seed = walk_neighbours_grouped(
-        db, workspace_id, seed_uids,
-        edges=_HOOK_DECL_EDGES, direction="undirected",
-        max_hops=1, limit_per_seed=limit * 4,
+        db,
+        workspace_id,
+        seed_uids,
+        edges=_HOOK_DECL_EDGES,
+        direction="undirected",
+        max_hops=1,
+        limit_per_seed=limit * 4,
     )
     site_to_seeds: dict[str, list[str]] = {}
     for seed, sites in sites_by_seed.items():
@@ -1076,9 +1081,13 @@ def _hook_transparency_hits(
     if not site_to_seeds:
         return {}
     api_by_site = walk_neighbours_grouped(
-        db, workspace_id, sorted(site_to_seeds),
-        edges=_HOOK_REGISTER_API_EDGES, direction="undirected",
-        max_hops=1, limit_per_seed=limit * 4,
+        db,
+        workspace_id,
+        sorted(site_to_seeds),
+        edges=_HOOK_REGISTER_API_EDGES,
+        direction="undirected",
+        max_hops=1,
+        limit_per_seed=limit * 4,
     )
     out: dict[str, list[_Hit]] = {}
     for site_uid, apis in api_by_site.items():
@@ -1125,6 +1134,7 @@ def build_context_for_candidates(
     minimal render per bundle by marginal utility per token.
     """
     from sidecar.axis.test_file_filter import is_test_path
+
     candidates = list(candidates)
     if not candidates:
         return []
@@ -1158,9 +1168,7 @@ def build_context_for_candidates(
             if bucket is None:
                 continue
             for nb in neighbours:
-                bucket.append(
-                    _Hit(nb.uid, nb.name, nb.file_path, nb.depth, step_name)
-                )
+                bucket.append(_Hit(nb.uid, nb.name, nb.file_path, nb.depth, step_name))
 
     # Hook transparency: open hook-DECLARATION seeds through their registration
     # lifecycle (incoming HOOK sites -> the registration API they go through).
@@ -1173,9 +1181,7 @@ def build_context_for_candidates(
             if bucket is not None:
                 bucket.extend(extra)
 
-    expansion_per_candidate: list[
-        tuple[RoleCandidate, list]
-    ] = []
+    expansion_per_candidate: list[tuple[RoleCandidate, list]] = []
     uids_to_fetch: set[str] = set()
     for cand in candidates:
         uids_to_fetch.add(cand.uid)

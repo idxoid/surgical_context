@@ -21,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import yaml
 
-from sidecar.indexer.fast.__main__ import _wipe_workspace
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+from sidecar.indexer.fast.__main__ import _wipe_workspace
 from sidecar.workspace import DEFAULT_WORKSPACE_ID, WorkspaceResolver
 
 _REPO_ROOT = Path(__file__).parent.parent
@@ -96,9 +96,7 @@ def resolve_reset_target(
             resolved_docs_path = str(candidate.resolve())
 
     resolved_workspace_id = (
-        WorkspaceResolver()
-        .from_project_path(str(resolved_project_path), value=workspace_id)
-        .id
+        WorkspaceResolver().from_project_path(str(resolved_project_path), value=workspace_id).id
     )
     return resolved_workspace_id, str(resolved_project_path), resolved_docs_path
 
@@ -156,17 +154,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Reset Neo4j + LanceDB rows for benchmark workspaces",
     )
-    parser.add_argument("--questions", default=str(_DEFAULT_REAL_REPO_PACK),
-                        help="Path to real-repo question pack")
+    parser.add_argument(
+        "--questions", default=str(_DEFAULT_REAL_REPO_PACK), help="Path to real-repo question pack"
+    )
     parser.add_argument("--repo", default=None, help="Repository id from the question pack")
     parser.add_argument("--project-path", default=None, help="Explicit checkout path")
     parser.add_argument("--docs-path", default=None, help="Optional docs path override")
     parser.add_argument("--workspace-id", default=None, help="Explicit workspace id override")
     parser.add_argument("--repos-root", default=None, help="Directory for benchmark repo checkouts")
-    parser.add_argument("--index-profile", default=AXIS_PYTHON_V1_PROFILE,
-                        help="Index profile whose rows to wipe (default: axis_python_v1)")
-    parser.add_argument("--fixture", action="store_true",
-                        help="Reset the sample_project fixture workspace instead of a real repo")
+    parser.add_argument(
+        "--index-profile",
+        default=AXIS_PYTHON_V1_PROFILE,
+        help="Index profile whose rows to wipe (default: axis_python_v1)",
+    )
+    parser.add_argument(
+        "--fixture",
+        action="store_true",
+        help="Reset the sample_project fixture workspace instead of a real repo",
+    )
     args = parser.parse_args()
 
     has_explicit_target = bool(args.fixture or args.repo or args.project_path or args.workspace_id)
@@ -186,9 +191,7 @@ def main() -> int:
         ]
     else:
         print("[reset] no target passed, cleaning fixture and any existing QA/repos checkouts")
-        targets = resolve_default_targets(
-            questions_path=args.questions, repos_root=args.repos_root
-        )
+        targets = resolve_default_targets(questions_path=args.questions, repos_root=args.repos_root)
 
     for resolved_workspace_id, resolved_project_path, _docs in targets:
         print(f"[reset] workspace: {resolved_workspace_id}  (profile={args.index_profile})")

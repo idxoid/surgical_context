@@ -217,15 +217,19 @@ def test_chain_kind_priority_orders_deps_within_callee_group():
     """Higher CHAIN_PRIORITY sorts earlier; depth & score still break ties."""
     ctx = _make_ctx(
         deps=[
-            {"symbol": "plain",     "direction": "callee", "depth": 1, "blended_score": 0.99},
-            {"symbol": "relay_a",   "direction": "callee", "depth": 1, "chain_kind": "relay"},
-            {"symbol": "callee_a",  "direction": "callee", "depth": 2, "chain_kind": "api_callee"},
-            {"symbol": "seed_a",    "direction": "callee", "depth": 2, "chain_kind": "query_seed"},
-            {"symbol": "must_a",    "direction": "callee", "depth": 3, "chain_kind": "mandatory"},
+            {"symbol": "plain", "direction": "callee", "depth": 1, "blended_score": 0.99},
+            {"symbol": "relay_a", "direction": "callee", "depth": 1, "chain_kind": "relay"},
+            {"symbol": "callee_a", "direction": "callee", "depth": 2, "chain_kind": "api_callee"},
+            {"symbol": "seed_a", "direction": "callee", "depth": 2, "chain_kind": "query_seed"},
+            {"symbol": "must_a", "direction": "callee", "depth": 3, "chain_kind": "mandatory"},
         ]
     )
     assert [dep.symbol for dep in ctx.ordered_graph_context()] == [
-        "must_a", "seed_a", "callee_a", "relay_a", "plain",
+        "must_a",
+        "seed_a",
+        "callee_a",
+        "relay_a",
+        "plain",
     ]
 
 
@@ -233,17 +237,34 @@ def test_chain_kind_tie_broken_by_depth_then_score():
     """Two deps with the same chain_kind sort by depth (shallow first), then score."""
     ctx = _make_ctx(
         deps=[
-            {"symbol": "seed_deep_high",    "direction": "callee", "depth": 2,
-             "chain_kind": "query_seed", "blended_score": 0.9},
-            {"symbol": "seed_shallow_low",  "direction": "callee", "depth": 1,
-             "chain_kind": "query_seed", "blended_score": 0.1},
-            {"symbol": "seed_shallow_high", "direction": "callee", "depth": 1,
-             "chain_kind": "query_seed", "blended_score": 0.8},
+            {
+                "symbol": "seed_deep_high",
+                "direction": "callee",
+                "depth": 2,
+                "chain_kind": "query_seed",
+                "blended_score": 0.9,
+            },
+            {
+                "symbol": "seed_shallow_low",
+                "direction": "callee",
+                "depth": 1,
+                "chain_kind": "query_seed",
+                "blended_score": 0.1,
+            },
+            {
+                "symbol": "seed_shallow_high",
+                "direction": "callee",
+                "depth": 1,
+                "chain_kind": "query_seed",
+                "blended_score": 0.8,
+            },
         ]
     )
     # shallow before deep; within same depth, higher score first.
     assert [dep.symbol for dep in ctx.ordered_graph_context()] == [
-        "seed_shallow_high", "seed_shallow_low", "seed_deep_high",
+        "seed_shallow_high",
+        "seed_shallow_low",
+        "seed_deep_high",
     ]
 
 
@@ -251,14 +272,19 @@ def test_caller_still_beats_any_chain_kind():
     """The caller-group axis is the outermost sort key; chain_kind ranks only within a group."""
     ctx = _make_ctx(
         deps=[
-            {"symbol": "callee_mandatory", "relation": "HAS_API",
-             "direction": "callee", "depth": 1, "chain_kind": "mandatory"},
-            {"symbol": "caller_plain", "relation": "caller",
-             "direction": "caller", "depth": 1},
+            {
+                "symbol": "callee_mandatory",
+                "relation": "HAS_API",
+                "direction": "callee",
+                "depth": 1,
+                "chain_kind": "mandatory",
+            },
+            {"symbol": "caller_plain", "relation": "caller", "direction": "caller", "depth": 1},
         ]
     )
     assert [dep.symbol for dep in ctx.ordered_graph_context()] == [
-        "caller_plain", "callee_mandatory",
+        "caller_plain",
+        "callee_mandatory",
     ]
 
 

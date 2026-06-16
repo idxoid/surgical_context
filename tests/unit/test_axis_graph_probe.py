@@ -41,10 +41,12 @@ class _Db:
 
 def test_neo4j_probe_exposes_proxy_binding_as_proxy_object_marker():
     # 1st run: proxy query, 2nd run: catalogue query (empty for this symbol)
-    db = _Db([
-        {"symbol_kind": "proxy_binding", "proxy_rel_count": 0},
-        {"qns": []},
-    ])
+    db = _Db(
+        [
+            {"symbol_kind": "proxy_binding", "proxy_rel_count": 0},
+            {"qns": []},
+        ]
+    )
     probe = Neo4jGraphContextProbe(db, "ws")
 
     assert probe.library_marker_kinds("u:proxy") == {"proxy_object"}
@@ -59,10 +61,12 @@ def test_neo4j_probe_exposes_proxy_binding_as_proxy_object_marker():
 
 def test_neo4j_probe_resolves_library_marker_kind_via_catalogue():
     # Proxy query returns nothing; catalogue query returns a known external QN.
-    db = _Db([
-        {"symbol_kind": "class", "proxy_rel_count": 0},
-        {"qns": ["starlette.routing.Router", "typing.Any"]},
-    ])
+    db = _Db(
+        [
+            {"symbol_kind": "class", "proxy_rel_count": 0},
+            {"qns": ["starlette.routing.Router", "typing.Any"]},
+        ]
+    )
     probe = Neo4jGraphContextProbe(db, "ws")
 
     kinds = probe.library_marker_kinds("u:cls")
@@ -75,10 +79,12 @@ def test_neo4j_probe_catalogue_query_walks_extends_and_instantiates_external():
     # Confirms the probe asks the graph for both edge types in a single
     # query — so a Variable Symbol carrying an INSTANTIATES_EXTERNAL edge to
     # a catalogue entry produces the same marker as a class that EXTENDS it.
-    db = _Db([
-        {"symbol_kind": "variable", "proxy_rel_count": 0},
-        {"qns": ["fastapi.applications.FastAPI"]},
-    ])
+    db = _Db(
+        [
+            {"symbol_kind": "variable", "proxy_rel_count": 0},
+            {"qns": ["fastapi.applications.FastAPI"]},
+        ]
+    )
     probe = Neo4jGraphContextProbe(db, "ws")
 
     kinds = probe.library_marker_kinds("u:var")
@@ -91,10 +97,12 @@ def test_neo4j_probe_catalogue_query_walks_extends_and_instantiates_external():
 
 
 def test_neo4j_probe_returns_union_when_file_imports_multiple_marker_packages():
-    db = _Db([
-        {"symbol_kind": "class", "proxy_rel_count": 0},
-        {"qns": ["celery.app.base.Celery", "werkzeug.local.LocalProxy"]},
-    ])
+    db = _Db(
+        [
+            {"symbol_kind": "class", "proxy_rel_count": 0},
+            {"qns": ["celery.app.base.Celery", "werkzeug.local.LocalProxy"]},
+        ]
+    )
     probe = Neo4jGraphContextProbe(db, "ws")
 
     # ``werkzeug.local.LocalProxy`` is no longer a catalogue entry — only the
@@ -103,10 +111,12 @@ def test_neo4j_probe_returns_union_when_file_imports_multiple_marker_packages():
 
 
 def test_neo4j_probe_ignores_unknown_external_qualified_names():
-    db = _Db([
-        {"symbol_kind": "class", "proxy_rel_count": 0},
-        {"qns": ["some.unknown.External", "another.Random"]},
-    ])
+    db = _Db(
+        [
+            {"symbol_kind": "class", "proxy_rel_count": 0},
+            {"qns": ["some.unknown.External", "another.Random"]},
+        ]
+    )
     probe = Neo4jGraphContextProbe(db, "ws")
 
     assert probe.library_marker_kinds("u:cls") == set()

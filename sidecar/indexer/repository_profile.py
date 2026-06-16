@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
+
 from sidecar.parser.registry import REGISTRY
 
 PROFILE_SCHEMA_VERSION = 1
@@ -86,6 +87,7 @@ _NEUTRAL_NON_CODE_EXTENSIONS = {
     ".map",
     "<no_ext>",
 }
+
 
 @dataclass(frozen=True)
 class RepositoryProfileInputs:

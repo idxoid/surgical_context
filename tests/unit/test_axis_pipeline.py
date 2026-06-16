@@ -69,15 +69,12 @@ def stub_stages(monkeypatch):
         _retr_mod,
         "find_symbols_by_roles",
         lambda ws, roles, **k: {
-            r: [_cand("a", "/x/a.py"), _cand("b", "/x/b.py"), _cand("c", "/x/c.py")]
-            for r in roles
+            r: [_cand("a", "/x/a.py"), _cand("b", "/x/b.py"), _cand("c", "/x/c.py")] for r in roles
         },
     )
     monkeypatch.setattr(_retr_mod, "find_seeds_by_vector", lambda *a, **k: [])
     # Intent-axis ranking is identity here — covered by its own unit tests.
-    monkeypatch.setattr(
-        _rank_mod, "apply_intent_axis_boost", lambda raw, roles, **_k: dict(raw)
-    )
+    monkeypatch.setattr(_rank_mod, "apply_intent_axis_boost", lambda raw, roles, **_k: dict(raw))
 
     def _fake_build(candidates, **kwargs):
         return [
@@ -153,10 +150,10 @@ def test_intent_budget_off_leaves_build_context_unbudgeted(stub_stages, monkeypa
     monkeypatch.setattr(
         _ctx_mod,
         "build_context_for_candidates",
-        lambda candidates, **kw: captured.update(
-            token_budget=kw.get("token_budget"), render_mode=kw.get("render_mode")
-        )
-        or [],
+        lambda candidates, **kw: (
+            captured.update(token_budget=kw.get("token_budget"), render_mode=kw.get("render_mode"))
+            or []
+        ),
     )
     result = _run()  # intent_budget defaults False -> benchmark behaviour
     assert captured["token_budget"] is None
@@ -207,9 +204,7 @@ def test_intent_budget_walks_full_scope_no_passive_split(stub_stages, monkeypatc
     assert [c.uid for c in result.candidates_for_context] == ["a", "b", "c"]
 
 
-def test_intent_budget_threads_proximity_utility_to_context_builder(
-    stub_stages, monkeypatch
-):
+def test_intent_budget_threads_proximity_utility_to_context_builder(stub_stages, monkeypatch):
     import sidecar.axis.context_builder as _ctx_mod
 
     captured: dict = {}
@@ -224,7 +219,5 @@ def test_intent_budget_threads_proximity_utility_to_context_builder(
 
     utility_score_fn = captured["utility_score_fn"]
     assert utility_score_fn is not None
-    assert utility_score_fn(_cand("near", "/x/near.py", score=0.5)) == pytest.approx(
-        0.65
-    )
+    assert utility_score_fn(_cand("near", "/x/near.py", score=0.5)) == pytest.approx(0.65)
     assert utility_score_fn(_cand("far", "/elsewhere/far.py", score=0.5)) == 0.5

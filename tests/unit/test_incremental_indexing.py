@@ -128,8 +128,16 @@ class TestIncrementalIndexing:
         Neo4jClient._create_import_relations(
             tx,
             [
-                {"source_file": "/repo/a.py", "target_path": "/repo/pkg/module_a.py", "import_type": "direct"},
-                {"source_file": "/repo/a.py", "target_path": "/repo/pkg/module_b.py", "import_type": "direct"},
+                {
+                    "source_file": "/repo/a.py",
+                    "target_path": "/repo/pkg/module_a.py",
+                    "import_type": "direct",
+                },
+                {
+                    "source_file": "/repo/a.py",
+                    "target_path": "/repo/pkg/module_b.py",
+                    "import_type": "direct",
+                },
             ],
             "acme/repo@main",
         )

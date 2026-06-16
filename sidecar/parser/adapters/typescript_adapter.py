@@ -34,9 +34,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         r"(?m)^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b[^=\n;]*=\s*"
         r"(?:(?:/\*.*?\*/)\s*)*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\("
     )
-    _BODY_CALL_FALLBACK_RE = re.compile(
-        r"\b([A-Za-z_$][\w$]*)\s*(?:<[^>\n;{}()]*>)?\s*\("
-    )
+    _BODY_CALL_FALLBACK_RE = re.compile(r"\b([A-Za-z_$][\w$]*)\s*(?:<[^>\n;{}()]*>)?\s*\(")
     _BODY_CALL_FALLBACK_SKIP = {
         "catch",
         "for",
@@ -715,9 +713,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return self._node_text(prop)
         return ""
 
-    def extract_type_references(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_type_references(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Extract TypeScript ``USES_TYPE`` references from AST-visible type syntax.
 
         Type annotations, generic constraints/defaults, interface/type bodies, and

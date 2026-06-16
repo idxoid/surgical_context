@@ -87,9 +87,7 @@ def _contract_names_from_json(raw: Any) -> tuple[str, ...]:
 
 
 def axis_profile_from_lance_row(row: dict[str, Any]) -> AxisProfile:
-    matches = container_kind_matches_from_json(
-        str(row.get("axis_container_kinds_json") or "[]")
-    )
+    matches = container_kind_matches_from_json(str(row.get("axis_container_kinds_json") or "[]"))
     facts = _axis_facts_from_json(row.get("axis_evidence_json"))
     uid = str(row.get("uid") or "")
     qualified_name = (
@@ -161,9 +159,7 @@ def compile_contract_report_row(
     compiler: AxisContractCompiler | None = None,
 ) -> AxisContractReportRow:
     profile = axis_profile_from_lance_row(row)
-    matches = container_kind_matches_from_json(
-        str(row.get("axis_container_kinds_json") or "[]")
-    )
+    matches = container_kind_matches_from_json(str(row.get("axis_container_kinds_json") or "[]"))
     compiler = compiler or AxisContractCompiler()
     contracts = tuple(compiler.compile(profile, matches))
     diagnostics = tuple(diagnostic.to_dict() for diagnostic in compiler.diagnose(profile, matches))
@@ -193,15 +189,8 @@ def build_axis_contract_report(
     *,
     workspace_id: str,
 ) -> list[AxisContractReportRow]:
-    report_rows = [
-        compile_contract_report_row(row, workspace_id=workspace_id)
-        for row in rows
-    ]
-    return [
-        row
-        for row in report_rows
-        if row.container_kinds or row.contracts
-    ]
+    report_rows = [compile_contract_report_row(row, workspace_id=workspace_id) for row in rows]
+    return [row for row in report_rows if row.container_kinds or row.contracts]
 
 
 def _sorted_counter_dict(counter: Counter[str]) -> dict[str, int]:
@@ -263,14 +252,9 @@ def _markdown_table(rows: list[AxisContractReportRow]) -> str:
     for row in rows:
         containers = ", ".join(row.container_kinds) or "-"
         contracts = ", ".join(contract.contract for contract in row.contracts) or "-"
-        diagnostics = ", ".join(
-            str(item.get("contract") or "") for item in row.diagnostics
-        ) or "-"
+        diagnostics = ", ".join(str(item.get("contract") or "") for item in row.diagnostics) or "-"
         persisted = ", ".join(row.persisted_contracts) or "-"
-        modes = ", ".join(
-            str(plan.get("traversal_mode") or "-")
-            for plan in row.plans
-        ) or "-"
+        modes = ", ".join(str(plan.get("traversal_mode") or "-") for plan in row.plans) or "-"
         lines.append(
             "| "
             + " | ".join(

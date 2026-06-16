@@ -340,7 +340,9 @@ def test_branch_condition_and_generic_annotation_payloads_are_axis_facts():
 
     branch_conditions = _fact_payloads(profile, "branch_condition")
     condition = next(
-        payload for payload in branch_conditions if payload["condition"] == "config['enabled'] and items"
+        payload
+        for payload in branch_conditions
+        if payload["condition"] == "config['enabled'] and items"
     )
     assert condition["kind"] == "if"
     assert any(
@@ -349,7 +351,10 @@ def test_branch_condition_and_generic_annotation_payloads_are_axis_facts():
         and read.get("key_literal") == "enabled"
         for read in condition["reads"]
     )
-    assert any(read.get("read_kind") == "name" and read.get("name") == "items" for read in condition["reads"])
+    assert any(
+        read.get("read_kind") == "name" and read.get("name") == "items"
+        for read in condition["reads"]
+    )
 
     generic_shapes = _fact_payloads(profile, "generic_shape")
     assert any(payload.get("generic") == "dict[str, bool]" for payload in generic_shapes)
@@ -380,8 +385,7 @@ def test_exception_raise_and_handler_type_payloads_are_axis_facts():
 
     raises = _fact_payloads(profile, "exception_raise_value")
     assert any(
-        payload.get("callee") == "ValidationError"
-        and payload.get("destination") == "raise"
+        payload.get("callee") == "ValidationError" and payload.get("destination") == "raise"
         for payload in raises
     )
 

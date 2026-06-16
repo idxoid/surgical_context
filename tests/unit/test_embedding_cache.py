@@ -298,8 +298,8 @@ def test_lancedb_client_search_axis_symbols_by_vector_uses_compiled_plan():
                     "dfg_bits": ["keyed_write"],
                     "struct_bits": ["literal_key"],
                     "container_kinds": ["metadata_carrier"],
-                    "axis_container_kinds_json": "[{\"kind\":\"metadata_carrier\"}]",
-                    "axis_contracts_json": "[{\"contract\":\"metadata_key_roundtrip\"}]",
+                    "axis_container_kinds_json": '[{"kind":"metadata_carrier"}]',
+                    "axis_contracts_json": '[{"contract":"metadata_key_roundtrip"}]',
                 },
                 {
                     "uid": "uid-b",
@@ -337,8 +337,8 @@ def test_lancedb_client_search_axis_symbols_by_vector_uses_compiled_plan():
             "dfg_bits": ["keyed_write"],
             "struct_bits": ["literal_key"],
             "container_kinds": ["metadata_carrier"],
-            "axis_container_kinds_json": "[{\"kind\":\"metadata_carrier\"}]",
-            "axis_contracts_json": "[{\"contract\":\"metadata_key_roundtrip\"}]",
+            "axis_container_kinds_json": '[{"kind":"metadata_carrier"}]',
+            "axis_contracts_json": '[{"contract":"metadata_key_roundtrip"}]',
         }
     ]
 

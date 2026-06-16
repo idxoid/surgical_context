@@ -33,14 +33,12 @@ is still axis-only.
 from __future__ import annotations
 
 import json
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.parser.adapters.python_adapter import PythonAdapter
 from sidecar.parser.uid import current_project_root, project_root_scope
-
 
 _PYTHON_ADAPTER = PythonAdapter()
 
@@ -77,7 +75,7 @@ def _strip_package_prefix(qualified_name: str, package: str | None) -> str:
     if package:
         prefix = f"{package}."
         if qualified_name.startswith(prefix):
-            return qualified_name[len(prefix):]
+            return qualified_name[len(prefix) :]
     return qualified_name
 
 
@@ -132,9 +130,13 @@ def _read_lance_kinds(lance, workspace_id: str) -> dict[str, dict[str, Any]]:
     current kinds and emit an updated row.
     """
     table = lance._sym_table  # noqa: SLF001 - direct access; same module family
-    rows = table.to_lance().to_table(
-        columns=["uid", "container_kinds", "axis_container_kinds_json", "workspace_id"],
-    ).to_pylist()
+    rows = (
+        table.to_lance()
+        .to_table(
+            columns=["uid", "container_kinds", "axis_container_kinds_json", "workspace_id"],
+        )
+        .to_pylist()
+    )
     return {
         r["uid"]: {
             "container_kinds": list(r.get("container_kinds") or []),
@@ -162,7 +164,7 @@ def _alias_ancestor_uids_for_class(
     bindings = cached_bindings.get(file_path)
     if bindings is None:
         try:
-            with open(file_path, "r", encoding="utf-8") as fh:
+            with open(file_path, encoding="utf-8") as fh:
                 source = fh.read()
         except OSError:
             cached_bindings[file_path] = {}
@@ -195,63 +197,65 @@ def _alias_ancestor_uids_for_class(
 # name set is fixed by the language, not by what a project happens to
 # call things. Warning subclasses are intentionally excluded; they are
 # not error-surface answers.
-_EXCEPTION_BASES: frozenset[str] = frozenset({
-    "BaseException",
-    "Exception",
-    "ArithmeticError",
-    "AssertionError",
-    "AttributeError",
-    "BufferError",
-    "EOFError",
-    "ImportError",
-    "ModuleNotFoundError",
-    "LookupError",
-    "IndexError",
-    "KeyError",
-    "MemoryError",
-    "NameError",
-    "UnboundLocalError",
-    "OSError",
-    "IOError",
-    "EnvironmentError",
-    "BlockingIOError",
-    "ChildProcessError",
-    "ConnectionError",
-    "BrokenPipeError",
-    "ConnectionAbortedError",
-    "ConnectionRefusedError",
-    "ConnectionResetError",
-    "FileExistsError",
-    "FileNotFoundError",
-    "InterruptedError",
-    "IsADirectoryError",
-    "NotADirectoryError",
-    "PermissionError",
-    "ProcessLookupError",
-    "TimeoutError",
-    "OverflowError",
-    "RecursionError",
-    "ReferenceError",
-    "RuntimeError",
-    "NotImplementedError",
-    "StopIteration",
-    "StopAsyncIteration",
-    "SyntaxError",
-    "IndentationError",
-    "TabError",
-    "SystemError",
-    "SystemExit",
-    "TypeError",
-    "ValueError",
-    "UnicodeError",
-    "UnicodeDecodeError",
-    "UnicodeEncodeError",
-    "UnicodeTranslateError",
-    "ZeroDivisionError",
-    "FloatingPointError",
-    "KeyboardInterrupt",
-    "GeneratorExit",
-})
+_EXCEPTION_BASES: frozenset[str] = frozenset(
+    {
+        "BaseException",
+        "Exception",
+        "ArithmeticError",
+        "AssertionError",
+        "AttributeError",
+        "BufferError",
+        "EOFError",
+        "ImportError",
+        "ModuleNotFoundError",
+        "LookupError",
+        "IndexError",
+        "KeyError",
+        "MemoryError",
+        "NameError",
+        "UnboundLocalError",
+        "OSError",
+        "IOError",
+        "EnvironmentError",
+        "BlockingIOError",
+        "ChildProcessError",
+        "ConnectionError",
+        "BrokenPipeError",
+        "ConnectionAbortedError",
+        "ConnectionRefusedError",
+        "ConnectionResetError",
+        "FileExistsError",
+        "FileNotFoundError",
+        "InterruptedError",
+        "IsADirectoryError",
+        "NotADirectoryError",
+        "PermissionError",
+        "ProcessLookupError",
+        "TimeoutError",
+        "OverflowError",
+        "RecursionError",
+        "ReferenceError",
+        "RuntimeError",
+        "NotImplementedError",
+        "StopIteration",
+        "StopAsyncIteration",
+        "SyntaxError",
+        "IndentationError",
+        "TabError",
+        "SystemError",
+        "SystemExit",
+        "TypeError",
+        "ValueError",
+        "UnicodeError",
+        "UnicodeDecodeError",
+        "UnicodeEncodeError",
+        "UnicodeTranslateError",
+        "ZeroDivisionError",
+        "FloatingPointError",
+        "KeyboardInterrupt",
+        "GeneratorExit",
+    }
+)
 
 
 def resolve_error_model_uids(
@@ -270,9 +274,7 @@ def resolve_error_model_uids(
     tested without a Neo4j / Lance harness.
     """
     anchor_uids: set[str] = {
-        uid
-        for uid, bases in parsed_bases_by_uid.items()
-        if _EXCEPTION_BASES & set(bases)
+        uid for uid, bases in parsed_bases_by_uid.items() if _EXCEPTION_BASES & set(bases)
     }
     error_model_uids: set[str] = set(anchor_uids)
     changed = True
@@ -333,9 +335,7 @@ def propagate_error_model_via_inheritance(
         r["class_uid"]: (r["class_qn"] or "").split(".")[-1] for r in rows
     }
     for r in rows:
-        names = {
-            name_by_uid.get(a, "") for a in (r.get("ancestor_uids") or [])
-        }
+        names = {name_by_uid.get(a, "") for a in (r.get("ancestor_uids") or [])}
         depends_on_names_by_class[r["class_uid"]] = names
 
     needed_local_qns: set[str] = set()
@@ -350,7 +350,7 @@ def propagate_error_model_via_inheritance(
             bindings = cached_bindings.get(file_path)
             if bindings is None:
                 try:
-                    with open(file_path, "r", encoding="utf-8") as fh:
+                    with open(file_path, encoding="utf-8") as fh:
                         source = fh.read()
                 except OSError:
                     cached_bindings[file_path] = {}
@@ -376,7 +376,9 @@ def propagate_error_model_via_inheritance(
                 alias_targets[r["class_uid"]] = local_qns
 
     candidate_uids_by_local_qn = _query_classes_by_local_qn(
-        db, workspace_id, needed_local_qns,
+        db,
+        workspace_id,
+        needed_local_qns,
     )
 
     # Full ancestor set per class = DEPENDS_ON transitive ∪ alias-resolved.
@@ -390,9 +392,7 @@ def propagate_error_model_via_inheritance(
                 ancestors.add(anc_uid)
         ancestors_by_uid[uid] = ancestors
 
-    error_model_uids = resolve_error_model_uids(
-        parsed_bases_by_uid, ancestors_by_uid
-    )
+    error_model_uids = resolve_error_model_uids(parsed_bases_by_uid, ancestors_by_uid)
 
     # Build Lance row updates for classes that don't already carry it.
     update_map: dict[str, dict[str, Any]] = {}
@@ -402,13 +402,9 @@ def propagate_error_model_via_inheritance(
             continue
         if "error_model" in self_data["container_kinds"]:
             continue
-        new_container_kinds = sorted(
-            set(self_data["container_kinds"]) | {"error_model"}
-        )
+        new_container_kinds = sorted(set(self_data["container_kinds"]) | {"error_model"})
         try:
-            existing_matches = json.loads(
-                self_data["axis_container_kinds_json"] or "[]"
-            )
+            existing_matches = json.loads(self_data["axis_container_kinds_json"] or "[]")
         except json.JSONDecodeError:
             existing_matches = []
         existing_matches.append(
@@ -423,9 +419,7 @@ def propagate_error_model_via_inheritance(
         )
         update_map[uid] = {
             "container_kinds": new_container_kinds,
-            "axis_container_kinds_json": json.dumps(
-                existing_matches, sort_keys=True
-            ),
+            "axis_container_kinds_json": json.dumps(existing_matches, sort_keys=True),
         }
 
     if not update_map:
@@ -500,7 +494,7 @@ def propagate_registry_class_via_inheritance(
             bindings = cached_bindings.get(file_path)
             if bindings is None:
                 try:
-                    with open(file_path, "r", encoding="utf-8") as fh:
+                    with open(file_path, encoding="utf-8") as fh:
                         source = fh.read()
                 except OSError:
                     cached_bindings[file_path] = {}
@@ -524,7 +518,9 @@ def propagate_registry_class_via_inheritance(
                 alias_targets[r["class_uid"]] = local_qns
 
     candidate_uids_by_local_qn = _query_classes_by_local_qn(
-        db, workspace_id, needed_local_qns,
+        db,
+        workspace_id,
+        needed_local_qns,
     )
 
     # Second pass: compute which classes need registry_class added.
@@ -551,9 +547,7 @@ def propagate_registry_class_via_inheritance(
                 continue
             if "registry_class" not in anc["container_kinds"]:
                 continue
-            new_container_kinds = sorted(
-                set(self_data["container_kinds"]) | {"registry_class"}
-            )
+            new_container_kinds = sorted(set(self_data["container_kinds"]) | {"registry_class"})
             existing_json = self_data["axis_container_kinds_json"]
             try:
                 existing_matches = json.loads(existing_json or "[]")

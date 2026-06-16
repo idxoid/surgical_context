@@ -31,9 +31,7 @@ class _Session:
 
     def run(self, query: str, **params: Any):
         self.runs.append((query, dict(params)))
-        records = (
-            self._records_by_query.pop(0) if self._records_by_query else []
-        )
+        records = self._records_by_query.pop(0) if self._records_by_query else []
         return _Result(records)
 
 
@@ -127,12 +125,7 @@ def _hit_record(
 def test_empty_candidates_returns_empty():
     db = _FakeDB([])
     lance = _FakeLance([])
-    assert (
-        build_context_for_candidates(
-            [], workspace_id=WORKSPACE, db=db, lance=lance
-        )
-        == []
-    )
+    assert build_context_for_candidates([], workspace_id=WORKSPACE, db=db, lance=lance) == []
 
 
 def test_seed_carries_code_and_zero_depth():
@@ -143,9 +136,7 @@ def test_seed_carries_code_and_zero_depth():
     db = _FakeDB([[], []])
     lance = _FakeLance([_lance_row("u:seed", "code-of-seed")])
 
-    bundles = build_context_for_candidates(
-        [candidate], workspace_id=WORKSPACE, db=db, lance=lance
-    )
+    bundles = build_context_for_candidates([candidate], workspace_id=WORKSPACE, db=db, lance=lance)
 
     assert len(bundles) == 1
     bundle = bundles[0]
@@ -183,9 +174,7 @@ def test_expanded_related_symbols_carry_step_and_depth():
         ]
     )
 
-    [bundle] = build_context_for_candidates(
-        [candidate], workspace_id=WORKSPACE, db=db, lance=lance
-    )
+    [bundle] = build_context_for_candidates([candidate], workspace_id=WORKSPACE, db=db, lance=lance)
 
     assert len(bundle.related) == 1
     related = bundle.related[0]
@@ -235,9 +224,7 @@ def test_duplicate_hits_across_expansion_steps_collapse_to_shallowest():
         ]
     )
 
-    [bundle] = build_context_for_candidates(
-        [candidate], workspace_id=WORKSPACE, db=db, lance=lance
-    )
+    [bundle] = build_context_for_candidates([candidate], workspace_id=WORKSPACE, db=db, lance=lance)
 
     assert len(bundle.related) == 1
     assert bundle.related[0].distance_from_seed == 1
@@ -259,8 +246,7 @@ def test_max_per_seed_caps_related_count():
     ]
     db = _FakeDB([hits, []])
     lance = _FakeLance(
-        [_lance_row("u:seed", "seed")]
-        + [_lance_row(f"u:n{i}", f"code{i}") for i in range(10)]
+        [_lance_row("u:seed", "seed")] + [_lance_row(f"u:n{i}", f"code{i}") for i in range(10)]
     )
 
     [bundle] = build_context_for_candidates(
@@ -282,12 +268,8 @@ def test_each_candidate_expands_independently():
             # binding step — ONE batched grouped walk over all seeds; each
             # seed's neighbour is grouped back by seed_uid.
             [
-                _hit_record(
-                    "u:A", "u:Anbr", "Anbr", "/tmp/a.py", "binding_structure_expansion", 1
-                ),
-                _hit_record(
-                    "u:B", "u:Bnbr", "Bnbr", "/tmp/b.py", "binding_structure_expansion", 1
-                ),
+                _hit_record("u:A", "u:Anbr", "Anbr", "/tmp/a.py", "binding_structure_expansion", 1),
+                _hit_record("u:B", "u:Bnbr", "Bnbr", "/tmp/b.py", "binding_structure_expansion", 1),
             ],
             # runtime step — batched, empty
             [],
@@ -316,9 +298,7 @@ def test_to_dict_round_trip_keeps_all_fields():
     db = _FakeDB([[], []])
     lance = _FakeLance([_lance_row("u:seed", "code")])
 
-    [bundle] = build_context_for_candidates(
-        [candidate], workspace_id=WORKSPACE, db=db, lance=lance
-    )
+    [bundle] = build_context_for_candidates([candidate], workspace_id=WORKSPACE, db=db, lance=lance)
 
     d = bundle.to_dict()
     assert d["role"] == "routing_surface"

@@ -14,7 +14,6 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
-
 WORKSPACE = "qa_repo/test@axis"
 
 _SCAN_COLS = [
@@ -34,9 +33,7 @@ def _rows_to_arrow(rows):
     vector (structural-only tests) the matrix extraction backs off and
     distance is ``None``, exactly as those tests expect."""
     data = {c: [r.get(c) for r in rows] for c in _SCAN_COLS}
-    data["vector"] = pa.array(
-        [r.get("vector") for r in rows], type=pa.list_(pa.float32())
-    )
+    data["vector"] = pa.array([r.get("vector") for r in rows], type=pa.list_(pa.float32()))
     return pa.table(data)
 
 
@@ -63,9 +60,7 @@ def fake_lance(monkeypatch):
                         m = re.search(r"workspace_id = '(.*)'", filter)
                         if m:
                             ws = m.group(1).replace("''", "'")
-                            rows = [
-                                r for r in rows if r.get("workspace_id") == ws
-                            ]
+                            rows = [r for r in rows if r.get("workspace_id") == ws]
                     return _rows_to_arrow(rows)
 
             return _LanceWrap()
@@ -89,9 +84,7 @@ def fake_lance(monkeypatch):
                     results = []
                     for row in outer.rows:
                         copy = dict(row)
-                        copy["_distance"] = outer.vector_distances.get(
-                            row["uid"], 0.5
-                        )
+                        copy["_distance"] = outer.vector_distances.get(row["uid"], 0.5)
                         results.append(copy)
                     return results
 
@@ -209,9 +202,7 @@ def test_query_text_brings_in_vector_distance_and_reweights(fake_lance):
 def test_limit_is_respected(fake_lance):
     from sidecar.axis.role_retrieval import find_symbols_by_role
 
-    fake_lance.rows = [
-        _row(f"u:{i}", f"sym{i}", ["route_register_binding"]) for i in range(8)
-    ]
+    fake_lance.rows = [_row(f"u:{i}", f"sym{i}", ["route_register_binding"]) for i in range(8)]
     results = find_symbols_by_role(WORKSPACE, "routing_surface", limit=3)
     assert len(results) == 3
 

@@ -82,7 +82,9 @@ def test_reverse_calls_emit_trace_callers():
     )
 
     out = expand_trace_neighbourhood(
-        [_seed("u:target")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:target")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
 
     assert len(out) == 1
@@ -100,7 +102,9 @@ def test_forward_calls_emit_trace_callees():
     )
 
     out = expand_trace_neighbourhood(
-        [_seed("u:target")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:target")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
 
     assert len(out) == 1
@@ -112,7 +116,9 @@ def test_forward_calls_emit_trace_callees():
 def test_trace_walks_only_calls_edges():
     db = _FakeDB([[], []])
     expand_trace_neighbourhood(
-        [_seed("u:target")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:target")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
 
     assert len(db._session.runs) == 2
@@ -133,7 +139,9 @@ def test_duplicate_uids_keep_caller_tag_first():
     )
 
     out = expand_trace_neighbourhood(
-        [_seed("u:target")], db=db, workspace_id=WORKSPACE,
+        [_seed("u:target")],
+        db=db,
+        workspace_id=WORKSPACE,
     )
 
     assert len(out) == 1

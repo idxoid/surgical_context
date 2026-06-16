@@ -71,9 +71,7 @@ def apply_intent_axis_boost(
         for c in cands:
             cand_axes = axes_for_kinds(frozenset(c.satisfying_kinds))
             if cand_axes & axes:
-                boosted.append(
-                    replace(c, score=min(score_ceiling, c.score + boost))
-                )
+                boosted.append(replace(c, score=min(score_ceiling, c.score + boost)))
             else:
                 boosted.append(c)
         # uid tiebreaker → reproducible order under the downstream cap

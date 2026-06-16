@@ -60,9 +60,8 @@ class _StageTimer:
         try:
             yield
         finally:
-            self.durations[name] = self.durations.get(name, 0.0) + (
-                time.monotonic() - t0
-            )
+            self.durations[name] = self.durations.get(name, 0.0) + (time.monotonic() - t0)
+
 
 # Map ``repo`` from the question pack to the axis-profile workspace_id we
 # actually indexed. Env-driven so a new index can be built while an old one is
@@ -75,8 +74,14 @@ _BENCH_TENANT = os.getenv("AXIS_BENCH_TENANT", "qa_repo")
 _BENCH_REF = os.getenv("AXIS_BENCH_REF", "main")
 _BENCH_PROFILE = resolve_index_profile(AXIS_PYTHON_V1_PROFILE)
 _BENCH_REPOS = (
-    "fastapi", "flask", "celery", "click",
-    "pydantic", "sqlalchemy", "django", "dathund",
+    "fastapi",
+    "flask",
+    "celery",
+    "click",
+    "pydantic",
+    "sqlalchemy",
+    "django",
+    "dathund",
 )
 REPO_TO_WORKSPACE: dict[str, str] = {
     repo: _BENCH_PROFILE.workspace_id(f"{_BENCH_TENANT}/{repo}@{_BENCH_REF}")
@@ -139,9 +144,7 @@ class QuestionResult:
             "pool_recall": self.pool_recall,
             "intent_top_role": self.intent_top_role,
             "intent_top_similarity": self.intent_top_similarity,
-            "intent_matches": [
-                {"role": r, "similarity": s} for r, s in self.intent_matches
-            ],
+            "intent_matches": [{"role": r, "similarity": s} for r, s in self.intent_matches],
             "skipped_reason": self.skipped_reason,
             "candidate_count": self.candidate_count,
             "context_seconds": self.context_seconds,
@@ -271,9 +274,7 @@ def run_question(
         intent_budget=intent_budget,
         base_token_budget=base_token_budget,
         render_mode_override=render_mode_override,
-        anchor_path=(
-            None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)
-        ),
+        anchor_path=(None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)),
         hook_transparency=hook_transparency,
         trace=timer,
     )
@@ -305,9 +306,7 @@ def run_question(
 
     # Layer 1 — seed (pure retrieval) recall, captured before any pool pass.
     result.seed_files = retrieval.seed_files
-    seed_recall, seed_matched = _compute_recall(
-        result.expected_files, result.seed_files
-    )
+    seed_recall, seed_matched = _compute_recall(result.expected_files, result.seed_files)
     result.seed_recall = seed_recall
     result.seed_matched = seed_matched
 
@@ -324,9 +323,7 @@ def run_question(
             seen_pool.add(path)
             pool_files_ordered.append(path)
     result.pool_files = pool_files_ordered
-    pool_recall, pool_matched = _compute_recall(
-        result.expected_files, result.pool_files
-    )
+    pool_recall, pool_matched = _compute_recall(result.expected_files, result.pool_files)
     result.pool_recall = pool_recall
     result.pool_matched = pool_matched
 
@@ -350,9 +347,7 @@ def run_question(
 def summarise(results: list[QuestionResult]) -> dict[str, Any]:
     scored = [r for r in results if r.skipped_reason is None]
     skipped = [r for r in results if r.skipped_reason is not None]
-    overall_recall = (
-        sum(r.file_recall for r in scored) / len(scored) if scored else 0.0
-    )
+    overall_recall = sum(r.file_recall for r in scored) / len(scored) if scored else 0.0
     full_recall_count = sum(1 for r in scored if r.file_recall >= 1.0 - 1e-9)
     zero_recall_count = sum(1 for r in scored if r.file_recall == 0.0)
 
@@ -406,13 +401,9 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             "full_recall": sum(1 for r in items if r.file_recall >= 1.0 - 1e-9),
             "zero_recall": sum(1 for r in items if r.file_recall == 0.0),
             "seed_mean_recall": sum(r.seed_recall for r in items) / len(items),
-            "seed_full_recall": sum(
-                1 for r in items if r.seed_recall >= 1.0 - 1e-9
-            ),
+            "seed_full_recall": sum(1 for r in items if r.seed_recall >= 1.0 - 1e-9),
             "pool_mean_recall": sum(r.pool_recall for r in items) / len(items),
-            "pool_full_recall": sum(
-                1 for r in items if r.pool_recall >= 1.0 - 1e-9
-            ),
+            "pool_full_recall": sum(1 for r in items if r.pool_recall >= 1.0 - 1e-9),
         }
         for repo, items in sorted(by_repo.items())
     }
@@ -487,59 +478,60 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
     def _masking_section(title: str, lower: str, upper: str, rows: list) -> None:
         if not rows:
             return
-        lines.extend([
-            "",
-            f"## {title}",
-            "",
-            f"{upper} covered these; {lower} missed them. The real engine "
-            f"gaps a collapse of this layer would expose — move the gap "
-            f"down a layer before trimming.",
-            "",
-            f"| id | repo | {lower} | {upper} | files only this layer found |",
-            "|---|---|---|---|---|",
-        ])
+        lines.extend(
+            [
+                "",
+                f"## {title}",
+                "",
+                f"{upper} covered these; {lower} missed them. The real engine "
+                f"gaps a collapse of this layer would expose — move the gap "
+                f"down a layer before trimming.",
+                "",
+                f"| id | repo | {lower} | {upper} | files only this layer found |",
+                "|---|---|---|---|---|",
+            ]
+        )
         for m in sorted(rows, key=lambda x: (x["repo"], x["question_id"])):
             files = ", ".join(m["added_files"]) or "—"
             lo = m.get(f"{lower}_recall", 0.0)
             up = m.get(f"{upper}_recall", 0.0)
-            lines.append(
-                f"| {m['question_id']} | {m['repo']} | {lo:.2f} | "
-                f"{up:.2f} | {files} |"
-            )
+            lines.append(f"| {m['question_id']} | {m['repo']} | {lo:.2f} | {up:.2f} | {files} |")
 
     _masking_section(
-        "Masked by the pool expander", "seed", "pool",
+        "Masked by the pool expander",
+        "seed",
+        "pool",
         summary.get("masked_by_pool_expander", []),
     )
     _masking_section(
-        "Masked by per-candidate context expansion", "pool", "bundle",
+        "Masked by per-candidate context expansion",
+        "pool",
+        "bundle",
         summary.get("masked_by_context_expander", []),
     )
-    lines.extend([
-        "",
-        "## Intent classifier — top role distribution",
-        "",
-        f"`{json.dumps(summary['intent_top_role_counts'], sort_keys=True)}`",
-        "",
-        "## Per-question detail",
-        "",
-        "`p⚠` = pool expander masks a seed miss · `c⚠` = context expander "
-        "masks a pool miss",
-        "",
-        "| id | repo | seed | pool | bundle | matched/expected | intent | cand |",
-        "|---|---|---|---|---|---|---|---|",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Intent classifier — top role distribution",
+            "",
+            f"`{json.dumps(summary['intent_top_role_counts'], sort_keys=True)}`",
+            "",
+            "## Per-question detail",
+            "",
+            "`p⚠` = pool expander masks a seed miss · `c⚠` = context expander masks a pool miss",
+            "",
+            "| id | repo | seed | pool | bundle | matched/expected | intent | cand |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+    )
     for r in sorted(results, key=lambda x: (x.repo, x.question_id)):
         if r.skipped_reason:
             lines.append(
-                f"| {r.question_id} | {r.repo} | — | — | — | — | — | "
-                f"skipped: {r.skipped_reason} |"
+                f"| {r.question_id} | {r.repo} | — | — | — | — | — | skipped: {r.skipped_reason} |"
             )
             continue
         intent_str = (
-            f"{r.intent_top_role}({r.intent_top_similarity:.2f})"
-            if r.intent_top_role
-            else "(none)"
+            f"{r.intent_top_role}({r.intent_top_similarity:.2f})" if r.intent_top_role else "(none)"
         )
         marks = ""
         if r.pool_recall > r.seed_recall + 1e-9:
@@ -564,6 +556,7 @@ def _print_comparison(prev_summary: dict[str, Any], summary: dict[str, Any]) -> 
         f"\noverall mean bundle_recall: {prev_recall:.3f} → {curr_recall:.3f} "
         f"({arrow} {delta:+.3f})"
     )
+
     def _layer(label: str, key: str) -> tuple[float, float]:
         p = float(prev_summary.get(key, 0.0))
         c = float(summary.get(key, 0.0))

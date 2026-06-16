@@ -71,21 +71,14 @@ def main() -> None:
     print(f"workspace: {args.workspace}")
     if args.query:
         print(f"query: {args.query!r}")
-    print(
-        f"role's satisfying contracts: "
-        f"{sorted(ROLE_CONTRACT_MAP[args.role])}"
-    )
+    print(f"role's satisfying contracts: {sorted(ROLE_CONTRACT_MAP[args.role])}")
     print()
     if not candidates:
         print("(no candidates)")
         return
     for i, cand in enumerate(candidates, 1):
         path = (cand.file_path or "").split("/")[-1]
-        dist = (
-            f"d={cand.vector_distance:.3f}"
-            if cand.vector_distance is not None
-            else "d=-"
-        )
+        dist = f"d={cand.vector_distance:.3f}" if cand.vector_distance is not None else "d=-"
         print(
             f"  #{i:2d}  score={cand.score:.3f}  {dist}  "
             f"contracts={cand.contract_count}  "

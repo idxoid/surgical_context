@@ -19,7 +19,9 @@ from sidecar.axis.container_kind import (
 from sidecar.axis.schema import AxisExtraction, AxisFact, AxisProfile
 
 
-def _fact(axis: str, bit: str, *, uid="u:x", qn="pkg.X", kind="class", line=1, payload=None) -> AxisFact:
+def _fact(
+    axis: str, bit: str, *, uid="u:x", qn="pkg.X", kind="class", line=1, payload=None
+) -> AxisFact:
     return AxisFact(
         symbol_uid=uid,
         qualified_name=qn,
@@ -35,7 +37,9 @@ def _fact(axis: str, bit: str, *, uid="u:x", qn="pkg.X", kind="class", line=1, p
 
 def _profile(facts: list[AxisFact], *, uid="u:x", qn="pkg.X", kind="class") -> AxisProfile:
     ext = AxisExtraction(file_path="<synthetic>", facts=facts)
-    profile = ext.profiles.get(uid) or AxisProfile(symbol_uid=uid, qualified_name=qn, symbol_kind=kind)
+    profile = ext.profiles.get(uid) or AxisProfile(
+        symbol_uid=uid, qualified_name=qn, symbol_kind=kind
+    )
     return profile
 
 
@@ -132,7 +136,9 @@ def test_registry_class_fires_when_peer_method_carries_metadata_carrier():
 def test_registry_class_fires_for_middleware_chain_peer_too():
     profile = _profile(
         [_fact("struct", "class_def", uid="u:H", qn="pkg.Hub", kind="class")],
-        uid="u:H", qn="pkg.Hub", kind="class",
+        uid="u:H",
+        qn="pkg.Hub",
+        kind="class",
     )
     probe = _StubProbe(
         peer_kinds_by_prefix={"pkg.Hub.": {"middleware_chain", "config_carrier"}},
@@ -146,7 +152,9 @@ def test_registry_class_fires_for_middleware_chain_peer_too():
 def test_registry_class_does_not_fire_without_registry_peers():
     profile = _profile(
         [_fact("struct", "class_def", uid="u:M", qn="pkg.Plain", kind="class")],
-        uid="u:M", qn="pkg.Plain", kind="class",
+        uid="u:M",
+        qn="pkg.Plain",
+        kind="class",
     )
     # Peer methods exist but carry only data_model / config_carrier kinds.
     probe = _StubProbe(
@@ -161,7 +169,9 @@ def test_registry_class_does_not_fire_without_registry_peers():
 def test_registry_class_does_not_fire_on_function_symbol_with_peers():
     profile = _profile(
         [_fact("struct", "function_def", uid="u:f", qn="pkg.f", kind="function")],
-        uid="u:f", qn="pkg.f", kind="function",
+        uid="u:f",
+        qn="pkg.f",
+        kind="function",
     )
     probe = _StubProbe(
         peer_kinds_by_prefix={"pkg.f.": {"metadata_carrier"}},
@@ -194,7 +204,9 @@ def test_registry_class_fires_on_variable_with_registered_callable():
                 payload={"count": 3},
             ),
         ],
-        uid="u:app", qn="myapp.app", kind="variable",
+        uid="u:app",
+        qn="myapp.app",
+        kind="variable",
     )
 
     matches = ContainerKindClassifier(NullGraphProbe()).classify(profile)
@@ -211,7 +223,9 @@ def test_registry_class_does_not_fire_on_variable_without_registered_callable():
     """
     profile = _profile(
         [_fact("struct", "module_scope", uid="u:v", qn="myapp.cache", kind="variable")],
-        uid="u:v", qn="myapp.cache", kind="variable",
+        uid="u:v",
+        qn="myapp.cache",
+        kind="variable",
     )
 
     matches = ContainerKindClassifier(NullGraphProbe()).classify(profile)
@@ -373,46 +387,32 @@ def _keyed_register_facts() -> list[AxisFact]:
 def test_keyed_register_callable_fires_on_full_fingerprint():
     profile = _profile(_keyed_register_facts())
     classifier = ContainerKindClassifier(NullGraphProbe())
-    assert "keyed_register_callable" in {
-        m.kind for m in classifier.classify(profile)
-    }
+    assert "keyed_register_callable" in {m.kind for m in classifier.classify(profile)}
 
 
 def test_keyed_register_callable_rejects_when_iterating():
     """Middleware chains both iterate AND write — that is a chain, not
     a registration, so the kind must back off when both shapes overlap.
     """
-    profile = _profile(
-        _keyed_register_facts() + [_fact("dfg", "iteration_source")]
-    )
+    profile = _profile(_keyed_register_facts() + [_fact("dfg", "iteration_source")])
     classifier = ContainerKindClassifier(NullGraphProbe())
-    assert "keyed_register_callable" not in {
-        m.kind for m in classifier.classify(profile)
-    }
+    assert "keyed_register_callable" not in {m.kind for m in classifier.classify(profile)}
 
 
 def test_keyed_register_callable_requires_callable_value():
     """A pure ``self[key] = some_data`` (no callable) is not a
     register-callable pattern — it is plain dict storage."""
-    facts = [
-        f for f in _keyed_register_facts() if f.bit != "callable_value"
-    ]
+    facts = [f for f in _keyed_register_facts() if f.bit != "callable_value"]
     profile = _profile(facts)
     classifier = ContainerKindClassifier(NullGraphProbe())
-    assert "keyed_register_callable" not in {
-        m.kind for m in classifier.classify(profile)
-    }
+    assert "keyed_register_callable" not in {m.kind for m in classifier.classify(profile)}
 
 
 def test_keyed_register_callable_requires_subscript_write():
-    facts = [
-        f for f in _keyed_register_facts() if f.bit != "subscript_write"
-    ]
+    facts = [f for f in _keyed_register_facts() if f.bit != "subscript_write"]
     profile = _profile(facts)
     classifier = ContainerKindClassifier(NullGraphProbe())
-    assert "keyed_register_callable" not in {
-        m.kind for m in classifier.classify(profile)
-    }
+    assert "keyed_register_callable" not in {m.kind for m in classifier.classify(profile)}
 
 
 def test_keyed_register_callable_rejects_when_returning_value():
@@ -424,13 +424,9 @@ def test_keyed_register_callable_rejects_when_returning_value():
     side-effect setter — fires the storage bits and exits without
     propagating a value out.
     """
-    profile = _profile(
-        _keyed_register_facts() + [_fact("dfg", "return_output")]
-    )
+    profile = _profile(_keyed_register_facts() + [_fact("dfg", "return_output")])
     classifier = ContainerKindClassifier(NullGraphProbe())
-    assert "keyed_register_callable" not in {
-        m.kind for m in classifier.classify(profile)
-    }
+    assert "keyed_register_callable" not in {m.kind for m in classifier.classify(profile)}
 
 
 # ---------------------------------------------------------------------------
@@ -463,9 +459,7 @@ def test_keyed_dispatch_callable_rejects_when_iterating():
     ``iteration_source`` is present in the same callable body, the
     classifier must NOT call this a keyed dispatcher.
     """
-    profile = _profile(
-        _keyed_dispatch_facts() + [_fact("dfg", "iteration_source")]
-    )
+    profile = _profile(_keyed_dispatch_facts() + [_fact("dfg", "iteration_source")])
     classifier = ContainerKindClassifier(NullGraphProbe())
     kinds = {m.kind for m in classifier.classify(profile)}
     assert "keyed_dispatch_callable" not in kinds
@@ -475,9 +469,7 @@ def test_keyed_dispatch_callable_requires_subscript_read():
     facts = [f for f in _keyed_dispatch_facts() if f.bit != "subscript_read"]
     profile = _profile(facts)
     classifier = ContainerKindClassifier(NullGraphProbe())
-    assert "keyed_dispatch_callable" not in {
-        m.kind for m in classifier.classify(profile)
-    }
+    assert "keyed_dispatch_callable" not in {m.kind for m in classifier.classify(profile)}
 
 
 def test_keyed_dispatch_callable_requires_callable_value():
@@ -486,18 +478,14 @@ def test_keyed_dispatch_callable_requires_callable_value():
     facts = [f for f in _keyed_dispatch_facts() if f.bit != "callable_value"]
     profile = _profile(facts)
     classifier = ContainerKindClassifier(NullGraphProbe())
-    assert "keyed_dispatch_callable" not in {
-        m.kind for m in classifier.classify(profile)
-    }
+    assert "keyed_dispatch_callable" not in {m.kind for m in classifier.classify(profile)}
 
 
 def test_keyed_dispatch_callable_requires_value_call():
     facts = [f for f in _keyed_dispatch_facts() if f.bit != "value_call"]
     profile = _profile(facts)
     classifier = ContainerKindClassifier(NullGraphProbe())
-    assert "keyed_dispatch_callable" not in {
-        m.kind for m in classifier.classify(profile)
-    }
+    assert "keyed_dispatch_callable" not in {m.kind for m in classifier.classify(profile)}
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +629,7 @@ def test_proxy_object_has_no_axis_only_fallback():
 
 def test_proxy_object_topology_excludes_signal_or_data():
     """A proxy topology proof on a symbol with overlapping bits must not also
-        pick up signal_register or data_model."""
+    pick up signal_register or data_model."""
     profile = _profile(
         [
             _fact("struct", "class_def", uid="u:LP", qn="pkg.LocalProxy"),
@@ -871,7 +859,14 @@ def test_di_container_rejects_pytest_fixture_style():
     profile = _profile(
         [
             _fact("struct", "function_def", uid="u:t", qn="pkg.test_x", kind="function"),
-            _fact("struct", "parameter_decl", uid="u:t", qn="pkg.test_x", kind="function", payload={"name": "db"}),
+            _fact(
+                "struct",
+                "parameter_decl",
+                uid="u:t",
+                qn="pkg.test_x",
+                kind="function",
+                payload={"name": "db"},
+            ),
             _fact("dfg", "parameter_input", uid="u:t", qn="pkg.test_x", kind="function"),
         ],
         uid="u:t",

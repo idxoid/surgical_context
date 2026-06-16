@@ -63,12 +63,7 @@ def test_module_level_assignment_emits_variable_symbol_as_caller():
 
 def test_function_level_instantiation_still_routes_to_enclosing_function():
     a = _adapter()
-    source = (
-        "from fastapi import FastAPI\n"
-        "\n"
-        "def make_app():\n"
-        "    return FastAPI()\n"
-    )
+    source = "from fastapi import FastAPI\n\ndef make_app():\n    return FastAPI()\n"
 
     symbols = a.extract_symbols(source, "myapp.py")
     instantiations = a.extract_instantiations(source, "myapp.py")
@@ -123,18 +118,12 @@ def test_parser_drops_unresolvable_typo_and_builtins():
     variable_names = {s.name for s in symbols if s.kind == "variable"}
 
     assert variable_names == {"app"}
-    assert {row["type_qualified_name"] for row in instantiations} == {
-        "fastapi.FastAPI"
-    }
+    assert {row["type_qualified_name"] for row in instantiations} == {"fastapi.FastAPI"}
 
 
 def test_dotted_attribute_constructor_resolves_through_module_import():
     a = _adapter()
-    source = (
-        "from starlette import routing\n"
-        "\n"
-        "sub_app = routing.Router()\n"
-    )
+    source = "from starlette import routing\n\nsub_app = routing.Router()\n"
 
     symbols = a.extract_symbols(source, "myapp.py")
     instantiations = a.extract_instantiations(source, "myapp.py")
@@ -151,18 +140,11 @@ def test_dotted_attribute_constructor_resolves_through_module_import():
 
 def test_local_class_constructor_marks_row_internal():
     a = _adapter()
-    source = (
-        "class MyBase:\n"
-        "    pass\n"
-        "\n"
-        "local_inst = MyBase()\n"
-    )
+    source = "class MyBase:\n    pass\n\nlocal_inst = MyBase()\n"
 
     symbols = a.extract_symbols(source, "myapp.py")
     instantiations = a.extract_instantiations(source, "myapp.py")
-    local_inst = next(
-        s for s in symbols if s.name == "local_inst" and s.kind == "variable"
-    )
+    local_inst = next(s for s in symbols if s.name == "local_inst" and s.kind == "variable")
 
     assert len(instantiations) == 1
     inst = instantiations[0]

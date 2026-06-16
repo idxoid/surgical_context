@@ -48,15 +48,16 @@ from sidecar.axis.library_marker_catalogue import LIBRARY_MARKER_CATALOGUE
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
-
 # Method-level contracts that prove a class participates in a registry
 # pattern. A class whose methods carry any of these is structurally
 # registry-like — the canonical catalogue claim is earned regardless of
 # subtype (web / task / signal / error).
-_REGISTRY_METHOD_CONTRACTS = frozenset({
-    "metadata_key_roundtrip",
-    "callable_container_dispatch",
-})
+_REGISTRY_METHOD_CONTRACTS = frozenset(
+    {
+        "metadata_key_roundtrip",
+        "callable_container_dispatch",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -120,7 +121,7 @@ def _find_class_with_evidence(
     prefix = f"{package}."
     if not canonical_qn.startswith(prefix):
         return None
-    local_qn = canonical_qn[len(prefix):]
+    local_qn = canonical_qn[len(prefix) :]
     with db.driver.session() as session:
         rec = session.run(
             """
@@ -144,9 +145,7 @@ def _find_class_with_evidence(
     method_uids = [u for u in (rec.get("method_uids") or []) if u]
     class_uid = str(rec["class_uid"])
     method_evidence = (
-        _collect_method_contract_evidence(db, workspace_id, method_uids)
-        if method_uids
-        else []
+        _collect_method_contract_evidence(db, workspace_id, method_uids) if method_uids else []
     )
     class_kind_evidence = _check_class_registry_kind(workspace_id, class_uid)
     return (True, method_evidence, class_kind_evidence)
@@ -160,9 +159,13 @@ def _check_class_registry_kind(workspace_id: str, class_uid: str) -> str | None:
     import lancedb
 
     table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
-    rows = table.to_lance().to_table(
-        columns=["uid", "axis_container_kinds_json", "workspace_id"],
-    ).to_pylist()
+    rows = (
+        table.to_lance()
+        .to_table(
+            columns=["uid", "axis_container_kinds_json", "workspace_id"],
+        )
+        .to_pylist()
+    )
     for row in rows:
         if row.get("workspace_id") != workspace_id or row.get("uid") != class_uid:
             continue
@@ -173,10 +176,7 @@ def _check_class_registry_kind(workspace_id: str, class_uid: str) -> str | None:
         for match in kinds_json:
             if match.get("kind") == "registry_class":
                 evidence_probes = match.get("evidence_probes") or []
-                return (
-                    ", ".join(str(p) for p in evidence_probes)
-                    or "registry_class"
-                )
+                return ", ".join(str(p) for p in evidence_probes) or "registry_class"
         return None
     return None
 
@@ -193,9 +193,13 @@ def _collect_method_contract_evidence(
     import lancedb
 
     table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
-    lance_rows = table.to_lance().to_table(
-        columns=["uid", "name", "axis_contracts_json", "workspace_id"],
-    ).to_pylist()
+    lance_rows = (
+        table.to_lance()
+        .to_table(
+            columns=["uid", "name", "axis_contracts_json", "workspace_id"],
+        )
+        .to_pylist()
+    )
     by_uid = {
         r["uid"]: r
         for r in lance_rows
@@ -314,13 +318,15 @@ def _render_markdown(rows: list[CatalogueEvidence], summary: dict[str, Any]) -> 
     ]
     for kind, statuses in summary["by_kind"].items():
         lines.append(f"- **{kind}**: `{json.dumps(statuses, sort_keys=True)}`")
-    lines.extend([
-        "",
-        "## Entries",
-        "",
-        "| canonical_qn | kind | status | workspace | method evidence | registry_class |",
-        "|---|---|---|---|---|---|",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Entries",
+            "",
+            "| canonical_qn | kind | status | workspace | method evidence | registry_class |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
     for row in rows:
         evidence_brief = (
             ", ".join(

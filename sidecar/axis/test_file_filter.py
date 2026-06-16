@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import re
 
-
 # Tokens that mark a path segment as part of a test surface. ``t`` is
 # Celery's convention (``t/unit``, ``t/integration``); ``test`` and
 # ``tests`` are the universal ones. We match on full path segments only
@@ -33,9 +32,7 @@ _TEST_DIR_SEGMENTS: frozenset[str] = frozenset({"tests", "test", "t"})
 
 # File-name patterns that mark a single ``.py`` as test surface. The
 # regexes match the full file name (no path).
-_TEST_FILE_NAME_RE: re.Pattern[str] = re.compile(
-    r"^(test_[^/]+\.py|[^/]+_test\.py|conftest\.py)$"
-)
+_TEST_FILE_NAME_RE: re.Pattern[str] = re.compile(r"^(test_[^/]+\.py|[^/]+_test\.py|conftest\.py)$")
 
 
 def is_test_path(path: str) -> bool:

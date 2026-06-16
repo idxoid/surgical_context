@@ -63,8 +63,16 @@ _TEST_FILE_NAME_RE: re.Pattern[str] = re.compile(
 # --- example / tutorial / peripheral non-answer code -----------------------
 _EXAMPLE_DIR_SEGMENTS: frozenset[str] = frozenset(
     {
-        "examples", "example", "tutorial", "tutorials", "demo", "demos",
-        "samples", "docs_src", "benchmarks", "codemods",
+        "examples",
+        "example",
+        "tutorial",
+        "tutorials",
+        "demo",
+        "demos",
+        "samples",
+        "docs_src",
+        "benchmarks",
+        "codemods",
     }
 )
 

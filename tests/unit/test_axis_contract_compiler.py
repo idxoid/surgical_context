@@ -168,8 +168,18 @@ def test_static_data_and_config_contracts_do_not_have_traversal_mode():
     profile = _profile(
         [
             _fact("struct", "class_def", kind="class"),
-            _fact("struct", "class_attribute", kind="class", payload={"annotation": "str", "value": '"x"'}),
-            _fact("struct", "class_attribute", kind="class", payload={"annotation": "int", "value": "1"}),
+            _fact(
+                "struct",
+                "class_attribute",
+                kind="class",
+                payload={"annotation": "str", "value": '"x"'},
+            ),
+            _fact(
+                "struct",
+                "class_attribute",
+                kind="class",
+                payload={"annotation": "int", "value": "1"},
+            ),
             _fact("struct", "annotation", kind="class"),
         ],
         kind="class",
@@ -185,7 +195,9 @@ def test_static_data_and_config_contracts_do_not_have_traversal_mode():
 
 
 def test_route_register_marker_alone_does_not_prove_route_register_binding():
-    profile = _profile([_fact("struct", "module_scope")], uid="u:app", qn="myapp.app", kind="variable")
+    profile = _profile(
+        [_fact("struct", "module_scope")], uid="u:app", qn="myapp.app", kind="variable"
+    )
     marker = ContainerKindMatch(
         kind="web_route_register",
         symbol_uid="u:app",
@@ -278,7 +290,9 @@ def test_registry_binding_inferred_fires_on_consumer_derived_variable():
                 payload={"count": 4},
             ),
         ],
-        uid="u:app", qn="myapp.app", kind="variable",
+        uid="u:app",
+        qn="myapp.app",
+        kind="variable",
     )
     marker = ContainerKindMatch(
         kind="registry_class",
@@ -302,7 +316,9 @@ def test_registry_binding_inferred_does_not_fire_without_registered_callable():
     """
     profile = _profile(
         [_fact("struct", "class_def", uid="u:c", qn="pkg.C", kind="class")],
-        uid="u:c", qn="pkg.C", kind="class",
+        uid="u:c",
+        qn="pkg.C",
+        kind="class",
     )
     marker = ContainerKindMatch(
         kind="registry_class",
@@ -327,7 +343,9 @@ def test_registry_binding_inferred_coexists_with_catalogue_subtype_contract():
         [
             _fact("dfg", "registered_callable", uid="u:app", qn="myapp.app", kind="variable"),
         ],
-        uid="u:app", qn="myapp.app", kind="variable",
+        uid="u:app",
+        qn="myapp.app",
+        kind="variable",
     )
     matches = [
         ContainerKindMatch(
@@ -372,10 +390,7 @@ def test_dependency_injection_binding_requires_cross_symbol_injected_dependency_
     assert "provider_default_binding" in contracts_no_inject
     assert "dependency_injection_binding" not in contracts_no_inject
 
-    wired = _profile(
-        base_facts
-        + [_fact("dfg", "injected_dependency", payload={"count": 2})]
-    )
+    wired = _profile(base_facts + [_fact("dfg", "injected_dependency", payload={"count": 2})])
     contracts_wired = {c.contract for c in _contracts(wired)}
     assert "provider_default_binding" in contracts_wired
     assert "dependency_injection_binding" in contracts_wired
@@ -383,10 +398,10 @@ def test_dependency_injection_binding_requires_cross_symbol_injected_dependency_
 
 def test_container_kind_matches_from_json_round_trips_persisted_matches():
     raw = (
-        "[{\"kind\": \"metadata_carrier\", \"symbol_uid\": \"u:x\", "
-        "\"qualified_name\": \"pkg.x\", "
-        "\"evidence_bits\": [[\"dfg\", \"keyed_write\"]], "
-        "\"evidence_probes\": [], \"payload\": {\"shared_key_count\": 1}}]"
+        '[{"kind": "metadata_carrier", "symbol_uid": "u:x", '
+        '"qualified_name": "pkg.x", '
+        '"evidence_bits": [["dfg", "keyed_write"]], '
+        '"evidence_probes": [], "payload": {"shared_key_count": 1}}]'
     )
 
     matches = container_kind_matches_from_json(raw)

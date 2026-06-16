@@ -21,7 +21,7 @@ def _unit(vector: list[float]) -> list[float]:
     return [x / norm for x in vector]
 
 
-def _orthogonal_embedder() -> "callable":
+def _orthogonal_embedder() -> callable:
     """Return an embedder that places every distinct string at a unit
     vector along a unique axis — so cosine similarity between two
     distinct strings is exactly 0 and between identical strings is
@@ -43,7 +43,7 @@ def _orthogonal_embedder() -> "callable":
     return embed
 
 
-def _shared_axis_embedder(boosts: dict[str, str]) -> "callable":
+def _shared_axis_embedder(boosts: dict[str, str]) -> callable:
     """Embedder where the query and the boosted role description share
     a high-weight component on a shared axis (high similarity); every
     other distinct string is orthogonal. ``boosts`` is a ``{query:
@@ -78,7 +78,7 @@ def _shared_axis_embedder(boosts: dict[str, str]) -> "callable":
     return embed
 
 
-def _similarity_embedder(query: str, scores_by_role: dict[str, float]) -> "callable":
+def _similarity_embedder(query: str, scores_by_role: dict[str, float]) -> callable:
     """Embed ``query`` on axis 0 and each named role description at an
     exact cosine similarity to it. Unnamed strings stay orthogonal.
     """
@@ -125,8 +125,7 @@ def test_every_described_role_is_registered():
     """
     missing = set(ROLE_INTENT_DESCRIPTIONS) - set(ROLE_CONTRACT_MAP)
     assert not missing, (
-        f"intent_classifier describes roles that role_resolver doesn't know: "
-        f"{sorted(missing)}"
+        f"intent_classifier describes roles that role_resolver doesn't know: {sorted(missing)}"
     )
 
 
@@ -167,13 +166,15 @@ def test_top_k_limits_results():
     query = "ambiguous query"
     # Share an axis with three distinct role descriptions so they all
     # score 1.0; top_k=2 must drop the third.
-    embedder = _shared_axis_embedder({
-        query: ROLE_INTENT_DESCRIPTIONS["routing_surface"],
-        # `_shared_axis_embedder` only matches by string equality, so
-        # the second / third are extra orthogonal — single role match
-        # in this construction. To get genuinely multiple matches we
-        # need a more complex embedder.
-    })
+    embedder = _shared_axis_embedder(
+        {
+            query: ROLE_INTENT_DESCRIPTIONS["routing_surface"],
+            # `_shared_axis_embedder` only matches by string equality, so
+            # the second / third are extra orthogonal — single role match
+            # in this construction. To get genuinely multiple matches we
+            # need a more complex embedder.
+        }
+    )
 
     matches = classify_intent(query, embedder, top_k=2, threshold=0.20)
 
@@ -205,9 +206,11 @@ def test_threshold_filters_low_similarity_matches():
     threshold and is filtered out.
     """
     query = "narrow query"
-    embedder = _shared_axis_embedder({
-        query: ROLE_INTENT_DESCRIPTIONS["dependency_solver"],
-    })
+    embedder = _shared_axis_embedder(
+        {
+            query: ROLE_INTENT_DESCRIPTIONS["dependency_solver"],
+        }
+    )
 
     above = classify_intent(query, embedder, threshold=0.50)
     below = classify_intent(query, embedder, threshold=1.5)  # impossible

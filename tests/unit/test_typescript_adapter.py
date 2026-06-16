@@ -202,11 +202,13 @@ export function buildCreateSlice() {
             calls = adapter.extract_calls_from_source(source, "createSlice.ts")
 
         build_uid = next(
-            symbol.uid for symbol in adapter.extract_symbols(source, "createSlice.ts")
+            symbol.uid
+            for symbol in adapter.extract_symbols(source, "createSlice.ts")
             if symbol.name == "buildCreateSlice"
         )
         call = next(
-            call for call in calls
+            call
+            for call in calls
             if call.get("caller_uid") == build_uid and call.get("callee_name") == "createReducer"
         )
         assert call["rel_type"] == "CALLS_IMPORTED"
@@ -289,9 +291,7 @@ export function configureStore<S>(
         configure_store = next(symbol for symbol in symbols if symbol.name == "configureStore")
 
         refs = adapter.extract_type_references(source, "configureStore.ts")
-        signature_refs = [
-            ref for ref in refs if ref["referrer_uid"] == configure_store.uid
-        ]
+        signature_refs = [ref for ref in refs if ref["referrer_uid"] == configure_store.uid]
 
         assert {ref["type_name"] for ref in signature_refs} >= {
             "ConfigureStoreOptions",

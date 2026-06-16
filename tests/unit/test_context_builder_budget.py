@@ -112,8 +112,13 @@ def test_hybrid_keeps_seed_full_and_signatures_the_rest():
     # every expanded neighbour (depth >= 1) collapses to a signature.
     def _at(uid, depth, code):
         return ContextSymbol(
-            uid=uid, name=uid, file_path="/f.py", role="r",
-            distance_from_seed=depth, expansion_step=None, code=code,
+            uid=uid,
+            name=uid,
+            file_path="/f.py",
+            role="r",
+            distance_from_seed=depth,
+            expansion_step=None,
+            code=code,
         )
 
     bundle = ContextBundle(
@@ -126,8 +131,8 @@ def test_hybrid_keeps_seed_full_and_signatures_the_rest():
     )
     out = _apply_render_and_budget([bundle], token_budget=None, render_mode="hybrid")
     assert out[0].seed.code == "def seed(x):\n    return x\n"  # depth 0 full
-    assert out[0].related[0].code == "def near(y):"           # depth 1 signature
-    assert out[0].related[1].code == "def far(z):"            # depth 2 signature
+    assert out[0].related[0].code == "def near(y):"  # depth 1 signature
+    assert out[0].related[1].code == "def far(z):"  # depth 2 signature
 
 
 def test_hybrid_compact_keeps_seed_compact_and_signatures_the_rest():
@@ -220,11 +225,7 @@ def test_fold_compact_groups_class_members_as_signatures_only():
     out = _render_bundle(bundle, "fold_compact")
 
     assert out.render_mode == "fold_compact"
-    assert out.seed.code == (
-        "class Service:\n"
-        "    def target(self):\n"
-        "    def helper(self):"
-    )
+    assert out.seed.code == ("class Service:\n    def target(self):\n    def helper(self):")
 
 
 def test_fold_leaves_ambiguous_single_method_alone():
@@ -457,8 +458,4 @@ def test_token_credit_starts_foldable_active_bundle_as_fold_coverage():
 
     assert cost == _bundle_token_count(rendered)
     assert rendered.render_mode == "fold_compact"
-    assert rendered.seed.code == (
-        "class Service:\n"
-        "    def target(self):\n"
-        "    def helper(self):"
-    )
+    assert rendered.seed.code == ("class Service:\n    def target(self):\n    def helper(self):")

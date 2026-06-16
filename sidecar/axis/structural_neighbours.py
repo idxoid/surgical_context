@@ -70,7 +70,9 @@ def expand_structural_neighbours(
     seed_files = {c.file_path for c in seeds if c.file_path}
 
     neighbours = walk_neighbours(
-        db, workspace_id, seed_uids,
+        db,
+        workspace_id,
+        seed_uids,
         edges=_DATAFLOW_EDGES,
         direction="undirected",
         max_hops=max_hops,

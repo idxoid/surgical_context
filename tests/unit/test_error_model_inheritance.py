@@ -28,9 +28,9 @@ def test_transitive_inheritance_through_workspace_class():
     """``UsageError(ClickException)`` reaches the builtin anchor through
     the in-workspace ``ClickException`` via DEPENDS_ON ancestry."""
     parsed = {
-        "ce": ["Exception"],         # anchor
-        "ue": ["ClickException"],    # no builtin base of its own
-        "bad": ["UsageError"],       # two hops from the anchor
+        "ce": ["Exception"],  # anchor
+        "ue": ["ClickException"],  # no builtin base of its own
+        "bad": ["UsageError"],  # two hops from the anchor
     }
     ancestors = {
         "ce": set(),
@@ -59,9 +59,9 @@ def test_alias_only_ancestor_edge_converges():
     ancestor edge (added as a single hop, not transitive), the fixpoint
     iteration still propagates error_model down a multi-level chain."""
     parsed = {
-        "root": ["Exception"],   # anchor
+        "root": ["Exception"],  # anchor
         "mid": ["AliasedRoot"],  # alias edge → root (only direct hop known)
-        "leaf": ["Mid"],         # alias edge → mid
+        "leaf": ["Mid"],  # alias edge → mid
     }
     # Each class only knows its immediate alias-resolved parent, not the
     # full transitive set — the fixpoint must still reach leaf.

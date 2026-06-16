@@ -142,9 +142,13 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             import lancedb
 
             table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
-            rows = table.to_lance().to_table(
-                columns=["uid", "container_kinds", "workspace_id"],
-            ).to_pylist()
+            rows = (
+                table.to_lance()
+                .to_table(
+                    columns=["uid", "container_kinds", "workspace_id"],
+                )
+                .to_pylist()
+            )
         except Exception:
             self._inherits_proxy_object_cache[symbol_uid] = False
             return False
@@ -214,9 +218,13 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             import lancedb
 
             table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
-            rows = table.to_lance().to_table(
-                columns=["uid", "container_kinds", "workspace_id"],
-            ).to_pylist()
+            rows = (
+                table.to_lance()
+                .to_table(
+                    columns=["uid", "container_kinds", "workspace_id"],
+                )
+                .to_pylist()
+            )
         except Exception:
             self._inherits_error_dispatch_cache[symbol_uid] = False
             return False
@@ -244,9 +252,7 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         treat ``0`` as "no structural proof" — never as "definitely zero".
         """
         fragments = [
-            _KIND_NEIGHBOUR_CYPHER[kind]
-            for kind in set(kinds)
-            if kind in _KIND_NEIGHBOUR_CYPHER
+            _KIND_NEIGHBOUR_CYPHER[kind] for kind in set(kinds) if kind in _KIND_NEIGHBOUR_CYPHER
         ]
         if not fragments:
             return 0

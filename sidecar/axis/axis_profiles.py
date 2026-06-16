@@ -162,17 +162,13 @@ def _check_consistency() -> None:  # pragma: no cover - import-time guard
     catalogue = set(_PREDICATES.keys()) | {"error_model"}
     missing = catalogue - set(KIND_AXES)
     if missing:
-        raise RuntimeError(
-            f"kinds without an axis profile: {sorted(missing)}"
-        )
+        raise RuntimeError(f"kinds without an axis profile: {sorted(missing)}")
     for axis in ALL_AXES:
         if not AXIS_EDGES.get(axis):
             raise RuntimeError(f"axis without edges: {axis}")
     unknown = set(KIND_AXES) - catalogue
     if unknown:
-        raise RuntimeError(
-            f"axis profile for unknown kind(s): {sorted(unknown)}"
-        )
+        raise RuntimeError(f"axis profile for unknown kind(s): {sorted(unknown)}")
 
 
 _check_consistency()

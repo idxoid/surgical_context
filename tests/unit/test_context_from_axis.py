@@ -79,9 +79,7 @@ def test_context_from_axis_returns_none_when_no_bundles(monkeypatch):
     # Empty pipeline -> adapter returns None -> provider falls through.
     _patch_pipeline(monkeypatch, _result([]))
 
-    ctx = sidecar_main._context_from_axis(
-        "how does routing work", workspace_id="ws", db=object()
-    )
+    ctx = sidecar_main._context_from_axis("how does routing work", workspace_id="ws", db=object())
     assert ctx is None
 
 

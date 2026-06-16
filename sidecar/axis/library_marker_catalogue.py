@@ -120,6 +120,7 @@ _TASK_REGISTER: tuple[str, ...] = (
 # ``container_kind._classify_proxy_object`` and
 # ``proxy_object_propagation.propagate_proxy_object``.
 
+
 def _build_catalogue() -> dict[str, str]:
     out: dict[str, str] = {}
     for kind, qns in (
@@ -129,8 +130,7 @@ def _build_catalogue() -> dict[str, str]:
         for qn in qns:
             if qn in out and out[qn] != kind:
                 raise ValueError(
-                    f"Library marker catalogue conflict for {qn!r}: "
-                    f"{out[qn]!r} vs {kind!r}"
+                    f"Library marker catalogue conflict for {qn!r}: {out[qn]!r} vs {kind!r}"
                 )
             out[qn] = kind
     return out

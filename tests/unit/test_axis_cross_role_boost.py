@@ -97,9 +97,7 @@ def test_empty_secondary_returns_primary_unchanged():
 
 def test_candidate_within_max_hops_gets_boosted():
     primary = [_candidate("u:proxy", "proxy", score=0.5)]
-    secondary = {
-        "routing_surface": [_candidate("u:route", "route", role="routing_surface")]
-    }
+    secondary = {"routing_surface": [_candidate("u:route", "route", role="routing_surface")]}
     # Proximity query returns u:proxy → u:route reachable.
     db = _FakeDB([[{"primary_uid": "u:proxy", "reachable": ["u:route"]}]])
 
@@ -120,9 +118,7 @@ def test_candidate_not_in_proximity_keeps_score():
         _candidate("u:near", "near", score=0.5),
         _candidate("u:far", "far", score=0.4),
     ]
-    secondary = {
-        "routing_surface": [_candidate("u:r", "r", role="routing_surface")]
-    }
+    secondary = {"routing_surface": [_candidate("u:r", "r", role="routing_surface")]}
     # Only u:near is reachable.
     db = _FakeDB([[{"primary_uid": "u:near", "reachable": ["u:r"]}]])
 
@@ -170,9 +166,7 @@ def test_score_capped_at_ceiling():
     }
     # u:p reaches all three secondary roles → would push score to 1.35,
     # but the ceiling caps it.
-    db = _FakeDB(
-        [[{"primary_uid": "u:p", "reachable": ["u:r", "u:d", "u:dm"]}]]
-    )
+    db = _FakeDB([[{"primary_uid": "u:p", "reachable": ["u:r", "u:d", "u:dm"]}]])
 
     out = boost_by_cross_role_proximity(
         primary,
@@ -200,9 +194,7 @@ def test_results_resorted_after_boost():
         "dependency_solver": [_candidate("u:d", "d", role="dependency_solver")],
     }
     # Only u:boosted has cross-role neighbours, on both secondaries.
-    db = _FakeDB(
-        [[{"primary_uid": "u:boosted", "reachable": ["u:r", "u:d"]}]]
-    )
+    db = _FakeDB([[{"primary_uid": "u:boosted", "reachable": ["u:r", "u:d"]}]])
 
     out = boost_by_cross_role_proximity(
         primary,
@@ -219,9 +211,7 @@ def test_results_resorted_after_boost():
 @pytest.mark.parametrize("bad_hops", [0, -1, 1.5, "2", True])
 def test_cross_role_rejects_unsafe_max_hops(bad_hops):
     primary = [_candidate("u:p", "p")]
-    secondary = {
-        "routing_surface": [_candidate("u:r", "r", role="routing_surface")]
-    }
+    secondary = {"routing_surface": [_candidate("u:r", "r", role="routing_surface")]}
 
     with pytest.raises(ValueError, match="max_hops"):
         boost_by_cross_role_proximity(
@@ -243,9 +233,7 @@ def test_intersect_drops_candidates_without_cross_role_neighbours():
         _candidate("u:in", "in", score=0.5),
         _candidate("u:out", "out", score=0.9),
     ]
-    secondary = {
-        "routing_surface": [_candidate("u:r", "r", role="routing_surface")]
-    }
+    secondary = {"routing_surface": [_candidate("u:r", "r", role="routing_surface")]}
     # Only u:in has a cross-role neighbour.
     db = _FakeDB([[{"primary_uid": "u:in", "reachable": ["u:r"]}]])
 
@@ -269,9 +257,7 @@ def test_intersect_empty_falls_back_to_primary():
     purpose of having a fallback intent at all.
     """
     primary = [_candidate("u:a", "a", score=0.5)]
-    secondary = {
-        "routing_surface": [_candidate("u:r", "r", role="routing_surface")]
-    }
+    secondary = {"routing_surface": [_candidate("u:r", "r", role="routing_surface")]}
     # Empty record set → no proximity.
     db = _FakeDB([[]])
 
@@ -287,9 +273,7 @@ def test_intersect_empty_falls_back_to_primary():
 
 def test_intersect_empty_no_fallback_returns_empty():
     primary = [_candidate("u:a", "a", score=0.5)]
-    secondary = {
-        "routing_surface": [_candidate("u:r", "r", role="routing_surface")]
-    }
+    secondary = {"routing_surface": [_candidate("u:r", "r", role="routing_surface")]}
     db = _FakeDB([[]])
 
     out = intersect_by_cross_role_proximity(

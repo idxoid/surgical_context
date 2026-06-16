@@ -133,11 +133,7 @@ def main() -> None:
             continue
         for i, cand in enumerate(candidates, 1):
             short_path = (cand.file_path or "").split("/")[-1]
-            dist = (
-                f"d={cand.vector_distance:.3f}"
-                if cand.vector_distance is not None
-                else "d=-"
-            )
+            dist = f"d={cand.vector_distance:.3f}" if cand.vector_distance is not None else "d=-"
             print(
                 f"  #{i:2d}  score={cand.score:.3f}  {dist}  "
                 f"contracts={cand.contract_count}  "
@@ -155,10 +151,7 @@ def main() -> None:
             )
             for bundle in bundles:
                 print()
-                print(
-                    f"  --- context bundle: seed={bundle.seed.name} "
-                    f"(role={bundle.role}) ---"
-                )
+                print(f"  --- context bundle: seed={bundle.seed.name} (role={bundle.role}) ---")
                 for sym in bundle.all_symbols():
                     short_path = (sym.file_path or "").split("/")[-1]
                     step = sym.expansion_step or "seed"

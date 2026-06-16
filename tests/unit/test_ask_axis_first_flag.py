@@ -31,9 +31,7 @@ def test_flag_off_never_calls_axis(monkeypatch):
     # Make the legacy cascade land deterministically on `direct`.
     monkeypatch.setattr(sidecar_main, "_context_from_workspace", lambda *_a, **_k: None)
 
-    ctx = sidecar_main._resolve_ask_context(
-        req=_req(), user_id="u", workspace_id="ws", db=object()
-    )
+    ctx = sidecar_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
     assert _ask_level(ctx) == "direct_llm"
 
 
@@ -43,9 +41,7 @@ def test_flag_on_axis_wins(monkeypatch):
     sentinel = object.__new__(type("Ctx", (), {}))  # bare object with a __dict__
     monkeypatch.setattr(sidecar_main, "_context_from_axis", lambda _q, **_k: sentinel)
 
-    ctx = sidecar_main._resolve_ask_context(
-        req=_req(), user_id="u", workspace_id="ws", db=object()
-    )
+    ctx = sidecar_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
     assert ctx is sentinel
     assert _ask_level(ctx) == "axis"
 
@@ -55,9 +51,7 @@ def test_flag_on_axis_none_falls_through(monkeypatch):
     monkeypatch.setattr(sidecar_main, "_context_from_axis", lambda _q, **_k: None)
     monkeypatch.setattr(sidecar_main, "_context_from_workspace", lambda *_a, **_k: None)
 
-    ctx = sidecar_main._resolve_ask_context(
-        req=_req(), user_id="u", workspace_id="ws", db=object()
-    )
+    ctx = sidecar_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
     assert _ask_level(ctx) == "direct_llm"
 
 
@@ -71,7 +65,5 @@ def test_flag_on_axis_error_falls_through(monkeypatch):
     monkeypatch.setattr(sidecar_main, "_context_from_workspace", lambda *_a, **_k: None)
 
     # Must not raise — degrades to the legacy cascade.
-    ctx = sidecar_main._resolve_ask_context(
-        req=_req(), user_id="u", workspace_id="ws", db=object()
-    )
+    ctx = sidecar_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
     assert _ask_level(ctx) == "direct_llm"

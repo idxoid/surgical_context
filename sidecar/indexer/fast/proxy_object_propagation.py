@@ -77,7 +77,8 @@ def _read_axis_evidence_rows(lance, workspace_id: str) -> list[dict[str, Any]]:
     table = lance._sym_table  # noqa: SLF001
     return [
         r
-        for r in table.to_lance().to_table(
+        for r in table.to_lance()
+        .to_table(
             columns=[
                 "uid",
                 "symbol_kind",
@@ -85,7 +86,8 @@ def _read_axis_evidence_rows(lance, workspace_id: str) -> list[dict[str, Any]]:
                 "axis_evidence_json",
                 "workspace_id",
             ],
-        ).to_pylist()
+        )
+        .to_pylist()
         if r.get("workspace_id") == workspace_id and r.get("uid")
     ]
 
@@ -155,9 +157,7 @@ def _apply_lance_kind_updates(
 
     arrow = pa.Table.from_pylist(existing_rows, schema=table.schema)
     quoted_ws = workspace_id.replace("'", "''")
-    uid_in = ", ".join(
-        "'" + uid.replace("'", "''") + "'" for uid in update_map
-    )
+    uid_in = ", ".join("'" + uid.replace("'", "''") + "'" for uid in update_map)
     table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
     table.add(arrow)
     return len(existing_rows)
@@ -171,9 +171,7 @@ def propagate_proxy_object(
     """Tag proxy carriers and propagate the kind down inheritance."""
     lance_kinds = _read_lance_kinds(lance, workspace_id)
     evidence_rows = _read_axis_evidence_rows(lance, workspace_id)
-    qn_by_uid = {
-        str(r["uid"]): str(r.get("qualified_name") or "") for r in evidence_rows
-    }
+    qn_by_uid = {str(r["uid"]): str(r.get("qualified_name") or "") for r in evidence_rows}
 
     seed_uids: set[str] = set(_proxy_binding_uids(db, workspace_id))
     update_map: dict[str, dict[str, Any]] = {}

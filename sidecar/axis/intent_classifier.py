@@ -35,7 +35,6 @@ from dataclasses import dataclass
 
 from sidecar.axis.role_resolver import ROLE_CONTRACT_MAP
 
-
 # Each description is one short sentence the embedder can map to a
 # query in similar shape. Keep them user-facing, not implementation-
 # facing. Add a description only when a role is actually intent-shaped
@@ -46,12 +45,10 @@ ROLE_INTENT_DESCRIPTIONS: dict[str, str] = {
         "request handlers registered, matched, and dispatched?"
     ),
     "task_surface": (
-        "How are background tasks, queued jobs, or scheduled workers "
-        "registered and executed?"
+        "How are background tasks, queued jobs, or scheduled workers registered and executed?"
     ),
     "error_surface": (
-        "How are exception handlers, error responses, and error "
-        "middleware dispatched?"
+        "How are exception handlers, error responses, and error middleware dispatched?"
     ),
     "proxy_mechanism": (
         "How does a lazy proxy or context-bound global (like "
@@ -62,24 +59,18 @@ ROLE_INTENT_DESCRIPTIONS: dict[str, str] = {
         "provider, marker, or Depends-style binding?"
     ),
     "data_model_surface": (
-        "Where are data model classes, typed records, or schema-like "
-        "structures declared?"
+        "Where are data model classes, typed records, or schema-like structures declared?"
     ),
     "configuration_surface": (
-        "Where are configuration carriers, settings classes, or option "
-        "defaults defined?"
+        "Where are configuration carriers, settings classes, or option defaults defined?"
     ),
-    "metadata_surface": (
-        "Where is keyed metadata stored, written, and read back by "
-        "name?"
-    ),
+    "metadata_surface": ("Where is keyed metadata stored, written, and read back by name?"),
     "dispatch_surface": (
         "How does a middleware chain or callable container iterate and "
         "invoke its stored callables at runtime?"
     ),
     "binding_surface": (
-        "How is a value bound or registered now so that it can be "
-        "dispatched later by the runtime?"
+        "How is a value bound or registered now so that it can be dispatched later by the runtime?"
     ),
     "impact_analysis": (
         "If this code changes, what callers, tests, downstream "
@@ -94,9 +85,7 @@ ROLE_INTENT_DESCRIPTIONS: dict[str, str] = {
 
 _missing_roles = set(ROLE_INTENT_DESCRIPTIONS) - set(ROLE_CONTRACT_MAP)
 if _missing_roles:  # pragma: no cover - module-load consistency check
-    raise RuntimeError(
-        f"intent descriptions reference unknown roles: {sorted(_missing_roles)}"
-    )
+    raise RuntimeError(f"intent descriptions reference unknown roles: {sorted(_missing_roles)}")
 
 
 @dataclass(frozen=True)
@@ -179,9 +168,7 @@ def _prune_weak_tail(
 
     secondary_floor = max(
         threshold,
-        _SECONDARY_ABSOLUTE_THRESHOLD
-        if secondary_threshold is None
-        else secondary_threshold,
+        _SECONDARY_ABSOLUTE_THRESHOLD if secondary_threshold is None else secondary_threshold,
     )
     relative_floor = primary.similarity * secondary_relative_to_top
     pruned = [primary]

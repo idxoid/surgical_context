@@ -53,6 +53,7 @@ LANCEDB_SYMBOL_BULK_REPLACE_MIN = int(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_MIN
 LANCEDB_SYMBOL_BULK_REPLACE_RATIO = float(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_RATIO", "0.85"))
 DOCS_TABLE = "docs"
 SYMBOLS_TABLE = "symbols"
+AXIS_ADJACENCY_TABLE = "axis_adjacency"
 
 _log = logging.getLogger(__name__)
 
@@ -160,6 +161,18 @@ AXIS_SYMBOL_REQUIRED_COLUMNS = {
     "file_tier",
 }
 
+AXIS_ADJACENCY_SCHEMA = pa.schema(
+    [
+        pa.field("workspace_id", pa.string()),
+        pa.field("uid", pa.string()),
+        pa.field("name", pa.string()),
+        pa.field("file_path", pa.string()),
+        pa.field("kind", pa.string()),
+        pa.field("out_edges_json", pa.string()),
+        pa.field("in_edges_json", pa.string()),
+    ]
+)
+
 
 def _symbols_schema_for_profile(profile: IndexProfile) -> pa.Schema:
     if profile.name == AXIS_PYTHON_V1_PROFILE:
@@ -211,6 +224,19 @@ class LanceDBClient:
                 *self._symbol_axis_columns,
             },
         )
+        self._axis_adjacency_table = self._open_or_reset_table(
+            AXIS_ADJACENCY_TABLE,
+            AXIS_ADJACENCY_SCHEMA,
+            required_columns={
+                "workspace_id",
+                "uid",
+                "name",
+                "file_path",
+                "kind",
+                "out_edges_json",
+                "in_edges_json",
+            },
+        )
 
     @property
     def index_profile_name(self) -> str:
@@ -226,9 +252,7 @@ class LanceDBClient:
             "struct_bits": list(symbol.get("struct_bits") or []),
             "container_kinds": list(symbol.get("container_kinds") or []),
             "axis_evidence_json": str(symbol.get("axis_evidence_json") or "[]"),
-            "axis_container_kinds_json": str(
-                symbol.get("axis_container_kinds_json") or "[]"
-            ),
+            "axis_container_kinds_json": str(symbol.get("axis_container_kinds_json") or "[]"),
             "axis_contracts_json": str(symbol.get("axis_contracts_json") or "[]"),
             "file_tier": str(symbol.get("file_tier") or "core"),
         }
@@ -304,6 +328,21 @@ class LanceDBClient:
             self._sym_table,
             workspace_id,
             columns=columns or ["uid", "name", "file_path", "vector"],
+        )
+
+    def scan_axis_adjacency_workspace(self, workspace_id: str) -> list[dict]:
+        """Materialized graph-walk rows for one workspace."""
+        return self._scan_table_by_workspace(
+            self._axis_adjacency_table,
+            workspace_id,
+            columns=[
+                "uid",
+                "name",
+                "file_path",
+                "kind",
+                "out_edges_json",
+                "in_edges_json",
+            ],
         )
 
     def _delete_doc_rows(
@@ -819,6 +858,30 @@ class LanceDBClient:
         except Exception:
             pass
 
+    def replace_axis_adjacency(
+        self,
+        rows: list[dict],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> None:
+        """Replace one workspace's materialized adjacency rows."""
+        ws = self._quote_delete_value(workspace_id)
+        predicate = f"workspace_id = '{ws}'"
+        try:
+            self._axis_adjacency_table.delete(predicate)
+        except Exception:
+            pass
+        if rows:
+            self._axis_adjacency_table.add(rows)
+
+    def count_axis_adjacency_workspace(self, workspace_id: str) -> int:
+        """Row count for one workspace in the materialized adjacency table."""
+        ws = self._quote_delete_value(workspace_id)
+        try:
+            return int(self._axis_adjacency_table.count_rows(f"workspace_id = '{ws}'"))
+        except Exception:
+            return len(self.scan_axis_adjacency_workspace(workspace_id))
+
     def delete_workspace(
         self,
         workspace_id: str,
@@ -835,6 +898,10 @@ class LanceDBClient:
         except Exception:
             pass
         self.delete_symbols_workspace(workspace_id, progress_callback=progress_callback)
+        try:
+            self._axis_adjacency_table.delete(predicate)
+        except Exception:
+            pass
 
     def delete_path_prefixes(
         self,
@@ -864,6 +931,10 @@ class LanceDBClient:
             progress_callback(f"delete symbols paths={len(prefixes)}")
         try:
             self._sym_table.delete(predicate)
+        except Exception:
+            pass
+        try:
+            self._axis_adjacency_table.delete(f"workspace_id = '{ws}'")
         except Exception:
             pass
 

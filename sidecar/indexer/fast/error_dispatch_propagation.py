@@ -115,7 +115,8 @@ def _read_axis_evidence_rows(lance, workspace_id: str) -> list[dict[str, Any]]:
     table = lance._sym_table  # noqa: SLF001
     return [
         r
-        for r in table.to_lance().to_table(
+        for r in table.to_lance()
+        .to_table(
             columns=[
                 "uid",
                 "symbol_kind",
@@ -123,7 +124,8 @@ def _read_axis_evidence_rows(lance, workspace_id: str) -> list[dict[str, Any]]:
                 "axis_evidence_json",
                 "workspace_id",
             ],
-        ).to_pylist()
+        )
+        .to_pylist()
         if r.get("workspace_id") == workspace_id and r.get("uid")
     ]
 
@@ -180,9 +182,7 @@ def _apply_lance_kind_updates(
 
     arrow = pa.Table.from_pylist(existing_rows, schema=table.schema)
     quoted_ws = workspace_id.replace("'", "''")
-    uid_in = ", ".join(
-        "'" + uid.replace("'", "''") + "'" for uid in update_map
-    )
+    uid_in = ", ".join("'" + uid.replace("'", "''") + "'" for uid in update_map)
     table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
     table.add(arrow)
     return len(existing_rows)
@@ -233,10 +233,7 @@ def propagate_error_dispatch(
     seed_uids: set[str] = set()
     update_map: dict[str, dict[str, Any]] = {}
 
-    qn_by_uid = {
-        str(r["uid"]): str(r.get("qualified_name") or "")
-        for r in evidence_rows
-    }
+    qn_by_uid = {str(r["uid"]): str(r.get("qualified_name") or "") for r in evidence_rows}
 
     for symbol_uid, keys in keyed_hits:
         matched = sorted({k for k in keys if k in exception_keys})
@@ -252,9 +249,7 @@ def propagate_error_dispatch(
             qualified_name=qn_by_uid.get(target_uid, ""),
             existing_kinds=list(self_data["container_kinds"]),
             existing_json=self_data["axis_container_kinds_json"],
-            evidence_probes=(
-                f"exception_keyed_registry:{','.join(matched[:5])}",
-            ),
+            evidence_probes=(f"exception_keyed_registry:{','.join(matched[:5])}",),
             payload={"exception_keys": matched[:8]},
         )
         update_map[target_uid] = {

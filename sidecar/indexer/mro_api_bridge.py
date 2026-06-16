@@ -176,9 +176,7 @@ class MroApiBridgeIndexer:
                 graph.setdefault(sub_uid, []).append(sup_uid)
         return graph
 
-    def _load_methods(
-        self, workspace_id: str, classes: list[ClassRecord]
-    ) -> list[MethodRecord]:
+    def _load_methods(self, workspace_id: str, classes: list[ClassRecord]) -> list[MethodRecord]:
         classes_by_file = _classes_by_file(classes)
         query = """
         MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(m:Symbol)

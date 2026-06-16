@@ -9,10 +9,16 @@ from sidecar.axis.role_retrieval import RoleCandidate
 
 def _cand(uid, kinds=(), score=0.5, role="x"):
     return RoleCandidate(
-        uid=uid, name=uid, file_path=f"/{uid}.py", role=role,
-        satisfying_contracts=(), satisfying_kinds=tuple(kinds),
-        contract_count=0, kind_count=len(kinds),
-        vector_distance=None, score=score,
+        uid=uid,
+        name=uid,
+        file_path=f"/{uid}.py",
+        role=role,
+        satisfying_contracts=(),
+        satisfying_kinds=tuple(kinds),
+        contract_count=0,
+        kind_count=len(kinds),
+        vector_distance=None,
+        score=score,
     )
 
 
@@ -38,7 +44,7 @@ def test_boost_lifts_on_axis_candidate():
     # is on REGISTRY → boosted above a data_model candidate that is not.
     pools = {
         "routing_surface": [
-            _cand("u:model", kinds=["data_model"], score=0.6),       # STRUCTURAL
+            _cand("u:model", kinds=["data_model"], score=0.6),  # STRUCTURAL
             _cand("u:route", kinds=["web_route_register"], score=0.5),  # REGISTRY
         ]
     }

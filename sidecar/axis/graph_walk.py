@@ -131,12 +131,8 @@ class EdgeProfile:
 #: Each step is ``(name, edges, direction, max_hops)``. The names match the
 #: legacy ``query_plan`` step names so a hit's ``expansion_step`` label is
 #: byte-identical after the fold.
-_MODE_STEPS: dict[
-    str, tuple[tuple[str, tuple[str, ...], "Direction", int], ...]
-] = {
-    "immediate_control_flow": (
-        ("control_call_expansion", EdgeProfile.CALLS, "forward", 2),
-    ),
+_MODE_STEPS: dict[str, tuple[tuple[str, tuple[str, ...], Direction, int], ...]] = {
+    "immediate_control_flow": (("control_call_expansion", EdgeProfile.CALLS, "forward", 2),),
     "deferred_binding_flow": (
         ("binding_structure_expansion", EdgeProfile.BINDING, "undirected", 1),
         ("deferred_runtime_dispatch", EdgeProfile.CALLS, "undirected", 2),
@@ -146,7 +142,7 @@ _MODE_STEPS: dict[
 
 def steps_for_mode(
     mode: str,
-) -> tuple[tuple[str, tuple[str, ...], "Direction", int], ...]:
+) -> tuple[tuple[str, tuple[str, ...], Direction, int], ...]:
     """Return the ordered ``(name, edges, direction, max_hops)`` expansion
     steps for a context-traversal mode."""
     try:
@@ -289,8 +285,7 @@ def walk_neighbours(
         )
     else:
         anchor_match = (
-            "MATCH (sf:File {workspace_id: $workspace_id})"
-            "-[:CONTAINS]->(s:Symbol {uid: su})"
+            "MATCH (sf:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: su})"
         )
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
@@ -382,9 +377,7 @@ def walk_neighbours_grouped(
         return {}
     rel = _safe_rel_pattern(edges)
     hops = _safe_max_hops(max_hops)
-    if limit_per_seed is not None and (
-        type(limit_per_seed) is not int or limit_per_seed < 1
-    ):
+    if limit_per_seed is not None and (type(limit_per_seed) is not int or limit_per_seed < 1):
         raise ValueError("limit_per_seed must be an integer >= 1")
 
     if direction == "forward":

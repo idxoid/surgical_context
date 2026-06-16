@@ -17,6 +17,7 @@ Gated by ``AXIS_INPROC_WALK`` (graph_walk delegates here when set).
 
 from __future__ import annotations
 
+import json
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -48,10 +49,27 @@ class _Adjacency:
 _CACHE: dict[str, _Adjacency] = {}
 
 
+def invalidate_adjacency(workspace_id: str | None = None) -> None:
+    if workspace_id is None:
+        _CACHE.clear()
+    else:
+        _CACHE.pop(workspace_id, None)
+
+
 def load_adjacency(db, workspace_id: str) -> _Adjacency:
     cached = _CACHE.get(workspace_id)
     if cached is not None:
         return cached
+    lance_adj = _load_adjacency_from_lance(workspace_id)
+    if lance_adj is not None:
+        _CACHE[workspace_id] = lance_adj
+        return lance_adj
+    adj = _load_adjacency_from_neo4j(db, workspace_id)
+    _CACHE[workspace_id] = adj
+    return adj
+
+
+def _load_adjacency_from_neo4j(db, workspace_id: str) -> _Adjacency:
     adj = _Adjacency()
     out_adj: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     in_adj: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
@@ -96,8 +114,94 @@ def load_adjacency(db, workspace_id: str) -> _Adjacency:
         pass
     adj.out = {u: dict(d) for u, d in out_adj.items()}
     adj.in_ = {u: dict(d) for u, d in in_adj.items()}
-    _CACHE[workspace_id] = adj
     return adj
+
+
+def _load_adjacency_from_lance(workspace_id: str) -> _Adjacency | None:
+    try:
+        import lancedb
+
+        from sidecar.database.lancedb_client import AXIS_ADJACENCY_TABLE, DB_PATH
+
+        db = lancedb.connect(DB_PATH)
+        if AXIS_ADJACENCY_TABLE not in db.table_names():
+            return None
+        table = db.open_table(AXIS_ADJACENCY_TABLE)
+        ws = workspace_id.replace("'", "''")
+        columns = [
+            "uid",
+            "name",
+            "file_path",
+            "kind",
+            "out_edges_json",
+            "in_edges_json",
+        ]
+        try:
+            rows = (
+                table.search()
+                .where(f"workspace_id = '{ws}'", prefilter=True)
+                .limit(0)
+                .select(columns)
+                .to_list()
+            )
+        except Exception:
+            df = table.to_pandas()
+            rows = [
+                {key: row.get(key) for key in columns}
+                for _, row in df.iterrows()
+                if row.get("workspace_id") == workspace_id
+            ]
+    except Exception:
+        return None
+    if not rows:
+        # Empty means "no materialization for this workspace"; let Neo4j answer.
+        return None
+    return _adjacency_from_lance_rows(rows)
+
+
+def _adjacency_from_lance_rows(rows: list[dict]) -> _Adjacency:
+    adj = _Adjacency()
+    out_adj: dict[str, dict[str, set[str]]] = {}
+    in_adj: dict[str, dict[str, set[str]]] = {}
+
+    for row in rows:
+        uid = str(row.get("uid") or "")
+        if not uid:
+            continue
+        name = str(row.get("name") or "")
+        path = str(row.get("file_path") or "")
+        kind = str(row.get("kind") or "")
+        adj.meta[uid] = (name, path, kind)
+        if kind == "class" and path:
+            adj.file_classes.setdefault(path, []).append(uid)
+        out_adj[uid] = _decode_edges(row.get("out_edges_json"))
+        in_adj[uid] = _decode_edges(row.get("in_edges_json"))
+
+    adj.out = out_adj
+    adj.in_ = in_adj
+    return adj
+
+
+def _decode_edges(raw: object) -> dict[str, set[str]]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        payload = raw
+    else:
+        try:
+            payload = json.loads(str(raw))
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    if not isinstance(payload, dict):
+        return {}
+    decoded: dict[str, set[str]] = {}
+    for edge_type, uids in payload.items():
+        if not isinstance(edge_type, str):
+            continue
+        if not isinstance(uids, list):
+            continue
+        decoded[edge_type] = {str(uid) for uid in uids if uid}
+    return decoded
 
 
 def _neighbours_fn(adj: _Adjacency, rels: frozenset[str], direction: Direction):

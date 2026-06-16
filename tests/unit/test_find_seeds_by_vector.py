@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import pyarrow as pa
-import pytest
 
 import sidecar.axis.role_retrieval as rr
 from sidecar.axis.role_retrieval import find_seeds_by_vector
-
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -98,7 +96,10 @@ def test_ranks_by_nearest_vector(monkeypatch):
     ]
     _patch(monkeypatch, rows)
     out = find_seeds_by_vector(
-        WORKSPACE, "q", embed_fn=lambda t: [0.0, 1.0], limit=2,
+        WORKSPACE,
+        "q",
+        embed_fn=lambda t: [0.0, 1.0],
+        limit=2,
     )
     assert [c.uid for c in out] == ["u:near", "u:far"]
     assert out[0].role == "vector_seed"
@@ -149,7 +150,10 @@ def test_include_tests_keeps_test_files(monkeypatch):
     ]
     _patch(monkeypatch, rows)
     out = find_seeds_by_vector(
-        WORKSPACE, "q", embed_fn=lambda t: [0.0, 1.0], include_tests=True,
+        WORKSPACE,
+        "q",
+        embed_fn=lambda t: [0.0, 1.0],
+        include_tests=True,
     )
     assert {c.uid for c in out} == {"u:src", "u:test"}
 
@@ -167,10 +171,8 @@ def _scan_with_tiers():
     # example sits CLOSER to the query (0.05) than core (0.15); only the
     # tier demotion can pull core ahead.
     rows = [
-        {"uid": "core", "name": "core", "file_path": "/pkg/core.py",
-         "file_tier": "core"},
-        {"uid": "ex", "name": "ex", "file_path": "/examples/app.py",
-         "file_tier": "example"},
+        {"uid": "core", "name": "core", "file_path": "/pkg/core.py", "file_tier": "core"},
+        {"uid": "ex", "name": "ex", "file_path": "/examples/app.py", "file_tier": "example"},
     ]
     vectors = np.array([[0.15, 0.0], [0.05, 0.0]], dtype=float)
     return rr.WorkspaceScan(rows=rows, vectors=vectors)
@@ -178,7 +180,10 @@ def _scan_with_tiers():
 
 def test_example_tier_demoted_below_core_in_seed_selection():
     out = find_seeds_by_vector(
-        WORKSPACE, "q", embed_fn=lambda t: [0.0, 0.0], limit=1,
+        WORKSPACE,
+        "q",
+        embed_fn=lambda t: [0.0, 0.0],
+        limit=1,
         prescanned=_scan_with_tiers(),
     )
     # Despite being vectorially nearer, the example is demoted out of the
@@ -188,8 +193,12 @@ def test_example_tier_demoted_below_core_in_seed_selection():
 
 def test_impact_mode_relaxes_example_demotion():
     out = find_seeds_by_vector(
-        WORKSPACE, "q", embed_fn=lambda t: [0.0, 0.0], limit=1,
-        impact_mode=True, prescanned=_scan_with_tiers(),
+        WORKSPACE,
+        "q",
+        embed_fn=lambda t: [0.0, 0.0],
+        limit=1,
+        impact_mode=True,
+        prescanned=_scan_with_tiers(),
     )
     # In impact mode the example is no longer demoted hard enough to lose
     # its nearer distance — it stays the top seed.

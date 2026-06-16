@@ -109,12 +109,38 @@ class PythonAdapter(TreeSitterAdapter):
     # the catalogue is for application-level objects.
     _BUILTIN_CALLABLE_NAMES = frozenset(
         {
-            "bool", "bytearray", "bytes", "complex", "dict", "enumerate",
-            "filter", "float", "frozenset", "int", "list", "map", "object",
-            "range", "reversed", "set", "slice", "str", "tuple", "type",
-            "zip", "Exception", "ValueError", "TypeError", "KeyError",
-            "IndexError", "RuntimeError", "OSError", "IOError",
-            "AttributeError", "NotImplementedError", "StopIteration",
+            "bool",
+            "bytearray",
+            "bytes",
+            "complex",
+            "dict",
+            "enumerate",
+            "filter",
+            "float",
+            "frozenset",
+            "int",
+            "list",
+            "map",
+            "object",
+            "range",
+            "reversed",
+            "set",
+            "slice",
+            "str",
+            "tuple",
+            "type",
+            "zip",
+            "Exception",
+            "ValueError",
+            "TypeError",
+            "KeyError",
+            "IndexError",
+            "RuntimeError",
+            "OSError",
+            "IOError",
+            "AttributeError",
+            "NotImplementedError",
+            "StopIteration",
             "FileNotFoundError",
         }
     )
@@ -200,9 +226,7 @@ class PythonAdapter(TreeSitterAdapter):
         module_name = module_name_from_path(file_path)
         import_bindings = self._extract_import_bindings(source_code, file_path)
         local_classes = self._module_level_classes(tree)
-        existing_names = {
-            s.name for s in base_symbols if s.kind in {"function", "class"}
-        }
+        existing_names = {s.name for s in base_symbols if s.kind in {"function", "class"}}
         existing_var_names = {s.name for s in base_symbols if s.kind == "variable"}
         out: list[SymbolMetadata] = []
         for stmt in tree.root_node.named_children:
@@ -387,7 +411,9 @@ class PythonAdapter(TreeSitterAdapter):
                     continue
                 # Strict attribute-iteration + method-call-on-loop-var.
                 if right is not None and right.type == "attribute":
-                    loop_var = _node_text(left) if (left is not None and left.type == "identifier") else ""
+                    loop_var = (
+                        _node_text(left) if (left is not None and left.type == "identifier") else ""
+                    )
                     if cls._for_body_calls_on(fbody, loop_var):
                         flags["iterates_attr_call"] = True
                 # Permissive: any for-loop body that writes a subscript.
@@ -458,7 +484,9 @@ class PythonAdapter(TreeSitterAdapter):
             if not any(shape.values()):
                 continue
             name = _node_text(name_node)
-            existing = out.setdefault(name, {"mapping": False, "sequence": False, "constructed": False})
+            existing = out.setdefault(
+                name, {"mapping": False, "sequence": False, "constructed": False}
+            )
             for k, v in shape.items():
                 if v:
                     existing[k] = True
@@ -842,9 +870,8 @@ class PythonAdapter(TreeSitterAdapter):
 
         def site_uid_for(node, *, decorated: bool) -> str:
             site_node = (
-                (self._hook_decorated_def(node) if decorated else None)
-                or self._enclosing_def_node(node)
-            )
+                self._hook_decorated_def(node) if decorated else None
+            ) or self._enclosing_def_node(node)
             return (
                 self._uid_for_node(site_node, source_code, file_path)
                 if site_node is not None
@@ -880,8 +907,13 @@ class PythonAdapter(TreeSitterAdapter):
                 if sig.isidentifier():
                     site = self._hook_decorated_def(node)
                     if site is not None:
-                        emit(self._uid_for_node(site, source_code, file_path),
-                             sig, "config", "object", "receiver")
+                        emit(
+                            self._uid_for_node(site, source_code, file_path),
+                            sig,
+                            "config",
+                            "object",
+                            "receiver",
+                        )
                 continue
 
             # --- object-signal config/exec: ``<signal>.connect(..)`` registers,
@@ -911,8 +943,13 @@ class PythonAdapter(TreeSitterAdapter):
                     if inner_attr is not None and _node_text(inner_attr) == "dispatch":
                         hook_name = _node_text(tail)
                         if hook_name.isidentifier():
-                            emit(site_uid_for(node, decorated=False),
-                                 hook_name, "exec", "method", "dispatch")
+                            emit(
+                                site_uid_for(node, decorated=False),
+                                hook_name,
+                                "exec",
+                                "method",
+                                "dispatch",
+                            )
         return out
 
     @staticmethod
@@ -970,8 +1007,9 @@ class PythonAdapter(TreeSitterAdapter):
         out: list[dict] = []
         seen: set[tuple[str, str, str, str]] = set()
 
-        def emit(accessor_uid: str, accessor_name: str,
-                 attr_name: str, attr_qn: str, kind: str) -> None:
+        def emit(
+            accessor_uid: str, accessor_name: str, attr_name: str, attr_qn: str, kind: str
+        ) -> None:
             if not accessor_uid or not attr_name:
                 return
             key = (accessor_uid, attr_name, attr_qn, kind)
@@ -1014,7 +1052,9 @@ class PythonAdapter(TreeSitterAdapter):
                 function_returns=function_returns,
             )
 
-            def resolve_receiver(obj_node, *, ec=enclosing_class, ct=cls_table, lt=local_types) -> str:
+            def resolve_receiver(
+                obj_node, *, ec=enclosing_class, ct=cls_table, lt=local_types
+            ) -> str:
                 """Best-guess qualified type for the receiver expression.
 
                 Loop-bound locals (``ec`` / ``ct`` / ``lt``) are captured via
@@ -1109,13 +1149,16 @@ class PythonAdapter(TreeSitterAdapter):
                         rname = _node_text(base)
                         local_type = local_types.get(rname, "")
                         if local_type:
-                            emit(accessor_uid, accessor_name, rname, local_type,
-                                 "write_subscript_local")
+                            emit(
+                                accessor_uid,
+                                accessor_name,
+                                rname,
+                                local_type,
+                                "write_subscript_local",
+                            )
         return out
 
-    def extract_type_references(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_type_references(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """USES_TYPE references: a symbol names a project class in an AST-visible
         position → ``referrer`` USES_TYPE ``type``.
 
@@ -1140,9 +1183,7 @@ class PythonAdapter(TreeSitterAdapter):
             referrer_uid = self._uid_for_node(referrer_node, source_code, file_path)
             rname_node = referrer_node.child_by_field_name("name")
             referrer_name = _node_text(rname_node) if rname_node is not None else ""
-            for type_name, type_qn in self._type_ref_targets(
-                type_node, import_bindings, module
-            ):
+            for type_name, type_qn in self._type_ref_targets(type_node, import_bindings, module):
                 key = (referrer_uid, type_qn)
                 if key in seen:
                     continue
@@ -1168,9 +1209,14 @@ class PythonAdapter(TreeSitterAdapter):
                 emit(node, node.child_by_field_name("return_type"), "return")
             elif node.type == "call":
                 fn = node.child_by_field_name("function")
-                if fn is not None and fn.type == "identifier" and _node_text(fn) in (
-                    "isinstance",
-                    "issubclass",
+                if (
+                    fn is not None
+                    and fn.type == "identifier"
+                    and _node_text(fn)
+                    in (
+                        "isinstance",
+                        "issubclass",
+                    )
                 ):
                     args = node.child_by_field_name("arguments")
                     referrer = self._enclosing_def_node(node)
@@ -1277,9 +1323,7 @@ class PythonAdapter(TreeSitterAdapter):
                         )
         return out
 
-    def extract_instantiations(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_instantiations(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """INSTANTIATES edges: caller symbol -> the project class it constructs.
 
         Static construction forms (a refinement of a call where the callee is a
@@ -1326,9 +1370,7 @@ class PythonAdapter(TreeSitterAdapter):
             # caller: the new object lives under that identifier and is the DFG
             # anchor downstream code (decorators, references) talks to.
             if caller_node is None:
-                var_uid = self._module_assignment_variable_uid(
-                    call_node, module
-                )
+                var_uid = self._module_assignment_variable_uid(call_node, module)
                 caller_uid = var_uid if var_uid is not None else module_uid
             else:
                 caller_uid = self._uid_for_node(caller_node, source_code, file_path)
@@ -1368,9 +1410,7 @@ class PythonAdapter(TreeSitterAdapter):
             if params is not None:
                 for p in params.named_children:
                     if p.type == "typed_parameter":
-                        ident = next(
-                            (c for c in p.named_children if c.type == "identifier"), None
-                        )
+                        ident = next((c for c in p.named_children if c.type == "identifier"), None)
                         add(ident, p.child_by_field_name("type"))
                     elif p.type == "typed_default_parameter":
                         add(p.child_by_field_name("name"), p.child_by_field_name("type"))
@@ -1478,9 +1518,7 @@ class PythonAdapter(TreeSitterAdapter):
             # Module-level construction: caller is ``None`` here; ``emit``
             # routes the row to the module Symbol or, when the call is the
             # RHS of a module-level assignment, to the Variable anchor.
-            locals_map = (
-                class_value_locals(caller) if caller is not None else {}
-            )
+            locals_map = class_value_locals(caller) if caller is not None else {}
 
             # Branch A: ``v(...)`` where ``v`` holds a class via type[X]
             # propagation (locals_map). Names that show up here are
@@ -1917,9 +1955,7 @@ class PythonAdapter(TreeSitterAdapter):
             return import_bindings[raw]
         return f"{module}.{raw}"
 
-    def _resolve_dotted_name(
-        self, raw: str, import_bindings: dict[str, str], module: str
-    ) -> str:
+    def _resolve_dotted_name(self, raw: str, import_bindings: dict[str, str], module: str) -> str:
         """Resolve dotted names through the imported head, preserving the tail."""
         if not raw:
             return ""
@@ -2313,9 +2349,7 @@ class PythonAdapter(TreeSitterAdapter):
                         source_code,
                     )
                     table[var_name] = {
-                        "target_type": self._resolve_type_name(
-                            type_ident, import_bindings, module
-                        ),
+                        "target_type": self._resolve_type_name(type_ident, import_bindings, module),
                         "target_source": "annotation",
                         "wrapped_callable": "",
                         "confidence": 1.0,
@@ -2467,12 +2501,13 @@ class PythonAdapter(TreeSitterAdapter):
 
                 m = _re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", text)
                 if m:
-                    target_module = self._resolve_import_module(m.group(1), module.rsplit(".", 1)[0]
-                                                                if "." in module else "")
+                    target_module = self._resolve_import_module(
+                        m.group(1), module.rsplit(".", 1)[0] if "." in module else ""
+                    )
                     for item in m.group(2).split(","):
                         item = item.strip()
                         original, _, alias = item.partition(" as ")
-                        local = (alias.strip() or original.strip())
+                        local = alias.strip() or original.strip()
                         if local and local != "*":
                             bindings[local] = f"{target_module}.{original.strip()}"
 
