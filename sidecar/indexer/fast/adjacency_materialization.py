@@ -27,12 +27,20 @@ def materialize_axis_adjacency(
 
     Returns the number of workspace-contained symbol rows written.
     """
+    from sidecar.axis.adjacency_bridges import load_external_maps
+
     meta, out_adj, in_adj = _fetch_workspace_adjacency(db, workspace_id)
     rows = _build_adjacency_rows(meta, out_adj, in_adj)
 
     replace = getattr(lance, "replace_axis_adjacency", None)
     if callable(replace):
         replace(rows, workspace_id=workspace_id)
+
+    with db.driver.session() as session:
+        sym_to_ext, ext_to_sym = load_external_maps(session, workspace_id)
+    replace_external = getattr(lance, "replace_axis_adjacency_external", None)
+    if callable(replace_external):
+        replace_external(sym_to_ext, ext_to_sym, workspace_id=workspace_id)
 
     _invalidate_adjacency_cache(workspace_id)
     return len(rows)
@@ -215,4 +223,59 @@ def _invalidate_adjacency_cache(workspace_id: str) -> None:
         pass
 
 
-__all__ = ["materialize_axis_adjacency", "materialize_axis_adjacency_subset"]
+def rematerialize_workspaces(
+    db: Any,
+    lance: Any,
+    workspace_ids: list[str],
+) -> dict[str, int]:
+    """Refresh adjacency + external maps for each workspace. Returns uid row counts."""
+    out: dict[str, int] = {}
+    for workspace_id in workspace_ids:
+        out[workspace_id] = materialize_axis_adjacency(db, lance, workspace_id)
+    return out
+
+
+def _cli_main(argv: list[str] | None = None) -> None:
+    import argparse
+    import sys
+
+    from sidecar.database.lancedb_client import LanceDBClient
+    from sidecar.database.neo4j_client import Neo4jClient
+    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+    from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+
+    parser = argparse.ArgumentParser(description="Materialize axis adjacency into LanceDB")
+    parser.add_argument(
+        "workspace_ids",
+        nargs="*",
+        help="Workspace ids to refresh (default: all benchmark workspaces)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.workspace_ids:
+        targets = list(args.workspace_ids)
+    else:
+        try:
+            from QA.axis_benchmark import REPO_TO_WORKSPACE
+
+            targets = list(REPO_TO_WORKSPACE.values())
+        except Exception:
+            print("Pass workspace_ids explicitly outside the repo checkout.", file=sys.stderr)
+            sys.exit(1)
+
+    db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+    lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+    counts = rematerialize_workspaces(db, lance, targets)
+    for workspace_id, count in counts.items():
+        print(f"{workspace_id}: {count} symbol rows")
+
+
+if __name__ == "__main__":
+    _cli_main()
+
+
+__all__ = [
+    "materialize_axis_adjacency",
+    "materialize_axis_adjacency_subset",
+    "rematerialize_workspaces",
+]

@@ -129,21 +129,26 @@ def _read_lance_kinds(lance, workspace_id: str) -> dict[str, dict[str, Any]]:
     for every Symbol row in the workspace, so the propagator can read
     current kinds and emit an updated row.
     """
-    table = lance._sym_table  # noqa: SLF001 - direct access; same module family
-    rows = (
-        table.to_lance()
-        .to_table(
-            columns=["uid", "container_kinds", "axis_container_kinds_json", "workspace_id"],
+    scan = getattr(lance, "scan_symbols_workspace", None)
+    if callable(scan):
+        rows = scan(
+            workspace_id,
+            columns=["uid", "container_kinds", "axis_container_kinds_json"],
         )
-        .to_pylist()
-    )
+    else:
+        table = lance.symbols_table(workspace_id)  # type: ignore[attr-defined]
+        rows = (
+            table.to_lance()
+            .to_table(columns=["uid", "container_kinds", "axis_container_kinds_json"])
+            .to_pylist()
+        )
     return {
         r["uid"]: {
             "container_kinds": list(r.get("container_kinds") or []),
             "axis_container_kinds_json": r.get("axis_container_kinds_json") or "[]",
         }
         for r in rows
-        if r.get("workspace_id") == workspace_id and r.get("uid")
+        if r.get("uid")
     }
 
 
@@ -424,11 +429,14 @@ def propagate_error_model_via_inheritance(
 
     if not update_map:
         return 0
-    table = lance._sym_table  # noqa: SLF001
+    from sidecar.database.lance_workspace_tables import workspace_partitioned_enabled
+
+    table = lance.symbols_table(workspace_id)  # type: ignore[attr-defined]
     existing_rows = [
         r
         for r in table.to_lance().to_table().to_pylist()
-        if r.get("workspace_id") == workspace_id and r.get("uid") in update_map
+        if r.get("uid") in update_map
+        and (workspace_partitioned_enabled() or r.get("workspace_id") == workspace_id)
     ]
     if not existing_rows:
         return 0
@@ -439,9 +447,12 @@ def propagate_error_model_via_inheritance(
     import pyarrow as pa
 
     arrow = pa.Table.from_pylist(existing_rows, schema=table.schema)
-    quoted_ws = workspace_id.replace("'", "''")
     uid_in = ", ".join("'" + uid.replace("'", "''") + "'" for uid in update_map)
-    table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
+    if workspace_partitioned_enabled():
+        table.delete(f"uid IN ({uid_in})")
+    else:
+        quoted_ws = workspace_id.replace("'", "''")
+        table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
     table.add(arrow)
     return len(existing_rows)
 
@@ -583,14 +594,15 @@ def propagate_registry_class_via_inheritance(
     # so we build a PyArrow table of the rows-to-replace and upsert them.
     if not classes_to_update:
         return 0
-    table = lance._sym_table  # noqa: SLF001
+    from sidecar.database.lance_workspace_tables import workspace_partitioned_enabled
+
+    table = lance.symbols_table(workspace_id)  # type: ignore[attr-defined]
     update_map = {uid: payload for uid, payload in classes_to_update}
-    # Read the full rows for those uids so we can preserve every column
-    # other than the two we change.
     existing_rows = [
         r
         for r in table.to_lance().to_table().to_pylist()
-        if r.get("workspace_id") == workspace_id and r.get("uid") in update_map
+        if r.get("uid") in update_map
+        and (workspace_partitioned_enabled() or r.get("workspace_id") == workspace_id)
     ]
     if not existing_rows:
         return 0
@@ -601,11 +613,11 @@ def propagate_registry_class_via_inheritance(
     import pyarrow as pa
 
     arrow = pa.Table.from_pylist(existing_rows, schema=table.schema)
-    # Lancedb 0.6's merge_insert ``on`` takes only a single key string.
-    # Delete the rows for those uids in this workspace, then add the
-    # updated rows back. Per-class scope keeps the rewrite cheap.
-    quoted_ws = workspace_id.replace("'", "''")
     uid_in = ", ".join("'" + uid.replace("'", "''") + "'" for uid in update_map)
-    table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
+    if workspace_partitioned_enabled():
+        table.delete(f"uid IN ({uid_in})")
+    else:
+        quoted_ws = workspace_id.replace("'", "''")
+        table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
     table.add(arrow)
     return len(existing_rows)

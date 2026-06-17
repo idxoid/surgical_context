@@ -1241,7 +1241,7 @@ questions:
   repo: celery
   core12: false
   symbol: Task.apply_async
-  question: If I modify the signature or default routing options in apply_async, what publisher components and tests are affected?
+  question: If I modify the signature or default routing options in apply_async, what publisher components are affected?
   difficulty: hard
   intent: impact_analysis
   expected_mode: symbol
@@ -1261,12 +1261,6 @@ questions:
   - celery/app/base.py
   - celery/app/routes.py
   - celery/canvas.py
-  - celery/app/amqp.py
-  - t/unit/app/test_app.py
-  - t/unit/app/test_amqp.py
-  - t/unit/app/test_routes.py
-  - t/unit/tasks/test_canvas.py
-  - t/unit/tasks/test_tasks.py
 - id: fastapi_new_q01
   repo: fastapi
   symbol: RequestValidationError

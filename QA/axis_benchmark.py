@@ -224,6 +224,7 @@ def run_question(
     per_role_limit: int,
     intent_threshold: float,
     context_per_seed: int,
+    context_seeds_per_role: int | None = None,
     intent_budget: bool = False,
     base_token_budget: int = 4000,
     render_mode_override: str | None = None,
@@ -270,7 +271,7 @@ def run_question(
         intent_threshold=intent_threshold,
         with_context=True,
         context_per_seed=context_per_seed,
-        context_seeds_per_role=None,
+        context_seeds_per_role=context_seeds_per_role,
         intent_budget=intent_budget,
         base_token_budget=base_token_budget,
         render_mode_override=render_mode_override,
@@ -681,6 +682,16 @@ def main() -> None:
     parser.add_argument("--intent-threshold", type=float, default=0.20)
     parser.add_argument("--context-per-seed", type=int, default=6)
     parser.add_argument(
+        "--context-seeds-per-role",
+        type=int,
+        default=None,
+        nargs="?",
+        const=2,
+        metavar="N",
+        help="Cap context seeds per intent role (production /ask default: 2). "
+        "Omit for the historical full-pool benchmark; pass alone for 2.",
+    )
+    parser.add_argument(
         "--intent-budget",
         action="store_true",
         help="Measure the production /ask path: apply the intent-driven Token "
@@ -783,6 +794,7 @@ def main() -> None:
             per_role_limit=args.per_role_limit,
             intent_threshold=args.intent_threshold,
             context_per_seed=args.context_per_seed,
+            context_seeds_per_role=args.context_seeds_per_role,
             intent_budget=args.intent_budget,
             base_token_budget=args.token_budget,
             render_mode_override=args.render_mode,

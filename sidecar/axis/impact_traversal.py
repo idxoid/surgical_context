@@ -86,7 +86,7 @@ def expand_impact_neighbourhood(
     db,
     workspace_id: str,
     max_hops: int = 3,
-    max_impacted: int = 80,
+    max_impacted: int = 40,
     base_score: float = 0.35,
     exclude_uids: Iterable[str] = (),
     include_tests: bool = False,

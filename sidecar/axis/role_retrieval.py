@@ -28,12 +28,22 @@ This is read-only; no graph writes, no Lance mutations.
 from __future__ import annotations
 
 import json
+import os
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
 import lancedb
 
 from sidecar.axis.role_resolver import ROLE_EVIDENCE_MAP
+
+_SCAN_CACHE_ENABLED = os.getenv("LANCEDB_WORKSPACE_SCAN_CACHE", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_SCAN_CACHE: dict[tuple[str, str, bool, bool], Any] = {}
 
 
 @dataclass(frozen=True)
@@ -171,18 +181,58 @@ class WorkspaceScan:
     vectors: Any | None  # np.ndarray | None — Any to avoid a hard numpy import at module scope
     signature_vectors: Any | None = None  # np.ndarray | None — optional signature facet
     rows_by_uid: dict[str, dict] = field(default_factory=dict)
+    contract_index: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    kind_index: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.rows_by_uid:
             self.rows_by_uid = {
                 str(row.get("uid") or ""): row for row in self.rows if row.get("uid")
             }
+        if self.rows and not self.contract_index:
+            contract_hits: dict[str, list[int]] = defaultdict(list)
+            kind_hits: dict[str, list[int]] = defaultdict(list)
+            for i, row in enumerate(self.rows):
+                for contract in row.get("_contracts") or ():
+                    contract_hits[contract].append(i)
+                for kind in row.get("_kinds") or ():
+                    kind_hits[kind].append(i)
+            self.contract_index = {k: tuple(v) for k, v in contract_hits.items()}
+            self.kind_index = {k: tuple(v) for k, v in kind_hits.items()}
+
+
+def invalidate_workspace_scan_cache(workspace_id: str | None = None) -> None:
+    """Drop cached Lance scans after index mutations."""
+    if workspace_id is None:
+        _SCAN_CACHE.clear()
+        return
+    for key in [k for k in _SCAN_CACHE if k[0] == workspace_id]:
+        del _SCAN_CACHE[key]
+
+
+def _scan_cache_key(
+    workspace_id: str,
+    lance_db_path: str,
+    include_tests: bool,
+    with_vector: bool,
+) -> tuple[str, str, bool, bool]:
+    return (workspace_id, lance_db_path, include_tests, with_vector)
+
+
+def _row_indices_for_evidence(scan: WorkspaceScan, evidence) -> tuple[int, ...]:
+    seen: set[int] = set()
+    for contract in evidence.contracts:
+        seen.update(scan.contract_index.get(contract, ()))
+    for kind in evidence.kinds:
+        seen.update(scan.kind_index.get(kind, ()))
+    return tuple(sorted(seen))
 
 
 def scan_workspace_rows(
     workspace_id: str,
     *,
     lance_db_path: str = "./data/lancedb",
+    lance: Any | None = None,
     include_tests: bool = False,
     with_vector: bool = True,
 ) -> WorkspaceScan:
@@ -198,8 +248,50 @@ def scan_workspace_rows(
     the vector column as a contiguous numpy matrix WITHOUT
     materialising it into Python dicts. Metadata ``to_pylist`` then
     touches only light columns.
+
+  When ``LANCEDB_WORKSPACE_PARTITIONED`` is on (default), the scan opens
+  the per-workspace physical table directly — no ``workspace_id`` filter.
+
+  Repeated reads for the same workspace reuse an in-process scan cache
+  (``LANCEDB_WORKSPACE_SCAN_CACHE``, default on) until the index mutates.
     """
-    table = lancedb.connect(lance_db_path).open_table("symbols_axis_python_v1")
+    cache_key = _scan_cache_key(workspace_id, lance_db_path, include_tests, with_vector)
+    if _SCAN_CACHE_ENABLED:
+        cached = _SCAN_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    from sidecar.database.lance_workspace_tables import (
+        workspace_partition_table_exists,
+        workspace_partition_table_name,
+        workspace_partitioned_enabled,
+    )
+    from sidecar.index_profile import active_index_profile
+
+    profile = active_index_profile()
+    partitioned = workspace_partitioned_enabled()
+    table_filter: str | None = None
+
+    if lance is not None and hasattr(lance, "symbols_table"):
+        table = lance.symbols_table(workspace_id)
+        partitioned = partitioned and table is not getattr(lance, "_sym_table", None)
+    else:
+        import lancedb
+
+        db = lancedb.connect(lance_db_path)
+        base_table = profile.symbols_table
+        if partitioned:
+            part_name = workspace_partition_table_name(base_table, workspace_id)
+            if workspace_partition_table_exists(db, base_table, workspace_id):
+                table = db.open_table(part_name)
+            else:
+                table = db.open_table(base_table)
+                ws_quoted = workspace_id.replace("'", "''")
+                table_filter = f"workspace_id = '{ws_quoted}'"
+        else:
+            table = db.open_table(base_table)
+            ws_quoted = workspace_id.replace("'", "''")
+            table_filter = f"workspace_id = '{ws_quoted}'"
     columns = [
         "uid",
         "name",
@@ -234,8 +326,11 @@ def scan_workspace_rows(
         columns.append("vector")
         if _have_sig_vec:
             columns.append("signature_vector")
-    ws_quoted = workspace_id.replace("'", "''")
-    arrow = table.to_lance().to_table(columns=columns, filter=f"workspace_id = '{ws_quoted}'")
+    lance_reader = table.to_lance()
+    if table_filter:
+        arrow = lance_reader.to_table(columns=columns, filter=table_filter)
+    else:
+        arrow = lance_reader.to_table(columns=columns)
     from sidecar.axis.test_file_filter import is_test_path
 
     def _matrix(col_name: str):
@@ -289,9 +384,12 @@ def scan_workspace_rows(
     kept_sig_vectors = None
     if signature_vectors_all is not None and kept_idx:
         kept_sig_vectors = signature_vectors_all[kept_idx]
-    return WorkspaceScan(
+    scan = WorkspaceScan(
         rows=kept_rows, vectors=kept_vectors, signature_vectors=kept_sig_vectors
     )
+    if _SCAN_CACHE_ENABLED:
+        _SCAN_CACHE[cache_key] = scan
+    return scan
 
 
 def find_symbols_by_roles(
@@ -345,7 +443,8 @@ def find_symbols_by_roles(
         total_contracts = len(evidence.contracts)
         total_kinds = len(evidence.kinds)
         candidates: list[RoleCandidate] = []
-        for row in rows:
+        for idx in _row_indices_for_evidence(scan, evidence):
+            row = rows[idx]
             matched_contracts = sorted(row["_contracts"] & evidence.contracts)
             matched_kinds = sorted(row["_kinds"] & evidence.kinds)
             if not (matched_contracts or matched_kinds):
@@ -572,8 +671,10 @@ def _scan_distances(scan: WorkspaceScan, query_text, embed_fn):
 
 __all__ = [
     "RoleCandidate",
+    "WorkspaceScan",
     "find_seeds_by_vector",
     "find_symbols_by_role",
     "find_symbols_by_roles",
+    "invalidate_workspace_scan_cache",
     "scan_workspace_rows",
 ]

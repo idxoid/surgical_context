@@ -74,20 +74,19 @@ def method_facts_show_proxy_delegation(facts: list[dict[str, Any]]) -> bool:
 
 
 def _read_axis_evidence_rows(lance, workspace_id: str) -> list[dict[str, Any]]:
-    table = lance._sym_table  # noqa: SLF001
+    scan = getattr(lance, "scan_symbols_workspace", None)
+    columns = [
+        "uid",
+        "symbol_kind",
+        "qualified_name",
+        "axis_evidence_json",
+    ]
+    if callable(scan):
+        return scan(workspace_id, columns=columns)
+    table = lance.symbols_table(workspace_id)  # type: ignore[attr-defined]
     return [
         r
-        for r in table.to_lance()
-        .to_table(
-            columns=[
-                "uid",
-                "symbol_kind",
-                "qualified_name",
-                "axis_evidence_json",
-                "workspace_id",
-            ],
-        )
-        .to_pylist()
+        for r in table.to_lance().to_table(columns=[*columns, "workspace_id"]).to_pylist()
         if r.get("workspace_id") == workspace_id and r.get("uid")
     ]
 

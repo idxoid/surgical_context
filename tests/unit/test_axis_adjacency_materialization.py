@@ -46,6 +46,8 @@ class _Session:
                     },
                 ]
             )
+        if "NOT x:Symbol" in query:
+            return _Result([])
         return _Result(
             [
                 {"au": "u:caller", "bu": "u:callee", "t": "CALLS_DIRECT"},
@@ -74,9 +76,14 @@ class _Lance:
         self.workspace_id = ""
         self.upserted = []
         self.existing_rows = 100
+        self.external: tuple[dict, dict] | None = None
 
     def replace_axis_adjacency(self, rows, *, workspace_id):
         self.rows = rows
+        self.workspace_id = workspace_id
+
+    def replace_axis_adjacency_external(self, sym_to_ext, ext_to_sym, *, workspace_id):
+        self.external = (sym_to_ext, ext_to_sym)
         self.workspace_id = workspace_id
 
     def upsert_axis_adjacency_rows(self, rows, *, workspace_id):
@@ -96,6 +103,7 @@ def test_materialize_axis_adjacency_writes_workspace_rows():
 
     assert count == 2
     assert lance.workspace_id == WORKSPACE
+    assert lance.external is not None
     by_uid = {row["uid"]: row for row in lance.rows}
     assert by_uid["u:caller"]["workspace_id"] == WORKSPACE
     assert json.loads(by_uid["u:caller"]["out_edges_json"]) == {"CALLS_DIRECT": ["u:callee"]}
@@ -125,7 +133,7 @@ def test_inproc_walk_uses_materialized_lance_rows(monkeypatch):
     monkeypatch.setattr(
         graph_walk_inproc,
         "_load_adjacency_from_lance",
-        lambda workspace_id: graph_walk_inproc._adjacency_from_lance_rows(rows),
+        lambda workspace_id, neo_db=None: graph_walk_inproc._adjacency_from_lance_rows(rows),
     )
 
     out = graph_walk_inproc.walk_neighbours(

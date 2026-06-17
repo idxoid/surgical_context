@@ -232,7 +232,7 @@ def walk_neighbours(
     """
     from sidecar.axis import graph_walk_inproc
 
-    if graph_walk_inproc.enabled():
+    if graph_walk_inproc.should_use(workspace_id):
         return graph_walk_inproc.walk_neighbours(
             db,
             workspace_id,
@@ -367,7 +367,7 @@ def call_fan_in(
     targets = [u for u in uids if u]
     if not targets:
         return {}
-    if graph_walk_inproc.enabled():
+    if graph_walk_inproc.should_use(workspace_id):
         return graph_walk_inproc.call_fan_in(
             db, workspace_id, targets, edges=edges, exclude_tests=exclude_tests
         )
@@ -423,7 +423,7 @@ def walk_neighbours_grouped(
     """
     from sidecar.axis import graph_walk_inproc
 
-    if graph_walk_inproc.enabled():
+    if graph_walk_inproc.should_use(workspace_id):
         return graph_walk_inproc.walk_neighbours_grouped(
             db,
             workspace_id,

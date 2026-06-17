@@ -859,21 +859,17 @@ def _context_from_axis(
     """
     from sidecar.axis.pipeline import run_axis_retrieval
     from sidecar.axis.prompt_provider import axis_bundles_to_prompt_context
-    from sidecar.axis.retrieval_budget import DEFAULT_BASE_TOKEN_BUDGET
     from sidecar.database.lancedb_client import LanceDBClient
     from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 
     lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
-    # Floor the request budget at the axis default: the legacy ``token_budget``
-    # (4000, sized for the single-symbol cascade) is far too small for a
-    # ~120-seed budgeted bundle; a caller may raise it but not starve axis.
     result = run_axis_retrieval(
         question,
         workspace_id=workspace_id,
         db=db,
         lance=lance,
         intent_budget=True,
-        base_token_budget=max(token_budget, DEFAULT_BASE_TOKEN_BUDGET),
+        base_token_budget=token_budget,
         anchor_path=anchor_path,
         # Hook transparency: open hook-DECLARATION seeds through their
         # registration lifecycle (the hook->registration archetype chain).

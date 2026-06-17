@@ -12,7 +12,13 @@ Phase 1a sources the adjacency from Neo4j (one bulk load, cached). Phase 1b
 will source it from a Lance per-axis materialization that rides ``prescanned``,
 removing even this one-time load.
 
-Gated by ``AXIS_INPROC_WALK`` (graph_walk delegates here when set).
+Gated by ``AXIS_INPROC_WALK`` (``graph_walk`` delegates here when active).
+
+Default is ``auto``: use in-process walks when the workspace has a
+materialized ``axis_adjacency`` Lance partition (indexed benchmarks and
+production workspaces). Set ``AXIS_INPROC_WALK=0`` to force per-call
+Neo4j traversals; ``1`` to force in-process even without Lance (one-time
+Neo4j bulk load as fallback).
 """
 
 from __future__ import annotations
@@ -20,19 +26,51 @@ from __future__ import annotations
 import json
 import os
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from sidecar.axis.adjacency_bridges import load_external_maps
 from sidecar.axis.graph_walk import Direction, Neighbour
 from sidecar.axis.test_file_filter import is_test_path
 
 
+def _lance_adjacency_available(workspace_id: str) -> bool:
+    """Fast catalog check — no full adjacency load."""
+    try:
+        import lancedb
+
+        from sidecar.database.lance_workspace_tables import (
+            workspace_partition_table_exists,
+            workspace_partitioned_enabled,
+        )
+        from sidecar.database.lancedb_client import AXIS_ADJACENCY_TABLE, DB_PATH
+
+        db = lancedb.connect(DB_PATH)
+        if workspace_partitioned_enabled():
+            return workspace_partition_table_exists(db, AXIS_ADJACENCY_TABLE, workspace_id)
+        return AXIS_ADJACENCY_TABLE in db.table_names()
+    except Exception:
+        return False
+
+
+def should_use(workspace_id: str) -> bool:
+    """Whether graph walks for *workspace_id* should use in-process adjacency."""
+    raw = os.environ.get("AXIS_INPROC_WALK", "auto").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return _lance_adjacency_available(workspace_id)
+
+
 def enabled() -> bool:
-    return os.environ.get("AXIS_INPROC_WALK", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    """Backward-compatible global check — prefer :func:`should_use`."""
+    raw = os.environ.get("AXIS_INPROC_WALK", "auto").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return False
 
 
 @dataclass
@@ -44,6 +82,9 @@ class _Adjacency:
     meta: dict[str, tuple[str, str, str]] = field(default_factory=dict)
     # file_path -> [class-kind uids in that file]
     file_classes: dict[str, list[str]] = field(default_factory=dict)
+    # external bridge maps — see adjacency_bridges.load_external_maps
+    sym_to_ext: dict[str, dict[str, set[str]]] = field(default_factory=dict)
+    ext_to_sym: dict[str, dict[str, set[str]]] = field(default_factory=dict)
 
 
 _CACHE: dict[str, _Adjacency] = {}
@@ -93,13 +134,35 @@ def load_adjacency(db, workspace_id: str) -> _Adjacency:
     cached = _CACHE.get(workspace_id)
     if cached is not None:
         return cached
-    lance_adj = _load_adjacency_from_lance(workspace_id)
+    lance_adj = _load_adjacency_from_lance(workspace_id, neo_db=db)
     if lance_adj is not None:
         _CACHE[workspace_id] = lance_adj
         return lance_adj
     adj = _load_adjacency_from_neo4j(db, workspace_id)
     _CACHE[workspace_id] = adj
     return adj
+
+
+def _attach_external_maps(adj: _Adjacency, db, workspace_id: str) -> None:
+    if adj.sym_to_ext and adj.ext_to_sym:
+        return
+    try:
+        from sidecar.database.lancedb_client import LanceDBClient
+        from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+
+        loaded = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE).load_axis_adjacency_external(
+            workspace_id
+        )
+        if loaded is not None:
+            adj.sym_to_ext, adj.ext_to_sym = loaded
+            return
+    except Exception:
+        pass
+    try:
+        with db.driver.session() as session:
+            adj.sym_to_ext, adj.ext_to_sym = load_external_maps(session, workspace_id)
+    except Exception:
+        pass
 
 
 def _load_adjacency_from_neo4j(db, workspace_id: str) -> _Adjacency:
@@ -143,24 +206,28 @@ def _load_adjacency_from_neo4j(db, workspace_id: str) -> _Adjacency:
                     continue
                 out_adj[au][t].add(bu)
                 in_adj[bu][t].add(au)
+            adj.sym_to_ext, adj.ext_to_sym = load_external_maps(session, workspace_id)
     except Exception:
         pass
     adj.out = {u: dict(d) for u, d in out_adj.items()}
     adj.in_ = {u: dict(d) for u, d in in_adj.items()}
+    if not adj.sym_to_ext and not adj.ext_to_sym:
+        _attach_external_maps(adj, db, workspace_id)
     return adj
 
 
-def _load_adjacency_from_lance(workspace_id: str) -> _Adjacency | None:
+def _load_adjacency_from_lance(workspace_id: str, *, neo_db=None) -> _Adjacency | None:
     try:
         import lancedb
 
+        from sidecar.database.lance_workspace_tables import (
+            workspace_partition_table_exists,
+            workspace_partition_table_name,
+            workspace_partitioned_enabled,
+        )
         from sidecar.database.lancedb_client import AXIS_ADJACENCY_TABLE, DB_PATH
 
-        db = lancedb.connect(DB_PATH)
-        if AXIS_ADJACENCY_TABLE not in db.table_names():
-            return None
-        table = db.open_table(AXIS_ADJACENCY_TABLE)
-        ws = workspace_id.replace("'", "''")
+        lance_conn = lancedb.connect(DB_PATH)
         columns = [
             "uid",
             "name",
@@ -169,28 +236,54 @@ def _load_adjacency_from_lance(workspace_id: str) -> _Adjacency | None:
             "out_edges_json",
             "in_edges_json",
         ]
-        try:
-            rows = (
-                table.search()
-                .where(f"workspace_id = '{ws}'", prefilter=True)
-                .limit(0)
-                .select(columns)
-                .to_list()
-            )
-        except Exception:
-            df = table.to_pandas()
-            rows = [
-                {key: row.get(key) for key in columns}
-                for _, row in df.iterrows()
-                if row.get("workspace_id") == workspace_id
-            ]
+        if workspace_partitioned_enabled():
+            if workspace_partition_table_exists(lance_conn, AXIS_ADJACENCY_TABLE, workspace_id):
+                table = lance_conn.open_table(
+                    workspace_partition_table_name(AXIS_ADJACENCY_TABLE, workspace_id)
+                )
+                rows = table.search().limit(0).select(columns).to_list()
+            else:
+                try:
+                    table = lance_conn.open_table(AXIS_ADJACENCY_TABLE)
+                except Exception:
+                    return None
+                ws = workspace_id.replace("'", "''")
+                rows = (
+                    table.search()
+                    .where(f"workspace_id = '{ws}'", prefilter=True)
+                    .limit(0)
+                    .select(columns)
+                    .to_list()
+                )
+        else:
+            if AXIS_ADJACENCY_TABLE not in lance_conn.table_names():
+                return None
+            table = lance_conn.open_table(AXIS_ADJACENCY_TABLE)
+            ws = workspace_id.replace("'", "''")
+            try:
+                rows = (
+                    table.search()
+                    .where(f"workspace_id = '{ws}'", prefilter=True)
+                    .limit(0)
+                    .select(columns)
+                    .to_list()
+                )
+            except Exception:
+                df = table.to_pandas()
+                rows = [
+                    {key: row.get(key) for key in columns}
+                    for _, row in df.iterrows()
+                    if row.get("workspace_id") == workspace_id
+                ]
     except Exception:
         return None
     if not rows:
         # Empty means "no materialization for this workspace"; let Neo4j answer.
         return None
-    return _adjacency_from_lance_rows(rows)
-
+    adj = _adjacency_from_lance_rows(rows)
+    if neo_db is not None:
+        _attach_external_maps(adj, neo_db, workspace_id)
+    return adj
 
 def _adjacency_from_lance_rows(rows: list[dict]) -> _Adjacency:
     adj = _Adjacency()
@@ -291,6 +384,13 @@ def _neighbours_fn(adj: _Adjacency, rels: frozenset[str], direction: Direction):
             if d:
                 for t in rels:
                     res |= d.get(t, frozenset())
+        # Pass through shared external nodes (ExternalPkg, ExternalSymbol, …).
+        if u in adj.meta and (fwd or direction == "undirected"):
+            for t in rels:
+                res |= adj.sym_to_ext.get(u, {}).get(t, frozenset())
+        if u not in adj.meta:
+            for t in rels:
+                res |= adj.ext_to_sym.get(u, {}).get(t, frozenset())
         frozen = frozenset(res)
         cache[u] = frozen
         return frozen
@@ -419,3 +519,65 @@ def walk_neighbours_grouped(
         if rows:
             grouped[su] = rows
     return grouped
+
+
+def query_proximity_roles(
+    db,
+    workspace_id: str,
+    primary_uids: list[str],
+    secondary_role_uids: Mapping[str, set[str]],
+    *,
+    edges: frozenset[str],
+    max_hops: int,
+) -> dict[str, set[str]]:
+    """For each primary uid, secondary role names reachable within ``max_hops``.
+
+    In-process mirror of ``cross_role_boost._query_proximity_roles`` Cypher —
+    filters the walk to the flat secondary-uid set and groups by primary.
+    """
+    if not primary_uids or not secondary_role_uids:
+        return {}
+    flat_secondary_uids: set[str] = set()
+    role_by_uid: dict[str, set[str]] = {}
+    for role, uids in secondary_role_uids.items():
+        for uid in uids:
+            flat_secondary_uids.add(uid)
+            role_by_uid.setdefault(uid, set()).add(role)
+    if not flat_secondary_uids:
+        return {}
+
+    adj = load_adjacency(db, workspace_id)
+    meta = adj.meta
+    neigh = _neighbours_fn(adj, edges, "undirected")
+    hops = max(1, int(max_hops))
+
+    out: dict[str, set[str]] = {}
+    for pu in primary_uids:
+        if pu not in meta:
+            continue
+        dist: dict[str, int] = {pu: 0}
+        frontier = [pu]
+        reached_secondary: set[str] = set()
+        for hop in range(1, hops + 1):
+            nxt: list[str] = []
+            for u in frontier:
+                for v in neigh(u):
+                    if v in dist:
+                        continue
+                    if v not in meta:
+                        continue
+                    dist[v] = hop
+                    nxt.append(v)
+                    if v in flat_secondary_uids:
+                        reached_secondary.add(v)
+            if not nxt:
+                break
+            frontier = nxt
+        if not reached_secondary:
+            continue
+        roles: set[str] = set()
+        for uid in reached_secondary:
+            roles |= role_by_uid.get(uid, set())
+        if roles:
+            out[pu] = roles
+    return out

@@ -120,6 +120,7 @@ class AxisQueryPlan:
     expansion_steps: tuple[GraphExpansionStep, ...]
     stop_conditions: tuple[str, ...]
     limit: int
+    workspace_id: str
     lance_predicate: str = field(repr=False)
 
     def to_dict(self) -> dict[str, object]:
@@ -132,6 +133,7 @@ class AxisQueryPlan:
             "expansion_steps": [step.to_dict() for step in self.expansion_steps],
             "stop_conditions": list(self.stop_conditions),
             "limit": self.limit,
+            "workspace_id": self.workspace_id,
             "lance_predicate": self.lance_predicate,
         }
 
@@ -154,6 +156,18 @@ def _container_kind_predicate(kind: str) -> str:
     if not kind.strip():
         raise ValueError("Container kind cannot be empty")
     return f"array_has(container_kinds, {_quote_lance_string(kind)})"
+
+
+def render_axis_bits_predicate(
+    *,
+    required_bits: tuple[AxisRequirement, ...] = (),
+    container_kinds: tuple[str, ...] = (),
+) -> str:
+    """Lance prefilter for axis bits/kinds only (workspace-scoped tables)."""
+    clauses: list[str] = []
+    clauses.extend(_axis_bit_predicate(req) for req in sorted(set(required_bits)))
+    clauses.extend(_container_kind_predicate(kind) for kind in sorted(set(container_kinds)))
+    return " AND ".join(clauses) if clauses else "true"
 
 
 def render_lance_predicate(
@@ -218,6 +232,7 @@ def compile_axis_query(request: AxisQueryRequest, *, workspace_id: str) -> AxisQ
         expansion_steps=_expansion_steps_for_mode(request.traversal_mode),
         stop_conditions=_stop_conditions_for_mode(request.traversal_mode),
         limit=request.limit,
+        workspace_id=workspace_id,
         lance_predicate=render_lance_predicate(
             workspace_id,
             required_bits=request.required_bits,
@@ -232,5 +247,6 @@ __all__ = [
     "AxisRequirement",
     "GraphExpansionStep",
     "compile_axis_query",
+    "render_axis_bits_predicate",
     "render_lance_predicate",
 ]

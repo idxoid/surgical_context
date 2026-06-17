@@ -63,7 +63,7 @@ def stub_stages(monkeypatch):
     monkeypatch.setattr(
         _retr_mod,
         "scan_workspace_rows",
-        lambda ws: WorkspaceScan(rows=[], vectors=None),
+        lambda ws, **k: WorkspaceScan(rows=[], vectors=None),
     )
     monkeypatch.setattr(
         _retr_mod,

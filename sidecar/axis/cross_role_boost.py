@@ -62,6 +62,18 @@ def _query_proximity_roles(
     if not flat_secondary_uids:
         return {}
 
+    from sidecar.axis import graph_walk_inproc
+
+    if graph_walk_inproc.should_use(workspace_id):
+        return graph_walk_inproc.query_proximity_roles(
+            db,
+            workspace_id,
+            list(primary_uids),
+            secondary_role_uids,
+            edges=frozenset(_PROXIMITY_RELS),
+            max_hops=max_hops,
+        )
+
     rel_pattern = _safe_rel_pattern(_PROXIMITY_RELS)
     hops = _safe_max_hops(max_hops)
     cypher = f"""

@@ -1327,10 +1327,12 @@ def _ensure_adjacency_materialized(
     reporter: ProgressReporter,
 ) -> int:
     count_rows = getattr(lance, "count_axis_adjacency_workspace", None)
+    load_external = getattr(lance, "load_axis_adjacency_external", None)
     if callable(count_rows):
         try:
             if int(count_rows(workspace_id)) > 0:
-                return 0
+                if callable(load_external) and load_external(workspace_id) is not None:
+                    return 0
         except Exception:
             return 0
     return _adjacency_materialization_phase(db, lance, workspace_id, reporter)

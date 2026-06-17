@@ -11,6 +11,12 @@ import lancedb
 import pyarrow as pa
 
 from sidecar.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
+from sidecar.database.lance_workspace_tables import (
+    workspace_partition_table_exists,
+    workspace_partition_table_name,
+    workspace_partitioned_enabled,
+)
+from sidecar.axis.query_plan import render_axis_bits_predicate
 from sidecar.database.embedding_registry import (
     EmbeddingMetadata,
     EmbeddingModelMismatch,
@@ -57,6 +63,7 @@ LANCEDB_SYMBOL_BULK_REPLACE_RATIO = float(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE
 DOCS_TABLE = "docs"
 SYMBOLS_TABLE = "symbols"
 AXIS_ADJACENCY_TABLE = "axis_adjacency"
+AXIS_ADJACENCY_EXTERNAL_TABLE = "axis_adjacency_external"
 
 _log = logging.getLogger(__name__)
 
@@ -232,6 +239,14 @@ AXIS_ADJACENCY_SCHEMA = pa.schema(
     ]
 )
 
+AXIS_ADJACENCY_EXTERNAL_SCHEMA = pa.schema(
+    [
+        pa.field("workspace_id", pa.string()),
+        pa.field("sym_to_ext_json", pa.string()),
+        pa.field("ext_to_sym_json", pa.string()),
+    ]
+)
+
 
 def _symbols_schema_for_profile(profile: IndexProfile) -> pa.Schema:
     if profile.name == AXIS_PYTHON_V1_PROFILE:
@@ -270,19 +285,24 @@ class LanceDBClient:
             DOCS_SCHEMA,
             required_columns={"id", "workspace_id", "file_path", "chunk", "pending", "vector"},
         )
+        self._symbols_schema = _symbols_schema_for_profile(self._index_profile)
+        self._symbol_required_columns = {
+            "uid",
+            "workspace_id",
+            "name",
+            "file_path",
+            "code",
+            "vector",
+            *self._symbol_axis_columns,
+        }
         self._sym_table = self._open_or_reset_table(
             self._index_profile.symbols_table,
-            _symbols_schema_for_profile(self._index_profile),
-            required_columns={
-                "uid",
-                "workspace_id",
-                "name",
-                "file_path",
-                "code",
-                "vector",
-                *self._symbol_axis_columns,
-            },
+            self._symbols_schema,
+            required_columns=self._symbol_required_columns,
         )
+        self._workspace_sym_tables: dict[str, Any] = {}
+        self._workspace_adj_tables: dict[str, Any] = {}
+        self._workspace_adj_external_tables: dict[str, Any] = {}
         self._axis_adjacency_table = self._open_or_reset_table(
             AXIS_ADJACENCY_TABLE,
             AXIS_ADJACENCY_SCHEMA,
@@ -294,6 +314,15 @@ class LanceDBClient:
                 "kind",
                 "out_edges_json",
                 "in_edges_json",
+            },
+        )
+        self._axis_adjacency_external_table = self._open_or_reset_table(
+            AXIS_ADJACENCY_EXTERNAL_TABLE,
+            AXIS_ADJACENCY_EXTERNAL_SCHEMA,
+            required_columns={
+                "workspace_id",
+                "sym_to_ext_json",
+                "ext_to_sym_json",
             },
         )
 
@@ -318,9 +347,10 @@ class LanceDBClient:
         }
 
     def _open_or_reset_table(self, name: str, schema: pa.Schema, *, required_columns: set[str]):
-        if name not in self._db.table_names():
+        try:
+            table = self._db.open_table(name)
+        except Exception:
             return self._db.create_table(name, schema=schema)
-        table = self._db.open_table(name)
         try:
             current = set(table.schema.names)
         except Exception:
@@ -330,6 +360,122 @@ class LanceDBClient:
         # No in-place migration: reset table and force full reindex.
         self._db.drop_table(name)
         return self._db.create_table(name, schema=schema)
+
+    def _open_workspace_partition_table(
+        self,
+        base_table: str,
+        workspace_id: str,
+        schema: pa.Schema,
+        *,
+        required_columns: set[str],
+        cache: dict[str, Any],
+    ):
+        if not workspace_partitioned_enabled():
+            if base_table == self._index_profile.symbols_table:
+                return self._sym_table
+            if base_table == AXIS_ADJACENCY_TABLE:
+                return self._axis_adjacency_table
+            if base_table == AXIS_ADJACENCY_EXTERNAL_TABLE:
+                return self._axis_adjacency_external_table
+            raise ValueError(f"Unknown partitioned Lance base table: {base_table}")
+
+        cached = cache.get(workspace_id)
+        if cached is not None:
+            return cached
+
+        name = workspace_partition_table_name(base_table, workspace_id)
+        if workspace_partition_table_exists(self._db, base_table, workspace_id):
+            table = self._db.open_table(name)
+            try:
+                current = set(table.schema.names)
+            except Exception:
+                current = set()
+            if not required_columns.issubset(current):
+                self._db.drop_table(name)
+                table = self._db.create_table(name, schema=schema)
+        else:
+            table = self._db.create_table(name, schema=schema)
+        cache[workspace_id] = table
+        return table
+
+    def _maybe_migrate_workspace_partition(
+        self,
+        workspace_id: str,
+        target_table,
+        legacy_table,
+    ) -> None:
+        """Copy rows from the monolithic table into a new workspace partition."""
+        try:
+            if int(target_table.count_rows()) > 0:
+                return
+        except Exception:
+            pass
+        rows = self._scan_table_by_workspace(legacy_table, workspace_id)
+        if not rows:
+            return
+        target_table.add(rows)
+
+    def _uses_workspace_symbol_partition(self, table) -> bool:
+        return workspace_partitioned_enabled() and table is not self._sym_table
+
+    def _uses_workspace_adjacency_partition(self, table) -> bool:
+        return workspace_partitioned_enabled() and table is not self._axis_adjacency_table
+
+    def _uses_workspace_adjacency_external_partition(self, table) -> bool:
+        return workspace_partitioned_enabled() and table is not self._axis_adjacency_external_table
+
+    def symbols_table(self, workspace_id: str):
+        """Physical Lance table for one workspace's symbol rows."""
+        if not workspace_partitioned_enabled() or not hasattr(self, "_workspace_sym_tables"):
+            return self._sym_table
+        table = self._open_workspace_partition_table(
+            self._index_profile.symbols_table,
+            workspace_id,
+            self._symbols_schema,
+            required_columns=self._symbol_required_columns,
+            cache=self._workspace_sym_tables,
+        )
+        self._maybe_migrate_workspace_partition(workspace_id, table, self._sym_table)
+        return table
+
+    def axis_adjacency_table(self, workspace_id: str):
+        """Physical Lance table for one workspace's materialized adjacency."""
+        if not workspace_partitioned_enabled() or not hasattr(self, "_workspace_adj_tables"):
+            return self._axis_adjacency_table
+        table = self._open_workspace_partition_table(
+            AXIS_ADJACENCY_TABLE,
+            workspace_id,
+            AXIS_ADJACENCY_SCHEMA,
+            required_columns={
+                "workspace_id",
+                "uid",
+                "name",
+                "file_path",
+                "kind",
+                "out_edges_json",
+                "in_edges_json",
+            },
+            cache=self._workspace_adj_tables,
+        )
+        self._maybe_migrate_workspace_partition(workspace_id, table, self._axis_adjacency_table)
+        return table
+
+    def axis_adjacency_external_table(self, workspace_id: str):
+        """Physical Lance table for one workspace's external-bridge maps."""
+        if not workspace_partitioned_enabled() or not hasattr(self, "_workspace_adj_external_tables"):
+            return self._axis_adjacency_external_table
+        table = self._open_workspace_partition_table(
+            AXIS_ADJACENCY_EXTERNAL_TABLE,
+            workspace_id,
+            AXIS_ADJACENCY_EXTERNAL_SCHEMA,
+            required_columns={
+                "workspace_id",
+                "sym_to_ext_json",
+                "ext_to_sym_json",
+            },
+            cache=self._workspace_adj_external_tables,
+        )
+        return table
 
     def _embedding_model(self):
         """Load the transformer lazily so delete-only paths avoid import + model init."""
@@ -384,25 +530,49 @@ class LanceDBClient:
         columns: list[str] | None = None,
     ) -> list[dict]:
         """Symbol embedding rows for a workspace (local semantic index for doc linking)."""
+        table = self.symbols_table(workspace_id)
+        if self._uses_workspace_symbol_partition(table):
+            try:
+                query = table.search().limit(0)
+                if columns:
+                    query = query.select(columns)
+                return cast(list[dict], query.to_list())
+            except Exception:
+                df = table.to_pandas()
+                rows = [row.to_dict() for _, row in df.iterrows()]
+                if columns:
+                    rows = [{key: row.get(key) for key in columns} for row in rows]
+                return rows
         return self._scan_table_by_workspace(
-            self._sym_table,
+            table,
             workspace_id,
             columns=columns or ["uid", "name", "file_path", "vector"],
         )
 
     def scan_axis_adjacency_workspace(self, workspace_id: str) -> list[dict]:
         """Materialized graph-walk rows for one workspace."""
+        table = self.axis_adjacency_table(workspace_id)
+        columns = [
+            "uid",
+            "name",
+            "file_path",
+            "kind",
+            "out_edges_json",
+            "in_edges_json",
+        ]
+        if self._uses_workspace_adjacency_partition(table):
+            try:
+                return cast(
+                    list[dict],
+                    table.search().limit(0).select(columns).to_list(),
+                )
+            except Exception:
+                df = table.to_pandas()
+                return [{key: row.get(key) for key in columns} for _, row in df.iterrows()]
         return self._scan_table_by_workspace(
-            self._axis_adjacency_table,
+            table,
             workspace_id,
-            columns=[
-                "uid",
-                "name",
-                "file_path",
-                "kind",
-                "out_edges_json",
-                "in_edges_json",
-            ],
+            columns=columns,
         )
 
     def list_symbol_uids_by_prefixes(self, workspace_id: str, prefixes: list[str]) -> set[str]:
@@ -410,11 +580,7 @@ class LanceDBClient:
         if not prefixes:
             return set()
         prefixes_resolved = [str(Path(prefix).resolve()) for prefix in prefixes]
-        rows = self._scan_table_by_workspace(
-            self._sym_table,
-            workspace_id,
-            columns=["uid", "file_path"],
-        )
+        rows = self.scan_symbols_workspace(workspace_id, columns=["uid", "file_path"])
         out: set[str] = set()
         for row in rows:
             uid = str(row.get("uid") or "")
@@ -434,11 +600,7 @@ class LanceDBClient:
         if not target_uids:
             return set()
         incident = set(target_uids)
-        rows = self._scan_table_by_workspace(
-            self._axis_adjacency_table,
-            workspace_id,
-            columns=["uid", "out_edges_json", "in_edges_json"],
-        )
+        rows = self.scan_axis_adjacency_workspace(workspace_id)
         for row in rows:
             uid = str(row.get("uid") or "")
             if not uid:
@@ -466,26 +628,36 @@ class LanceDBClient:
     ) -> None:
         if not uids:
             return
+        table = self.axis_adjacency_table(workspace_id)
+        partitioned = self._uses_workspace_adjacency_partition(table)
         batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
         total = len(uids)
         for start in range(0, total, batch_size):
             batch = uids[start : start + batch_size]
-            predicate = " OR ".join(
-                (
-                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                    f"AND uid = '{self._quote_delete_value(uid)}')"
+            if partitioned:
+                predicate = " OR ".join(
+                    f"uid = '{self._quote_delete_value(uid)}'" for uid in batch
                 )
-                for uid in batch
-            )
+            else:
+                predicate = " OR ".join(
+                    (
+                        f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                        f"AND uid = '{self._quote_delete_value(uid)}')"
+                    )
+                    for uid in batch
+                )
             try:
-                self._axis_adjacency_table.delete(predicate)
+                table.delete(predicate)
             except Exception:
                 for uid in batch:
                     try:
-                        self._axis_adjacency_table.delete(
-                            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                            f"AND uid = '{self._quote_delete_value(uid)}')"
-                        )
+                        if partitioned:
+                            table.delete(f"uid = '{self._quote_delete_value(uid)}'")
+                        else:
+                            table.delete(
+                                f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                                f"AND uid = '{self._quote_delete_value(uid)}')"
+                            )
                     except Exception:
                         pass
 
@@ -532,26 +704,36 @@ class LanceDBClient:
     ) -> None:
         if not uids:
             return
+        table = self.symbols_table(workspace_id)
+        partitioned = self._uses_workspace_symbol_partition(table)
         batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
         total = len(uids)
         for start in range(0, total, batch_size):
             batch = uids[start : start + batch_size]
-            predicate = " OR ".join(
-                (
-                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                    f"AND uid = '{self._quote_delete_value(uid)}')"
+            if partitioned:
+                predicate = " OR ".join(
+                    f"uid = '{self._quote_delete_value(uid)}'" for uid in batch
                 )
-                for uid in batch
-            )
+            else:
+                predicate = " OR ".join(
+                    (
+                        f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                        f"AND uid = '{self._quote_delete_value(uid)}')"
+                    )
+                    for uid in batch
+                )
             try:
-                self._sym_table.delete(predicate)
+                table.delete(predicate)
             except Exception:
                 for uid in batch:
                     try:
-                        self._sym_table.delete(
-                            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                            f"AND uid = '{self._quote_delete_value(uid)}')"
-                        )
+                        if partitioned:
+                            table.delete(f"uid = '{self._quote_delete_value(uid)}'")
+                        else:
+                            table.delete(
+                                f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                                f"AND uid = '{self._quote_delete_value(uid)}')"
+                            )
                     except Exception:
                         pass
             if progress_callback:
@@ -982,19 +1164,26 @@ class LanceDBClient:
         if progress_callback and existing > 0:
             progress_callback(f"clear/delete done in {time.perf_counter() - t0:.2f}s")
         t0 = time.perf_counter()
-        self._sym_table.add(rows)
+        self.symbols_table(workspace_id).add(rows)
         if progress_callback:
             progress_callback(f"insert done in {time.perf_counter() - t0:.2f}s")
+        from sidecar.axis.role_retrieval import invalidate_workspace_scan_cache
+
+        invalidate_workspace_scan_cache(workspace_id)
 
     def count_symbols_workspace(self, workspace_id: str) -> int:
         """Row count for one workspace in the symbols table."""
+        table = self.symbols_table(workspace_id)
+        if self._uses_workspace_symbol_partition(table):
+            try:
+                return int(table.count_rows())
+            except Exception:
+                return len(table.to_pandas())
         ws = self._quote_delete_value(workspace_id)
         try:
-            return int(self._sym_table.count_rows(f"workspace_id = '{ws}'"))
+            return int(table.count_rows(f"workspace_id = '{ws}'"))
         except Exception:
-            return len(
-                self._scan_table_by_workspace(self._sym_table, workspace_id, columns=["uid"])
-            )
+            return len(self._scan_table_by_workspace(table, workspace_id, columns=["uid"]))
 
     def delete_symbols_workspace(
         self,
@@ -1003,14 +1192,28 @@ class LanceDBClient:
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         """Drop all symbol embedding rows for a workspace (docs table untouched)."""
-        ws = self._quote_delete_value(workspace_id)
-        predicate = f"workspace_id = '{ws}'"
         if progress_callback:
             progress_callback(f"clear symbol vectors for {workspace_id}")
-        try:
-            self._sym_table.delete(predicate)
-        except Exception:
-            pass
+        if hasattr(self, "_workspace_sym_tables"):
+            name = workspace_partition_table_name(self._index_profile.symbols_table, workspace_id)
+            if name in self._db.table_names():
+                self._db.drop_table(name)
+            self._workspace_sym_tables.pop(workspace_id, None)
+            ws = self._quote_delete_value(workspace_id)
+            try:
+                self._sym_table.delete(f"workspace_id = '{ws}'")
+            except Exception:
+                pass
+        else:
+            ws = self._quote_delete_value(workspace_id)
+            predicate = f"workspace_id = '{ws}'"
+            try:
+                self._sym_table.delete(predicate)
+            except Exception:
+                pass
+        from sidecar.axis.role_retrieval import invalidate_workspace_scan_cache
+
+        invalidate_workspace_scan_cache(workspace_id)
 
     def replace_axis_adjacency(
         self,
@@ -1019,14 +1222,86 @@ class LanceDBClient:
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ) -> None:
         """Replace one workspace's materialized adjacency rows."""
-        ws = self._quote_delete_value(workspace_id)
-        predicate = f"workspace_id = '{ws}'"
-        try:
-            self._axis_adjacency_table.delete(predicate)
-        except Exception:
-            pass
+        table = self.axis_adjacency_table(workspace_id)
+        if self._uses_workspace_adjacency_partition(table):
+            name = workspace_partition_table_name(AXIS_ADJACENCY_TABLE, workspace_id)
+            if name in self._db.table_names():
+                self._db.drop_table(name)
+            self._workspace_adj_tables.pop(workspace_id, None)
+            table = self.axis_adjacency_table(workspace_id)
+        else:
+            ws = self._quote_delete_value(workspace_id)
+            try:
+                table.delete(f"workspace_id = '{ws}'")
+            except Exception:
+                pass
         if rows:
-            self._axis_adjacency_table.add(rows)
+            table.add(rows)
+
+    def replace_axis_adjacency_external(
+        self,
+        sym_to_ext: dict[str, dict[str, set[str]]],
+        ext_to_sym: dict[str, dict[str, set[str]]],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> None:
+        """Replace one workspace's external-node bridge maps for in-proc walks."""
+        from sidecar.axis.adjacency_bridges import serialize_external_maps
+
+        sym_json, ext_json = serialize_external_maps(sym_to_ext, ext_to_sym)
+        row = {
+            "workspace_id": workspace_id,
+            "sym_to_ext_json": sym_json,
+            "ext_to_sym_json": ext_json,
+        }
+        table = self.axis_adjacency_external_table(workspace_id)
+        if self._uses_workspace_adjacency_external_partition(table):
+            name = workspace_partition_table_name(AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id)
+            if name in self._db.table_names():
+                self._db.drop_table(name)
+            self._workspace_adj_external_tables.pop(workspace_id, None)
+            table = self.axis_adjacency_external_table(workspace_id)
+        else:
+            ws = self._quote_delete_value(workspace_id)
+            try:
+                table.delete(f"workspace_id = '{ws}'")
+            except Exception:
+                pass
+        table.add([row])
+
+    def load_axis_adjacency_external(
+        self,
+        workspace_id: str,
+    ) -> tuple[dict[str, dict[str, set[str]]], dict[str, dict[str, set[str]]]] | None:
+        """Load materialized external bridge maps, or ``None`` when absent."""
+        from sidecar.axis.adjacency_bridges import deserialize_external_maps
+
+        table = self.axis_adjacency_external_table(workspace_id)
+        try:
+            if self._uses_workspace_adjacency_external_partition(table):
+                if int(table.count_rows()) <= 0:
+                    return None
+                rows = table.search().limit(1).select(
+                    ["sym_to_ext_json", "ext_to_sym_json"]
+                ).to_list()
+            else:
+                ws = self._quote_delete_value(workspace_id)
+                rows = (
+                    table.search()
+                    .where(f"workspace_id = '{ws}'", prefilter=True)
+                    .limit(1)
+                    .select(["sym_to_ext_json", "ext_to_sym_json"])
+                    .to_list()
+                )
+        except Exception:
+            return None
+        if not rows:
+            return None
+        row = rows[0]
+        return deserialize_external_maps(
+            str(row.get("sym_to_ext_json") or ""),
+            str(row.get("ext_to_sym_json") or ""),
+        )
 
     def upsert_axis_adjacency_rows(
         self,
@@ -1039,13 +1314,19 @@ class LanceDBClient:
             return
         uids = [str(row["uid"]) for row in rows if row.get("uid")]
         self._delete_axis_adjacency_rows(uids, workspace_id)
-        self._axis_adjacency_table.add(rows)
+        self.axis_adjacency_table(workspace_id).add(rows)
 
     def count_axis_adjacency_workspace(self, workspace_id: str) -> int:
         """Row count for one workspace in the materialized adjacency table."""
+        table = self.axis_adjacency_table(workspace_id)
+        if self._uses_workspace_adjacency_partition(table):
+            try:
+                return int(table.count_rows())
+            except Exception:
+                return len(self.scan_axis_adjacency_workspace(workspace_id))
         ws = self._quote_delete_value(workspace_id)
         try:
-            return int(self._axis_adjacency_table.count_rows(f"workspace_id = '{ws}'"))
+            return int(table.count_rows(f"workspace_id = '{ws}'"))
         except Exception:
             return len(self.scan_axis_adjacency_workspace(workspace_id))
 
@@ -1065,8 +1346,22 @@ class LanceDBClient:
         except Exception:
             pass
         self.delete_symbols_workspace(workspace_id, progress_callback=progress_callback)
+        if hasattr(self, "_workspace_adj_tables"):
+            name = workspace_partition_table_name(AXIS_ADJACENCY_TABLE, workspace_id)
+            if name in self._db.table_names():
+                self._db.drop_table(name)
+            self._workspace_adj_tables.pop(workspace_id, None)
+        if hasattr(self, "_workspace_adj_external_tables"):
+            ext_name = workspace_partition_table_name(AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id)
+            if ext_name in self._db.table_names():
+                self._db.drop_table(ext_name)
+            self._workspace_adj_external_tables.pop(workspace_id, None)
         try:
             self._axis_adjacency_table.delete(predicate)
+        except Exception:
+            pass
+        try:
+            self._axis_adjacency_external_table.delete(predicate)
         except Exception:
             pass
 
@@ -1089,6 +1384,8 @@ class LanceDBClient:
             path_clauses.append(f"file_path LIKE '{escaped}/%'")
         path_predicate = " OR ".join(path_clauses)
         predicate = f"workspace_id = '{ws}' AND ({path_predicate})"
+        sym_table = self.symbols_table(workspace_id)
+        sym_predicate = path_predicate if self._uses_workspace_symbol_partition(sym_table) else predicate
 
         target_uids = self.list_symbol_uids_by_prefixes(workspace_id, prefixes)
         incident_uids = self.find_incident_axis_adjacency_uids(workspace_id, target_uids)
@@ -1107,15 +1404,23 @@ class LanceDBClient:
         if progress_callback:
             progress_callback(f"delete symbols paths={len(prefixes)}")
         try:
-            self._sym_table.delete(predicate)
+            sym_table.delete(sym_predicate)
         except Exception:
             pass
 
+        adj_table = self.axis_adjacency_table(workspace_id)
         if use_full_reset:
-            try:
-                self._axis_adjacency_table.delete(f"workspace_id = '{ws}'")
-            except Exception:
-                pass
+            if self._uses_workspace_adjacency_partition(adj_table):
+                name = workspace_partition_table_name(AXIS_ADJACENCY_TABLE, workspace_id)
+                if name in self._db.table_names():
+                    self._db.drop_table(name)
+                if hasattr(self, "_workspace_adj_tables"):
+                    self._workspace_adj_tables.pop(workspace_id, None)
+            else:
+                try:
+                    adj_table.delete(f"workspace_id = '{ws}'")
+                except Exception:
+                    pass
         else:
             self.delete_axis_adjacency_uids(workspace_id, incident_uids)
 
@@ -1177,12 +1482,14 @@ class LanceDBClient:
         """Returns symbols semantically similar to a precomputed embedding vector."""
         if hasattr(vector, "tolist"):
             vector = vector.tolist()
-        results = (
-            self._sym_table.search(vector)
-            .where(f"workspace_id = '{self._quote_delete_value(workspace_id)}'", prefilter=True)
-            .limit(limit)
-            .to_list()
-        )
+        table = self.symbols_table(workspace_id)
+        query = table.search(vector).limit(limit)
+        if not self._uses_workspace_symbol_partition(table):
+            query = query.where(
+                f"workspace_id = '{self._quote_delete_value(workspace_id)}'",
+                prefilter=True,
+            )
+        results = query.to_list()
 
         # Guard against cross-model queries (skip check for unversioned rows)
         for r in results:
@@ -1228,12 +1535,19 @@ class LanceDBClient:
             raise ValueError("Axis symbol search requires an axis index profile")
         if hasattr(vector, "tolist"):
             vector = vector.tolist()
-        results = (
-            self._sym_table.search(vector)
-            .where(plan.lance_predicate, prefilter=True)
-            .limit(plan.limit)
-            .to_list()
-        )
+        workspace_id = plan.workspace_id or DEFAULT_WORKSPACE_ID
+        table = self.symbols_table(workspace_id)
+        query = table.search(vector).limit(plan.limit)
+        if self._uses_workspace_symbol_partition(table):
+            bits_predicate = render_axis_bits_predicate(
+                required_bits=plan.required_bits,
+                container_kinds=plan.container_kinds,
+            )
+            if bits_predicate != "true":
+                query = query.where(bits_predicate, prefilter=True)
+        else:
+            query = query.where(plan.lance_predicate, prefilter=True)
+        results = query.to_list()
         out = []
         for r in results:
             distance = r.get("_distance", 1.0)

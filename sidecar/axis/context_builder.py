@@ -115,7 +115,8 @@ def _fetch_symbol_payloads(
     """
     if not uids:
         return {}
-    table = lance._sym_table  # noqa: SLF001
+    sym_table_fn = getattr(lance, "symbols_table", None)
+    table = sym_table_fn(workspace_id) if callable(sym_table_fn) else lance._sym_table  # noqa: SLF001
     columns = ["uid", "code", "workspace_id"]
     try:
         if "qualified_name" in set(table.schema.names):
@@ -127,7 +128,12 @@ def _fetch_symbol_payloads(
         return "'" + value.replace("'", "''") + "'"
 
     uid_filter = ", ".join(_quote(uid) for uid in sorted(uids))
-    filter_sql = f"workspace_id = {_quote(workspace_id)} AND uid IN ({uid_filter})"
+    from sidecar.database.lance_workspace_tables import workspace_partitioned_enabled
+
+    if workspace_partitioned_enabled() and callable(sym_table_fn):
+        filter_sql = f"uid IN ({uid_filter})"
+    else:
+        filter_sql = f"workspace_id = {_quote(workspace_id)} AND uid IN ({uid_filter})"
     lance_table = table.to_lance()
     try:
         arrow = lance_table.to_table(columns=columns, filter=filter_sql)

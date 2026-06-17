@@ -63,9 +63,10 @@ from sidecar.axis.role_retrieval import RoleCandidate
 # *anchor* those passes.
 _MODE_ROLES = frozenset({"impact_analysis", "trace_dependency"})
 # Seed-budget multiplier for mode (impact / trace) intents — their answer
-# surface is a blast radius and the seed layer now feeds a multi-stage pool,
-# so the seeds must carry more than a point-lookup's ``per_role_limit``.
-_MODE_SEED_LIMIT_FACTOR = 2
+# surface is a blast radius and the seed layer now feeds a multi-stage pool.
+# Was 2× per_role_limit (=16 at default 8); tightened to 1× (=8) to cut
+# impact/trace latency on large workspaces.
+_MODE_SEED_LIMIT_FACTOR = 1
 
 
 class _NullTrace:
@@ -161,7 +162,7 @@ def run_axis_retrieval(
     with tr.stage("retrieval"):
         # One workspace-scoped scan (predicate pushdown + parse once)
         # feeds every role retrieval and the vector seeds.
-        scanned = role_retrieval.scan_workspace_rows(workspace_id)
+        scanned = role_retrieval.scan_workspace_rows(workspace_id, lance=lance)
         raw_by_role: dict[str, list] = role_retrieval.find_symbols_by_roles(
             workspace_id,
             [m.role for m in intent],
@@ -170,6 +171,11 @@ def run_axis_retrieval(
             limit=seed_limit,
             prescanned=scanned,
         )
+        from sidecar.axis import graph_walk_inproc
+
+        if graph_walk_inproc.should_use(workspace_id):
+            with tr.stage("adjacency"):
+                graph_walk_inproc.load_adjacency(db, workspace_id)
 
     # Seed layer — pure vector/role retrieval, captured BEFORE any
     # graph-walk pool expansion (lookahead is itself a pool pass).
