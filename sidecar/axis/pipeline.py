@@ -321,10 +321,11 @@ def run_axis_retrieval(
     # active/passive split — the whole pool is active.
     token_budget: int | None = None
     render_mode = "full"
+    budget_profile = None
     active = candidates_for_context
     utility_score_fn = None
     if intent_budget:
-        budget = budget_for_intent(intent)
+        budget_profile = budget_for_intent(intent)
         # S_utility = score (S_vector × W_type, already in the candidate score)
         # + B_proximity (path-locality from the ask anchor). The boost only
         # reorders the packing priority; it does not mutate the candidate score
@@ -340,8 +341,10 @@ def run_axis_retrieval(
             return c.score + proximity_boost(c.file_path, anchor_path)
 
         utility_score_fn = _budget_utility_score
-        token_budget = budget.effective_tokens(base_token_budget)
-        render_mode = budget.render_mode if render_mode_override is None else render_mode_override
+        token_budget = budget_profile.effective_tokens(base_token_budget)
+        render_mode = (
+            budget_profile.render_mode if render_mode_override is None else render_mode_override
+        )
 
     bundles: list[ContextBundle] = []
     if with_context and active:
@@ -355,6 +358,15 @@ def run_axis_retrieval(
                 hook_transparency=hook_transparency,
                 token_budget=token_budget,
                 render_mode=render_mode,
+                per_transaction_share=(
+                    budget_profile.per_transaction_share if budget_profile else 0.10
+                ),
+                file_soft_cap_share=(
+                    budget_profile.file_soft_cap_share if budget_profile else 0.25
+                ),
+                signature_only_initial=(
+                    budget_profile.signature_only_initial if budget_profile else False
+                ),
                 utility_score_fn=utility_score_fn,
                 include_tests=include_tests_in_walks,
             )

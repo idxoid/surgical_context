@@ -34,7 +34,10 @@ def test_profile_shapes():
     # simple "how does X" questions need fewer walks than impact analysis.
     assert ARCHITECTURE.max_walk_seeds <= IMPACT.max_walk_seeds
     assert ARCHITECTURE.render_mode == "hybrid"
-    assert IMPACT.render_mode == "signature_only"
+    assert IMPACT.render_mode == "impact_tiered"
+    assert IMPACT.per_transaction_share < ARCHITECTURE.per_transaction_share
+    assert IMPACT.file_soft_cap_share < ARCHITECTURE.file_soft_cap_share
+    assert not IMPACT.signature_only_initial
 
 
 def test_effective_tokens_are_proportional_to_request_budget():

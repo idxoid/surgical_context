@@ -698,7 +698,9 @@ def main() -> None:
         "--render-mode",
         choices=[
             "full",
-            "signature_only",
+            "impact_tiered",
+        "impact_surface",
+        "signature_only",
             "hybrid",
             "hybrid_compact",
             "fold",

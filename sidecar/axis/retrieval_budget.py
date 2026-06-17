@@ -19,8 +19,11 @@ intent classifier:
   * **architecture / how-it-works** (default): few seeds, a *large* token
     share, full code — pour the core in whole so the LLM sees structure.
   * **impact / find-dependencies** (an ``impact_analysis`` / ``trace_dependency``
-    intent is present): many seeds, a *smaller* token share, signature-only —
-    surface as many connected sites as possible, each cheap.
+    intent is present): many seeds, a *smaller* token share,
+    ``impact_tiered`` render — core-tier class blocks fold compact, anchor
+    seeds keep a full signature header, tail sites one-line stubs; tighter
+    per-file and per-transaction caps so a small request budget still buys
+    breadth.
 
 Token shares are RELATIVE weights, not absolute counts. The caller's
 ``token_budget`` anchors the *smallest* profile and richer profiles scale up
@@ -47,7 +50,10 @@ class RetrievalBudget:
     name: str
     max_walk_seeds: int  # echelon 1: how many ranked seeds get a GRAPH WALK
     token_weight: int  # echelon 2: RELATIVE share, scaled by the caller's budget
-    render_mode: str  # "full" | "signature_only" | "hybrid"
+    render_mode: str  # "full" | "impact_tiered" | "impact_surface" | "signature_only" | "hybrid"
+    per_transaction_share: float = 0.10  # echelon-2 phase-1 buy size vs budget
+    file_soft_cap_share: float = 0.25  # per-file saturation vs budget
+    signature_only_initial: bool = False  # skip fold_compact in phase-1 buys
 
     def effective_tokens(self, base_token_budget: int) -> int:
         """Scale the caller's budget by this profile's share of the minimum
@@ -79,7 +85,10 @@ IMPACT = RetrievalBudget(
     name="impact",
     max_walk_seeds=40,
     token_weight=6000,
-    render_mode="signature_only",
+    render_mode="impact_tiered",
+    per_transaction_share=0.06,
+    file_soft_cap_share=0.12,
+    signature_only_initial=False,
 )
 
 _PROFILES = (ARCHITECTURE, IMPACT)

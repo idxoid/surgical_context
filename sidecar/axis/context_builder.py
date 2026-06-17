@@ -34,6 +34,7 @@ from sidecar.axis.test_file_filter import is_test_path
 from sidecar.observability.metrics import estimate_text_tokens
 
 _RENDER_LADDER: tuple[str, ...] = (
+    "impact_surface",
     "signature_only",
     "fold_compact",
     "fold",
@@ -234,6 +235,20 @@ def _code_signature(code: str | None) -> str:
     return "\n".join(out)
 
 
+def _code_impact_surface(
+    code: str | None,
+    *,
+    qualified_name: str = "",
+    name: str = "",
+) -> str:
+    """One-line blast-radius stub — cheapest render for impact breadth."""
+    sig = _code_signature(code or "")
+    first = next((ln.strip() for ln in sig.splitlines() if ln.strip()), "")
+    if first:
+        return first
+    return (qualified_name or name or "").strip()
+
+
 def _collapse_long_line(line: str, *, limit: int = 140) -> str:
     stripped = line.rstrip()
     if len(stripped) <= limit:
@@ -371,6 +386,7 @@ def _fold_class_symbols(
     symbols: list[ContextSymbol],
     *,
     compact: bool = False,
+    core_tier_only: bool = False,
 ) -> list[ContextSymbol]:
     """Fold already-selected class members into synthetic class blocks.
 
@@ -396,6 +412,10 @@ def _fold_class_symbols(
             for member in members
         )
         if has_class_symbol or len(members) >= 2:
+            if core_tier_only and not any(
+                _file_tier_from_path(m.file_path) == "core" for m in members
+            ):
+                continue
             foldable.add(parent)
 
     out: list[ContextSymbol] = []
@@ -457,12 +477,63 @@ def _apply_fold_render(
     return folded
 
 
+def _render_impact_tiered(
+    bundle: ContextBundle,
+    *,
+    full_render_max_depth: int = 0,
+) -> ContextBundle:
+    """Impact echelon-2: core-tier fold groups as ``fold_compact``, rest tiered.
+
+    * **Upper tier + fold objects** — production (``core``) class blocks fold
+      into a compact skeleton (``fold_compact``).
+    * **Anchor symbols** on production (``core``) files — full signature header.
+    * **Everything else** — one-line signature stub (``impact_surface``).
+    """
+    del full_render_max_depth
+    symbols = _fold_class_symbols(
+        list(bundle.all_symbols()),
+        compact=True,
+        core_tier_only=True,
+    )
+    if not symbols:
+        return replace(bundle, render_mode="impact_tiered")
+    trimmed: list[ContextSymbol] = []
+    for sym in symbols:
+        if sym.expansion_step == "fold":
+            trimmed.append(sym)
+        elif sym.distance_from_seed == 0 and _file_tier_from_path(sym.file_path) == "core":
+            trimmed.append(replace(sym, code=_code_signature(sym.code)))
+        else:
+            trimmed.append(
+                replace(
+                    sym,
+                    code=_code_impact_surface(
+                        sym.code,
+                        qualified_name=sym.qualified_name,
+                        name=sym.name,
+                    ),
+                )
+            )
+    seed = trimmed[0]
+    related = tuple(trimmed[1:])
+    return replace(bundle, seed=seed, related=related, render_mode="impact_tiered")
+
+
 def _trim_symbol_for_mode(
     sym: ContextSymbol,
     render_mode: str,
     *,
     full_render_max_depth: int,
 ) -> ContextSymbol:
+    if render_mode == "impact_surface":
+        return replace(
+            sym,
+            code=_code_impact_surface(
+                sym.code,
+                qualified_name=sym.qualified_name,
+                name=sym.name,
+            ),
+        )
     if render_mode == "signature_only":
         return replace(sym, code=_code_signature(sym.code))
     if render_mode == "hybrid_compact":
@@ -480,6 +551,8 @@ def _render_bundle(
     *,
     full_render_max_depth: int = 0,
 ) -> ContextBundle:
+    if render_mode == "impact_tiered":
+        return _render_impact_tiered(bundle, full_render_max_depth=full_render_max_depth)
     if render_mode in ("fold", "fold_compact"):
         rendered = _apply_fold_render(
             [bundle],
@@ -487,7 +560,12 @@ def _render_bundle(
         )[0]
         if rendered == bundle:
             return bundle
-    elif render_mode in ("signature_only", "hybrid", "hybrid_compact"):
+    elif render_mode in (
+        "impact_surface",
+        "signature_only",
+        "hybrid",
+        "hybrid_compact",
+    ):
         rendered = replace(
             bundle,
             seed=_trim_symbol_for_mode(
@@ -544,7 +622,7 @@ def _render_with_transaction_limit(
         )
         cost = _bundle_token_count(rendered)
         last = (rendered, cost)
-        if cost <= per_transaction_limit or mode == "signature_only":
+        if cost <= per_transaction_limit or mode in ("impact_surface", "signature_only"):
             result = (rendered, cost)
             break
     if result is None:
@@ -703,13 +781,30 @@ def _initial_credit_render(
     *,
     transaction_limit: int,
     full_render_max_depth: int,
+    initial_mode: str = "signature_only",
+    signature_only_initial: bool = False,
 ) -> tuple[ContextBundle, int]:
     """Cheap coverage render: signatures everywhere, compact fold when cheap.
 
     A compact fold block is still a cheap coverage artifact, but it carries
     class topology that a plain signature loses. Passive seeds stay
     signature-first; they are the breadth reservoir and can be upgraded later.
+    Impact profile uses ``impact_tiered``: core-tier fold groups render as
+    ``fold_compact`` blocks; every other symbol keeps a full signature header.
     """
+    if initial_mode == "impact_tiered":
+        rendered = _render_impact_tiered(
+            bundle,
+            full_render_max_depth=full_render_max_depth,
+        )
+        return rendered, _bundle_token_count(rendered)
+    if signature_only_initial or bundle.passive:
+        rendered = _render_bundle(
+            bundle,
+            initial_mode,
+            full_render_max_depth=full_render_max_depth,
+        )
+        return rendered, _bundle_token_count(rendered)
     signature = _render_bundle(
         bundle,
         "signature_only",
@@ -732,8 +827,13 @@ def _initial_credit_render(
 
 
 def _target_credit_modes(bundle: ContextBundle, render_mode: str) -> tuple[str, ...]:
-    del bundle, render_mode
-    return _RENDER_LADDER
+    del bundle
+    if render_mode == "impact_tiered":
+        return ("impact_tiered",)
+    if render_mode not in _RENDER_LADDER:
+        return _RENDER_LADDER
+    idx = _RENDER_LADDER.index(render_mode)
+    return _RENDER_LADDER[: idx + 1]
 
 
 def _next_upgrade_render(
@@ -776,6 +876,109 @@ _BundleStatic = namedtuple(
 )
 
 
+def _dedupe_bundles_by_seed_uid(bundles: list[ContextBundle]) -> list[ContextBundle]:
+    """One packer row per seed symbol — axis flattening repeats the same uid.
+
+    Impact pools often carry the same symbol on seeds, structural walks, and
+    impact_analysis (185 rows, 172 uids). Marginal packing runs on unique
+    symbols; the highest-utility row wins when roles disagree.
+    """
+    best: dict[str, ContextBundle] = {}
+    order: list[str] = []
+    for bundle in bundles:
+        if bundle.seed is None or not bundle.seed.uid:
+            continue
+        uid = bundle.seed.uid
+        if uid not in best:
+            order.append(uid)
+            best[uid] = bundle
+        elif bundle.utility_score > best[uid].utility_score:
+            best[uid] = bundle
+    return [best[uid] for uid in order]
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def _mad(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    center = _median(values)
+    return _median([abs(v - center) for v in values])
+
+
+def _noise_level_from_tail(
+    tail: list[float],
+    *,
+    k: float = 1.0,
+) -> float:
+    """``median(tail) + k * 1.4826 * MAD(tail)`` with ``noise >= 1``."""
+    if not tail:
+        return 1.0
+    med = _median(tail)
+    mad = _mad(tail)
+    return max(1.0, med + k * 1.4826 * mad)
+
+
+def _leader_pool_metrics(
+    static: list[_BundleStatic],
+    *,
+    k: float = 1.0,
+) -> tuple[float, int]:
+    """Tail noise threshold and leader breadth for the ladder cap.
+
+    ``tail`` = ``100 * (1 - u/peak)`` on symbols at or below median utility::
+
+        noise_level = median(tail) + k * 1.4826 * MAD(tail)
+
+    ``marginality`` = ``100 * (u/peak)`` (signal strength, same scale).  Leaders
+    are symbols with ``marginality > noise_level`` — above the robust noise
+    floor.  Then::
+
+        %leader = 100 / COUNT(marginality > noise_level)
+
+    Weak symbols below the floor are excluded from the divisor; they still enter
+    via marginal packer on leftover budget.
+    """
+    n = len(static)
+    if n <= 1:
+        return 1.0, 1
+    utilities = [max(1e-9, st.base_utility) for st in static]
+    peak = max(utilities)
+    sorted_u = sorted(utilities)
+    median_u = _median(sorted_u)
+    tail_u = [u for u in sorted_u if u <= median_u]
+    if not tail_u:
+        tail_u = sorted_u
+    tail = [100.0 * (1.0 - u / peak) for u in tail_u]
+    noise_level = _noise_level_from_tail(tail, k=k)
+    leader_count = sum(1 for u in utilities if (100.0 * u / peak) > noise_level)
+    return noise_level, max(1, leader_count)
+
+
+def _leader_transaction_limit(
+    token_budget: int,
+    *,
+    leader_count: int,
+) -> int:
+    """Per-symbol ladder-step cap: ``budget * (100 / leader_count) / 100``."""
+    if token_budget <= 0:
+        return 1
+    count = max(1, leader_count)
+    if count <= 1:
+        return max(1, int(token_budget))
+    leader_share = (100.0 / count) / 100.0
+    return max(1, int(token_budget * leader_share))
+
+
 def _apply_token_credit_budget(
     bundles: list[ContextBundle],
     *,
@@ -783,22 +986,29 @@ def _apply_token_credit_budget(
     render_mode: str,
     full_render_max_depth: int,
     per_transaction_share: float = 0.10,
+    file_soft_cap_share: float = 0.25,
+    signature_only_initial: bool = False,
 ) -> list[ContextBundle]:
     """Token Credit System v2 prototype: coverage-first marginal transactions.
 
-    Phase 1 buys cheap coverage artifacts (signature, or compact fold when a
-    coherent class block is available cheaply). Phase 2 spends surplus on the
-    tariff ladder ``signature -> fold_compact -> fold -> hybrid_compact ->
-    hybrid -> full``, ordered by marginal utility per additional token. The
-    stateful gains favor new files / roles / edge steps and softly saturate
-    files that already consumed budget, so the packer buys the next useful fact
-    instead of the next whole bundle.
+    Phase 1 dedupes to unique seed symbols, then buys cheap coverage ordered
+    by marginal utility per token.  Each ladder step is capped by
+    ``_leader_transaction_limit`` from a robust tail noise estimate::
+
+        noise_level = median(tail) + k * 1.4826 * MAD(tail)
+        %leader = 100 / COUNT(marginality > noise_level)
+
+    ``marginality = 100 * (u/u_peak)`` on each deduped symbol.  Phase 2 uses
+    the same cap.
     """
     if token_budget <= 0:
         return bundles
 
-    transaction_limit = max(1, int(token_budget * per_transaction_share))
-    file_soft_cap = max(1, int(token_budget * 0.25))
+    del per_transaction_share  # profile knob; leader % comes from tail noise
+
+    bundles = _dedupe_bundles_by_seed_uid(bundles)
+    file_soft_cap = max(1, int(token_budget * file_soft_cap_share))
+    initial_mode = render_mode if render_mode in _RENDER_LADDER else "signature_only"
     covered_files: set[str] = set()
     covered_roles: set[str] = set()
     covered_steps: set[str] = set()
@@ -816,6 +1026,11 @@ def _apply_token_credit_budget(
         )
         for b in bundles
     ]
+    _noise_level, leader_count = _leader_pool_metrics(static)
+    transaction_limit = _leader_transaction_limit(
+        token_budget,
+        leader_count=leader_count,
+    )
 
     def _file_saturation_penalty(bundle: ContextBundle) -> float:
         primary = _primary_file(bundle)
@@ -862,6 +1077,8 @@ def _apply_token_credit_budget(
             bundle,
             transaction_limit=transaction_limit,
             full_render_max_depth=full_render_max_depth,
+            initial_mode=initial_mode,
+            signature_only_initial=signature_only_initial,
         )
         st = static[idx]
         optimistic_gain = st.base_utility + 0.35 + 0.20
@@ -907,6 +1124,8 @@ def _apply_token_credit_budget(
 
     def _upgrade_gain(st: _BundleStatic, bundle: ContextBundle, rendered: ContextBundle) -> float:
         mode_bonus = {
+            "impact_tiered": 0.12,
+            "impact_surface": 0.08,
             "fold_compact": 0.18,
             "fold": 0.22,
             "hybrid_compact": 0.25,
@@ -991,6 +1210,9 @@ def _apply_render_and_budget(
     token_budget: int | None,
     render_mode: str,
     full_render_max_depth: int = 0,
+    per_transaction_share: float = 0.10,
+    file_soft_cap_share: float = 0.25,
+    signature_only_initial: bool = False,
 ) -> list[ContextBundle]:
     """Echelon 2: render-trim then token-pack the assembled bundles.
 
@@ -1001,6 +1223,9 @@ def _apply_render_and_budget(
 
     With no budget we just apply ``render_mode`` to every bundle:
       * ``"full"`` — never trims (whole pool, full code).
+      * ``"impact_tiered"`` — core fold groups compact; anchors full signature,
+        tail one-line stubs.
+      * ``"impact_surface"`` — one-line stub per symbol (impact breadth).
       * ``"signature_only"`` — every symbol collapses to its signature.
       * ``"hybrid"`` — only neighbours past ``full_render_max_depth`` collapse
         (default 0 → the seed stays full, every expanded neighbour collapses to
@@ -1015,9 +1240,14 @@ def _apply_render_and_budget(
             token_budget=token_budget,
             render_mode=render_mode,
             full_render_max_depth=full_render_max_depth,
+            per_transaction_share=per_transaction_share,
+            file_soft_cap_share=file_soft_cap_share,
+            signature_only_initial=signature_only_initial,
         )
 
     if render_mode in (
+        "impact_tiered",
+        "impact_surface",
         "fold",
         "fold_compact",
         "signature_only",
@@ -1110,6 +1340,9 @@ def build_context_for_candidates(
     hook_transparency: bool = False,
     token_budget: int | None = None,
     render_mode: str = "full",
+    per_transaction_share: float = 0.10,
+    file_soft_cap_share: float = 0.25,
+    signature_only_initial: bool = False,
     utility_score_fn: Callable[[RoleCandidate], float] | None = None,
 ) -> list[ContextBundle]:
     """Expand each candidate into a ``ContextBundle`` of related code.
@@ -1251,6 +1484,9 @@ def build_context_for_candidates(
         bundles,
         token_budget=token_budget,
         render_mode=render_mode,
+        per_transaction_share=per_transaction_share,
+        file_soft_cap_share=file_soft_cap_share,
+        signature_only_initial=signature_only_initial,
     )
 
 
