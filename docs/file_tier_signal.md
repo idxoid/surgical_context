@@ -1,5 +1,7 @@
 # File-tier signal — spec
 
+> **Type:** A — Spec (✅ implemented). Index-time structural signal; not a cascade remnant.
+
 One **index-time structural signal** that unifies two retrieval problems
 the three-layer benchmark exposed as the *same* missing notion:
 

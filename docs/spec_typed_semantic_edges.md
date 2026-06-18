@@ -12,7 +12,7 @@ The original graph used one broad `CALLS` edge for every call-like relationship.
 - a method dispatch through `self` or an object is weaker than a direct function call
 - a heuristic `getattr`/`eval` pattern should not rank like ordinary control flow
 
-Typed semantic edges give BFS, AFFECTS, and UnifiedRanker a confidence signal before semantic search or role backfill even runs.
+Typed semantic edges give axis graph walks and AFFECTS a confidence signal before semantic seed ranking runs.
 
 ## 2. Current Edge Types
 
@@ -120,25 +120,11 @@ path when graph shape drifts — no separate migration CLI.
 
 ## 5. Retrieval Consumption
 
-### 5.1 GraphExpander
+### 5.1 Axis graph walks
 
-`context_engine/context/graph_expander.py` traverses:
+`context_engine/axis/graph_walk.py` traverses typed edges via `EdgeProfile` whitelists (`axis_profiles.py`). Pool passes call `walk_neighbours` / `walk_neighbours_grouped`. Seed ranking blends structural + semantic scores in `role_retrieval.py`. Legacy `CALLS` remains accepted where stored. `SEMANTIC_HINT` is **not produced** (removed 2026-06) and is not in axis edge profiles.
 
-```cypher
-CALLS
-CALLS_DIRECT
-CALLS_SCOPED
-CALLS_IMPORTED
-CALLS_DYNAMIC
-CALLS_INFERRED
-CALLS_GUESS
-DEPENDS_ON
-IMPLEMENTS
-OVERRIDES
-REFERENCES
-```
-
-Current relation priors:
+Example relation priors (legacy cascade; axis uses profile-specific caps):
 
 ```python
 CALLS_DIRECT_out:   1.0
@@ -161,18 +147,6 @@ IMPLEMENTS:         1.1
 OVERRIDES:          1.1
 REFERENCES:         0.3
 ```
-
-### 5.2 UnifiedRanker
-
-`context_engine/context/unified_ranker.py` mirrors the same typed edge priors and additionally consumes `SEMANTIC_HINT` with a strong prior. Typed relationships are used for:
-
-- graph candidate score
-- direction labels
-- strong-relation gating
-- AFFECTS reverse traversal
-- role/backfill recovery queries
-
-Legacy `CALLS` remains accepted and is treated like `CALLS_DIRECT`.
 
 ## 6. AFFECTS Integration
 
@@ -204,10 +178,8 @@ Implemented coverage includes:
   - Neo4j `link_calls` uses `callee_uid` and batches same resolution mode
 - `tests/integration/test_phase5_validation.py`
   - typed semantic edge smoke validation
-- ranker tests in `tests/unit/test_unified_ranker.py`
-  - typed relation handling in graph candidates and scoring paths
+- axis walk / retrieval tests under `tests/unit/test_axis_*`
 - AFFECTS tests in `tests/unit/test_affects_indexer.py`
-  - typed edge family used for reverse dependency loading
 
 ## 8. Current Success Criteria
 
@@ -215,17 +187,16 @@ Implemented:
 
 1. Parser emits typed call rows for Python and TypeScript.
 2. Neo4j writes typed call relationships with confidence/tier/resolver metadata.
-3. GraphExpander and UnifiedRanker traverse and score typed edges.
+3. Axis graph walks traverse typed edges via `EdgeProfile`.
 4. AFFECTS derives reverse impact from typed edges.
-5. Legacy `CALLS` remains compatible.
+5. Legacy `CALLS` remains compatible where still stored.
 
 Still deferred:
 
 1. Emit dedicated `IMPLEMENTS` / `OVERRIDES` edges instead of only metadata-rich `DEPENDS_ON`.
 2. Emit `REFERENCES` from type annotations/comments.
-3. Update schema migration/index creation for `CALLS_SCOPED`, `CALLS_IMPORTED`, and `CALLS_GUESS`.
-4. Add more parser tests for Python dynamic/inferred edge cases.
-5. Use typed-edge confidence more directly in UnifiedRanker blending, not only relation priors.
+3. Add more parser tests for Python dynamic/inferred edge cases.
+4. Use typed-edge confidence more directly in seed ranking blend, not only hop caps.
 
 ## 9. Phase Sequencing
 

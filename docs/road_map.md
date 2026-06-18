@@ -389,7 +389,7 @@ Goal: Classify function calls by confidence; enable cascade-aware incremental re
 | COVERS edges | 2,286 (doc chunks → code symbols) |
 | Relation types | 8 active (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, AFFECTS, FROM, COVERS, DEPENDS_ON, IMPORTS) |
 | File doc_type | 37 files classified (28 code, 17 spec, 2 arch, 2 docs, 1 ea: concept/idea/review/roadmap) |
-| Context assembly | Working (ContextArbitrator orchestrates: expand → deduplicate → resolve → compile) |
+| Context assembly | Working (axis `run_axis_retrieval` → `axis_bundles_to_prompt_context`; cascade removed 2026-06) |
 
 ### Deferred to Phase 6+
 - [ ] IMPLEMENTS / OVERRIDES / REFERENCES edge creation (data structure exists, parser detection TODO)

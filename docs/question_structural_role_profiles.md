@@ -1,8 +1,8 @@
 # Question structural role profiles
 
-Design draft — **intentionally ignores the current implementation**. Gold
-target for benchmark questions as structural mechanism signatures (not yet
-machine-readable in fixtures).
+> **Type:** D — Design draft. Gold eval target; intentionally ignores current engine.
+
+Design draft — gold target for benchmark questions as structural mechanism signatures (not yet machine-readable in fixtures).
 
 **See also:**
 - [logical_roles_structural_closure.md](logical_roles_structural_closure.md) — logical role vs structural closure layer
@@ -11,12 +11,10 @@ machine-readable in fixtures).
 
 Scope:
 
-- Source packs:
-  - `QA/fixtures/questions_python.yaml`
-  - `QA/fixtures/questions_non_python.yaml`
-  - `QA/fixtures/new_questions_python.yaml`
-- Excluded repos: `dathund`, `surgical_context`.
-- Included questions: 116 public-repo questions.
+- **Profiled:** 116 questions by `id` in `QA/fixtures/questions_python.yaml` (core + `*_new_q*`) and `QA/fixtures/questions_non_python.yaml`.
+- **Not profiled** (in YAML, no `+`/`-` row here): `celery_q01`–`q05`, `click_q01`–`q05`; all nine in `QA/fixtures/new_questions_python.yaml` (`*_faq_q01`, `*_bug_q01`).
+- **Excluded repos** (in YAML, out of scope): `dathund`, `surgical_context`.
+- Fixtures carry `expected_files`, `expected_symbols`, `mechanism`, `intent`. Structural `+`/`-` roles and closure recipes exist **only in this doc** until encoded in YAML (see [Next step](#next-step)).
 
 Intent is not modeled here. Intent changes breadth and ordering, but the
 structural mechanism that makes a question answerable stays mostly the same.

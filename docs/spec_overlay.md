@@ -3,7 +3,7 @@
 
 ## Overview
 
-`context_engine/overlay.py` — holds unsaved file content in memory and re-parses symbols on demand. Enables the arbitrator to answer questions about code the user is currently editing, before it hits disk.
+`context_engine/overlay.py` — holds unsaved file content in memory and re-parses symbols on demand. Enables the axis context builder (`context_engine/axis/overlay_context.py`) to answer questions about code the user is currently editing, before it hits disk.
 
 `POST /overlay` and `DELETE /overlay` validate `file_path` under the workspace project root before touching overlay state (see [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)).
 
@@ -32,7 +32,7 @@ Remove a file from the overlay. Called on file save or editor close (`DELETE /ov
 Returns `True` if this file has a dirty version in memory.
 
 #### read_lines(file_path: str, start: int, end: int) → str
-Returns lines `start..end` (1-indexed, inclusive) from the in-memory content. Used by `ContextArbitrator._read_code()`.
+Returns lines `start..end` (1-indexed, inclusive) from the in-memory content. Used by `overlay_context._overlay_code_for_symbol()` when assembling axis bundles.
 
 #### get_symbols(file_path: str) → dict[str, tuple[int, int]]
 Re-parses the in-memory content via tree-sitter. Returns `{name: (start_line, end_line)}` for all symbols found. Used by `POST /overlay` response to tell VS Code what symbols exist in the dirty file.

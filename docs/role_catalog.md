@@ -463,7 +463,7 @@ Edges the graph does **not** create today, grouped by cost. Existing edges:
 `CALLS*`, `IMPORTS`, `CONTAINS`, `DEPENDS_ON` (+inheritance), `HAS_API`,
 `INHERITED_API`, `USES_TYPE` (kind: param / annotation / return / isinstance),
 `INJECTS`, `HANDLES`, `DECORATED_BY`, `PROXY_OF`, `RE_EXPORTS`, `INSTANTIATES`,
-`AFFECTS`, `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, `SEMANTIC_HINT`, `COVERS`;
+`AFFECTS`, `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, `COVERS` (legacy `SEMANTIC_HINT` may exist in old graphs — no longer emitted);
 external-pkg topology (`ExternalPkg` node + `CALLS_EXTERNAL` / `IMPORTS_EXTERNAL`,
 fed by `package.json` / installed-package roots — `external_boundary.py`);
 TS/JS parity (TS `USES_TYPE`, JS property-API + CommonJS alias references via

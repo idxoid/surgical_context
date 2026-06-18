@@ -280,7 +280,7 @@ This reduces indexing time for large repos with few changes. Full re-index still
 - Dynamic-surface flags are extension/path heuristics; they guide routing and diagnosis, not mechanism detection.
 - The single-file hot path does not currently refresh the full repository profile or rerun Pass 1.
 - Current impact capability is still shallow: AFFECTS reachability does not prove behavioral breakage.
-- Residual ranker fallbacks: `mechanism_registry` preloaded packs, structural mechanism overlap, and `unified_ranker._infer_role` when Pass-1 roles are absent.
+- Residual ranker fallbacks: removed with the cascade (`mechanism_registry`, `UnifiedRanker`). Pass-1 roles and axis retrieval are the read path.
 
 ---
 

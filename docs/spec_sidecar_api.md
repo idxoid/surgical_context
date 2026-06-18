@@ -64,7 +64,7 @@ Any endpoint that reads or indexes files on disk (`POST /index`, `/index/file`, 
 - File/index operations before the workspace is indexed return **`400`** (“no registered project root; POST /index first”).
 - `POST /index` registers the resolved `project_path` directory as the root for that workspace (queued file paths are validated under it).
 
-**Graph-resolved reads:** `ContextArbitrator` / `CodeResolver` and `UnifiedRanker` module sizing use the same root for `file_path` values coming from Neo4j. Paths outside the root return empty code (no disk read). On manifest persist, outside-root `File` nodes are best-effort deleted from the graph.
+**Graph-resolved reads:** indexed symbol bodies come from LanceDB; dirty editor buffers override via the overlay at axis fetch time. Manifest persist best-effort **prunes** outside-root `File` nodes from Neo4j (`workspace_paths.prune_graph_paths_outside_root`). Caller-supplied paths use `_sandbox_path` in `main.py`.
 
 This limits local callers when `AUTH_REQUIRED=false` from using the sidecar to read or index arbitrary readable files, including via stale graph nodes.
 
@@ -230,8 +230,8 @@ Assemble surgical context for a symbol and query the LLM.
 
 **Context resolution (fallback ladder):** `_resolve_ask_context` in `context_engine/main.py` tries, in order:
 
-1. **Symbol** — when `symbol` is set, `ContextArbitrator.get_context_for_symbol(...)` runs intent classification, workspace-scoped graph expansion, code resolution, and doc retrieval. On success, `context.budget.ask_level` is `"symbol"`.
-2. **File** — when symbol resolution returns an error string and `file_path` is set, assemble context from that file on disk (`ask_level`: `"file"`).
+1. **Axis (default)** — when `ASK_AXIS_FIRST` is enabled (default), `_try_axis_context` runs `run_axis_retrieval` (intent → seeds → pool walks → context expansion) and adapts bundles via `axis_bundles_to_prompt_context`. On success, `context.budget.ask_level` is `"axis"`.
+2. **File** — when axis renders nothing and `file_path` is set, assemble context from that file on disk (`ask_level`: `"file"`).
 3. **Workspace** — vector search over indexed docs + symbols for the question (`ask_level`: `"workspace"`, `mode`: `"workspace"`). Skipped when both searches return nothing.
 4. **Direct LLM** — minimal `PromptContext` with no graph or docs (`ask_level`: `"direct_llm"`, `mode`: `"direct"`). This step always succeeds.
 
@@ -328,7 +328,7 @@ Unified search over symbols, graph neighbors, and docs.
 ```json
 {
   "query": "ranking recovery",
-  "symbol": "UnifiedRanker",
+  "symbol": "run_axis_retrieval",
   "include_graph": true,
   "limit": 10,
   "token_budget": 2000

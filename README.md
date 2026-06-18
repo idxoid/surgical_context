@@ -8,6 +8,7 @@ This folder contains the current product and technical documentation for the `co
 
 ### **For Understanding the System**
 - **[architectura.md](docs/architectura.md)** — how all pieces fit together (start here)
+- **[DOCS_STYLE_GUIDE.md](docs/DOCS_STYLE_GUIDE.md)** — doc types (Spec / Architecture / Concept / Design draft)
 - **[product_direction_memo.md](docs/product_direction_memo.md)** — canonical product thesis, scope boundaries, and validation plan
 - **[concept.md](docs/concept.md)** — compact product identity (pointer document)
 - **[idea_summary.md](docs/idea_summary.md)** — one-screen pitch summary (pointer document)

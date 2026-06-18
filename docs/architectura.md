@@ -1,6 +1,6 @@
 # Surgical Context — Architecture
 
-> **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, intent-aware prompt assembly, unified graph+semantic ranking, canonical role normalization, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. Recent retrieval hardening includes trace-dependency recovery for sparse import topology (runtime symbol seeding, sibling-directory expansion, explicit recovery provenance) and qualified-callee gating for DI hint edges. The main open gaps are extension product polish, setup/smoke-test hardening, broader real-repo benchmark coverage (Flask/Django/Express tails), impact-analysis precision/doc-noise control, and provider boundaries around the local defaults. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
+> **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, **axis retrieval** (`context_engine/axis/`) as the default `/ask` path, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. The legacy ranking cascade (`ContextArbitrator`, `UnifiedRanker`) was removed 2026-06. Main open gaps: extension polish, setup/smoke-test hardening, broader real-repo benchmark coverage, impact-analysis precision, and provider boundaries around local defaults. See [road_map.md](road_map.md) and [project_gap_analysis.md](project_gap_analysis.md).
 >
 > **Future layer:** tenant-level API contract graph. Each project indexes and publishes its own safe service/API facts; the tenant graph links those facts across projects and systems without scanning neighboring repositories. This is Team/Enterprise horizon work, not a dependency for the local single-tenant release. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
@@ -102,7 +102,7 @@ Local development often runs with `AUTH_REQUIRED=false`. Without path checks, an
 | Resolve paths | `/ask` (`file_path`), `/index/file`, `/index/files`, `/index/docs`, and `/overlay` normalize relative paths under that root; absolute paths must still lie inside it (`Path.resolve()` + `relative_to`). |
 | Reject | No manifest yet → HTTP `400`. Path escapes root → HTTP `403`. |
 
-`CodeResolver` and `UnifiedRanker` apply the same root check to **graph-resolved** `file_path` values before disk reads. Stale outside-root nodes are skipped at read time; manifest persist also best-effort **prunes** outside-root `File` nodes from Neo4j. Caller-supplied paths: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
+`workspace_paths` + `_sandbox_path` in `main.py` enforce the same root check on caller-supplied paths and IDE anchors. Stale outside-root graph nodes are pruned at index time; overlay reads stay under the registered root. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
 ### 2.3.2. API request bounds ✅
 
@@ -119,17 +119,14 @@ Out-of-range values return HTTP 422 before vector search or context assembly run
 
 ### 2.4. Observability (current)
 
-The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The QA benchmark measures retrieval quality, token reduction, and assembly latency using mechanism-aware classification. Runtime metrics, trace IDs, and prompt-contract retrieval metadata exist; the main remaining work is extension surfacing of ranking details, doc confidence/type scoring in the UI, and local release SLO checks.
+The system's value proposition rests on three measurable claims: **<200ms context assembly**, **60–80% token reduction**, and **3–5× cost savings**. The axis benchmark (`QA/axis_benchmark.py`) measures **`file_recall`**, seed/pool recall, token cost, and assembly latency. Runtime metrics, trace IDs, and prompt-contract metadata exist; remaining work is extension surfacing and local release SLO checks.
 
-**Unified ranking + retrieval policy ✅ implemented**
-- **Blended score formula**: `score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost` (normalized per track)
-- **Graph signal**: BFS with typed edges (CALLS_DIRECT, CALLS_DYNAMIC, CALLS_INFERRED, DEPENDS_ON, IMPLEMENTS, OVERRIDES)
-- **Semantic signal**: vector search + similarity threshold tuning (0.4 → 1.5)
-- **Intent signal**: query intent → tier priority → budget allocation
-- **Overlap bonus**: when both graph and semantic fire on the same candidate
-- **Cost term**: token budget vs. symbol body size
-- **Mechanism-aware routing**: query intent + symbol type → role backfill strategy (e.g., impact_analysis on serialization routes through test-coverage roles)
-- **Target disambiguation**: when workspace has multiple same-name symbols, route by usage context and qualified name
+**Axis retrieval ✅ implemented** (`run_axis_retrieval` in `context_engine/axis/pipeline.py`)
+- **Intent:** structural intent roles via embedding classifier (`classify_intent`)
+- **Seeds:** role + vector retrieval with file-tier weights (`file_tier_signal.md`)
+- **Pool:** graph walks (`walk_neighbours`) — structural, inheritance, impact/trace, cross-role
+- **Context:** per-candidate expansion + LanceDB code fetch + overlay dirty buffers
+- **Prompt:** `axis_bundles_to_prompt_context` → `PromptContext.to_system_prompt()`
 
 **DocAnchor confidence/type scoring ✅ partially implemented**
 - **Anchor type classification** and **per-edge confidence** are available in the retrieval pipeline.
@@ -141,20 +138,15 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - ✅ **Provenance**: why each symbol was selected
 - ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
 - ✅ **Pruned details**: skipped candidates with reason codes
-- ✅ **Ranker metadata** in benchmark `ready_context` snapshots
-- ✅ **Provider protocols (v1)**: `VectorSearchProvider`, `WorkspaceMetaProvider`, `GraphDriverProvider` in `context_engine.retrieval.protocols` + fakes for tests; production vector search satisfies `VectorSearchProvider` (`tests/unit/test_retrieval_protocols.py`)
+- ✅ **Ranker metadata** in benchmark output (`metadata.ranker`, assembly timings)
+- ✅ **Provider protocols (v1)**: retrieval protocol fakes for tests
 - 🚧 Remaining work: richer UI surfacing and consistency checks across extension surfaces
 
 **Supporting Infrastructure:**
-- **Structured logs**: per pipeline stage with `trace_id`, `phase`, `duration_ms`, `symbols_in`, `symbols_out`, `tokens_estimated`
-- **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts, cache hit rates
-- **Token accounting**: both surgical count + "carpet-bomb" estimate; delta is the core KPI
-- **Mechanism-aware retrieval metrics**: questions classified by code relationship type + evaluated on **role_recall** (required roles fulfilled) + intent-stratified pass gates
-- **Intent-stratified evaluation**:
-  - `explain_behavior`: role ≥ 0.70 AND file ≥ 0.50
-  - `trace_dependency`: role ≥ 0.80 AND file ≥ 0.70, **or** (role ≥ 1.0 OR file ≥ 1.0) AND role ≥ 0.60 AND file ≥ 0.50
-  - `impact_analysis`: role ≥ 0.60 OR file ≥ 0.50 (either signal sufficient)
-- **Benchmark artifacts**: each report includes explicit precision + full `ready_context` payload (token count, serialized contract, rendered system prompt)
+- **Structured logs**: per pipeline stage with `trace_id`, `phase`, `duration_ms`
+- **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts
+- **Axis eval (P7):** `file_recall` on `expected_files` per question pack — no YAML `required_roles` (removed 2026-06)
+- **Benchmark artifacts:** `QA/axis_benchmark.py` → `summary.json` with seed/pool/bundle recall layers
 
 Without complete prompt-contract observability, production claims in §1.3 remain hard to debug outside benchmark runs.
 
@@ -239,7 +231,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 3.4. Dirty State Handling ✅ Implemented
 `InMemoryOverlay` holds `{(workspace_id, file_path): raw_content}`:
 - Re-parses symbols on the fly via tree-sitter — no disk I/O.
-- `CodeResolver` checks overlay before disk during context assembly.
+- Axis context builder merges dirty overlay bodies at fetch time (`axis/overlay_context.py`).
 - Cleared on file save or editor close (TTL = session).
 
 ### 3.5. Pipeline Priority Queue
@@ -256,18 +248,14 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 4.1. Prompt Lifecycle
 1. VS Code sends `POST /ask` with `{symbol?, file_path?, question, token_budget}`. When `file_path` is present, it is resolved under the workspace project root before any disk read.
 2. Sidecar resolves user identity plus `X-Workspace` (default: `local/surgical_context@main` for development).
-3. **Intent classification** (axis `classify_intent`): detect query intent (the structural intent role[s]) → drive retrieval. (The legacy 7-label keyword `IntentClassifier` was removed with the cascade.) Impact analysis questions get topic-sensitive noise suppression for tests/examples plus intent-specific priors for ranking (Phase 6 + Phase 4 enhancements).
-4. **Mechanism determination** (Phase 4): if intent = `impact_analysis`, classify the code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`) → informs role backfill strategy and impact-analysis precision controls.
-5. **Resolution ladder**: resolve context at the most specific available level. Local v0.1 uses `symbol → file → workspace → direct_llm`. A future Team layer may insert `tenant_api_graph` before direct LLM fallback. Missing symbols are soft misses, not failed chats.
-6. **Unified graph + semantic ranking** (`UnifiedRanker` — Phase 9.1): BFS from target symbol through current-workspace typed edges (CALLS_DIRECT, CALLS_SCOPED, CALLS_IMPORTED, CALLS_DYNAMIC, CALLS_INFERRED, CALLS_GUESS, DEPENDS_ON, IMPLEMENTS, OVERRIDES, REFERENCES) blended with vector semantic search. Mechanism-aware role backfill, query-sensitive mechanism routing, duplicate-target disambiguation, package/module fallback targets, and canonical role normalization run inside this layer. Thin wrapper APIs can also satisfy capability roles from their own implementation body when nested helpers are not indexed as standalone symbols. Selection is constrained by token budget + intent-aware noise filtering and returns candidates with graph, semantic, blended scores, and anchor confidence (Phase 9.3).
-7. **Tenant API expansion (future Team layer):** when the question needs service-boundary context, retrieve published API contract links using `api_direction` and `tenant_link_depth`. This reads only tenant-published manifests, not neighboring project source.
-8. **Subgraph/doc split** (`UnifiedRanker.candidates_to_subgraph(...)`): convert the chosen ranked candidates back into `SubgraphNode` plus `DocChunk` objects for prompt compilation.
-9. **Deduplication** (in `PromptCompiler` + `BudgetPruner` redundancy penalties): collapse duplicate symbol bodies and overlapping doc chunks during compile; marginal-gain selection in `UnifiedRanker` avoids redundant candidates earlier.
-10. **Code resolution** (`CodeResolver`): read from `InMemoryOverlay` (if dirty) or disk for each symbol. Tracks `is_dirty` flag per symbol. Signature-only resolution for distant neighbors and massive targets.
-11. **Prompt assembly** (`PromptCompiler`): rank tiers by intent (code → cross-refs → specs → architecture → concepts → ideas → tenant API context), fill budget in order.
-12. **LLM call**: if tiers are empty → "standard mode" (bare query, no context). Else → `PromptContext.to_system_prompt()` + response from Ollama/Claude.
-13. Response: `{symbol, answer, context}` — `context` is the full JSON Prompt Contract with `intent_details`, `scores`, `provenance`, `pruned[]` (Phase 9.4), `metadata.ranker` (Phase 9.4), and assembly metadata. Benchmark reports additionally persist this same contract as `ready_context`.
-14. **Streaming**: `/ask/stream` provides JSON-safe SSE responses with `chunk`, `context`, `error`, and `done` events.
+3. **Intent classification** (axis `classify_intent`): structural intent roles drive seed/pool routing and file-tier sign (impact vs behaviour).
+4. **Axis retrieval** (`run_axis_retrieval`): workspace scan → role/vector seeds → graph pool passes → cross-role ranking → per-candidate context expansion → `ContextBundle` list.
+5. **Prompt adaptation** (`axis_bundles_to_prompt_context`): bundles → `PromptContext` with provenance, tier tokens, assembly metadata.
+6. **Fallback ladder** (when axis renders nothing or `ASK_AXIS_FIRST=false`): file → workspace vector → direct LLM (`_resolve_ask_context` in `main.py`).
+7. **Overlay merge:** dirty editor buffers from `InMemoryOverlay` override LanceDB bodies at fetch time (`axis/overlay_context.py`).
+8. **LLM call:** if tiers are empty → direct mode. Else → `PromptContext.to_system_prompt()` + Ollama/local or optional cloud route.
+9. Response: `{symbol, answer, context}` — full prompt contract with `intent_details`, scores, provenance, `metadata.assembly`, `feedback_token`.
+10. **Streaming**: `/ask/stream` — JSON-safe SSE (`chunk`, `context`, `error`, `done`).
 
 ### 4.2. Cold Start
 1. FS scan for `.py`/`.ts`/`.tsx` files (gitignore-aware, dirs pruned).
@@ -537,48 +525,11 @@ Legacy cascade field **`required_roles`** was removed from question packs (2026-
 
 This enables the benchmark to report *which mechanisms the ranker handles well* and *which gaps are actual code relationship discovery failures* vs. ranking noise.
 
-### 4.2. Intent-Aware Ranker
-Added `IMPACT_ANALYSIS` intent classification and intent-aware ranking noise suppression:
+### 4.2. Axis eval (current)
 
-- **IMPACT_ANALYSIS** (keyword: "most likely to break", "what parts", "what breaks"): tests/examples are load-bearing, but only topic-related noisy candidates keep `noise_factor=1.0`; unrelated tests/examples retain the standard noisy-candidate penalty
-- **Other intents** (debugging, refactoring, navigation, etc.): get standard noise_factor computed from file type (tests penalized at 0.15)
-- **Intent floors**: IMPACT_ANALYSIS gets 3000-token minimum floor + special priors (symbol=0.3, doc=0.5) to surface test files and documentation
-- **Compact completion**: when all required roles are fulfilled below an intent floor and no useful candidates remain, the ranker reports `context_complete_below_floor` instead of treating the result as a floor failure
+- **Metric:** `file_recall` on `expected_files` (`QA/axis_benchmark.py`, P7 gate). Also reports seed/pool/bundle recall layers.
+- **Intent:** structural intent roles (`classify_intent`) drive retrieval mode; file-tier weights demote/promote by intent ([file_tier_signal.md](file_tier_signal.md)).
+- **Mechanism labels** in YAML (`mechanism: fastapi_route_registration`, …) are human taxonomy only — not scored.
+- **Structural profiles:** [question_structural_role_profiles.md](question_structural_role_profiles.md) is a design draft; `+`/`-` roles are not in fixtures yet.
 
-This prevents impact analysis questions from being downranked just because they hit relevant test files, while avoiding unrelated benchmark/test noise.
-
-### 4.3. Role Recall Metric (removed with cascade)
-
-The cascade computed `role_recall` from YAML `required_roles` vs `ctx.missing_roles`. **Axis eval replaced this** with `file_recall` on `expected_files` (`QA/axis_benchmark.py`, P7 gate). Question packs no longer carry `required_roles`.
-
-### 4.4. Intent-Stratified Pass Gates (cascade — historical)
-Different query intents have different acceptable metrics:
-
-| Intent | role_recall floor | file_recall floor | Gate semantics |
-|---|---|---|---|
-| explain_behavior | 0.70 | 0.50 | **AND** — must pass both |
-| trace_dependency | 0.80 | 0.70 | **AND** (strict), **or** relaxed single-axis pass when one metric is 1.0 and the other clears 0.60 / 0.50 |
-| impact_analysis | 0.60 | 0.50 | **OR** — either signal is enough (tests may not be symbols) |
-
-This recognizes that:
-- Navigation/dependency tracing prefers both deep role coverage and broad file coverage; near-perfect single-axis recall can still pass when the other axis is partially satisfied
-- Explanation can work with moderate coverage if roles are well-chosen
-- Impact analysis can work with just test file coverage OR symbol coverage (either proves cascade exposure)
-
-### 4.5. Benchmark Output
-The benchmark now displays per-question:
-```
-✅ fastapi_q06: serialize_response [impact_analysis] | role=1.00 | file=1.00 | 839t | context_complete_below_floor
-```
-
-Current local snapshot (May 2026, `--no-index` on current indexes):
-
-```text
-surgical_context  7/7 pass  | role=1.00 | file=0.79
-dathund           8/8 pass  | role=1.00 | file=0.83
-fastapi           8/8 pass  | role=1.00 | file=0.81
-```
-
-All 65 real-repo questions pass with `--no-index`; `role_recall` is saturated at **1.00**. Remaining work is precision@5 and file-recall tails, not mechanism role coverage.
-
-This makes it clear which mechanism-intent combinations are working well vs. needing tuning.
+Removed with cascade (2026-06): YAML `required_roles`, `role_recall`, intent-stratified role+file gates, `UnifiedRanker` noise_factor floors.

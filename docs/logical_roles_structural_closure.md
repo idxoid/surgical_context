@@ -1,5 +1,7 @@
 # Logical roles and structural closure
 
+> **Type:** C — Concept. Eval / Pass-1 vocabulary; not a cascade remnant.
+
 Separates two things that are easy to collapse in eval and Pass-1 work:
 
 **See also:**

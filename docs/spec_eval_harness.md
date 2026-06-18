@@ -14,7 +14,7 @@ Committed under `QA/fixtures/`:
 |---|---|
 | `questions_python.yaml` | Python repos (fastapi, pydantic, django, flask, sqlalchemy, surgical_context, dathund, celery, click, …) |
 | `questions_non_python.yaml` | Non-Python repos (express, nestjs, redux_toolkit, vue, …) |
-| `new_questions_python.yaml` | Additional Python questions |
+| `new_questions_python.yaml` | FAQ/bug-style Python questions (not in structural role profiles doc) |
 
 Each question entry includes `repo`, `question`, `expected_files`, and optional `expected_symbols`, `intent`, `mechanism`, `anchor`. Legacy cascade fields (`required_roles`, `required_roles_canonical`) were removed — axis gate validates `file_recall` only.
 

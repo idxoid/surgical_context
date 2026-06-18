@@ -22,6 +22,17 @@
 
 ## 2. Document Types & Structure
 
+| Type | Filename pattern | Purpose |
+|---|---|---|
+| **A — Spec** | `spec_*.md`, `*_signal.md` (when shipped) | Current implementation: code path, API, limits |
+| **B — Architecture** | `architectura.md`, `*_architecture.md` | How components connect; decision records |
+| **C — Concept** | `concept.md`, `*_closure.md`, terminology | Ideas and vocabulary without tying to one module |
+| **D — Design draft** | `question_*_profiles.md`, plans with open steps | Gold target / roadmap; may ignore current code until implemented |
+
+Not cascade leftovers: eval design docs (`question_structural_role_profiles.md`,
+`logical_roles_structural_closure.md`) and shipped signals (`file_tier_signal.md`)
+belong here as first-class types — not footnotes in `cascade_cleanup_inventory.md`.
+
 ### **Type A: Spec** (`spec_*.md`)
 
 Describes the current implementation of a system component. Audience: developers building on it.
@@ -387,9 +398,13 @@ Before submitting a doc, ask:
 
 ## Examples in This Repo
 
-- **Spec example:** spec_intent_classifier.md (removed) — 6 intent types with priority orderings
+- **Spec example:** [file_tier_signal.md](file_tier_signal.md) — index-time tier + ranker weights (shipped)
+- **Spec example:** [spec_language_adapter.md](spec_language_adapter.md) — ADR-005 adapter protocol
 - **Architecture example:** [architectura.md](architectura.md) — Section 3 data pipelines + Section 4 workflows
+- **Architecture example:** [role_clustering_architecture.md](role_clustering_architecture.md) — Pass-1 decision record
 - **Concept example:** [concept.md](concept.md) — surgical code retrieval rationale
+- **Concept example:** [logical_roles_structural_closure.md](logical_roles_structural_closure.md) — logical role vs closure value
+- **Design draft example:** [question_structural_role_profiles.md](question_structural_role_profiles.md) — gold benchmark profiles (not yet in YAML)
 - **Limitation + Extension:** [spec_doc_anchor.md](spec_doc_anchor.md#limitations-current) — current gaps + roadmap
 
 ---
