@@ -26,7 +26,17 @@ Supported extensions are auto-derived from registered adapters (ADR-005):
 from context_engine.parser.registry import REGISTRY
 _INDEXED_EXTENSIONS = {ext for adapter in REGISTRY.supported_adapters() for ext in adapter.file_extensions}
 ```
-Currently: `.py`, `.pyi` (Python), `.ts`, `.tsx` (TypeScript).
+Currently: `.py`, `.pyi` (Python); `.ts`, `.tsx` (TypeScript); `.js`, `.jsx` (JavaScript).
+
+Language-specific post-pass hooks in the fast pipeline (`context_engine/indexer/fast/pipeline.py`) are adapter-driven where possible:
+
+| Hook | Python | TypeScript | JavaScript |
+|---|---|---|---|
+| Baseline (`extract_all`) | ✅ | ✅ | ✅ |
+| Decorators / compositions | ✅ | ✅ | — |
+| Type references (`USES_TYPE`) | — | ✅ | — |
+| Property API (`HAS_API`) | — | — | ✅ |
+| Symbol aliases (`REFERENCES`) | — | — | ✅ |
 
 New languages can be added by creating an adapter in `context_engine/parser/adapters/` — no core changes needed. Protocol: [spec_language_adapter.md](spec_language_adapter.md).
 

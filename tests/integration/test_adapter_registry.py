@@ -12,6 +12,7 @@ class TestAdapterRegistry:
         languages = registry.supported_languages()
         assert "python" in languages
         assert "typescript" in languages
+        assert "javascript" in languages
 
     def test_detect_language_py(self, registry):
         lang = registry.detect_language("foo.py")
@@ -29,6 +30,14 @@ class TestAdapterRegistry:
         lang = registry.detect_language("bar.tsx")
         assert lang == "typescript"
 
+    def test_detect_language_js(self, registry):
+        lang = registry.detect_language("app.js")
+        assert lang == "javascript"
+
+    def test_detect_language_jsx(self, registry):
+        lang = registry.detect_language("component.jsx")
+        assert lang == "javascript"
+
     def test_unknown_extension_raises(self, registry):
         with pytest.raises(ValueError, match="Unknown file extension"):
             registry.detect_language("foo.xyz")
@@ -41,12 +50,17 @@ class TestAdapterRegistry:
         adapter = registry.get_adapter("typescript")
         assert adapter.language_name == "typescript"
 
+    def test_get_adapter_javascript(self, registry):
+        adapter = registry.get_adapter("javascript")
+        assert adapter.language_name == "javascript"
+
     def test_get_adapter_unknown_raises(self, registry):
         with pytest.raises(ValueError, match="No adapter registered"):
             registry.get_adapter("unknown_lang")
 
     def test_supported_adapters(self, registry):
         adapters = registry.supported_adapters()
-        assert len(adapters) >= 2
+        assert len(adapters) >= 3
         assert any(a.language_name == "python" for a in adapters)
         assert any(a.language_name == "typescript" for a in adapters)
+        assert any(a.language_name == "javascript" for a in adapters)

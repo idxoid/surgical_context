@@ -1,5 +1,6 @@
 import pytest
 
+from context_engine.parser.adapters.javascript_adapter import JavaScriptAdapter
 from context_engine.parser.adapters.python_adapter import PythonAdapter
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
@@ -14,6 +15,10 @@ class TestGraphCompleteness:
     @pytest.fixture
     def ts_adapter(self):
         return TypeScriptAdapter()
+
+    @pytest.fixture
+    def js_adapter(self):
+        return JavaScriptAdapter()
 
     def test_python_complete_extraction(self, py_adapter):
         """Test Python extracts symbols, calls, imports, and inheritance."""
@@ -89,6 +94,48 @@ class Derived extends Base {
         inheritance = ts_adapter.extract_inheritance(source, "test.ts")
         assert any(edge.superclass_name == "Component" for edge in inheritance)
         assert any(edge.superclass_name == "Base" for edge in inheritance)
+
+    def test_javascript_complete_extraction(self, js_adapter):
+        """Test JavaScript extracts symbols, calls, imports, and inheritance."""
+        source = """
+const util = require("./util");
+
+class Base {}
+
+class Derived extends Base {
+  helper() {
+    console.log("helper");
+  }
+
+  caller() {
+    this.helper();
+  }
+}
+
+app.use = function use(fn) {
+  fn();
+};
+"""
+        file_path = "lib/application.js"
+        symbols = js_adapter.extract_symbols(source, file_path)
+        assert any(s.name == "Base" for s in symbols)
+        assert any(s.name == "Derived" for s in symbols)
+        assert any(s.name == "use" for s in symbols)
+
+        calls = js_adapter.extract_calls_from_source(source, file_path)
+        assert len(calls) > 0
+
+        imports = js_adapter.extract_imports(source, file_path)
+        assert any(imp.target_module_name == "./util" for imp in imports)
+
+        inheritance = js_adapter.extract_inheritance(source, file_path)
+        assert any(edge.superclass_name == "Base" for edge in inheritance)
+
+        api_edges = js_adapter.extract_property_api_edges(source, file_path)
+        assert any(
+            edge.method_uid == js_adapter._property_method_uid(file_path, "app", "use")
+            for edge in api_edges
+        )
 
     def test_import_edges_have_correct_type(self, py_adapter):
         """Test that intra-project import edges are classified correctly."""
