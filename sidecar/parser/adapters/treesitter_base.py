@@ -2,8 +2,9 @@
 
 from abc import abstractmethod
 from hashlib import sha256
+from typing import Any, Iterator, cast
 
-from tree_sitter import Language, Parser, Query
+from tree_sitter import Language, Parser
 
 from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata
 from sidecar.parser.uid import (
@@ -17,6 +18,16 @@ from sidecar.parser.uid import (
 
 def _node_text(node) -> str:
     return (node.text or b"").decode("utf-8")
+
+
+def iter_ts_query_matches(
+    language: Language,
+    query_source: str,
+    root_node,
+) -> Iterator[tuple[int, dict[str, list]]]:
+    """Iterate tree-sitter query matches (binding stubs vary by version)."""
+    query = language.query(query_source)
+    yield from cast(Any, query).matches(root_node)
 
 
 class TreeSitterAdapter(LanguageAdapter):
@@ -76,11 +87,12 @@ class TreeSitterAdapter(LanguageAdapter):
         """
         if tree is None:
             tree = self._parse(source_code)
-        query = Query(self.language, self.symbol_query)
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
-        for _match_id, captures_dict in query.matches(tree.root_node):
+        for _match_id, captures_dict in iter_ts_query_matches(
+            self.language, self.symbol_query, tree.root_node
+        ):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))
@@ -174,11 +186,12 @@ class TreeSitterAdapter(LanguageAdapter):
         """Extract function call edges from source code with call type classification."""
         if tree is None:
             tree = self._parse(source_code)
-        query = Query(self.language, self.call_query)
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
-        for _match_id, captures_dict in query.matches(tree.root_node):
+        for _match_id, captures_dict in iter_ts_query_matches(
+            self.language, self.call_query, tree.root_node
+        ):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))

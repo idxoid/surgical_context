@@ -122,24 +122,11 @@ Supported modes:
 - `qualified_name` — imported target
 - name fallback — only links if exactly one candidate exists
 
-`sidecar/database/schema_migration.py` supports:
-
-```bash
-python -m sidecar.database.schema_migration status
-python -m sidecar.database.schema_migration create-indexes
-python -m sidecar.database.schema_migration migrate-edges [--drop-old]
-```
-
-The migration converts old `CALLS` edges to `CALLS_DIRECT` conservatively and can create relationship indexes for:
-
-- `CALLS_DIRECT`
-- `CALLS_DYNAMIC`
-- `CALLS_INFERRED`
-- `IMPLEMENTS`
-- `OVERRIDES`
-- `REFERENCES`
-
-The newer `CALLS_SCOPED`, `CALLS_IMPORTED`, and `CALLS_GUESS` types are used by the live parser/ranker path but are not fully reflected in the older migration script's index list.
+Pre-prod and fresh workspaces get typed edges directly from the parser/indexer
+(`CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`,
+`CALLS_GUESS`). Legacy `CALLS` is still accepted as a traversal fallback in
+`Neo4jClient`, but new indexing does not emit it. Wipe + reindex is the supported
+path when graph shape drifts — no separate migration CLI.
 
 ## 5. Retrieval Consumption
 

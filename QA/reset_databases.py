@@ -26,7 +26,7 @@ from sidecar.indexer.fast.__main__ import _wipe_workspace
 from sidecar.workspace import DEFAULT_WORKSPACE_ID, WorkspaceResolver
 
 _REPO_ROOT = Path(__file__).parent.parent
-_DEFAULT_REAL_REPO_PACK = _REPO_ROOT / "tests" / "fixtures" / "questions_python.yaml"
+_DEFAULT_REAL_REPO_PACK = _REPO_ROOT / "QA" / "fixtures" / "questions_python.yaml"
 
 
 def _default_repo_checkout_path(repo: str, *, repos_root: str | None = None) -> Path:
@@ -59,7 +59,7 @@ def resolve_reset_target(
 ) -> tuple[str, str, str | None]:
     """Resolve workspace/project/docs paths for a cleanup run."""
     if fixture:
-        fixture_path = _REPO_ROOT / "tests" / "fixtures" / "sample_project"
+        fixture_path = _REPO_ROOT / "tests" / "sample_project"
         repo_docs_path = _REPO_ROOT / "docs"
         return (
             workspace_id or DEFAULT_WORKSPACE_ID,

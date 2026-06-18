@@ -72,17 +72,17 @@ def _fetch_kinds(lance, workspace_id: str, uids: set[str], prescanned=None) -> d
             for r in prescanned.rows
             if str(r.get("uid") or "") in uids
         }
+    out: dict[str, set[str]] = {}
     sym = getattr(lance, "symbols_table", None)
     if sym is None:
         sym_table = getattr(lance, "_sym_table", None)
         if sym_table is None:
-            return {}
+            return out
         rows = (
             sym_table.to_lance()
             .to_table(columns=["uid", "axis_container_kinds_json", "workspace_id"])
             .to_pylist()
         )
-        out = {}
         for r in rows:
             if r.get("workspace_id") != workspace_id:
                 continue
@@ -92,7 +92,6 @@ def _fetch_kinds(lance, workspace_id: str, uids: set[str], prescanned=None) -> d
         return out
     table = sym(workspace_id)
     rows = table.to_lance().to_table(columns=["uid", "axis_container_kinds_json"]).to_pylist()
-    out: dict[str, set[str]] = {}
     for r in rows:
         uid = str(r.get("uid") or "")
         if uid in uids:

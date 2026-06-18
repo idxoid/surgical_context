@@ -8,7 +8,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sidecar.database.embedding_registry import get_model_metadata
 from sidecar.index_profile import active_index_profile, resolve_index_profile
@@ -66,9 +66,9 @@ def _graph_version(db: Any, workspace_id: str) -> int | None:
     gv = getattr(db, "get_workspace_graph_version", None)
     if callable(gv):
         try:
-            return gv(workspace_id=workspace_id)
+            return cast(int | None, gv(workspace_id=workspace_id))
         except TypeError:
-            return gv(workspace_id)
+            return cast(int | None, gv(workspace_id))
     return None
 
 

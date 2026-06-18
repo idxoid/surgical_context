@@ -84,7 +84,7 @@ def _summarise_judge(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Axis benchmark + Claude LLM judge")
-    parser.add_argument("--pack", type=Path, default=Path("tests/fixtures/questions_python.yaml"))
+    parser.add_argument("--pack", type=Path, default=Path("QA/fixtures/questions_python.yaml"))
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--repo", default=None, help="Optional single-repo filter")
     parser.add_argument(

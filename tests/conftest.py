@@ -39,13 +39,13 @@ def pytest_collection_modifyitems(config, items):
 @pytest.fixture
 def sample_project_path():
     """Return the path to the golden fixture project."""
-    return Path(__file__).parent / "fixtures" / "sample_project"
+    return Path(__file__).parent / "sample_project"
 
 
 @pytest.fixture
 def sample_questions_path():
     """Return the path to the golden questions file."""
-    return Path(__file__).parent / "fixtures" / "sample_project" / "questions.yaml"
+    return Path(__file__).parent / "sample_project" / "questions.yaml"
 
 
 @pytest.fixture

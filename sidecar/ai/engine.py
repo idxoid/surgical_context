@@ -2,6 +2,7 @@
 
 import logging
 import os
+from typing import Any, cast
 
 import ollama
 from anthropic import Anthropic
@@ -40,7 +41,7 @@ _CONTEXT_MARKERS = ("--- TARGET SYMBOL:", "--- DEPENDENCIES ---", "--- DOCUMENTA
 _MIN_CACHE_TOKENS = 1024
 
 
-def _build_system_blocks(system_prompt: str) -> list[dict]:
+def _build_system_blocks(system_prompt: str) -> list[dict[str, Any]]:
     """Split system_prompt into cacheable API blocks.
 
     Anthropic prompt caching requires the cacheable content to be a separate
@@ -246,7 +247,7 @@ class AIEngine:
             message = self.anthropic.messages.create(
                 model=self.claude_model,
                 max_tokens=2048,
-                system=_build_system_blocks(system_prompt),
+                system=cast(Any, _build_system_blocks(system_prompt)),
                 messages=[{"role": "user", "content": user_message}],
             )
 
@@ -313,7 +314,7 @@ class AIEngine:
             with self.anthropic.messages.stream(
                 model=self.claude_model,
                 max_tokens=2048,
-                system=_build_system_blocks(system_prompt),
+                system=cast(Any, _build_system_blocks(system_prompt)),
                 messages=[{"role": "user", "content": user_message}],
             ) as stream:
                 for text in stream.text_stream:

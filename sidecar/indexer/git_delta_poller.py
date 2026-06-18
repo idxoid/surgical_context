@@ -8,13 +8,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Condition, Lock, Thread
-from typing import Any
+from typing import Any, TypedDict
 
 from sidecar.indexer.git_committed import git_root_for
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_SECONDS = 60
+
+
+class _PollerStats(TypedDict):
+    ticks: int
+    syncs: int
+    errors: int
+    last_error: str
 
 
 @dataclass(frozen=True)
@@ -74,7 +81,7 @@ class GitDeltaPoller:
         self._closed = False
         self._condition = Condition()
         self._thread: Thread | None = None
-        self._stats = {
+        self._stats: _PollerStats = {
             "ticks": 0,
             "syncs": 0,
             "errors": 0,

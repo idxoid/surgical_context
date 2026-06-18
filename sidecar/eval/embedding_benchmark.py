@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-DEFAULT_PROJECT = ROOT / "tests" / "fixtures" / "sample_project"
+DEFAULT_PROJECT = ROOT / "tests" / "sample_project"
 DEFAULT_QUESTIONS = DEFAULT_PROJECT / "questions.yaml"
 DEFAULT_MODELS = ("all-MiniLM-L6-v2", "microsoft/unixcoder-base")
 

@@ -1,6 +1,6 @@
 """A/B benchmark for the axis pipeline (read-side).
 
-Replays ``tests/fixtures/questions_python.yaml`` against the
+Replays ``QA/fixtures/questions_python.yaml`` against the
 axis pipeline (intent → role retrieval → context expansion) and
 measures file_recall: how many of each question's ``expected_files``
 appear in the retrieved file_paths. The legacy ``/ask`` cascade is
@@ -14,7 +14,7 @@ reason so the report is honest about coverage.
 Usage::
 
     python -m QA.axis_benchmark \\
-        --pack tests/fixtures/questions_python.yaml \\
+        --pack QA/fixtures/questions_python.yaml \\
         --out /tmp/axis_benchmark
 
     # Comparison with a previous run:
@@ -380,18 +380,20 @@ def run_axis_pack(
     """Run the axis benchmark over an in-memory question list."""
     owned_db = db is None
     owned_lance = lance is None
-    if owned_db:
-        db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-    if owned_lance:
-        lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+    active_db = (
+        db if db is not None else Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+    )
+    active_lance = (
+        lance if lance is not None else LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+    )
     results: list[QuestionResult] = []
     try:
         for entry in questions:
             results.append(
                 run_question(
                     entry,
-                    db=db,
-                    lance=lance,
+                    db=active_db,
+                    lance=active_lance,
                     top_roles=top_roles,
                     per_role_limit=per_role_limit,
                     max_impacted=max_impacted,
@@ -407,8 +409,8 @@ def run_axis_pack(
                 )
             )
     finally:
-        if owned_db and db is not None:
-            db.close()
+        if owned_db:
+            active_db.close()
     return results
 
 
@@ -426,7 +428,7 @@ def assert_p7_baseline(summary: dict[str, Any], baseline: dict[str, Any]) -> Non
         actual = float(summary.get(key, 0.0))
         assert actual + 1e-9 >= floor, (
             f"{label} {actual:.3f} below P7 floor {floor:.3f}. "
-            "Refresh tests/fixtures/baselines/p7_surgical_context_axis.json "
+            "Refresh QA/fixtures/baselines/p7_surgical_context_axis.json "
             "only after an intentional engine improvement."
         )
 
@@ -795,7 +797,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--pack",
-        default="tests/fixtures/questions_python.yaml",
+        default="QA/fixtures/questions_python.yaml",
         type=Path,
     )
     parser.add_argument("--out", default="/tmp/axis_benchmark", type=Path)

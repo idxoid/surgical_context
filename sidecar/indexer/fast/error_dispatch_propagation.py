@@ -24,7 +24,7 @@ with direct ``keyed_write`` facts still works via
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.indexer.fast.registry_class_inheritance import (
@@ -120,7 +120,7 @@ def _read_axis_evidence_rows(lance, workspace_id: str) -> list[dict[str, Any]]:
         "axis_evidence_json",
     ]
     if callable(scan):
-        return scan(workspace_id, columns=columns)
+        return cast(list[dict[str, Any]], scan(workspace_id, columns=columns))
     table = lance.symbols_table(workspace_id)  # type: ignore[attr-defined]
     return [
         r

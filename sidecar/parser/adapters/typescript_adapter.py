@@ -3,9 +3,7 @@
 import re
 from pathlib import Path
 
-from tree_sitter import Query
-
-from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
+from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.parser.uid import (
     compute_uid,
@@ -405,11 +403,12 @@ class TypeScriptAdapter(TreeSitterAdapter):
         """Extract import statements from TypeScript source."""
         if tree is None:
             tree = self._parse(source_code)
-        query = Query(self.language, self.import_query)
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
-        for _match_id, captures_dict in query.matches(tree.root_node):
+        for _match_id, captures_dict in iter_ts_query_matches(
+            self.language, self.import_query, tree.root_node
+        ):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))
@@ -797,11 +796,12 @@ class TypeScriptAdapter(TreeSitterAdapter):
         """Extract TypeScript calls with direct vs dynamic dispatch classification."""
         if tree is None:
             tree = self._parse(source_code)
-        query = Query(self.language, "(call_expression) @call")
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
-        for _match_id, captures_dict in query.matches(tree.root_node):
+        for _match_id, captures_dict in iter_ts_query_matches(
+            self.language, "(call_expression) @call", tree.root_node
+        ):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))
@@ -977,9 +977,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
         lines = source_code.splitlines(keepends=True)
         line_offsets: list[int] = []
         offset = 0
-        for line in lines:
+        for src_line in lines:
             line_offsets.append(offset)
-            offset += len(line)
+            offset += len(src_line)
 
         for symbol in symbols:
             if symbol.end_line <= symbol.start_line:

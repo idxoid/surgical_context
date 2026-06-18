@@ -32,7 +32,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -474,7 +474,7 @@ def _proxy_binding_phase(
     workspace_id: str,
     reporter: ProgressReporter,
     project_path: str | None = None,
-) -> int:
+) -> set[str]:
     """Create ProxyBinding nodes + PROXY_OF edges for lazy-proxy module vars.
 
     Runs after `_apply_graph` so the target types (e.g. FlaskProxy) already exist.
@@ -1187,7 +1187,7 @@ def _axis_payloads_for_extracted_file(
     if not ex.path.endswith((".py", ".pyi")):
         return {}
     from sidecar.axis import PythonAxisExtractor
-    from sidecar.axis.container_kind import ContainerKindClassifier
+    from sidecar.axis.container_kind import ContainerKindClassifier, GraphContextProbe
     from sidecar.axis.contract_compiler import AxisContractCompiler
     from sidecar.axis.schema import AxisFact, AxisProfile
 
@@ -1303,7 +1303,7 @@ def _axis_payloads_for_extracted_file(
             match.kind for match in matches
         )
 
-    class_probe = _PeerAwarePeerProbe(base_probe, peer_kinds_by_qn)
+    class_probe = cast(GraphContextProbe, _PeerAwarePeerProbe(base_probe, peer_kinds_by_qn))
     class_classifier = ContainerKindClassifier(probe=class_probe)
     for uid, profile in profiles_by_uid.items():
         if profile.symbol_kind != "class":

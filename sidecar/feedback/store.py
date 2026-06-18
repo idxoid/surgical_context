@@ -106,16 +106,18 @@ class FeedbackStore:
         self.feedback_file = (
             feedback_file or os.getenv("FEEDBACK_LOG_PATH") or ".surgical_context/feedback.jsonl"
         )
-        self.max_jsonl_bytes = max_jsonl_bytes
-        if self.max_jsonl_bytes is None:
-            self.max_jsonl_bytes = _env_positive_int(
-                "FEEDBACK_JSONL_MAX_BYTES", _DEFAULT_JSONL_MAX_BYTES
-            )
-        self.max_jsonl_lines = max_jsonl_lines
-        if self.max_jsonl_lines is None:
-            self.max_jsonl_lines = _env_positive_int(
-                "FEEDBACK_JSONL_MAX_LINES", _DEFAULT_JSONL_MAX_LINES
-            )
+        bytes_limit = (
+            max_jsonl_bytes
+            if max_jsonl_bytes is not None
+            else _env_positive_int("FEEDBACK_JSONL_MAX_BYTES", _DEFAULT_JSONL_MAX_BYTES)
+        )
+        lines_limit = (
+            max_jsonl_lines
+            if max_jsonl_lines is not None
+            else _env_positive_int("FEEDBACK_JSONL_MAX_LINES", _DEFAULT_JSONL_MAX_LINES)
+        )
+        self.max_jsonl_bytes = bytes_limit
+        self.max_jsonl_lines = lines_limit
         Path(self.snapshot_file).parent.mkdir(parents=True, exist_ok=True)
         Path(self.feedback_file).parent.mkdir(parents=True, exist_ok=True)
 

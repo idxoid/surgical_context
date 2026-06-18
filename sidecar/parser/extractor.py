@@ -1,6 +1,7 @@
 from sidecar.parser.protocol import SymbolMetadata
 from sidecar.parser.registry import REGISTRY
 from sidecar.parser.uid import project_root_scope
+from typing import Any, cast
 
 
 class SymbolExtractor:
@@ -60,7 +61,7 @@ class SymbolExtractor:
         if not callable(method):
             return []
         with project_root_scope(self.project_root):
-            return method(source_code, file_path)
+            return cast(list[dict[Any, Any]], method(source_code, file_path))
 
     def extract_decorators(self, file_path: str) -> list[dict]:
         with open(file_path, encoding="utf-8") as f:
@@ -71,7 +72,7 @@ class SymbolExtractor:
         if not callable(method):
             return []
         with project_root_scope(self.project_root):
-            return method(source_code, file_path)
+            return cast(list[dict[Any, Any]], method(source_code, file_path))
 
     def extract_type_references(self, file_path: str) -> list[dict]:
         with open(file_path, encoding="utf-8") as f:
@@ -82,7 +83,7 @@ class SymbolExtractor:
         if not callable(method):
             return []
         with project_root_scope(self.project_root):
-            return method(source_code, file_path)
+            return cast(list[dict[Any, Any]], method(source_code, file_path))
 
     def extract_injections(self, file_path: str) -> list[dict]:
         with open(file_path, encoding="utf-8") as f:
@@ -93,4 +94,4 @@ class SymbolExtractor:
         if not callable(method):
             return []
         with project_root_scope(self.project_root):
-            return method(source_code, file_path)
+            return cast(list[dict[Any, Any]], method(source_code, file_path))

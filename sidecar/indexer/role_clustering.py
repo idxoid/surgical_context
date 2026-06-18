@@ -15,9 +15,11 @@ import os
 from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Sequence, cast
 
 from sidecar.indexer.external_boundary import EXTERNAL_INTEGRATION_PLUMBING_ROOTS
 from sidecar.indexer.role_cascade import (
+    FanProfile,
     SymbolRoleAssignment,
     assign_all,
     detect_present_roles,
@@ -276,7 +278,7 @@ def assign_role_taxonomy(
 ) -> tuple[RoleAssignmentSummary, dict[str, SymbolRoleAssignment], dict[str, int]]:
     """Run discriminator-first Pass 1 on structural rows."""
     assign_rows = filter_clustering_rows(rows)
-    assignments = assign_all(assign_rows)
+    assignments = assign_all(cast(list[FanProfile], assign_rows))
     kwargs = {} if min_support is None else {"min_support": min_support}
     present = detect_present_roles(assignments, **kwargs)
     l1_counts = Counter(asn.l1 for asn in assignments.values())
@@ -318,7 +320,7 @@ def _iter_structural_edges(
 
 
 def assemble_symbol_rows(
-    symbols: Sequence[tuple[str, str, str]],
+    symbols: Sequence[tuple[str, ...]],
     call_edges: Sequence[tuple[str, ...]],
     doc_counts: dict[str, int],
     import_in_per_uid: dict[str, int] | None = None,
@@ -643,8 +645,8 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
         db, workspace_id
     )
     return assemble_symbol_rows(
-        symbols,
-        edges,
+        cast(Sequence[tuple[str, ...]], symbols),
+        cast(Sequence[tuple[str, ...]], edges),
         doc_counts,
         import_in,
         doc_signals,
@@ -661,7 +663,7 @@ def extract_symbol_rows(db, workspace_id: str) -> list[SymbolRow]:
 
 def _query_symbols(
     db, workspace_id: str
-) -> list[tuple[str, str, str, bool, bool, bool, bool, bool]]:
+) -> list[tuple[str, str, str, bool, bool, bool, bool, bool, bool, bool]]:
     with db.driver.session() as session:
         result = session.run(
             """

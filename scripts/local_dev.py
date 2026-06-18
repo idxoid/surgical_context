@@ -30,7 +30,7 @@ EXTENSION_DIR = ROOT / "extension"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SMOKE_PROJECT_DIR = ROOT / "sidecar" / "axis"
-SMOKE_DOCS_DIR = ROOT / "tests" / "fixtures" / "smoke_docs"
+SMOKE_DOCS_DIR = ROOT / "tests" / "smoke_docs"
 
 LOCAL_DIRS = [
     ROOT / "data" / "lancedb",
@@ -723,7 +723,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument(
         "--docs-path",
         default="",
-        help="Docs path to index. Defaults to tests/fixtures/smoke_docs for a fast smoke test.",
+        help="Docs path to index. Defaults to tests/smoke_docs for a fast smoke test.",
     )
     smoke_parser.add_argument(
         "--full-repo",

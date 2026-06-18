@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from sidecar.axis.schema import AxisExtraction, AxisFact, AxisName
 from sidecar.parser.uid import UNRESOLVED_SIGNATURE, compute_uid, module_name_from_path
@@ -319,11 +320,13 @@ class _AxisVisitor(ast.NodeVisitor):
             self._emit("dfg", "return_output", node.value)
             self._maybe_emit_callable_value(node.value, source="return")
             if _looks_like_constructed_output(node.value):
+                value = node.value
+                assert isinstance(value, ast.Call)
                 self._emit(
                     "dfg",
                     "constructed_output",
-                    node.value,
-                    payload=_constructed_output_payload(node.value, destination="return"),
+                    value,
+                    payload=_constructed_output_payload(value, destination="return"),
                 )
             if _contains_attr_read(node.value):
                 self._emit("dfg", "projection", node.value)
@@ -619,7 +622,7 @@ class _AxisVisitor(ast.NodeVisitor):
         if method in _CONTAINER_MUTATION_METHODS:
             values = _container_mutation_values(method, node)
             key = _container_mutation_key(method, node)
-            payload: dict[str, object] = {
+            payload: dict[str, Any] = {
                 "container": container,
                 "method": method,
                 "callee": _unparse(node.func),
@@ -674,7 +677,7 @@ class _AxisVisitor(ast.NodeVisitor):
         *,
         source: str,
         scope: _SymbolScope | None = None,
-        payload: dict[str, object] | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         callable_payload = self._callable_value_payload(node)
         if callable_payload is None:
@@ -684,7 +687,7 @@ class _AxisVisitor(ast.NodeVisitor):
         callable_payload["source"] = source
         self._emit("dfg", "callable_value", node, scope=scope, payload=callable_payload)
 
-    def _callable_value_payload(self, node: ast.AST) -> dict[str, object] | None:
+    def _callable_value_payload(self, node: ast.AST) -> dict[str, Any] | None:
         if isinstance(node, ast.Lambda):
             return {"callable_kind": "lambda", **_expr_payload(node)}
         if isinstance(node, ast.Name) and self._name_is_callable_binding(node.id):
@@ -785,7 +788,7 @@ class _AxisVisitor(ast.NodeVisitor):
         annotation: ast.AST,
         *,
         scope: _SymbolScope | None = None,
-        payload: dict[str, object] | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         annotation_payload = {"annotation": _unparse(annotation)}
         if payload:
@@ -838,7 +841,7 @@ class _AxisVisitor(ast.NodeVisitor):
         node: ast.AST,
         *,
         scope: _SymbolScope | None = None,
-        payload: dict[str, object] | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         owner = scope or self.current_scope
         self.facts.append(
@@ -871,9 +874,11 @@ def _iter_parameter_defaults(args: ast.arguments) -> Iterable[tuple[ast.arg, ast
     offset = len(positional) - len(args.defaults)
     for index, default in enumerate(args.defaults):
         yield positional[offset + index], default
-    for arg, default in zip(args.kwonlyargs, args.kw_defaults, strict=False):
-        if default is not None:
-            yield arg, default
+    for index, arg in enumerate(args.kwonlyargs):
+        kw_default = args.kw_defaults[index]
+        if kw_default is None:
+            continue
+        yield arg, kw_default
 
 
 def _signature_for_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
@@ -912,7 +917,7 @@ def _looks_like_constructor_call(func: ast.AST) -> bool:
     return False
 
 
-def _decorator_shape_payload(decorator: ast.AST) -> dict[str, object]:
+def _decorator_shape_payload(decorator: ast.AST) -> dict[str, Any]:
     payload = {"decorator": _unparse(decorator), **_expr_payload(decorator)}
     if isinstance(decorator, ast.Call):
         payload.update(
@@ -932,8 +937,8 @@ def _decorator_shape_payload(decorator: ast.AST) -> dict[str, object]:
     return payload
 
 
-def _expr_payload(node: ast.AST) -> dict[str, object]:
-    payload: dict[str, object] = {
+def _expr_payload(node: ast.AST) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "expression": _unparse(node),
         "expression_kind": type(node).__name__,
     }
@@ -953,8 +958,8 @@ def _expr_payload(node: ast.AST) -> dict[str, object]:
     return payload
 
 
-def _read_expression_payloads(node: ast.AST) -> list[dict[str, object]]:
-    reads: list[dict[str, object]] = []
+def _read_expression_payloads(node: ast.AST) -> list[dict[str, Any]]:
+    reads: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for child in ast.walk(node):
         if isinstance(child, ast.Subscript) and isinstance(child.ctx, ast.Load):
@@ -977,8 +982,8 @@ def _read_expression_payloads(node: ast.AST) -> list[dict[str, object]]:
     return reads
 
 
-def _raise_payload(node: ast.Raise) -> dict[str, object]:
-    payload: dict[str, object] = {"raise_kind": "bare"}
+def _raise_payload(node: ast.Raise) -> dict[str, Any]:
+    payload: dict[str, Any] = {"raise_kind": "bare"}
     if node.exc is not None:
         payload = {"raise_kind": "expression", **_expr_payload(node.exc)}
         if isinstance(node.exc, ast.Call):
@@ -989,8 +994,8 @@ def _raise_payload(node: ast.Raise) -> dict[str, object]:
     return payload
 
 
-def _exception_handler_payload(node: ast.ExceptHandler) -> dict[str, object]:
-    payload: dict[str, object] = {
+def _exception_handler_payload(node: ast.ExceptHandler) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "caught_type": _unparse(node.type),
         "caught_type_kind": type(node.type).__name__ if node.type is not None else "bare",
         "bound_name": node.name or "",
@@ -1000,7 +1005,7 @@ def _exception_handler_payload(node: ast.ExceptHandler) -> dict[str, object]:
     return payload
 
 
-def _return_shape_payload(value: ast.AST | None) -> dict[str, object]:
+def _return_shape_payload(value: ast.AST | None) -> dict[str, Any]:
     if value is None:
         return {"shape_kind": "none", "expression": "", "expression_kind": "None"}
     payload = {"shape_kind": _return_shape_kind(value), **_expr_payload(value)}
@@ -1039,7 +1044,7 @@ def _looks_like_constructed_output(value: ast.AST | None) -> bool:
     return isinstance(value, ast.Call) and _looks_like_constructor_call(value.func)
 
 
-def _constructed_output_payload(call: ast.Call, *, destination: str) -> dict[str, object]:
+def _constructed_output_payload(call: ast.Call, *, destination: str) -> dict[str, Any]:
     return {
         "destination": destination,
         "callee": _unparse(call.func),
@@ -1061,7 +1066,7 @@ def _iter_generic_shapes(annotation: ast.AST) -> Iterable[ast.Subscript]:
             yield node
 
 
-def _generic_shape_payload(node: ast.Subscript) -> dict[str, object]:
+def _generic_shape_payload(node: ast.Subscript) -> dict[str, Any]:
     return {
         "generic": _unparse(node),
         "base": _unparse(node.value),
@@ -1082,8 +1087,8 @@ def _call_arg_expr(node: ast.AST) -> ast.AST:
     return node.value if isinstance(node, ast.Starred) else node
 
 
-def _key_payload(key: ast.AST) -> dict[str, object]:
-    payload = {
+def _key_payload(key: ast.AST) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "key": _unparse(key),
         "key_kind": type(key).__name__,
     }
@@ -1093,7 +1098,7 @@ def _key_payload(key: ast.AST) -> dict[str, object]:
     return payload
 
 
-def _subscript_key_payload(node: ast.Subscript) -> dict[str, object]:
+def _subscript_key_payload(node: ast.Subscript) -> dict[str, Any]:
     return {
         "container": _unparse(node.value),
         "container_kind": type(node.value).__name__,
@@ -1107,15 +1112,15 @@ def _keyed_write_payload(
     key: ast.AST,
     value: ast.AST | None,
     container: str,
-) -> dict[str, object]:
-    payload: dict[str, object] = {"container": container, **_key_payload(key)}
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"container": container, **_key_payload(key)}
     if value is not None:
         payload["value"] = _unparse(value)
         payload["value_kind"] = type(value).__name__
     return payload
 
 
-def _literal_key_payload(key: ast.AST) -> dict[str, object] | None:
+def _literal_key_payload(key: ast.AST) -> dict[str, Any] | None:
     literal = _literal_key_value(key)
     if literal is _NO_LITERAL:
         return None
@@ -1184,7 +1189,7 @@ def _is_class_attribute_statement(stmt: ast.stmt) -> bool:
     return isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign))
 
 
-def _assignment_payload(node: ast.AST) -> dict[str, object]:
+def _assignment_payload(node: ast.AST) -> dict[str, Any]:
     if isinstance(node, ast.Assign):
         return {
             "targets": [_unparse(target) for target in node.targets],

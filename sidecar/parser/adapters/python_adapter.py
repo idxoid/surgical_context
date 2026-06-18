@@ -6,10 +6,9 @@ import re
 import sys
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, cast
 
-from tree_sitter import Query
-
-from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
+from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
 from sidecar.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.parser.uid import (
     UNRESOLVED_SIGNATURE,
@@ -786,7 +785,7 @@ class PythonAdapter(TreeSitterAdapter):
             # method) then member calls ``L.attr(...)``.
             for fn in methods.values():
                 caller_uid = self._uid_for_node(fn, source_code, file_path)
-                fn_body = fn.child_by_field_name("body")
+                fn_body = cast(Any, fn).child_by_field_name("body")
                 if fn_body is None:
                     continue
                 # local -> proxy-return method M (only single, direct binding)
@@ -1009,7 +1008,7 @@ class PythonAdapter(TreeSitterAdapter):
             tree = self._parse(source_code)
         register_names = frozenset({"listen", "listens_for"})
         out: list[dict] = []
-        seen: set[tuple[str, str, str]] = set()
+        seen: set[tuple[str, str, str, str, str]] = set()
 
         def hook_name_from_args(call_node) -> str:
             arg_list = call_node.child_by_field_name("arguments")
@@ -1265,8 +1264,8 @@ class PythonAdapter(TreeSitterAdapter):
                 if obj_node.type == "identifier":
                     name = _node_text(obj_node)
                     if name == "self" and ec:
-                        return ec
-                    return lt.get(name, "")
+                        return cast(str, ec)
+                    return cast(str, lt.get(name, ""))
                 if obj_node.type == "attribute":
                     inner = obj_node.child_by_field_name("object")
                     inner_attr = obj_node.child_by_field_name("attribute")
@@ -1277,7 +1276,7 @@ class PythonAdapter(TreeSitterAdapter):
                         and inner_attr is not None
                         and inner_attr.type == "identifier"
                     ):
-                        return ct.get(_node_text(inner_attr), "")
+                        return cast(str, ct.get(_node_text(inner_attr), ""))
                 return ""
 
             # 1. Attribute reads — every ``obj.attr`` we can resolve a
@@ -1951,11 +1950,12 @@ class PythonAdapter(TreeSitterAdapter):
         """Extract function calls and attach resolver metadata when statically resolvable."""
         if tree is None:
             tree = self._parse(source_code)
-        query = Query(self.language, self.call_query)
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
-        for _match_id, captures_dict in query.matches(tree.root_node):
+        for _match_id, captures_dict in iter_ts_query_matches(
+            self.language, self.call_query, tree.root_node
+        ):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))
@@ -2293,7 +2293,7 @@ class PythonAdapter(TreeSitterAdapter):
         for _ in range(len(assignments) + 1):
             changed = False
             for name, assign in assignments:
-                inferred = resolve_expr(assign.child_by_field_name("right"))
+                inferred = resolve_expr(cast(Any, assign).child_by_field_name("right"))
                 if inferred and name not in mapping:
                     mapping[name] = inferred
                     changed = True

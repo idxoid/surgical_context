@@ -671,7 +671,12 @@ class Neo4jClient:
         for imp in imports:
             row = _import_row(imp)
             target_path: str | None = None
-            for suffix in row["path_suffixes"]:  # type: ignore[index]
+            path_suffixes = row.get("path_suffixes")
+            if not isinstance(path_suffixes, list):
+                continue
+            for suffix in path_suffixes:
+                if not isinstance(suffix, str):
+                    continue
                 if suffix in file_path_set:
                     target_path = suffix  # type: ignore[assignment]
                     break

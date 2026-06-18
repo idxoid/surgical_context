@@ -359,7 +359,7 @@ Goal: Reduce token overhead and prepare for multi-model / multi-user environment
 - [x] Model registry in `sidecar/database/embedding_registry.py` — known models + dimensions
 - [x] Write path: record model_name, model_version, chunk_hash, embedding_hash per row
 - [x] Read path: guard against cross-model queries (raise `EmbeddingModelMismatch`)
-- [x] Migration CLI: `python -m sidecar.database.embedding_migration status / migrate`
+- [x] Model mismatch recovery: wipe LanceDB and re-index (no separate migration CLI)
 
 ### Graph Richness (Phase 5 planning) ✅ COMPLETE
 - [x] Feasibility assessment: dynamic dispatch detection in Python/TypeScript parsers

@@ -160,12 +160,12 @@ def _fetch_symbol_payloads(
         except Exception:
             pass
 
+    out: dict[str, dict[str, str | None]] = {}
     try:
         row_uids = arrow["uid"].to_pylist()
         codes = arrow["code"].to_pylist()
         workspace_ids = arrow["workspace_id"].to_pylist()
     except Exception:
-        out: dict[str, dict[str, str | None]] = {}
         for r in arrow.to_pylist():
             uid = str(r.get("uid") or "")
             if r.get("workspace_id") == workspace_id and uid in uids:
@@ -190,7 +190,6 @@ def _fetch_symbol_payloads(
     except Exception:
         file_paths = [""] * len(row_uids)
 
-    out: dict[str, dict[str, str | None]] = {}
     for uid_raw, code, row_workspace_id, qualified_name, name, file_path in zip(
         row_uids,
         codes,
@@ -473,7 +472,9 @@ def _fold_class_symbols(
                 body_blocks.append(_indent_block(sig))
             else:
                 keep_full = member.distance_from_seed == 0 or member.name == "__init__"
-                body_blocks.append(_indent_block(member.code if keep_full else sig))
+                body_blocks.append(
+                    _indent_block((member.code or "") if keep_full else sig or "")
+                )
         code = "\n".join([class_header, *(body_blocks or ["    ..."])])
         first = min(members, key=lambda m: (m.distance_from_seed, m.uid))
         out.append(
@@ -633,14 +634,14 @@ def _render_with_transaction_limit(
     *,
     per_transaction_limit: int,
     full_render_max_depth: int,
-    render_cache: dict | None = None,
+    render_cache: dict[tuple[int, str], tuple[ContextBundle, int]] | None = None,
 ) -> tuple[ContextBundle, int]:
     # Within one budget pass per_transaction_limit/full_render_max_depth are
     # constant, so (bundle, initial_mode) fully determines the render. The
     # upgrade loop re-asks for the same modes across repeated pushes; memoise.
-    key = (id(bundle), initial_mode) if render_cache is not None else None
-    if key is not None and key in render_cache:
-        return render_cache[key]
+    cache_key = (id(bundle), initial_mode)
+    if render_cache is not None and cache_key in render_cache:
+        return render_cache[cache_key]
     last: tuple[ContextBundle, int] | None = None
     result: tuple[ContextBundle, int] | None = None
     for mode in _render_modes_for_credit(initial_mode):
@@ -657,8 +658,8 @@ def _render_with_transaction_limit(
     if result is None:
         assert last is not None
         result = last
-    if key is not None:
-        render_cache[key] = result
+    if render_cache is not None:
+        render_cache[cache_key] = result
     return result
 
 
@@ -1074,7 +1075,7 @@ def _apply_token_credit_budget(
         new_steps = st.steps - covered_steps
         tier_weight = st.tier_weight
         impact_mode = st.impact_mode
-        gain = st.base_utility * tier_weight
+        gain: float = st.base_utility * tier_weight
         if new_files:
             new_file_weight = max(
                 _tier_weight_for_path(path, impact_mode=impact_mode) for path in new_files
@@ -1161,7 +1162,7 @@ def _apply_token_credit_budget(
             "hybrid": 0.28,
             "full": 0.38,
         }.get(rendered.render_mode, 0.10)
-        gain = 0.35 * st.base_utility * st.tier_weight
+        gain: float = 0.35 * st.base_utility * st.tier_weight
         gain += mode_bonus
         gain += 0.05 if not bundle.passive else 0.03
         gain -= _file_saturation_penalty(bundle)
@@ -1171,18 +1172,18 @@ def _apply_token_credit_budget(
 
     def _push_upgrade(entry_index: int) -> None:
         entry = selected[entry_index]
-        source = entry["source"]
+        entry_source = entry["source"]
         current = entry["rendered"]
         current_cost = entry["cost"]
         if not isinstance(current, ContextBundle) or not isinstance(current_cost, int):
             return
-        if not isinstance(source, ContextBundle):
+        if not isinstance(entry_source, ContextBundle):
             return
         bundle_index = entry["index"]
         if not isinstance(bundle_index, int):
             return
         candidate = _next_upgrade_render(
-            source,
+            entry_source,
             current_mode=current.render_mode,
             current_cost=current_cost,
             render_mode=render_mode,
@@ -1196,7 +1197,7 @@ def _apply_token_credit_budget(
         delta = upgraded_cost - current_cost
         if delta < 0:
             return
-        priority = _upgrade_gain(static[bundle_index], source, upgraded) / max(1, delta)
+        priority = _upgrade_gain(static[bundle_index], entry_source, upgraded) / max(1, delta)
         heapq.heappush(
             upgrade_heap,
             (-priority, entry_index, current_cost, upgraded, upgraded_cost),
@@ -1221,15 +1222,17 @@ def _apply_token_credit_budget(
         entry["rendered"] = upgraded
         entry["cost"] = upgraded_cost
         used += delta
-        source = entry["source"]
-        if isinstance(source, ContextBundle):
-            primary = _primary_file(source)
+        entry_source = entry["source"]
+        if isinstance(entry_source, ContextBundle):
+            primary = _primary_file(entry_source)
             if primary:
                 file_tokens[primary] = file_tokens.get(primary, 0) + delta
         _push_upgrade(entry_index)
 
     return [
-        entry["rendered"] for entry in selected if isinstance(entry.get("rendered"), ContextBundle)
+        rendered_bundle
+        for entry in selected
+        if isinstance((rendered_bundle := entry.get("rendered")), ContextBundle)
     ]
 
 

@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-# Repos present in tests/fixtures/questions_python.yaml and REPO_TO_WORKSPACE.
+# Repos present in QA/fixtures/questions_python.yaml and REPO_TO_WORKSPACE.
 REPOS = [
     "fastapi",
     "pydantic",
@@ -28,7 +28,7 @@ REPOS = [
 ]
 
 ROOT = Path(__file__).resolve().parent.parent
-PACK = ROOT / "tests" / "fixtures" / "questions_python.yaml"
+PACK = ROOT / "QA" / "fixtures" / "questions_python.yaml"
 OUT = Path("/tmp/benchmark_sweep_full.json")
 
 

@@ -20,7 +20,7 @@ from QA.reset_databases import _default_repo_checkout_path, _repo_meta_from_pack
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 
 ROOT = Path(__file__).resolve().parent.parent
-QUESTIONS = ROOT / "tests" / "fixtures" / "questions_python.yaml"
+QUESTIONS = ROOT / "QA" / "fixtures" / "questions_python.yaml"
 OUT_DIR = ROOT / "QA" / "baselines" / "reindex_2026-05-30"
 COMBINED = ROOT / "QA" / "baseline_reindex_2026-05-30.json"
 BASELINES_JSONL = ROOT / "QA" / "baselines.jsonl"

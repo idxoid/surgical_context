@@ -5,7 +5,7 @@ source .venv/bin/activate
 
 LOG=/tmp/benchmark_sweep.log
 COMBINED=/tmp/benchmark_sweep_full.json
-PACK=tests/fixtures/questions_python.yaml
+PACK=QA/fixtures/questions_python.yaml
 : > "$LOG"
 
 # Repos in questions_python.yaml with axis_python_v1 workspaces.

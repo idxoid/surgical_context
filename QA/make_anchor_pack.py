@@ -25,7 +25,7 @@ from QA.axis_benchmark import _load_pack
 
 
 def main() -> None:
-    src = Path("tests/fixtures/questions_python.yaml")
+    src = Path("QA/fixtures/questions_python.yaml")
     questions = _load_pack(src)
     out: list[dict] = []
     for q in questions:

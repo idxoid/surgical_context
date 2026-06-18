@@ -110,23 +110,17 @@ def _assert_model_consistency(self):
 
 **Performance note:** `_assert_model_consistency` is called once per `LanceDBClient` instance, cached after first check. Not per query.
 
-### 2.5 Migration Utility
+### 2.5 Model mismatch recovery
 
-Add a CLI command for inspecting and migrating metadata:
+There is no in-place re-embedding migration. When `EmbeddingModelMismatch` fires:
 
-```bash
-python -m sidecar.database.embedding_migration status
-# Output:
-# Table: docs
-#   Rows: 1240
-#   Models: sentence-transformers/all-MiniLM-L6-v2 (1240)
-#   Stale (missing metadata): 0
+1. Set `EMBED_MODEL` to the target model.
+2. Delete `./data/lancedb` (or the affected workspace partition tables).
+3. Re-index the project.
 
-python -m sidecar.database.embedding_migration migrate --from-model old_model --re-index
-# Re-embeds all rows from old_model using current runtime model.
-```
-
-`migrate` calls the full indexing pipeline on affected source files, not just the LanceDB rows, to guarantee consistency.
+Lazy workspace-partition copy from monolithic Lance tables still runs inside
+`LanceDBClient._maybe_migrate_workspace_partition` when
+`LANCEDB_WORKSPACE_PARTITIONED=true` and a partition is first opened.
 
 ## 3. Schema Changes
 
@@ -197,8 +191,7 @@ Callers in `sidecar/main.py`, `QA/qa_benchmark.py`, and tests that construct `La
 
 1. Unit tests green.
 2. `qa_benchmark.py --no-index` does not raise `EmbeddingModelMismatch` (existing index is consistent).
-3. Manually running with a different `EMBEDDING_MODEL` env var and a stale index raises a clear error with migration instructions.
-4. `embedding_migration status` correctly identifies stale rows.
+3. Manually running with a different `EMBEDDING_MODEL` env var and a stale index raises a clear error with re-index instructions.
 
 ## 8. Phase Sequencing
 
@@ -207,4 +200,3 @@ Implement after ContextDeduplicator (independent, but lower urgency). Requires u
 - `sidecar/indexer/docs.py` — pass metadata on write
 - `sidecar/indexer/code.py` — pass metadata on symbol embedding write
 - New: `sidecar/database/embedding_registry.py`
-- New: `sidecar/database/embedding_migration.py`

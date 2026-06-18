@@ -86,8 +86,8 @@ def _fetch_neighbour_kinds(
     """
     if not neighbour_uids:
         return {}
+    out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
     if prescanned is not None:
-        out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
         rows_by_uid = getattr(prescanned, "rows_by_uid", {}) or {}
         for uid in neighbour_uids:
             row = rows_by_uid.get(uid)
@@ -146,7 +146,6 @@ def _fetch_neighbour_kinds(
             table = table.filter(mask)
         except Exception:
             pass
-    out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
     try:
         uids = table["uid"].to_pylist()
         names = table["name"].to_pylist()

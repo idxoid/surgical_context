@@ -1895,11 +1895,14 @@ def unified_search(
         if req.include_graph and req.symbol:
             with trace.stage("graph_neighbors"):
                 results.extend(
-                    _axis_graph_neighbors(
-                        symbol=req.symbol,
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                        limit=req.limit,
+                    cast(
+                        Any,
+                        _axis_graph_neighbors(
+                            symbol=req.symbol,
+                            workspace_id=workspace_id,
+                            user_id=user_id,
+                            limit=req.limit,
+                        ),
                     )
                 )
 

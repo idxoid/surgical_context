@@ -27,6 +27,8 @@ This is read-only; no graph writes, no Lance mutations.
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import json
 import os
 from collections import defaultdict
@@ -43,7 +45,7 @@ _SCAN_CACHE_ENABLED = os.getenv("LANCEDB_WORKSPACE_SCAN_CACHE", "true").strip().
     "yes",
     "on",
 }
-_SCAN_CACHE: dict[tuple[str, str, bool, bool], Any] = {}
+_SCAN_CACHE: dict[tuple[str, str, bool, bool], WorkspaceScan] = {}
 
 
 @dataclass(frozen=True)

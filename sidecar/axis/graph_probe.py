@@ -441,5 +441,8 @@ class Neo4jGraphContextProbe(GraphContextProbe):
             return 0
         return int((record and record.get("n")) or 0)
 
+    def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
+        return set()
+
 
 __all__ = ["Neo4jGraphContextProbe"]

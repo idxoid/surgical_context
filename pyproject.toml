@@ -11,7 +11,7 @@ description = "AI-powered VS Code extension for surgical code analysis"
 target-version = "py312"
 line-length = 100
 respect-gitignore = true
-exclude = ["tests/fixtures/sample_project/payments/broken.py"]
+exclude = ["tests/sample_project/payments/broken.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -37,7 +37,7 @@ disallow_incomplete_defs = false
 explicit_package_bases = true
 namespace_packages = true
 warn_unused_ignores = false
-exclude = ["tests/fixtures/sample_project/payments/broken.py"]
+exclude = ["tests/sample_project/payments/broken.py"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"
@@ -45,10 +45,16 @@ ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = [
+  "anthropic",
+  "neo4j",
+  "tree_sitter",
+  "pathspec",
+  "torch",
   "ollama",
   "sentence_transformers",
   "lancedb",
   "pyarrow",
+  "pyarrow.compute",
   "yaml",
   "tqdm",
   "opentelemetry",

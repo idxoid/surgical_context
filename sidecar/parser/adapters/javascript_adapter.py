@@ -3,9 +3,7 @@
 import re
 from pathlib import Path
 
-from tree_sitter import Query
-
-from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
+from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
 from sidecar.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from sidecar.parser.uid import (
     compute_uid,
@@ -360,11 +358,12 @@ class JavaScriptAdapter(TreeSitterAdapter):
         """Extract import and require statements from JavaScript source."""
         if tree is None:
             tree = self._parse(source_code)
-        query = Query(self.language, self.import_query)
 
         # Flatten captures from matches into (node, tag) tuples
         captures = []
-        for _match_id, captures_dict in query.matches(tree.root_node):
+        for _match_id, captures_dict in iter_ts_query_matches(
+            self.language, self.import_query, tree.root_node
+        ):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))
@@ -545,17 +544,17 @@ class JavaScriptAdapter(TreeSitterAdapter):
         """Extract JavaScript calls with direct vs dynamic dispatch classification."""
         if tree is None:
             tree = self._parse(source_code)
-        query = Query(
+
+        # Flatten captures from matches into (node, tag) tuples
+        captures = []
+        for _match_id, captures_dict in iter_ts_query_matches(
             self.language,
             """
             (call_expression) @call
             (new_expression) @call
             """,
-        )
-
-        # Flatten captures from matches into (node, tag) tuples
-        captures = []
-        for _match_id, captures_dict in query.matches(tree.root_node):
+            tree.root_node,
+        ):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))

@@ -265,9 +265,10 @@ class LanceDBClient:
             self._index_profile = active_index_profile()
         self._db = lancedb.connect(DB_PATH)
         self._model = None
-        self._model_metadata = get_model_metadata(EMBED_MODEL)
-        if self._model_metadata is None:
+        model_metadata = get_model_metadata(EMBED_MODEL)
+        if model_metadata is None:
             raise ValueError(f"Unknown embedding model: {EMBED_MODEL}")
+        self._model_metadata = model_metadata
         self._embedding_cache_enabled = EMBED_CACHE_ENABLED
         self._embedding_cache = EmbeddingCache() if self._embedding_cache_enabled else None
         self._embed_batch_size = max(1, EMBED_BATCH_SIZE)
@@ -1064,7 +1065,7 @@ class LanceDBClient:
                     ):
                         raise EmbeddingModelMismatch(
                             f"Query embedding uses {EMBED_MODEL} but database has {metadata_dict.get('model_name')}. "
-                            "Run migration: python -m sidecar.database.embedding_migration migrate"
+                            "Delete ./data/lancedb (or the workspace partition) and re-index."
                         )
                 except json.JSONDecodeError:
                     pass
@@ -1510,7 +1511,7 @@ class LanceDBClient:
                     ):
                         raise EmbeddingModelMismatch(
                             f"Query embedding uses {EMBED_MODEL} but database has {metadata_dict.get('model_name')}. "
-                            "Run migration: python -m sidecar.database.embedding_migration migrate"
+                            "Delete ./data/lancedb (or the workspace partition) and re-index."
                         )
                 except json.JSONDecodeError:
                     pass

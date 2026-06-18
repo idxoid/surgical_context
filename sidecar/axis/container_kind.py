@@ -331,7 +331,11 @@ def _classify_registry_class(
         ]
         if not registered_facts:
             return None
-        registered_count = sum(int((f.payload or {}).get("count") or 0) for f in registered_facts)
+        registered_count = sum(
+            int(v) if isinstance(v, (int, float)) else 0
+            for f in registered_facts
+            for v in [(f.payload or {}).get("count")]
+        )
         return ContainerKindMatch(
             kind="registry_class",
             symbol_uid=profile.symbol_uid,

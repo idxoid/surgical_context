@@ -3,7 +3,7 @@
 Indexes this repository under a dedicated CI workspace, replays the seven
 ``surgical_context_*`` questions from ``questions_python.yaml`` with the
 production /ask caps (intent budget + context seed cap), and asserts the
-checked-in baseline in ``tests/fixtures/baselines/p7_surgical_context_axis.json``.
+checked-in baseline in ``QA/fixtures/baselines/p7_surgical_context_axis.json``.
 
 To refresh the baseline after an intentional engine improvement::
 
@@ -12,7 +12,7 @@ To refresh the baseline after an intentional engine improvement::
         --workspace ci/surgical_context@main \\
         --index-profile axis_python_v1 --fresh
     python -m QA.axis_benchmark \\
-        --pack tests/fixtures/questions_python.yaml \\
+        --pack QA/fixtures/questions_python.yaml \\
         --repo surgical_context \\
         --intent-budget --context-seeds-per-role 2 \\
         --out /tmp/p7_axis_refresh
@@ -35,8 +35,8 @@ from QA.axis_benchmark import (
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PACK = REPO_ROOT / "tests/fixtures/questions_python.yaml"
-BASELINE_PATH = REPO_ROOT / "tests/fixtures/baselines/p7_surgical_context_axis.json"
+PACK = REPO_ROOT / "QA/fixtures/questions_python.yaml"
+BASELINE_PATH = REPO_ROOT / "QA/fixtures/baselines/p7_surgical_context_axis.json"
 CI_BASE_WORKSPACE = "ci/surgical_context@main"
 
 

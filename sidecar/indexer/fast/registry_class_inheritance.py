@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.parser.adapters.python_adapter import PythonAdapter
@@ -88,7 +88,7 @@ def _query_class_inheritance_context(
     of DEPENDS_ON edges up to 6 hops.
     """
     with db.driver.session() as session:
-        return session.run(
+        return cast(list[dict[str, Any]], session.run(
             """
             MATCH (f:File {workspace_id: $ws})-[:CONTAINS]->(c:Symbol {kind: 'class'})
             OPTIONAL MATCH (c)-[:DEPENDS_ON*1..6 {workspace_id: $ws}]->(a:Symbol)
@@ -100,7 +100,7 @@ def _query_class_inheritance_context(
                    collect(DISTINCT a.uid) AS ancestor_uids
             """,
             ws=workspace_id,
-        ).data()
+        ).data())
 
 
 def _query_classes_by_local_qn(
