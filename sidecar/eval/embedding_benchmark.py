@@ -21,8 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-DEFAULT_PROJECT = ROOT / "tests" / "sample_project"
-DEFAULT_QUESTIONS = DEFAULT_PROJECT / "questions.yaml"
+DEFAULT_PROJECT = ROOT / "sidecar" / "axis"
 DEFAULT_MODELS = ("all-MiniLM-L6-v2", "microsoft/unixcoder-base")
 
 
@@ -262,8 +261,8 @@ def evaluate_model(
 
 
 def run_benchmark(
+    questions_path: str | Path,
     project_path: str | Path = DEFAULT_PROJECT,
-    questions_path: str | Path = DEFAULT_QUESTIONS,
     models: Iterable[str] = DEFAULT_MODELS,
     top_k: int = 5,
     encoder_factory: Callable[[str], Embedder] = default_encoder_factory,
@@ -317,8 +316,8 @@ def print_report(metrics: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare embedding models on golden questions")
-    parser.add_argument("--project", default=str(DEFAULT_PROJECT), help="Fixture project path")
-    parser.add_argument("--questions", default=str(DEFAULT_QUESTIONS), help="questions.yaml path")
+    parser.add_argument("--project", default=str(DEFAULT_PROJECT), help="Project path to scan")
+    parser.add_argument("--questions", required=True, help="Path to questions YAML (list format)")
     parser.add_argument(
         "--models",
         default=",".join(DEFAULT_MODELS),
@@ -337,8 +336,8 @@ def main() -> int:
     args = parser.parse_args()
 
     metrics = run_benchmark(
-        project_path=args.project,
         questions_path=args.questions,
+        project_path=args.project,
         models=parse_models(args.models),
         top_k=max(1, args.top_k),
     )

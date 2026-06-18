@@ -23,7 +23,7 @@ import yaml
 
 from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 from sidecar.indexer.fast.__main__ import _wipe_workspace
-from sidecar.workspace import DEFAULT_WORKSPACE_ID, WorkspaceResolver
+from sidecar.workspace import WorkspaceResolver
 
 _REPO_ROOT = Path(__file__).parent.parent
 _DEFAULT_REAL_REPO_PACK = _REPO_ROOT / "QA" / "fixtures" / "questions_python.yaml"
@@ -49,7 +49,6 @@ def _repo_meta_from_pack(questions_path: str, repo: str) -> dict | None:
 
 def resolve_reset_target(
     *,
-    fixture: bool,
     repo: str | None,
     questions_path: str,
     project_path: str | None,
@@ -58,17 +57,8 @@ def resolve_reset_target(
     repos_root: str | None,
 ) -> tuple[str, str, str | None]:
     """Resolve workspace/project/docs paths for a cleanup run."""
-    if fixture:
-        fixture_path = _REPO_ROOT / "tests" / "sample_project"
-        repo_docs_path = _REPO_ROOT / "docs"
-        return (
-            workspace_id or DEFAULT_WORKSPACE_ID,
-            str(fixture_path.resolve()),
-            str(repo_docs_path.resolve()) if repo_docs_path.exists() else None,
-        )
-
     if not repo and not project_path:
-        raise ValueError("Pass --repo, --project-path, or --fixture.")
+        raise ValueError("Pass --repo or --project-path.")
 
     if repo and _repo_meta_from_pack(questions_path, repo) is None:
         raise ValueError(f"Repository '{repo}' is not defined in {questions_path}")
@@ -76,7 +66,6 @@ def resolve_reset_target(
     if project_path:
         resolved_project_path = Path(project_path).resolve()
     else:
-        # repo is set (guarded above); use its pack project_path or default checkout.
         meta = _repo_meta_from_pack(questions_path, repo) or {}
         resolved_project_path = Path(
             meta.get("project_path") or _default_repo_checkout_path(repo, repos_root=repos_root)
@@ -106,18 +95,8 @@ def resolve_default_targets(
     questions_path: str,
     repos_root: str | None,
 ) -> list[tuple[str, str, str | None]]:
-    """Resolve the default cleanup set: fixture plus any existing cached repos."""
-    targets = [
-        resolve_reset_target(
-            fixture=True,
-            repo=None,
-            questions_path=questions_path,
-            project_path=None,
-            docs_path=None,
-            workspace_id=None,
-            repos_root=repos_root,
-        )
-    ]
+    """Resolve the default cleanup set: any existing QA/repos checkouts from the pack."""
+    targets: list[tuple[str, str, str | None]] = []
 
     pack = Path(questions_path)
     if not pack.exists():
@@ -138,7 +117,6 @@ def resolve_default_targets(
             continue
         targets.append(
             resolve_reset_target(
-                fixture=False,
                 repo=repo_id,
                 questions_path=questions_path,
                 project_path=str(checkout),
@@ -167,20 +145,14 @@ def main() -> int:
         default=AXIS_PYTHON_V1_PROFILE,
         help="Index profile whose rows to wipe (default: axis_python_v1)",
     )
-    parser.add_argument(
-        "--fixture",
-        action="store_true",
-        help="Reset the sample_project fixture workspace instead of a real repo",
-    )
     args = parser.parse_args()
 
-    has_explicit_target = bool(args.fixture or args.repo or args.project_path or args.workspace_id)
-    if args.workspace_id and not (args.fixture or args.repo or args.project_path):
+    has_explicit_target = bool(args.repo or args.project_path or args.workspace_id)
+    if args.workspace_id and not (args.repo or args.project_path):
         targets = [(args.workspace_id, "<explicit workspace-id>", None)]
     elif has_explicit_target:
         targets = [
             resolve_reset_target(
-                fixture=args.fixture,
                 repo=args.repo,
                 questions_path=args.questions,
                 project_path=args.project_path,
@@ -190,7 +162,7 @@ def main() -> int:
             )
         ]
     else:
-        print("[reset] no target passed, cleaning fixture and any existing QA/repos checkouts")
+        print("[reset] no target passed, cleaning any existing QA/repos checkouts")
         targets = resolve_default_targets(questions_path=args.questions, repos_root=args.repos_root)
 
     for resolved_workspace_id, resolved_project_path, _docs in targets:

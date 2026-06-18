@@ -1,7 +1,5 @@
 """Shared pytest fixtures and configuration for evaluation harness."""
 
-from pathlib import Path
-
 import pytest
 
 from sidecar.parser.adapters.python_adapter import PythonAdapter
@@ -34,18 +32,6 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_integration)
-
-
-@pytest.fixture
-def sample_project_path():
-    """Return the path to the golden fixture project."""
-    return Path(__file__).parent / "sample_project"
-
-
-@pytest.fixture
-def sample_questions_path():
-    """Return the path to the golden questions file."""
-    return Path(__file__).parent / "sample_project" / "questions.yaml"
 
 
 @pytest.fixture

@@ -160,7 +160,7 @@ The smoke test checks the local daily-driver path:
 - sidecar `/health` responds; if no sidecar is running, the smoke test starts a temporary sidecar and stops it at the end
 - graph provider status responds
 - code indexing works against the fast default slice: `sidecar/axis`
-- docs indexing works against the fast default fixture: `tests/fixtures/smoke_docs`
+- docs indexing works against `docs/local_development.md` by default (full `docs/` with `--full-repo`)
 - unified search returns a valid response
 - `/ask` returns context and trace metadata
 - `/impact` responds for the smoke symbol (`run_axis_retrieval` by default)

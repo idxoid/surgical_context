@@ -11,7 +11,6 @@ description = "AI-powered VS Code extension for surgical code analysis"
 target-version = "py312"
 line-length = 100
 respect-gitignore = true
-exclude = ["tests/sample_project/payments/broken.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -37,7 +36,6 @@ disallow_incomplete_defs = false
 explicit_package_bases = true
 namespace_packages = true
 warn_unused_ignores = false
-exclude = ["tests/sample_project/payments/broken.py"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"

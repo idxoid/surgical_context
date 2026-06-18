@@ -30,7 +30,7 @@ EXTENSION_DIR = ROOT / "extension"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 SMOKE_PROJECT_DIR = ROOT / "sidecar" / "axis"
-SMOKE_DOCS_DIR = ROOT / "tests" / "smoke_docs"
+SMOKE_DOCS_PATH = ROOT / "docs" / "local_development.md"
 
 LOCAL_DIRS = [
     ROOT / "data" / "lancedb",
@@ -457,7 +457,7 @@ def smoke(args: argparse.Namespace) -> int:
         base_url = f"http://{args.host}:{args.port}"
     workspace_id = args.workspace_id
     default_project_path = ROOT if args.full_repo else SMOKE_PROJECT_DIR
-    default_docs_path = ROOT / "docs" if args.full_repo else SMOKE_DOCS_DIR
+    default_docs_path = ROOT / "docs" if args.full_repo else SMOKE_DOCS_PATH
     project_path = Path(args.project_path or default_project_path).resolve()
     docs_path = Path(args.docs_path or default_docs_path).resolve()
 
@@ -723,7 +723,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument(
         "--docs-path",
         default="",
-        help="Docs path to index. Defaults to tests/smoke_docs for a fast smoke test.",
+        help="Docs path to index. Defaults to docs/local_development.md for a fast smoke test.",
     )
     smoke_parser.add_argument(
         "--full-repo",
