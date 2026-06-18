@@ -91,11 +91,7 @@ def _fetch_kinds(lance, workspace_id: str, uids: set[str], prescanned=None) -> d
                 out[uid] = _flat_kinds(r.get("axis_container_kinds_json"))
         return out
     table = sym(workspace_id)
-    rows = (
-        table.to_lance()
-        .to_table(columns=["uid", "axis_container_kinds_json"])
-        .to_pylist()
-    )
+    rows = table.to_lance().to_table(columns=["uid", "axis_container_kinds_json"]).to_pylist()
     out: dict[str, set[str]] = {}
     for r in rows:
         uid = str(r.get("uid") or "")

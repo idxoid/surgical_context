@@ -237,23 +237,23 @@ def scan_workspace_rows(
     with_vector: bool = True,
 ) -> WorkspaceScan:
     """One workspace-scoped Lance scan, JSON parsed once, vectors kept
-    in a numpy matrix.
+      in a numpy matrix.
 
-    The retrieval layer used to scan the *entire* symbol table (every
-    workspace, 384-dim vector column included) and filter in Python —
-    once per role, three+ times per question. This reads only the
-    workspace's rows (``workspace_id`` pushed down into Lance as a C++
-    bitmask), runs the test fence once, parses each row's
-    contracts/kinds JSON once into sets, and — critically — extracts
-    the vector column as a contiguous numpy matrix WITHOUT
-    materialising it into Python dicts. Metadata ``to_pylist`` then
-    touches only light columns.
+      The retrieval layer used to scan the *entire* symbol table (every
+      workspace, 384-dim vector column included) and filter in Python —
+      once per role, three+ times per question. This reads only the
+      workspace's rows (``workspace_id`` pushed down into Lance as a C++
+      bitmask), runs the test fence once, parses each row's
+      contracts/kinds JSON once into sets, and — critically — extracts
+      the vector column as a contiguous numpy matrix WITHOUT
+      materialising it into Python dicts. Metadata ``to_pylist`` then
+      touches only light columns.
 
-  When ``LANCEDB_WORKSPACE_PARTITIONED`` is on (default), the scan opens
-  the per-workspace physical table directly — no ``workspace_id`` filter.
+    When ``LANCEDB_WORKSPACE_PARTITIONED`` is on (default), the scan opens
+    the per-workspace physical table directly — no ``workspace_id`` filter.
 
-  Repeated reads for the same workspace reuse an in-process scan cache
-  (``LANCEDB_WORKSPACE_SCAN_CACHE``, default on) until the index mutates.
+    Repeated reads for the same workspace reuse an in-process scan cache
+    (``LANCEDB_WORKSPACE_SCAN_CACHE``, default on) until the index mutates.
     """
     cache_key = _scan_cache_key(workspace_id, lance_db_path, include_tests, with_vector)
     if _SCAN_CACHE_ENABLED:
@@ -338,9 +338,7 @@ def scan_workspace_rows(
             import numpy as np
 
             col = arrow.column(col_name).combine_chunks()
-            return np.asarray(col.values.to_numpy(zero_copy_only=False)).reshape(
-                arrow.num_rows, -1
-            )
+            return np.asarray(col.values.to_numpy(zero_copy_only=False)).reshape(arrow.num_rows, -1)
         except Exception:
             return None
 
@@ -382,9 +380,7 @@ def scan_workspace_rows(
     kept_sig_vectors = None
     if signature_vectors_all is not None and kept_idx:
         kept_sig_vectors = signature_vectors_all[kept_idx]
-    scan = WorkspaceScan(
-        rows=kept_rows, vectors=kept_vectors, signature_vectors=kept_sig_vectors
-    )
+    scan = WorkspaceScan(rows=kept_rows, vectors=kept_vectors, signature_vectors=kept_sig_vectors)
     if _SCAN_CACHE_ENABLED:
         _SCAN_CACHE[cache_key] = scan
     return scan

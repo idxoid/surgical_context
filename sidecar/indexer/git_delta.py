@@ -29,9 +29,9 @@ def apply_git_head_delta(
     indexer when ``should_index_file`` allows.
     """
     project = Path(project_path).resolve()
-    change_set = GitStateTracker(state_file=str(project / ".surgical_context/git_state.json")).detect_changes(
-        str(project)
-    )
+    change_set = GitStateTracker(
+        state_file=str(project / ".surgical_context/git_state.json")
+    ).detect_changes(str(project))
     result: dict[str, Any] = {
         "previous_head": change_set.previous.head if change_set.previous else "",
         "current_head": change_set.current.head,

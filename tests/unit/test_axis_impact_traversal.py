@@ -52,7 +52,9 @@ def _install(monkeypatch, *, seed_uids, by_label: dict[str, list[Neighbour]], fa
     orig = set(seed_uids)
     calls: list[tuple[str, tuple]] = []
 
-    def fake_walk(db, workspace_id, seeds, *, edges, direction, max_hops, exclude_tests=False, **kw):
+    def fake_walk(
+        db, workspace_id, seeds, *, edges, direction, max_hops, exclude_tests=False, **kw
+    ):
         es = frozenset(edges)
         seen = set(seeds)
         if es == _AFFECTS:

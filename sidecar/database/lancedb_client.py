@@ -10,19 +10,19 @@ from typing import TYPE_CHECKING, Any, cast
 import lancedb
 import pyarrow as pa
 
-from sidecar.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
-from sidecar.database.lance_workspace_tables import (
-    workspace_partition_table_exists,
-    workspace_partition_table_name,
-    workspace_partitioned_enabled,
-)
 from sidecar.axis.query_plan import render_axis_bits_predicate
+from sidecar.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
 from sidecar.database.embedding_registry import (
     EmbeddingMetadata,
     EmbeddingModelMismatch,
     compute_chunk_hash,
     compute_embedding_hash,
     get_model_metadata,
+)
+from sidecar.database.lance_workspace_tables import (
+    workspace_partition_table_exists,
+    workspace_partition_table_name,
+    workspace_partitioned_enabled,
 )
 from sidecar.index_profile import (
     AXIS_PYTHON_V1_PROFILE,
@@ -226,6 +226,7 @@ def symbol_signature_text(code: str) -> str:
         if line.strip():
             return line.strip()
     return code.strip()
+
 
 AXIS_ADJACENCY_SCHEMA = pa.schema(
     [
@@ -462,7 +463,9 @@ class LanceDBClient:
 
     def axis_adjacency_external_table(self, workspace_id: str):
         """Physical Lance table for one workspace's external-bridge maps."""
-        if not workspace_partitioned_enabled() or not hasattr(self, "_workspace_adj_external_tables"):
+        if not workspace_partitioned_enabled() or not hasattr(
+            self, "_workspace_adj_external_tables"
+        ):
             return self._axis_adjacency_external_table
         table = self._open_workspace_partition_table(
             AXIS_ADJACENCY_EXTERNAL_TABLE,
@@ -587,7 +590,9 @@ class LanceDBClient:
             file_path = str(row.get("file_path") or "")
             if not uid or not file_path:
                 continue
-            if any(file_path == pref or file_path.startswith(f"{pref}/") for pref in prefixes_resolved):
+            if any(
+                file_path == pref or file_path.startswith(f"{pref}/") for pref in prefixes_resolved
+            ):
                 out.add(uid)
         return out
 
@@ -609,7 +614,11 @@ class LanceDBClient:
             in_edges = _decode_edges_json(row.get("in_edges_json"))
             out_neighbours = {v for values in out_edges.values() for v in values}
             in_neighbours = {v for values in in_edges.values() for v in values}
-            if uid in target_uids or (out_neighbours & target_uids) or (in_neighbours & target_uids):
+            if (
+                uid in target_uids
+                or (out_neighbours & target_uids)
+                or (in_neighbours & target_uids)
+            ):
                 incident.add(uid)
                 incident.update(out_neighbours & target_uids)
                 incident.update(in_neighbours & target_uids)
@@ -635,9 +644,7 @@ class LanceDBClient:
         for start in range(0, total, batch_size):
             batch = uids[start : start + batch_size]
             if partitioned:
-                predicate = " OR ".join(
-                    f"uid = '{self._quote_delete_value(uid)}'" for uid in batch
-                )
+                predicate = " OR ".join(f"uid = '{self._quote_delete_value(uid)}'" for uid in batch)
             else:
                 predicate = " OR ".join(
                     (
@@ -711,9 +718,7 @@ class LanceDBClient:
         for start in range(0, total, batch_size):
             batch = uids[start : start + batch_size]
             if partitioned:
-                predicate = " OR ".join(
-                    f"uid = '{self._quote_delete_value(uid)}'" for uid in batch
-                )
+                predicate = " OR ".join(f"uid = '{self._quote_delete_value(uid)}'" for uid in batch)
             else:
                 predicate = " OR ".join(
                     (
@@ -1281,9 +1286,9 @@ class LanceDBClient:
             if self._uses_workspace_adjacency_external_partition(table):
                 if int(table.count_rows()) <= 0:
                     return None
-                rows = table.search().limit(1).select(
-                    ["sym_to_ext_json", "ext_to_sym_json"]
-                ).to_list()
+                rows = (
+                    table.search().limit(1).select(["sym_to_ext_json", "ext_to_sym_json"]).to_list()
+                )
             else:
                 ws = self._quote_delete_value(workspace_id)
                 rows = (
@@ -1385,7 +1390,9 @@ class LanceDBClient:
         path_predicate = " OR ".join(path_clauses)
         predicate = f"workspace_id = '{ws}' AND ({path_predicate})"
         sym_table = self.symbols_table(workspace_id)
-        sym_predicate = path_predicate if self._uses_workspace_symbol_partition(sym_table) else predicate
+        sym_predicate = (
+            path_predicate if self._uses_workspace_symbol_partition(sym_table) else predicate
+        )
 
         target_uids = self.list_symbol_uids_by_prefixes(workspace_id, prefixes)
         incident_uids = self.find_incident_axis_adjacency_uids(workspace_id, target_uids)

@@ -70,7 +70,11 @@ def publisher_spine_from_intent(
     roles = set(intent_roles)
     if intent_similarities is not None:
         publisher_best = max(
-            (intent_similarities[r] for r in _PUBLISHER_SPINE_INTENT_ROLES if r in intent_similarities),
+            (
+                intent_similarities[r]
+                for r in _PUBLISHER_SPINE_INTENT_ROLES
+                if r in intent_similarities
+            ),
             default=0.0,
         )
         if publisher_best <= 0.0:

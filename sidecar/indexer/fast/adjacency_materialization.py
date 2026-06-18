@@ -82,7 +82,9 @@ def materialize_axis_adjacency_subset(
 def _fetch_workspace_adjacency(
     db: Any,
     workspace_id: str,
-) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, set[str]]], dict[str, dict[str, set[str]]]]:
+) -> tuple[
+    dict[str, dict[str, str]], dict[str, dict[str, set[str]]], dict[str, dict[str, set[str]]]
+]:
     meta: dict[str, dict[str, str]] = {}
     out_adj: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     in_adj: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))

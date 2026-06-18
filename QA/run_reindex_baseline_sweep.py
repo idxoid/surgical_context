@@ -178,8 +178,12 @@ def main() -> int:
         "pass_count": sum(r.get("pass_count", 0) for r in ok),
     }
     if ok and totals["questions"]:
+
         def weighted_avg(key: str) -> float:
-            return sum(r[key] * r.get("scored", r.get("questions", 0)) for r in ok) / totals["questions"]
+            return (
+                sum(r[key] * r.get("scored", r.get("questions", 0)) for r in ok)
+                / totals["questions"]
+            )
 
         aggregate = {
             "pass_rate": totals["pass_count"] / totals["questions"],

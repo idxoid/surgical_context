@@ -549,7 +549,11 @@ def test_lancedb_delete_path_prefixes_falls_back_to_full_axis_reset(monkeypatch)
     client._sym_table = FakeTable()
     client._axis_adjacency_table = FakeTable()
     client.list_symbol_uids_by_prefixes = lambda workspace_id, prefixes: {"u:b"}
-    client.find_incident_axis_adjacency_uids = lambda workspace_id, target_uids: {"u:a", "u:b", "u:c"}
+    client.find_incident_axis_adjacency_uids = lambda workspace_id, target_uids: {
+        "u:a",
+        "u:b",
+        "u:c",
+    }
     client.count_axis_adjacency_workspace = lambda workspace_id: 4
     client.delete_axis_adjacency_uids = lambda workspace_id, uids: (_ for _ in ()).throw(
         AssertionError("partial delete must not be used")
@@ -563,7 +567,9 @@ def test_lancedb_delete_path_prefixes_falls_back_to_full_axis_reset(monkeypatch)
     )
     from sidecar.axis import graph_walk_inproc
 
-    monkeypatch.setattr(graph_walk_inproc, "invalidate_adjacency_uids", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        graph_walk_inproc, "invalidate_adjacency_uids", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         graph_walk_inproc,
         "invalidate_adjacency",

@@ -285,6 +285,7 @@ def _load_adjacency_from_lance(workspace_id: str, *, neo_db=None) -> _Adjacency 
         _attach_external_maps(adj, neo_db, workspace_id)
     return adj
 
+
 def _adjacency_from_lance_rows(rows: list[dict]) -> _Adjacency:
     adj = _Adjacency()
     out_adj: dict[str, dict[str, set[str]]] = {}
@@ -330,7 +331,9 @@ def _decode_edges(raw: object) -> dict[str, set[str]]:
     return decoded
 
 
-def call_fan_in(db, workspace_id: str, uids, *, edges, exclude_tests: bool = False) -> dict[str, int]:
+def call_fan_in(
+    db, workspace_id: str, uids, *, edges, exclude_tests: bool = False
+) -> dict[str, int]:
     """In-proc twin of ``graph_walk.call_fan_in`` — distinct in-workspace
     callers over ``edges`` per uid, read straight off the cached reverse
     adjacency. Callers are restricted to workspace symbols (``adj.meta``)

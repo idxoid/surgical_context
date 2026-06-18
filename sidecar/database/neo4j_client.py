@@ -1888,7 +1888,7 @@ class Neo4jClient:
             DELETE r
             """,
             workspace_id=workspace_id,
-            )
+        )
 
     def delete_hooks_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
         """Clear EVENT / HOOK edges whose site symbol lives in ``file_path``."""

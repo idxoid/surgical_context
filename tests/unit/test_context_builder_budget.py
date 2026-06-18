@@ -230,7 +230,9 @@ def test_code_compact_keeps_structure_calls_and_returns():
 # --- _apply_render_and_budget ---------------------------------------------
 
 
-def _bundle(seed_uid: str, seed_code: str, related=(), *, file_path: str = "/f.py") -> ContextBundle:
+def _bundle(
+    seed_uid: str, seed_code: str, related=(), *, file_path: str = "/f.py"
+) -> ContextBundle:
     return ContextBundle(
         role="r",
         seed=_sym(seed_uid, seed_code, file_path=file_path),
@@ -453,7 +455,9 @@ def test_impact_tiered_related_tail_is_one_line_stub():
 
     bundle = ContextBundle(
         role="impact_analysis",
-        seed=_at("s", "def send_task(self, name):\n    pass\n", depth=0, path="/repo/celery/app/base.py"),
+        seed=_at(
+            "s", "def send_task(self, name):\n    pass\n", depth=0, path="/repo/celery/app/base.py"
+        ),
         related=(
             _at(
                 "r",

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Condition, Lock, Thread
-from typing import Any, Callable
+from typing import Any
 
 from sidecar.indexer.git_committed import git_root_for
 
@@ -154,9 +155,7 @@ class GitDeltaPoller:
             if not result:
                 continue
             changed = bool(
-                result.get("indexed")
-                or result.get("queued")
-                or result.get("tombstoned")
+                result.get("indexed") or result.get("queued") or result.get("tombstoned")
             )
             if changed:
                 self._stats["syncs"] += 1

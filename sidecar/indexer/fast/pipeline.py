@@ -580,9 +580,7 @@ def _proxy_return_call_phase(
                 if not ex.path.endswith((".py", ".pyi")):
                     continue
                 try:
-                    candidates.extend(
-                        adapter.extract_self_method_proxy_calls(ex.source, ex.path)
-                    )
+                    candidates.extend(adapter.extract_self_method_proxy_calls(ex.source, ex.path))
                 except Exception:
                     continue
         if candidates:

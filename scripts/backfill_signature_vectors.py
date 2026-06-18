@@ -62,7 +62,9 @@ def main() -> int:
         print("signature_vector already present — nothing to backfill")
         return 0
 
-    workspaces = sorted(set(src.to_lance().to_table(columns=["workspace_id"]).column(0).to_pylist()))
+    workspaces = sorted(
+        set(src.to_lance().to_table(columns=["workspace_id"]).column(0).to_pylist())
+    )
     src_total = src.count_rows()
     print(f"source rows={src_total} across {len(workspaces)} workspaces")
 

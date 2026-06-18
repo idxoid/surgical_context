@@ -13,9 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from QA.axis_benchmark import REPO_TO_WORKSPACE, _load_pack, summarise
+from QA.axis_benchmark import REPO_TO_WORKSPACE, _load_pack
 from QA.llm_judge import EFFORTS, judge_question_matrix
 from sidecar.axis.pipeline import run_axis_retrieval
 from sidecar.axis.prompt_provider import axis_bundles_to_prompt_context
@@ -76,7 +74,12 @@ def _summarise_judge(results: list[dict[str, Any]]) -> dict[str, Any]:
                     verdict = str(cell.get("verdict") or "fail").lower()
                     bucket[verdict if verdict in bucket else "fail"] += 1
                 judge_tokens += int(cell.get("input_tokens", 0)) + int(cell.get("output_tokens", 0))
-    return {"cells": cells, "errors": errors, "judge_tokens": judge_tokens, "questions": len(results)}
+    return {
+        "cells": cells,
+        "errors": errors,
+        "judge_tokens": judge_tokens,
+        "questions": len(results),
+    }
 
 
 def main() -> int:

@@ -800,7 +800,9 @@ def main() -> None:
     )
     parser.add_argument("--out", default="/tmp/axis_benchmark", type=Path)
     parser.add_argument("--top-roles", type=int, default=3)
-    parser.add_argument("--per-role-limit", type=int, default=7, help="Seed/pool cap per intent role (default 7).")
+    parser.add_argument(
+        "--per-role-limit", type=int, default=7, help="Seed/pool cap per intent role (default 7)."
+    )
     parser.add_argument(
         "--max-impacted",
         type=int,
@@ -838,8 +840,8 @@ def main() -> None:
         choices=[
             "full",
             "impact_tiered",
-        "impact_surface",
-        "signature_only",
+            "impact_surface",
+            "signature_only",
             "hybrid",
             "hybrid_compact",
             "fold",
