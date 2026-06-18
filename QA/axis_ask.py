@@ -65,8 +65,10 @@ def main() -> None:
     parser.add_argument(
         "--context-seeds-per-role",
         type=int,
-        default=2,
-        help="When --with-context is set, top-K candidates per role to expand.",
+        default=None,
+        nargs="?",
+        const=2,
+        help="When --with-context is set, optional top-K candidates per role to expand.",
     )
     parser.add_argument(
         "--code-chars",
@@ -140,7 +142,11 @@ def main() -> None:
             )
 
         if args.with_context:
-            seeds_for_context = candidates[: args.context_seeds_per_role]
+            seeds_for_context = (
+                candidates
+                if args.context_seeds_per_role is None
+                else candidates[: args.context_seeds_per_role]
+            )
             bundles = build_context_for_candidates(
                 seeds_for_context,
                 workspace_id=args.workspace,

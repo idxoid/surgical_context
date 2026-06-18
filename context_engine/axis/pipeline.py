@@ -26,11 +26,10 @@ Design notes that matter for the seam:
   instead of re-opening per pass.
 * **Optional ``trace``.** The endpoint passes its request trace so each
   stage keeps a span; the benchmark passes nothing and gets a null tracer.
-* **Optional ``context_seeds_per_role`` cap.** ``None`` (the benchmark
-  path) feeds the whole pool into context expansion; the endpoint passes
-  its request value to cap the per-role context seeds. The cap is the only
-  knob that separates the two callers — everything else is identical, so
-  the benchmark validates the endpoint's pipeline byte-for-byte.
+* **Optional ``context_seeds_per_role`` cap.** ``None`` feeds the whole pool
+  into context expansion. Callers may pass a positive value for latency A/B,
+  but the production endpoint leaves it unset so the Token Credit budget can
+  rank the full scope instead of post-processing a pre-truncated pool.
 """
 
 from __future__ import annotations
@@ -109,7 +108,7 @@ def run_axis_retrieval(
     with_context: bool = True,
     context_per_seed: int = 4,
     context_seeds_per_role: int | None = None,
-    intent_budget: bool = False,
+    intent_budget: bool = True,
     base_token_budget: int = 6000,
     render_mode_override: str | None = None,
     anchor_path: str | None = None,

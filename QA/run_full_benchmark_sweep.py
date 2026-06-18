@@ -65,11 +65,8 @@ def run_repo(repo: str) -> dict:
         str(out_dir),
         "--repo",
         repo,
-        "--intent-budget",
         "--token-budget",
         "6000",
-        "--context-seeds-per-role",
-        "2",
     ]
     print(f"\n>>> {' '.join(cmd)}\n", flush=True)
     proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)

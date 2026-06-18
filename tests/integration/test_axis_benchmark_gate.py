@@ -2,7 +2,7 @@
 
 Indexes this repository under a dedicated CI workspace, replays the seven
 ``surgical_context_*`` questions from ``questions_python.yaml`` with the
-production /ask caps (intent budget + context seed cap), and asserts the
+production /ask budget path, and asserts the
 checked-in baseline in ``QA/fixtures/baselines/p7_surgical_context_axis.json``.
 
 To refresh the baseline after an intentional engine improvement::
@@ -14,7 +14,6 @@ To refresh the baseline after an intentional engine improvement::
     python -m QA.axis_benchmark \\
         --pack QA/fixtures/questions_python.yaml \\
         --repo surgical_context \\
-        --intent-budget --context-seeds-per-role 2 \\
         --out /tmp/p7_axis_refresh
 """
 
@@ -84,11 +83,14 @@ def test_p7_surgical_context_axis_file_recall(
     assert len(questions) == p7_baseline["scored"]
 
     caps = p7_baseline["caps"]
+    context_seed_cap = caps.get("context_seeds_per_role")
     results = run_axis_pack(
         questions,
         per_role_limit=int(caps["per_role_limit"]),
         max_impacted=int(caps["max_impacted"]),
-        context_seeds_per_role=int(caps["context_seeds_per_role"]),
+        context_seeds_per_role=(
+            None if context_seed_cap is None else int(context_seed_cap)
+        ),
         intent_budget=bool(caps["intent_budget"]),
         workspace_overrides={"surgical_context": surgical_context_workspace},
     )

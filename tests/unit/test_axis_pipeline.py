@@ -143,7 +143,7 @@ def test_runs_without_a_tracer(stub_stages):
     assert result.bundles
 
 
-def test_intent_budget_off_leaves_build_context_unbudgeted(stub_stages, monkeypatch):
+def test_intent_budget_can_be_disabled_for_ab(stub_stages, monkeypatch):
     import context_engine.axis.context_builder as _ctx_mod
 
     captured: dict = {}
@@ -155,13 +155,13 @@ def test_intent_budget_off_leaves_build_context_unbudgeted(stub_stages, monkeypa
             or []
         ),
     )
-    result = _run()  # intent_budget defaults False -> benchmark behaviour
+    result = _run(intent_budget=False)
     assert captured["token_budget"] is None
     assert captured["render_mode"] == "full"
     assert result.render_mode == "full"
 
 
-def test_intent_budget_on_applies_architecture_profile(stub_stages, monkeypatch):
+def test_intent_budget_defaults_to_architecture_profile(stub_stages, monkeypatch):
     import context_engine.axis.context_builder as _ctx_mod
 
     captured: dict = {}
@@ -176,7 +176,7 @@ def test_intent_budget_on_applies_architecture_profile(stub_stages, monkeypatch)
 
     # stub intent is a plain role (routing_surface) -> architecture profile:
     # generous max_seeds (pool of 3 unaffected), hybrid render, token_budget = 4000*2.
-    result = _run(intent_budget=True, base_token_budget=4000)
+    result = _run(base_token_budget=4000)
     assert captured["render_mode"] == "hybrid"
     assert captured["token_budget"] == 8000
     assert captured["n_seeds"] == 3
@@ -197,7 +197,7 @@ def test_intent_budget_walks_full_scope_no_passive_split(stub_stages, monkeypatc
 
     # The Token Credit System IS the budget: the whole ranked pool is active
     # (no walk cap, no active/passive split) and the packer trims downstream.
-    result = _run(intent_budget=True)
+    result = _run()
 
     assert captured["active"] == ["a", "b", "c"]
     assert captured["passive"] == []
@@ -215,7 +215,7 @@ def test_intent_budget_threads_proximity_utility_to_context_builder(stub_stages,
 
     monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
 
-    _run(intent_budget=True, anchor_path="/x/open.py")
+    _run(anchor_path="/x/open.py")
 
     utility_score_fn = captured["utility_score_fn"]
     assert utility_score_fn is not None

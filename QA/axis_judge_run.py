@@ -95,7 +95,14 @@ def main() -> int:
     parser.add_argument("--per-role-limit", type=int, default=7)
     parser.add_argument("--max-impacted", type=int, default=35)
     parser.add_argument("--token-budget", type=int, default=6000)
-    parser.add_argument("--context-seeds-per-role", type=int, default=2)
+    parser.add_argument(
+        "--context-seeds-per-role",
+        type=int,
+        default=None,
+        nargs="?",
+        const=2,
+        help="Optional latency A/B cap for context seeds per role; omit for full pool.",
+    )
     parser.add_argument("--top-roles", type=int, default=3)
     parser.add_argument("--intent-threshold", type=float, default=0.20)
     parser.add_argument("--context-per-seed", type=int, default=6)

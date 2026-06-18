@@ -5,9 +5,9 @@ file-like ``expected_file``, with that file set as the ask ``anchor`` (the
 "open file"). Then:
 
     python -m QA.make_anchor_pack
-    python -m QA.axis_benchmark --pack /tmp/anchor_pack.yaml --intent-budget \\
+    python -m QA.axis_benchmark --pack /tmp/anchor_pack.yaml \\
         --out /tmp/prox_on
-    python -m QA.axis_benchmark --pack /tmp/anchor_pack.yaml --intent-budget \\
+    python -m QA.axis_benchmark --pack /tmp/anchor_pack.yaml \\
         --no-proximity --out /tmp/prox_off
 
 The on/off diff on the SAME pack isolates B_proximity's boost on *neighbour*

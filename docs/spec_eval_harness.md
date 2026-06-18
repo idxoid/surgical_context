@@ -28,8 +28,7 @@ Read-side benchmark: replays a pack against indexed workspaces under the `axis_p
 PYTHONPATH=. python -m QA.axis_benchmark \
   --pack QA/fixtures/questions_python.yaml \
   --out /tmp/axis_benchmark \
-  --repo surgical_context \
-  --intent-budget --context-seeds-per-role 2
+  --repo surgical_context
 ```
 
 Requires a pre-indexed workspace for each `repo` in the pack. Repos not indexed are recorded as `skipped`.

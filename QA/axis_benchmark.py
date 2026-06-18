@@ -23,7 +23,7 @@ Usage::
 
     # Cap sweep (per-role seed limit / impact blast radius):
     python -m QA.axis_benchmark --pack ... --out /tmp/cap_8_35 \\
-        --per-role-limit 8 --max-impacted 35 --intent-budget --token-budget 6000
+        --per-role-limit 8 --max-impacted 35 --token-budget 6000
 """
 
 from __future__ import annotations
@@ -236,7 +236,7 @@ def run_question(
     intent_threshold: float,
     context_per_seed: int,
     context_seeds_per_role: int | None = None,
-    intent_budget: bool = False,
+    intent_budget: bool = True,
     base_token_budget: int = 6000,
     render_mode_override: str | None = None,
     ignore_anchor: bool = False,
@@ -268,11 +268,10 @@ def run_question(
     # benchmark behaviour); the seed / pool / bundle recall layers below
     # read straight off the layered result.
     #
-    # ``--intent-budget`` instead measures the PRODUCTION /ask path: the
-    # intent-driven Token Credit budget (full ranked scope, then the echelon-2
-    # marginal token-credit packer) that ``_context_from_axis`` runs when
-    # ``ASK_AXIS_FIRST`` is on. The seed / pool layers are unaffected (budgeting
-    # lives in context expansion); only the bundle layer reflects the cost.
+    # The default benchmark path measures production /ask budgeting: full
+    # ranked scope, then the echelon-2 marginal token-credit packer. The seed /
+    # pool layers are unaffected (budgeting lives in context expansion); only
+    # the bundle layer reflects the cost.
     timer = _StageTimer()
     retrieval = run_axis_retrieval(
         result.question,
@@ -370,7 +369,7 @@ def run_axis_pack(
     intent_threshold: float = 0.20,
     context_per_seed: int = 6,
     context_seeds_per_role: int | None = None,
-    intent_budget: bool = False,
+    intent_budget: bool = True,
     base_token_budget: int = 6000,
     render_mode_override: str | None = None,
     ignore_anchor: bool = False,
@@ -820,21 +819,28 @@ def main() -> None:
         nargs="?",
         const=2,
         metavar="N",
-        help="Cap context seeds per intent role (production /ask default: 2). "
-        "Omit for the historical full-pool benchmark; pass alone for 2.",
+        help="Optional latency A/B cap for context seeds per intent role. "
+        "Omit for the production/full-pool path; pass alone for legacy cap 2.",
     )
-    parser.add_argument(
+    budget_group = parser.add_mutually_exclusive_group()
+    budget_group.add_argument(
         "--intent-budget",
+        dest="intent_budget",
         action="store_true",
-        help="Measure the production /ask path: apply the intent-driven Token "
-        "Credit budget (full ranked scope + the echelon-2 marginal token-credit "
-        "packer) that ASK_AXIS_FIRST enables, instead of the uncapped pool.",
+        help="Use the production Token Credit budget path (default).",
     )
+    budget_group.add_argument(
+        "--no-intent-budget",
+        dest="intent_budget",
+        action="store_false",
+        help="Run the legacy unbudgeted render path for A/B comparisons.",
+    )
+    parser.set_defaults(intent_budget=True)
     parser.add_argument(
         "--token-budget",
         type=int,
         default=6000,
-        help="Base token budget for --intent-budget (scaled per intent "
+        help="Base token budget for the intent budget path (scaled per intent "
         "profile). Mirrors AskRequest.token_budget. Default 6000.",
     )
     parser.add_argument(
@@ -850,7 +856,7 @@ def main() -> None:
             "fold_compact",
         ],
         default=None,
-        help="Override the profile's echelon-2 render mode for --intent-budget "
+        help="Override the profile's echelon-2 render mode for intent budgeting "
         "(sweep knob). Unset = use each profile's own render_mode.",
     )
     parser.add_argument(
@@ -975,6 +981,8 @@ def main() -> None:
     summary["caps"] = {
         "per_role_limit": args.per_role_limit,
         "max_impacted": args.max_impacted,
+        "context_seeds_per_role": args.context_seeds_per_role,
+        "intent_budget": args.intent_budget,
     }
     if args.repo:
         summary["repo_filter"] = args.repo

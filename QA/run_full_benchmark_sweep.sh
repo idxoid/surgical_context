@@ -19,9 +19,7 @@ run_one() {
     --pack "$PACK" \
     --out "$out" \
     --repo "$repo" \
-    --intent-budget \
     --token-budget 6000 \
-    --context-seeds-per-role 2 \
     2>&1 | tee -a "$LOG"
   echo | tee -a "$LOG"
 }

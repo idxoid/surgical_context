@@ -232,10 +232,11 @@ class AskResponse(BaseModel):
 class AskAxisRequest(BaseModel):
     """``/ask/axis`` payload — axis-pipeline-only retrieval shape.
 
-    No symbol anchor, no token budget: the axis pipeline picks
-    candidates by role intent. ``with_context`` toggles whether
-    expanded code bundles come back; without it the response only
-    carries intent matches + ranked candidates (cheap).
+    No symbol anchor: the axis pipeline picks candidates by role intent.
+    ``with_context`` toggles whether expanded code bundles come back; without
+    it the response only carries intent matches + ranked candidates (cheap).
+    ``intent_budget`` is on by default so context rendering uses the same Token
+    Credit path as production ``/ask``.
     """
 
     question: str
@@ -243,8 +244,10 @@ class AskAxisRequest(BaseModel):
     intent_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
     per_role_limit: int = Field(default=7, ge=1, le=50)
     with_context: bool = True
-    context_seeds_per_role: int = Field(default=2, ge=1, le=10)
+    context_seeds_per_role: int | None = Field(default=None, ge=1, le=10)
     context_per_seed: int = Field(default=4, ge=1, le=20)
+    intent_budget: bool = True
+    token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
 
 
 class AxisIntentMatchResponse(BaseModel):
@@ -2136,6 +2139,8 @@ def ask_axis(
                 with_context=req.with_context,
                 context_per_seed=req.context_per_seed,
                 context_seeds_per_role=req.context_seeds_per_role,
+                intent_budget=req.intent_budget,
+                base_token_budget=req.token_budget,
                 trace=trace,
                 overlay=overlay,
                 user_id=user_id,

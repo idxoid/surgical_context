@@ -104,11 +104,8 @@ def run_repo(repo: str, *, skip_existing: bool = True) -> dict:
         str(bench_out),
         "--repo",
         repo,
-        "--intent-budget",
         "--token-budget",
         "6000",
-        "--context-seeds-per-role",
-        "2",
     ]
 
     started = time.time()

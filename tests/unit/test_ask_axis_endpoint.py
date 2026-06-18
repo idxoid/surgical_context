@@ -136,6 +136,13 @@ def _request(**overrides) -> context_engine_main.AskAxisRequest:
     return context_engine_main.AskAxisRequest(**defaults)
 
 
+def test_ask_axis_request_default_keeps_context_pool_uncapped() -> None:
+    req = context_engine_main.AskAxisRequest(question="how does routing work")
+    assert req.context_seeds_per_role is None
+    assert req.intent_budget is True
+    assert req.token_budget == 6000
+
+
 def test_ask_axis_returns_well_formed_payload(patch_axis_pipeline):
     candidate, _bundle = patch_axis_pipeline
     resp = context_engine_main.ask_axis(_request())
