@@ -98,6 +98,11 @@ def fake_lance(monkeypatch):
             return self.table
 
     fake_db = FakeDB()
+    import sidecar.axis.role_retrieval as _role_retrieval
+
+    _role_retrieval.invalidate_workspace_scan_cache()
+    monkeypatch.setenv("LANCEDB_WORKSPACE_SCAN_CACHE", "false")
+    monkeypatch.setenv("LANCEDB_WORKSPACE_PARTITIONED", "false")
     monkeypatch.setattr(
         "sidecar.axis.role_retrieval.lancedb",
         type(
@@ -122,6 +127,7 @@ def _row(
         "name": name,
         "file_path": path,
         "axis_contracts_json": json.dumps(contract_objs),
+        "axis_container_kinds_json": "[]",
         "workspace_id": WORKSPACE,
         "vector": vector,
     }

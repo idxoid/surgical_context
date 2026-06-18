@@ -115,7 +115,11 @@ def patch_axis_pipeline(monkeypatch):
 
     monkeypatch.setattr(sidecar_main, "db_session", lambda **_: _NoopCtx())
     monkeypatch.setattr(sidecar_main, "_resolve_request_user", lambda *a, **k: "test-user")
-    monkeypatch.setattr(sidecar_main, "_resolve_workspace", lambda _: "test-workspace")
+    monkeypatch.setattr(
+        sidecar_main,
+        "_resolve_workspace",
+        lambda *a, **k: "test-workspace",
+    )
     return candidate, bundle
 
 

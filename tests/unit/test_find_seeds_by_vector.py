@@ -81,6 +81,9 @@ def _row(uid, path, vec, ws=WORKSPACE):
 
 
 def _patch(monkeypatch, rows):
+    rr.invalidate_workspace_scan_cache()
+    monkeypatch.setenv("LANCEDB_WORKSPACE_SCAN_CACHE", "false")
+    monkeypatch.setenv("LANCEDB_WORKSPACE_PARTITIONED", "false")
     monkeypatch.setattr(rr.lancedb, "connect", lambda *_a, **_k: _Conn(rows))
 
 

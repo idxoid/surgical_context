@@ -276,8 +276,6 @@ def scan_workspace_rows(
         table = lance.symbols_table(workspace_id)
         partitioned = partitioned and table is not getattr(lance, "_sym_table", None)
     else:
-        import lancedb
-
         db = lancedb.connect(lance_db_path)
         base_table = profile.symbols_table
         if partitioned:

@@ -198,7 +198,14 @@ class TestAIEngineRouting:
 class TestAIEngineModels:
     """Test AIEngine model configuration."""
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
+    @patch.dict(
+        os.environ,
+        {
+            "ANTHROPIC_API_KEY": "test-key",
+            "ALLOW_CLOUD_LLM": "true",
+            "ANTHROPIC_MODEL": "",
+        },
+    )
     def test_claude_model_defaults_to_sonnet_4_6(self):
         """Default Claude model is Sonnet 4.6 (not retired claude-sonnet-4-20250514)."""
         from sidecar.ai.engine import DEFAULT_CLAUDE_MODEL

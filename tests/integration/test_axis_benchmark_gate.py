@@ -43,6 +43,17 @@ CI_BASE_WORKSPACE = "ci/surgical_context@main"
 @pytest.fixture(scope="module")
 def surgical_context_workspace() -> str:
     """Fresh axis_python_v1 index of this repo for the P7 gate."""
+    from sidecar.database.neo4j_client import Neo4jClient
+    from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+
+    try:
+        probe = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+        with probe.driver.session() as session:
+            session.run("RETURN 1").single()
+        probe.close()
+    except Exception as exc:
+        pytest.skip(f"Neo4j unavailable for P7 axis gate: {exc}")
+
     os.environ["INDEX_PROFILE"] = AXIS_PYTHON_V1_PROFILE
     profile = resolve_index_profile(AXIS_PYTHON_V1_PROFILE)
     workspace_id = profile.workspace_id(CI_BASE_WORKSPACE)

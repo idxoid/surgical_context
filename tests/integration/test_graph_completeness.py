@@ -18,37 +18,37 @@ class TestGraphCompleteness:
     def test_python_complete_extraction(self, py_adapter):
         """Test Python extracts symbols, calls, imports, and inheritance."""
         source = """
-import os
-from pathlib import Path
+from payments import validators
 
 class Base:
     pass
 
 class Derived(Base):
     def __init__(self):
-        self.path = Path(".")
+        self.check = validators.validate_amount
 
     def helper(self):
-        print(os.getcwd())
+        self.check(1)
 
     def caller(self):
         self.helper()
 """
+        file_path = "payments/processor.py"
         # Symbols
-        symbols = py_adapter.extract_symbols(source, "test.py")
+        symbols = py_adapter.extract_symbols(source, file_path)
         assert any(s.name == "Base" for s in symbols)
         assert any(s.name == "Derived" for s in symbols)
 
         # Calls
-        calls = py_adapter.extract_calls_from_source(source, "test.py")
+        calls = py_adapter.extract_calls_from_source(source, file_path)
         assert len(calls) > 0
 
-        # Imports
-        imports = py_adapter.extract_imports(source, "test.py")
-        assert any("pathlib" in imp.target_module_name for imp in imports)
+        # Imports — intra-project only; stdlib/third-party are filtered out.
+        imports = py_adapter.extract_imports(source, file_path)
+        assert any("payments" in imp.target_module_name for imp in imports)
 
         # Inheritance
-        inheritance = py_adapter.extract_inheritance(source, "test.py")
+        inheritance = py_adapter.extract_inheritance(source, file_path)
         assert any(edge.superclass_name == "Base" for edge in inheritance)
 
     def test_typescript_complete_extraction(self, ts_adapter):
@@ -91,12 +91,12 @@ class Derived extends Base {
         assert any(edge.superclass_name == "Base" for edge in inheritance)
 
     def test_import_edges_have_correct_type(self, py_adapter):
-        """Test that import edges are classified correctly."""
-        source = "import os\nfrom . import utils\nfrom pathlib import Path"
-        imports = py_adapter.extract_imports(source, "test.py")
+        """Test that intra-project import edges are classified correctly."""
+        source = "import payments\nfrom payments import validators"
+        imports = py_adapter.extract_imports(source, "payments/processor.py")
 
         import_types = {imp.import_type for imp in imports}
-        assert "direct" in import_types or "from_package" in import_types
+        assert import_types == {"direct", "from_package"}
 
     def test_inheritance_edges_have_correct_interface_flag(self, ts_adapter):
         """Test that inheritance edges correctly flag interfaces."""

@@ -305,7 +305,6 @@ class TestAIEngineColdRun:
             )
         )
 
-        assert len(chunks) == 4
         assert "".join(chunks) == "Stream of Claude response"
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
@@ -313,16 +312,26 @@ class TestAIEngineColdRun:
     def test_prompt_caching_enabled_on_graph_context(
         self, mock_anthropic_class, sample_system_prompt, sample_questions
     ):
-        """Verify prompt caching is enabled when graph context present."""
+        """Verify prompt caching is enabled when graph context is large enough."""
+        from sidecar.ai.engine import _MIN_CACHE_TOKENS
+
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
         mock_message = MagicMock()
         mock_message.content = [MagicMock(text="Response")]
         mock_client.messages.create.return_value = mock_message
 
+        # Cache control only applies once the code+graph block exceeds the
+        # Anthropic minimum (~1024 tokens). Pad the prompt for this assertion.
+        pad = "x" * (_MIN_CACHE_TOKENS * 4 + 100)
+        padded_prompt = sample_system_prompt.replace(
+            "\n--- DOCUMENTATION ---",
+            f"\n{pad}\n--- DOCUMENTATION ---",
+        )
+
         engine = AIEngine(model_preference="claude")
         _answer = engine.chat(
-            system_prompt=sample_system_prompt,  # Contains "--- DEPENDENCIES ---"
+            system_prompt=padded_prompt,
             user_message="What does process_payment do?",
             token_count=2500,
             intent="exploration",

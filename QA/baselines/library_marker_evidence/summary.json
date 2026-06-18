@@ -1,11 +1,5 @@
 {
   "by_kind": {
-    "error_dispatch": {
-      "absent": 2
-    },
-    "proxy_object": {
-      "absent": 3
-    },
     "task_register": {
       "absent": 4,
       "structurally_backed": 1
@@ -16,8 +10,8 @@
     }
   },
   "by_status": {
-    "absent": 17,
+    "absent": 12,
     "structurally_backed": 5
   },
-  "total": 22
+  "total": 17
 }
