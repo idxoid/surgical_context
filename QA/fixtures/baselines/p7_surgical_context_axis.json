@@ -2,7 +2,7 @@
   "description": "P7 empirical gate for surgical_context dogfood questions on the production /ask axis budget path.",
   "pack": "QA/fixtures/questions_python.yaml",
   "repo_filter": "surgical_context",
-  "scored": 7,
+  "scored": 8,
   "caps": {
     "per_role_limit": 7,
     "max_impacted": 35,

@@ -639,22 +639,47 @@ questions:
   - _embed_phase
   expected_files:
   - context_engine/indexer/fast/pipeline.py
-- id: surgical_context_q06
+- id: surgical_context_q06_ranking_weights
   repo: surgical_context
   core12: false
-  symbol: build_context_for_candidates
-  question: If the axis ranking and token-budget weights change, which tests and benchmark paths are most likely to break?
+  symbol: apply_intent_axis_boost
+  question: If axis ranking weights change (apply_intent_axis_boost boost/score_ceiling, seed tier demotion in role_retrieval),
+    and the production caps per-role-limit and max-impacted change with them, which unit tests and QA/axis_benchmark
+    paths are most likely to break?
   difficulty: hard
   intent: impact_analysis
   expected_mode: symbol
-  mechanism: surgical_context_axis_ranking_weight_impact
+  mechanism: surgical_context_axis_ranking_weights_impact
   expected_symbols:
-  - build_context_for_candidates
+  - apply_intent_axis_boost
+  - intent_axes
+  - find_seeds_by_vector
+  expected_files:
+  - context_engine/axis/axis_ranking.py
+  - context_engine/axis/role_retrieval.py
+  - tests/unit/test_axis_ranking.py
+  - QA/axis_benchmark.py
+- id: surgical_context_q06_token_budget_weights
+  repo: surgical_context
+  core12: false
+  symbol: _apply_token_credit_budget
+  question: If token-budget weights change (RetrievalBudget.token_weight, tier/bonus tables in context_builder,
+    _apply_token_credit_budget), and the production flags intent-budget, token-budget, and render-mode change with
+    them, which unit tests and benchmark paths are most likely to break?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: surgical_context_token_budget_weights_impact
+  expected_symbols:
   - _apply_token_credit_budget
   - _apply_render_and_budget
+  - budget_for_intent
+  - effective_tokens
   expected_files:
   - context_engine/axis/context_builder.py
+  - context_engine/axis/retrieval_budget.py
   - tests/unit/test_context_builder_budget.py
+  - tests/unit/test_retrieval_budget.py
   - QA/axis_benchmark.py
 - id: surgical_context_q07
   repo: surgical_context
