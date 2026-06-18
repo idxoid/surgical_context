@@ -767,12 +767,20 @@ def main() -> None:
         action="store_true",
         help="Disable per-question progress output on stderr",
     )
+    parser.add_argument(
+        "--repo",
+        default=None,
+        help="Run only questions whose ``repo`` field matches this id",
+    )
     args = parser.parse_args()
 
     questions = _load_pack(args.pack)
+    if args.repo:
+        questions = [q for q in questions if q.get("repo") == args.repo]
     if not questions:
-        print(f"no questions in pack {args.pack}")
-        return
+        target = f"{args.pack}" + (f" repo={args.repo!r}" if args.repo else "")
+        print(f"no questions in {target}")
+        raise SystemExit(1)
 
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
@@ -854,6 +862,8 @@ def main() -> None:
         "per_role_limit": args.per_role_limit,
         "max_impacted": args.max_impacted,
     }
+    if args.repo:
+        summary["repo_filter"] = args.repo
 
     args.out.mkdir(parents=True, exist_ok=True)
     summary_path = args.out / "summary.json"
@@ -872,6 +882,7 @@ def main() -> None:
 
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))
     print(f"\nfull report → {args.out}/")
+    print(f"Report JSON: {summary_path}")
 
     if args.compare and args.compare.exists():
         prev = json.loads(args.compare.read_text(encoding="utf-8"))

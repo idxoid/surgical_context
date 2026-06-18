@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,14 @@ class WorkspaceRootNotRegisteredError(ValueError):
 
 class PathOutsideWorkspaceError(ValueError):
     """Resolved path escapes the workspace project root."""
+
+
+class WorkspaceRootMismatchError(ValueError):
+    """project_path conflicts with the workspace identity or an existing registration."""
+
+
+class WorkspaceRootNotAllowedError(ValueError):
+    """project_path is outside WORKSPACE_TRUSTED_ROOTS."""
 
 
 def registered_workspace_root(db: Any, workspace_id: str) -> Path | None:
@@ -41,6 +50,62 @@ def resolve_project_root(raw_path: str) -> Path:
     if not candidate.is_dir():
         raise FileNotFoundError(f"Path not found: {raw_path}")
     return candidate
+
+
+def trusted_workspace_roots() -> list[Path]:
+    """Optional allowlist from WORKSPACE_TRUSTED_ROOTS (os.pathsep-separated).
+
+    When unset, no extra root restriction is applied beyond workspace identity
+    checks. Set to parent directories that may host registered project roots
+    (e.g. ``$HOME`` or ``/home/user/projects``) when the sidecar is reachable
+    beyond strict localhost trust.
+    """
+    raw = os.getenv("WORKSPACE_TRUSTED_ROOTS", "").strip()
+    if not raw:
+        return []
+    roots: list[Path] = []
+    for entry in raw.split(os.pathsep):
+        text = entry.strip()
+        if not text:
+            continue
+        roots.append(Path(text).expanduser().resolve())
+    return roots
+
+
+def validate_workspace_project_root(
+    project_root: Path,
+    *,
+    workspace_repo: str,
+    existing_root: Path | None = None,
+) -> None:
+    """Authorize a directory as the workspace sandbox root.
+
+    Rules:
+    - An existing registration is sticky: the same resolved path only.
+    - First registration must use a directory whose basename matches
+      ``workspace.repo`` (the VS Code extension derives both from the folder).
+    - When WORKSPACE_TRUSTED_ROOTS is set, the root must lie under one entry.
+    """
+    resolved = project_root.resolve()
+    if existing_root is not None:
+        if resolved != existing_root.resolve():
+            raise WorkspaceRootMismatchError(
+                f"Workspace already registered with project root '{existing_root}'; "
+                f"refusing to re-register '{resolved}'"
+            )
+        return
+
+    if resolved.name != workspace_repo:
+        raise WorkspaceRootMismatchError(
+            f"Project directory name '{resolved.name}' does not match "
+            f"workspace repo '{workspace_repo}'"
+        )
+
+    trusted = trusted_workspace_roots()
+    if trusted and not any(is_path_within_root(resolved, base) for base in trusted):
+        raise WorkspaceRootNotAllowedError(
+            f"Project root '{resolved}' is not under WORKSPACE_TRUSTED_ROOTS"
+        )
 
 
 def is_path_within_root(path: Path, root: Path) -> bool:

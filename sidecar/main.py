@@ -17,6 +17,12 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from sidecar.ai.engine import AIEngine
+from sidecar.api.errors import (
+    INDEX_FAILED_REASON,
+    LLM_UNREACHABLE_REASON,
+    PUBLIC_INTERNAL_ERROR,
+    degraded_llm_answer,
+)
 from sidecar.api.sse import format_sse
 from sidecar.auth import AuditLog, UserAuth
 from sidecar.cache.layered import default_cache
@@ -37,7 +43,7 @@ from sidecar.observability import (
 )
 from sidecar.overlay import InMemoryOverlay
 from sidecar.search import UnifiedSearchResult, dedupe_and_rank
-from sidecar.workspace import WorkspaceResolver
+from sidecar.workspace import DEFAULT_WORKSPACE_ID, Workspace, WorkspaceResolver
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,6 +56,18 @@ ALLOW_CLOUD_LLM = os.getenv("ALLOW_CLOUD_LLM", "false").lower() in {
     "on",
 }
 AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes", "on"}
+TRUST_CLIENT_USER_HEADER = os.getenv("TRUST_CLIENT_USER_HEADER", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+TRUST_CLIENT_WORKSPACE_HEADER = os.getenv("TRUST_CLIENT_WORKSPACE_HEADER", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 INDEX_QUEUE_MAX_PENDING = int(os.getenv("INDEX_QUEUE_MAX_PENDING", "500"))
 INDEX_QUEUE_DEBOUNCE_MS = int(os.getenv("INDEX_QUEUE_DEBOUNCE_MS", "500"))
 INDEX_QUEUE_BATCH_SIZE = int(os.getenv("INDEX_QUEUE_BATCH_SIZE", "50"))
@@ -377,6 +395,16 @@ def _canonical_user_id(value: str | None) -> str:
     return str(value or "").lower().strip()
 
 
+def _extract_bearer_token(authorization: Any = None) -> str | None:
+    authorization_value = _header_value(authorization)
+    if not authorization_value:
+        return None
+    scheme, _, token = authorization_value.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    return token
+
+
 def _resolve_request_user(
     x_user_id: Any = None,
     authorization: Any = None,
@@ -385,11 +413,8 @@ def _resolve_request_user(
 ) -> str:
     """Resolve the request user and optionally require a valid bearer token."""
     require_auth = AUTH_REQUIRED if require_auth is None else require_auth
-    authorization_value = _header_value(authorization)
-    if authorization_value:
-        scheme, _, token = authorization_value.partition(" ")
-        if scheme.lower() != "bearer" or not token:
-            raise HTTPException(status_code=401, detail="Invalid authorization header")
+    token = _extract_bearer_token(authorization)
+    if token is not None:
         if not user_auth.verify_token(token):
             raise HTTPException(status_code=401, detail="Invalid or expired bearer token")
         return user_auth.get_user_from_token(token)
@@ -397,14 +422,49 @@ def _resolve_request_user(
     if require_auth:
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
-    return user_auth.identify_user(_header_value(x_user_id))  # type: ignore
+    if TRUST_CLIENT_USER_HEADER:
+        return user_auth.identify_user(_header_value(x_user_id))  # type: ignore[union-attr]
+
+    return user_auth.identify_user(None)
 
 
-def _resolve_workspace(x_workspace: Any = None) -> str:
+def _resolve_workspace_context(
+    x_workspace: Any = None,
+    authorization: Any = None,
+) -> Workspace:
+    token = _extract_bearer_token(authorization)
+    token_workspace: str | None = None
+    if token is not None:
+        if not user_auth.verify_token(token):
+            raise HTTPException(status_code=401, detail="Invalid or expired bearer token")
+        token_workspace = user_auth.get_workspace_from_token(token)
+
+    header_workspace = _header_value(x_workspace)
+    if token_workspace:
+        if header_workspace and header_workspace != token_workspace:
+            raise HTTPException(
+                status_code=403,
+                detail="X-Workspace does not match bearer token workspace",
+            )
+        try:
+            return workspace_resolver.from_header(token_workspace)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if TRUST_CLIENT_WORKSPACE_HEADER:
+        try:
+            return workspace_resolver.from_header(header_workspace)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
-        return workspace_resolver.from_header(_header_value(x_workspace)).id
+        return workspace_resolver.from_header(DEFAULT_WORKSPACE_ID)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _resolve_workspace(x_workspace: Any = None, authorization: Any = None) -> str:
+    return _resolve_workspace_context(x_workspace, authorization).id
 
 
 def _start_trace(endpoint: str, x_trace_id: Any = None, workspace_id: str = "") -> RequestTrace:
@@ -510,19 +570,15 @@ def _stream_trace_payload(
 
 
 def _degraded_llm_answer(exc: Exception) -> str:
-    return (
-        "The language model is currently unreachable, so this is a degraded "
-        "context-only response. The assembled context is still included below "
-        f"for inspection. Error: {exc}"
-    )
+    logger.warning("LLM unreachable, returning degraded context-only response: %s", exc)
+    return degraded_llm_answer()
 
 
 def _mark_degraded_route(route: dict[str, Any], exc: Exception) -> dict[str, Any]:
     return {
         **route,
         "degraded": True,
-        "reason": "llm_unreachable_context_only",
-        "error": str(exc),
+        "reason": LLM_UNREACHABLE_REASON,
     }
 
 
@@ -640,6 +696,32 @@ def _require_workspace_root_dir(raw_project_path: str):
         return resolve_project_root(raw_project_path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _authorize_workspace_project_root(
+    project_root: Path,
+    *,
+    workspace: Workspace,
+    db: Any,
+) -> None:
+    from sidecar.workspace_paths import (
+        WorkspaceRootMismatchError,
+        WorkspaceRootNotAllowedError,
+        registered_workspace_root,
+        validate_workspace_project_root,
+    )
+
+    existing = registered_workspace_root(db, workspace.id)
+    try:
+        validate_workspace_project_root(
+            project_root,
+            workspace_repo=workspace.repo,
+            existing_root=existing,
+        )
+    except WorkspaceRootMismatchError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WorkspaceRootNotAllowedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _sandbox_path(
@@ -1389,11 +1471,13 @@ def index(
     x_workspace: str = Header(None),
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace = _resolve_workspace_context(x_workspace, authorization)
+    workspace_id = workspace.id
     project_root = _require_workspace_root_dir(req.project_path)
     _track_git_delta_target(workspace_id, str(project_root), user_id)
 
     with db_session(user_id=user_id) as db:
+        _authorize_workspace_project_root(project_root, workspace=workspace, db=db)
         if req.queue:
             from sidecar.indexer.code import _collect_files
 
@@ -1424,8 +1508,16 @@ def index(
                 status = "partial_queued"
             return {"status": status, "path": str(project_root), **summary}
 
-        from sidecar.indexer.code import run_indexing
+        from sidecar.indexer.code import _collect_files, run_indexing
+        from sidecar.retrieval.manifest import register_workspace_project_root
 
+        files = _collect_files(str(project_root))
+        register_workspace_project_root(
+            db=db,
+            workspace_id=workspace_id,
+            project_path=str(project_root),
+            file_count=len(files),
+        )
         run_indexing(str(project_root), workspace_id=workspace_id)
     return {"status": "indexed", "path": str(project_root)}
 
@@ -1438,7 +1530,7 @@ def index_file_endpoint(
     x_workspace: str = Header(None),
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     with db_session(user_id=user_id) as db:
         safe_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
     if not os.path.isfile(safe_path):
@@ -1472,10 +1564,11 @@ def index_file_endpoint(
     try:
         job_id = _index_file_now(safe_path, workspace_id, user_id)
     except Exception as exc:
+        logger.exception("index_file failed for %s", safe_path)
         job_log = IndexJobLog()
         job = job_log.get_job(job_id) if job_id else None
         detail = {
-            "error": str(exc),
+            "error": PUBLIC_INTERNAL_ERROR,
             "job_id": job_id,
             "job_status": job["status"] if job else "unknown",
         }
@@ -1496,7 +1589,7 @@ def index_files_endpoint(
     x_workspace: str = Header(None),
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     with db_session(user_id=user_id) as db:
         safe_paths = [
             _sandbox_path(file_path, workspace_id=workspace_id, db=db)
@@ -1564,7 +1657,8 @@ def index_files_endpoint(
                     reason=reason,
                 )
             )
-        except Exception as exc:
+        except Exception:
+            logger.exception("index_files sync failed for %s", file_path)
             sync_results.append(
                 EnqueueResult(
                     accepted=False,
@@ -1572,7 +1666,7 @@ def index_files_endpoint(
                     file_path=file_path,
                     workspace_id=workspace_id,
                     queue_depth=index_queue.snapshot()["pending"],
-                    reason=str(exc),
+                    reason=INDEX_FAILED_REASON,
                 )
             )
     summary = _summarize_enqueue_results(sync_results)
@@ -1595,10 +1689,12 @@ def index_git_delta_endpoint(
     from sidecar.workspace_paths import registered_workspace_root
 
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace = _resolve_workspace_context(x_workspace, authorization)
+    workspace_id = workspace.id
     with db_session(user_id=user_id) as db:
         if req.project_path:
             project_root = _require_workspace_root_dir(req.project_path)
+            _authorize_workspace_project_root(project_root, workspace=workspace, db=db)
         else:
             manifest_root = registered_workspace_root(db, workspace_id)
             if manifest_root is None:
@@ -1645,7 +1741,7 @@ def index_manifest_endpoint(
 ):
     """Return the latest index manifest stored on the Workspace node (Neo4j)."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     with db_session(user_id=user_id) as db:
         get_m = getattr(db, "get_index_manifest", None)
         manifest = get_m(workspace_id=workspace_id) if callable(get_m) else None
@@ -1665,7 +1761,7 @@ def index_docs_endpoint(
     x_workspace: str = Header(None),
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     with db_session(user_id=user_id) as db:
         safe_docs_path = _sandbox_path(req.docs_path, workspace_id=workspace_id, db=db)
     if not os.path.isdir(safe_docs_path):
@@ -1685,7 +1781,7 @@ def search(
     x_workspace: str = Header(None),
 ):
     _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     return {"results": _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)}
 
 
@@ -1751,7 +1847,7 @@ def unified_search(
 ):
     """Blend doc vectors, symbol vectors, and optional graph neighbors into one ranked list."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     trace = _start_trace("/search/unified", x_trace_id, workspace_id)
     status = "ok"
     results: list[UnifiedSearchResult] = []
@@ -1835,7 +1931,7 @@ def update_overlay(
     x_workspace: str = Header(None),
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     with db_session(user_id=user_id) as db:
         safe_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
     overlay.update(
@@ -1857,7 +1953,7 @@ def clear_overlay(
     x_workspace: str = Header(None),
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     with db_session(user_id=user_id) as db:
         safe_path = _sandbox_path(file_path, workspace_id=workspace_id, db=db)
     overlay.clear(safe_path, workspace_id=workspace_id, user_id=user_id)
@@ -1874,7 +1970,7 @@ def ask(
 ):
     """Ask about a symbol (with multi-user audit logging)."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     trace = _start_trace("/ask", x_trace_id, workspace_id)
     status = "ok"
     try:
@@ -2014,7 +2110,7 @@ def ask_axis(
     from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
 
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     trace = _start_trace("/ask/axis", x_trace_id, workspace_id)
     status = "ok"
 
@@ -2124,7 +2220,7 @@ def ask_stream(
 ):
     """Streaming version of /ask endpoint (SSE)."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     trace = _start_trace("/ask/stream", x_trace_id, workspace_id)
 
     def response_generator() -> Generator[str, None, None]:
@@ -2249,12 +2345,16 @@ def ask_stream(
                     },
                 )
                 yield format_sse("done", {"type": "done", "trace_id": trace.trace_id})
-        except Exception as exc:
+        except Exception:
             status = "error"
             logger.exception("trace_id=%s endpoint=/ask/stream status=error", trace.trace_id)
             yield format_sse(
                 "error",
-                {"type": "error", "error": str(exc), "trace_id": trace.trace_id},
+                {
+                    "type": "error",
+                    "error": PUBLIC_INTERNAL_ERROR,
+                    "trace_id": trace.trace_id,
+                },
             )
         finally:
             default_metrics.record_trace(trace, status)
@@ -2271,7 +2371,7 @@ def record_feedback(
 ):
     """Record retrieval feedback against an issued feedback token."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     snapshot = feedback_store.get_snapshot(req.feedback_token)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Unknown feedback token")
@@ -2317,7 +2417,7 @@ def record_history_ask(
 ):
     """Persist a sanitized ask/request snapshot for local dialog history."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     if not _history_enabled():
         return {
             "status": "disabled",
@@ -2454,7 +2554,7 @@ def history_conversations(
 ):
     """List local history conversations for the current workspace and user."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     if not _history_enabled():
         return {"conversations": []}
     return {
@@ -2475,7 +2575,7 @@ def history_conversation(
 ):
     """Return a sanitized conversation bundle with messages and snapshots."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     _history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
     bundle = history_provider.get_conversation_bundle(conversation_id)
     if bundle is None:
@@ -2496,7 +2596,7 @@ def history_request_bundle(
 ):
     """Return the snapshots for a selected request in a conversation."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     _history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
     bundle = history_provider.get_request_bundle(conversation_id, request_id)
     if bundle is None:
@@ -2514,7 +2614,7 @@ def impact(
 ):
     """Return downstream dependents affected by a change to the given symbol."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace)
+    workspace_id = _resolve_workspace(x_workspace, authorization)
     with db_session(user_id=user_id) as db:
         from sidecar.axis.impact_surface import build_impact_surface
 
@@ -2551,13 +2651,21 @@ def auth_token(
     user_id: str = None,  # type: ignore
     x_user_id: str = Header(None),
     authorization: str = Header(None),
+    x_workspace: str = Header(None),
 ):
-    """Generate a signed token.
+    """Generate a signed token scoped to a workspace.
 
-    With AUTH_REQUIRED=false this is a local bootstrap/dev endpoint. With
-    AUTH_REQUIRED=true an existing bearer token is required, and callers may
-    only mint a replacement token for themselves.
+    Bootstrap endpoint for the VS Code extension. When AUTH_REQUIRED=true an
+    existing bearer token is required, and callers may only mint a replacement
+    token for themselves. X-User-Id is never trusted for identity; workspace
+    scope is taken from X-Workspace (or DEFAULT_WORKSPACE_ID).
     """
+    workspace_id = _header_value(x_workspace) or DEFAULT_WORKSPACE_ID
+    try:
+        workspace_resolver.from_header(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if AUTH_REQUIRED:
         requester = _resolve_request_user(x_user_id, authorization, require_auth=True)
         requested_user = _canonical_user_id(user_id) or requester
@@ -2565,17 +2673,21 @@ def auth_token(
             raise HTTPException(status_code=403, detail="Cannot issue token for another user")
         token_user = requester
     else:
-        token_user = user_auth.identify_user(user_id)
+        requested = _canonical_user_id(user_id)
+        if TRUST_CLIENT_USER_HEADER:
+            token_user = user_auth.identify_user(requested or _header_value(x_user_id))
+        else:
+            token_user = user_auth.identify_user(requested or None)
 
-    token = user_auth.generate_token(token_user)
-    logger.info(f"✅ Token issued for user: {token_user}")
+    token = user_auth.generate_token(token_user, workspace_id=workspace_id)
+    logger.info("Token issued for user=%s workspace=%s", token_user, workspace_id)
     return {"token": token, "user_id": token_user, "expires_in_hours": 24}
 
 
 @app.get("/auth/users", response_model=UsersResponse)
 def list_users(x_user_id: str = Header(None), authorization: str = Header(None)):
-    """List all active users."""
-    _resolve_request_user(x_user_id, authorization)
+    """List all active users (requires a valid bearer token)."""
+    _resolve_request_user(x_user_id, authorization, require_auth=True)
     return {"users": user_auth.list_users()}
 
 

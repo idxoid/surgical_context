@@ -6,6 +6,8 @@ import pytest
 
 from sidecar.workspace_paths import (
     PathOutsideWorkspaceError,
+    WorkspaceRootMismatchError,
+    WorkspaceRootNotAllowedError,
     WorkspaceRootNotRegisteredError,
     is_path_within_root,
     prune_graph_paths_outside_root,
@@ -13,6 +15,8 @@ from sidecar.workspace_paths import (
     resolve_graph_file_path,
     resolve_path_under_workspace_root,
     resolve_project_root,
+    trusted_workspace_roots,
+    validate_workspace_project_root,
 )
 
 
@@ -103,3 +107,37 @@ def test_is_path_within_root(tmp_path):
     inner.write_text("", encoding="utf-8")
     assert is_path_within_root(inner, root)
     assert not is_path_within_root(tmp_path / "other.py", root)
+
+
+def test_validate_workspace_project_root_requires_repo_basename(tmp_path):
+    root = tmp_path / "fastapi"
+    root.mkdir()
+    validate_workspace_project_root(root, workspace_repo="fastapi")
+    with pytest.raises(WorkspaceRootMismatchError):
+        validate_workspace_project_root(root, workspace_repo="flask")
+
+
+def test_validate_workspace_project_root_is_sticky(tmp_path):
+    first = tmp_path / "repo"
+    first.mkdir()
+    second = tmp_path / "other"
+    second.mkdir()
+    validate_workspace_project_root(first, workspace_repo="repo")
+    validate_workspace_project_root(first, workspace_repo="repo", existing_root=first)
+    with pytest.raises(WorkspaceRootMismatchError):
+        validate_workspace_project_root(second, workspace_repo="other", existing_root=first)
+
+
+def test_validate_workspace_project_root_honors_trusted_roots(tmp_path, monkeypatch):
+    allowed_parent = tmp_path / "allowed"
+    allowed_parent.mkdir()
+    project = allowed_parent / "repo"
+    project.mkdir()
+    outside = tmp_path / "outside" / "repo"
+    outside.mkdir(parents=True)
+
+    monkeypatch.setenv("WORKSPACE_TRUSTED_ROOTS", str(allowed_parent))
+    assert trusted_workspace_roots() == [allowed_parent.resolve()]
+    validate_workspace_project_root(project, workspace_repo="repo")
+    with pytest.raises(WorkspaceRootNotAllowedError):
+        validate_workspace_project_root(outside, workspace_repo="repo")

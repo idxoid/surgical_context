@@ -30,13 +30,29 @@ function getTokenBudget(defaultValue = 6000): number {
 async function getHeaders(authToken = getAuthToken()): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const workspaceId = await resolveWorkspaceId();
+  const token = authToken || (await ensureAuthToken(workspaceId));
   if (workspaceId) {
     headers['X-Workspace'] = workspaceId;
   }
-  if (authToken) {
-    headers.Authorization = authHeaderValue(authToken);
+  if (token) {
+    headers.Authorization = authHeaderValue(token);
   }
   return headers;
+}
+
+async function ensureAuthToken(workspaceId?: string | null): Promise<string> {
+  const res = await fetch(`${getBaseUrl()}/auth/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(workspaceId ? { 'X-Workspace': workspaceId } : {}),
+    },
+  });
+  if (!res.ok) {
+    return '';
+  }
+  const body = (await res.json()) as { token?: string };
+  return body.token?.trim() || '';
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {

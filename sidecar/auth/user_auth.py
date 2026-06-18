@@ -61,13 +61,20 @@ class UserAuth:
 
         return user_id
 
-    def generate_token(self, user_id: str, duration_hours: int = 24) -> str:
+    def generate_token(
+        self,
+        user_id: str,
+        duration_hours: int = 24,
+        *,
+        workspace_id: str | None = None,
+    ) -> str:
         """
         Generate a signed bearer token.
 
         Args:
             user_id: User ID
             duration_hours: Token validity (hours)
+            workspace_id: Optional workspace scope bound into the token
 
         Returns:
             Token string
@@ -75,12 +82,14 @@ class UserAuth:
         user_id = self.identify_user(user_id)
 
         # Create payload
-        payload = {
+        payload: dict[str, str] = {
             "user_id": user_id,
             "issued_at": datetime.now().isoformat(),
             "expires_at": (datetime.now() + timedelta(hours=duration_hours)).isoformat(),
             "nonce": str(uuid.uuid4()),
         }
+        if workspace_id:
+            payload["workspace_id"] = workspace_id
 
         payload_segment = self._encode_payload(payload)
         signature = self._sign(payload_segment)
@@ -112,6 +121,14 @@ class UserAuth:
             return "anonymous"
         user_id = payload.get("user_id", "anonymous")
         return str(user_id) if user_id else "anonymous"
+
+    def get_workspace_from_token(self, token: str) -> str | None:
+        """Extract workspace scope from token, if present."""
+        payload = self._decode_token(token)
+        if not payload:
+            return None
+        workspace_id = payload.get("workspace_id")
+        return str(workspace_id).strip() if workspace_id else None
 
     def list_users(self) -> list[dict]:
         """List all known users."""

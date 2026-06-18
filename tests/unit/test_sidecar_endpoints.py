@@ -97,6 +97,15 @@ def fake_db_session(user_id="anonymous"):
         db.close()
 
 
+def bearer_auth(
+    main,
+    user_id: str = "alice",
+    workspace_id: str = "local/surgical_context@main",
+) -> str:
+    token = main.user_auth.generate_token(user_id, workspace_id=workspace_id)
+    return f"Bearer {token}"
+
+
 def import_main_with_fakes(monkeypatch):
     """Import sidecar.main without constructing real LanceDB/LLM clients."""
     sys.modules.pop("sidecar.main", None)
@@ -163,7 +172,15 @@ def import_main_with_fakes(monkeypatch):
     # /ask uses the axis provider by default. Fake that seam so endpoint tests
     # get a deterministic context; fallback tests override it to return None.
     def fake_context_from_axis(
-        question, *, workspace_id="", db=None, token_budget=4000, anchor_path=None
+        question,
+        *,
+        workspace_id="",
+        db=None,
+        token_budget=4000,
+        anchor_path=None,
+        trace_id="",
+        user_id="anonymous",
+        **_,
     ):
         return FakeCtx()
 
@@ -210,7 +227,7 @@ def test_ask_endpoint_returns_typed_response(monkeypatch):
 
     body = main.ask(
         main.AskRequest(symbol="process_payment", question="How does this work?"),
-        x_user_id="Alice",
+        authorization=bearer_auth(main),
     )
 
     assert body["symbol"] == "process_payment"
@@ -256,20 +273,22 @@ def test_ask_endpoint_degrades_when_llm_unreachable(monkeypatch):
 
     assert body["trace_id"] == "trace-degraded"
     assert "degraded context-only response" in body["answer"]
-    assert "Ollama request failed" in body["answer"]
+    assert "Ollama request failed" not in body["answer"]
     assert body["context"]["primary_source"]["symbol"] == "process_payment"
     assert body["feedback_token"].startswith("fbk_")
     assert body["model_route"]["degraded"] is True
     assert body["model_route"]["reason"] == "llm_unreachable_context_only"
+    assert "error" not in body["model_route"]
 
 
 def test_ask_endpoint_persists_private_feedback_snapshot(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
     question = "How does this work?"
+    auth = bearer_auth(main)
 
     body = main.ask(
         main.AskRequest(symbol="process_payment", question=question),
-        x_user_id="Alice",
+        authorization=auth,
         x_trace_id="trace-feedback",
     )
 
@@ -286,9 +305,10 @@ def test_ask_endpoint_persists_private_feedback_snapshot(monkeypatch):
 
 def test_feedback_endpoint_records_sanitized_event(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
+    auth = bearer_auth(main)
     ask_body = main.ask(
         main.AskRequest(symbol="process_payment", question="How does this work?"),
-        x_user_id="Alice",
+        authorization=auth,
     )
 
     body = main.record_feedback(
@@ -301,7 +321,7 @@ def test_feedback_endpoint_records_sanitized_event(monkeypatch):
                 "api_key": "secret",
             },
         ),
-        x_user_id="Alice",
+        authorization=auth,
     )
 
     assert body["status"] == "recorded"
@@ -318,7 +338,7 @@ def test_feedback_endpoint_enforces_token_user_scope(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
     ask_body = main.ask(
         main.AskRequest(symbol="process_payment", question="How does this work?"),
-        x_user_id="Alice",
+        authorization=bearer_auth(main, "alice"),
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -327,7 +347,7 @@ def test_feedback_endpoint_enforces_token_user_scope(monkeypatch):
                 feedback_token=ask_body["feedback_token"],
                 kind="explicit_accept",
             ),
-            x_user_id="Bob",
+            authorization=bearer_auth(main, "bob"),
         )
 
     assert exc_info.value.status_code == 403
@@ -335,6 +355,7 @@ def test_feedback_endpoint_enforces_token_user_scope(monkeypatch):
 
 def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
+    auth = bearer_auth(main)
 
     body = main.record_history_ask(
         main.HistoryAskRecordRequest(
@@ -361,18 +382,18 @@ def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(
                 "affected_symbols": [{"symbol": "caller", "code": "raw code"}],
             },
         ),
-        x_user_id="Alice",
+        authorization=auth,
     )
 
     assert body["status"] == "recorded"
     assert body["conversation_id"] == "dialog-local-1"
     assert body["selected_request_id"] == "req-history"
 
-    conversations = main.history_conversations(x_user_id="Alice")
+    conversations = main.history_conversations(authorization=auth)
     assert conversations["conversations"][0]["id"] == body["conversation_id"]
     assert conversations["conversations"][0]["selected_request_id"] == "req-history"
 
-    bundle = main.history_conversation(body["conversation_id"], x_user_id="Alice")
+    bundle = main.history_conversation(body["conversation_id"], authorization=auth)
     assert bundle["conversation"]["selected_request_id"] == "req-history"
     assert len(bundle["messages"]) == 2
     assert bundle["messages"][1]["ask_snapshot"]["snapshot"]["redacted_keys"] == [
@@ -383,7 +404,7 @@ def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(
     request_bundle = main.history_request_bundle(
         body["conversation_id"],
         "req-history",
-        x_user_id="Alice",
+        authorization=auth,
     )
     assert request_bundle["message"]["id"] == body["assistant_message_id"]
     assert request_bundle["ask_snapshot"]["feedback_token"] == "fbk_history"
@@ -393,7 +414,10 @@ def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(
     ] == ["code"]
 
     with pytest.raises(HTTPException) as exc_info:
-        main.history_conversation(body["conversation_id"], x_user_id="Bob")
+        main.history_conversation(
+            body["conversation_id"],
+            authorization=bearer_auth(main, "bob"),
+        )
 
     assert exc_info.value.status_code == 403
 
@@ -409,7 +433,7 @@ def test_history_ask_endpoint_is_quiet_when_history_disabled(monkeypatch):
             prompt_summary="Ask about disabled history",
             answer_summary="No-op",
         ),
-        x_user_id="Alice",
+        authorization=bearer_auth(main),
     )
 
     assert body == {
@@ -419,7 +443,7 @@ def test_history_ask_endpoint_is_quiet_when_history_disabled(monkeypatch):
         "assistant_message_id": "",
         "selected_request_id": "req-disabled",
     }
-    assert main.history_conversations(x_user_id="Alice") == {"conversations": []}
+    assert main.history_conversations(authorization=bearer_auth(main)) == {"conversations": []}
 
 
 def test_ask_stream_endpoint_emits_json_sse(monkeypatch):
@@ -481,7 +505,7 @@ def test_ask_stream_degrades_when_llm_unreachable(monkeypatch):
     chunks = [p["content"] for name, p in events if name == "chunk"]
     assert len(chunks) == 1
     assert "degraded context-only response" in chunks[0]
-    assert "Ollama streaming failed" in chunks[0]
+    assert "Ollama streaming failed" not in chunks[0]
 
     context_events = [p for name, p in events if name == "context"]
     assert len(context_events) == 1
@@ -489,6 +513,7 @@ def test_ask_stream_degrades_when_llm_unreachable(monkeypatch):
     assert context_events[0]["context"]["primary_source"]["symbol"] == "process_payment"
     assert context_events[0]["feedback_token"].startswith("fbk_")
     assert context_events[0]["context"]["metadata"]["assembly"]["model_route"]["degraded"] is True
+    assert "error" not in context_events[0]["context"]["metadata"]["assembly"]["model_route"]
 
     assert any(name == "done" for name, _ in events)
     assert not any(name == "error" for name, _ in events)
@@ -654,7 +679,7 @@ def test_unified_search_includes_axis_graph_neighbors(monkeypatch):
 def test_auth_required_accepts_valid_bearer_token(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
     monkeypatch.setattr(main, "AUTH_REQUIRED", True)
-    token = main.user_auth.generate_token("Alice")
+    token = main.user_auth.generate_token("Alice", workspace_id="local/surgical_context@main")
 
     body = main.ask(
         main.AskRequest(symbol="process_payment", question="How does this work?"),
@@ -739,14 +764,20 @@ def test_queued_index_registers_root_before_overlay_and_index_file(monkeypatch, 
         ],
     )
 
-    index_body = main.index(main.IndexRequest(project_path=str(project), queue=True))
+    index_body = main.index(
+        main.IndexRequest(project_path=str(project), queue=True),
+        authorization=bearer_auth(main, workspace_id="local/proj@main"),
+        x_workspace="local/proj@main",
+    )
     assert index_body["status"] == "queued"
 
     overlay_body = main.update_overlay(
         main.OverlayRequest(
             file_path=str(source_file),
             content="def hello():\n    return 'ok'\n",
-        )
+        ),
+        authorization=bearer_auth(main, workspace_id="local/proj@main"),
+        x_workspace="local/proj@main",
     )
     assert overlay_body["file_path"] == str(source_file.resolve())
 
@@ -922,7 +953,11 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     monkeypatch.setattr(impact_surface, "build_impact_surface", fake_build_impact_surface)
     monkeypatch.setattr(main, "db_session", impact_db_session)
 
-    body = main.impact(symbol="process_payment", max_depth=2, x_user_id="Alice")
+    body = main.impact(
+        symbol="process_payment",
+        max_depth=2,
+        authorization=bearer_auth(main),
+    )
 
     assert body["symbol_uid"] == "symbol-1"
     assert body["affected_count"] == 1
@@ -957,7 +992,7 @@ def test_cloud_status_uses_request_user_for_db_session(monkeypatch):
 
     monkeypatch.setattr(main, "db_session", cloud_db_session)
 
-    body = main.cloud_status(x_user_id="Alice")
+    body = main.cloud_status(authorization=bearer_auth(main, "alice"))
 
     assert body == {
         "cloud_enabled": True,
@@ -980,7 +1015,7 @@ def test_audit_actions_endpoint_returns_actions(monkeypatch):
 
     monkeypatch.setattr(main, "audit_log", FakeAuditLog())
 
-    body = main.audit_actions(limit=1, x_user_id="Alice")
+    body = main.audit_actions(limit=1, authorization=bearer_auth(main, "alice"))
 
     assert body == {
         "actions": [{"user_id": "alice", "action": "query"}],
@@ -993,7 +1028,10 @@ def test_audit_actions_endpoint_rejects_cross_user_reads(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
-        main.audit_actions(user_id="bob", x_user_id="Alice")
+        main.audit_actions(
+            user_id="bob",
+            authorization=bearer_auth(main, "alice"),
+        )
 
     assert exc_info.value.status_code == 403
 
@@ -1001,11 +1039,15 @@ def test_audit_actions_endpoint_rejects_cross_user_reads(monkeypatch):
 def test_auth_token_endpoint_returns_token(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
-    body = main.auth_token(user_id="Alice")
+    body = main.auth_token(
+        user_id="Alice",
+        x_workspace="local/surgical_context@main",
+    )
 
     assert body["user_id"] == "alice"
     assert body["token"]
     assert body["expires_in_hours"] == 24
+    assert main.user_auth.get_workspace_from_token(body["token"]) == "local/surgical_context@main"
 
 
 def test_auth_token_requires_bearer_when_auth_required(monkeypatch):
@@ -1021,7 +1063,7 @@ def test_auth_token_requires_bearer_when_auth_required(monkeypatch):
 def test_auth_token_allows_self_refresh_when_auth_required(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
     monkeypatch.setattr(main, "AUTH_REQUIRED", True)
-    token = main.user_auth.generate_token("Alice")
+    token = main.user_auth.generate_token("Alice", workspace_id="local/surgical_context@main")
 
     body = main.auth_token(user_id="Alice", authorization=f"Bearer {token}")
 
@@ -1032,9 +1074,171 @@ def test_auth_token_allows_self_refresh_when_auth_required(monkeypatch):
 def test_auth_token_rejects_cross_user_mint_when_auth_required(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
     monkeypatch.setattr(main, "AUTH_REQUIRED", True)
-    token = main.user_auth.generate_token("Alice")
+    token = main.user_auth.generate_token("Alice", workspace_id="local/surgical_context@main")
 
     with pytest.raises(HTTPException) as exc_info:
         main.auth_token(user_id="Bob", authorization=f"Bearer {token}")
 
     assert exc_info.value.status_code == 403
+
+
+def test_resolve_request_user_ignores_x_user_id_by_default(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    user_id = main._resolve_request_user(x_user_id="Alice")
+
+    assert user_id == "anonymous"
+
+
+def test_resolve_request_user_honors_bearer_over_x_user_id(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    token = main.user_auth.generate_token("carol", workspace_id="local/surgical_context@main")
+
+    user_id = main._resolve_request_user(
+        x_user_id="Alice",
+        authorization=f"Bearer {token}",
+    )
+
+    assert user_id == "carol"
+
+
+def test_resolve_workspace_ignores_spoofed_header_without_token(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    workspace_id = main._resolve_workspace(x_workspace="local/evil@main")
+
+    assert workspace_id == main.DEFAULT_WORKSPACE_ID
+
+
+def test_resolve_workspace_rejects_header_token_mismatch(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+    token = main.user_auth.generate_token("alice", workspace_id="local/surgical_context@main")
+
+    with pytest.raises(HTTPException) as exc_info:
+        main._resolve_workspace(
+            x_workspace="local/evil@main",
+            authorization=f"Bearer {token}",
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+def test_list_users_requires_bearer_token(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.list_users()
+
+    assert exc_info.value.status_code == 401
+
+
+def test_index_rejects_workspace_root_hijack(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    registered = tmp_path / "victim"
+    registered.mkdir()
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+
+    class ManifestDb(FakeDb):
+        def __init__(self):
+            super().__init__()
+            self._manifest = {"project_path": str(registered)}
+
+        def get_index_manifest(self, workspace_id=None):
+            return self._manifest
+
+        def save_index_manifest(self, manifest, workspace_id=None):
+            self._manifest = dict(manifest)
+
+    manifest_db = ManifestDb()
+
+    @contextmanager
+    def manifest_db_session(user_id="anonymous"):
+        yield manifest_db
+
+    monkeypatch.setattr(main, "db_session", manifest_db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.index(
+            main.IndexRequest(project_path=str(attacker), queue=True),
+            authorization=bearer_auth(main, workspace_id="local/victim@main"),
+            x_workspace="local/victim@main",
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "already registered" in str(exc_info.value.detail).lower()
+
+
+def test_index_rejects_repo_name_mismatch(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    project = tmp_path / "wrong-name"
+    project.mkdir()
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.index(
+            main.IndexRequest(project_path=str(project), queue=True),
+            authorization=bearer_auth(main, workspace_id="local/expected@main"),
+            x_workspace="local/expected@main",
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "does not match" in str(exc_info.value.detail).lower()
+    main = import_main_with_fakes(monkeypatch)
+
+    def fail_context(*args, **kwargs):
+        raise RuntimeError("neo4j://secret-host:7687 connection refused")
+
+    monkeypatch.setattr(main, "_resolve_ask_context", fail_context)
+
+    response = main.ask_stream(
+        main.AskRequest(symbol="process_payment", question="Fail early"),
+        x_trace_id="trace-stream-error",
+    )
+    body = asyncio.run(_read_streaming_response(response)).decode("utf-8")
+    events = _parse_sse_events(body)
+    error_events = [payload for name, payload in events if name == "error"]
+
+    assert len(error_events) == 1
+    assert error_events[0]["error"] == "An internal error occurred"
+    assert "neo4j" not in error_events[0]["error"]
+    assert error_events[0]["trace_id"] == "trace-stream-error"
+
+
+def test_index_file_endpoint_redacts_internal_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
+    main = import_main_with_fakes(monkeypatch)
+    source_file = tmp_path / "app.py"
+    source_file.write_text("def hello():\n    pass\n", encoding="utf-8")
+
+    def fail_now(*args, **kwargs):
+        raise RuntimeError("neo4j://secret-host:7687 write failed")
+
+    monkeypatch.setattr(main, "_index_file_now", fail_now)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.index_file_endpoint(main.IndexFileRequest(file_path=str(source_file), queue=False))
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail["error"] == "An internal error occurred"
+    assert "neo4j" not in exc_info.value.detail["error"]
+
+
+def test_index_files_endpoint_redacts_sync_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
+    main = import_main_with_fakes(monkeypatch)
+    source_file = tmp_path / "app.py"
+    source_file.write_text("def hello():\n    pass\n", encoding="utf-8")
+
+    def fail_now(*args, **kwargs):
+        raise RuntimeError("lancedb path /secret/data failed")
+
+    monkeypatch.setattr(main, "_index_file_now", fail_now)
+
+    body = main.index_files_endpoint(
+        main.IndexFilesRequest(file_paths=[str(source_file)], queue=False)
+    )
+
+    failed = [result for result in body["results"] if result["status"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["reason"] == "index_failed"
+    assert "lancedb" not in failed[0]["reason"]
