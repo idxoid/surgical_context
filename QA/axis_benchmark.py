@@ -20,6 +20,10 @@ Usage::
     # Comparison with a previous run:
     python -m QA.axis_benchmark --pack ... --out ... \\
         --compare /tmp/axis_benchmark_previous/summary.json
+
+    # Cap sweep (per-role seed limit / impact blast radius):
+    python -m QA.axis_benchmark --pack ... --out /tmp/cap_8_35 \\
+        --per-role-limit 8 --max-impacted 35 --intent-budget --token-budget 6000
 """
 
 from __future__ import annotations
@@ -82,11 +86,17 @@ _BENCH_REPOS = (
     "sqlalchemy",
     "django",
     "dathund",
+    "surgical_context",
 )
 REPO_TO_WORKSPACE: dict[str, str] = {
     repo: _BENCH_PROFILE.workspace_id(f"{_BENCH_TENANT}/{repo}@{_BENCH_REF}")
     for repo in _BENCH_REPOS
+    if repo != "surgical_context"
 }
+# Dogfood repo is indexed under the local tenant (see run_demo / manual reindex),
+# not under qa_repo like the cloned benchmark checkouts.
+_SC_WS = os.getenv("AXIS_SURGICAL_CONTEXT_WORKSPACE", f"local/surgical_context@{_BENCH_REF}")
+REPO_TO_WORKSPACE["surgical_context"] = _BENCH_PROFILE.workspace_id(_SC_WS)
 
 
 @dataclass
@@ -222,11 +232,12 @@ def run_question(
     lance: LanceDBClient,
     top_roles: int,
     per_role_limit: int,
+    max_impacted: int,
     intent_threshold: float,
     context_per_seed: int,
     context_seeds_per_role: int | None = None,
     intent_budget: bool = False,
-    base_token_budget: int = 4000,
+    base_token_budget: int = 6000,
     render_mode_override: str | None = None,
     ignore_anchor: bool = False,
     hook_transparency: bool = False,
@@ -268,6 +279,7 @@ def run_question(
         lance=lance,
         top_roles=top_roles,
         per_role_limit=per_role_limit,
+        max_impacted=max_impacted,
         intent_threshold=intent_threshold,
         with_context=True,
         context_per_seed=context_per_seed,
@@ -678,7 +690,13 @@ def main() -> None:
     )
     parser.add_argument("--out", default="/tmp/axis_benchmark", type=Path)
     parser.add_argument("--top-roles", type=int, default=3)
-    parser.add_argument("--per-role-limit", type=int, default=6)
+    parser.add_argument("--per-role-limit", type=int, default=7, help="Seed/pool cap per intent role (default 7).")
+    parser.add_argument(
+        "--max-impacted",
+        type=int,
+        default=35,
+        help="Impact-analysis traversal cap (default 35). Pair with --per-role-limit for cap sweeps (e.g. 7/35).",
+    )
     parser.add_argument("--intent-threshold", type=float, default=0.20)
     parser.add_argument("--context-per-seed", type=int, default=6)
     parser.add_argument(
@@ -701,9 +719,9 @@ def main() -> None:
     parser.add_argument(
         "--token-budget",
         type=int,
-        default=4000,
+        default=6000,
         help="Base token budget for --intent-budget (scaled per intent "
-        "profile). Mirrors AskRequest.token_budget. Default 4000.",
+        "profile). Mirrors AskRequest.token_budget. Default 6000.",
     )
     parser.add_argument(
         "--render-mode",
@@ -772,7 +790,8 @@ def main() -> None:
 
     if progress_enabled:
         print(
-            f"[axis] pack={args.pack} questions={total_questions} out={args.out}",
+            f"[axis] pack={args.pack} questions={total_questions} out={args.out} "
+            f"caps={args.per_role_limit}/{args.max_impacted}",
             file=progress_stream,
             flush=True,
         )
@@ -792,6 +811,7 @@ def main() -> None:
             lance=lance,
             top_roles=args.top_roles,
             per_role_limit=args.per_role_limit,
+            max_impacted=args.max_impacted,
             intent_threshold=args.intent_threshold,
             context_per_seed=args.context_per_seed,
             context_seeds_per_role=args.context_seeds_per_role,
@@ -830,6 +850,10 @@ def main() -> None:
             )
 
     summary = summarise(results)
+    summary["caps"] = {
+        "per_role_limit": args.per_role_limit,
+        "max_impacted": args.max_impacted,
+    }
 
     args.out.mkdir(parents=True, exist_ok=True)
     summary_path = args.out / "summary.json"

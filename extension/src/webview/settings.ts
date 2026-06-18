@@ -89,7 +89,7 @@ class SettingsPanel {
     const workspaceId = (document.getElementById('workspaceId') as HTMLInputElement)?.value || '';
     const modelPreference = (document.getElementById('modelPreference') as HTMLSelectElement)?.value || 'auto';
     const authToken = (document.getElementById('authToken') as HTMLInputElement)?.value || '';
-    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement)?.value || '4000');
+    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement)?.value || '6000');
     const lancedbPath = (document.getElementById('lancedbPath') as HTMLInputElement)?.value || '';
     const historyPath = (document.getElementById('historyPath') as HTMLInputElement)?.value || '';
     const overlaySync = (document.getElementById('overlaySync') as HTMLInputElement)?.checked || false;
@@ -130,7 +130,7 @@ class SettingsPanel {
       workspaceId: '',
       modelPreference: 'auto',
       authToken: '',
-      tokenBudget: 4000,
+      tokenBudget: 6000,
       lancedbPath: './data/lancedb',
       historyPath: './data/history/surgical_context.sqlite3',
       overlaySync: true,

@@ -114,7 +114,7 @@ class IndexDocsRequest(BaseModel):
 class AskRequest(BaseModel):
     symbol: str | None = None
     question: str = "What does this code do?"
-    token_budget: int = Field(default=4000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
+    token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
     file_path: str | None = None
 
 
@@ -224,7 +224,7 @@ class AskAxisRequest(BaseModel):
     question: str
     top_roles: int = Field(default=3, ge=1, le=10)
     intent_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
-    per_role_limit: int = Field(default=6, ge=1, le=50)
+    per_role_limit: int = Field(default=7, ge=1, le=50)
     with_context: bool = True
     context_seeds_per_role: int = Field(default=2, ge=1, le=10)
     context_per_seed: int = Field(default=4, ge=1, le=20)
@@ -852,7 +852,7 @@ def _context_from_axis(
     *,
     workspace_id: str,
     db: Any,
-    token_budget: int = 4000,
+    token_budget: int = 6000,
     anchor_path: str | None = None,
     trace_id: str = "",
     user_id: str = "anonymous",

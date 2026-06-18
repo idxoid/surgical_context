@@ -255,7 +255,7 @@
         },
         "surgicalContext.tokenBudget": {
           "type": "number",
-          "default": 4000,
+          "default": 6000,
           "minimum": 1000,
           "maximum": 32000,
           "description": "Default context token budget for ask requests"

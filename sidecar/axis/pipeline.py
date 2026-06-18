@@ -65,7 +65,7 @@ _MODE_ROLES = frozenset({"impact_analysis", "trace_dependency"})
 # Seed-budget multiplier for mode (impact / trace) intents — their answer
 # surface is a blast radius and the seed layer now feeds a multi-stage pool.
 # Was 2× per_role_limit (=16 at default 8); tightened to 1× to cut
-# impact/trace latency on large workspaces. Default per_role_limit is 6 (cap 6/30).
+# impact/trace latency on large workspaces. Default caps: 7/35.
 _MODE_SEED_LIMIT_FACTOR = 1
 
 
@@ -103,13 +103,14 @@ def run_axis_retrieval(
     db: Any,
     lance: Any,
     top_roles: int = 3,
-    per_role_limit: int = 6,
+    per_role_limit: int = 7,
+    max_impacted: int = 35,
     intent_threshold: float = 0.20,
     with_context: bool = True,
     context_per_seed: int = 4,
     context_seeds_per_role: int | None = None,
     intent_budget: bool = False,
-    base_token_budget: int = 4000,
+    base_token_budget: int = 6000,
     render_mode_override: str | None = None,
     anchor_path: str | None = None,
     hook_transparency: bool = False,
@@ -267,6 +268,7 @@ def run_axis_retrieval(
                         existing_pool,
                         db=db,
                         workspace_id=workspace_id,
+                        max_impacted=max_impacted,
                         include_tests=include_tests_in_walks,
                         intent_roles=[m.role for m in intent],
                         intent_similarities={m.role: m.similarity for m in intent},
