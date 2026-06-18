@@ -17,7 +17,7 @@ guess. The catalogue still names the *canonical* QN's container kind
 into this generator.
 
 The output is a JSON map merged into the catalogue at probe-lookup time
-through :mod:`sidecar.axis.library_marker_aliases`.
+through :mod:`context_engine.axis.library_marker_aliases`.
 
 Usage::
 
@@ -25,7 +25,7 @@ Usage::
         --workspace qa_repo/flask@axis-v4+axis_python_v1 \
         --workspace qa_repo/fastapi@axis-v4+axis_python_v1 \
         --workspace qa_repo/celery@axis-v4+axis_python_v1 \
-        --out sidecar/axis/library_marker_aliases.json
+        --out context_engine/axis/library_marker_aliases.json
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+from context_engine.database.neo4j_client import Neo4jClient
+from context_engine.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
 
 def derive_aliases_for_workspace(db: Neo4jClient, workspace_id: str) -> dict[str, list[str]]:
@@ -134,7 +134,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--out",
-        default="sidecar/axis/library_marker_aliases.json",
+        default="context_engine/axis/library_marker_aliases.json",
         help="Output JSON path",
     )
     args = parser.parse_args()

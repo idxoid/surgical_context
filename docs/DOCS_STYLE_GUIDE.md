@@ -55,7 +55,7 @@ What's on the roadmap. Bullet list.
 ```
 # Anchor Linker — Spec
 
-`sidecar/indexer/anchor.py` — links documentation chunks to code symbols 
+`context_engine/indexer/anchor.py` — links documentation chunks to code symbols 
 via DocAnchor nodes in Neo4j. Enables hybrid retrieval: semantic search 
 finds a doc chunk → graph traversal finds the code it describes.
 
@@ -147,7 +147,7 @@ When the user saves, the overlay is cleared and re-indexing begins.
 **Good:**
 ```python
 # ✓ Specific, copy-paste-able, shows input + output
-calls = extractor.extract_calls("sidecar/indexer/code.py")
+calls = extractor.extract_calls("context_engine/indexer/code.py")
 print(calls[0])
 # Output: {"caller_uid": "abc123", "callee_name": "run_indexing", "rel_type": "CALLS_DIRECT"}
 ```
@@ -213,7 +213,7 @@ See [spec_doc_anchor.md](spec_doc_anchor.md) for DocAnchor semantics.
 
 **Code files:**
 ```markdown
-[sidecar/indexer/code.py:54-60](sidecar/indexer/code.py#L54-L60) — symbol extraction phase
+[context_engine/indexer/code.py:54-60](context_engine/indexer/code.py#L54-L60) — symbol extraction phase
 ```
 
 **External:**
@@ -253,7 +253,7 @@ Goal: Classify function calls by confidence.
 
 **Filenames & paths:**
 ```markdown
-`sidecar/indexer/code.py`       # Local paths always relative to repo root
+`context_engine/indexer/code.py`       # Local paths always relative to repo root
 `config.json`                   # Bare filenames if in same directory
 ```
 

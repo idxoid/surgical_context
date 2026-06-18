@@ -1,6 +1,6 @@
 """Unit tests for bounded coalescing indexing queue."""
 
-from sidecar.indexer.queue import IndexBatchQueue
+from context_engine.indexer.queue import IndexBatchQueue
 
 
 def test_queue_coalesces_duplicate_file_saves():

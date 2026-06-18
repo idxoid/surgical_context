@@ -62,7 +62,7 @@ It undersells the product. Local llama3 on `/ask` produces mediocre answers that
 - Demo against **Claude Sonnet 4.6** via the Anthropic SDK with prompt caching on the `graph_context` block. This is where the "surgical" story sings: cache hits on stable symbols, only the target body invalidates per query.
 - Keep Ollama as the offline/air-gapped fallback, not the default.
 
-Implementation: [sidecar/ai/engine.py](../sidecar/ai/engine.py) already has a stubbed Anthropic path. Activate it, add cache-breakpoint markers in `PromptContext.to_system_prompt()` at the boundary between `primary_source` (hot) and `graph_context` (cache-cold after first hit).
+Implementation: [context_engine/ai/engine.py](../context_engine/ai/engine.py) already has a stubbed Anthropic path. Activate it, add cache-breakpoint markers in `PromptContext.to_system_prompt()` at the boundary between `primary_source` (hot) and `graph_context` (cache-cold after first hit).
 
 ### 6. `extension/` is the real gap ✅ implemented, now polish/sync gap
 

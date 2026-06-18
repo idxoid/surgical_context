@@ -1,6 +1,6 @@
 # Surgical Context - Road Map
 
-> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`context_engine/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
 
 
 > **Status:** This branch (`context-engine-refocus`) treats Surgical Context as a **local-first, model-agnostic context engine for code understanding and change impact**.
@@ -107,7 +107,7 @@ Active work for the local release. Completed stabilization and phase history are
 | express, vue, nestjs | Mixed | JS export-shape / target-resolution before ranker weights |
 | LLM judgment (65 q) | P1 context better 69%; answers equal 92% | Impact/trace questions favor P1; see benchmark doc |
 
-`UnifiedRanker` decomposition is shipped under `sidecar/context/ranker/*` (`TargetSelector`, `GraphCandidateSource`, `VectorCandidateSource`, `RoleBackfill`, `BudgetSelector`, `SubgraphAssembler`); `UnifiedRanker` remains the compatibility facade.
+`UnifiedRanker` decomposition is shipped under `context_engine/context/ranker/*` (`TargetSelector`, `GraphCandidateSource`, `VectorCandidateSource`, `RoleBackfill`, `BudgetSelector`, `SubgraphAssembler`); `UnifiedRanker` remains the compatibility facade.
 
 ### P4 — Provider boundaries (defaults first)
 - [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
@@ -123,7 +123,7 @@ Active work for the local release. Completed stabilization and phase history are
 - [ ] Add parallel indexing only after local profiling identifies the real bottlenecks.
 - [ ] Add customer-managed/dedicated provider modes for graph, vector, and history stores.
 - [ ] Add Tenant API Contract Graph for project-published API facts and tenant-level service links; no neighboring source scans.
-- [ ] Add optional LLM Proxy Gateway transport for organizations that need provider-account policy, auditing, masking, quotas, or fallback outside the sidecar.
+- [ ] Add optional LLM Proxy Gateway transport for organizations that need provider-account policy, auditing, masking, quotas, or fallback outside the context_engine.
 - [ ] Split the sidecar into services only when scale requires it.
 - [ ] Consider Rust/Go/C parser or indexer hot paths only after a performance review proves Python orchestration is the bottleneck.
 
@@ -164,7 +164,7 @@ This section preserves the post-MVP hardening record. Completed items remain use
 - [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
 - [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
 - [x] Add auth-boundary enforcement tests for protected endpoints with `AUTH_REQUIRED=true`.
-- [x] Workspace path sandboxing: caller-supplied paths and **graph-resolved** `file_path` values normalized under registered `project_path`; outside root → `403` or empty code; stale Neo4j paths pruned on manifest persist (`sidecar/workspace_paths.py`, `spec_sidecar_api.md`).
+- [x] Workspace path sandboxing: caller-supplied paths and **graph-resolved** `file_path` values normalized under registered `project_path`; outside root → `403` or empty code; stale Neo4j paths pruned on manifest persist (`context_engine/workspace_paths.py`, `spec_sidecar_api.md`).
 - [x] Queued `POST /index` registers workspace root immediately via `register_workspace_project_root()` (extension default `queue=true` no longer leaves `/overlay` / `/index/file` without a manifest).
 - [x] Bounded public API limits: search `limit` 1–50, `token_budget` 400–32 000 (HTTP 422 when out of range).
 - [x] Anthropic default model `claude-sonnet-4-6` (`ANTHROPIC_MODEL` override; retired `claude-sonnet-4-20250514`).
@@ -201,12 +201,12 @@ Goal: Working "VS Code ↔ Python Sidecar" prototype with basic parsing.
 ### Infrastructure
 - [x] Docker container with Neo4j and schema configuration (`docker-compose.yml`)
 - [x] Python environment and project scaffold
-- [x] FastAPI/JSON-RPC sidecar entrypoint (`sidecar/main.py`)
+- [x] FastAPI/JSON-RPC sidecar entrypoint (`context_engine/main.py`)
 - [x] Switch Docker image from `neo4j:5.12-enterprise` to `neo4j:5.12-community` for open-source dev baseline (enterprise license only where intentionally required)
 - [x] Move `NEO4J_AUTH` out of `docker-compose.yml` into `.env` with `.env.example` committed
 
 ### Parsing (ETL)
-- [x] tree-sitter integration for Python (`sidecar/parser/extractor.py`)
+- [x] tree-sitter integration for Python (`context_engine/parser/extractor.py`)
 - [x] Symbol extractor: functions, classes, line coordinates
 - [x] Deterministic UID hashes per symbol (ADR-001)
 - [x] TypeScript language support (via adapter registry, auto-detect from extension)
@@ -228,17 +228,17 @@ Goal: Working "VS Code ↔ Python Sidecar" prototype with basic parsing.
 Goal: System can navigate the graph and gather precise context.
 
 ### Graph Logic
-- [x] Neo4j client: upsert file/symbol nodes (`sidecar/database/neo4j_client.py`)
-- [x] Four-phase indexer: symbols → calls → symbol embeddings → pending resolution (`sidecar/indexer/code.py`)
-- [x] BFS Cypher query for dependency discovery (`sidecar/context/arbitrator.py`)
+- [x] Neo4j client: upsert file/symbol nodes (`context_engine/database/neo4j_client.py`)
+- [x] Four-phase indexer: symbols → calls → symbol embeddings → pending resolution (`context_engine/indexer/code.py`)
+- [x] BFS Cypher query for dependency discovery (`context_engine/context/arbitrator.py`)
 
 ### Data Contract
-- [x] JSON Prompt Contract: typed `PromptContext` with `to_dict()` + `to_system_prompt()` (`sidecar/context/arbitrator.py`)
-- [x] Local LLM integration via Ollama (`sidecar/main.py` — llama3, configurable via `OLLAMA_MODEL`)
+- [x] JSON Prompt Contract: typed `PromptContext` with `to_dict()` + `to_system_prompt()` (`context_engine/context/arbitrator.py`)
+- [x] Local LLM integration via Ollama (`context_engine/main.py` — llama3, configurable via `OLLAMA_MODEL`)
 - [x] Fallback behavior when Ollama is unreachable (clear error, degraded `/ask` that still returns `context`)
 
 ### Dirty State
-- [x] In-Memory Overlay: parse unsaved changes and merge with graph (`sidecar/context/overlay.py`, `POST /overlay`, `DELETE /overlay`)
+- [x] In-Memory Overlay: parse unsaved changes and merge with graph (`context_engine/context/overlay.py`, `POST /overlay`, `DELETE /overlay`)
 
 ---
 
@@ -285,16 +285,16 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 Goal: Connect the semantic layer via documentation.
 
 ### Vector Layer
-- [x] LanceDB integration — two tables: `docs` + `symbols` (`sidecar/database/lancedb_client.py`)
-- [x] Markdown processing pipeline: section-aware chunking + embedding generation (`sidecar/indexer/docs.py`)
+- [x] LanceDB integration — two tables: `docs` + `symbols` (`context_engine/database/lancedb_client.py`)
+- [x] Markdown processing pipeline: section-aware chunking + embedding generation (`context_engine/indexer/docs.py`)
 
 ### Semantic Connections
-- [x] DocAnchor in Neo4j: `chunk_id`-only node, `[:FROM]` to File, typed/confident `[:COVERS]` to Symbols, lazy `pending` resolution via LanceDB (`sidecar/indexer/anchor.py`)
+- [x] DocAnchor in Neo4j: `chunk_id`-only node, `[:FROM]` to File, typed/confident `[:COVERS]` to Symbols, lazy `pending` resolution via LanceDB (`context_engine/indexer/anchor.py`)
 
 ### RAG Optimization
 - [x] Hybrid Search: Vector Search (semantics) → Graph Expansion (code) (`/ask` appends top-3 doc chunks to context)
 - [x] Symbol body embeddings: `symbols` LanceDB table for semantic DocAnchor matching (`indexer_main.py` Phase 3)
-- [x] Section-aware doc chunking: headings-first split, word-window fallback (`sidecar/indexer/docs.py`)
+- [x] Section-aware doc chunking: headings-first split, word-window fallback (`context_engine/indexer/docs.py`)
 - [x] Gitignore-aware indexer: `pathspec` prunes ignored dirs/files (`indexer_main.py`)
 - [x] ADR-001 enforced: no data on Neo4j nodes — `file_path` removed from Symbol and DocAnchor
 
@@ -322,7 +322,7 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] Delete-on-remove: prune Symbol nodes when file changes (`delete_symbols_for_file`)
 - [x] Transactional recovery: write-ahead indexing job log, retry state, and dead-letter queue for partial Neo4j/LanceDB failure
 - [x] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed (optimization, deferred)
-- [x] Background debounce queue: batch rapid-fire saves (`sidecar/indexer/queue.py`, `POST /index/files`)
+- [x] Background debounce queue: batch rapid-fire saves (`context_engine/indexer/queue.py`, `POST /index/files`)
 - [x] Backpressure for mass IDE events: bounded queue, batch coalescing, and stale job cancellation
 
 ### Graph Completeness ✅ COMPLETE
@@ -332,7 +332,7 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] Arbitrator BFS expanded to traverse all three edge types for context gathering
 
 ### Embedding Quality (DEFERRED — Phase 5)
-- [x] Add reusable embedding benchmark harness for golden-set model comparisons (`python -m sidecar.eval.embedding_benchmark`)
+- [x] Add reusable embedding benchmark harness for golden-set model comparisons (`python -m context_engine.eval.embedding_benchmark`)
 - [x] Run and record `all-MiniLM-L6-v2` vs a code-native model (e.g. `bge-code`, `unixcoder`) on the golden set
   - 2026-04-21 benchmark: `all-MiniLM-L6-v2` reached `target_hit@5=1.00`, `MRR=0.78`, `expected_recall@5=0.42`, `expected_precision@5=0.52`; `microsoft/unixcoder-base` reached `target_hit@5=1.00`, `MRR=0.78`, `expected_recall@5=0.45`, `expected_precision@5=0.58`.
 - [x] Embedding cache keyed by content hash to avoid recomputation on re-index
@@ -356,7 +356,7 @@ Goal: Reduce token overhead and prepare for multi-model / multi-user environment
 ### Embedding Versioning ✅ COMPLETE
 > **Spec:** [spec_embedding_versioning.md](spec_embedding_versioning.md) — metadata schema, model registry, cross-model guard, migration CLI.
 - [x] Add `embedding_metadata` JSON column to `docs` and `symbols` LanceDB tables
-- [x] Model registry in `sidecar/database/embedding_registry.py` — known models + dimensions
+- [x] Model registry in `context_engine/database/embedding_registry.py` — known models + dimensions
 - [x] Write path: record model_name, model_version, chunk_hash, embedding_hash per row
 - [x] Read path: guard against cross-model queries (raise `EmbeddingModelMismatch`)
 - [x] Model mismatch recovery: wipe LanceDB and re-index (no separate migration CLI)
@@ -365,7 +365,7 @@ Goal: Reduce token overhead and prepare for multi-model / multi-user environment
 - [x] Feasibility assessment: dynamic dispatch detection in Python/TypeScript parsers
   - Result: Python classifies direct/scoped/imported/dynamic/inferred calls; TypeScript now classifies top-level identifier calls as direct and member dispatch (`this.method()`, `service.method()`) as dynamic.
 - [x] Spec review: [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md), [spec_affects_index.md](spec_affects_index.md)
-  - Result: both specs have corresponding Phase 5 implementation paths in `sidecar/parser`, `sidecar/indexer/affects.py`, and BFS typed-edge traversal.
+  - Result: both specs have corresponding Phase 5 implementation paths in `context_engine/parser`, `context_engine/indexer/affects.py`, and BFS typed-edge traversal.
 - [x] Decision gate: prioritize typed edges vs AFFECTS index for Phase 5 first milestone
   - Result: resolved by shipping both; typed call edges feed the materialized AFFECTS index.
 
@@ -446,7 +446,7 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 
 ### Phase 6.3: Streaming & Model Routing ✅ COMPLETE
 - [x] Streaming LLM responses (SSE) via `/ask/stream` endpoint
-- [x] Official Anthropic SDK activation (`sidecar/ai/engine.py`) with prompt caching on `graph_context` block
+- [x] Official Anthropic SDK activation (`context_engine/ai/engine.py`) with prompt caching on `graph_context` block
 - [x] Model Router (ADR-004) — route by context size + intent
   - Large contexts (>= 2k tokens) → Claude (powerful, cached)
   - Complex intents (design, exploration, refactor) → Claude
@@ -553,7 +553,7 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] Overlap bonus when both signals fire on the same candidate
 - [x] Budget-fill loop competes symbols and doc chunks on identical terms
 - [x] Weight tuning via eval harness sweep
-- [x] Decompose `UnifiedRanker` internals into focused components under `sidecar/context/ranker/`, while preserving `get_target(...)`, `rank(...)`, `candidates_to_subgraph(...)` contracts used by Arbitrator/QA
+- [x] Decompose `UnifiedRanker` internals into focused components under `context_engine/context/ranker/`, while preserving `get_target(...)`, `rank(...)`, `candidates_to_subgraph(...)` contracts used by Arbitrator/QA
 - [x] Target disambiguation for duplicate symbol names within one workspace
 - [x] Module/package fallback targets for package-surface questions
 - [x] Topic-aware subsystem noise control for focused API questions, so distant graph links through broad helpers do not crowd out relevant runtime/doc candidates
@@ -643,7 +643,7 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [x] Context inspector panel showing retrieved symbols/docs, relevance scores, and dirty-state badges.
 - [x] Four UI surfaces defined: Chat Panel, Context Inspector, Impact Explorer, Dashboard.
 - [x] Webview component model and layout rules (bottom-docked composer, collapsed accordions, auto-grow textarea).
-- [x] Message protocol between webview ↔ extension host and extension host ↔ sidecar.
+- [x] Message protocol between webview ↔ extension host and extension host ↔ context_engine.
 - [x] VS Code manifest structure (viewsContainers, commands, menus, keybindings, configuration).
 - [~] Streaming chat integration with `/ask/stream` JSON-safe SSE events (endpoint + degradation shipped; extension wiring incomplete).
 - [x] Token budget, selected mode, query intent, and model route display.

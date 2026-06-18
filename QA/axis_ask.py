@@ -23,14 +23,14 @@ from __future__ import annotations
 
 import argparse
 
-from sidecar.axis.context_builder import build_context_for_candidates
-from sidecar.axis.intent_classifier import classify_intent
-from sidecar.axis.role_retrieval import find_symbols_by_role
+from context_engine.axis.context_builder import build_context_for_candidates
+from context_engine.axis.intent_classifier import classify_intent
+from context_engine.axis.role_retrieval import find_symbols_by_role
 
 
 def _embed_function():
-    from sidecar.database.lancedb_client import LanceDBClient
-    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+    from context_engine.database.lancedb_client import LanceDBClient
+    from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 
     client = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
 
@@ -106,10 +106,10 @@ def main() -> None:
     db = None
     lance = None
     if args.with_context:
-        from sidecar.database.lancedb_client import LanceDBClient
-        from sidecar.database.neo4j_client import Neo4jClient
-        from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
-        from sidecar.indexer.fast.pipeline import (
+        from context_engine.database.lancedb_client import LanceDBClient
+        from context_engine.database.neo4j_client import Neo4jClient
+        from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+        from context_engine.indexer.fast.pipeline import (
             NEO4J_PASSWORD,
             NEO4J_URI,
             NEO4J_USER,

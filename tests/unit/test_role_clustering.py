@@ -1,7 +1,7 @@
 """Pass 1 discriminator cascade tests on synthetic graphs."""
 
-from sidecar.indexer.role_cascade import assign_symbol_roles
-from sidecar.indexer.role_clustering import (
+from context_engine.indexer.role_cascade import assign_symbol_roles
+from context_engine.indexer.role_clustering import (
     SymbolRow,
     assemble_symbol_rows,
     assign_role_taxonomy,

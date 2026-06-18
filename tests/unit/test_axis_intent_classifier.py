@@ -6,12 +6,12 @@ import math
 
 import pytest
 
-from sidecar.axis.intent_classifier import (
+from context_engine.axis.intent_classifier import (
     ROLE_INTENT_DESCRIPTIONS,
     classify_intent,
     clear_role_vector_cache,
 )
-from sidecar.axis.role_resolver import ROLE_CONTRACT_MAP
+from context_engine.axis.role_resolver import ROLE_CONTRACT_MAP
 
 
 def _unit(vector: list[float]) -> list[float]:

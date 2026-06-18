@@ -14,15 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sidecar.axis.contract_compiler import (
+from context_engine.axis.contract_compiler import (
     AxisContractCompiler,
     AxisContractMatch,
     container_kind_matches_from_json,
 )
-from sidecar.axis.query_plan import compile_axis_query
-from sidecar.axis.schema import AxisFact, AxisProfile
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
-from sidecar.workspace import DEFAULT_WORKSPACE_ID
+from context_engine.axis.query_plan import compile_axis_query
+from context_engine.axis.schema import AxisFact, AxisProfile
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+from context_engine.workspace import DEFAULT_WORKSPACE_ID
 
 
 def _list_strings(value: Any) -> list[str]:
@@ -301,7 +301,7 @@ def run_report(
     out_dir: Path,
     limit: int | None = None,
 ) -> list[AxisContractReportRow]:
-    from sidecar.database.lancedb_client import LanceDBClient
+    from context_engine.database.lancedb_client import LanceDBClient
 
     lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
     rows = lance.scan_symbols_workspace(

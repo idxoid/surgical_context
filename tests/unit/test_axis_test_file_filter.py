@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar.axis.test_file_filter import (
+from context_engine.axis.test_file_filter import (
     cypher_test_exclusion_clause,
     is_test_path,
 )

@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidecar.database import session
+from context_engine.database import session
 
 
 class FakeDb:

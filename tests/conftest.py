@@ -2,8 +2,8 @@
 
 import pytest
 
-from sidecar.parser.adapters.python_adapter import PythonAdapter
-from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
+from context_engine.parser.adapters.python_adapter import PythonAdapter
+from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
 
 def pytest_addoption(parser):

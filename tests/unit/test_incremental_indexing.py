@@ -3,11 +3,11 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from sidecar.database.neo4j_client import Neo4jClient, _import_row
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
-from sidecar.indexer.code import index_file
-from sidecar.indexer.fast.extractor import ExtractedFile
-from sidecar.indexer.fast.pipeline import (
+from context_engine.database.neo4j_client import Neo4jClient, _import_row
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+from context_engine.indexer.code import index_file
+from context_engine.indexer.fast.extractor import ExtractedFile
+from context_engine.indexer.fast.pipeline import (
     FileDiff,
     _apply_graph,
     _embed_phase,
@@ -16,7 +16,7 @@ from sidecar.indexer.fast.pipeline import (
     _symbol_alias_phase,
     _type_reference_phase,
 )
-from sidecar.parser.protocol import ImportEdge, SymbolMetadata
+from context_engine.parser.protocol import ImportEdge, SymbolMetadata
 
 
 def _symbol(uid: str, content_hash: str, start_line: int = 1, end_line: int = 2):
@@ -759,7 +759,7 @@ class Settings:
             def rebuild_affects(self, uids, workspace_id):
                 rebuilt.extend(uids)
 
-        monkeypatch.setattr("sidecar.indexer.affects.AFFECTSIndexer", FakeAffectsIndexer)
+        monkeypatch.setattr("context_engine.indexer.affects.AFFECTSIndexer", FakeAffectsIndexer)
         source_file = tmp_path / "test.py"
         source_file.write_text(
             "def unchanged():\n    pass\ndef changed():\n    return 1\ndef new():\n    return 2\n",
@@ -826,7 +826,7 @@ class Settings:
                 return []
 
         monkeypatch.setattr(
-            "sidecar.indexer.affects.AFFECTSIndexer",
+            "context_engine.indexer.affects.AFFECTSIndexer",
             lambda db: (_ for _ in ()).throw(AssertionError("AFFECTS should not rebuild")),
         )
         source_file = tmp_path / "test.py"

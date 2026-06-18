@@ -2,12 +2,12 @@
 
 ## Overview
 
-`sidecar/indexer/code.py` — full project code indexing pipeline. Walks a directory, extracts symbols and typed function calls, embeds symbol bodies, resolves pending DocAnchors, rebuilds the AFFECTS reverse-dependency index, and emits a repository readiness profile.
+`context_engine/indexer/code.py` — full project code indexing pipeline. Walks a directory, extracts symbols and typed function calls, embeds symbol bodies, resolves pending DocAnchors, rebuilds the AFFECTS reverse-dependency index, and emits a repository readiness profile.
 
 Entry points:
-- CLI: `python sidecar/indexer/code.py [path]` (defaults to repo root)
+- CLI: `python context_engine/indexer/code.py [path]` (defaults to repo root)
 - Programmatic: `run_indexing(path)`, `index_file(path, db, lance, extractor)`
-- API: `POST /index` via `sidecar/main.py` — registers `project_path` immediately (including `queue=true` via `register_workspace_project_root()` in `sidecar/retrieval/manifest.py`) before batch workers run; see path sandboxing in [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)
+- API: `POST /index` via `context_engine/main.py` — registers `project_path` immediately (including `queue=true` via `register_workspace_project_root()` in `context_engine/retrieval/manifest.py`) before batch workers run; see path sandboxing in [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)
 
 ---
 
@@ -23,12 +23,12 @@ Entry points:
 
 Supported extensions are auto-derived from registered adapters (ADR-005):
 ```python
-from sidecar.parser.registry import REGISTRY
+from context_engine.parser.registry import REGISTRY
 _INDEXED_EXTENSIONS = {ext for adapter in REGISTRY.supported_adapters() for ext in adapter.file_extensions}
 ```
 Currently: `.py`, `.pyi` (Python), `.ts`, `.tsx` (TypeScript).
 
-New languages can be added by creating an adapter in `sidecar/parser/adapters/` — no core changes needed.
+New languages can be added by creating an adapter in `context_engine/parser/adapters/` — no core changes needed.
 
 ---
 
@@ -36,7 +36,7 @@ New languages can be added by creating an adapter in `sidecar/parser/adapters/` 
 
 Indexing now produces a `repository_profile` in its returned stats. This is the index-time capability contract for the repo: it records not only what was indexed, but what kinds of reasoning are safe to attempt.
 
-Implemented in `sidecar/indexer/repository_profile.py`.
+Implemented in `context_engine/indexer/repository_profile.py`.
 
 Profiles are persisted on the Neo4j `Workspace` node as index metadata:
 
@@ -111,7 +111,7 @@ db.link_calls(calls)
 
 Creates typed call edges: `MERGE (caller)-[:{rel_type}]->(callee)` where `rel_type` ∈ {`CALLS_DIRECT`, `CALLS_DYNAMIC`, `CALLS_INFERRED`}.
 
-**Call types** (from `sidecar/parser/adapters/python_adapter.py`):
+**Call types** (from `context_engine/parser/adapters/python_adapter.py`):
 - `CALLS_DIRECT` — static/deterministic calls (default, dunders like `__init__`)
 - `CALLS_DYNAMIC` — dispatch via `self.method()` or other receivers (confidence: 0.7)
 - `CALLS_INFERRED` — string-based patterns (`getattr`, `eval`, globals, etc.) (confidence: 0.4)
@@ -136,7 +136,7 @@ Checks LanceDB `docs.pending` against symbols now present in Neo4j. Creates `[:C
 ### Phase 5 — AFFECTS index rebuild (once per batch, Phase 5+)
 
 ```python
-from sidecar.indexer.affects import AFFECTSIndexer
+from context_engine.indexer.affects import AFFECTSIndexer
 indexer = AFFECTSIndexer(db)
 indexer.rebuild_affects(all_changed_uids)  # single call after all files processed
 ```
@@ -177,7 +177,7 @@ The single-file hot path does not currently rebuild the full repository profile.
 
 ### Phase 7 — Repository role taxonomy (Pass 1)
 
-Implemented in `sidecar/indexer/role_clustering.py` + `sidecar/indexer/role_cascade.py`. A per-repository role assignment derived from call-graph topology via a **discriminator-first L1/L2 cascade** (see [role_clustering_architecture.md](role_clustering_architecture.md)). `repository_profile` reports indexability/capabilities only (no keyword mechanism detection). Python import extraction avoids a hand-maintained third-party allow-list.
+Implemented in `context_engine/indexer/role_clustering.py` + `context_engine/indexer/role_cascade.py`. A per-repository role assignment derived from call-graph topology via a **discriminator-first L1/L2 cascade** (see [role_clustering_architecture.md](role_clustering_architecture.md)). `repository_profile` reports indexability/capabilities only (no keyword mechanism detection). Python import extraction avoids a hand-maintained third-party allow-list.
 
 **Pipeline order.** The fast pipeline runs Pass 1 between Phase 4 (DocAnchor resolution) and Phase 6 (repository readiness profile), so the pass sees CALLS-family edges, COVERS, INJECTS, HANDLES, DECORATED_BY, INSTANTIATES, USES_TYPE (with `kind`), and RE_EXPORTS-derived features. The single-file hot path does not run Pass 1.
 
@@ -243,10 +243,10 @@ Pass-1 structural roles. See `cascade_cleanup_inventory.md`.
 
 ### Fast pipeline — semantic hint phases
 
-After per-file symbol/call linking, the fast project indexer (`sidecar/indexer/fast/pipeline.py`) runs graph-enrichment passes before the embedding batch, in this order:
+After per-file symbol/call linking, the fast project indexer (`context_engine/indexer/fast/pipeline.py`) runs graph-enrichment passes before the embedding batch, in this order:
 
 1. **`framework_hints`** — applies shared typed rules from `semantic_hints.yaml` via `FrameworkHintsIndexer`; creates `SEMANTIC_HINT` edges for framework patterns already present in the indexed graph.
-2. **`ts_http_route_hints`** — implemented in `sidecar/indexer/ts_http_route_hints.py`. Scans Python FastAPI route decorators (`@app.post("/ask")`, etc.) and TypeScript HTTP client surfaces (`export const SidecarClient = { ... post('/ask') ... }`). Creates `SEMANTIC_HINT` edges from TS `object_api` symbols to Python handler symbols when paths match. Skips test/QA Python files and prefers `main.py` / `sidecar/` entrypoints when duplicate routes exist.
+2. **`ts_http_route_hints`** — implemented in `context_engine/indexer/ts_http_route_hints.py`. Scans Python FastAPI route decorators (`@app.post("/ask")`, etc.) and TypeScript HTTP client surfaces (`export const SidecarClient = { ... post('/ask') ... }`). Creates `SEMANTIC_HINT` edges from TS `object_api` symbols to Python handler symbols when paths match. Skips test/QA Python files and prefers `main.py` / `context_engine/` entrypoints when duplicate routes exist.
 3. **`proxy` (ProxySurface)** — `_proxy_binding_phase` creates `ProxyBinding` nodes + `PROXY_OF` edges for annotated lazy proxies (`current_app: FlaskProxy = LocalProxy(...)`); `_proxy_call_resolution_phase` forwards calls on those proxy vars through `PROXY_OF` to the real type's method, wiring `CALLS_DYNAMIC {via_proxy}`. See [spec_call_resolution_pipeline.md §5.1](spec_call_resolution_pipeline.md). Runs before degree so forwarded edges are counted.
 4. **`degree` (materialized centrality)** — `_degree_phase` recomputes `Symbol.in_degree` / `Symbol.out_degree` so the ranker reads degree as a node property instead of a `count(DISTINCT)` subquery per query (see below).
 

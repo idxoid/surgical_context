@@ -29,14 +29,14 @@ ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_DIR = ROOT / "extension"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
-SMOKE_PROJECT_DIR = ROOT / "sidecar" / "axis"
+SMOKE_PROJECT_DIR = ROOT / "context_engine" / "axis"
 SMOKE_DOCS_PATH = ROOT / "docs" / "local_development.md"
 
 LOCAL_DIRS = [
     ROOT / "data" / "lancedb",
     ROOT / "data" / "history",
     ROOT / "data" / "neo4j",
-    ROOT / "logs" / "sidecar",
+    ROOT / "logs" / "context_engine",
     ROOT / "logs" / "neo4j",
     ROOT / "import" / "neo4j",
     ROOT / "plugins" / "neo4j",
@@ -315,7 +315,7 @@ def sidecar_command(args: argparse.Namespace) -> list[str]:
         *_python_cmd(),
         "-m",
         "uvicorn",
-        "sidecar.main:app",
+        "context_engine.main:app",
         "--host",
         host,
         "--port",
@@ -429,7 +429,7 @@ def _ensure_sidecar_for_smoke(
                 f"Sidecar is not reachable at {base_url}. Start it with "
                 "`python scripts/local_dev.py sidecar --reload`, or run smoke "
                 "without --no-start-sidecar to let the smoke test start a "
-                "temporary sidecar."
+                "temporary context_engine."
             ) from exc
 
         print(f"\n[smoke] sidecar is not reachable at {base_url}; starting temporary sidecar")
@@ -450,7 +450,7 @@ def _ensure_sidecar_for_smoke(
 
 
 def smoke(args: argparse.Namespace) -> int:
-    """Run a local product smoke test against a running sidecar."""
+    """Run a local product smoke test against a running context_engine."""
     if args.base_url:
         base_url = args.base_url.rstrip("/")
     else:
@@ -621,21 +621,21 @@ def up(args: argparse.Namespace) -> int:
             print(f"$ {_display_cmd(code_command())}")
         return 0
 
-    print("\nStarting sidecar. Press Ctrl+C here to stop it.")
+    print("\nStarting context_engine. Press Ctrl+C here to stop it.")
     sidecar = subprocess.Popen(sidecar_cmd, cwd=ROOT, env=_sidecar_env())
     try:
         time.sleep(args.launch_delay)
         if args.launch_code:
             launch_code(args)
-        return sidecar.wait()
+        return context_engine.wait()
     except KeyboardInterrupt:
-        print("\nStopping sidecar...")
-        sidecar.terminate()
+        print("\nStopping context_engine...")
+        context_engine.terminate()
         try:
-            return sidecar.wait(timeout=5)
+            return context_engine.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            sidecar.kill()
-            return sidecar.wait()
+            context_engine.kill()
+            return context_engine.wait()
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -718,7 +718,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument(
         "--project-path",
         default="",
-        help="Code path to index. Defaults to sidecar/axis for a fast smoke test.",
+        help="Code path to index. Defaults to context_engine/axis for a fast smoke test.",
     )
     smoke_parser.add_argument(
         "--docs-path",

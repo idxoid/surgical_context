@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from sidecar.indexer.git_committed import (
+from context_engine.indexer.git_committed import (
     filter_indexable_paths,
     matches_head,
     should_index_file,

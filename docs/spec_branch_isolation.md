@@ -1,6 +1,6 @@
 # Spec — Branch / Workspace Isolation (Phase 8)
 
-> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`context_engine/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
 
 
 > **Status:** Implemented for graph reads/writes and dirty overlay isolation. Closes the SaaS correctness gap: the Phase 7 shared Aura graph collapses all branches and users into a single symbol set, guaranteeing drift across workspaces.
@@ -99,7 +99,7 @@ Workspace scoping is enforced **in Cypher**, not in Python filtering — a Pytho
 ## 3. API / Interface
 
 ```python
-# sidecar/workspace.py
+# context_engine/workspace.py
 
 @dataclass
 class Workspace:

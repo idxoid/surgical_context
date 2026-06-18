@@ -3,26 +3,26 @@
 import json
 import logging
 
-from sidecar.observability.metrics import MetricsRegistry, RequestTrace
+from context_engine.observability.metrics import MetricsRegistry, RequestTrace
 
 
 def _json_messages(records):
     return [
         json.loads(record.message)
         for record in records
-        if record.name == "sidecar.observability.metrics"
+        if record.name == "context_engine.observability.metrics"
     ]
 
 
 def test_request_trace_stage_emits_structured_log(caplog):
-    caplog.set_level(logging.INFO, logger="sidecar.observability.metrics")
+    caplog.set_level(logging.INFO, logger="context_engine.observability.metrics")
     trace = RequestTrace(trace_id="trace-1", endpoint="/ask", workspace_id="acme/repo@main")
 
     with trace.stage("context"):
         pass
 
     events = _json_messages(caplog.records)
-    stage_event = next(event for event in events if event["event"] == "sidecar.stage")
+    stage_event = next(event for event in events if event["event"] == "context_engine.stage")
     assert stage_event["trace_id"] == "trace-1"
     assert stage_event["endpoint"] == "/ask"
     assert stage_event["workspace_id"] == "acme/repo@main"
@@ -31,7 +31,7 @@ def test_request_trace_stage_emits_structured_log(caplog):
 
 
 def test_metrics_registry_record_trace_emits_request_summary(caplog):
-    caplog.set_level(logging.INFO, logger="sidecar.observability.metrics")
+    caplog.set_level(logging.INFO, logger="context_engine.observability.metrics")
     registry = MetricsRegistry()
     trace = RequestTrace(trace_id="trace-2", endpoint="/ask", workspace_id="acme/repo@main")
     trace.stage_timings_ms = {"context": 1.25, "llm": 2.5}
@@ -41,7 +41,7 @@ def test_metrics_registry_record_trace_emits_request_summary(caplog):
     registry.record_trace(trace, status="ok")
 
     events = _json_messages(caplog.records)
-    request_event = next(event for event in events if event["event"] == "sidecar.request")
+    request_event = next(event for event in events if event["event"] == "context_engine.request")
     assert request_event["trace_id"] == "trace-2"
     assert request_event["status"] == "ok"
     assert request_event["total_latency_ms"] == 3.75
@@ -54,7 +54,7 @@ def test_metrics_registry_record_trace_emits_request_summary(caplog):
 
 def test_metrics_registry_tracks_latency_slo_breach(monkeypatch, caplog):
     monkeypatch.setenv("SIDECAR_REQUEST_LATENCY_SLO_MS", "3")
-    caplog.set_level(logging.INFO, logger="sidecar.observability.metrics")
+    caplog.set_level(logging.INFO, logger="context_engine.observability.metrics")
     registry = MetricsRegistry()
     trace = RequestTrace(trace_id="trace-3", endpoint="/ask", workspace_id="acme/repo@main")
     trace.stage_timings_ms = {"context": 1.25, "llm": 2.5}
@@ -69,7 +69,7 @@ def test_metrics_registry_tracks_latency_slo_breach(monkeypatch, caplog):
     assert 'sidecar_request_slo_violations_total{endpoint="/ask",target_ms="3"} 1' in rendered
 
     events = _json_messages(caplog.records)
-    request_event = next(event for event in events if event["event"] == "sidecar.request")
+    request_event = next(event for event in events if event["event"] == "context_engine.request")
     assert request_event["latency_slo"] == {
         "target_ms": 3.0,
         "status": "breached",

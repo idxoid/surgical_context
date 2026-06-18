@@ -1,4 +1,4 @@
-# Spec: Parser Module (`sidecar/parser/`)
+# Spec: Parser Module (`context_engine/parser/`)
 
 > **Status:** Refactored to ADR-005 plugin architecture (Phase 1 polish complete). See [spec_language_adapter.md](spec_language_adapter.md) for protocol details.
 
@@ -15,7 +15,7 @@ It has no knowledge of Neo4j, LanceDB, or the sidecar API. It takes a file path 
 ### Module Structure
 
 ```
-sidecar/parser/
+context_engine/parser/
   ├── protocol.py           # LanguageAdapter ABC + SymbolMetadata
   ├── registry.py           # LanguageAdapterRegistry (singleton)
   ├── extractor.py          # SymbolExtractor (thin dispatcher)
@@ -86,9 +86,9 @@ def extract_calls_from_source(self, source_code: str, file_path: str) -> List[di
 
 ## 4. Registry — Dynamic Adapter Loading
 
-### `LanguageAdapterRegistry` (singleton at `sidecar.parser.registry.REGISTRY`)
+### `LanguageAdapterRegistry` (singleton at `context_engine.parser.registry.REGISTRY`)
 
-Auto-discovers adapters from `sidecar/parser/adapters/*_adapter.py`:
+Auto-discovers adapters from `context_engine/parser/adapters/*_adapter.py`:
 
 ```python
 def get_adapter(language: str) -> LanguageAdapter
@@ -162,10 +162,10 @@ The base class handles all tree-sitter parsing; subclass just declares the queri
 
 ## 6. Adding a New Language
 
-Create one file: `sidecar/parser/adapters/go_adapter.py`
+Create one file: `context_engine/parser/adapters/go_adapter.py`
 
 ```python
-from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
+from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter
 
 class GoAdapter(TreeSitterAdapter):
     @property

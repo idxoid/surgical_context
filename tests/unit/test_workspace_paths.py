@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sidecar.workspace_paths import (
+from context_engine.workspace_paths import (
     PathOutsideWorkspaceError,
     WorkspaceRootMismatchError,
     WorkspaceRootNotAllowedError,

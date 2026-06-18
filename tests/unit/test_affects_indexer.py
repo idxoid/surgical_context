@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from sidecar.indexer.affects import AFFECTSIndexer
+from context_engine.indexer.affects import AFFECTSIndexer
 
 
 def test_rebuild_affects_batches_delete_compute_and_merge():

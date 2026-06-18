@@ -1,6 +1,6 @@
 import pytest
 
-from sidecar.parser.adapters.javascript_adapter import JavaScriptAdapter
+from context_engine.parser.adapters.javascript_adapter import JavaScriptAdapter
 
 
 class TestJavaScriptAdapter:

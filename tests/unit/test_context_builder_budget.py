@@ -7,7 +7,7 @@ the benchmark and the live gate.
 
 from __future__ import annotations
 
-from sidecar.axis.context_builder import (
+from context_engine.axis.context_builder import (
     ContextBundle,
     ContextSymbol,
     _apply_render_and_budget,
@@ -111,7 +111,7 @@ def test_median_and_mad():
 
 
 def test_leader_pool_metrics_one_strong_above_noise():
-    from sidecar.axis.context_builder import _BundleStatic
+    from context_engine.axis.context_builder import _BundleStatic
 
     # 1 strong + 99 weak: noise ~95, only peak symbol clears it → count=1.
     static = [
@@ -132,7 +132,7 @@ def test_leader_pool_metrics_one_strong_above_noise():
 
 
 def test_leader_pool_metrics_counts_symbols_above_noise_floor():
-    from sidecar.axis.context_builder import _BundleStatic
+    from context_engine.axis.context_builder import _BundleStatic
 
     static = [
         _BundleStatic(

@@ -1,6 +1,6 @@
 import pytest
 
-from sidecar.parser.adapters.python_adapter import PythonAdapter
+from context_engine.parser.adapters.python_adapter import PythonAdapter
 
 
 class TestPythonAdapter:

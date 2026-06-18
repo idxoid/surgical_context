@@ -1,6 +1,6 @@
 import textwrap
 
-from sidecar.axis import PythonAxisExtractor
+from context_engine.axis import PythonAxisExtractor
 
 
 def _profile(source: str, qualified_name: str, file_path: str = "pkg/tasks.py"):

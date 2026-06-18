@@ -15,13 +15,13 @@ from typing import Any
 
 from QA.axis_benchmark import REPO_TO_WORKSPACE, _load_pack
 from QA.llm_judge import EFFORTS, judge_question_matrix
-from sidecar.axis.pipeline import run_axis_retrieval
-from sidecar.axis.prompt_provider import axis_bundles_to_prompt_context
-from sidecar.database.lancedb_client import LanceDBClient
-from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
-from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
-from sidecar.observability.metrics import estimate_text_tokens
+from context_engine.axis.pipeline import run_axis_retrieval
+from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
+from context_engine.database.lancedb_client import LanceDBClient
+from context_engine.database.neo4j_client import Neo4jClient
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+from context_engine.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+from context_engine.observability.metrics import estimate_text_tokens
 
 
 def _judge_cell(result) -> dict[str, Any]:

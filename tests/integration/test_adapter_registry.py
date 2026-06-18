@@ -1,6 +1,6 @@
 import pytest
 
-from sidecar.parser.registry import bootstrap_adapters
+from context_engine.parser.registry import bootstrap_adapters
 
 
 class TestAdapterRegistry:

@@ -1,6 +1,6 @@
 # Spec — Prompt Contract Observability (Phase 9)
 
-> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`context_engine/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
 
 
 > **Status:** Partially implemented. Ranking scores, provenance, pruning details, intent metadata, and ranker metadata are already present in the current prompt contract. Remaining gaps are consistent workspace/branch population, doc-anchor type/confidence, and richer stage timing coverage.
@@ -54,7 +54,7 @@ Without scores in the contract:
   "primary_source": {
     "symbol": "process_payment",
     "uid": "a4f9c1e2b7d83f56",
-    "file_path": "sidecar/payments.py",
+    "file_path": "context_engine/payments.py",
     "range": [42, 78],
     "code": "...",
     "is_dirty": false,
@@ -70,7 +70,7 @@ Without scores in the contract:
     {
       "symbol": "validate_amount",
       "uid": "...",
-      "file_path": "sidecar/validation.py",
+      "file_path": "context_engine/validation.py",
       "code": "...",
       "relation": "CALLS_DIRECT",
       "direction": "callee",
@@ -173,7 +173,7 @@ Full contract for a typical query: +400 to +800 bytes vs. current. Negligible co
 ## 3. API / Interface
 
 ```python
-# sidecar/context/types.py — extended
+# context_engine/context/types.py — extended
 
 @dataclass
 class CandidateScores:

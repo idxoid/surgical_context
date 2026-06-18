@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sidecar.parser.adapters.python_adapter import PythonAdapter  # noqa: E402
-from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter  # noqa: E402
+from context_engine.parser.adapters.python_adapter import PythonAdapter  # noqa: E402
+from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter  # noqa: E402
 
 QA = Path(__file__).resolve().parent
 

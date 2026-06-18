@@ -10,11 +10,11 @@ test-free.
 
 from __future__ import annotations
 
-from sidecar import main as sidecar_main
-from sidecar.axis.context_builder import ContextBundle, ContextSymbol
-from sidecar.axis.intent_classifier import IntentMatch
-from sidecar.axis.pipeline import AxisRetrievalResult
-from sidecar.axis.prompt_provider import axis_bundles_to_prompt_context
+from context_engine import main as context_engine_main
+from context_engine.axis.context_builder import ContextBundle, ContextSymbol
+from context_engine.axis.intent_classifier import IntentMatch
+from context_engine.axis.pipeline import AxisRetrievalResult
+from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
 
 
 def _sym(uid: str, name: str, *, depth: int, code: str) -> ContextSymbol:
@@ -50,8 +50,8 @@ def _result(bundles) -> AxisRetrievalResult:
 def _patch_pipeline(monkeypatch, result):
     # ``_context_from_axis`` imports these at call time, so patch the source
     # modules (a bound import in main would not see the patch).
-    import sidecar.axis.pipeline as _pipeline_mod
-    import sidecar.database.lancedb_client as _lance_mod
+    import context_engine.axis.pipeline as _pipeline_mod
+    import context_engine.database.lancedb_client as _lance_mod
 
     monkeypatch.setattr(_pipeline_mod, "run_axis_retrieval", lambda q, **k: result)
     monkeypatch.setattr(_lance_mod, "LanceDBClient", lambda **_: object())
@@ -60,7 +60,7 @@ def _patch_pipeline(monkeypatch, result):
 def test_context_from_axis_builds_prompt_context(monkeypatch):
     _patch_pipeline(monkeypatch, _result([_bundle()]))
 
-    ctx = sidecar_main._context_from_axis(
+    ctx = context_engine_main._context_from_axis(
         "how does routing work", workspace_id="ws", db=object(), trace_id="t1"
     )
 
@@ -79,7 +79,7 @@ def test_context_from_axis_returns_none_when_no_bundles(monkeypatch):
     # Empty pipeline -> adapter returns None -> provider falls through.
     _patch_pipeline(monkeypatch, _result([]))
 
-    ctx = sidecar_main._context_from_axis("how does routing work", workspace_id="ws", db=object())
+    ctx = context_engine_main._context_from_axis("how does routing work", workspace_id="ws", db=object())
     assert ctx is None
 
 
@@ -88,7 +88,7 @@ def test_context_from_axis_empty_intent_passes_blank(monkeypatch):
     result.intent = []  # no classified intent
     _patch_pipeline(monkeypatch, result)
 
-    ctx = sidecar_main._context_from_axis("q", workspace_id="ws", db=object())
+    ctx = context_engine_main._context_from_axis("q", workspace_id="ws", db=object())
     assert ctx is not None
     assert ctx.intent == ""
 

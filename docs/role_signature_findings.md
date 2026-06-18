@@ -46,7 +46,7 @@ Feature vocabulary and per-role discriminators referenced below live in
   the primary discriminator `handle_fan_out > 0`. **They do not — there is no
   collision.**
 - **how:** HANDLES is created **decoration-only** — `MERGE (deco)-[h:HANDLES]->(decorated)`
-  from the `@deco` AST fact (`sidecar/database/neo4j_client.py`
+  from the `@deco` AST fact (`context_engine/database/neo4j_client.py`
   `_create_decorator_relations`). So `handle_fan_out` lives on the **decorator**
   (`Flask.route`, `@app.task`), which *is* `registration_step`. A runtime router
   (`dispatch_request`) is not a decorator → emits **no** HANDLES edge → has **no**
@@ -75,7 +75,7 @@ Feature vocabulary and per-role discriminators referenced below live in
   module wiring) **and** the canonical name of the gateway role (§9, external-SDK
   boundary).
 - **how:** §3 alias list vs §9 heading in [role_catalog.md](role_catalog.md);
-  `sidecar/context/role_taxonomy.py` maps `store_integration → integration_surface`.
+  `context_engine/context/role_taxonomy.py` maps `store_integration → integration_surface`.
 - **why:** one canonical name, two incompatible structural profiles (internal
   cross-package fan-out vs out-degree to *external* nodes). Taxonomy/ranker cannot
   distinguish them.
@@ -103,7 +103,7 @@ Feature vocabulary and per-role discriminators referenced below live in
   `dependency_solver` all consume types; catalog separates them by USES_TYPE
   `kind` (param/annotation/return/isinstance).
 - **how:** catalog uses `type_fan_in(kind=…)`, but
-  `sidecar/indexer/role_clustering.py` aggregates a single `type_fan_in` /
+  `context_engine/indexer/role_clustering.py` aggregates a single `type_fan_in` /
   `type_fan_out` in `_FEATURE_NAMES` — **kind is not a feature**. The kind weights
   exist (`USES_TYPE_KIND_WEIGHT`) but only scale a scalar, they do not split axes.
 - **why:** the doc's four-way separation is not realizable on the current feature
@@ -209,7 +209,7 @@ after each engine change.
 ### F12 — L1 noise sink captures public entrypoints 🔴
 - **what:** `FastAPI` — the canonical `public_entrypoint`/`api_surface` — lands in
   L1 `noise` → `orphan`.
-- **how:** `assign_l1` (`sidecar/indexer/role_cascade.py`) tests
+- **how:** `assign_l1` (`context_engine/indexer/role_cascade.py`) tests
   `zero_in_degree and call_fan_out <= eps` **first**. A framework's public class is
   instantiated by *user* code (`docs_src/`, `tests/`) which Pass-1 excludes, so its
   *internal* in-degree is zero — it hits the noise sink before the `state_types`
@@ -221,7 +221,7 @@ after each engine change.
 - **fixed (prototype):** a pure reorder is *not* enough — `FastAPI` has
   `depth_from_public=6` (F13 makes depth unreliable) and `api_fan_in=0`, so the
   existing `state_types`/`api_surface` predicates still miss it. Two-part fix in
-  `sidecar/indexer/role_cascade.py`: (1) `assign_l1` exempts a documented class exposing an API
+  `context_engine/indexer/role_cascade.py`: (1) `assign_l1` exempts a documented class exposing an API
   surface (`is_class and (api_fan_out > eps or has_documentation)`) from the noise
   sink and routes it to `state_types` (added `api_fan_out` to the bucket gate);
   (2) `api_surface` L2 predicate now also fires on `is_class and api_fan_out > eps
@@ -237,7 +237,7 @@ after each engine change.
   symbol set — which keeps test-fixture pollution out of role assignment — also
   removes the edges by which **user code exercises framework public surfaces**.
 - **how:** `_query_pass1_symbols` / `_query_symbols` filter `NOISE_PATH_PATTERNS`
-  (`sidecar/indexer/role_clustering.py`); the framework's public API is used in
+  (`context_engine/indexer/role_clustering.py`); the framework's public API is used in
   `docs_src/`/`tests/`, now invisible to the in-degree/`depth_from_public` signals.
 - **why:** genuine tension — test exclusion is correct for *role-shape* hygiene
   (don't assign roles from test fixtures) but wrong for *entrypoint reachability*
@@ -245,7 +245,7 @@ after each engine change.
 - **decision:** keep Pass-1 input test-free but compute `api_fan_in` and
   `depth_from_public` over the **full** call graph (incl. tests) so entrypoints
   retain reachability. Implemented in ``assemble_symbol_rows`` /
-  ``_depth_from_public_full_graph`` (`sidecar/indexer/role_clustering.py`).
+  ``_depth_from_public_full_graph`` (`context_engine/indexer/role_clustering.py`).
 
 ### Implemented since: two derived edges (RE_EXPORTS, INSTANTIATES)
 Both added to the production indexer (extractor → `link_*` → pipeline phase),
@@ -268,7 +268,7 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   `solve_dependencies`) and `Param → config_surface` (F4 kind-split) also remain.
 
 ### F14 — arbiter (`ROLE_ALIASES`) desynced from the cascade vocabulary 🔴
-- **what:** `normalize_roles` (`sidecar/context/role_taxonomy.py`) is applied to **both**
+- **what:** `normalize_roles` (`context_engine/context/role_taxonomy.py`) is applied to **both**
   the YAML `required_roles` *and* the engine's `indexed_roles` and the ranker's role
   plan. A miss is manufactured whenever a concept and the engine's emitted role for the
   same symbol normalize to **different** canonicals. It also feeds the ranker's plan, so
@@ -347,7 +347,7 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   symbol-extraction coverage.**
 
 ### F16 — intent→roles table (`_SECONDARY_INTENT_ROLES`) names unreachable roles 🟡
-- **what:** `IntentClassifier._SECONDARY_INTENT_ROLES` (`sidecar/context/intent_classifier.py`)
+- **what:** `IntentClassifier._SECONDARY_INTENT_ROLES` (`context_engine/context/intent_classifier.py`)
   maps a query intent to supplemental role-types the ranker should prioritize. It is a
   query-side *strategy* hint (not graph/role authoring — not a P1/P2 violation), but it
   names roles the engine cannot produce: `runtime_surface`, `error_surface` (DEBUGGING),

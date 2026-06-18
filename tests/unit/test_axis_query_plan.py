@@ -1,6 +1,6 @@
 import pytest
 
-from sidecar.axis.query_plan import (
+from context_engine.axis.query_plan import (
     AxisQueryRequest,
     AxisRequirement,
     compile_axis_query,

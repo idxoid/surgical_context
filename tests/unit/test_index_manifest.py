@@ -3,9 +3,9 @@
 import json
 from unittest.mock import patch
 
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
-from sidecar.indexer.repository_profile import build_empty_repository_profile
-from sidecar.retrieval.manifest import (
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+from context_engine.indexer.repository_profile import build_empty_repository_profile
+from context_engine.retrieval.manifest import (
     INDEX_MANIFEST_SCHEMA_VERSION,
     build_index_manifest,
     compute_manifest_id,
@@ -180,7 +180,7 @@ def test_persist_records_warning_when_disk_unwritable(tmp_path):
         "repository_profile_store": "",
     }
     with patch(
-        "sidecar.retrieval.manifest.write_manifest_to_disk",
+        "context_engine.retrieval.manifest.write_manifest_to_disk",
         side_effect=OSError("permission denied"),
     ):
         m = persist_index_manifest(

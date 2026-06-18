@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from sidecar.axis.axis_phased import expand_phased
-from sidecar.axis.role_retrieval import RoleCandidate
+from context_engine.axis.axis_phased import expand_phased
+from context_engine.axis.role_retrieval import RoleCandidate
 
 WORKSPACE = "qa_repo/test@axis"
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sidecar.indexer.fast.error_dispatch_propagation import (
+from context_engine.indexer.fast.error_dispatch_propagation import (
     exception_name_keys_from_keyed_writes,
     is_builtin_exception_type_name,
 )

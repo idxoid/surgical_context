@@ -1,7 +1,7 @@
 # Axis terminology
 
 Canonical vocabulary for the axis-based compiler stack. Every doc and module
-under `sidecar/axis/` uses these terms with these meanings. When a layer talks
+under `context_engine/axis/` uses these terms with these meanings. When a layer talks
 about its inputs and outputs it talks in terms below — not in framework names
 or benchmark labels.
 
@@ -31,9 +31,9 @@ Current implementation status:
 
 | layer | status |
 |---|---|
-| L1 extractor | implemented for Python in `sidecar.axis.python_extractor` |
-| L2 container kind | implemented in `sidecar.axis.container_kind` |
-| L3 contract compiler | implemented in `sidecar.axis.contract_compiler` |
+| L1 extractor | implemented for Python in `context_engine.axis.python_extractor` |
+| L2 container kind | implemented in `context_engine.axis.container_kind` |
+| L3 contract compiler | implemented in `context_engine.axis.contract_compiler` |
 | L4 role resolver | not implemented in the axis stack |
 | L5 exposure | QA-only via `QA.axis_contract_report` and `QA.axis_query_smoke` |
 

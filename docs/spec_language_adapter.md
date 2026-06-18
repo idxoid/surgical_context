@@ -4,7 +4,7 @@
 
 ## 1. Problem
 
-Currently, language-specific parsing logic is scattered across `sidecar/parser/`:
+Currently, language-specific parsing logic is scattered across `context_engine/parser/`:
 - Tree-sitter queries baked into `languages.py` as a `LANGUAGE_CONFIGS` dict.
 - `SymbolExtractor` hard-codes the lookup.
 - Adding a new language (Go, Rust, Java) means editing both files.
@@ -19,7 +19,7 @@ ADR-005 solves this via a plugin architecture: each language implements a protoc
 ```python
 from abc import ABC, abstractmethod
 from typing import List, Optional
-from sidecar.parser.extractor import SymbolMetadata, CallEdge
+from context_engine.parser.extractor import SymbolMetadata, CallEdge
 
 class LanguageAdapter(ABC):
     """Plugin interface for language-specific parsing."""
@@ -191,7 +191,7 @@ class LanguageAdapterRegistry:
 
 ### 3.2 Bootstrap — Auto-discover Adapters
 
-On sidecar startup, auto-load all adapters from `sidecar/parser/adapters/`:
+On sidecar startup, auto-load all adapters from `context_engine/parser/adapters/`:
 
 ```python
 def bootstrap_adapters() -> LanguageAdapterRegistry:
@@ -202,7 +202,7 @@ def bootstrap_adapters() -> LanguageAdapterRegistry:
     for module_file in adapters_dir.glob("*_adapter.py"):
         module_name = module_file.stem  # e.g., "python_adapter"
         try:
-            mod = importlib.import_module(f"sidecar.parser.adapters.{module_name}")
+            mod = importlib.import_module(f"context_engine.parser.adapters.{module_name}")
             # Adapters export a `make_adapter()` factory function
             adapter = mod.make_adapter()
             registry.register(adapter)
@@ -258,12 +258,12 @@ class SymbolExtractor:
 
 ## 5. Example: Python Adapter
 
-### 5.1 File: `sidecar/parser/adapters/python_adapter.py`
+### 5.1 File: `context_engine/parser/adapters/python_adapter.py`
 
 ```python
 import tree_sitter_languages
 from hashlib import sha256
-from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
+from context_engine.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
 
 class PythonAdapter(LanguageAdapter):
     """Python language adapter using tree-sitter."""
@@ -363,11 +363,11 @@ def make_adapter() -> LanguageAdapter:
 
 ### 6.1 Go Example
 
-1. **Create adapter file** `sidecar/parser/adapters/go_adapter.py`:
+1. **Create adapter file** `context_engine/parser/adapters/go_adapter.py`:
 
 ```python
 import tree_sitter_languages
-from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
+from context_engine.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
 
 class GoAdapter(LanguageAdapter):
     
@@ -422,8 +422,8 @@ def test_go_extract_symbols():
 ### Phase 1 ✅ Complete
 
 Adapter protocol and registry fully implemented:
-1. ✅ `sidecar/parser/protocol.py` with `LanguageAdapter` ABC and data classes.
-2. ✅ `sidecar/parser/adapters/` directory with `python_adapter.py` and `typescript_adapter.py`.
+1. ✅ `context_engine/parser/protocol.py` with `LanguageAdapter` ABC and data classes.
+2. ✅ `context_engine/parser/adapters/` directory with `python_adapter.py` and `typescript_adapter.py`.
 3. ✅ `SymbolExtractor` refactored to use registry and auto-detect language.
 4. ✅ 10 unit tests + 10 integration tests for adapter loading and language detection.
 

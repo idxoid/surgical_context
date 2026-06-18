@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar.axis import pipeline as axis_pipeline
-from sidecar.axis.context_builder import ContextBundle, ContextSymbol
-from sidecar.axis.intent_classifier import IntentMatch
-from sidecar.axis.role_retrieval import RoleCandidate, WorkspaceScan
+from context_engine.axis import pipeline as axis_pipeline
+from context_engine.axis.context_builder import ContextBundle, ContextSymbol
+from context_engine.axis.intent_classifier import IntentMatch
+from context_engine.axis.role_retrieval import RoleCandidate, WorkspaceScan
 
 
 def _cand(uid: str, path: str, *, score: float = 0.8) -> RoleCandidate:
@@ -48,10 +48,10 @@ def stub_stages(monkeypatch):
     observable); the graph pool passes are left real and return ``[]``
     against the bare-object db.
     """
-    import sidecar.axis.axis_ranking as _rank_mod
-    import sidecar.axis.context_builder as _ctx_mod
-    import sidecar.axis.intent_classifier as _intent_mod
-    import sidecar.axis.role_retrieval as _retr_mod
+    import context_engine.axis.axis_ranking as _rank_mod
+    import context_engine.axis.context_builder as _ctx_mod
+    import context_engine.axis.intent_classifier as _intent_mod
+    import context_engine.axis.role_retrieval as _retr_mod
 
     monkeypatch.setattr(
         _intent_mod,
@@ -144,7 +144,7 @@ def test_runs_without_a_tracer(stub_stages):
 
 
 def test_intent_budget_off_leaves_build_context_unbudgeted(stub_stages, monkeypatch):
-    import sidecar.axis.context_builder as _ctx_mod
+    import context_engine.axis.context_builder as _ctx_mod
 
     captured: dict = {}
     monkeypatch.setattr(
@@ -162,7 +162,7 @@ def test_intent_budget_off_leaves_build_context_unbudgeted(stub_stages, monkeypa
 
 
 def test_intent_budget_on_applies_architecture_profile(stub_stages, monkeypatch):
-    import sidecar.axis.context_builder as _ctx_mod
+    import context_engine.axis.context_builder as _ctx_mod
 
     captured: dict = {}
 
@@ -184,7 +184,7 @@ def test_intent_budget_on_applies_architecture_profile(stub_stages, monkeypatch)
 
 
 def test_intent_budget_walks_full_scope_no_passive_split(stub_stages, monkeypatch):
-    import sidecar.axis.context_builder as _ctx_mod
+    import context_engine.axis.context_builder as _ctx_mod
 
     captured: dict = {}
 
@@ -205,7 +205,7 @@ def test_intent_budget_walks_full_scope_no_passive_split(stub_stages, monkeypatc
 
 
 def test_intent_budget_threads_proximity_utility_to_context_builder(stub_stages, monkeypatch):
-    import sidecar.axis.context_builder as _ctx_mod
+    import context_engine.axis.context_builder as _ctx_mod
 
     captured: dict = {}
 

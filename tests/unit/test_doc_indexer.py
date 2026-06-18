@@ -1,4 +1,4 @@
-from sidecar.indexer import docs as docs_indexer
+from context_engine.indexer import docs as docs_indexer
 
 
 def test_index_docs_returns_file_and_chunk_counts(tmp_path, monkeypatch):

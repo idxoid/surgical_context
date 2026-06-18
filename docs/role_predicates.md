@@ -1,6 +1,6 @@
 # Структурные роли и правила (Pass 1)
 
-Источник истины — [sidecar/indexer/role_cascade.py](../sidecar/indexer/role_cascade.py).
+Источник истины — [context_engine/indexer/role_cascade.py](../context_engine/indexer/role_cascade.py).
 Документ — снимок состояния `role_cascade.py` на коммит `640f157`. Если код
 разойдётся с таблицами, **код прав**, документ обновляется отдельно.
 

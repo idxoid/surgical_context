@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from sidecar.axis import role_retrieval as rr
-from sidecar.axis.role_retrieval import WorkspaceScan, _row_indices_for_evidence
+from context_engine.axis import role_retrieval as rr
+from context_engine.axis.role_retrieval import WorkspaceScan, _row_indices_for_evidence
 
 
 def test_workspace_scan_builds_contract_and_kind_indexes():

@@ -20,7 +20,7 @@ These tests pin the parser's authority over module-level execution:
 
 from __future__ import annotations
 
-from sidecar.parser.adapters.python_adapter import PythonAdapter
+from context_engine.parser.adapters.python_adapter import PythonAdapter
 
 
 def _adapter() -> PythonAdapter:

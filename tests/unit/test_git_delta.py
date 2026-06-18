@@ -5,8 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from sidecar.indexer.git_delta import apply_git_head_delta
-from sidecar.indexer.git_sync import GitStateTracker
+from context_engine.indexer.git_delta import apply_git_head_delta
+from context_engine.indexer.git_sync import GitStateTracker
 
 
 def _git(repo: Path, *args: str) -> None:

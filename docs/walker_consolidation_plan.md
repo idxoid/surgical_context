@@ -5,7 +5,7 @@ recall-neutral target. Does NOT depend on seed-floor (that work is done).
 
 ## Current state — two walkers
 
-1. **`sidecar/axis/graph_walk.py` → `walk_neighbours`** (the core).
+1. **`context_engine/axis/graph_walk.py` → `walk_neighbours`** (the core).
    Used by 5 pool passes: structural_neighbours, inheritance_ancestors,
    impact_traversal, trace_traversal, role_lookahead (+ cross_role_boost
    reuses its `_safe_rel_pattern`/`_safe_max_hops`). Takes a **seed list**
@@ -13,10 +13,10 @@ recall-neutral target. Does NOT depend on seed-floor (that work is done).
    other lacks: `reach` (distinct-seeds centrality), `cap_by_file`,
    `exclude_tests`, `anchor=file_classes`, workspace-edge filter.
 
-2. **`sidecar/axis/graph_traversal.py` → `AxisGraphTraversal.expand`**
+2. **`context_engine/axis/graph_traversal.py` → `AxisGraphTraversal.expand`**
    (the holdout). Used ONLY by `build_context_for_candidates`
    (per-candidate context expansion). Plan-driven: `compile_axis_query`
-   (`sidecar/axis/query_plan.py`) compiles a `TraversalMode`
+   (`context_engine/axis/query_plan.py`) compiles a `TraversalMode`
    (`immediate_control_flow` | `deferred_binding_flow`) into
    `ExpansionStep`s (edge_types + direction + max_depth) + stop_conditions.
    Then `expand([uid], plan)` runs `(seed)-[edges*1..N]->(n:Symbol)` per
@@ -26,7 +26,7 @@ The two issue essentially the same Cypher shape. `AxisGraphTraversal` is a
 plan-indirection + per-candidate loop on top of what `walk_neighbours`
 already does — but **per-candidate (N queries) instead of batched (1)**.
 That per-candidate loop is the latency hotspot
-([context_builder.py:142](../sidecar/axis/context_builder.py#L142)).
+([context_builder.py:142](../context_engine/axis/context_builder.py#L142)).
 
 ## Why two layers exist (the precision reason — keep it)
 Per-edge-type fan-out differs: `DEPENDS_ON` sparse (1-2 bases), `CALLS`

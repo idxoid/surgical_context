@@ -1,6 +1,6 @@
 import pytest
 
-from sidecar.index_profile import (
+from context_engine.index_profile import (
     AXIS_PYTHON_V1_PROFILE,
     INDEX_PROFILE_ENV,
     LEGACY_INDEX_PROFILE,

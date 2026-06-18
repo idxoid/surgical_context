@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sidecar.axis.retrieval_budget import (
+from context_engine.axis.retrieval_budget import (
     ARCHITECTURE,
     IMPACT,
     budget_for_intent,

@@ -3,7 +3,7 @@
 
 Re-pointed off the deleted legacy ``qa_benchmark`` harness (cascade cleanup,
 2026-06-15): the wipe now goes through the indexer's own
-``sidecar.indexer.fast.__main__._wipe_workspace`` (exact per-workspace delete —
+``context_engine.indexer.fast.__main__._wipe_workspace`` (exact per-workspace delete —
 every workspace-scoped label carries ``workspace_id``), and the tiny pack /
 checkout helpers are inlined. No more ``QA.qa_benchmark`` import.
 
@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import yaml
 
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
-from sidecar.indexer.fast.__main__ import _wipe_workspace
-from sidecar.workspace import WorkspaceResolver
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+from context_engine.indexer.fast.__main__ import _wipe_workspace
+from context_engine.workspace import WorkspaceResolver
 
 _REPO_ROOT = Path(__file__).parent.parent
 _DEFAULT_REAL_REPO_PACK = _REPO_ROOT / "QA" / "fixtures" / "questions_python.yaml"

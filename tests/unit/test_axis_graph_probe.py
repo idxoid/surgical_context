@@ -1,4 +1,4 @@
-from sidecar.axis.graph_probe import Neo4jGraphContextProbe
+from context_engine.axis.graph_probe import Neo4jGraphContextProbe
 
 
 class _Result:

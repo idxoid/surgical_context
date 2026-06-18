@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar.indexer.file_tier import (
+from context_engine.indexer.file_tier import (
     TIER_CORE,
     TIER_DOC,
     TIER_EXAMPLE,

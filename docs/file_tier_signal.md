@@ -69,7 +69,7 @@ are the new lever. Weights echo the legacy `NOISE_FACTOR`
 ## Subsumes (3 → 1)
 
 - `axis/test_file_filter.is_test_path` → the `test` tier, now native.
-- **`sidecar/indexer/signal_constants.NOISE_PATH_PATTERNS`** (class B, moved
+- **`context_engine/indexer/signal_constants.NOISE_PATH_PATTERNS`** (class B, moved
   out of the deleted cascade into the indexer, 2026-06-15) → its path patterns
   become the `example`/`doc` derivation.
   This *closes the class-B migration item* — the indexer is its home.
@@ -78,7 +78,7 @@ are the new lever. Weights echo the legacy `NOISE_FACTOR`
 
 ## Implementation steps
 
-1. **`sidecar/indexer/file_tier.py`** — `classify_file_tier(path,
+1. **`context_engine/indexer/file_tier.py`** — `classify_file_tier(path,
    pure_reexport)` + `is_pure_reexport_source(src)`. *(this commit — derive only)*
 2. Indexer fast-pipeline — set `file_tier` on each `Symbol` at index
    time (next to degree materialization). Requires reindex.

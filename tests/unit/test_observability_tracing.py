@@ -3,7 +3,7 @@
 import sys
 import types
 
-from sidecar.observability.metrics import RequestTrace
+from context_engine.observability.metrics import RequestTrace
 
 
 class FakeSpan:
@@ -56,13 +56,13 @@ def test_request_stage_creates_otel_span_when_enabled(monkeypatch):
     with trace.stage("context"):
         pass
 
-    assert tracer.names == ["sidecar.ask.context"]
+    assert tracer.names == ["context_engine.ask.context"]
     span = tracer.spans[0]
-    assert span.attributes["sidecar.trace_id"] == "trace-otel"
+    assert span.attributes["context_engine.trace_id"] == "trace-otel"
     assert span.attributes["http.route"] == "/ask"
-    assert span.attributes["sidecar.workspace_id"] == "acme/repo@main"
-    assert span.attributes["sidecar.stage"] == "context"
-    assert span.attributes["sidecar.elapsed_ms"] >= 0
+    assert span.attributes["context_engine.workspace_id"] == "acme/repo@main"
+    assert span.attributes["context_engine.stage"] == "context"
+    assert span.attributes["context_engine.elapsed_ms"] >= 0
 
 
 def test_request_stage_records_otel_exception(monkeypatch):
@@ -79,5 +79,5 @@ def test_request_stage_records_otel_exception(monkeypatch):
 
     span = tracer.spans[0]
     assert isinstance(span.exceptions[0], RuntimeError)
-    assert span.attributes["sidecar.error"] is True
-    assert span.attributes["sidecar.error_type"] == "RuntimeError"
+    assert span.attributes["context_engine.error"] is True
+    assert span.attributes["context_engine.error_type"] == "RuntimeError"

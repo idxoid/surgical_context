@@ -1,12 +1,12 @@
 import pytest
 
-from sidecar.axis.container_kind import ContainerKindClassifier, ContainerKindMatch
-from sidecar.axis.contract_compiler import (
+from context_engine.axis.container_kind import ContainerKindClassifier, ContainerKindMatch
+from context_engine.axis.contract_compiler import (
     AxisContractCompiler,
     AxisContractMatch,
     container_kind_matches_from_json,
 )
-from sidecar.axis.schema import AxisExtraction, AxisFact, AxisProfile
+from context_engine.axis.schema import AxisExtraction, AxisFact, AxisProfile
 
 
 def _fact(

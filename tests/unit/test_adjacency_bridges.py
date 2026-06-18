@@ -1,4 +1,4 @@
-from sidecar.axis.adjacency_bridges import deserialize_external_maps, serialize_external_maps
+from context_engine.axis.adjacency_bridges import deserialize_external_maps, serialize_external_maps
 
 
 def test_external_maps_roundtrip():

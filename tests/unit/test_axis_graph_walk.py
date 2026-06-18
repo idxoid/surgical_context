@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar.axis.graph_walk import (
+from context_engine.axis.graph_walk import (
     EdgeProfile,
     Neighbour,
     _safe_rel_pattern,

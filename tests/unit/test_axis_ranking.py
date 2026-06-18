@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from sidecar.axis.axis_profiles import Axis
-from sidecar.axis.axis_ranking import apply_intent_axis_boost, intent_axes
-from sidecar.axis.role_retrieval import RoleCandidate
+from context_engine.axis.axis_profiles import Axis
+from context_engine.axis.axis_ranking import apply_intent_axis_boost, intent_axes
+from context_engine.axis.role_retrieval import RoleCandidate
 
 
 def _cand(uid, kinds=(), score=0.5, role="x"):

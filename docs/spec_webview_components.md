@@ -6,7 +6,7 @@
 
 The Surgical Context extension uses webviews for UI that exceeds native VS Code view capabilities. Webviews render rich layouts for streaming answers, evidence inspection, token breakdowns, impact summaries, and operational dashboards.
 
-The webview layer must stay thin. Business logic remains in the extension host and sidecar. Webviews are responsible for rendering state, capturing user input, and sending typed messages to the extension host.
+The webview layer must stay thin. Business logic remains in the extension host and context_engine. Webviews are responsible for rendering state, capturing user input, and sending typed messages to the extension host.
 
 ## Design
 
@@ -197,7 +197,7 @@ Do not persist transient streaming buffers after dispose.
 
 - All messages are typed.
 - Webviews never call sidecar HTTP APIs directly.
-- The extension host is the only bridge to VS Code APIs and the sidecar.
+- The extension host is the only bridge to VS Code APIs and the context_engine.
 - Every request message has a response, progress, or error path.
 
 ### Webview → extension host messages

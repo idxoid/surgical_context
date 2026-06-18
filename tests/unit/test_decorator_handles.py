@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from sidecar.database.neo4j_client import Neo4jClient
+from context_engine.database.neo4j_client import Neo4jClient
 
 
 def test_create_decorator_relations_materializes_handles_inverse():

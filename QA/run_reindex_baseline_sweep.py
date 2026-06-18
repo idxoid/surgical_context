@@ -2,7 +2,7 @@
 """Re-index each benchmark repo, run axis benchmark, emit combined baseline JSON.
 
 Replaces the deleted ``QA/qa_benchmark.py`` harness. Indexing uses
-``python -m sidecar.indexer.fast --fresh``; evaluation uses
+``python -m context_engine.indexer.fast --fresh``; evaluation uses
 ``python -m QA.axis_benchmark``.
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from QA.axis_benchmark import REPO_TO_WORKSPACE
 from QA.reset_databases import _default_repo_checkout_path, _repo_meta_from_pack
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 
 ROOT = Path(__file__).resolve().parent.parent
 QUESTIONS = ROOT / "QA" / "fixtures" / "questions_python.yaml"
@@ -85,7 +85,7 @@ def run_repo(repo: str, *, skip_existing: bool = True) -> dict:
     index_cmd = [
         sys.executable,
         "-m",
-        "sidecar.indexer.fast",
+        "context_engine.indexer.fast",
         str(project_path),
         "--workspace",
         workspace_id,

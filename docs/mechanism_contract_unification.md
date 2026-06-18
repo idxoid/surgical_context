@@ -1,6 +1,6 @@
 # Mechanism contract tables — post-mortem
 
-> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`context_engine/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
 
 
 ## What was removed
@@ -14,13 +14,13 @@ Four hardcoded contract table groups in `signal_constants.py` and four correspon
 | `TRACE_TASK_REGISTRATION_CONTRACT_*` | `task_registration_mandatory_anchor_candidates` | celery task registration |
 | `TRACE_ASYNC_RESULT_CONTRACT_*` | `async_result_backend_mandatory_anchor_candidates` | celery result backend |
 
-Each table embedded literal symbol names and file-path substrings (`/app/task.py`, `/worker/strategy.py`) derived directly from the celery benchmark answer key. They were framework-specific, overfitting, and a principle violation — [mechanism_registry.py](../sidecar/context/mechanism_registry.py) explicitly stubs framework dispatch tables; these were the same thing in a different file.
+Each table embedded literal symbol names and file-path substrings (`/app/task.py`, `/worker/strategy.py`) derived directly from the celery benchmark answer key. They were framework-specific, overfitting, and a principle violation — [mechanism_registry.py](../context_engine/context/mechanism_registry.py) explicitly stubs framework dispatch tables; these were the same thing in a different file.
 
 ## Why they could be deleted
 
 The root cause was a gap in the parser: `self.attr.method()` calls and `local = self.attr; local.method()` patterns were dropped silently (nested attribute branch returned early). Celery's collaborator chains (`apply_async → create_task_message / send_task_message / Producer`) were invisible to the graph, so the ranker fell back to contract tables to surface them.
 
-The fix was **Tier 4.5 CALLS_TYPED** in [python_adapter.py](../sidecar/parser/adapters/python_adapter.py): instance-attribute type inference (three sources: `_cls` string convention, `__init__` instantiation, class annotations) resolves collaborator calls to qualified targets and emits real `CALLS_DYNAMIC` edges. See [spec_call_resolution_pipeline.md §2.5.1](spec_call_resolution_pipeline.md).
+The fix was **Tier 4.5 CALLS_TYPED** in [python_adapter.py](../context_engine/parser/adapters/python_adapter.py): instance-attribute type inference (three sources: `_cls` string convention, `__init__` instantiation, class annotations) resolves collaborator calls to qualified targets and emits real `CALLS_DYNAMIC` edges. See [spec_call_resolution_pipeline.md §2.5.1](spec_call_resolution_pipeline.md).
 
 With those edges in the graph, the LLM judge confirmed (q01–q03 pass, role_recall=1.0) that derived-only context is sufficient. Contract tables were deleted unconditionally — no kill-switch, no YAML migration.
 
@@ -63,6 +63,6 @@ that construct typed objects across package boundaries.
 
 ## What Path 2 (mechanism packs) is today
 
-`_role_backfill_candidates` in [unified_ranker.py](../sidecar/context/unified_ranker.py) remains active as an **opt-in extensibility mechanism**: set `MECHANISM_PACK_PATH` to load a YAML pack (see [celery_publish_consume.yaml](../sidecar/context/mechanism_packs/bundled/celery_publish_consume.yaml) for the schema). It is not loaded by default and does not author graph edges — it only backfills role slots that the derived graph leaves empty.
+`_role_backfill_candidates` in [unified_ranker.py](../context_engine/context/unified_ranker.py) remains active as an **opt-in extensibility mechanism**: set `MECHANISM_PACK_PATH` to load a YAML pack (see [celery_publish_consume.yaml](../context_engine/context/mechanism_packs/bundled/celery_publish_consume.yaml) for the schema). It is not loaded by default and does not author graph edges — it only backfills role slots that the derived graph leaves empty.
 
 The principle: **graph = derivative of code and topology. YAML packs are not authors of links.**

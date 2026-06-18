@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from sidecar.axis.context_builder import build_context_for_candidates
-from sidecar.axis.role_retrieval import RoleCandidate
+from context_engine.axis.context_builder import build_context_for_candidates
+from context_engine.axis.role_retrieval import RoleCandidate
 
 WORKSPACE = "qa_repo/test@axis"
 

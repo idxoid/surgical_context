@@ -2,7 +2,7 @@
 
 import json
 
-from sidecar.feedback.store import FeedbackStore, RetrievalSnapshot
+from context_engine.feedback.store import FeedbackStore, RetrievalSnapshot
 
 
 def _snapshot(token: str) -> RetrievalSnapshot:

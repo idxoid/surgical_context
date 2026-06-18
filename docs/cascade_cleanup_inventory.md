@@ -3,25 +3,25 @@
 > **✅ DONE 2026-06-15.** The migration described below is complete. axis is the
 > default `/ask` provider (`ASK_AXIS_FIRST=0` rolls back); class A was deleted
 > (commits 8d430dc cutover → 75985cb indexer decouple → 6429811 main.py decouple
-> → eb3da79 delete, ~19.5k LOC). Kept (class C): `sidecar/context/{types,
+> → eb3da79 delete, ~19.5k LOC). Kept (class C): `context_engine/context/{types,
 > doc_resolver, overlay}`. `reset_databases` re-pointed (f0f7e52); `/search`
 > graph neighbors restored via the axis walk (04d16b4). `role_cascade` is the
 > KEPT structural role engine (misnomer — not the ranking cascade). This doc is
 > retained as the migration record; the plan below is historical.
 
-Migration of the legacy ranking cascade (`sidecar/context/`) to the axis
-pipeline (`sidecar/axis/`). This is the Phase 0 deliverable: the exact
-A/B/C classification of every `sidecar/context` module by its
+Migration of the legacy ranking cascade (`context_engine/context/`) to the axis
+pipeline (`context_engine/axis/`). This is the Phase 0 deliverable: the exact
+A/B/C classification of every `context_engine/context` module by its
 **production** (non-test, non-QA) importers, plus the `/ask` API
 contract the replacement must honour.
 
-Measured 2026-06-11 by scanning `from sidecar.context.<mod>` across
-`sidecar/`, `QA/`, `tests/`.
+Measured 2026-06-11 by scanning `from context_engine.context.<mod>` across
+`context_engine/`, `QA/`, `tests/`.
 
 > **Re-scan 2026-06-13 (post Phase 1a–1f axis migration).** Production
-> importers of `sidecar.context` re-verified after the axis `/ask` provider
-> landed. Only NEW edge: `sidecar/axis/prompt_provider.py` now imports
-> `from sidecar.context.types import PromptContext, SymbolContext` — the axis
+> importers of `context_engine.context` re-verified after the axis `/ask` provider
+> landed. Only NEW edge: `context_engine/axis/prompt_provider.py` now imports
+> `from context_engine.context.types import PromptContext, SymbolContext` — the axis
 > provider itself depends on `context/types.py`, which **confirms `types` as
 > class C (shared contract, never delete)**. No new edges into class A.
 > `main.py` still carries the full class-A cascade wiring (arbitrator,
@@ -38,7 +38,7 @@ Measured 2026-06-11 by scanning `from sidecar.context.<mod>` across
 
 ## The border principle
 
-`sidecar/context/` is NOT all cascade. Only **class A** is deleted;
+`context_engine/context/` is NOT all cascade. Only **class A** is deleted;
 B migrates into the indexer (it is index-time infra, and the axis
 pipeline itself depends on indexing); C is shared runtime infra.
 
@@ -46,7 +46,7 @@ pipeline itself depends on indexing); C is shared runtime infra.
 
 Removed only AFTER the `/ask` endpoints are switched to axis (Phase 3).
 Every module below has **zero production importers** outside
-`sidecar/context` except where noted (the exception is `main.py`'s
+`context_engine/context` except where noted (the exception is `main.py`'s
 cascade wiring, which Phase 1–3 replaces).
 
 | module | production importer | note |
@@ -75,16 +75,16 @@ cascade wiring, which Phase 1–3 replaces).
 | intent_classifier (legacy) | main.py (`IntentClassifier`) | axis has its own `axis/intent_classifier`; delete after switch |
 | prompt_compiler (`PromptCompiler`) | (via arbitrator) | **provider-side**, builds PromptContext from ranked candidates INSIDE arbitrator; deleted with cascade — but the axis provider needs its own ContextBundle→PromptContext adapter (Phase 1), NOT a full prompt rewrite |
 
-## Class B — MIGRATE → `sidecar/indexer/`
+## Class B — MIGRATE → `context_engine/indexer/`
 
 Index-time infrastructure, NOT ranking. The indexer (which axis itself
-relies on) imports these. Move them under `sidecar/indexer/`, do not
+relies on) imports these. Move them under `context_engine/indexer/`, do not
 delete.
 
 | module | importer | destination |
 |---|---|---|
-| framework_hints | `indexer/fast/pipeline.py` (`FrameworkHintsIndexer`) | `sidecar/indexer/framework_hints.py` |
-| ranker/signal_constants | `indexer/role_clustering.py` (`NOISE_PATH_PATTERNS`) | `sidecar/indexer/signal_constants.py` |
+| framework_hints | `indexer/fast/pipeline.py` (`FrameworkHintsIndexer`) | `context_engine/indexer/framework_hints.py` |
+| ranker/signal_constants | `indexer/role_clustering.py` (`NOISE_PATH_PATTERNS`) | `context_engine/indexer/signal_constants.py` |
 
 ## Class C — KEEP / relocate (shared runtime infra)
 
@@ -95,7 +95,7 @@ Not cascade; the axis answer path needs them too.
 | **types.`PromptContext`** | main.py (consumer seam) | **THE provider↔consumer CONTRACT** — `_resolve_ask_context()` returns it, consumers call `to_system_prompt()`. NOT cascade. KEEP. The migration swaps the PROVIDER behind this contract, not the contract. |
 | types.`to_system_prompt()` | (consumer) | consumer-side render on PromptContext; untouched |
 | types.`SymbolContext` / `DocChunk` | (part of PromptContext) | the context payload types PromptContext carries; KEEP with the contract |
-| overlay (`InMemoryOverlay`) | main.py | runtime uncommitted-edit overlay; relocate to `sidecar/overlay.py` or keep |
+| overlay (`InMemoryOverlay`) | main.py | runtime uncommitted-edit overlay; relocate to `context_engine/overlay.py` or keep |
 | doc_resolver (`DocResolver`) | main.py (`/search`, doc context) | doc-chunk retrieval; axis answer path needs docs |
 | types.`Subgraph` | `cache/layered.py` | cache type; relocate to cache or a small shared types module |
 | types.`RESOLVER_VERSION` | main.py | version stamp; relocate |
@@ -158,7 +158,7 @@ feedback_token, model_route, metrics, index_manifest_id/_schema_version
    `/search/unified` similarly; arbitrator behind flag for rollback.
 4. **Indexer decouple** — migrate class B; drop mechanism_registry/packs
    (inert answer-key); relocate Subgraph. GATE: indexer imports no
-   `sidecar.context`.
+   `context_engine.context`.
 5. **Delete class A** (~7200 LOC) + legacy tests (~20) + QA legacy
    benchmark (`qa_benchmark.py`, `context_frontier.py`). GATE: suite
    green, no dangling imports.

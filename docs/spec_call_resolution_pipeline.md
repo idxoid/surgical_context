@@ -107,7 +107,7 @@ Local aliases (`amqp = self.amqp`) inherit the attribute's type within the funct
 
 Confidence: **0.8**, `tier = "typed"`. The edge is emitted with **`rel_type = CALLS_DYNAMIC`** so it participates in every existing graph traversal union; `tier` carries the resolver identity for observability. A dedicated `CALLS_TYPED` edge label can be promoted later once all traversal queries enumerate it.
 
-Implemented in [python_adapter.py](../sidecar/parser/adapters/python_adapter.py) — `_build_attr_type_table`, `_local_alias_types`, `_typed_qualified_target`. When the type is unknown, **no edge is fabricated** (precision over recall).
+Implemented in [python_adapter.py](../context_engine/parser/adapters/python_adapter.py) — `_build_attr_type_table`, `_local_alias_types`, `_typed_qualified_target`. When the type is unknown, **no edge is fabricated** (precision over recall).
 
 **Why this tier exists:** it removes the architectural reason the ranker needed hardcoded "contract symbol" tables / mechanism-packs to answer mainstream-framework questions — the collaborator chains are now real graph edges. See [mechanism_contract_unification](mechanism_contract_unification.md).
 
@@ -124,7 +124,7 @@ If no tier produces a match, the call site is recorded in a `pending_calls` tabl
 ## 3. Pipeline Shape
 
 ```python
-# implemented inside `sidecar/parser/adapters/python_adapter.py`
+# implemented inside `context_engine/parser/adapters/python_adapter.py`
 
 class CallResolver:
     def __init__(self, scope_table: ScopeTable, graph: Neo4jClient):
@@ -159,7 +159,7 @@ Existing `CALLS` edges migrated:
 - `CALLS_DIRECT` if the current edge passes the new resolver → keep.
 - Otherwise downgrade to `CALLS_GUESS` (honest labeling beats flattering).
 
-Migration CLI: `python -m sidecar.indexer.migrate_calls` — walks every file, reparses, rewrites edges.
+Migration CLI: `python -m context_engine.indexer.migrate_calls` — walks every file, reparses, rewrites edges.
 
 ## 5. Examples
 

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar.axis.container_kind import ContainerKindClassifier
-from sidecar.axis.library_marker_catalogue import (
+from context_engine.axis.container_kind import ContainerKindClassifier
+from context_engine.axis.library_marker_catalogue import (
     LIBRARY_MARKER_CATALOGUE,
     kind_for_external_qualified_name,
 )
@@ -58,7 +58,7 @@ def test_lookup_returns_none_for_unknown_qn():
 
 def test_lookup_resolves_through_structural_alias_map():
     """The 4 re-export aliases were removed from the literal catalogue and now
-    resolve structurally via ``sidecar.axis.library_marker_aliases`` (built
+    resolve structurally via ``context_engine.axis.library_marker_aliases`` (built
     from ``RE_EXPORTS`` edges of indexed library workspaces). The consumer
     QN ``flask.Flask`` must still classify as ``web_route_register``.
     """

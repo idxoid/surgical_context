@@ -27,7 +27,7 @@ from typing import Any
 
 import lancedb
 
-from sidecar.axis.role_resolver import (
+from context_engine.axis.role_resolver import (
     ROLE_CONTRACT_MAP,
     resolve_roles_with_evidence,
 )

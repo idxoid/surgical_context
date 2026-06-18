@@ -1,7 +1,7 @@
 """End-to-end demo of role-driven retrieval over the axis pipeline.
 
 Takes a role name (and optionally a query text), runs the
-:func:`sidecar.axis.role_retrieval.find_symbols_by_role` primitive
+:func:`context_engine.axis.role_retrieval.find_symbols_by_role` primitive
 against an indexed workspace, and prints the ranked candidates with
 their ranking components. This is the read-side surface that any
 future ``/ask``-style consumer would call instead of the legacy
@@ -25,15 +25,15 @@ from __future__ import annotations
 
 import argparse
 
-from sidecar.axis.role_resolver import ROLE_CONTRACT_MAP
-from sidecar.axis.role_retrieval import find_symbols_by_role
+from context_engine.axis.role_resolver import ROLE_CONTRACT_MAP
+from context_engine.axis.role_retrieval import find_symbols_by_role
 
 
 def _embed_function():
     """Return ``query_text -> vector`` using the LanceDB client's embedder
     (same model as the indexed symbols)."""
-    from sidecar.database.lancedb_client import LanceDBClient
-    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
+    from context_engine.database.lancedb_client import LanceDBClient
+    from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 
     client = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
 

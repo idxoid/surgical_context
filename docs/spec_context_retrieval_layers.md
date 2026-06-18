@@ -1,6 +1,6 @@
 # Context retrieval — layered truth model
 
-> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`context_engine/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
 
 
 ## Status
@@ -78,7 +78,7 @@ flowchart TB
 
 ### Layer 2 — Declarative hint overlay (authoritative for “we know the pattern”)
 
-**Owns:** Small, **typed** rules (e.g. `call_argument_link` with metadata `kind: dependency_injection`) that create **specialized edges** (e.g. `SEMANTIC_HINT`) the extractor cannot infer. Today bundled rules live in `sidecar/context/semantic_hints.yaml`; the **target end state** is workspace-extensible rules keyed by **shared rule types / subtypes**, not per-framework filenames.
+**Owns:** Small, **typed** rules (e.g. `call_argument_link` with metadata `kind: dependency_injection`) that create **specialized edges** (e.g. `SEMANTIC_HINT`) the extractor cannot infer. Today bundled rules live in `context_engine/context/semantic_hints.yaml`; the **target end state** is workspace-extensible rules keyed by **shared rule types / subtypes**, not per-framework filenames.
 
 **Current safety contract:** Rules may require extractor-provided qualification metadata (example: `require_callee_qualified_prefix`) so a hint depends on both **pattern match** and **namespace evidence**.
 

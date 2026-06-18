@@ -18,7 +18,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B", "F811"]
-"sidecar/main.py" = ["E402"]
+"context_engine/main.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

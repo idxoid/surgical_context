@@ -1,4 +1,4 @@
-"""Evidence gate for ``sidecar/axis/library_marker_catalogue.py``.
+"""Evidence gate for ``context_engine/axis/library_marker_catalogue.py``.
 
 Every canonical catalogue entry — ``flask.app.Flask → web_route_register``
 and the rest — is a human assertion: *this external class is structurally
@@ -44,9 +44,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sidecar.axis.library_marker_catalogue import LIBRARY_MARKER_CATALOGUE
-from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+from context_engine.axis.library_marker_catalogue import LIBRARY_MARKER_CATALOGUE
+from context_engine.database.neo4j_client import Neo4jClient
+from context_engine.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
 # Method-level contracts that prove a class participates in a registry
 # pattern. A class whose methods carry any of these is structurally

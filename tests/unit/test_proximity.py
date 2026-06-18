@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sidecar.axis.proximity import proximity_boost
+from context_engine.axis.proximity import proximity_boost
 
 
 def test_no_anchor_is_zero():

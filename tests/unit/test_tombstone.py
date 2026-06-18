@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sidecar.workspace_paths import tombstone_indexed_file, tombstone_stale_indexed_files
+from context_engine.workspace_paths import tombstone_indexed_file, tombstone_stale_indexed_files
 
 
 class _FakeLance:

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar.axis.cross_role_boost import (
+from context_engine.axis.cross_role_boost import (
     boost_by_cross_role_proximity,
     intersect_by_cross_role_proximity,
 )
-from sidecar.axis.role_retrieval import RoleCandidate
+from context_engine.axis.role_retrieval import RoleCandidate
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -292,7 +292,7 @@ def test_unsafe_edge_pattern_rejected():
     every edge type at construction time. Cypher injection through the
     proximity walk is impossible by construction.
     """
-    from sidecar.axis.cross_role_boost import _safe_rel_pattern
+    from context_engine.axis.cross_role_boost import _safe_rel_pattern
 
     with pytest.raises(ValueError, match="unsafe edge type"):
         _safe_rel_pattern(["CALLS", "DROP TABLE"])

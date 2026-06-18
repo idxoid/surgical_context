@@ -1,4 +1,4 @@
-from sidecar.indexer.external_boundary import (
+from context_engine.indexer.external_boundary import (
     build_project_boundary,
     classify_external_root,
     external_pkg_uid,
@@ -6,14 +6,14 @@ from sidecar.indexer.external_boundary import (
     external_symbol_uid,
     package_manifest_external_roots,
 )
-from sidecar.indexer.external_facts import (
+from context_engine.indexer.external_facts import (
     collect_external_call_links,
     collect_external_import_links,
     collect_external_symbol_import_links,
     external_call_link_rows,
     external_symbol_import_rows,
 )
-from sidecar.indexer.role_clustering import assemble_symbol_rows
+from context_engine.indexer.role_clustering import assemble_symbol_rows
 
 
 def test_external_root_from_qualified_name_truncates_to_root():
@@ -165,7 +165,7 @@ def test_collect_external_symbol_imports_skips_star_import():
 
 
 def test_external_symbol_import_rows_attach_workspace_scoped_uids():
-    from sidecar.indexer.external_facts import ExternalSymbolImportLink
+    from context_engine.indexer.external_facts import ExternalSymbolImportLink
 
     link = ExternalSymbolImportLink(
         file_path="svc/main.py",
@@ -185,7 +185,7 @@ def test_external_symbol_import_rows_attach_workspace_scoped_uids():
 
 
 def test_apply_external_boundary_for_file_passes_symbol_imports_through_db_stub():
-    from sidecar.indexer.external_facts import apply_external_boundary_for_file
+    from context_engine.indexer.external_facts import apply_external_boundary_for_file
 
     class _DbStub:
         def __init__(self):
@@ -222,7 +222,7 @@ def test_apply_external_boundary_for_file_passes_symbol_imports_through_db_stub(
 
 
 def test_external_call_link_rows_use_stable_uids():
-    from sidecar.indexer.external_facts import ExternalCallLink
+    from context_engine.indexer.external_facts import ExternalCallLink
 
     link = ExternalCallLink("caller", "json", "dumps", 1, 0.9)
     rows = external_call_link_rows([link], "ws/test")

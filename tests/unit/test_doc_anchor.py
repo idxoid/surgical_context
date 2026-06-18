@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
-from sidecar.indexer import anchor
-from sidecar.indexer.anchor import (
+from context_engine.indexer import anchor
+from context_engine.indexer.anchor import (
     _add_covers_edges,
     _add_covers_edges_batch,
     _anchor_confidence,

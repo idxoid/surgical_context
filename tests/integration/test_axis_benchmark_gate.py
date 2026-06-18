@@ -8,7 +8,7 @@ checked-in baseline in ``QA/fixtures/baselines/p7_surgical_context_axis.json``.
 To refresh the baseline after an intentional engine improvement::
 
     INDEX_PROFILE=axis_python_v1 \\
-    python -m sidecar.indexer.fast . \\
+    python -m context_engine.indexer.fast . \\
         --workspace ci/surgical_context@main \\
         --index-profile axis_python_v1 --fresh
     python -m QA.axis_benchmark \\
@@ -32,7 +32,7 @@ from QA.axis_benchmark import (
     run_axis_pack,
     summarise,
 )
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACK = REPO_ROOT / "QA/fixtures/questions_python.yaml"
@@ -43,8 +43,8 @@ CI_BASE_WORKSPACE = "ci/surgical_context@main"
 @pytest.fixture(scope="module")
 def surgical_context_workspace() -> str:
     """Fresh axis_python_v1 index of this repo for the P7 gate."""
-    from sidecar.database.neo4j_client import Neo4jClient
-    from sidecar.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+    from context_engine.database.neo4j_client import Neo4jClient
+    from context_engine.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
     try:
         probe = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
@@ -58,8 +58,8 @@ def surgical_context_workspace() -> str:
     profile = resolve_index_profile(AXIS_PYTHON_V1_PROFILE)
     workspace_id = profile.workspace_id(CI_BASE_WORKSPACE)
 
-    from sidecar.indexer.fast import run_fast_indexing
-    from sidecar.indexer.fast.__main__ import _wipe_workspace
+    from context_engine.indexer.fast import run_fast_indexing
+    from context_engine.indexer.fast.__main__ import _wipe_workspace
 
     _wipe_workspace(CI_BASE_WORKSPACE, AXIS_PYTHON_V1_PROFILE)
     run_fast_indexing(

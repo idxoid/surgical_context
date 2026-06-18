@@ -10,7 +10,7 @@ those two fields without going through the database.
 
 from __future__ import annotations
 
-from sidecar.parser.adapters.python_adapter import PythonAdapter
+from context_engine.parser.adapters.python_adapter import PythonAdapter
 
 
 def _bases(source: str) -> list[tuple[str, str, str]]:

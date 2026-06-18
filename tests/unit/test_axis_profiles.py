@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sidecar.axis.axis_profiles import (
+from context_engine.axis.axis_profiles import (
     ALL_AXES,
     AXIS_EDGES,
     KIND_AXES,
@@ -10,7 +10,7 @@ from sidecar.axis.axis_profiles import (
     axes_for_kinds,
     edges_for_axes,
 )
-from sidecar.axis.container_kind import _PREDICATES
+from context_engine.axis.container_kind import _PREDICATES
 
 
 def test_every_catalogue_kind_has_axes():

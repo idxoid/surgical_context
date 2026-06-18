@@ -98,13 +98,13 @@ def fake_lance(monkeypatch):
             return self.table
 
     fake_db = FakeDB()
-    import sidecar.axis.role_retrieval as _role_retrieval
+    import context_engine.axis.role_retrieval as _role_retrieval
 
     _role_retrieval.invalidate_workspace_scan_cache()
     monkeypatch.setenv("LANCEDB_WORKSPACE_SCAN_CACHE", "false")
     monkeypatch.setenv("LANCEDB_WORKSPACE_PARTITIONED", "false")
     monkeypatch.setattr(
-        "sidecar.axis.role_retrieval.lancedb",
+        "context_engine.axis.role_retrieval.lancedb",
         type(
             "_LancedbMock",
             (),
@@ -134,14 +134,14 @@ def _row(
 
 
 def test_returns_empty_list_for_unknown_role(fake_lance):
-    from sidecar.axis.role_retrieval import find_symbols_by_role
+    from context_engine.axis.role_retrieval import find_symbols_by_role
 
     fake_lance.rows = [_row("u:1", "foo", ["route_register_binding"])]
     assert find_symbols_by_role(WORKSPACE, "definitely_not_a_role") == []
 
 
 def test_returns_empty_list_when_no_contracts_match_role(fake_lance):
-    from sidecar.axis.role_retrieval import find_symbols_by_role
+    from context_engine.axis.role_retrieval import find_symbols_by_role
 
     fake_lance.rows = [_row("u:1", "foo", ["data_shape_declaration"])]
     # routing_surface only satisfied by route_register_binding.
@@ -149,7 +149,7 @@ def test_returns_empty_list_when_no_contracts_match_role(fake_lance):
 
 
 def test_structural_only_ranks_by_count_of_role_contracts(fake_lance):
-    from sidecar.axis.role_retrieval import find_symbols_by_role
+    from context_engine.axis.role_retrieval import find_symbols_by_role
 
     fake_lance.rows = [
         # binding_surface has 9 contracts; one match → low structural score.
@@ -174,7 +174,7 @@ def test_structural_only_ranks_by_count_of_role_contracts(fake_lance):
 
 
 def test_query_text_brings_in_vector_distance_and_reweights(fake_lance):
-    from sidecar.axis.role_retrieval import find_symbols_by_role
+    from context_engine.axis.role_retrieval import find_symbols_by_role
 
     # ``near_match`` has a stored vector that's L2-zero away from the
     # query; ``far_match`` is meaningfully distant. Both match structurally.
@@ -206,7 +206,7 @@ def test_query_text_brings_in_vector_distance_and_reweights(fake_lance):
 
 
 def test_limit_is_respected(fake_lance):
-    from sidecar.axis.role_retrieval import find_symbols_by_role
+    from context_engine.axis.role_retrieval import find_symbols_by_role
 
     fake_lance.rows = [_row(f"u:{i}", f"sym{i}", ["route_register_binding"]) for i in range(8)]
     results = find_symbols_by_role(WORKSPACE, "routing_surface", limit=3)
@@ -220,7 +220,7 @@ def test_satisfying_contracts_only_include_role_relevant_ones(fake_lance):
     ``satisfying_contracts`` — that field is the answer to "which
     contracts proved THIS role" specifically.
     """
-    from sidecar.axis.role_retrieval import find_symbols_by_role
+    from context_engine.axis.role_retrieval import find_symbols_by_role
 
     fake_lance.rows = [
         _row(

@@ -1,8 +1,8 @@
 """C2: boundary_integration L1 + integration_surface L2 from external features."""
 
-from sidecar.indexer.external_boundary import is_integration_external_root
-from sidecar.indexer.role_cascade import assign_symbol_roles
-from sidecar.indexer.role_clustering import SymbolRow
+from context_engine.indexer.external_boundary import is_integration_external_root
+from context_engine.indexer.role_cascade import assign_symbol_roles
+from context_engine.indexer.role_clustering import SymbolRow
 
 
 def _row(**kwargs) -> SymbolRow:

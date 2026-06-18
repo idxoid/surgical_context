@@ -32,7 +32,7 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sidecar.silence import install as _silence
+from context_engine.silence import install as _silence
 
 _silence()
 
@@ -75,7 +75,7 @@ def clean_dbs():
     os.makedirs(LANCEDB_PATH, exist_ok=True)
     print("  LanceDB cleared.")
 
-    from sidecar.database.neo4j_client import Neo4jClient
+    from context_engine.database.neo4j_client import Neo4jClient
 
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     with db.driver.session() as s:
@@ -85,10 +85,10 @@ def clean_dbs():
 
 
 def index_code():
-    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE
-    from sidecar.indexer.fast import run_fast_indexing
+    from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+    from context_engine.indexer.fast import run_fast_indexing
 
-    for rel in ["sidecar"]:
+    for rel in ["context_engine"]:
         abs_p = os.path.join(ROOT, rel)
         if os.path.isdir(abs_p):
             print(f"  Indexing code: {abs_p}")
@@ -102,8 +102,8 @@ def index_code():
 
 
 def index_docs():
-    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
-    from sidecar.indexer.docs import index_docs as _index_docs
+    from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
+    from context_engine.indexer.docs import index_docs as _index_docs
 
     abs_p = os.path.join(ROOT, "docs")
     workspace_id = resolve_index_profile(AXIS_PYTHON_V1_PROFILE).workspace_id(WORKSPACE_ID)
@@ -112,12 +112,12 @@ def index_docs():
 
 
 def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"):
-    from sidecar.axis.pipeline import run_axis_retrieval
-    from sidecar.axis.prompt_provider import axis_bundles_to_prompt_context
-    from sidecar.context_types import DocChunk
-    from sidecar.database.lancedb_client import LanceDBClient
-    from sidecar.database.neo4j_client import Neo4jClient
-    from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
+    from context_engine.axis.pipeline import run_axis_retrieval
+    from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
+    from context_engine.context_types import DocChunk
+    from context_engine.database.lancedb_client import LanceDBClient
+    from context_engine.database.neo4j_client import Neo4jClient
+    from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 
     db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)

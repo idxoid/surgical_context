@@ -1,4 +1,4 @@
-from sidecar.indexer.mro_api_bridge import (
+from context_engine.indexer.mro_api_bridge import (
     ClassRecord,
     MethodRecord,
     _classes_by_file,

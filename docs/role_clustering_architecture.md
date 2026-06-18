@@ -6,8 +6,8 @@ vocabulary in [role_catalog.md](role_catalog.md).
 
 Format per item: **what → how (where in code) → why it matters → decision**.
 
-**Status:** implemented in `sidecar/indexer/role_clustering.py` +
-`sidecar/indexer/role_cascade.py` (schema v3). Sections C1–D5 below include
+**Status:** implemented in `context_engine/indexer/role_clustering.py` +
+`context_engine/indexer/role_cascade.py` (schema v3). Sections C1–D5 below include
 historical rationale for the retired k-means + Pass-1 archetype tier.
 
 ---

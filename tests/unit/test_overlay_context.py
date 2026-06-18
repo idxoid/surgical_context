@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from sidecar.axis.context_builder import ContextBundle, ContextSymbol
-from sidecar.axis.overlay_context import (
+from context_engine.axis.context_builder import ContextBundle, ContextSymbol
+from context_engine.axis.overlay_context import (
     apply_dirty_overlay_to_bundles,
     merge_saved_overlay_payloads,
 )
-from sidecar.overlay import InMemoryOverlay
+from context_engine.overlay import InMemoryOverlay
 
 WORKSPACE = "qa_repo/test@overlay"
 

@@ -2,7 +2,7 @@
 
 import json
 
-from sidecar.api.sse import format_sse
+from context_engine.api.sse import format_sse
 
 
 class TestSSEFormatting:

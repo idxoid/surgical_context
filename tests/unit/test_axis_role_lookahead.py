@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sidecar.axis.role_lookahead import expand_candidates_via_neighbourhood
-from sidecar.axis.role_retrieval import RoleCandidate
+from context_engine.axis.role_lookahead import expand_candidates_via_neighbourhood
+from context_engine.axis.role_retrieval import RoleCandidate
 
 WORKSPACE = "qa_repo/test@axis"
 

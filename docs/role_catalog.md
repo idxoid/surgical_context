@@ -471,7 +471,7 @@ TS/JS parity (TS `USES_TYPE`, JS property-API + CommonJS alias references via
 (transitively propagated along in-graph `DEPENDS_ON`); and Python return-shape
 Symbol markers (`returns_mapping`, `returns_sequence`, `returns_constructed_type`,
 `returns_function_expression`) from top-level return statements. All verified in
-`sidecar/database/neo4j_client.py` / `sidecar/indexer/`. The §9/§10 gaps
+`context_engine/database/neo4j_client.py` / `context_engine/indexer/`. The §9/§10 gaps
 (`WRAPS`/`BEFORE_CALL`/`AFTER_CALL`, `MUTATES`/`STORES`,
 `READS`/`WRITES`/`EXTERNAL_CALL`, `PUBLISHES`/`CONSUMES`, `DescriptorSurface`,
 `USES_VALUE`, `HANDLES.phase`) are not repeated here.

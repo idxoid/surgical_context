@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from sidecar.axis.library_marker_catalogue import LIBRARY_MARKER_CATALOGUE
+from context_engine.axis.library_marker_catalogue import LIBRARY_MARKER_CATALOGUE
 
 _BASELINE_PATH = (
     Path(__file__).resolve().parents[2]

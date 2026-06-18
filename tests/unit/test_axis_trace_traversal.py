@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from sidecar.axis.role_retrieval import RoleCandidate
-from sidecar.axis.trace_traversal import expand_trace_neighbourhood
+from context_engine.axis.role_retrieval import RoleCandidate
+from context_engine.axis.trace_traversal import expand_trace_neighbourhood
 
 WORKSPACE = "qa_repo/test@axis"
 

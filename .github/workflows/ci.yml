@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: PYTHONPATH=${{ github.workspace }} mypy sidecar/ tests/
+      - run: PYTHONPATH=${{ github.workspace }} mypy context_engine/ tests/
 
   test:
     needs: type-check

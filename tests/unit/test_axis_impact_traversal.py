@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar.axis import impact_traversal
-from sidecar.axis.graph_walk import EdgeProfile, Neighbour
-from sidecar.axis.role_retrieval import RoleCandidate
+from context_engine.axis import impact_traversal
+from context_engine.axis.graph_walk import EdgeProfile, Neighbour
+from context_engine.axis.role_retrieval import RoleCandidate
 
 WORKSPACE = "qa_repo/test@axis"
 

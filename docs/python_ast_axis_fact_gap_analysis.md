@@ -17,7 +17,7 @@ Only the first two belong in the extractor.
 
 ## Current extractor coverage
 
-Implemented in [python_extractor.py](../sidecar/axis/python_extractor.py).
+Implemented in [python_extractor.py](../context_engine/axis/python_extractor.py).
 
 ### CFG bits present
 

@@ -7,8 +7,8 @@ from QA.axis_contract_report import (
     summarize_axis_contract_report,
     write_axis_contract_report,
 )
-from sidecar.axis.container_kind import ContainerKindMatch
-from sidecar.axis.schema import AxisFact
+from context_engine.axis.container_kind import ContainerKindMatch
+from context_engine.axis.schema import AxisFact
 
 
 def _kind_json(match: ContainerKindMatch) -> str:

@@ -1,6 +1,6 @@
 # Spec — LanceDB Embedding Versioning (Phase 4)
 
-> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`context_engine/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
 
 
 > **Status:** Proposed. Prevents silent quality degradation when embedding models are upgraded or swapped. Prerequisite for any multi-model or cross-version search.
@@ -39,7 +39,7 @@ All fields required at write time. No nullable fields.
 A lightweight in-process registry maps model identifiers to expected dimensions:
 
 ```python
-# sidecar/database/embedding_registry.py
+# context_engine/database/embedding_registry.py
 
 KNOWN_MODELS: dict[str, dict] = {
     "sentence-transformers/all-MiniLM-L6-v2": {
@@ -65,7 +65,7 @@ New models are added manually to the registry. This is a deliberate friction —
 When `LanceDBClient` writes an embedding row, it must also write `embedding_metadata`:
 
 ```python
-# sidecar/database/lancedb_client.py
+# context_engine/database/lancedb_client.py
 
 def _build_metadata(self, chunk: str, embedding: list[float]) -> dict:
     return {
@@ -145,7 +145,7 @@ Old rows without `embedding_metadata` are tolerated during search if `allow_mixe
 ## 4. New Exceptions
 
 ```python
-# sidecar/context/types.py or sidecar/database/exceptions.py
+# context_engine/context/types.py or context_engine/database/exceptions.py
 
 class EmbeddingModelMismatch(RuntimeError):
     """Raised when indexed embeddings were produced by a different model than the runtime."""
@@ -171,7 +171,7 @@ class LanceDBClient:
         ...
 ```
 
-Callers in `sidecar/main.py`, `QA/qa_benchmark.py`, and tests that construct `LanceDBClient()` continue to work unchanged (default model unchanged). Only callers explicitly switching models need to update.
+Callers in `context_engine/main.py`, `QA/qa_benchmark.py`, and tests that construct `LanceDBClient()` continue to work unchanged (default model unchanged). Only callers explicitly switching models need to update.
 
 ## 6. Tests
 
@@ -196,7 +196,7 @@ Callers in `sidecar/main.py`, `QA/qa_benchmark.py`, and tests that construct `La
 ## 8. Phase Sequencing
 
 Implement after ContextDeduplicator (independent, but lower urgency). Requires updating:
-- `sidecar/database/lancedb_client.py` — write and read paths
-- `sidecar/indexer/docs.py` — pass metadata on write
-- `sidecar/indexer/code.py` — pass metadata on symbol embedding write
-- New: `sidecar/database/embedding_registry.py`
+- `context_engine/database/lancedb_client.py` — write and read paths
+- `context_engine/indexer/docs.py` — pass metadata on write
+- `context_engine/indexer/code.py` — pass metadata on symbol embedding write
+- New: `context_engine/database/embedding_registry.py`

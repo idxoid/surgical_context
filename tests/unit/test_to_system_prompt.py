@@ -1,6 +1,6 @@
 """Tests for PromptContext.to_system_prompt() rendering."""
 
-from sidecar.context_types import DocChunk, PromptContext, SymbolContext
+from context_engine.context_types import DocChunk, PromptContext, SymbolContext
 
 
 def _make_ctx(

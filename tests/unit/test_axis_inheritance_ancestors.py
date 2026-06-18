@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from sidecar.axis.inheritance_ancestors import expand_inheritance_ancestors
-from sidecar.axis.role_retrieval import RoleCandidate
+from context_engine.axis.inheritance_ancestors import expand_inheritance_ancestors
+from context_engine.axis.role_retrieval import RoleCandidate
 
 WORKSPACE = "qa_repo/test@axis"
 

@@ -12,11 +12,11 @@ is reading something other than axis bits / payloads (e.g. a name).
 
 from __future__ import annotations
 
-from sidecar.axis.container_kind import (
+from context_engine.axis.container_kind import (
     ContainerKindClassifier,
     NullGraphProbe,
 )
-from sidecar.axis.schema import AxisExtraction, AxisFact, AxisProfile
+from context_engine.axis.schema import AxisExtraction, AxisFact, AxisProfile
 
 
 def _fact(

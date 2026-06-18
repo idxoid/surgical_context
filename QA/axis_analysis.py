@@ -76,7 +76,7 @@ class ExtractorInventory:
 
 
 def inventory_extractor_bits(
-    extractor_path: Path = PROJECT_ROOT / "sidecar" / "axis" / "python_extractor.py",
+    extractor_path: Path = PROJECT_ROOT / "context_engine" / "axis" / "python_extractor.py",
 ) -> ExtractorInventory:
     """Walk the extractor AST to find every `self._emit(axis, bit, ...)` call.
 

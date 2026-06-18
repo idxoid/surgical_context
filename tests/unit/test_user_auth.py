@@ -1,6 +1,6 @@
 """Unit tests for user authentication."""
 
-from sidecar.auth import UserAuth
+from context_engine.auth import UserAuth
 
 
 class TestUserAuth:

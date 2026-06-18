@@ -1,6 +1,6 @@
 # Spec — Evaluation Harness (Phase 2.5)
 
-> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`context_engine/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
 
 
 > **Status:** Implemented locally and used actively for retrieval tuning. The remaining gap is CI automation of benchmark deltas; the harness, reports, real-repo pack, and baseline appends already exist in the repo.
@@ -174,7 +174,7 @@ When a real-repo question **`warn`s with `missing_roles`** (or the graph is too 
 
 **What it is**
 
-- YAML under `sidecar/context/mechanism_packs/` (bundled templates in `bundled/`, e.g. [`flask_registration.yaml`](../sidecar/context/mechanism_packs/bundled/flask_registration.yaml)).
+- YAML under `context_engine/context/mechanism_packs/` (bundled templates in `bundled/`, e.g. [`flask_registration.yaml`](../context_engine/context/mechanism_packs/bundled/flask_registration.yaml)).
 - Keys merged into index-time `role_catalog_json` on the Neo4j `Workspace`:
   - `mechanism_required_roles` — mechanism id → list of canonical roles (e.g. `api_surface`, `orchestrator`).
   - `mechanism_role_backfill` — mechanism id → role → `[{name, path_hint?, priority?}, …]` symbol hints for `_role_backfill_candidates`.
@@ -194,14 +194,14 @@ When a real-repo question **`warn`s with `missing_roles`** (or the graph is too 
 2. Export path before **re-index** (pack is merged at Pass 1 persist, not at `--no-index` time):
 
    ```bash
-   export MECHANISM_PACK_PATH=/home/idxoid/surgical_context/sidecar/context/mechanism_packs/bundled/flask_registration.yaml
+   export MECHANISM_PACK_PATH=/home/idxoid/surgical_context/context_engine/context/mechanism_packs/bundled/flask_registration.yaml
    PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py --repo flask --report /tmp/flask_reindex.json
    ```
 
    **Celery PoC** (publish/consume content gap — `celery_q02` / `celery_q03`):
 
    ```bash
-   export MECHANISM_PACK_PATH=$PWD/sidecar/context/mechanism_packs/bundled/celery_publish_consume.yaml
+   export MECHANISM_PACK_PATH=$PWD/context_engine/context/mechanism_packs/bundled/celery_publish_consume.yaml
    # Re-index celery (pack merges at Pass 1 persist), then:
    PYTHONPATH=. .venv/bin/python QA/qa_benchmark.py \
      --questions tests/fixtures/celery_questions.yaml --repo celery --no-index \
@@ -230,7 +230,7 @@ When a real-repo question **`warn`s with `missing_roles`** (or the graph is too 
 ```bash
 surgical suggest-pack --repo flask \
   --from-report /tmp/qa_bench_noindex_all/flask.json \
-  --out sidecar/context/mechanism_packs/generated/flask_draft.yaml
+  --out context_engine/context/mechanism_packs/generated/flask_draft.yaml
 ```
 
 Alias during harness-only workflows: `python QA/suggest_mechanism_pack.py --repo flask` (same logic, no new top-level binary required for v1).

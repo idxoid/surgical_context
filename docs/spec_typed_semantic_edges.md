@@ -1,6 +1,6 @@
 # Spec — Typed Semantic Edges (Phase 5)
 
-> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`context_engine/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
 
 
 > **Status:** Implemented for typed call edges and ranker traversal. The graph now supports and consumes `CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`, and `CALLS_GUESS`; legacy `CALLS` is still accepted as a compatibility fallback. `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, and `SEMANTIC_HINT` are supported by traversal/scoring, but parser emission is uneven: inheritance currently writes `DEPENDS_ON` with metadata, not dedicated `IMPLEMENTS`/`OVERRIDES` edges, and `REFERENCES` is schema/ranker-ready but not broadly emitted.
@@ -45,7 +45,7 @@ Typed semantic edges give BFS, AFFECTS, and UnifiedRanker a confidence signal be
 
 ### 3.1 Python Adapter
 
-Implemented in `sidecar/parser/adapters/python_adapter.py`.
+Implemented in `context_engine/parser/adapters/python_adapter.py`.
 
 Current call classification:
 
@@ -70,7 +70,7 @@ Relationship metadata written with calls:
 
 ### 3.2 TypeScript Adapter
 
-Implemented in `sidecar/parser/adapters/typescript_adapter.py`.
+Implemented in `context_engine/parser/adapters/typescript_adapter.py`.
 
 Current call classification:
 
@@ -84,7 +84,7 @@ TypeScript support is intentionally simpler than Python scoped/imported resoluti
 
 ### 3.3 Cross-language HTTP hints
 
-Implemented in `sidecar/indexer/ts_http_route_hints.py` (fast pipeline stage after `framework_hints`).
+Implemented in `context_engine/indexer/ts_http_route_hints.py` (fast pipeline stage after `framework_hints`).
 
 When a monorepo contains both TypeScript client code and Python FastAPI handlers:
 
@@ -132,7 +132,7 @@ path when graph shape drifts — no separate migration CLI.
 
 ### 5.1 GraphExpander
 
-`sidecar/context/graph_expander.py` traverses:
+`context_engine/context/graph_expander.py` traverses:
 
 ```cypher
 CALLS
@@ -174,7 +174,7 @@ REFERENCES:         0.3
 
 ### 5.2 UnifiedRanker
 
-`sidecar/context/unified_ranker.py` mirrors the same typed edge priors and additionally consumes `SEMANTIC_HINT` with a strong prior. Typed relationships are used for:
+`context_engine/context/unified_ranker.py` mirrors the same typed edge priors and additionally consumes `SEMANTIC_HINT` with a strong prior. Typed relationships are used for:
 
 - graph candidate score
 - direction labels
@@ -186,7 +186,7 @@ Legacy `CALLS` remains accepted and is treated like `CALLS_DIRECT`.
 
 ## 6. AFFECTS Integration
 
-`sidecar/indexer/affects.py` derives reverse dependency reachability from:
+`context_engine/indexer/affects.py` derives reverse dependency reachability from:
 
 ```python
 CALLS_DIRECT

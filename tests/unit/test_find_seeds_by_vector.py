@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pyarrow as pa
 
-import sidecar.axis.role_retrieval as rr
-from sidecar.axis.role_retrieval import find_seeds_by_vector
+import context_engine.axis.role_retrieval as rr
+from context_engine.axis.role_retrieval import find_seeds_by_vector
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -256,7 +256,7 @@ def test_scan_distances_is_elementwise_min():
 
 
 def test_symbol_signature_text_keeps_multiline_def_header_drops_body():
-    from sidecar.database.lancedb_client import symbol_signature_text
+    from context_engine.database.lancedb_client import symbol_signature_text
 
     code = (
         "    def apply_async(self, args=None, kwargs=None,\n"
@@ -273,12 +273,12 @@ def test_symbol_signature_text_keeps_multiline_def_header_drops_body():
 
 
 def test_symbol_signature_text_class_header():
-    from sidecar.database.lancedb_client import symbol_signature_text
+    from context_engine.database.lancedb_client import symbol_signature_text
 
     assert symbol_signature_text("class Task(BaseTask):\n    x = 1\n") == "class Task(BaseTask):"
 
 
 def test_symbol_signature_text_constant_first_line():
-    from sidecar.database.lancedb_client import symbol_signature_text
+    from context_engine.database.lancedb_client import symbol_signature_text
 
     assert symbol_signature_text("DEFAULT_TIMEOUT = 30\n") == "DEFAULT_TIMEOUT = 30"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sidecar.indexer.fast.proxy_object_propagation import (
+from context_engine.indexer.fast.proxy_object_propagation import (
     method_facts_show_proxy_delegation,
 )
 

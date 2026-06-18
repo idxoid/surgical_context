@@ -1,4 +1,4 @@
-from sidecar.api.errors import PUBLIC_INTERNAL_ERROR, degraded_llm_answer
+from context_engine.api.errors import PUBLIC_INTERNAL_ERROR, degraded_llm_answer
 
 
 def test_degraded_llm_answer_is_generic():

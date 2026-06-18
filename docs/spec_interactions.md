@@ -1,50 +1,50 @@
 # Cross-Module Interactions — Spec
 
-> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`sidecar/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
+> **Superseded (2026-06-15).** Describes the legacy ranking cascade / `qa_benchmark` harness, removed in the cascade cleanup — axis (`context_engine/axis/`, `QA/axis_benchmark.py`) is the sole context + eval path now. Kept for historical context; see `cascade_cleanup_inventory.md`.
 
 
 ## Module Map
 
 ```
-sidecar/indexer/code.py
-  ├── sidecar/parser/extractor.py        SymbolExtractor
-  │     └── sidecar/parser/registry.py   LanguageAdapterRegistry (adapters/*)
-  ├── sidecar/database/neo4j_client.py   Neo4jClient
-  ├── sidecar/database/lancedb_client.py LanceDBClient
-  └── sidecar/indexer/anchor.py          resolve_pending_anchors()
+context_engine/indexer/code.py
+  ├── context_engine/parser/extractor.py        SymbolExtractor
+  │     └── context_engine/parser/registry.py   LanguageAdapterRegistry (adapters/*)
+  ├── context_engine/database/neo4j_client.py   Neo4jClient
+  ├── context_engine/database/lancedb_client.py LanceDBClient
+  └── context_engine/indexer/anchor.py          resolve_pending_anchors()
 
-sidecar/indexer/docs.py
-  ├── sidecar/database/lancedb_client.py LanceDBClient
-  ├── sidecar/database/neo4j_client.py   Neo4jClient
-  └── sidecar/indexer/anchor.py          link_docs_to_symbols()
+context_engine/indexer/docs.py
+  ├── context_engine/database/lancedb_client.py LanceDBClient
+  ├── context_engine/database/neo4j_client.py   Neo4jClient
+  └── context_engine/indexer/anchor.py          link_docs_to_symbols()
 
-sidecar/indexer/anchor.py
-  ├── sidecar/database/neo4j_client.py   Neo4jClient  (passed in)
-  └── sidecar/database/lancedb_client.py LanceDBClient (passed in)
+context_engine/indexer/anchor.py
+  ├── context_engine/database/neo4j_client.py   Neo4jClient  (passed in)
+  └── context_engine/database/lancedb_client.py LanceDBClient (passed in)
 
-sidecar/context/arbitrator.py
-  ├── sidecar/database/neo4j_client.py   Neo4jClient  (passed in)
-  └── sidecar/context/overlay.py         InMemoryOverlay (passed in, optional)
+context_engine/context/arbitrator.py
+  ├── context_engine/database/neo4j_client.py   Neo4jClient  (passed in)
+  └── context_engine/context/overlay.py         InMemoryOverlay (passed in, optional)
 
-sidecar/context/overlay.py
-  └── sidecar/parser/extractor.py        SymbolExtractor
+context_engine/context/overlay.py
+  └── context_engine/parser/extractor.py        SymbolExtractor
 
-sidecar/main.py  (FastAPI)
-  ├── sidecar/indexer/code.py            run_indexing()
-  ├── sidecar/indexer/docs.py            index_docs()
-  ├── sidecar/context/arbitrator.py      ContextArbitrator
-  ├── sidecar/context/overlay.py         InMemoryOverlay  [singleton]
-  ├── sidecar/workspace_paths.py         resolve_path_under_workspace_root()
-  └── sidecar/database/lancedb_client.py LanceDBClient    [singleton]
+context_engine/main.py  (FastAPI)
+  ├── context_engine/indexer/code.py            run_indexing()
+  ├── context_engine/indexer/docs.py            index_docs()
+  ├── context_engine/context/arbitrator.py      ContextArbitrator
+  ├── context_engine/context/overlay.py         InMemoryOverlay  [singleton]
+  ├── context_engine/workspace_paths.py         resolve_path_under_workspace_root()
+  └── context_engine/database/lancedb_client.py LanceDBClient    [singleton]
 
 run_demo.py
-  ├── sidecar/indexer/code.py            run_indexing()
-  ├── sidecar/indexer/docs.py            index_docs()
-  ├── sidecar/context/arbitrator.py      ContextArbitrator
-  ├── sidecar/database/neo4j_client.py   Neo4jClient
-  └── sidecar/database/lancedb_client.py LanceDBClient
+  ├── context_engine/indexer/code.py            run_indexing()
+  ├── context_engine/indexer/docs.py            index_docs()
+  ├── context_engine/context/arbitrator.py      ContextArbitrator
+  ├── context_engine/database/neo4j_client.py   Neo4jClient
+  └── context_engine/database/lancedb_client.py LanceDBClient
 
-sidecar/ai/
+context_engine/ai/
   ├── engine.py                          AIEngine — wired from main.py (Ollama + Anthropic SDK)
   ├── auth.py                            GitHubAuth (device flow OAuth; not wired)
   └── session.py                         SessionManager (token persistence; not wired)
@@ -102,7 +102,7 @@ run_indexing(project_path)
 
 ## Flow 2: Doc Indexing
 
-**Trigger:** `POST /index/docs` or `run_demo.py` or `python sidecar/doc_indexer.py <path>`
+**Trigger:** `POST /index/docs` or `run_demo.py` or `python context_engine/doc_indexer.py <path>`
 
 ```
 index_docs(docs_path)
@@ -175,7 +175,7 @@ ask(req)
 │
 ├─ context += doc chunks as "--- DOCUMENTATION ---" section
 │
-└─ AIEngine.chat(system_prompt, question)     [sidecar/ai/engine.py via main.py]
+└─ AIEngine.chat(system_prompt, question)     [context_engine/ai/engine.py via main.py]
       → Ollama by default (`MODEL_PREFERENCE=ollama`)
       → Anthropic SDK only when `ALLOW_CLOUD_LLM=true` and routing selects cloud
       → {"symbol": ..., "answer": ..., "context": PromptContract}
@@ -214,8 +214,8 @@ update_overlay(req)
 
 | Object | Owned by | Lifetime | Shared across |
 |---|---|---|---|
-| `InMemoryOverlay` | `sidecar/main.py` | Process | All `/overlay` + `/ask` requests |
-| `LanceDBClient` (vector_db) | `sidecar/main.py` | Process | `/search`, `/ask`, `/index/docs` |
+| `InMemoryOverlay` | `context_engine/main.py` | Process | All `/overlay` + `/ask` requests |
+| `LanceDBClient` (vector_db) | `context_engine/main.py` | Process | `/search`, `/ask`, `/index/docs` |
 | `Neo4jClient` | Per request | Request | Closed in `finally` |
 | `SymbolExtractor` | `InMemoryOverlay.__init__` | Process | All overlay parses |
 | `SentenceTransformer` | `LanceDBClient.__init__` | Process | All embeds |
@@ -242,7 +242,7 @@ InMemoryOverlay ──[read by]──▶       ContextArbitrator  ──▶  LLM
 
 ---
 
-## LLM routing (`sidecar/ai/engine.py`)
+## LLM routing (`context_engine/ai/engine.py`)
 
 `main.py` constructs a process-wide `AIEngine` used by `/ask` and `/ask/stream`.
 
@@ -258,16 +258,16 @@ Prompt caching: Anthropic `cache_control` on the large code/graph block when abo
 
 | Module | Status | Notes |
 |---|---|---|
-| `sidecar/ai/auth.py` | Not wired | GitHub Device Flow OAuth. Not called from any current entry point. |
-| `sidecar/ai/session.py` | Not wired | Persists GitHub token to `~/.config/surgical_sidecar/session.json`. Not called from any current entry point. |
+| `context_engine/ai/auth.py` | Not wired | GitHub Device Flow OAuth. Not called from any current entry point. |
+| `context_engine/ai/session.py` | Not wired | Persists GitHub token to `~/.config/surgical_context_engine/session.json`. Not called from any current entry point. |
 
 ---
 
 ## silence.py
 
-`sidecar/silence.py` — installed at startup in `indexer_main.py` and `run_demo.py` via:
+`context_engine/silence.py` — installed at startup in `indexer_main.py` and `run_demo.py` via:
 ```python
-from sidecar.silence import install as _silence; _silence()
+from context_engine.silence import install as _silence; _silence()
 ```
 
 Wraps `sys.stderr` with a filter that drops known noisy lines from HuggingFace Hub, CUDA init warnings, and BertModel load reports. No functional effect on any module — purely output hygiene.

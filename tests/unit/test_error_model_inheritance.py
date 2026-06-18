@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sidecar.indexer.fast.registry_class_inheritance import (
+from context_engine.indexer.fast.registry_class_inheritance import (
     _EXCEPTION_BASES,
     resolve_error_model_uids,
 )

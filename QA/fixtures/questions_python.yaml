@@ -718,9 +718,9 @@ questions:
   - build_context_for_candidates
   - axis_bundles_to_prompt_context
   expected_files:
-  - sidecar/axis/pipeline.py
-  - sidecar/axis/context_builder.py
-  - sidecar/axis/prompt_provider.py
+  - context_engine/axis/pipeline.py
+  - context_engine/axis/context_builder.py
+  - context_engine/axis/prompt_provider.py
 - id: surgical_context_q02
   repo: surgical_context
   core12: true
@@ -741,10 +741,10 @@ questions:
   - apply_intent_axis_boost
   - build_context_for_candidates
   expected_files:
-  - sidecar/axis/role_retrieval.py
-  - sidecar/axis/graph_walk.py
-  - sidecar/axis/axis_ranking.py
-  - sidecar/axis/context_builder.py
+  - context_engine/axis/role_retrieval.py
+  - context_engine/axis/graph_walk.py
+  - context_engine/axis/axis_ranking.py
+  - context_engine/axis/context_builder.py
 - id: surgical_context_q03
   repo: surgical_context
   core12: true
@@ -764,8 +764,8 @@ questions:
   - IntentMatch
   - intent_axes
   expected_files:
-  - sidecar/axis/intent_classifier.py
-  - sidecar/axis/axis_ranking.py
+  - context_engine/axis/intent_classifier.py
+  - context_engine/axis/axis_ranking.py
 - id: surgical_context_q04
   repo: surgical_context
   core12: false
@@ -786,9 +786,9 @@ questions:
   - walk_neighbours
   - run_axis_retrieval
   expected_files:
-  - sidecar/axis/role_retrieval.py
-  - sidecar/axis/graph_walk.py
-  - sidecar/axis/pipeline.py
+  - context_engine/axis/role_retrieval.py
+  - context_engine/axis/graph_walk.py
+  - context_engine/axis/pipeline.py
 - id: surgical_context_q05
   repo: surgical_context
   core12: false
@@ -810,7 +810,7 @@ questions:
   - _apply_graph
   - _embed_phase
   expected_files:
-  - sidecar/indexer/fast/pipeline.py
+  - context_engine/indexer/fast/pipeline.py
 - id: surgical_context_q06
   repo: surgical_context
   core12: false
@@ -829,7 +829,7 @@ questions:
   - _apply_token_credit_budget
   - _apply_render_and_budget
   expected_files:
-  - sidecar/axis/context_builder.py
+  - context_engine/axis/context_builder.py
   - tests/unit/test_context_builder_budget.py
   - QA/axis_benchmark.py
 - id: surgical_context_q07
@@ -855,7 +855,7 @@ questions:
   - extension/src/sidecarClient.ts
   - extension/src/providers/SurgicalContextViewProvider.ts
   - extension/src/extension.ts
-  - sidecar/main.py
+  - context_engine/main.py
 - id: dathund_q01
   repo: dathund
   core12: true

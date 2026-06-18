@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
-from sidecar.database.neo4j_client import Neo4jClient
-from sidecar.parser.protocol import ClassApiEdge, InheritanceEdge
+from context_engine.database.neo4j_client import Neo4jClient
+from context_engine.parser.protocol import ClassApiEdge, InheritanceEdge
 
 
 def test_builtin_exception_propagation_uses_direct_steps_not_variable_path():

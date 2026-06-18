@@ -1,8 +1,8 @@
-from sidecar.indexer.ts_http_route_hints import TsHttpRouteHintsIndexer
+from context_engine.indexer.ts_http_route_hints import TsHttpRouteHintsIndexer
 
 
 def test_scan_python_routes_finds_fastapi_handlers(tmp_path):
-    main_py = tmp_path / "sidecar" / "main.py"
+    main_py = tmp_path / "context_engine" / "main.py"
     main_py.parent.mkdir(parents=True)
     main_py.write_text(
         """
@@ -40,7 +40,7 @@ export const SidecarClient = {
 
 
 def test_extract_exported_object_api_collapses_nested_methods():
-    from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
+    from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
     adapter = TypeScriptAdapter()
     source = """
@@ -55,12 +55,12 @@ export const SidecarClient = {
 """
     symbols = adapter.extract_symbols(source, "extension/src/sidecarClient.ts")
     names = {symbol.name for symbol in symbols}
-    sidecar = next(symbol for symbol in symbols if symbol.name == "SidecarClient")
+    client = next(symbol for symbol in symbols if symbol.name == "SidecarClient")
 
     assert names == {"SidecarClient"}
-    assert sidecar.kind == "object_api"
-    assert sidecar.end_line - sidecar.start_line >= 5
+    assert client.kind == "object_api"
+    assert client.end_line - client.start_line >= 5
 
     calls = adapter.extract_calls_from_source(source, "extension/src/sidecarClient.ts")
-    sidecar_calls = [call for call in calls if call.get("caller_uid") == sidecar.uid]
-    assert {call["callee_name"] for call in sidecar_calls} >= {"post", "fetch"}
+    client_calls = [call for call in calls if call.get("caller_uid") == client.uid]
+    assert {call["callee_name"] for call in client_calls} >= {"post", "fetch"}

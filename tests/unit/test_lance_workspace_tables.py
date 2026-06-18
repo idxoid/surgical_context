@@ -1,6 +1,6 @@
 """Tests for per-workspace Lance table naming."""
 
-from sidecar.database.lance_workspace_tables import (
+from context_engine.database.lance_workspace_tables import (
     is_workspace_partition_table,
     workspace_partition_table_name,
 )
@@ -25,7 +25,7 @@ def test_workspace_partition_table_exists_opens_off_catalog_datasets(tmp_path, m
     import lancedb
     import pyarrow as pa
 
-    from sidecar.database.lance_workspace_tables import workspace_partition_table_exists
+    from context_engine.database.lance_workspace_tables import workspace_partition_table_exists
 
     monkeypatch.setenv("LANCEDB_PATH", str(tmp_path))
     db = lancedb.connect(str(tmp_path))

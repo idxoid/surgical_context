@@ -1,6 +1,6 @@
 # Spec — DocAnchor Confidence & Type (Phase 9)
 
-> **Status:** Implemented in `sidecar/indexer/anchor.py` and consumed by the context ranker (axis; the legacy `UnifiedRanker` consumer was removed 2026-06-15). Existing flat `COVERS` edges remain readable through fallback defaults; newly indexed docs write `anchor_type`, `confidence`, `primary_bias`, and `resolver`.
+> **Status:** Implemented in `context_engine/indexer/anchor.py` and consumed by the context ranker (axis; the legacy `UnifiedRanker` consumer was removed 2026-06-15). Existing flat `COVERS` edges remain readable through fallback defaults; newly indexed docs write `anchor_type`, `confidence`, `primary_bias`, and `resolver`.
 
 ## 1. Problem
 

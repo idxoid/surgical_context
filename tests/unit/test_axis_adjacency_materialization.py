@@ -1,7 +1,7 @@
 import json
 
-from sidecar.axis import graph_walk_inproc
-from sidecar.indexer.fast.adjacency_materialization import (
+from context_engine.axis import graph_walk_inproc
+from context_engine.indexer.fast.adjacency_materialization import (
     materialize_axis_adjacency,
     materialize_axis_adjacency_subset,
 )

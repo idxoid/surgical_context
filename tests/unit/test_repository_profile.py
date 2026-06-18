@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sidecar.indexer.repository_profile import (
+from context_engine.indexer.repository_profile import (
     RepositoryProfileInputs,
     build_repository_profile,
     summarize_repository_profile,

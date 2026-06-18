@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar import main as sidecar_main
-from sidecar.axis.context_builder import ContextBundle, ContextSymbol
-from sidecar.axis.intent_classifier import IntentMatch
-from sidecar.axis.role_retrieval import RoleCandidate
+from context_engine import main as context_engine_main
+from context_engine.axis.context_builder import ContextBundle, ContextSymbol
+from context_engine.axis.intent_classifier import IntentMatch
+from context_engine.axis.role_retrieval import RoleCandidate
 
 
 @pytest.fixture
@@ -32,12 +32,12 @@ def patch_axis_pipeline(monkeypatch):
 
     # The endpoint runs the pipeline (``run_axis_retrieval``), which reaches
     # these stage functions through their source modules — so patch the
-    # source modules, not ``sidecar_main``.
-    import sidecar.axis.axis_ranking as _rank_mod
-    import sidecar.axis.context_builder as _ctx_mod
-    import sidecar.axis.intent_classifier as _intent_mod
-    import sidecar.axis.role_retrieval as _retr_mod
-    import sidecar.database.lancedb_client as _lance_mod
+    # source modules, not ``context_engine_main``.
+    import context_engine.axis.axis_ranking as _rank_mod
+    import context_engine.axis.context_builder as _ctx_mod
+    import context_engine.axis.intent_classifier as _intent_mod
+    import context_engine.axis.role_retrieval as _retr_mod
+    import context_engine.database.lancedb_client as _lance_mod
 
     monkeypatch.setattr(_intent_mod, "classify_intent", fake_classify)
     # The pipeline always applies intent-axis ranking; neutralise it so the
@@ -113,17 +113,17 @@ def patch_axis_pipeline(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(sidecar_main, "db_session", lambda **_: _NoopCtx())
-    monkeypatch.setattr(sidecar_main, "_resolve_request_user", lambda *a, **k: "test-user")
+    monkeypatch.setattr(context_engine_main, "db_session", lambda **_: _NoopCtx())
+    monkeypatch.setattr(context_engine_main, "_resolve_request_user", lambda *a, **k: "test-user")
     monkeypatch.setattr(
-        sidecar_main,
+        context_engine_main,
         "_resolve_workspace",
         lambda *a, **k: "test-workspace",
     )
     return candidate, bundle
 
 
-def _request(**overrides) -> sidecar_main.AskAxisRequest:
+def _request(**overrides) -> context_engine_main.AskAxisRequest:
     defaults = {
         "question": "how does routing work",
         "top_roles": 2,
@@ -133,12 +133,12 @@ def _request(**overrides) -> sidecar_main.AskAxisRequest:
         "context_per_seed": 4,
     }
     defaults.update(overrides)
-    return sidecar_main.AskAxisRequest(**defaults)
+    return context_engine_main.AskAxisRequest(**defaults)
 
 
 def test_ask_axis_returns_well_formed_payload(patch_axis_pipeline):
     candidate, _bundle = patch_axis_pipeline
-    resp = sidecar_main.ask_axis(_request())
+    resp = context_engine_main.ask_axis(_request())
 
     assert resp.question == "how does routing work"
     assert resp.workspace_id == "test-workspace"
@@ -162,7 +162,7 @@ def test_ask_axis_returns_well_formed_payload(patch_axis_pipeline):
 
 
 def test_ask_axis_skips_context_when_with_context_false(patch_axis_pipeline):
-    resp = sidecar_main.ask_axis(_request(with_context=False))
+    resp = context_engine_main.ask_axis(_request(with_context=False))
     assert resp.candidates_by_role["routing_surface"]
     assert resp.context_bundles == []
 
@@ -171,11 +171,11 @@ def test_ask_axis_empty_intent_returns_empty_payload(monkeypatch, patch_axis_pip
     """``classify_intent`` returning nothing must produce a well-shaped
     empty response — not a 500.
     """
-    import sidecar.axis.intent_classifier as _intent_mod
+    import context_engine.axis.intent_classifier as _intent_mod
 
     monkeypatch.setattr(_intent_mod, "classify_intent", lambda *a, **k: [])
 
-    resp = sidecar_main.ask_axis(_request(intent_threshold=0.99))
+    resp = context_engine_main.ask_axis(_request(intent_threshold=0.99))
 
     assert resp.intent_matches == []
     assert resp.candidates_by_role == {}

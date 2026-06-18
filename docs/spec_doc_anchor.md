@@ -2,7 +2,7 @@
 
 ## Overview
 
-`sidecar/doc_anchor.py` — links documentation chunks to code symbols in Neo4j. Enables hybrid retrieval: vector search finds a relevant doc chunk → graph traversal finds the code it describes.
+`context_engine/doc_anchor.py` — links documentation chunks to code symbols in Neo4j. Enables hybrid retrieval: vector search finds a relevant doc chunk → graph traversal finds the code it describes.
 
 ---
 

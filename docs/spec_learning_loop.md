@@ -123,7 +123,7 @@ Low coverage means the loop is inert — signals aren't enough to trust. Triage 
 ## 3. API / Interface
 
 ```python
-# sidecar/feedback/types.py (new module)
+# context_engine/feedback/types.py (new module)
 
 @dataclass
 class FeedbackEvent:
@@ -139,7 +139,7 @@ class FeedbackStore:
 ```
 
 ```python
-# sidecar/feedback/ranker_update.py
+# context_engine/feedback/ranker_update.py
 
 class PersonalizedWeights:
     """Per-user deltas over the global ranker weights."""

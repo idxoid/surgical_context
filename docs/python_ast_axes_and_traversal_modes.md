@@ -589,13 +589,13 @@ Implemented runtime modules:
 
 | layer | module | output |
 |---|---|---|
-| L1 axis facts | `sidecar.axis.python_extractor` | `AxisFact`, `AxisProfile` |
-| L2 container kinds | `sidecar.axis.container_kind` | `ContainerKindMatch` |
-| graph probe | `sidecar.axis.graph_probe` | structural marker/probe answers |
-| L3 contracts | `sidecar.axis.contract_compiler` | `AxisContractMatch` |
-| query plan | `sidecar.axis.query_plan` | `AxisQueryPlan` |
-| graph expansion | `sidecar.axis.graph_traversal` | `AxisGraphHit` |
-| storage | `sidecar.database.lancedb_client` | axis prefiltered symbol search |
+| L1 axis facts | `context_engine.axis.python_extractor` | `AxisFact`, `AxisProfile` |
+| L2 container kinds | `context_engine.axis.container_kind` | `ContainerKindMatch` |
+| graph probe | `context_engine.axis.graph_probe` | structural marker/probe answers |
+| L3 contracts | `context_engine.axis.contract_compiler` | `AxisContractMatch` |
+| query plan | `context_engine.axis.query_plan` | `AxisQueryPlan` |
+| graph expansion | `context_engine.axis.graph_traversal` | `AxisGraphHit` |
+| storage | `context_engine.database.lancedb_client` | axis prefiltered symbol search |
 
 The physical index profile is isolated:
 

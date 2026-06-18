@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from sidecar.axis.contract_compiler import AxisContractCompiler
-from sidecar.axis.role_resolver import (
+from context_engine.axis.contract_compiler import AxisContractCompiler
+from context_engine.axis.role_resolver import (
     ROLE_CONTRACT_MAP,
     registered_contracts,
     registered_roles,

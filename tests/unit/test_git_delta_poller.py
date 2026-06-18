@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from sidecar.indexer.git_delta_poller import GitDeltaPoller, GitDeltaRegistry, GitDeltaTarget
+from context_engine.indexer.git_delta_poller import GitDeltaPoller, GitDeltaRegistry, GitDeltaTarget
 
 
 def _git(repo: Path, *args: str) -> None:

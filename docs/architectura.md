@@ -2,7 +2,7 @@
 
 > **Context-path migration (2026-06-15).** The `/ask` + `/search` context path
 > moved from the legacy ranking cascade (`ContextArbitrator`, `UnifiedRanker`,
-> the keyword `IntentClassifier`) to the **axis pipeline** (`sidecar/axis/`),
+> the keyword `IntentClassifier`) to the **axis pipeline** (`context_engine/axis/`),
 > now the default and only provider; the cascade was deleted. Flow steps below
 > that still name the arbitrator/cascade are superseded by the axis path — see
 > `cascade_cleanup_inventory.md`.
@@ -66,7 +66,7 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 | `HistoryProvider` | SQLite local | encrypted SQLite, Postgres, enterprise audit store, memory-only, disabled |
 
 ### 2.2. Inter-Process Communication
-VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsive even if a heavy Cypher query blocks the sidecar. Enables future replacement of Python binary with Rust without frontend changes.
+VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsive even if a heavy Cypher query blocks the context_engine. Enables future replacement of Python binary with Rust without frontend changes.
 
 ### 2.3. Current Sidecar Endpoints
 
@@ -101,7 +101,7 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 
 Local development often runs with `AUTH_REQUIRED=false`. Without path checks, any process on the machine could ask the sidecar to read or index arbitrary readable files.
 
-**Rules** (implemented in `sidecar/workspace_paths.py`, enforced in `sidecar/main.py`):
+**Rules** (implemented in `context_engine/workspace_paths.py`, enforced in `context_engine/main.py`):
 
 | Step | Behavior |
 |---|---|
@@ -149,8 +149,8 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
 - ✅ **Pruned details**: skipped candidates with reason codes
 - ✅ **Ranker metadata** in benchmark `ready_context` snapshots
-- ✅ **Retrieval trace (v1)**: `metadata.retrieval_trace` on `PromptContext.to_dict()` — unified vs graph-only strategy, mechanism, roles, budget summary, `schema_version` (`sidecar.retrieval.trace`); target architecture in [retrieval_kernel.md](retrieval_kernel.md)
-- ✅ **Provider protocols (v1)**: `VectorSearchProvider`, `WorkspaceMetaProvider`, `GraphDriverProvider` in `sidecar.retrieval.protocols` + fakes for tests; production `VectorSearcher` satisfies `VectorSearchProvider` (`tests/unit/test_retrieval_protocols.py`)
+- ✅ **Retrieval trace (v1)**: `metadata.retrieval_trace` on `PromptContext.to_dict()` — unified vs graph-only strategy, mechanism, roles, budget summary, `schema_version` (`context_engine.retrieval.trace`); target architecture in [retrieval_kernel.md](retrieval_kernel.md)
+- ✅ **Provider protocols (v1)**: `VectorSearchProvider`, `WorkspaceMetaProvider`, `GraphDriverProvider` in `context_engine.retrieval.protocols` + fakes for tests; production `VectorSearcher` satisfies `VectorSearchProvider` (`tests/unit/test_retrieval_protocols.py`)
 - 🚧 Remaining work: richer UI surfacing and consistency checks across extension surfaces
 
 **Supporting Infrastructure:**
@@ -188,7 +188,7 @@ All UI communication flows through a message bridge:
 - **Extension Host → Webview:** State updates and streaming responses
 - **Extension Host → Sidecar:** HTTP/JSON API calls (proxied from webview requests)
 
-This layering ensures webviews remain stateless and dumb; all business logic stays in the extension host and sidecar.
+This layering ensures webviews remain stateless and dumb; all business logic stays in the extension host and context_engine.
 
 **Key Design Decisions:**
 
@@ -296,7 +296,7 @@ Scenario: user edits `process_payment`, hasn't saved.
 ### 4.4. Model Routing
 - Default: **Ollama** (`MODEL_PREFERENCE=ollama`, `ALLOW_CLOUD_LLM=false`) — assembled context stays on the machine.
 - **Cloud opt-in:** Anthropic runs only when `ALLOW_CLOUD_LLM=true`, `ANTHROPIC_API_KEY` is set, and `MODEL_PREFERENCE` is `auto` or `claude`. A key alone does not enable cloud.
-- `AIEngine` (`sidecar/ai/engine.py`) scores intent + token count: large/complex contexts and design/exploration/refactor intents prefer Claude when cloud is allowed; otherwise Ollama.
+- `AIEngine` (`context_engine/ai/engine.py`) scores intent + token count: large/complex contexts and design/exploration/refactor intents prefer Claude when cloud is allowed; otherwise Ollama.
 - Default Anthropic model: **`claude-sonnet-4-6`** (`ANTHROPIC_MODEL` env). Retired `claude-sonnet-4-20250514` must not be used after 2026-06-15.
 - Fallback: Claude failures fall back to Ollama; unreachable LLM → degraded `/ask` and `/ask/stream` still return `context`.
 
@@ -360,7 +360,7 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
 
 ### 5.3. JSON Prompt Contract
 
-✅ Implemented — `PromptContext.to_dict()` in `sidecar/context/types.py`. Returned under `"context"` key in `/ask` response and re-used by the benchmark as `ready_context.contract`.
+✅ Implemented — `PromptContext.to_dict()` in `context_engine/context/types.py`. Returned under `"context"` key in `/ask` response and re-used by the benchmark as `ready_context.contract`.
 
 ```json
 {
@@ -459,7 +459,7 @@ The primary graph is supplied by the configured `GraphProvider`: local Docker fo
 ## ADR-004: Automatic Model Routing by Task Complexity
 **Status:** Accepted and partially implemented
 
-Intent + context-size classifier routes requests to appropriate model tier in `sidecar/ai/engine.py`.
+Intent + context-size classifier routes requests to appropriate model tier in `context_engine/ai/engine.py`.
 
 **Why:** Top-tier models for all requests is economically wasteful. Simple queries can be answered cheaper/faster locally.
 

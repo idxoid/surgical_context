@@ -1,22 +1,22 @@
 """Unit tests for embedding cache and recomputation controls."""
 
-from sidecar.axis.query_plan import AxisQueryRequest, AxisRequirement, compile_axis_query
-from sidecar.database import lancedb_client as lancedb_client_module
-from sidecar.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
-from sidecar.database.embedding_registry import (
+from context_engine.axis.query_plan import AxisQueryRequest, AxisRequirement, compile_axis_query
+from context_engine.database import lancedb_client as lancedb_client_module
+from context_engine.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
+from context_engine.database.embedding_registry import (
     EmbeddingModel,
     compute_chunk_hash,
     compute_embedding_hash,
 )
-from sidecar.database.lancedb_client import (
+from context_engine.database.lancedb_client import (
     AXIS_SYMBOL_REQUIRED_COLUMNS,
     AXIS_SYMBOLS_SCHEMA,
     SYMBOLS_SCHEMA,
     LanceDBClient,
     _symbols_schema_for_profile,
 )
-from sidecar.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
-from sidecar.workspace import DEFAULT_WORKSPACE_ID
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
+from context_engine.workspace import DEFAULT_WORKSPACE_ID
 
 
 def test_embedding_cache_roundtrip(tmp_path):
@@ -477,7 +477,7 @@ def test_lancedb_delete_path_prefixes_uses_partial_axis_reset(monkeypatch):
         0.25,
     )
     monkeypatch.setattr(lancedb_client_module, "graph_walk_inproc", None, raising=False)
-    from sidecar.axis import graph_walk_inproc
+    from context_engine.axis import graph_walk_inproc
 
     monkeypatch.setattr(graph_walk_inproc, "invalidate_adjacency_uids", _invalidate_uids)
     monkeypatch.setattr(
@@ -523,7 +523,7 @@ def test_lancedb_delete_path_prefixes_rematerializes_survivors_when_db_provided(
         "LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO",
         0.25,
     )
-    import sidecar.indexer.fast.adjacency_materialization as adjacency_materialization
+    import context_engine.indexer.fast.adjacency_materialization as adjacency_materialization
 
     monkeypatch.setattr(
         adjacency_materialization,
@@ -565,7 +565,7 @@ def test_lancedb_delete_path_prefixes_falls_back_to_full_axis_reset(monkeypatch)
         "LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO",
         0.25,
     )
-    from sidecar.axis import graph_walk_inproc
+    from context_engine.axis import graph_walk_inproc
 
     monkeypatch.setattr(
         graph_walk_inproc, "invalidate_adjacency_uids", lambda *args, **kwargs: None

@@ -2,9 +2,9 @@
 
 ## Overview
 
-`sidecar/indexer/docs.py` — walks a directory for `*.md` files, chunks them, embeds into LanceDB, then links chunks to code symbols in Neo4j via DocAnchor nodes with rich FROM/COVERS relationships.
+`context_engine/indexer/docs.py` — walks a directory for `*.md` files, chunks them, embeds into LanceDB, then links chunks to code symbols in Neo4j via DocAnchor nodes with rich FROM/COVERS relationships.
 
-Entry point: `index_docs(docs_path: str)`, also callable as `python sidecar/indexer/docs.py <path>` or `POST /index/docs` via `sidecar/main.py`.
+Entry point: `index_docs(docs_path: str)`, also callable as `python context_engine/indexer/docs.py <path>` or `POST /index/docs` via `context_engine/main.py`.
 
 ---
 
@@ -50,7 +50,7 @@ index_docs(docs_path)
   5. neo4j.close()
 ```
 
-**DocAnchor linking flow** (`sidecar/indexer/anchor.py`):
+**DocAnchor linking flow** (`context_engine/indexer/anchor.py`):
 - For each chunk:
   1. `_write_anchor()` — create DocAnchor node, set `File.doc_type`, create `FROM {type: "doc"}` edge
   2. Semantic search: `lance.search_symbols(chunk_text, threshold=1.5)` → hits

@@ -26,7 +26,7 @@ Each project indexes itself. The tenant graph only links published project facts
 
 ### Out of Scope
 
-- Scanning sibling repositories from another project's sidecar.
+- Scanning sibling repositories from another project's context_engine.
 - Reading source code from a neighboring project unless that project's own index explicitly published safe metadata.
 - Invoking live external APIs during indexing or retrieval.
 - Storing raw request/response payloads, secrets, auth tokens, or raw prompts in the tenant graph.

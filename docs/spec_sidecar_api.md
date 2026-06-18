@@ -1,14 +1,14 @@
 # Sidecar API — Spec
 
-> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`sidecar/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
+> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`context_engine/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
 
 
 ## Overview
 
 FastAPI process running on localhost. VS Code communicates via HTTP/JSON. Fault-isolated from the editor: if the sidecar blocks on a Cypher query, the editor stays responsive.
 
-Entry point: `sidecar/main.py`
-Start: `uvicorn sidecar.main:app --port 8000`
+Entry point: `context_engine/main.py`
+Start: `uvicorn context_engine.main:app --port 8000`
 
 ---
 
@@ -79,7 +79,7 @@ Server-side Pydantic limits (invalid values → HTTP **422**):
 | `limit` | `/search`, `/search/unified` | 1–50 | `5` |
 | `token_budget` | `/ask`, `/ask/stream`, `/search/unified` (graph leg) | 400–32 000 | `4000` / `2000` |
 
-Implementation: `SEARCH_LIMIT_*` and `TOKEN_BUDGET_*` in `sidecar/main.py`. Tests: `tests/unit/test_api_bounds.py`.
+Implementation: `SEARCH_LIMIT_*` and `TOKEN_BUDGET_*` in `context_engine/main.py`. Tests: `tests/unit/test_api_bounds.py`.
 
 ---
 
@@ -230,7 +230,7 @@ Assemble surgical context for a symbol and query the LLM.
 
 **Errors:** `/ask` does **not** return `404` when a symbol is missing from the graph. Missing symbols trigger the fallback ladder below; the response is always HTTP `200` with a populated `context` (unless auth/workspace validation fails).
 
-**Context resolution (fallback ladder):** `_resolve_ask_context` in `sidecar/main.py` tries, in order:
+**Context resolution (fallback ladder):** `_resolve_ask_context` in `context_engine/main.py` tries, in order:
 
 1. **Symbol** — when `symbol` is set, `ContextArbitrator.get_context_for_symbol(...)` runs intent classification, workspace-scoped graph expansion, code resolution, and doc retrieval. On success, `context.budget.ask_level` is `"symbol"`.
 2. **File** — when symbol resolution returns an error string and `file_path` is set, assemble context from that file on disk (`ask_level`: `"file"`).

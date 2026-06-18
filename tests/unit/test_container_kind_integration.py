@@ -1,7 +1,7 @@
 import textwrap
 
-from sidecar.axis import PythonAxisExtractor
-from sidecar.axis.container_kind import ContainerKindClassifier, NullGraphProbe
+from context_engine.axis import PythonAxisExtractor
+from context_engine.axis.container_kind import ContainerKindClassifier, NullGraphProbe
 
 
 class _MarkerProbe(NullGraphProbe):

@@ -1,7 +1,7 @@
 """config_surface marker-base branch (Param / F4 kind-split follow-up)."""
 
-from sidecar.indexer.role_cascade import assign_symbol_roles
-from sidecar.indexer.role_clustering import SymbolRow
+from context_engine.indexer.role_cascade import assign_symbol_roles
+from context_engine.indexer.role_clustering import SymbolRow
 
 
 def _class_row(**kwargs) -> SymbolRow:

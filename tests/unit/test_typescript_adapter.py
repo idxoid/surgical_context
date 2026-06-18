@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
+from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
 
 class TestTypeScriptAdapter:
@@ -53,7 +53,7 @@ function func2() {}
         source = "export const createSlice = buildCreateSlice()"
 
         with patch(
-            "sidecar.parser.adapters.treesitter_base.TreeSitterAdapter.extract_symbols",
+            "context_engine.parser.adapters.treesitter_base.TreeSitterAdapter.extract_symbols",
             return_value=[],
         ):
             symbols = adapter.extract_symbols(source, "createSlice.ts")
@@ -73,7 +73,7 @@ export function buildCreateSlice() {
 """
 
         with patch(
-            "sidecar.parser.adapters.treesitter_base.TreeSitterAdapter.extract_symbols",
+            "context_engine.parser.adapters.treesitter_base.TreeSitterAdapter.extract_symbols",
             return_value=[],
         ):
             symbols = adapter.extract_symbols(source, "createSlice.ts")
@@ -466,6 +466,6 @@ export const SidecarClient = {
 """
         symbols = adapter.extract_symbols(source, "extension/src/sidecarClient.ts")
         assert {symbol.name for symbol in symbols} == {"SidecarClient"}
-        sidecar = symbols[0]
-        assert sidecar.kind == "object_api"
-        assert sidecar.signature_status == "object_api_export"
+        client = symbols[0]
+        assert client.kind == "object_api"
+        assert client.signature_status == "object_api_export"
