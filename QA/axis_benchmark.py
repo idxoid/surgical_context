@@ -87,6 +87,11 @@ _BENCH_REPOS = (
     "django",
     "dathund",
     "surgical_context",
+    # Non-Python benchmark pack (QA/fixtures/questions_non_python.yaml)
+    "express",
+    "nestjs",
+    "redux_toolkit",
+    "vue",
 )
 REPO_TO_WORKSPACE: dict[str, str] = {
     repo: _BENCH_PROFILE.workspace_id(f"{_BENCH_TENANT}/{repo}@{_BENCH_REF}")
