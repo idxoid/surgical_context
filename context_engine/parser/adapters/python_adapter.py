@@ -1802,19 +1802,35 @@ class PythonAdapter(TreeSitterAdapter):
         """
         out: list[tuple[str, str]] = []
         for n in self._iter_nodes(type_node):
-            if n.type != "subscript":
-                continue
-            value = n.child_by_field_name("value")
-            if (
-                value is None
-                or value.type != "identifier"
-                or _node_text(value) not in ("type", "Type")
-            ):
-                continue
-            for sub in n.named_children:
-                if sub.id == value.id:
+            if n.type == "subscript":
+                value = n.child_by_field_name("value")
+                if (
+                    value is None
+                    or value.type != "identifier"
+                    or _node_text(value) not in ("type", "Type")
+                ):
                     continue
-                out.extend(self._type_ref_targets(sub, import_bindings, module))
+                for sub in n.named_children:
+                    if sub.id == value.id:
+                        continue
+                    out.extend(self._type_ref_targets(sub, import_bindings, module))
+                continue
+
+            # Current tree-sitter-python represents annotations as
+            # ``type -> generic_type -> type_parameter`` rather than the
+            # expression ``subscript`` shape. Treat only ``type[X]`` / ``Type[X]``
+            # as a class-object annotation; ordinary ``X`` annotations remain
+            # instance types and do not imply construction.
+            if n.type == "generic_type":
+                head = n.named_children[0] if n.named_children else None
+                if (
+                    head is None
+                    or head.type != "identifier"
+                    or _node_text(head) not in ("type", "Type")
+                ):
+                    continue
+                for sub in n.named_children[1:]:
+                    out.extend(self._type_ref_targets(sub, import_bindings, module))
         return out
 
     @staticmethod
