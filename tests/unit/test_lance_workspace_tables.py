@@ -1,7 +1,9 @@
 """Tests for per-workspace Lance table naming."""
 
 from context_engine.database.lance_workspace_tables import (
+    drop_workspace_partition_table,
     is_workspace_partition_table,
+    workspace_partition_table_exists,
     workspace_partition_table_name,
 )
 
@@ -44,3 +46,29 @@ def test_workspace_partition_table_exists_opens_off_catalog_datasets(tmp_path, m
     assert name not in db.table_names() or workspace_partition_table_exists(
         db, "symbols_axis_python_v1", ws
     )
+
+
+def test_drop_workspace_partition_table_removes_off_catalog_dataset(tmp_path, monkeypatch):
+    import lancedb
+    import pyarrow as pa
+
+    monkeypatch.setenv("LANCEDB_PATH", str(tmp_path))
+    db = lancedb.connect(str(tmp_path))
+    ws = "local/surgical_context@main+axis_python_v1"
+    base = "symbols_axis_python_v1"
+    name = workspace_partition_table_name(base, ws)
+    db.create_table(
+        name,
+        data=[
+            {
+                "uid": "abc",
+                "workspace_id": ws,
+                "file_path": "/tmp/phantom.py",
+            }
+        ],
+    )
+    assert workspace_partition_table_exists(db, base, ws)
+
+    dropped = drop_workspace_partition_table(db, base, ws)
+    assert dropped is True
+    assert not workspace_partition_table_exists(db, base, ws)

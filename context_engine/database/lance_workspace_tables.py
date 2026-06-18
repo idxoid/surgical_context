@@ -46,10 +46,25 @@ def workspace_partition_table_exists(db, base_table: str, workspace_id: str) -> 
         return False
 
 
+def drop_workspace_partition_table(db, base_table: str, workspace_id: str) -> bool:
+    """Drop a workspace partition table when it exists on disk.
+
+    LanceDB can leave orphaned ``.lance`` datasets that ``open_table`` can
+    still read but ``table_names()`` omits. Wipe paths must drop by existence,
+    not catalog membership.
+    """
+    if not workspace_partition_table_exists(db, base_table, workspace_id):
+        return False
+    name = workspace_partition_table_name(base_table, workspace_id)
+    db.drop_table(name)
+    return True
+
+
 __all__ = [
     "PARTITION_MARKER",
     "WORKSPACE_TABLE_DIGEST_LEN",
     "is_workspace_partition_table",
+    "drop_workspace_partition_table",
     "list_workspace_partition_tables",
     "workspace_partition_table_name",
     "workspace_partition_table_exists",

@@ -21,6 +21,7 @@ from context_engine.database.embedding_registry import (
 )
 from context_engine.database.lance_workspace_tables import (
     workspace_partition_table_exists,
+    drop_workspace_partition_table,
     workspace_partition_table_name,
     workspace_partitioned_enabled,
 )
@@ -1201,9 +1202,9 @@ class LanceDBClient:
         if progress_callback:
             progress_callback(f"clear symbol vectors for {workspace_id}")
         if hasattr(self, "_workspace_sym_tables"):
-            name = workspace_partition_table_name(self._index_profile.symbols_table, workspace_id)
-            if name in self._db.table_names():
-                self._db.drop_table(name)
+            drop_workspace_partition_table(
+                self._db, self._index_profile.symbols_table, workspace_id
+            )
             self._workspace_sym_tables.pop(workspace_id, None)
             ws = self._quote_delete_value(workspace_id)
             try:
@@ -1230,9 +1231,7 @@ class LanceDBClient:
         """Replace one workspace's materialized adjacency rows."""
         table = self.axis_adjacency_table(workspace_id)
         if self._uses_workspace_adjacency_partition(table):
-            name = workspace_partition_table_name(AXIS_ADJACENCY_TABLE, workspace_id)
-            if name in self._db.table_names():
-                self._db.drop_table(name)
+            drop_workspace_partition_table(self._db, AXIS_ADJACENCY_TABLE, workspace_id)
             self._workspace_adj_tables.pop(workspace_id, None)
             table = self.axis_adjacency_table(workspace_id)
         else:
@@ -1262,9 +1261,9 @@ class LanceDBClient:
         }
         table = self.axis_adjacency_external_table(workspace_id)
         if self._uses_workspace_adjacency_external_partition(table):
-            name = workspace_partition_table_name(AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id)
-            if name in self._db.table_names():
-                self._db.drop_table(name)
+            drop_workspace_partition_table(
+                self._db, AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id
+            )
             self._workspace_adj_external_tables.pop(workspace_id, None)
             table = self.axis_adjacency_external_table(workspace_id)
         else:
@@ -1353,14 +1352,12 @@ class LanceDBClient:
             pass
         self.delete_symbols_workspace(workspace_id, progress_callback=progress_callback)
         if hasattr(self, "_workspace_adj_tables"):
-            name = workspace_partition_table_name(AXIS_ADJACENCY_TABLE, workspace_id)
-            if name in self._db.table_names():
-                self._db.drop_table(name)
+            drop_workspace_partition_table(self._db, AXIS_ADJACENCY_TABLE, workspace_id)
             self._workspace_adj_tables.pop(workspace_id, None)
         if hasattr(self, "_workspace_adj_external_tables"):
-            ext_name = workspace_partition_table_name(AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id)
-            if ext_name in self._db.table_names():
-                self._db.drop_table(ext_name)
+            drop_workspace_partition_table(
+                self._db, AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id
+            )
             self._workspace_adj_external_tables.pop(workspace_id, None)
         try:
             self._axis_adjacency_table.delete(predicate)
@@ -1419,9 +1416,7 @@ class LanceDBClient:
         adj_table = self.axis_adjacency_table(workspace_id)
         if use_full_reset:
             if self._uses_workspace_adjacency_partition(adj_table):
-                name = workspace_partition_table_name(AXIS_ADJACENCY_TABLE, workspace_id)
-                if name in self._db.table_names():
-                    self._db.drop_table(name)
+                drop_workspace_partition_table(self._db, AXIS_ADJACENCY_TABLE, workspace_id)
                 if hasattr(self, "_workspace_adj_tables"):
                     self._workspace_adj_tables.pop(workspace_id, None)
             else:
