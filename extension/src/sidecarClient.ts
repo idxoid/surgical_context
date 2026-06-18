@@ -301,8 +301,8 @@ export const SidecarClient = {
     }
   },
 
-  overlay(file_path: string, content: string): Promise<OverlayResponse> {
-    return post('/overlay', { file_path, content });
+  overlay(file_path: string, content: string, dirty = true): Promise<OverlayResponse> {
+    return post('/overlay', { file_path, content, dirty });
   },
 
   async deleteOverlay(file_path: string): Promise<void> {

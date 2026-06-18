@@ -5,6 +5,8 @@ from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+import logging
+
 from sidecar.database.lancedb_client import LanceDBClient
 from sidecar.database.neo4j_client import Neo4jClient
 from sidecar.parser.extractor import SymbolExtractor
@@ -13,6 +15,8 @@ from sidecar.silence import install as _silence
 from sidecar.workspace import DEFAULT_WORKSPACE_ID
 
 _silence()
+
+logger = logging.getLogger(__name__)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _INDEXED_EXTENSIONS = {
@@ -54,7 +58,9 @@ def _collect_files(project_path: str) -> list[str]:
                 if spec.match_file(rel):
                     continue
             files.append(full)
-    return files
+    from sidecar.indexer.git_committed import filter_indexable_paths
+
+    return filter_indexable_paths(files, project_path)
 
 
 def hash_file(file_path: str) -> str:
@@ -87,6 +93,11 @@ def index_file(
     and run a single AFFECTS rebuild after all files are processed.
     Pass ``skip_affects=True`` when the caller will do that itself.
     """
+    from sidecar.indexer.git_committed import should_index_file
+
+    if not should_index_file(file_path):
+        logger.info("Skipping index for uncommitted or untracked file: %s", file_path)
+        return []
     file_hash = hash_file(file_path)
     symbols = extractor.extract(file_path)
     for sym in symbols:

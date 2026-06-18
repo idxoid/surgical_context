@@ -64,8 +64,8 @@ from sidecar.axis.role_retrieval import RoleCandidate
 _MODE_ROLES = frozenset({"impact_analysis", "trace_dependency"})
 # Seed-budget multiplier for mode (impact / trace) intents — their answer
 # surface is a blast radius and the seed layer now feeds a multi-stage pool.
-# Was 2× per_role_limit (=16 at default 8); tightened to 1× (=8) to cut
-# impact/trace latency on large workspaces.
+# Was 2× per_role_limit (=16 at default 8); tightened to 1× to cut
+# impact/trace latency on large workspaces. Default per_role_limit is 6 (cap 6/30).
 _MODE_SEED_LIMIT_FACTOR = 1
 
 
@@ -103,7 +103,7 @@ def run_axis_retrieval(
     db: Any,
     lance: Any,
     top_roles: int = 3,
-    per_role_limit: int = 8,
+    per_role_limit: int = 6,
     intent_threshold: float = 0.20,
     with_context: bool = True,
     context_per_seed: int = 4,
@@ -114,6 +114,8 @@ def run_axis_retrieval(
     anchor_path: str | None = None,
     hook_transparency: bool = False,
     trace: Any | None = None,
+    overlay: Any | None = None,
+    user_id: str = "anonymous",
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
 
@@ -375,6 +377,8 @@ def run_axis_retrieval(
                 ),
                 utility_score_fn=utility_score_fn,
                 include_tests=include_tests_in_walks,
+                overlay=overlay,
+                user_id=user_id,
             )
 
     return AxisRetrievalResult(

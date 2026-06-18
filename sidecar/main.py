@@ -7,7 +7,9 @@ _install_stderr_filter()
 import hashlib
 import logging
 import os
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, cast
 
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -59,7 +61,6 @@ TOKEN_BUDGET_MAX = 32_000
 IMPACT_DEPTH_MIN = 1
 IMPACT_DEPTH_MAX = 4
 
-app = FastAPI(title="Surgical Context Sidecar")
 overlay = InMemoryOverlay()
 vector_db = LanceDBClient()
 
@@ -101,6 +102,11 @@ class IndexFilesRequest(BaseModel):
     queue: bool = True
 
 
+class IndexGitDeltaRequest(BaseModel):
+    project_path: str | None = None
+    queue: bool = True
+
+
 class IndexDocsRequest(BaseModel):
     docs_path: str
 
@@ -115,6 +121,7 @@ class AskRequest(BaseModel):
 class OverlayRequest(BaseModel):
     file_path: str
     content: str
+    dirty: bool = True
 
 
 class SearchRequest(BaseModel):
@@ -217,7 +224,7 @@ class AskAxisRequest(BaseModel):
     question: str
     top_roles: int = Field(default=3, ge=1, le=10)
     intent_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
-    per_role_limit: int = Field(default=8, ge=1, le=50)
+    per_role_limit: int = Field(default=6, ge=1, le=50)
     with_context: bool = True
     context_seeds_per_role: int = Field(default=2, ge=1, le=10)
     context_per_seed: int = Field(default=4, ge=1, le=20)
@@ -848,6 +855,7 @@ def _context_from_axis(
     token_budget: int = 4000,
     anchor_path: str | None = None,
     trace_id: str = "",
+    user_id: str = "anonymous",
 ) -> PromptContext | None:
     """Axis-pipeline provider: canonical retrieval -> renderable PromptContext.
 
@@ -876,6 +884,8 @@ def _context_from_axis(
         # Inert for non-hook seeds; closes the named-hook gap (sqlalchemy q03
         # 0.5 -> 1.0) at the cost of two cheap walks when hook seeds are present.
         hook_transparency=True,
+        overlay=overlay,
+        user_id=user_id,
     )
     intent = result.intent[0].role if result.intent else ""
     return axis_bundles_to_prompt_context(
@@ -968,7 +978,7 @@ def _ask_axis_first_enabled() -> bool:
 
 
 def _try_axis_context(
-    *, req: AskRequest, workspace_id: str, db: Any, anchor_path: str | None = None
+    *, req: AskRequest, workspace_id: str, db: Any, anchor_path: str | None = None, user_id: str
 ) -> PromptContext | None:
     """Best-effort axis context. Any failure (missing axis index, db/Lance
     error) degrades to ``None`` so the remaining fallback ladder can answer.
@@ -982,6 +992,7 @@ def _try_axis_context(
             db=db,
             token_budget=req.token_budget,
             anchor_path=anchor_path,
+            user_id=user_id,
         )
     except Exception:
         logger.exception("ask_axis_first provider failed; falling through")
@@ -1006,7 +1017,11 @@ def _resolve_ask_context(
     # we fall straight through to the file -> workspace -> direct providers below.
     if _ask_axis_first_enabled():
         axis_ctx = _try_axis_context(
-            req=req, workspace_id=workspace_id, db=db, anchor_path=safe_file_path or None
+            req=req,
+            workspace_id=workspace_id,
+            db=db,
+            anchor_path=safe_file_path or None,
+            user_id=user_id,
         )
         if axis_ctx is not None:
             _context_budget(axis_ctx)["ask_level"] = "axis"
@@ -1112,7 +1127,11 @@ def _system_prompt_for_context(ctx: PromptContext) -> str:
 def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
     from sidecar.indexer.anchor import resolve_pending_anchors
     from sidecar.indexer.code import hash_file, index_file
+    from sidecar.indexer.git_committed import should_index_file
     from sidecar.parser.extractor import SymbolExtractor
+
+    if not should_index_file(file_path):
+        return 0
 
     job_log = IndexJobLog()
     file_hash = hash_file(file_path)
@@ -1130,6 +1149,7 @@ def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
             )
             resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
     default_cache.invalidate_files([file_path], workspace_id)
+    overlay.clear(file_path, workspace_id=workspace_id, user_id=user_id)
     return tracked_job_id
 
 
@@ -1174,6 +1194,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
 
     from sidecar.indexer.anchor import resolve_pending_anchors
     from sidecar.indexer.code import hash_file, index_file, is_indexable_file
+    from sidecar.indexer.git_committed import should_index_file
     from sidecar.parser.extractor import SymbolExtractor
 
     grouped: dict[tuple[str, str], list[IndexWorkItem]] = defaultdict(list)
@@ -1187,6 +1208,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
         missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
         unsupported_paths = [path for path in existing_paths if not is_indexable_file(path)]
         indexable_paths = [path for path in existing_paths if is_indexable_file(path)]
+        indexable_paths = [path for path in indexable_paths if should_index_file(path)]
         for path in missing_paths:
             logger.warning("Skipping queued index for missing file: %s", path)
             default_metrics.increment(
@@ -1235,6 +1257,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                         all_changed_uids.extend(changed)
                         indexed_paths.append(path)
                         completed += 1
+                        overlay.clear(path, workspace_id=workspace_id, user_id=user_id)
                 except Exception:
                     logger.exception("Queued indexing failed for %s", path)
                     default_metrics.increment(
@@ -1265,6 +1288,88 @@ index_queue = IndexBatchQueue(
     batch_size=INDEX_QUEUE_BATCH_SIZE,
 )
 
+from sidecar.indexer.git_delta_poller import (
+    GitDeltaPoller,
+    GitDeltaRegistry,
+    GitDeltaTarget,
+    poll_interval_seconds,
+)
+
+git_delta_registry = GitDeltaRegistry()
+
+
+def _track_git_delta_target(workspace_id: str, project_path: str, user_id: str) -> None:
+    git_delta_registry.register(workspace_id, project_path, user_id=user_id)
+
+
+def _apply_git_head_delta_for_workspace(
+    *,
+    workspace_id: str,
+    user_id: str,
+    project_root: Path,
+    db: Any,
+    queue: bool,
+) -> dict[str, Any]:
+    from sidecar.indexer.code import index_file
+    from sidecar.indexer.git_delta import apply_git_head_delta
+    from sidecar.parser.extractor import SymbolExtractor
+
+    extractor = SymbolExtractor()
+    if hasattr(extractor, "project_root"):
+        extractor.project_root = str(project_root)
+
+    def _index_one(path: str, db: Any, lance: Any, *, workspace_id: str) -> list[str]:
+        return index_file(
+            path,
+            db,
+            lance,
+            extractor,
+            workspace_id=workspace_id,
+        )
+
+    return apply_git_head_delta(
+        str(project_root),
+        db=db,
+        lance=vector_db,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        index_file_fn=_index_one,
+        enqueue_file_fn=_enqueue_index_file,
+        queue=queue,
+    )
+
+
+def _poll_git_delta_target(target: GitDeltaTarget) -> dict[str, Any] | None:
+    with db_session(user_id=target.user_id) as db:
+        return _apply_git_head_delta_for_workspace(
+            workspace_id=target.workspace_id,
+            user_id=target.user_id,
+            project_root=Path(target.project_path),
+            db=db,
+            queue=True,
+        )
+
+
+git_delta_poller = GitDeltaPoller(
+    git_delta_registry,
+    _poll_git_delta_target,
+    interval_seconds=poll_interval_seconds(),
+    auto_start=False,
+)
+
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    git_delta_poller.start()
+    try:
+        yield
+    finally:
+        git_delta_poller.close()
+        index_queue.close()
+
+
+app = FastAPI(title="Surgical Context Sidecar", lifespan=_app_lifespan)
+
 
 @app.get("/health", response_model=HealthResponse)
 def health():
@@ -1286,6 +1391,7 @@ def index(
     user_id = _resolve_request_user(x_user_id, authorization)
     workspace_id = _resolve_workspace(x_workspace)
     project_root = _require_workspace_root_dir(req.project_path)
+    _track_git_delta_target(workspace_id, str(project_root), user_id)
 
     with db_session(user_id=user_id) as db:
         if req.queue:
@@ -1337,6 +1443,17 @@ def index_file_endpoint(
         safe_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
     if not os.path.isfile(safe_path):
         raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
+
+    from sidecar.indexer.git_committed import should_index_file
+
+    if not should_index_file(safe_path):
+        return {
+            "status": "skipped",
+            "file_path": safe_path,
+            "job_id": 0,
+            "workspace_id": workspace_id,
+            "reason": "uncommitted_or_untracked",
+        }
 
     if req.queue:
         result = _enqueue_index_file(safe_path, workspace_id, user_id)
@@ -1399,8 +1516,28 @@ def index_files_endpoint(
     ]
     valid_paths = [file_path for file_path in safe_paths if os.path.isfile(file_path)]
 
+    from sidecar.indexer.git_committed import should_index_file
+
+    uncommitted = [
+        EnqueueResult(
+            accepted=False,
+            status="skipped",
+            file_path=file_path,
+            workspace_id=workspace_id,
+            queue_depth=index_queue.snapshot()["pending"],
+            reason="uncommitted_or_untracked",
+        )
+        for file_path in valid_paths
+        if not should_index_file(file_path)
+    ]
+    indexable_paths = [file_path for file_path in valid_paths if should_index_file(file_path)]
+
     if req.queue:
-        results = [*missing, *_enqueue_index_files(valid_paths, workspace_id, user_id)]
+        results = [
+            *missing,
+            *uncommitted,
+            *_enqueue_index_files(indexable_paths, workspace_id, user_id),
+        ]
         summary = _summarize_enqueue_results(results)
         status = "queued" if not summary["rejected"] else "partial_queued"
         return {
@@ -1410,18 +1547,21 @@ def index_files_endpoint(
             **summary,
         }
 
-    sync_results = missing
-    for file_path in valid_paths:
+    sync_results = [*missing, *uncommitted]
+    for file_path in indexable_paths:
         try:
             job_id = _index_file_now(file_path, workspace_id, user_id)
+            status = "indexed" if job_id > 0 else "skipped"
+            reason = "" if job_id > 0 else "uncommitted_or_untracked"
             sync_results.append(
                 EnqueueResult(
-                    accepted=True,
-                    status="indexed",
+                    accepted=job_id > 0,
+                    status=status,
                     file_path=file_path,
                     workspace_id=workspace_id,
                     queue_depth=index_queue.snapshot()["pending"],
                     generation=job_id,
+                    reason=reason,
                 )
             )
         except Exception as exc:
@@ -1442,6 +1582,50 @@ def index_files_endpoint(
         "results": [result.to_dict() for result in sync_results],
         **summary,
     }
+
+
+@app.post("/index/git-delta")
+def index_git_delta_endpoint(
+    req: IndexGitDeltaRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+):
+    """Incremental post-commit sync: index only files in ``prev..HEAD`` git diff."""
+    from sidecar.workspace_paths import registered_workspace_root
+
+    user_id = _resolve_request_user(x_user_id, authorization)
+    workspace_id = _resolve_workspace(x_workspace)
+    with db_session(user_id=user_id) as db:
+        if req.project_path:
+            project_root = _require_workspace_root_dir(req.project_path)
+        else:
+            manifest_root = registered_workspace_root(db, workspace_id)
+            if manifest_root is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="project_path required when workspace has no registered project root",
+                )
+            project_root = manifest_root
+        _track_git_delta_target(workspace_id, str(project_root), user_id)
+
+        stats = _apply_git_head_delta_for_workspace(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            project_root=project_root,
+            db=db,
+            queue=req.queue,
+        )
+    return {"status": "ok", "workspace_id": workspace_id, **stats}
+
+
+@app.get("/index/git-delta/status")
+def index_git_delta_status(
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
+    _resolve_request_user(x_user_id, authorization)
+    return {"status": "ok", "poller": git_delta_poller.snapshot()}
 
 
 @app.get("/index/queue", response_model=IndexQueueStatusResponse)
@@ -1654,7 +1838,13 @@ def update_overlay(
     workspace_id = _resolve_workspace(x_workspace)
     with db_session(user_id=user_id) as db:
         safe_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
-    overlay.update(safe_path, req.content, workspace_id=workspace_id, user_id=user_id)
+    overlay.update(
+        safe_path,
+        req.content,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        dirty=req.dirty,
+    )
     symbols = overlay.get_symbols(safe_path, workspace_id=workspace_id, user_id=user_id)
     return {"file_path": safe_path, "symbols": list(symbols.keys())}
 
@@ -1849,6 +2039,8 @@ def ask_axis(
                 context_per_seed=req.context_per_seed,
                 context_seeds_per_role=req.context_seeds_per_role,
                 trace=trace,
+                overlay=overlay,
+                user_id=user_id,
             )
 
         intent_payload = [

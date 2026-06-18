@@ -31,6 +31,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 sys.path.append(
@@ -129,6 +130,82 @@ class FileDiff:
     @property
     def edge_refresh_uids(self) -> list[str]:
         return self.changed_uids or self.current_uids
+
+
+def _clear_derived_edges_for_diffs(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> None:
+    """Drop stale per-file derived edges before relinking (parity with ``index_file``)."""
+    per_file_deleters: tuple[tuple[str, str], ...] = (
+        ("proxy_bindings", "delete_proxy_bindings_for_file"),
+        ("decorators", "delete_decorators_for_file"),
+        ("decorator_compositions", "delete_decorator_compositions_for_file"),
+        ("type_refs", "delete_type_references_for_file"),
+        ("injections", "delete_injections_for_file"),
+        ("attr_accesses", "delete_attr_accesses_for_file"),
+        ("reexports", "delete_reexports_for_file"),
+        ("instantiations", "delete_instantiations_for_file"),
+        ("hooks", "delete_hooks_for_file"),
+    )
+    reporter.stage_start("clear_derived_edges", total=len(diffs) * len(per_file_deleters))
+    for diff in diffs:
+        path = diff.extracted.path
+        for _, method_name in per_file_deleters:
+            delete_fn = getattr(db, method_name, None)
+            if callable(delete_fn):
+                delete_fn(path, workspace_id=workspace_id)
+            reporter.step("clear_derived_edges")
+    reporter.stage_end("clear_derived_edges")
+
+
+def _rebuild_affects_for_uids(
+    uids: list[str],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    if not uids:
+        reporter.stage_start("affects", total=0)
+        reporter.stage_end("affects")
+        return 0
+    from sidecar.indexer.affects import AFFECTSIndexer
+
+    reporter.stage_start("affects", total=len(uids))
+    AFFECTSIndexer(db).rebuild_affects(uids, workspace_id=workspace_id)
+    reporter.stage_end("affects")
+    return len(uids)
+
+
+def _tombstone_phase(
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    *,
+    workspace_id: str,
+    project_path: str,
+    active_paths: list[str],
+    reporter: ProgressReporter,
+) -> tuple[list[str], list[str]]:
+    from sidecar.workspace_paths import (
+        prune_graph_paths_outside_root,
+        tombstone_stale_indexed_files,
+    )
+
+    project_root = Path(project_path).resolve()
+    prune_graph_paths_outside_root(db, workspace_id=workspace_id, project_root=project_root)
+    reporter.stage_start("tombstone", total=1)
+    removed_paths, removed_uids = tombstone_stale_indexed_files(
+        db,
+        lance,
+        workspace_id=workspace_id,
+        project_root=project_root,
+        active_paths=active_paths,
+    )
+    reporter.step("tombstone")
+    reporter.stage_end("tombstone")
+    return removed_paths, removed_uids
 
 
 def _hash_phase(files: list[str], workers: int, reporter: ProgressReporter) -> dict[str, str]:
@@ -1477,6 +1554,7 @@ def run_fast_indexing(
         "performed": True,
         "skipped": False,
         "collected": 0,
+        "tombstoned": 0,
         "changed": 0,
         "parsed": 0,
         "symbols_encoded": 0,
@@ -1523,7 +1601,21 @@ def run_fast_indexing(
         files = collect_files(project_path)
         stats["collected"] = len(files)
         stats["timings_sec"]["collect"] = round(time.perf_counter() - t_stage, 3)
-        if not files:
+
+        # Stage 1b: tombstone indexed files no longer in the committed collect set
+        t_stage = time.perf_counter()
+        tombstoned_paths, tombstone_uids = _tombstone_phase(
+            db,
+            lance,
+            workspace_id=workspace_id,
+            project_path=project_path,
+            active_paths=files,
+            reporter=reporter,
+        )
+        stats["tombstoned"] = len(tombstoned_paths)
+        stats["timings_sec"]["tombstone"] = round(time.perf_counter() - t_stage, 3)
+
+        if not files and not tombstoned_paths:
             _use_repository_profile(
                 stats,
                 build_empty_repository_profile(
@@ -1542,6 +1634,23 @@ def run_fast_indexing(
             print(f"❌ No indexable files under {project_path}")
             return stats
 
+        if not files and tombstoned_paths:
+            if tombstone_uids and not skip_affects:
+                t_stage = time.perf_counter()
+                stats["affects_rebuilt"] = _rebuild_affects_for_uids(
+                    tombstone_uids, db, workspace_id, reporter
+                )
+                stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
+            persist_index_manifest(
+                stats=stats,
+                db=db,
+                workspace_id=workspace_id,
+                project_path=project_path,
+                outcome="tombstone_only",
+            )
+            print(f"🪦 Tombstoned {len(tombstoned_paths)} stale indexed file(s).")
+            return stats
+
         # Stage 2: parallel hash + diff
         t_stage = time.perf_counter()
         current_hashes = _hash_phase(files, hash_workers, reporter)
@@ -1553,6 +1662,12 @@ def run_fast_indexing(
         stats["timings_sec"]["hash"] = round(time.perf_counter() - t_stage, 3)
 
         if not changed_files:
+            if tombstone_uids and not skip_affects:
+                t_stage = time.perf_counter()
+                stats["affects_rebuilt"] = _rebuild_affects_for_uids(
+                    tombstone_uids, db, workspace_id, reporter
+                )
+                stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
             get_profile = getattr(db, "get_repository_profile", None)
             existing_profile = (
                 get_profile(workspace_id=workspace_id) if callable(get_profile) else None
@@ -1587,13 +1702,15 @@ def run_fast_indexing(
                     f"🕸️  Axis adjacency: materialized {stats['axis_adjacency_materialized']} rows"
                 )
             stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
+            if tombstoned_paths:
+                print(f"🪦 Tombstoned {len(tombstoned_paths)} stale indexed file(s).")
             print("✅ All files up-to-date, nothing to re-index.")
             persist_index_manifest(
                 stats=stats,
                 db=db,
                 workspace_id=workspace_id,
                 project_path=project_path,
-                outcome="noop_unchanged",
+                outcome="noop_unchanged" if not tombstoned_paths else "tombstone_noop",
             )
             return stats
         print(f"🔄 {len(changed_files)}/{len(files)} files changed")
@@ -1699,6 +1816,10 @@ def run_fast_indexing(
         # proxy nodes into the seed set; the closure recompute then covers them and
         # their PROXY_OF / via_proxy neighbors.
         degree_seeds |= proxy_uids
+
+        t_stage = time.perf_counter()
+        _clear_derived_edges_for_diffs(diffs, db, workspace_id, reporter)
+        stats["timings_sec"]["clear_derived_edges"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.655: READS_ATTR + WRITES_ATTR edges. Same syntactic-fact
         # pattern as decorators / type references — runs after _apply_graph

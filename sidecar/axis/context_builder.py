@@ -119,8 +119,13 @@ def _fetch_symbol_payloads(
     table = sym_table_fn(workspace_id) if callable(sym_table_fn) else lance._sym_table  # noqa: SLF001
     columns = ["uid", "code", "workspace_id"]
     try:
-        if "qualified_name" in set(table.schema.names):
+        schema_names = set(table.schema.names)
+        if "qualified_name" in schema_names:
             columns.append("qualified_name")
+        if "name" in schema_names:
+            columns.append("name")
+        if "file_path" in schema_names:
+            columns.append("file_path")
     except Exception:
         pass
 
@@ -167,6 +172,8 @@ def _fetch_symbol_payloads(
                 out[uid] = {
                     "code": r.get("code"),
                     "qualified_name": r.get("qualified_name") or "",
+                    "name": r.get("name") or "",
+                    "file_path": r.get("file_path") or "",
                 }
         return out
 
@@ -174,10 +181,24 @@ def _fetch_symbol_payloads(
         qualified_names = arrow["qualified_name"].to_pylist()
     except Exception:
         qualified_names = [""] * len(row_uids)
+    try:
+        names = arrow["name"].to_pylist()
+    except Exception:
+        names = [""] * len(row_uids)
+    try:
+        file_paths = arrow["file_path"].to_pylist()
+    except Exception:
+        file_paths = [""] * len(row_uids)
 
     out: dict[str, dict[str, str | None]] = {}
-    for uid_raw, code, row_workspace_id, qualified_name in zip(
-        row_uids, codes, workspace_ids, qualified_names, strict=False
+    for uid_raw, code, row_workspace_id, qualified_name, name, file_path in zip(
+        row_uids,
+        codes,
+        workspace_ids,
+        qualified_names,
+        names,
+        file_paths,
+        strict=False,
     ):
         if row_workspace_id != workspace_id:
             continue
@@ -186,6 +207,8 @@ def _fetch_symbol_payloads(
             out[uid] = {
                 "code": code,
                 "qualified_name": str(qualified_name or ""),
+                "name": str(name or ""),
+                "file_path": str(file_path or ""),
             }
     return out
 
@@ -1350,6 +1373,8 @@ def build_context_for_candidates(
     file_soft_cap_share: float = 0.25,
     signature_only_initial: bool = False,
     utility_score_fn: Callable[[RoleCandidate], float] | None = None,
+    overlay: Any | None = None,
+    user_id: str = "anonymous",
 ) -> list[ContextBundle]:
     """Expand each candidate into a ``ContextBundle`` of related code.
 
@@ -1445,6 +1470,18 @@ def build_context_for_candidates(
             uids_to_fetch.add(h.uid)
 
     payload_by_uid = _fetch_symbol_payloads(lance, workspace_id, uids_to_fetch)
+    if overlay is not None:
+        from sidecar.axis.overlay_context import (
+            apply_dirty_overlay_to_bundles,
+            merge_saved_overlay_payloads,
+        )
+
+        payload_by_uid = merge_saved_overlay_payloads(
+            payload_by_uid,
+            overlay=overlay,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
 
     def _code(uid: str) -> str | None:
         return payload_by_uid.get(uid, {}).get("code")
@@ -1484,6 +1521,16 @@ def build_context_for_candidates(
                 related=related,
                 utility_score=_utility_score(cand),
             )
+        )
+
+    if overlay is not None:
+        from sidecar.axis.overlay_context import apply_dirty_overlay_to_bundles
+
+        bundles = apply_dirty_overlay_to_bundles(
+            bundles,
+            overlay=overlay,
+            workspace_id=workspace_id,
+            user_id=user_id,
         )
 
     return _apply_render_and_budget(

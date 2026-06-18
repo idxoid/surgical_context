@@ -124,3 +124,18 @@ class MyClass:
         overlay.clear("test.py", workspace_id=ws, user_id="alice")
         assert not overlay.has("test.py", workspace_id=ws, user_id="alice")
         assert overlay.has("test.py", workspace_id=ws, user_id="bob")
+
+    def test_dirty_defaults_true(self, overlay):
+        overlay.update("test.py", "draft\n")
+        assert overlay.is_dirty("test.py")
+
+    def test_saved_overlay_is_not_dirty(self, overlay):
+        overlay.update("test.py", "saved\n", dirty=False)
+        assert overlay.has("test.py")
+        assert not overlay.is_dirty("test.py")
+
+    def test_update_can_flip_dirty_state(self, overlay):
+        overlay.update("test.py", "v1\n", dirty=True)
+        overlay.update("test.py", "v2\n", dirty=False)
+        assert not overlay.is_dirty("test.py")
+        assert overlay.read_lines("test.py", 1, 1) == "v2\n"

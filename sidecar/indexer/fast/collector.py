@@ -101,4 +101,6 @@ def collect_files(project_path: str) -> list[str]:
                     continue
             files.append(full)
 
-    return files
+    from sidecar.indexer.git_committed import filter_indexable_paths
+
+    return filter_indexable_paths(files, project_root)

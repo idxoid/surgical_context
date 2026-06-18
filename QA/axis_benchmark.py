@@ -678,7 +678,7 @@ def main() -> None:
     )
     parser.add_argument("--out", default="/tmp/axis_benchmark", type=Path)
     parser.add_argument("--top-roles", type=int, default=3)
-    parser.add_argument("--per-role-limit", type=int, default=8)
+    parser.add_argument("--per-role-limit", type=int, default=6)
     parser.add_argument("--intent-threshold", type=float, default=0.20)
     parser.add_argument("--context-per-seed", type=int, default=6)
     parser.add_argument(

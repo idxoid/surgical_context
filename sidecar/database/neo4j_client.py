@@ -1888,7 +1888,21 @@ class Neo4jClient:
             DELETE r
             """,
             workspace_id=workspace_id,
-        )
+            )
+
+    def delete_hooks_for_file(self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID):
+        """Clear EVENT / HOOK edges whose site symbol lives in ``file_path``."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(site:Symbol)
+                OPTIONAL MATCH (site)-[r:EVENT_SUB|EVENT_PUB|HOOK_CONFIG|HOOK_EXEC]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
 
     def link_attr_accesses(
         self,

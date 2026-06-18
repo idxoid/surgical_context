@@ -132,3 +132,76 @@ def prune_graph_paths_outside_root(
             delete_file(path, workspace_id=workspace_id)
             removed.append(path)
     return removed
+
+
+def _normalize_path(path: str) -> str:
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        return path
+
+
+def tombstone_indexed_file(
+    db: Any,
+    lance: Any,
+    file_path: str,
+    *,
+    workspace_id: str,
+) -> list[str] | None:
+    """Remove one indexed file from Neo4j + Lance.
+
+    Returns removed symbol uids, or ``None`` when the path was not indexed.
+    """
+    delete_file = getattr(db, "delete_symbols_for_file", None)
+    if not callable(delete_file):
+        return []
+    list_paths = getattr(db, "list_file_paths", None)
+    indexed_path = file_path
+    if callable(list_paths):
+        known = list_paths(workspace_id=workspace_id)
+        normalized = _normalize_path(file_path)
+        matches = [path for path in known if _normalize_path(path) == normalized]
+        if not matches:
+            return None
+        indexed_path = matches[0]
+    get_idx = getattr(db, "get_symbol_index_for_file", None)
+    uids: list[str] = []
+    if callable(get_idx):
+        uids = list(get_idx(indexed_path, workspace_id=workspace_id))
+    delete_file(indexed_path, workspace_id=workspace_id)
+    delete_embeddings = getattr(lance, "delete_symbol_embeddings", None)
+    if uids and callable(delete_embeddings):
+        try:
+            delete_embeddings(uids, workspace_id=workspace_id)
+        except TypeError:
+            delete_embeddings(uids)
+    return uids
+
+
+def tombstone_stale_indexed_files(
+    db: Any,
+    lance: Any,
+    *,
+    workspace_id: str,
+    project_root: Path,
+    active_paths: list[str],
+) -> tuple[list[str], list[str]]:
+    """Drop indexed files under *project_root* that are absent from *active_paths*."""
+    list_paths = getattr(db, "list_file_paths", None)
+    if not callable(list_paths):
+        return [], []
+    root = project_root.resolve()
+    active = {_normalize_path(path) for path in active_paths}
+    removed_paths: list[str] = []
+    removed_uids: list[str] = []
+    for path in list_paths(workspace_id=workspace_id):
+        if resolve_graph_file_path(path, workspace_root=root) is None:
+            continue
+        if _normalize_path(path) in active:
+            continue
+        uids = tombstone_indexed_file(db, lance, path, workspace_id=workspace_id)
+        if uids is None:
+            continue
+        removed_paths.append(path)
+        removed_uids.extend(uids)
+    return removed_paths, removed_uids
