@@ -149,7 +149,7 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
 - ✅ **Pruned details**: skipped candidates with reason codes
 - ✅ **Ranker metadata** in benchmark `ready_context` snapshots
-- ✅ **Retrieval trace (v1)**: `metadata.retrieval_trace` on `PromptContext.to_dict()` — unified vs graph-only strategy, mechanism, roles, budget summary, `schema_version` (`context_engine.retrieval.trace`); target architecture in [retrieval_kernel.md](retrieval_kernel.md)
+- ✅ **Retrieval trace (v1)**: `metadata.retrieval_trace` on `PromptContext.to_dict()` — strategy, mechanism, roles, budget summary, `schema_version` (`context_engine.retrieval.trace`); see [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)
 - ✅ **Provider protocols (v1)**: `VectorSearchProvider`, `WorkspaceMetaProvider`, `GraphDriverProvider` in `context_engine.retrieval.protocols` + fakes for tests; production `VectorSearcher` satisfies `VectorSearchProvider` (`tests/unit/test_retrieval_protocols.py`)
 - 🚧 Remaining work: richer UI surfacing and consistency checks across extension surfaces
 

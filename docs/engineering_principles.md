@@ -60,7 +60,8 @@ preset per-framework tables.
 
 ## P7 — Validate empirically, never a-priori
 New role/ranking logic is proven against the **indexed benchmark** (e.g.
-`file_recall` / QA target-symbol checks via `QA/prototype_role_cascade.py`), and
+`file_recall` / QA target-symbol checks via `QA/axis_benchmark.py` and
+`tests/integration/test_axis_benchmark_gate.py`), and
 the result — including regressions — is reported honestly.
 
 ## P8 — Don't special-case for benchmark coverage

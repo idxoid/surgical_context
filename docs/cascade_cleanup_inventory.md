@@ -31,7 +31,7 @@ Measured 2026-06-11 by scanning `from context_engine.context.<mod>` across
 > cascade is the live fallback. Class-A deletion stays gated on flipping axis
 > to default (Phase 3). Current production importer set:
 > `prompt_provider→types`(C), `cache/layered→types.Subgraph`(C),
-> `indexer/fast/pipeline→mechanism_registry,framework_hints`(B),
+> `indexer/fast/pipeline→mechanism_registry`(B),
 > `indexer/role_clustering→mechanism_registry,ranker.signal_constants`(B),
 > `main.py→arbitrator,doc_resolver,intent_classifier,overlay,
 > ranker.candidate_pool,types`(A+C). The A/B/C tables below are unchanged.
@@ -83,7 +83,6 @@ delete.
 
 | module | importer | destination |
 |---|---|---|
-| framework_hints | `indexer/fast/pipeline.py` (`FrameworkHintsIndexer`) | `context_engine/indexer/framework_hints.py` |
 | ranker/signal_constants | `indexer/role_clustering.py` (`NOISE_PATH_PATTERNS`) | `context_engine/indexer/signal_constants.py` |
 
 ## Class C — KEEP / relocate (shared runtime infra)

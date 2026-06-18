@@ -179,18 +179,12 @@ Feature vocabulary and per-role discriminators referenced below live in
 
 ---
 
-## Empirical validation (`QA/prototype_role_cascade.py`)
+## Empirical validation
 
-Inspect Pass-1 on an indexed workspace: L1 distribution, presence-gated
-`present_roles`, QA target symbols (`QA_EXPECTED`), multi-label samples. Uses
-the same code path as the indexer (`extract_symbol_rows` → `assign_role_taxonomy`).
-
-### Historical note (pre-cascade baseline, removed)
-Early prototype runs compared the cascade against a k-means + archetype catalog.
-The presence gate cut ~12 phantom roles (catalog entries with no structural support
-in the repo). That comparison code was removed; the design decision stands on
-structural grounds (C1/C2/D1–D5 below), validated by re-running the QA script
-after each engine change.
+- **Axis retrieval:** `python -m QA.axis_benchmark --pack QA/fixtures/questions_python.yaml --out /tmp/axis_benchmark`
+- **P7 CI gate:** `tests/integration/test_axis_benchmark_gate.py` (this repo, `file_recall` baseline)
+- **Pass-1 cascade:** `tests/unit/test_role_clustering.py` on synthetic graphs
+- **L4 role coverage:** `python -m QA.axis_role_report --workspace <workspace_id>`
 
 ### Per-symbol accuracy (ongoing QA targets)
 | symbol | cascade result | qa_missing | cause |
@@ -302,50 +296,6 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   matches — that is the honest baseline). Class 2 stays as documented engine gaps (P5);
   class 3 to be excluded from role accounting. Re-measure before any further engine work.
 
-### F15 — the question pack (gold) is materially stale/misaligned 🔴
-- **what:** auditing `tests/fixtures/real_repo_question_pack.yaml` against the indexed
-  repos, **42/65 questions** have an `expected_symbol` or `expected_file` that does not
-  exist in the indexed graph. Source-grep confirms three distinct root causes:
-  1. **Version-stale gold** — the symbol was removed/renamed in the checked-out
-     version: flask `_request_ctx_stack` (0 source files; removed Flask ≥2.3), vue
-     `Watcher` (0 files; Vue 2 concept, Vue 3 uses `ReactiveEffect`).
-  2. **Wrong name/case** — sqlalchemy `SessionMaker` (0) vs `sessionmaker` (3 files).
-  3. **Indexing gap, not pack** — rtk `combineReducers` exists in 3 source files but
-     was **not extracted** as a Symbol (TS/JS extraction gap).
-  Plus: 5 `required_roles` use vocab absent from `ROLE_ALIASES`
-  (`migration_loader`, `deferred_registration`, `import_system`,
-  `cleanup_handler`); the 7 `surgical_context` self-questions failed workspace
-  resolution (self-index issue, separate). Some file-only "misses" are partly the
-  audit's stricter matcher vs `_expected_file_matches`.
-- **why:** `recall_at_5` / `file_recall` / `role_recall` are partly measured against a
-  gold that no longer matches the code. Optimizing the engine to it is the P1/P7 trap
-  (chasing stale answers). The sweep would produce a misleading baseline.
-- **decision:** **refresh the pack against the indexed repo versions before sweeping**
-  — fix version-stale + wrong-case symbols, drop/realias unmapped role vocab, fix the
-  self-repo workspace. Track the TS/JS extraction gaps (combineReducers, …) separately
-  as **engine** issues, not pack fixes. Hold the full sweep until the gold is validated.
-- **done (grounded rewrite, all repos except surgical_context):** fixed the genuinely
-  stale/fork-specific symbols — fastapi (`routes`→`get_openapi_path`,
-  `response_model`→`_serialize_data`), flask (custom-fork proxies:
-  `RequestContext`→`from_environ`, `deferred_functions`→`BlueprintSetupState`,
-  `LocalProxy`→`RequestProxy`, `_request_ctx_stack`→`_get_current_object`,
-  `url_map`→`create_url_adapter`, `Map`→`dispatch_request`), vue
-  (`Watcher`→`doWatch`, Vue3), sqlalchemy (`SessionMaker`→`sessionmaker`), nestjs
-  (file paths), celery (`Publisher`→`_create_task_sender`), click
-  (`_make_command`→`get_command`).
-- **dominant residual = INDEXER GAPS, not stale pack:** after the rewrite, **14/15**
-  remaining symbol misses are symbols that **exist in source but were not extracted**
-  → an engine (symbol-extraction) debt, not a pack fix. Three classes:
-  (a) **TS/JS extraction** — rtk `getDefaultMiddleware`/`combineReducers`, express
-  `router`/`next`/`mount`, vue `patch` (const/arrow/middleware exports the TS adapter
-  misses); (b) **Python class dunders / instance attributes** — pydantic
-  `__pydantic_validator__`/`__pydantic_serializer__`, django `_view_middleware`, celery
-  `on_task_request`; (c) **module / external-import names** — pydantic `v1` (submodule),
-  celery `Producer` (kombu). The one non-gap residual, dathund `require_lineage_path`,
-  is flagged for owner confirmation (its own question text embeds the renamed symbol).
-  **So the pack was mostly correct; the real debt these questions expose is
-  symbol-extraction coverage.**
-
 ### F16 — intent→roles table (`_SECONDARY_INTENT_ROLES`) names unreachable roles 🟡
 - **what:** `IntentClassifier._SECONDARY_INTENT_ROLES` (`context_engine/context/intent_classifier.py`)
   maps a query intent to supplemental role-types the ranker should prioritize. It is a
@@ -362,9 +312,10 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
   unreachable entries are dead weight.
 
 ### F17 — symbol-extraction coverage for attributes fails alone (needs a connecting edge) 🔴
-- **what:** the dominant "indexer-gap" residual (F15) was tested by extracting Python
-  class-body attributes as symbols (`module.Class.attr`, all annotated+plain). It
-  **failed empirical validation** and was reverted.
+- **what:** attribute-level answer symbols (e.g. pydantic `__pydantic_validator__`,
+  django `_view_middleware`) were tested by extracting Python class-body attributes as
+  symbols (`module.Class.attr`, all annotated+plain). It **failed empirical validation**
+  and was reverted.
 - **how (measured):** fastapi reindex showed the cascade stayed stable (attrs are
   structurally disconnected → the `structurally_connected` filter drops them from
   Pass-1; `orphan` only 23→27 despite attrs = 20% of symbols; targets unchanged, Param
@@ -543,7 +494,7 @@ fed into the cascade as features. Engine fixes, not threshold tuning (P4).
 **Critical path:** honest dataflow residuals (`request_router` dynamic dispatch,
 `self.<attr>`-only construction, field/iteration-local binding). Phase A added
 return-shape AST markers as a foundation, but not value-flow. Re-validate with
-`QA/prototype_role_cascade.py` after engine changes (fastapi only).
+`python -m QA.axis_benchmark` and `tests/unit/test_role_clustering.py` after engine changes.
 
 ### F22 — schema_builder works for builder *functions*, not for builder *classes* 🟡
 - **pydantic q04 (`model_json_schema`)**: misses `schema_builder`.

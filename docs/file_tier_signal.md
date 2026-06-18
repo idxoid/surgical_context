@@ -73,8 +73,7 @@ are the new lever. Weights echo the legacy `NOISE_FACTOR`
   out of the deleted cascade into the indexer, 2026-06-15) → its path patterns
   become the `example`/`doc` derivation.
   This *closes the class-B migration item* — the indexer is its home.
-- Scattered checks (`indexer/anchor.py` `/examples/`·`/tutorial/`,
-  `ts_http_route_hints` `test/QA`) → one derive.
+- Scattered checks (`indexer/anchor.py` `/examples/`·`/tutorial/`) → one derive.
 
 ## Implementation steps
 

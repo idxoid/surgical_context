@@ -54,7 +54,6 @@ from context_engine.indexer.fast.collector import collect_files
 from context_engine.indexer.fast.extractor import ExtractedFile, FastExtractor, hash_file
 from context_engine.indexer.fast.schema import ensure_fast_indexes
 from context_engine.indexer.file_tier import classify_file_tier, is_pure_reexport_source
-from context_engine.indexer.framework_hints import FrameworkHintsIndexer
 from context_engine.indexer.job_log import IndexJobLog
 from context_engine.indexer.repository_profile import (
     RepositoryProfileInputs,
@@ -454,9 +453,8 @@ def _degree_phase(
 ) -> int:
     """Recompute materialized Symbol degree over the affected closure.
 
-    Runs after every edge-creating phase (calls, imports, inheritance, MRO API,
-    SEMANTIC_HINT, TS HTTP route hints) so all degree-counted edge types are
-    present before counting.
+    Runs after every edge-creating phase (calls, imports, inheritance, MRO API)
+    so all degree-counted edge types are present before counting.
     """
     recompute = getattr(db, "recompute_degree_for_closure", None)
     reporter.stage_start("degree", total=1)
@@ -1001,36 +999,6 @@ def _property_api_phase(
     return linked, touched
 
 
-def _framework_hints_phase(
-    diffs: list[FileDiff],
-    db: Neo4jClient,
-    workspace_id: str,
-    reporter: ProgressReporter,
-) -> int:
-    """Apply semantic hint rules to create SEMANTIC_HINT edges."""
-    reporter.stage_start("framework_hints", total=len(diffs))
-    indexer = FrameworkHintsIndexer(db)
-    indexer.apply_rules(diffs, workspace_id)
-    reporter.stage_end("framework_hints")
-    return len(diffs)
-
-
-def _ts_http_route_hints_phase(
-    diffs: list[FileDiff],
-    db: Neo4jClient,
-    workspace_id: str,
-    project_path: str,
-    reporter: ProgressReporter,
-) -> int:
-    """Link TS HTTP client surfaces to Python FastAPI handlers."""
-    from context_engine.indexer.ts_http_route_hints import TsHttpRouteHintsIndexer
-
-    reporter.stage_start("ts_http_route_hints", total=len(diffs))
-    created = TsHttpRouteHintsIndexer(db, project_path).apply(diffs, workspace_id)
-    reporter.stage_end("ts_http_route_hints")
-    return created
-
-
 def _embed_phase(
     diffs: list[FileDiff],
     lance: LanceDBClient,
@@ -1546,9 +1514,7 @@ def run_fast_indexing(
         "lancedb_docs_table": profile.docs_table,
         "lancedb_symbols_table": profile.symbols_table,
         "skip_affects": skip_affects,
-        # `performed` / `skipped` mirror the shape that QA/qa_benchmark.py
-        # expects from _empty_indexing_summary(). A real run always
-        # performs indexing, so performed=True / skipped=False.
+        # `performed` / `skipped` mirror the shape indexing summary consumers expect.
         "performed": True,
         "skipped": False,
         "collected": 0,
@@ -1557,13 +1523,10 @@ def run_fast_indexing(
         "parsed": 0,
         "symbols_encoded": 0,
         "symbols_removed": 0,
-        "framework_hints_applied": 0,
         "affects_rebuilt": 0,
         "axis_adjacency_materialized": 0,
-        # Doc indexing is done by the caller (qa_benchmark calls
-        # context_engine.indexer.docs.index_docs separately). We pre-seed these
-        # keys so consumers can always read them without KeyError; the
-        # benchmark overwrites them after its doc pass completes.
+        # Doc indexing is done by the caller (`index_docs` separately). Pre-seed keys
+        # so consumers can always read them without KeyError.
         "docs_files_indexed": 0,
         "docs_chunks_indexed": 0,
         "docs_timings_sec": {},
@@ -1781,21 +1744,6 @@ def run_fast_indexing(
         stats["property_api_edges"] = property_api_count
         stats["timings_sec"]["property_api"] = round(time.perf_counter() - t_stage, 3)
         degree_seeds |= property_api_uids
-
-        # Stage 4.5: framework hints
-        t_stage = time.perf_counter()
-        stats["framework_hints_applied"] = _framework_hints_phase(diffs, db, workspace_id, reporter)
-        stats["timings_sec"]["framework_hints"] = round(time.perf_counter() - t_stage, 3)
-
-        t_stage = time.perf_counter()
-        stats["ts_http_route_hints_applied"] = _ts_http_route_hints_phase(
-            diffs,
-            db,
-            workspace_id,
-            project_path,
-            reporter,
-        )
-        stats["timings_sec"]["ts_http_route_hints"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.6: lazy-proxy resolution. Create ProxyBinding nodes + PROXY_OF
         # edges, then forward proxy-var calls (current_app.x) through to the real

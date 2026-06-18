@@ -89,25 +89,10 @@ Active work for the local release. Completed stabilization and phase history are
 - [~] Impact analysis remains **shallow by design** until proven otherwise: `AFFECTS` is bounded reverse reachability, not full blast-radius across frameworks, codegen, templates, runtime dispatch, and tests. **Current:** VS Code Impact tab shows affected symbols/files, impact counts/depth, and opens related files; **remaining:** explicit shallow-scope disclaimer and broader validation.
 
 ### P3 — Real-repo validation
-- [x] QA harness on [real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml) (75 questions with click/celery satellite includes, 13 repos, 3 intents).
-- [x] `core12` subset, then full pack expansion.
-- [x] Automated harness sweep: **65/65 pass** per repo with `--no-index` (May 2026; pre-indexed graph/vector assumed).
-- [x] LLM Judgment: Path1 (Surgical Context) vs Path2 (first-time repo read) on the full pack — [benchmark_path1_vs_path2.md](benchmark_path1_vs_path2.md) (Sonnet 4.6 max effort).
-- [x] Use benchmark results to tune ranking rather than tuning by intuition.
-- [ ] Record token deltas, latency, and fallback behavior in `QA/benchmark_runs.jsonl` as a repeatable release gate (harness supports it; release checklist not formalized).
-
-**Benchmark snapshot (May 2026)**
-
-| Repo / lane | Harness (`qa_benchmark`) | Notes |
-|---|---|---|
-| fastapi, pydantic, redux_toolkit, sqlalchemy | Green control baselines | Keep stable while tuning tails |
-| surgical_context | 7/7 | TS `object_api` + `ts_http_route_hints`; topic recovery for pipeline stages |
-| dathund | 8/8 | Generic trace recovery (identity, clock/window) |
-| flask, django | Mostly pass | Role/file-coverage tails on trace/explain |
-| express, vue, nestjs | Mixed | JS export-shape / target-resolution before ranker weights |
-| LLM judgment (65 q) | P1 context better 69%; answers equal 92% | Impact/trace questions favor P1; see benchmark doc |
-
-`UnifiedRanker` decomposition is shipped under `context_engine/context/ranker/*` (`TargetSelector`, `GraphCandidateSource`, `VectorCandidateSource`, `RoleBackfill`, `BudgetSelector`, `SubgraphAssembler`); `UnifiedRanker` remains the compatibility facade.
+- [x] Question packs under `QA/fixtures/` (`questions_python.yaml`, `questions_non_python.yaml`, `new_questions_python.yaml`).
+- [x] Axis benchmark harness: `python -m QA.axis_benchmark` (see [spec_eval_harness.md](spec_eval_harness.md)).
+- [x] P7 CI gate: `tests/integration/test_axis_benchmark_gate.py` on this repo (`file_recall` baseline).
+- [ ] Multi-repo axis sweep in CI (currently manual via `QA/run_full_benchmark_sweep.py`).
 
 ### P4 — Provider boundaries (defaults first)
 - [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
@@ -143,12 +128,10 @@ Ordered execution lanes — do not regress green control repos while working tai
 | 6 | **Impact (deferred)** | Separate iteration after non-impact lanes stabilize; document shallow `AFFECTS` in UI. |
 
 **Validation rhythm**
-- After retrieval changes: `core12` on FastAPI, Pydantic, RTK → spot-check full pack when JS/TS routing changes.
-- Log runs to `QA/benchmark_runs.jsonl`; review with `QA/benchmark_runs.py`.
-- Debug misses from `ready_context` before changing weights.
-- Pre-registered role-label pass before treating `role_recall=1.00` as full mechanism coverage.
+- After axis engine changes: run P7 gate (`pytest tests/integration/ --run-integration`) and spot-check `python -m QA.axis_benchmark` on control repos.
+- Full sweep: `python QA/run_full_benchmark_sweep.py` (manual; requires pre-indexed workspaces).
 
-**Docs:** product thesis + safety specs current (maintenance only). Index: [benchmark_all_repos_context_comparison.md](benchmark_all_repos_context_comparison.md). API/sandbox: [spec_sidecar_api.md](spec_sidecar_api.md). LLM judgment: [benchmark_path1_vs_path2.md](benchmark_path1_vs_path2.md).
+**Docs:** product thesis + safety specs current (maintenance only). Eval: [spec_eval_harness.md](spec_eval_harness.md). API/sandbox: [spec_sidecar_api.md](spec_sidecar_api.md).
 
 ---
 
@@ -248,11 +231,10 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 > **Specs:** [spec_eval_harness.md](spec_eval_harness.md) (fixture design, metric set, CI contract), [review_findings_2026-04-17.md](review_findings_2026-04-17.md) (sequencing and rationale).
 
 ### Evaluation Harness ✅ COMPLETE
-- [x] `tests/` directory with pytest for parser, arbitrator, overlay, indexer
-- [x] Golden fixture repo under `tests/fixtures/sample_project/` (8 files, ~30 symbols, all topologies covered)
-- [x] Retrieval benchmark: 10 curated (question → expected_symbols) pairs in `questions.yaml`
-- [x] `QA/qa_benchmark.py` reframed as reproducible metric runner (emits JSON: recall@k, precision@k, tokens, latency)
-- [x] CI config (GitHub Actions) running tests + benchmark on every PR (deferred: needs Neo4j services)
+- [x] `tests/` directory with pytest for parser, indexer, axis retrieval, overlay
+- [x] Question packs under `QA/fixtures/`
+- [x] `QA/axis_benchmark.py` — axis `file_recall` benchmark (replaces deleted `qa_benchmark.py`)
+- [x] CI config (GitHub Actions): lint, mypy, unit tests, P7 axis gate with Neo4j
 
 ### Observability
 - [x] Structured logging across pipeline stages (Phase 5 prerequisite)

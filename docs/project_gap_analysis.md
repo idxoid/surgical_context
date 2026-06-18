@@ -21,7 +21,7 @@ The active gap list now lives in [road_map.md](road_map.md), under **Canonical B
 
 ## Supporting Specs
 
-- [retrieval_kernel.md](retrieval_kernel.md) - retrieval kernel target architecture, trace schema, providers, manifests.
+- [axis_terminology.md](axis_terminology.md) - axis retrieval vocabulary, trace schema, traversal layers.
 - [spec_uid_stability.md](spec_uid_stability.md) - stable symbol identity.
 - [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md) - scoped call resolver.
 - [spec_branch_isolation.md](spec_branch_isolation.md) - workspace and branch boundaries.

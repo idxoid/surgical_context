@@ -240,9 +240,8 @@ The project should prove the core thesis with a small benchmark instead of more 
 
 This validation path is now in progress, not hypothetical:
 
-- the benchmark harness runs against the committed real-repo pack in `tests/fixtures/real_repo_question_pack.yaml`
-- FastAPI `core12` has already been used to tune duplicate-target selection, role backfill, and prompt-contract observability
-- Pydantic `core12` is now evaluated on the same canonical role scale, which exposed a narrower remaining gap: reliable recovery of validator/serializer handles rather than a generic ranking failure
+- the benchmark harness runs against committed packs in `QA/fixtures/` (see [spec_eval_harness.md](spec_eval_harness.md))
+- axis `file_recall` is the primary automated metric; legacy cascade metrics are not comparable
 
 ### Benchmark Design
 
@@ -263,7 +262,7 @@ Compare three modes:
    - larger semantic / file stuffing without careful structure
 
 Starter seed pack for this benchmark:
-- [../tests/fixtures/real_repo_question_pack.yaml](../tests/fixtures/real_repo_question_pack.yaml)
+- [../QA/fixtures/questions_python.yaml](../QA/fixtures/questions_python.yaml)
 
 ### Measurements
 

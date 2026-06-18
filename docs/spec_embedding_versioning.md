@@ -171,7 +171,7 @@ class LanceDBClient:
         ...
 ```
 
-Callers in `context_engine/main.py`, `QA/qa_benchmark.py`, and tests that construct `LanceDBClient()` continue to work unchanged (default model unchanged). Only callers explicitly switching models need to update.
+Callers in `context_engine/main.py`, `QA/axis_benchmark.py`, and tests that construct `LanceDBClient()` continue to work unchanged (default model unchanged). Only callers explicitly switching models need to update.
 
 ## 6. Tests
 
@@ -190,7 +190,7 @@ Callers in `context_engine/main.py`, `QA/qa_benchmark.py`, and tests that constr
 ## 7. Success Criteria
 
 1. Unit tests green.
-2. `qa_benchmark.py --no-index` does not raise `EmbeddingModelMismatch` (existing index is consistent).
+2. `python -m QA.axis_benchmark --pack QA/fixtures/questions_python.yaml --repo <repo>` does not raise `EmbeddingModelMismatch` (existing index is consistent).
 3. Manually running with a different `EMBEDDING_MODEL` env var and a stale index raises a clear error with re-index instructions.
 
 ## 8. Phase Sequencing

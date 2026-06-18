@@ -81,7 +81,6 @@ def _stats_fingerprint(stats: dict[str, Any]) -> str:
         "symbols_encoded": stats.get("symbols_encoded"),
         "symbols_removed": stats.get("symbols_removed"),
         "affects_rebuilt": stats.get("affects_rebuilt"),
-        "framework_hints_applied": stats.get("framework_hints_applied"),
     }
     raw = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
@@ -178,7 +177,6 @@ def build_index_manifest(
         "symbols_encoded": stats.get("symbols_encoded"),
         "symbols_removed": stats.get("symbols_removed"),
         "affects_rebuilt": stats.get("affects_rebuilt"),
-        "framework_hints_applied": stats.get("framework_hints_applied"),
         "docs_files_indexed": stats.get("docs_files_indexed"),
         "docs_chunks_indexed": stats.get("docs_chunks_indexed"),
         "role_taxonomy": taxonomy or None,

@@ -209,7 +209,7 @@ attributes — F24, HAS_API method ranking — F23, and binding/data-shape evide
 beyond Phase A return-shape flags). Honest data-semantics gaps left unscored or
 partial: `serializer_handle` / `validator_handle` (F21), builder-class
 `schema_builder` and parts of `binding_surface` (F22). Re-validate with
-`QA/prototype_role_cascade.py` after engine changes.
+Re-validate with `python -m QA.axis_benchmark` and `tests/unit/test_role_clustering.py` after engine changes.
 
 ## Related
 - [role_catalog.md](role_catalog.md) — role vocabulary and discriminators.

@@ -6,8 +6,9 @@ design draft for benchmark questions as structural mechanism signatures.
 Scope:
 
 - Source packs:
-  - `tests/fixtures/real_repo_question_pack.yaml`
-  - `tests/fixtures/publick_repo_question_pack_2.yaml`
+  - `QA/fixtures/questions_python.yaml`
+  - `QA/fixtures/questions_non_python.yaml`
+  - `QA/fixtures/new_questions_python.yaml`
 - Excluded repos: `dathund`, `surgical_context`.
 - Included questions: 116 public-repo questions.
 

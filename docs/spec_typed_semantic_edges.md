@@ -38,7 +38,7 @@ Typed semantic edges give BFS, AFFECTS, and UnifiedRanker a confidence signal be
 | `IMPLEMENTS` | Class implements interface/abstract contract | Traversal/scoring support; not broadly emitted |
 | `OVERRIDES` | Method overrides parent method | Traversal/scoring support; not broadly emitted |
 | `REFERENCES` | Weak symbol reference/type-only mention | Schema/scoring support; not broadly emitted |
-| `SEMANTIC_HINT` | Framework/doc-derived semantic relationship | Consumed by UnifiedRanker; produced by framework hint paths |
+| `SEMANTIC_HINT` | Legacy semantic relationship | May exist in older graphs; **no longer produced** (framework/ts_http hints removed 2026-06); not in axis `EdgeProfile` |
 | `IMPORTS` | File-to-file imports | Retained at file level |
 
 ## 3. Detection Logic
@@ -82,17 +82,9 @@ TypeScript support is intentionally simpler than Python scoped/imported resoluti
 
 **Exported object APIs.** `export const SidecarClient = { ask(...) { ... } }` is indexed as one `object_api` symbol (`signature_status: object_api_export`). Nested methods are not separate top-level symbols. Call extraction attributes HTTP helper calls to the object surface. See `tests/unit/test_typescript_adapter.py`.
 
-### 3.3 Cross-language HTTP hints
+### 3.3 Cross-language HTTP (scoped out)
 
-Implemented in `context_engine/indexer/ts_http_route_hints.py` (fast pipeline stage after `framework_hints`).
-
-When a monorepo contains both TypeScript client code and Python FastAPI handlers:
-
-1. Python scan extracts `@app.<method>("/path")` decorators and handler function names (test/QA files skipped; `main.py` preferred on duplicate paths).
-2. TypeScript scan finds `export const` object APIs and HTTP path literals in `post/get/fetch(...)` calls.
-3. Matching paths create `SEMANTIC_HINT` edges from the TS `object_api` symbol to the Python handler symbol.
-
-These edges are consumed by `UnifiedRanker` with the same strong prior as other `SEMANTIC_HINT` relationships. They are generic path matching, not repo-name dispatch.
+Cross-language TS client → Python handler linking was previously attempted via regex-based `SEMANTIC_HINT` edges (`framework_hints`, `ts_http_route_hints`). **Removed 2026-06** — not consumed by axis retrieval, not grounded in AST. Revisit when TypeScript indexing emits structural route/call edges into the shared graph.
 
 ### 3.4 Inheritance and References
 

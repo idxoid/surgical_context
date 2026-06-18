@@ -1,6 +1,6 @@
 """Structured retrieval decisions for observability and benchmarks.
 
-Schema version must bump when keys or semantics change; see docs/retrieval_kernel.md.
+Schema version must bump when keys or semantics change; see `context_engine/retrieval/trace.py` and [spec_prompt_contract_observability.md](../docs/spec_prompt_contract_observability.md).
 """
 
 from __future__ import annotations

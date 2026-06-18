@@ -445,7 +445,7 @@ The TypeScript adapter collapses `export const Foo = { ... }` client objects int
 - nested method symbols inside the object literal are suppressed to reduce graph noise
 - HTTP calls inside the object (`post('/ask')`, `fetch('/health')`) are attributed to the enclosing `object_api` symbol
 
-This enables cross-language trace questions (for example extension `SidecarClient` → sidecar `/ask` handler) when combined with the `ts_http_route_hints` indexer pass.
+Cross-language trace (for example extension `SidecarClient` → sidecar `/ask` handler) is **not** wired today — regex `SEMANTIC_HINT` hints were removed; revisit when TS indexing emits structural route/call edges.
 
 ### Phase 5+
 

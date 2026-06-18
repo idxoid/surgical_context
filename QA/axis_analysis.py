@@ -1166,9 +1166,8 @@ def _default_pack_paths() -> list[Path]:
     base = PROJECT_ROOT / "QA" / "fixtures"
     return [
         base / "questions_python.yaml",
-        base / "click_questions.yaml",
-        base / "celery_questions.yaml",
-        base / "publick_repo_question_pack_2.yaml",
+        base / "questions_non_python.yaml",
+        base / "new_questions_python.yaml",
     ]
 
 

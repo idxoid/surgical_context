@@ -109,7 +109,7 @@ Confidence: **0.8**, `tier = "typed"`. The edge is emitted with **`rel_type = CA
 
 Implemented in [python_adapter.py](../context_engine/parser/adapters/python_adapter.py) — `_build_attr_type_table`, `_local_alias_types`, `_typed_qualified_target`. When the type is unknown, **no edge is fabricated** (precision over recall).
 
-**Why this tier exists:** it removes the architectural reason the ranker needed hardcoded "contract symbol" tables / mechanism-packs to answer mainstream-framework questions — the collaborator chains are now real graph edges. See [mechanism_contract_unification](mechanism_contract_unification.md).
+**Why this tier exists:** it removes the architectural reason the ranker needed hardcoded "contract symbol" tables / mechanism-packs to answer mainstream-framework questions — the collaborator chains are now real graph edges. See [engineering_principles.md](engineering_principles.md) and [axis_terminology.md](axis_terminology.md).
 
 ### 2.6 Tier 5 — CALLS_GUESS
 

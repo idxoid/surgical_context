@@ -234,23 +234,23 @@ Pass-1 structural roles. See `cascade_cleanup_inventory.md`.
 
 `stats["role_taxonomy"]` exposes `method`, `sample_size`, `filtered_sample_size`, and `present_role_count`. `stats["role_catalog"]` exposes `present_roles` count and preloaded mechanism count. Timing is under `stats["timings_sec"]["role_clustering"]`.
 
-**Consumers.** `UnifiedRanker` reads `derived_primary_role` / `derived_supporting_roles_json` per symbol, `present_roles` from the catalog, optional mechanism templates, structural overlap scoring, then repository `strategy_profile` / `generic`. Inspect an indexed workspace: `python QA/prototype_role_cascade.py --repo fastapi`.
+**Consumers.** The axis read path (`context_engine/axis/role_retrieval.py`) reads `axis_contracts_json` and `axis_container_kinds_json` from Lance — not `derived_primary_role` on Neo4j. Pass-1 Neo4j roles remain index-time diagnostics. Inspect L4 role coverage: `python -m QA.axis_role_report --workspace <workspace_id>`.
 
 **Trade-offs.**
 - Predicate thresholds can miss or over-fire on edge cases; fix by adding structural edges/features, not benchmark answer keys (see [engineering_principles.md](engineering_principles.md)).
 - Pass 1 runs on every full project pass, even when changes are small. The "no changed files" branch reuses the existing taxonomy from the Workspace.
 - Some roles remain honestly unmapped until dynamic-dispatch / dataflow gaps are closed (`request_router`, parts of `factory_surface`, and binding/data-shape roles). Phase A return-shape markers are persisted and visible to Pass 1, but they do not yet replace field/iteration/value-flow analysis — see [role_signature_findings.md](role_signature_findings.md).
 
-### Fast pipeline — semantic hint phases
+### Fast pipeline — graph enrichment (proxy + degree)
 
-After per-file symbol/call linking, the fast project indexer (`context_engine/indexer/fast/pipeline.py`) runs graph-enrichment passes before the embedding batch, in this order:
+After per-file symbol/call linking, the fast project indexer (`context_engine/indexer/fast/pipeline.py`) runs graph-enrichment passes before the embedding batch:
 
-1. **`framework_hints`** — applies shared typed rules from `semantic_hints.yaml` via `FrameworkHintsIndexer`; creates `SEMANTIC_HINT` edges for framework patterns already present in the indexed graph.
-2. **`ts_http_route_hints`** — implemented in `context_engine/indexer/ts_http_route_hints.py`. Scans Python FastAPI route decorators (`@app.post("/ask")`, etc.) and TypeScript HTTP client surfaces (`export const SidecarClient = { ... post('/ask') ... }`). Creates `SEMANTIC_HINT` edges from TS `object_api` symbols to Python handler symbols when paths match. Skips test/QA Python files and prefers `main.py` / `context_engine/` entrypoints when duplicate routes exist.
-3. **`proxy` (ProxySurface)** — `_proxy_binding_phase` creates `ProxyBinding` nodes + `PROXY_OF` edges for annotated lazy proxies (`current_app: FlaskProxy = LocalProxy(...)`); `_proxy_call_resolution_phase` forwards calls on those proxy vars through `PROXY_OF` to the real type's method, wiring `CALLS_DYNAMIC {via_proxy}`. See [spec_call_resolution_pipeline.md §5.1](spec_call_resolution_pipeline.md). Runs before degree so forwarded edges are counted.
-4. **`degree` (materialized centrality)** — `_degree_phase` recomputes `Symbol.in_degree` / `Symbol.out_degree` so the ranker reads degree as a node property instead of a `count(DISTINCT)` subquery per query (see below).
+1. **`proxy` (ProxySurface)** — `_proxy_binding_phase` creates `ProxyBinding` nodes + `PROXY_OF` edges for annotated lazy proxies (`current_app: FlaskProxy = LocalProxy(...)`); `_proxy_call_resolution_phase` forwards calls on those proxy vars through `PROXY_OF` to the real type's method, wiring `CALLS_DYNAMIC {via_proxy}`. See [spec_call_resolution_pipeline.md §5.1](spec_call_resolution_pipeline.md). Runs before degree so forwarded edges are counted.
+2. **`degree` (materialized centrality)** — `_degree_phase` recomputes `Symbol.in_degree` / `Symbol.out_degree` over the affected closure.
 
-Stats keys: `framework_hints_applied`, `ts_http_route_hints_applied`, `proxy_bindings`, `proxy_calls_resolved`, `degree_recomputed`. Re-index after changing any pass; `--no-index` benchmark runs assume the graph already contains these edges.
+Stats keys: `proxy_bindings`, `proxy_calls_resolved`, `degree_recomputed`.
+
+**Removed (2026-06):** `framework_hints` and `ts_http_route_hints` wrote `SEMANTIC_HINT` edges via name/regex matching. They were not consumed by the axis read path; cross-language TS↔Python linking is scoped out until structural route/call edges exist.
 
 **Materialized degree (`in_degree` / `out_degree`).** Degree over the call/dep/ref/hint edge set is static topology, so it is computed once at index time and stored on each `Symbol`. The ranker's recovery queries read `coalesce(s.in_degree, 0)` instead of re-aggregating edges per query. The edge-type set counted is fixed in `Neo4jClient._DEGREE_REL_PATTERN` and **must** match what the ranker reads. To stay accurate under incremental `update`, degree is recomputed only over the **affected closure** (changed symbols ∪ their 1-hop neighbors, captured before mutation so a removed symbol's neighbor is still corrected), never globally. Newly created `ProxyBinding` nodes are folded into the closure seed set. Verified on click/flask/celery: 100% coverage, zero mismatch vs. a live recompute.
 
