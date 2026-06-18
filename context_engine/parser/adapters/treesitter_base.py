@@ -2,9 +2,9 @@
 
 from abc import abstractmethod
 from hashlib import sha256
-from typing import Any, Iterator, cast
+from typing import Iterator
 
-from tree_sitter import Language, Parser
+from tree_sitter import Language, Parser, Query, QueryCursor
 
 from context_engine.parser.protocol import LanguageAdapter, SymbolMetadata
 from context_engine.parser.uid import (
@@ -25,9 +25,10 @@ def iter_ts_query_matches(
     query_source: str,
     root_node,
 ) -> Iterator[tuple[int, dict[str, list]]]:
-    """Iterate tree-sitter query matches (binding stubs vary by version)."""
-    query = language.query(query_source)
-    yield from cast(Any, query).matches(root_node)
+    """Iterate tree-sitter query matches via Query + QueryCursor."""
+    query = Query(language, query_source)
+    cursor = QueryCursor(query)
+    yield from cursor.matches(root_node)
 
 
 class TreeSitterAdapter(LanguageAdapter):
