@@ -20,6 +20,11 @@ def pytest_addoption(parser):
 
 def pytest_collection_modifyitems(config, items):
     """Skip integration tests unless --run-integration is passed."""
+    for item in items:
+        nodeid = str(getattr(item, "path", item.fspath))
+        if "/tests/integration/" in nodeid.replace("\\", "/"):
+            item.add_marker(pytest.mark.integration)
+
     if config.getoption("--run-integration"):
         return
 

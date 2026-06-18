@@ -50,4 +50,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: PYTHONPATH=${{ github.workspace }} NEO4J_URI=bolt://neo4j:7687 NEO4J_USER=neo4j NEO4J_PASSWORD="" pytest tests/unit/ -v
+      - name: Unit tests
+        env:
+          NEO4J_URI: bolt://neo4j:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: ""
+        run: PYTHONPATH=${{ github.workspace }} pytest tests/unit/ -v
+      - name: Integration tests and P7 axis benchmark gate
+        env:
+          INDEX_PROFILE: axis_python_v1
+          NEO4J_URI: bolt://neo4j:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: ""
+        run: PYTHONPATH=${{ github.workspace }} pytest tests/integration/ --run-integration -v

@@ -241,6 +241,7 @@ def run_question(
     render_mode_override: str | None = None,
     ignore_anchor: bool = False,
     hook_transparency: bool = False,
+    workspace_overrides: dict[str, str] | None = None,
 ) -> QuestionResult:
     repo = str(question_entry.get("repo") or "")
     qid = str(question_entry.get("id") or "")
@@ -253,7 +254,8 @@ def run_question(
         expected_files=[str(p) for p in (question_entry.get("expected_files") or [])],
     )
 
-    workspace_id = REPO_TO_WORKSPACE.get(repo)
+    overrides = workspace_overrides or {}
+    workspace_id = overrides.get(repo) or REPO_TO_WORKSPACE.get(repo)
     if workspace_id is None:
         result.skipped_reason = f"repo {repo!r} not indexed under axis_python_v1"
         return result
@@ -357,6 +359,104 @@ def run_question(
     return result
 
 
+def run_axis_pack(
+    questions: list[dict[str, Any]],
+    *,
+    db: Neo4jClient | None = None,
+    lance: LanceDBClient | None = None,
+    top_roles: int = 3,
+    per_role_limit: int = 7,
+    max_impacted: int = 35,
+    intent_threshold: float = 0.20,
+    context_per_seed: int = 6,
+    context_seeds_per_role: int | None = None,
+    intent_budget: bool = False,
+    base_token_budget: int = 6000,
+    render_mode_override: str | None = None,
+    ignore_anchor: bool = False,
+    hook_transparency: bool = True,
+    workspace_overrides: dict[str, str] | None = None,
+) -> list[QuestionResult]:
+    """Run the axis benchmark over an in-memory question list."""
+    owned_db = db is None
+    owned_lance = lance is None
+    if owned_db:
+        db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+    if owned_lance:
+        lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+    results: list[QuestionResult] = []
+    try:
+        for entry in questions:
+            results.append(
+                run_question(
+                    entry,
+                    db=db,
+                    lance=lance,
+                    top_roles=top_roles,
+                    per_role_limit=per_role_limit,
+                    max_impacted=max_impacted,
+                    intent_threshold=intent_threshold,
+                    context_per_seed=context_per_seed,
+                    context_seeds_per_role=context_seeds_per_role,
+                    intent_budget=intent_budget,
+                    base_token_budget=base_token_budget,
+                    render_mode_override=render_mode_override,
+                    ignore_anchor=ignore_anchor,
+                    hook_transparency=hook_transparency,
+                    workspace_overrides=workspace_overrides,
+                )
+            )
+    finally:
+        if owned_db and db is not None:
+            db.close()
+    return results
+
+
+def assert_p7_baseline(summary: dict[str, Any], baseline: dict[str, Any]) -> None:
+    """Raise AssertionError when an axis summary regresses below the P7 gate."""
+    expected_scored = int(baseline["scored"])
+    actual_scored = int(summary.get("scored", 0))
+    assert actual_scored == expected_scored, (
+        f"expected {expected_scored} scored questions, got {actual_scored} "
+        f"(skipped={summary.get('skipped', 0)})"
+    )
+
+    def _check_min(key: str, label: str) -> None:
+        floor = float(baseline[f"min_{key}"])
+        actual = float(summary.get(key, 0.0))
+        assert actual + 1e-9 >= floor, (
+            f"{label} {actual:.3f} below P7 floor {floor:.3f}. "
+            "Refresh tests/fixtures/baselines/p7_surgical_context_axis.json "
+            "only after an intentional engine improvement."
+        )
+
+    _check_min("overall_mean_recall", "bundle recall")
+    _check_min("overall_seed_mean_recall", "seed recall")
+    _check_min("overall_pool_mean_recall", "pool recall")
+
+    max_zero = int(baseline["max_zero_recall_count"])
+    zero_count = int(summary.get("zero_recall_questions", 0))
+    assert zero_count <= max_zero, (
+        f"{zero_count} questions had zero bundle recall (max allowed {max_zero})"
+    )
+
+    min_full = int(baseline["min_full_recall_count"])
+    full_count = int(summary.get("full_recall_questions", 0))
+    assert full_count >= min_full, (
+        f"{full_count} questions reached full bundle recall (min required {min_full})"
+    )
+
+    per_question = baseline.get("per_question_min_file_recall") or {}
+    by_id = {r["question_id"]: r for r in summary.get("per_question", [])}
+    for qid, floor in per_question.items():
+        row = by_id.get(qid)
+        assert row is not None, f"missing per-question row for {qid!r} in summary"
+        actual = float(row.get("file_recall", 0.0))
+        assert actual + 1e-9 >= float(floor), (
+            f"{qid} bundle recall {actual:.3f} below floor {float(floor):.3f}"
+        )
+
+
 def summarise(results: list[QuestionResult]) -> dict[str, Any]:
     scored = [r for r in results if r.skipped_reason is None]
     skipped = [r for r in results if r.skipped_reason is not None]
@@ -447,6 +547,16 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         "max_context_seconds": max((r.context_seconds for r in scored), default=0.0),
         "overall_mean_rendered_tokens": _mean("rendered_tokens"),
         "max_rendered_tokens": max((r.rendered_tokens for r in scored), default=0),
+        "per_question": [
+            {
+                "question_id": r.question_id,
+                "repo": r.repo,
+                "file_recall": round(r.file_recall, 4),
+                "seed_recall": round(r.seed_recall, 4),
+                "pool_recall": round(r.pool_recall, 4),
+            }
+            for r in sorted(scored, key=lambda x: x.question_id)
+        ],
     }
 
 

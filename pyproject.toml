@@ -24,6 +24,9 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["QA/repos", "data", "graphify-out"]
+markers = [
+    "integration: tests that require live Neo4j/LanceDB (pass --run-integration)",
+]
 
 [tool.mypy]
 python_version = "3.12"

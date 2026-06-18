@@ -1,0 +1,22 @@
+{
+  "description": "P7 empirical gate for surgical_context dogfood questions on the production /ask axis path.",
+  "pack": "tests/fixtures/questions_python.yaml",
+  "repo_filter": "surgical_context",
+  "scored": 7,
+  "caps": {
+    "per_role_limit": 7,
+    "max_impacted": 35,
+    "context_seeds_per_role": 2,
+    "intent_budget": true
+  },
+  "min_overall_mean_recall": 0.55,
+  "min_overall_seed_mean_recall": 0.25,
+  "min_overall_pool_mean_recall": 0.40,
+  "max_zero_recall_count": 2,
+  "min_full_recall_count": 3,
+  "per_question_min_file_recall": {
+    "surgical_context_q01": 0.5,
+    "surgical_context_q02": 0.25,
+    "surgical_context_q03": 0.25
+  }
+}
