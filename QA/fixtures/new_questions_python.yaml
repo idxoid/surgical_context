@@ -3,16 +3,12 @@ questions:
   repo: fastapi
   core12: false
   symbol: Depends
-  question: How does FastAPI ensure that dependencies with `yield` execute their teardown logic (cleanup) after the response is generated?
+  question: How does FastAPI ensure that dependencies with `yield` execute their teardown logic (cleanup) after the response
+    is generated?
   difficulty: hard
   intent: trace_dependency
   expected_mode: symbol
   mechanism: fastapi_yield_dependencies_teardown
-  required_roles:
-  - api_surface
-  - runtime_surface
-  - handler_or_lifecycle
-  - executor
   expected_symbols:
   - solve_dependencies
   - AsyncExitStack
@@ -20,41 +16,32 @@ questions:
   expected_files:
   - fastapi/dependencies/utils.py
   - fastapi/routing.py
-
 - id: pydantic_faq_q01
   repo: pydantic
   core12: false
   symbol: model_construct
-  question: How does model_construct bypass the standard __init__ validation pipeline to instantiate a model directly for performance?
+  question: How does model_construct bypass the standard __init__ validation pipeline to instantiate a model directly for
+    performance?
   difficulty: medium
   intent: explain_behavior
   expected_mode: symbol
   mechanism: pydantic_bypass_validation_construct
-  required_roles:
-  - api_surface
-  - core_runtime
-  - factory_surface
   expected_symbols:
   - model_construct
   - __pydantic_validator__
   - __pydantic_extra__
   expected_files:
   - pydantic/main.py
-
 - id: django_faq_q01
   repo: django
   core12: true
   symbol: prefetch_related
-  question: How does prefetch_related evaluate the initial QuerySet and then perform secondary queries to attach reverse foreign keys in Python memory?
+  question: How does prefetch_related evaluate the initial QuerySet and then perform secondary queries to attach reverse foreign
+    keys in Python memory?
   difficulty: hard
   intent: trace_dependency
   expected_mode: symbol
   mechanism: django_prefetch_related_evaluation
-  required_roles:
-  - api_surface
-  - orchestrator
-  - executor
-  - query_compiler
   expected_symbols:
   - prefetch_related
   - prefetch_related_objects
@@ -62,21 +49,16 @@ questions:
   expected_files:
   - django/db/models/query.py
   - django/db/models/query_utils.py
-
 - id: celery_faq_q01
   repo: celery
   core12: false
   symbol: acks_late
-  question: How does the worker handle acks_late=True to ensure the AMQP message is only acknowledged after the task function successfully returns?
+  question: How does the worker handle acks_late=True to ensure the AMQP message is only acknowledged after the task function
+    successfully returns?
   difficulty: hard
   intent: explain_behavior
   expected_mode: symbol
   mechanism: celery_late_acknowledgment
-  required_roles:
-  - config_surface
-  - integration_surface
-  - runtime_surface
-  - executor
   expected_symbols:
   - acks_late
   - acknowledge
@@ -85,21 +67,16 @@ questions:
   expected_files:
   - celery/worker/request.py
   - celery/app/task.py
-
 - id: sqlalchemy_faq_q01
   repo: sqlalchemy
   core12: true
   symbol: flush
-  question: What is the sequence of unit-of-work events triggered when session.flush() is called to synchronize pending objects to the database before a commit?
+  question: What is the sequence of unit-of-work events triggered when session.flush() is called to synchronize pending objects
+    to the database before a commit?
   difficulty: hard
   intent: trace_dependency
   expected_mode: symbol
   mechanism: sqlalchemy_uow_flush_process
-  required_roles:
-  - api_surface
-  - orchestrator
-  - identity_map
-  - executor
   expected_symbols:
   - flush
   - UOWTransaction
@@ -108,7 +85,6 @@ questions:
   expected_files:
   - lib/sqlalchemy/orm/session.py
   - lib/sqlalchemy/orm/unitofwork.py
-
 - id: click_faq_q01
   repo: click
   core12: false
@@ -118,11 +94,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: click_testing_systemexit_suppression
-  required_roles:
-  - api_surface
-  - executor
-  - integration_surface
-  - error_surface
   expected_symbols:
   - CliRunner
   - invoke
@@ -131,20 +102,16 @@ questions:
   expected_files:
   - src/click/testing.py
   - src/click/exceptions.py
-
 - id: flask_faq_q01
   repo: flask
   core12: false
   symbol: current_app
-  question: How does LocalProxy raise a RuntimeError ("Working outside of application context") when current_app is accessed without an active app context?
+  question: How does LocalProxy raise a RuntimeError ("Working outside of application context") when current_app is accessed
+    without an active app context?
   difficulty: medium
   intent: trace_dependency
   expected_mode: symbol
   mechanism: flask_unbound_localproxy_error
-  required_roles:
-  - proxy_mechanism
-  - error_surface
-  - context_accessor
   expected_symbols:
   - current_app
   - _find_app
@@ -153,27 +120,22 @@ questions:
   expected_files:
   - src/flask/globals.py
   - src/flask/ctx.py
-
 - id: fastapi_bug_q01
   repo: fastapi
   core12: false
   symbol: CORSMiddleware
-  question: How does CORSMiddleware intercept preflight OPTIONS requests to append Access-Control-Allow headers without hitting the actual endpoint?
+  question: How does CORSMiddleware intercept preflight OPTIONS requests to append Access-Control-Allow headers without hitting
+    the actual endpoint?
   difficulty: hard
   intent: explain_behavior
   expected_mode: symbol
   mechanism: fastapi_cors_preflight_handling
-  required_roles:
-  - interceptor
-  - middleware_registry
-  - runtime_surface
   expected_symbols:
   - CORSMiddleware
   - __call__
   - is_preflight_request
   expected_files:
   - fastapi/middleware/cors.py
-
 - id: django_bug_q01
   repo: django
   core12: false
@@ -183,10 +145,6 @@ questions:
   intent: trace_dependency
   expected_mode: symbol
   mechanism: django_row_level_locking
-  required_roles:
-  - api_surface
-  - query_compiler
-  - executor
   expected_symbols:
   - select_for_update
   - FOR_UPDATE

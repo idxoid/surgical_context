@@ -26,7 +26,7 @@ from context_engine.api.errors import (
 from context_engine.api.sse import format_sse
 from context_engine.auth import AuditLog, UserAuth
 from context_engine.cache.layered import default_cache
-from context_engine.context_types import RESOLVER_VERSION, DocChunk, PromptContext, SymbolContext
+from context_engine.context_types import CONTEXT_PIPELINE_VERSION, DocChunk, PromptContext, SymbolContext
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.session import db_session
 from context_engine.doc_resolver import DocResolver
@@ -210,7 +210,6 @@ class UnifiedSearchResponse(BaseModel):
     total: int
     index_manifest_id: str | None = None
     index_manifest_schema_version: int | None = None
-    retrieval_trace: dict[str, Any] | None = None
 
 
 class AskResponse(BaseModel):
@@ -500,7 +499,7 @@ def _attach_trace_metadata(ctx: PromptContext, trace: RequestTrace) -> None:
     ctx.model_route = dict(trace.model_route)
     ctx.estimated_cost_usd = trace.estimated_cost_usd
     ctx.cost_basis = trace.cost_basis
-    ctx.resolver_version = RESOLVER_VERSION
+    ctx.context_pipeline_version = CONTEXT_PIPELINE_VERSION
 
 
 def _index_manifest_fields(db: Any, workspace_id: str) -> tuple[str | None, int | None]:
@@ -629,7 +628,9 @@ def _record_retrieval_snapshot(
         mode=str(getattr(ctx, "mode", "")),
         question_hash=hashlib.sha256(question.encode()).hexdigest(),
         question_tokens=trace.token_counts.get("user", estimate_text_tokens(question)),
-        resolver_version=getattr(ctx, "resolver_version", RESOLVER_VERSION),
+        context_pipeline_version=getattr(
+            ctx, "context_pipeline_version", CONTEXT_PIPELINE_VERSION
+        ),
         selected_candidates=selected,
         documentation=documentation,
         context_metadata={
@@ -1851,7 +1852,6 @@ def unified_search(
     trace = _start_trace("/search/unified", x_trace_id, workspace_id)
     status = "ok"
     results: list[UnifiedSearchResult] = []
-    retrieval_trace_payload: dict[str, Any] | None = None
     try:
         with trace.stage("vector_docs"):
             docs = _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)
@@ -1917,7 +1917,6 @@ def unified_search(
             "total": len(ranked),
             "index_manifest_id": mid,
             "index_manifest_schema_version": sv,
-            "retrieval_trace": retrieval_trace_payload,
         }
     except Exception:
         status = "error"

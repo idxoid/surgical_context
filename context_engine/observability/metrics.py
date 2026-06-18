@@ -171,11 +171,11 @@ class RequestTrace:
             "latency_ms": latency,
         }
 
-    def to_metadata(self, resolver_version: str) -> dict[str, Any]:
+    def to_metadata(self, context_pipeline_version: str) -> dict[str, Any]:
         return {
             "trace_id": self.trace_id,
             "workspace_id": self.workspace_id,
-            "resolver_version": resolver_version,
+            "context_pipeline_version": context_pipeline_version,
             "latency_slo": self.latency_slo(),
             "stage_timings_ms": dict(self.stage_timings_ms),
             "token_counts": dict(self.token_counts),

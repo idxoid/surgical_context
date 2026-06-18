@@ -1,11 +1,9 @@
-"""Phase 1d: ASK_AXIS_FIRST routing in ``_resolve_ask_context``.
+"""ASK_AXIS_FIRST routing in ``_resolve_ask_context``.
 
-The flag is opt-in (default off). When set, the axis provider leads; on
-nothing-renderable or any failure the cascade falls through to the
-unchanged symbol -> file -> workspace -> direct tiers. These tests pin the
-routing only (the axis provider itself is stubbed); the legacy tiers are
-reached with req.symbol/file_path unset so the fall-through lands on the
-deterministic ``direct`` tier (workspace stubbed to None).
+Axis is the default ``/ask`` provider (``ASK_AXIS_FIRST`` unset or truthy).
+When axis returns nothing or raises, the fallback ladder is
+file → workspace → direct_llm — not the deleted ranking cascade.
+These tests stub the axis provider and pin routing only.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ def test_flag_off_never_calls_axis(monkeypatch):
         raise AssertionError("axis must not run when ASK_AXIS_FIRST is unset")
 
     monkeypatch.setattr(context_engine_main, "_context_from_axis", _boom)
-    # Make the legacy cascade land deterministically on `direct`.
+    # Fall through to direct_llm when axis is disabled.
     monkeypatch.setattr(context_engine_main, "_context_from_workspace", lambda *_a, **_k: None)
 
     ctx = context_engine_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
@@ -64,6 +62,6 @@ def test_flag_on_axis_error_falls_through(monkeypatch):
     monkeypatch.setattr(context_engine_main, "_context_from_axis", _raise)
     monkeypatch.setattr(context_engine_main, "_context_from_workspace", lambda *_a, **_k: None)
 
-    # Must not raise — degrades to the legacy cascade.
+    # Must not raise — degrades to direct_llm.
     ctx = context_engine_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
     assert _ask_level(ctx) == "direct_llm"

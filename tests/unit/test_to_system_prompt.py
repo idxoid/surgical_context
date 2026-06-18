@@ -8,7 +8,6 @@ def _make_ctx(
     primary_code: str = "def target(): pass",
     deps: list[dict] | None = None,
     docs: list[dict] | None = None,
-    missing_roles: list[str] | None = None,
     stopped_reason: str = "",
     budget: dict | None = None,
 ) -> PromptContext:
@@ -45,7 +44,6 @@ def _make_ctx(
         primary_source=primary,
         graph_context=graph_context,
         documentation=documentation,
-        missing_roles=missing_roles or [],
         stopped_reason=stopped_reason,
         budget=budget or {},
     )
@@ -96,17 +94,6 @@ def test_dep_annotation_omits_zero_depth_and_zero_score():
 # ---------------------------------------------------------------------------
 
 
-def test_missing_roles_disclaimer_appears_before_target():
-    ctx = _make_ctx(missing_roles=["runtime_surface", "tests"])
-    prompt = ctx.to_system_prompt()
-    disclaimer_pos = prompt.find("# Context note: partial")
-    target_pos = prompt.find("--- TARGET SYMBOL:")
-    assert disclaimer_pos != -1, "missing_roles disclaimer not found"
-    assert disclaimer_pos < target_pos, "disclaimer must precede target block"
-    assert "runtime_surface" in prompt
-    assert "tests" in prompt
-
-
 def test_budget_limit_disclaimer_on_budget_exhausted():
     ctx = _make_ctx(
         stopped_reason="budget_exhausted",
@@ -118,7 +105,7 @@ def test_budget_limit_disclaimer_on_budget_exhausted():
 
 
 def test_no_disclaimer_when_context_is_complete():
-    ctx = _make_ctx(missing_roles=[], stopped_reason="role_complete")
+    ctx = _make_ctx(stopped_reason="")
     prompt = ctx.to_system_prompt()
     assert "Context note" not in prompt
 

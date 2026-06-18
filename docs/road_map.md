@@ -1,7 +1,5 @@
 # Surgical Context - Road Map
 
-> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`context_engine/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
-
 
 > **Status:** This branch (`context-engine-refocus`) treats Surgical Context as a **local-first, model-agnostic context engine for code understanding and change impact**.
 >
@@ -9,7 +7,7 @@
 >
 > **Principle:** measure retrieval quality and token efficiency on real repositories before expanding platform scope.
 >
-> **See also:** [concept.md](concept.md), [product_direction_memo.md](product_direction_memo.md), [review_findings_2026-04-17.md](review_findings_2026-04-17.md), [README.md](../README.md)
+> **See also:** [concept.md](concept.md), [product_direction_memo.md](product_direction_memo.md), [README.md](../README.md)
 >
 > **Last updated:** 2026-05-28 (`context-engine-refocus`; extension Impact + selected-request sync docs)
 
@@ -203,8 +201,6 @@ Goal: Working "VS Code ↔ Python Sidecar" prototype with basic parsing.
 - [x] Cursor position capture mechanism
 - [x] Wire `onDidChangeTextDocument` / `onDidSaveTextDocument` → `POST /overlay` / `DELETE /overlay`
 
-> **Note:** [review_findings_2026-04-17.md](review_findings_2026-04-17.md) recommends promoting this to Phase 2.5 — it blocks external validation as much as the eval harness. ✅ Complete.
-
 ---
 
 ## Phase 2: Graph Brain & Surgical Retrieval ✅ Largely Complete
@@ -228,7 +224,7 @@ Goal: System can navigate the graph and gather precise context.
 ## Phase 2.5: Quality Foundation & Extension UI ✅ COMPLETE
 Goal: Make the system **measurable** before scaling it, and ship a thin client for real-world validation. Without this phase, all later performance and cost claims are unfalsifiable, and the "VS Code integration" premise remains unproven.
 
-> **Specs:** [spec_eval_harness.md](spec_eval_harness.md) (fixture design, metric set, CI contract), [review_findings_2026-04-17.md](review_findings_2026-04-17.md) (sequencing and rationale).
+> **Specs:** [spec_eval_harness.md](spec_eval_harness.md) (fixture design, metric set, CI contract).
 
 ### Evaluation Harness ✅ COMPLETE
 - [x] `tests/` directory with pytest for parser, indexer, axis retrieval, overlay
@@ -563,7 +559,7 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] Per-candidate basic `scores` block (graph relevance / semantic score)
 - [x] `provenance` list on every symbol and doc chunk
 - [x] Budget-level `metadata.pruning_reasons`
-- [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, resolver_version
+- [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, context_pipeline_version
 - [x] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
 - [x] `pruned[]` array — candidates that missed the budget, with reason, scores, cost, roles, noise factor, and provenance
 - [x] `metadata.ranker.weights` — tuning state snapshotted with every response
@@ -695,7 +691,7 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 |---|---|---|---|---|
 | Eval harness unblocker | **High** | No measurable proof of token/quality gains — all Phase 4+ claims unverified | Phase 2.5: ship fixture + CI ✅ (spec: [spec_eval_harness.md](spec_eval_harness.md)) | ✅ Resolved |
 | Unmeasured quality claims | **High** | "60–80% reduction" cannot be verified without eval harness | Phase 2.5 blocks Phase 4 ✅ (ADR-006) | ✅ Resolved |
-| Missing extension UI | **High** | "VS Code integration" premise unproven; `run_demo.py` doesn't validate product | Phase 2.5: promote extension scaffold from Phase 1 ✅ (per [review_findings_2026-04-17.md](review_findings_2026-04-17.md) rec #6) | ✅ Resolved |
+| Missing extension UI | **High** | "VS Code integration" premise unproven; `run_demo.py` doesn't validate product | Phase 2.5: promote extension scaffold from Phase 1 ✅ | ✅ Resolved |
 | Token overhead limit | High | 883t baseline across all queries suggests dedup opportunity | Phase 4: ContextDeduplicator (target 15–40% reduction) ✅ | ✅ Resolved |
 | Embedding model drift | High | Switching embedding models without versioning causes silent quality loss | Phase 4: embedding metadata tracking + migration flag ✅ | ✅ Resolved |
 | Tree-sitter multi-language | High | Complexity of supporting many languages | ADR-005 LanguageAdapter protocol (spec: [spec_language_adapter.md](spec_language_adapter.md)); formalize in Phase 1 polish, defer extra languages to Phase 3.5 | 🟢 Mitigated |

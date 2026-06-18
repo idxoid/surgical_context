@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-RESOLVER_VERSION = "context-arbitrator-v2"
+CONTEXT_PIPELINE_VERSION = "context-axis-v1"
 
 # Chain priority for prompt ordering. The ranker sets ``chain_kind`` on a
 # candidate when it emits a structural-chain signal (mandatory contract anchor,
@@ -85,9 +85,8 @@ class PromptContext:
     stopped_reason: str = ""
     mechanism: str = ""
     pruned_details: list[dict] = field(default_factory=list)
-    missing_roles: list[str] = field(default_factory=list)
     workspace_id: str = ""
-    resolver_version: str = RESOLVER_VERSION
+    context_pipeline_version: str = CONTEXT_PIPELINE_VERSION
     stage_timings_ms: dict[str, float] = field(default_factory=dict)
     token_counts: dict[str, int] = field(default_factory=dict)
     model_route: dict[str, Any] = field(default_factory=dict)
@@ -95,8 +94,6 @@ class PromptContext:
     cost_basis: str = "not_configured"
     pruning_reasons: list[str] = field(default_factory=list)
     feedback_token: str = ""
-    ranker_state: dict[str, Any] = field(default_factory=dict)
-    retrieval_trace: dict[str, Any] = field(default_factory=dict)
     index_manifest_id: str = ""
     index_manifest_schema_version: int | None = None
 
@@ -143,9 +140,6 @@ class PromptContext:
         """Render to the flat text format the LLM receives."""
         # Incompleteness disclaimer when the LLM would otherwise see partial context.
         header_lines: list[str] = []
-        if self.missing_roles:
-            roles_str = ", ".join(self.missing_roles)
-            header_lines.append(f"# Context note: partial — missing roles: [{roles_str}].")
         if self.stopped_reason in (
             "budget_exhausted",
             "expansion_no_progress",
@@ -219,7 +213,6 @@ class PromptContext:
                 "effective_intent_mode": self.intent_effective_mode,
                 "tiers_used": tiers_used,
                 "stopped_reason": self.stopped_reason,
-                "missing_roles": self.missing_roles,
                 "pruned_count": len(self.pruned_details),
                 "tier_tokens": self.tier_tokens,
                 "tokens_primary": self.tier_tokens.get("code", 0),
@@ -227,13 +220,12 @@ class PromptContext:
                 "tokens_docs": docs_tokens,
                 "pruning_reasons": pruning_reasons,
                 "ranker": ranker_state,
-                "retrieval_trace": self.retrieval_trace,
                 "index_manifest_id": self.index_manifest_id or None,
                 "index_manifest_schema_version": self.index_manifest_schema_version,
                 "assembly": {
                     "trace_id": self.trace_id,
                     "workspace_id": self.workspace_id,
-                    "resolver_version": self.resolver_version,
+                    "context_pipeline_version": self.context_pipeline_version,
                     "cache_hits": self.budget.get("cache_hits", []),
                     "feedback_token": self.feedback_token,
                     "stage_timings_ms": self.stage_timings_ms,
@@ -289,7 +281,7 @@ class PromptContext:
                 "blended_score": symbol.blended_score or symbol.relevance_score,
                 "intent_weight": symbol.intent_weight,
             },
-            "provenance": symbol.provenance or ["graph", "code_resolver"],
+            "provenance": symbol.provenance or ["graph", "axis"],
             "render_mode": symbol.render_mode,
             "is_dirty": symbol.is_dirty,
             "code": symbol.code,
@@ -303,21 +295,15 @@ class PromptContext:
         return payload
 
     def _ranker_metadata(self) -> dict[str, Any]:
-        ranker_state = dict(self.ranker_state)
-        if not ranker_state and self.budget.get("ranker"):
-            ranker_state["strategy"] = self.budget["ranker"]
-
-        weights = self.budget.get("ranker_weights")
-        if weights and "weights" not in ranker_state:
-            ranker_state["weights"] = dict(weights)
-
-        if "candidates_considered" not in ranker_state and "pool_size" in self.budget:
-            ranker_state["candidates_considered"] = self.budget["pool_size"]
-        if "candidates_selected" not in ranker_state:
-            ranker_state["candidates_selected"] = len(self.graph_context) + len(self.documentation)
-        if "pruned_total_count" not in ranker_state:
-            ranker_state["pruned_total_count"] = len(self.pruned_details)
-        return ranker_state
+        """Assembly counts for observability (axis path; no cascade ranker state)."""
+        out: dict[str, Any] = {
+            "candidates_selected": len(self.graph_context) + len(self.documentation),
+            "pruned_total_count": len(self.pruned_details),
+        }
+        pool_size = self.budget.get("pool_size")
+        if pool_size is not None:
+            out["candidates_considered"] = pool_size
+        return out
 
     def _serialize_pruned_candidates(self, limit: int = 20) -> list[dict[str, Any]]:
         pruned = sorted(

@@ -1,12 +1,5 @@
 # Surgical Context — Architecture
 
-> **Context-path migration (2026-06-15).** The `/ask` + `/search` context path
-> moved from the legacy ranking cascade (`ContextArbitrator`, `UnifiedRanker`,
-> the keyword `IntentClassifier`) to the **axis pipeline** (`context_engine/axis/`),
-> now the default and only provider; the cascade was deleted. Flow steps below
-> that still name the arbitrator/cascade are superseded by the axis path — see
-> `cascade_cleanup_inventory.md`.
-
 > **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, intent-aware prompt assembly, unified graph+semantic ranking, canonical role normalization, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. Recent retrieval hardening includes trace-dependency recovery for sparse import topology (runtime symbol seeding, sibling-directory expansion, explicit recovery provenance) and qualified-callee gating for DI hint edges. The main open gaps are extension product polish, setup/smoke-test hardening, broader real-repo benchmark coverage (Flask/Django/Express tails), impact-analysis precision/doc-noise control, and provider boundaries around the local defaults. See [road_map.md](road_map.md) for the canonical backlog and [project_gap_analysis.md](project_gap_analysis.md) for the analysis index.
 >
 > **Future layer:** tenant-level API contract graph. Each project indexes and publishes its own safe service/API facts; the tenant graph links those facts across projects and systems without scanning neighboring repositories. This is Team/Enterprise horizon work, not a dependency for the local single-tenant release. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
@@ -149,8 +142,7 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
 - ✅ **Pruned details**: skipped candidates with reason codes
 - ✅ **Ranker metadata** in benchmark `ready_context` snapshots
-- ✅ **Retrieval trace (v1)**: `metadata.retrieval_trace` on `PromptContext.to_dict()` — strategy, mechanism, roles, budget summary, `schema_version` (`context_engine.retrieval.trace`); see [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)
-- ✅ **Provider protocols (v1)**: `VectorSearchProvider`, `WorkspaceMetaProvider`, `GraphDriverProvider` in `context_engine.retrieval.protocols` + fakes for tests; production `VectorSearcher` satisfies `VectorSearchProvider` (`tests/unit/test_retrieval_protocols.py`)
+- ✅ **Provider protocols (v1)**: `VectorSearchProvider`, `WorkspaceMetaProvider`, `GraphDriverProvider` in `context_engine.retrieval.protocols` + fakes for tests; production vector search satisfies `VectorSearchProvider` (`tests/unit/test_retrieval_protocols.py`)
 - 🚧 Remaining work: richer UI surfacing and consistency checks across extension surfaces
 
 **Supporting Infrastructure:**
@@ -386,7 +378,7 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
 }
 ```
 
-**Implemented metadata:** `mode`, `intent`, `intent_details` (`primary`, `distribution`, `ambiguous`, `confidence`), `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth` / `direction`, per-candidate `scores`, `provenance`, doc-anchor `anchor_type` / `anchor_confidence` / `primary_bias`, `pruned[]`, `stopped_reason`, `missing_roles`, `metadata.ranker.strategy`, `metadata.ranker.weights`, `metadata.ranker.candidates_*`, `metadata.ranker.pruned_total_count`, and `metadata.assembly` fields such as `trace_id`, `workspace_id` slot, `resolver_version`, `cache_hits`, `model_route`, and `feedback_token`.
+**Implemented metadata:** `mode`, `intent`, `intent_details` (`primary`, `distribution`, `ambiguous`, `confidence`), `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth` / `direction`, per-candidate `scores`, `provenance`, doc-anchor `anchor_type` / `anchor_confidence` / `primary_bias`, `pruned[]`, `stopped_reason`, `metadata.ranker.candidates_*`, `metadata.ranker.pruned_total_count`, and `metadata.assembly` fields such as `trace_id`, `workspace_id` slot, `context_pipeline_version`, `cache_hits`, `model_route`, and `feedback_token`.
 
 **Planned metadata:** `tenant_api_context`, `api_direction`, `tenant_link_depth`, service/contract provenance, and tenant API candidate scores. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
@@ -539,8 +531,9 @@ Graph, vector, and user-history storage live behind provider connector interface
 ### 4.1. Mechanism Classification
 Every question in the real-repo pack is annotated with:
 - **mechanism**: The code relationship being tested (e.g., `fastapi_route_registration`, `pydantic_validation_core_bridge`, `rtk_slice_generation`)
-- **required_roles**: List of code roles the ranker must fulfill for a correct answer. The YAML may still use legacy names, but benchmark scoring normalizes them into canonical roles such as `api_surface`, `factory_surface`, `runtime_surface`, `schema_builder`, `orchestrator`, and `core_runtime`.
-- **expected_mode**: Either `symbol` (should find by name) or `workspace` (correct answer is "not found")
+- **expected_mode**: Either `symbol` (should find by name) or `workspace` (correct answer is "not found") — human annotation only; axis benchmark does not score it.
+
+Legacy cascade field **`required_roles`** was removed from question packs (2026-06). Axis eval uses **`file_recall`** on `expected_files` only.
 
 This enables the benchmark to report *which mechanisms the ranker handles well* and *which gaps are actual code relationship discovery failures* vs. ranking noise.
 
@@ -554,14 +547,11 @@ Added `IMPACT_ANALYSIS` intent classification and intent-aware ranking noise sup
 
 This prevents impact analysis questions from being downranked just because they hit relevant test files, while avoiding unrelated benchmark/test noise.
 
-### 4.3. Role Recall Metric
-Computed after canonical-role normalization as: `(required_roles not in ctx.missing_roles) / len(required_roles)`
+### 4.3. Role Recall Metric (removed with cascade)
 
-- Returns 1.0 if no required_roles (fallback)
-- Diagnostic signal for code relationship gaps — higher role_recall means the ranker found code from more of the required roles
-- The normalization layer removes most framework-specific naming drift, so mechanism coverage is evaluated on canonical roles rather than on benchmark/repo-specific role names
+The cascade computed `role_recall` from YAML `required_roles` vs `ctx.missing_roles`. **Axis eval replaced this** with `file_recall` on `expected_files` (`QA/axis_benchmark.py`, P7 gate). Question packs no longer carry `required_roles`.
 
-### 4.4. Intent-Stratified Pass Gates
+### 4.4. Intent-Stratified Pass Gates (cascade — historical)
 Different query intents have different acceptable metrics:
 
 | Intent | role_recall floor | file_recall floor | Gate semantics |

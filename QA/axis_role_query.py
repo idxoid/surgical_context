@@ -3,9 +3,8 @@
 Takes a role name (and optionally a query text), runs the
 :func:`context_engine.axis.role_retrieval.find_symbols_by_role` primitive
 against an indexed workspace, and prints the ranked candidates with
-their ranking components. This is the read-side surface that any
-future ``/ask``-style consumer would call instead of the legacy
-``unified_ranker``.
+their ranking components. This is the role-scoped read primitive behind
+axis ``/ask`` retrieval (``context_engine.axis.role_retrieval``).
 
 Usage::
 

@@ -1,8 +1,11 @@
 # Структурные роли и правила (Pass 1)
 
 Источник истины — [context_engine/indexer/role_cascade.py](../context_engine/indexer/role_cascade.py).
-Документ — снимок состояния `role_cascade.py` на коммит `640f157`. Если код
-разойдётся с таблицами, **код прав**, документ обновляется отдельно.
+Таблицы ниже — снимок предикатов L1/L2; если код разойдётся с документом, **код прав**.
+
+См. также:
+- [role_catalog.md](role_catalog.md) — словарь ролей, признаки, примеры из бенчмарк-репо
+- [role_clustering_architecture.md](role_clustering_architecture.md) — decision record (почему L1/L2, что выведено из k-means)
 
 ## 1. Пайплайн
 

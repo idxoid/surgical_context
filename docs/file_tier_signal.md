@@ -20,9 +20,20 @@ questions, **promote** the relevant tier for impact/trace modes.
 This is invariant-clean: tier is derived purely from **path topology +
 file shape**, never from semantic content; intent only chooses the
 **weight sign** (resource management, like `apply_intent_axis_boost`),
-never which files are structurally valid. Precedent already in-tree:
-`axis/test_file_filter.is_test_path`, the cascade's
-`NOISE_PATH_PATTERNS`, and the degree materialization.
+never which files are structurally valid.
+
+**Code:** [context_engine/indexer/file_tier.py](../context_engine/indexer/file_tier.py)
+(derivation), [context_engine/axis/role_retrieval.py](../context_engine/axis/role_retrieval.py)
+(seed/role ranking weights).
+
+**See also:** [axis_terminology.md](axis_terminology.md),
+[engineering_principles.md](engineering_principles.md),
+[spec_indexer.md](spec_indexer.md) (embedding batch).
+
+**Status:** derivation + LanceDB materialization + ranker weights are
+implemented. Step 5 (retire `is_test_path` / `include_tests` shims in
+graph walks) is still open — tier weights apply to seed/role retrieval;
+walks still use the binary test filter.
 
 ## Taxonomy + derivation (index-time, structural)
 
@@ -40,10 +51,11 @@ Precedence: path tiers (`test` → `example` → `doc`) before shape tiers
 
 ## Storage
 
-`file_tier` as a node property on `Symbol`, materialized **once at index
-time** (alongside `in_degree`/`out_degree`). This natively carries the
-`:TestFile`/`:TestSymbol` labels `test_file_filter` was a query-time shim
-for — generalised to six tiers.
+`file_tier` on each LanceDB symbol row (schema v5+), materialized **once at
+index time** in the embedding batch (alongside vector upsert). Path is
+relative to the indexed project root so infra prefixes (`QA/repos/…`) do not
+false-trigger tier rules. Ranker scans read `file_tier` from
+`scan_workspace_rows` / `find_seeds_by_vector`.
 
 ## Application (axis ranker, query-time, intent-signed)
 
@@ -77,14 +89,14 @@ are the new lever. Weights echo the legacy `NOISE_FACTOR`
 
 ## Implementation steps
 
-1. **`context_engine/indexer/file_tier.py`** — `classify_file_tier(path,
-   pure_reexport)` + `is_pure_reexport_source(src)`. *(this commit — derive only)*
-2. Indexer fast-pipeline — set `file_tier` on each `Symbol` at index
-   time (next to degree materialization). Requires reindex.
-3. `scan_workspace_rows` — surface `file_tier` in scanned rows.
-4. `find_symbols_by_roles` + `find_seeds_by_vector` — apply the
-   intent-signed tier multiplier to `score` before top-k.
-5. Retire the binary `include_tests` / `is_test_path` query shim; graph
+1. ✅ **`context_engine/indexer/file_tier.py`** — `classify_file_tier(path,
+   pure_reexport)` + `is_pure_reexport_source(src)`.
+2. ✅ Indexer fast-pipeline — stamp `file_tier` on each Lance symbol row at
+   embed time. Requires reindex for existing workspaces.
+3. ✅ `scan_workspace_rows` — surface `file_tier` in scanned rows.
+4. ✅ `find_symbols_by_roles` + `find_seeds_by_vector` — intent-signed tier
+   multiplier on `score` before top-k.
+5. ⏳ Retire the binary `include_tests` / `is_test_path` query shim; graph
    fences (lookahead/cross_role/structural) read the tier label.
 
 ## Measurement target (three-layer benchmark)

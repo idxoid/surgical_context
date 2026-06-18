@@ -1,8 +1,8 @@
 # Pass-1 role assignment — discriminator-first L1/L2 cascade
 
-Decision record for how Pass-1 derives roles. Motivated by the collisions
-in [role_signature_findings.md](role_signature_findings.md) and the role
-vocabulary in [role_catalog.md](role_catalog.md).
+Decision record for how Pass-1 derives roles. Motivated by the role
+vocabulary in [role_catalog.md](role_catalog.md). L1/L2 predicate tables:
+[role_predicates.md](role_predicates.md).
 
 Format per item: **what → how (where in code) → why it matters → decision**.
 
@@ -93,8 +93,7 @@ historical rationale for the retired k-means + Pass-1 archetype tier.
   orchestrator/composition; else isinstance-dispatch → dependency_solver; else
   generic_control. (`request_router` is **not** in this cascade — it has no
   `handle_fan_out` and dispatches dynamically; see F1, deferred.)
-- **why:** L1 overlap is *by design* (resolves F2/F3 from
-  [role_signature_findings.md](role_signature_findings.md)); the real work is the
+- **why:** L1 overlap is *by design*; the real work is the
   L2 cascade. Removes ~70% of the flat-clustering "collisions".
 - **open issues:** (a) 4 buckets may be too few — `public_entrypoint`,
   `gateway`, `abstract_contract` straddle; consider a 5th `Surface/Entry` bucket.
@@ -113,8 +112,7 @@ historical rationale for the retired k-means + Pass-1 archetype tier.
 - **what:** drop the `archetype` layer (`_ARCHETYPE_TEMPLATES`,
   `_ROLE_TO_ARCHETYPES`, `_score_cluster_for_archetype`, cluster-based
   `resolve_role_clusters`, and the ranker's `_cluster_role_membership`) as a
-  distinct construct. See the tautology analysis in F11 of
-  [role_signature_findings.md](role_signature_findings.md).
+  distinct construct. See the tautology analysis in the role catalog (F11).
 - **why it existed (retired):** k-means cluster ids were unstable across re-index;
   the archetype layer mapped names to centroids to paper over that. It was also a
   third name-normalisation tier (`framework-alias → canonical role → archetype`) on
@@ -158,8 +156,8 @@ first and better serves the second.
 - **was (k-means):** one `cluster_id` per symbol; supporting roles from cluster
   co-membership — multi-label was often centroid confusion.
 - **now:** each L2 role is an independent predicate; a symbol gets primary +
-  supporting roles from `role_cascade.py`. Straddlers in F8
-  ([role_signature_findings.md](role_signature_findings.md)) are first-class
+  supporting roles from `role_cascade.py`. Straddlers documented in the role
+  catalog (F8) are first-class
   multi-label rows (`factory + orchestrator`, …).
 - **consumer:** `roles_of` / `supporting_roles_of` in `role_fulfilment.py` read
   persisted Pass-1 assignments.
@@ -213,6 +211,8 @@ Re-validate with `python -m QA.axis_benchmark` and `tests/unit/test_role_cluster
 
 ## Related
 - [role_catalog.md](role_catalog.md) — role vocabulary and discriminators.
-- [role_signature_findings.md](role_signature_findings.md) — the collisions that motivate this.
+- [role_predicates.md](role_predicates.md) — L1/L2 predicate tables (code snapshot).
+- [logical_roles_structural_closure.md](logical_roles_structural_closure.md) — logical vs structural closure (eval design).
+- [question_structural_role_profiles.md](question_structural_role_profiles.md) — gold per-question profiles (design draft).
 - spec_unified_ranking.md (removed) — consumes derived roles.
 - spec_multi_label_intent.md (removed) — query-side multi-label.

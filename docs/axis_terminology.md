@@ -12,7 +12,8 @@ or benchmark labels.
 | **fact** | A physical AST or graph observation. The raw event: this `Call` node, this `IMPORTS` edge, this attribute write. Lives in the source / index, not in the axis layer. |
 | **axis bit** | A normalized fact on one of three axes (CFG, DFG, STRUCT). Emitted by the L1 extractor. Carries no semantics beyond "this physical pattern is present" and an optional structured `payload`. |
 | **contract** | A provable combination of axis bits on one symbol (or a tightly-scoped neighbourhood). A contract is a structural proof pattern; it never names a framework or a benchmark role. |
-| **role** | A user-facing or benchmark-facing requirement. The thing a question expects to find: `binding_surface`, `api_surface`, `error_surface`. A role is satisfied when ≥1 of its contracts is proven. |
+| **role** | A user-facing or benchmark-facing requirement. The thing a question expects to find: `binding_surface`, `api_surface`, `error_surface`. A role is satisfied when ≥1 of its contracts is proven. See [logical_roles_structural_closure.md](logical_roles_structural_closure.md) for logical role vs structural closure. |
+| **file tier** | A file's structural place in the repo (`core`, `test`, `example`, `doc`, `stub`, `reexport`), derived at index time from path topology + file shape — not semantics. The ranker demotes or promotes tiers by intent (behaviour vs impact). See [file_tier_signal.md](file_tier_signal.md). |
 | **bucket** | An optimisation grouping. Buckets are how the engine batches work (which symbols to score together, which retrieval tier to draw from). Buckets are not roles and not contracts — they exist purely for performance and pruning. |
 
 ## Layer responsibilities by term

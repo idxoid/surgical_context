@@ -1,7 +1,3 @@
-# Non-Python benchmark questions — merged from real_repo_question_pack.yaml,
-# click_questions.yaml, celery_questions.yaml, and publick_repo_question_pack_2.yaml.
-# JS/TS repos only (redux_toolkit, express, nestjs, vue).
-
 repositories:
 - id: express
   name: Express
@@ -9,15 +5,16 @@ repositories:
   repo_url: https://github.com/expressjs/express
   docs_url: https://expressjs.com/
   language: javascript
-  rationale: Lightweight Node.js HTTP framework with app/request/response facades and routing/middleware delegation to the external router package—good for testing minimal-core patterns and package-boundary
-    interactions.
+  rationale: Lightweight Node.js HTTP framework with app/request/response facades and routing/middleware delegation to the
+    external router package—good for testing minimal-core patterns and package-boundary interactions.
 - id: nestjs
   name: NestJS
   clone_url: https://github.com/nestjs/nest.git
   repo_url: https://github.com/nestjs/nest
   docs_url: https://docs.nestjs.com/
   language: typescript
-  rationale: Enterprise-grade TypeScript framework with decorators, dependency injection, and modular architecture—tests architectural patterns and complex metadata systems.
+  rationale: Enterprise-grade TypeScript framework with decorators, dependency injection, and modular architecture—tests architectural
+    patterns and complex metadata systems.
 - id: redux_toolkit
   name: Redux Toolkit
   clone_url: https://github.com/reduxjs/redux-toolkit.git
@@ -31,7 +28,8 @@ repositories:
   repo_url: https://github.com/vuejs/core
   docs_url: https://vuejs.org/
   language: typescript
-  rationale: Vue 3 core repository with runtime-core, reactivity, and compiler-core packages—tests UI framework patterns and reactive state management.
+  rationale: Vue 3 core repository with runtime-core, reactivity, and compiler-core packages—tests UI framework patterns and
+    reactive state management.
 questions:
 - id: rtk_q01
   repo: redux_toolkit
@@ -42,11 +40,6 @@ questions:
   intent: trace_dependency
   expected_mode: symbol
   mechanism: rtk_slice_generation
-  required_roles:
-  - public_entrypoint
-  - action_creator_factory
-  - reducer_builder
-  - composition_result
   expected_symbols:
   - createSlice
   - createAction
@@ -64,11 +57,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: rtk_store_configuration
-  required_roles:
-  - public_entrypoint
-  - middleware_builder
-  - enhancer_builder
-  - devtools_config
   expected_symbols:
   - configureStore
   - getDefaultMiddleware
@@ -84,11 +72,6 @@ questions:
   intent: trace_dependency
   expected_mode: symbol
   mechanism: rtk_async_thunk_lifecycle
-  required_roles:
-  - public_entrypoint
-  - lifecycle_action_creators
-  - async_executor
-  - runtime_surface
   expected_symbols:
   - createAsyncThunk
   expected_files:
@@ -102,11 +85,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: rtk_query_api_slice
-  required_roles:
-  - public_entrypoint
-  - endpoint_definition
-  - generated_api_surface
-  - store_integration
   expected_symbols:
   - createApi
   expected_files:
@@ -116,15 +94,12 @@ questions:
   repo: redux_toolkit
   core12: false
   symbol: createSlice
-  question: If I change the generated action type format in createSlice, what parts of the packages and tests are likely to break?
+  question: If I change the generated action type format in createSlice, what parts of the packages and tests are likely to
+    break?
   difficulty: hard
   intent: impact_analysis
   expected_mode: symbol
   mechanism: rtk_action_type_impact
-  required_roles:
-  - impact_runtime
-  - impact_public_api
-  - impact_test_surface
   expected_symbols:
   - createSlice
   - createAction
@@ -141,11 +116,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: rtk_listener_middleware
-  required_roles:
-  - public_entrypoint
-  - action_interceptor
-  - side_effect_executor
-  - docs_or_concept
   expected_symbols:
   - createListenerMiddleware
   expected_files:
@@ -159,11 +129,6 @@ questions:
   intent: explain_behavior
   expected_mode: workspace
   mechanism: rtk_monorepo_structure
-  required_roles:
-  - public_entrypoint
-  - core_runtime
-  - docs_or_concept
-  - supporting_surface
   expected_symbols:
   - configureStore
   - createSlice
@@ -177,16 +142,12 @@ questions:
   repo: redux_toolkit
   core12: false
   symbol: SliceRouter
-  question: Where is SliceRouter implemented, and if it does not exist, what is the closest real mechanism that coordinates slice registration or composition?
+  question: Where is SliceRouter implemented, and if it does not exist, what is the closest real mechanism that coordinates
+    slice registration or composition?
   difficulty: medium
   intent: explain_behavior
   expected_mode: workspace
   mechanism: nonexistent_symbol_nearest_mechanism
-  required_roles:
-  - negative_lookup
-  - nearest_real_mechanism
-  - public_entrypoint
-  - composition_result
   expected_symbols:
   - createSlice
   - combineSlices
@@ -203,11 +164,6 @@ questions:
   intent: trace_dependency
   expected_mode: symbol
   mechanism: express_routing_dispatch
-  required_roles:
-  - public_entrypoint
-  - route_matcher
-  - handler_executor
-  - middleware_chain
   expected_symbols:
   - createApplication
   - app
@@ -225,11 +181,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: express_middleware_execution
-  required_roles:
-  - public_entrypoint
-  - middleware_registry
-  - handler_executor
-  - control_flow
   expected_symbols:
   - use
   - router
@@ -246,11 +197,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: express_router_composition
-  required_roles:
-  - public_entrypoint
-  - route_builder
-  - composition_pattern
-  - mounting
   expected_symbols:
   - Router
   - use
@@ -267,11 +213,6 @@ questions:
   intent: trace_dependency
   expected_mode: symbol
   mechanism: express_response_methods
-  required_roles:
-  - public_entrypoint
-  - response_builder
-  - serializer_handle
-  - header_handler
   expected_symbols:
   - send
   - json
@@ -288,11 +229,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: nestjs_decorator_routing
-  required_roles:
-  - public_entrypoint
-  - decorator_processor
-  - metadata_registry
-  - route_builder
   expected_symbols:
   - Controller
   - Get
@@ -311,11 +247,6 @@ questions:
   intent: trace_dependency
   expected_mode: symbol
   mechanism: nestjs_dependency_injection
-  required_roles:
-  - public_entrypoint
-  - di_container
-  - provider_registry
-  - instance_resolver
   expected_symbols:
   - Injectable
   - Inject
@@ -334,11 +265,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: nestjs_module_composition
-  required_roles:
-  - public_entrypoint
-  - module_registry
-  - composition_pattern
-  - config_surface
   expected_symbols:
   - Module
   - imports
@@ -357,10 +283,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: nestjs_pipe_validation
-  required_roles:
-  - public_entrypoint
-  - validator_handle
-  - middleware_pattern
   expected_symbols:
   - Pipe
   - PipeTransform
@@ -377,11 +299,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: vue_app_initialization
-  required_roles:
-  - public_entrypoint
-  - reactive_system
-  - component_factory
-  - lifecycle_handler
   expected_symbols:
   - createApp
   - App
@@ -399,11 +316,6 @@ questions:
   intent: explain_behavior
   expected_mode: symbol
   mechanism: vue_reactivity_ref_system
-  required_roles:
-  - public_entrypoint
-  - reactive_proxy
-  - dependency_tracker
-  - change_notifier
   expected_symbols:
   - Ref
   - reactive
@@ -421,11 +333,6 @@ questions:
   intent: trace_dependency
   expected_mode: symbol
   mechanism: vue_template_compilation_rendering
-  required_roles:
-  - public_entrypoint
-  - template_compiler
-  - vnode_builder
-  - patch_engine
   expected_symbols:
   - render
   - compile
@@ -443,11 +350,6 @@ questions:
   intent: trace_dependency
   expected_mode: symbol
   mechanism: vue_watcher_setup
-  required_roles:
-  - public_entrypoint
-  - dependency_tracker
-  - effect_executor
-  - runtime_surface
   expected_symbols:
   - watch
   - watchEffect
@@ -458,11 +360,6 @@ questions:
   repo: redux_toolkit
   symbol: createEntityAdapter
   question: How does createEntityAdapter normalize state by maintaining arrays of IDs and dictionary maps of entities?
-  required_roles:
-  - api_surface
-  - factory_surface
-  - representation_surface
-  - runtime_surface
   expected_symbols:
   - createEntityAdapter
   - getInitialState
@@ -475,11 +372,6 @@ questions:
   repo: redux_toolkit
   symbol: providesTags
   question: How does RTK Query use providesTags and invalidatesTags to automate cache invalidation?
-  required_roles:
-  - api_surface
-  - config_surface
-  - runtime_surface
-  - orchestrator
   expected_symbols:
   - providesTags
   - invalidatesTags
@@ -491,11 +383,6 @@ questions:
   repo: redux_toolkit
   symbol: onQueryStarted
   question: How are optimistic updates implemented using onQueryStarted and updateQueryData inside RTK Query?
-  required_roles:
-  - registration_step
-  - executor
-  - runtime_surface
-  - orchestrator
   expected_symbols:
   - onQueryStarted
   - updateQueryData
@@ -507,11 +394,6 @@ questions:
   repo: redux_toolkit
   symbol: createSelector
   question: How does createSelector (re-exported from Reselect) memoize derived state to prevent unnecessary React renders?
-  required_roles:
-  - api_surface
-  - factory_surface
-  - runtime_surface
-  - representation_surface
   expected_symbols:
   - createSelector
   - defaultMemoize
@@ -521,11 +403,6 @@ questions:
   repo: redux_toolkit
   symbol: extraReducers
   question: How does the builder callback in extraReducers process external actions using addCase and addMatcher?
-  required_roles:
-  - config_surface
-  - composition_surface
-  - registration_step
-  - factory_surface
   expected_symbols:
   - extraReducers
   - addCase
@@ -538,11 +415,6 @@ questions:
   repo: redux_toolkit
   symbol: setupListeners
   question: How does setupListeners hook into the window focus and network reconnect events to trigger refetches?
-  required_roles:
-  - api_surface
-  - registration_step
-  - runtime_surface
-  - executor
   expected_symbols:
   - setupListeners
   - onFocus
@@ -553,11 +425,6 @@ questions:
   repo: express
   symbol: json
   question: How does express.json() middleware buffer the incoming HTTP stream and parse it into req.body?
-  required_roles:
-  - api_surface
-  - composition_surface
-  - binding_surface
-  - runtime_surface
   expected_symbols:
   - json
   - bodyParser
@@ -568,11 +435,6 @@ questions:
   repo: express
   symbol: static
   question: How does express.static() intercept requests, resolve file paths, and handle caching headers?
-  required_roles:
-  - api_surface
-  - composition_surface
-  - runtime_surface
-  - integration_surface
   expected_symbols:
   - static
   - serveStatic
@@ -582,11 +444,6 @@ questions:
   repo: express
   symbol: params
   question: How does the router extract parameterized URL segments (e.g., /user/:id) and attach them to req.params?
-  required_roles:
-  - request_router
-  - binding_surface
-  - representation_surface
-  - runtime_surface
   expected_symbols:
   - params
   - match
@@ -599,11 +456,6 @@ questions:
   repo: express
   symbol: locals
   question: How are res.locals passed down to the template engine during res.render()?
-  required_roles:
-  - binding_surface
-  - runtime_surface
-  - integration_surface
-  - representation_surface
   expected_symbols:
   - locals
   - render
@@ -615,11 +467,6 @@ questions:
   repo: express
   symbol: next
   question: What happens internally in the Layer iteration when a middleware calls next(err) with an argument?
-  required_roles:
-  - composition_surface
-  - runtime_surface
-  - error_surface
-  - executor
   expected_symbols:
   - next
   - handle_error
@@ -631,11 +478,6 @@ questions:
   repo: express
   symbol: view
   question: How does app.engine() and app.set('view engine') coordinate the resolution and compilation of template files?
-  required_roles:
-  - api_surface
-  - registration_step
-  - config_surface
-  - integration_surface
   expected_symbols:
   - engine
   - set
@@ -648,11 +490,6 @@ questions:
   repo: nestjs
   symbol: Catch
   question: How do Exception Filters intercept thrown HttpException instances and map them to standard HTTP responses?
-  required_roles:
-  - api_surface
-  - registration_step
-  - error_surface
-  - runtime_surface
   expected_symbols:
   - Catch
   - ExceptionFilter
@@ -665,11 +502,6 @@ questions:
   repo: nestjs
   symbol: CanActivate
   question: How are Guards evaluated before Interceptors and Pipes in the NestJS request lifecycle?
-  required_roles:
-  - api_surface
-  - orchestrator
-  - runtime_surface
-  - executor
   expected_symbols:
   - CanActivate
   - GuardsContextCreator
@@ -681,11 +513,6 @@ questions:
   repo: nestjs
   symbol: CallHandler
   question: How do Interceptors use CallHandler.handle() to wrap the execution stream using RxJS Observables?
-  required_roles:
-  - api_surface
-  - interceptor
-  - executor
-  - runtime_surface
   expected_symbols:
   - CallHandler
   - NestInterceptor
@@ -698,11 +525,6 @@ questions:
   repo: nestjs
   symbol: createParamDecorator
   question: How does createParamDecorator extract data from the ExecutionContext to inject into controller arguments?
-  required_roles:
-  - api_surface
-  - factory_surface
-  - binding_surface
-  - runtime_surface
   expected_symbols:
   - createParamDecorator
   - ExecutionContextHost
@@ -714,11 +536,6 @@ questions:
   repo: nestjs
   symbol: DynamicModule
   question: How does the forRoot/register pattern construct a DynamicModule with custom providers at boot time?
-  required_roles:
-  - representation_surface
-  - config_surface
-  - composition_surface
-  - registration_step
   expected_symbols:
   - DynamicModule
   - ModuleMetadata
@@ -730,11 +547,6 @@ questions:
   repo: nestjs
   symbol: MessagePattern
   question: How does @MessagePattern register RPC routes for the microservice transport layer?
-  required_roles:
-  - api_surface
-  - registration_step
-  - integration_surface
-  - runtime_surface
   expected_symbols:
   - MessagePattern
   - Server
@@ -745,12 +557,8 @@ questions:
 - id: vue_new_q01
   repo: vue
   symbol: compileScript
-  question: How does the SFC compiler transform <script setup> macro bindings into the component's setup() function return object?
-  required_roles:
-  - api_surface
-  - orchestrator
-  - binding_surface
-  - representation_surface
+  question: How does the SFC compiler transform <script setup> macro bindings into the component's setup() function return
+    object?
   expected_symbols:
   - compileScript
   - SFCScriptCompileOptions
@@ -761,11 +569,6 @@ questions:
   repo: vue
   symbol: provide
   question: How do Provide and Inject traverse the component parent chain to resolve dependencies across deep hierarchies?
-  required_roles:
-  - api_surface
-  - binding_surface
-  - runtime_surface
-  - representation_surface
   expected_symbols:
   - provide
   - inject
@@ -777,11 +580,6 @@ questions:
   repo: vue
   symbol: computed
   question: How does a computed property know when to re-evaluate itself versus returning the cached value?
-  required_roles:
-  - api_surface
-  - representation_surface
-  - runtime_surface
-  - executor
   expected_symbols:
   - computed
   - ComputedRefImpl
@@ -793,12 +591,8 @@ questions:
 - id: vue_new_q04
   repo: vue
   symbol: Teleport
-  question: How does the <Teleport> built-in component detach its children from the main VNode tree and append them to a target DOM node?
-  required_roles:
-  - api_surface
-  - representation_surface
-  - runtime_surface
-  - executor
+  question: How does the <Teleport> built-in component detach its children from the main VNode tree and append them to a target
+    DOM node?
   expected_symbols:
   - Teleport
   - TeleportImpl
@@ -810,11 +604,6 @@ questions:
   repo: vue
   symbol: Suspense
   question: How does the Suspense component coordinate async dependencies before switching from fallback to default content?
-  required_roles:
-  - api_surface
-  - runtime_surface
-  - executor
-  - orchestrator
   expected_symbols:
   - Suspense
   - SuspenseImpl
@@ -826,11 +615,6 @@ questions:
   repo: vue
   symbol: withDirectives
   question: How are custom directives bound to a VNode and when are lifecycle hooks like mounted and updated triggered?
-  required_roles:
-  - api_surface
-  - binding_surface
-  - registration_step
-  - runtime_surface
   expected_symbols:
   - withDirectives
   - invokeDirectiveHook

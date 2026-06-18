@@ -32,9 +32,11 @@ Pass-1 role inference uses **call-graph topology + per-edge-type fan only**
 a file stem.
 - **Removed, do not reintroduce:** `_semantic_tokens`, `symbol_name_matches_file_stem`,
   name-token role tests, keyword/name-pattern branches in role inference.
-- **Allowed:** path patterns (`NOISE_PATH_PATTERNS`) **only** for impact
-  partitioning (test-surface vs runtime-surface) and for excluding test fixtures
-  from Pass-1 assignment — never to decide a semantic role.
+- **Allowed:** path-based **file tier** ([file_tier_signal.md](file_tier_signal.md))
+  for retrieval demotion/promotion and test-surface routing — structural path
+  topology only, never to decide a semantic role. Legacy
+  `NOISE_PATH_PATTERNS` / `is_test_path` shims are being subsumed by tier;
+  do not add new path-pattern role logic.
 
 ## P4 — Fix the engine, not the symptom
 When a role/retrieval is wrong, add the **missing structural signal**, not a patch:
@@ -102,7 +104,8 @@ visibly.
    a name match or a benchmark lookup.
 5. **Measure** on the indexed benchmark before and after (P7); report regressions.
 
-See [role_signature_findings.md](role_signature_findings.md),
-[role_clustering_architecture.md](role_clustering_architecture.md), and
-[role_catalog.md](role_catalog.md) for the current role vocabulary, the open
-structural gaps, and the missing-edge inventory.
+See [role_clustering_architecture.md](role_clustering_architecture.md),
+[role_catalog.md](role_catalog.md), [role_predicates.md](role_predicates.md),
+and [logical_roles_structural_closure.md](logical_roles_structural_closure.md)
+for the current role vocabulary, L1/L2 predicate rules, the proposed
+logical→closure mapping, and the open structural gaps.

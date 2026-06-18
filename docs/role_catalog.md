@@ -6,10 +6,11 @@ Each role lists its distinctive feature collection (the "признаки") and 
 concrete examples from the benchmark repos (celery, fastapi, flask, django,
 sqlalchemy, express, nestjs, pydantic, redux_toolkit, vue, click).
 
-> **Companion analysis:** [role_signature_findings.md](role_signature_findings.md)
-> records feature-duplication / discriminator collisions in this vocabulary, and
-> [role_clustering_architecture.md](role_clustering_architecture.md) records the
-> Pass-1 pipeline (discriminator-first L1/L2; k-means retired).
+> **Pass-1 pipeline:** [role_clustering_architecture.md](role_clustering_architecture.md)
+> records the discriminator-first L1/L2 cascade (k-means retired).
+> Predicate tables: [role_predicates.md](role_predicates.md).
+> Eval design (logical vs closure): [logical_roles_structural_closure.md](logical_roles_structural_closure.md),
+> [question_structural_role_profiles.md](question_structural_role_profiles.md).
 
 The signatures are written in the feature vocabulary Pass-1 assembles per symbol
 (`SymbolRow` / cascade predicates in `role_cascade.py`), fed by derived edges:
@@ -629,7 +630,8 @@ once).
 
 ## Related analysis
 
-- [role_signature_findings.md](role_signature_findings.md) — duplicate features
-  and discriminator collisions in this catalog, each with a what/how/why + decision.
+- [role_predicates.md](role_predicates.md) — L1 router + L2 predicate tables (`role_cascade.py`).
+- [logical_roles_structural_closure.md](logical_roles_structural_closure.md) — logical roles vs finer structural closure values.
+- [question_structural_role_profiles.md](question_structural_role_profiles.md) — gold per-question structural profiles (design draft).
 - [role_clustering_architecture.md](role_clustering_architecture.md) — Pass-1
   discriminator-first L1/L2 cascade + presence gate (replaces retired k-means).

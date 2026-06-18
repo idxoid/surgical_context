@@ -128,7 +128,7 @@ export interface PromptContextPayload {
     assembly?: {
       trace_id?: string;
       workspace_id?: string;
-      resolver_version?: string;
+      context_pipeline_version?: string;
       stage_timings_ms?: Record<string, number>;
       token_counts?: Record<string, number>;
       model_route?: Record<string, unknown>;

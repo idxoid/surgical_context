@@ -21,6 +21,9 @@ This folder contains the current product and technical documentation for the `co
 **Code Indexing:**
 - **[spec_indexer.md](docs/spec_indexer.md)** — code extraction, call typing, AFFECTS rebuild
 - **[spec_parser.md](docs/spec_parser.md)** — language adapters, symbol extraction
+- **[role_catalog.md](docs/role_catalog.md)** — structural role vocabulary (Pass 1)
+- **[role_predicates.md](docs/role_predicates.md)** — L1/L2 predicate rules (`role_cascade.py`)
+- **[role_clustering_architecture.md](docs/role_clustering_architecture.md)** — Pass-1 design decisions
 
 **Doc Indexing:**
 - **[spec_doc_indexer.md](docs/spec_doc_indexer.md)** — chunking, embedding, DocAnchor linking
@@ -29,6 +32,8 @@ This folder contains the current product and technical documentation for the `co
 **Context Assembly:**
 - **[architectura.md](docs/architectura.md)** — current end-to-end architecture and retrieval flow
 - **[axis_terminology.md](docs/axis_terminology.md)** — vocabulary for axis retrieval, roles, and traversal layers
+- **[file_tier_signal.md](docs/file_tier_signal.md)** — structural file-tier demotion/promotion for seed retrieval
+- **[walker_consolidation_plan.md](docs/walker_consolidation_plan.md)** — axis graph-walk unification (implemented)
 - **[spec_prompt_contract_observability.md](docs/spec_prompt_contract_observability.md)** — prompt contract fields, trace metadata, and observability
 
 **APIs & Infrastructure:**
@@ -41,6 +46,8 @@ This folder contains the current product and technical documentation for the `co
 
 **Advanced Topics:**
 - **[spec_eval_harness.md](docs/spec_eval_harness.md)** — axis benchmark harness, question packs, and CI gate
+- **[question_structural_role_profiles.md](docs/question_structural_role_profiles.md)** — gold per-question structural profiles (design draft)
+- **[logical_roles_structural_closure.md](docs/logical_roles_structural_closure.md)** — logical roles vs structural closure values
 - **[spec_embedding_versioning.md](docs/spec_embedding_versioning.md)** — managing embedding model versions
 - **[spec_affects_index.md](docs/spec_affects_index.md)** — reverse dependency index
 
@@ -48,7 +55,6 @@ This folder contains the current product and technical documentation for the `co
 - **[road_map.md](docs/road_map.md)** — phases and timelines
 - **[product_direction_memo.md](docs/product_direction_memo.md)** — narrow product direction before the next fork
 - **[project_gap_analysis.md](docs/project_gap_analysis.md)** — index for current gaps and supporting specs
-- **[review_findings_2026-04-17.md](docs/review_findings_2026-04-17.md)** — external review recommendations
 - **[architectural_review.md](docs/architectural_review.md)** — archived historical review (canonical architecture now in `architectura.md`)
 
 ---

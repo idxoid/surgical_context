@@ -1,13 +1,9 @@
-"""Axis -> PromptContext adapter (cascade migration, Phase 1).
+"""Axis -> PromptContext adapter.
 
 The ``/ask`` consumer is isolated from how context is *built* by a fixed
-contract: ``PromptContext`` (``context_engine.context_types``). Today four
-providers sit behind ``_resolve_ask_context`` (arbitrator/file/workspace/
-direct); this module is the FIFTH — it turns the axis pipeline's
-``ContextBundle`` list into a ``PromptContext`` the existing
-``to_system_prompt`` renders unchanged. No prompt/LLM rewrite: the
-consumer (``to_system_prompt`` -> ``ai_engine`` -> ``AskResponse``) is
-untouched.
+contract: ``PromptContext`` (``context_engine.context_types``). This module
+turns the axis pipeline's ``ContextBundle`` list into a ``PromptContext``
+that ``to_system_prompt`` renders unchanged.
 
 Modelling note: axis returns a RANKED SET (one bundle per candidate),
 while ``PromptContext`` wants one ``primary_source`` + dependencies. The

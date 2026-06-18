@@ -608,8 +608,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
         names the components it composes inline as identifiers inside arrays
         of the object literal. Each such identifier is a static AST reference
         from the decorated class to a composed symbol — the cleanest possible
-        signal for the "declarative metadata composition" pattern documented
-        in role_signature_findings as subtype 2 of composition_surface.
+        signal for the declarative metadata composition pattern (composition_surface
+        subtype 2).
 
         Emitted as edges from the decorated class to each referenced symbol,
         carrying the decorator name and the property key (``imports``,

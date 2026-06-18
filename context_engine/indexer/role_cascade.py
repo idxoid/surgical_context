@@ -1,7 +1,8 @@
 """Discriminator-first L1/L2 role assignment (Pass 1).
 
 Pipeline: L1 macro buckets → L2 role predicates → presence gate → per-symbol
-primary + supporting roles. See docs/role_clustering_architecture.md.
+primary + supporting roles. See docs/role_clustering_architecture.md and
+docs/role_predicates.md.
 """
 
 from __future__ import annotations

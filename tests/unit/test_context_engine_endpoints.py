@@ -21,7 +21,6 @@ class FakeCtx:
     mode = "surgical_full"
     index_manifest_id = ""
     index_manifest_schema_version = None
-    retrieval_trace: dict = {}
     budget: dict = {}
     primary_source = SymbolContext(
         symbol="process_payment",

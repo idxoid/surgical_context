@@ -2,6 +2,16 @@
 
 > **Status:** ✅ Implemented. Multi-language support is pluggable via the adapter registry. New languages add a single adapter file — no core edits. Phase 3.5 Graph Completeness extends adapters with `extract_imports()` and `extract_inheritance()` for richer dependency tracking.
 
+**Code:** [context_engine/parser/protocol.py](../context_engine/parser/protocol.py),
+[context_engine/parser/registry.py](../context_engine/parser/registry.py),
+[context_engine/parser/adapters/](../context_engine/parser/adapters/).
+
+**See also:**
+- [spec_parser.md](spec_parser.md) — `SymbolExtractor`, module layout, indexer handoff
+- [spec_indexer.md](spec_indexer.md) — indexed extensions derived from the registry
+- [role_predicates.md](role_predicates.md) — Pass-1 consumes extraction-time AST markers
+- [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md) — call typing after extract
+
 ## 1. Problem
 
 Currently, language-specific parsing logic is scattered across `context_engine/parser/`:
@@ -145,8 +155,8 @@ class InheritanceEdge:
 | `returns_constructed_type` | Top-level return yields a capitalized constructed call result |
 
 These markers are monotone booleans: multiple returns OR together. They are
-shape facts, not dataflow; they should not imply that the engine knows where each
-returned value came from.
+shape facts, not dataflow; Pass-1 predicates in [role_predicates.md](role_predicates.md)
+read them — they should not imply that the engine knows where each returned value came from.
 
 ## 3. Adapter Registry & Discovery
 
@@ -423,18 +433,18 @@ def test_go_extract_symbols():
 
 Adapter protocol and registry fully implemented:
 1. ✅ `context_engine/parser/protocol.py` with `LanguageAdapter` ABC and data classes.
-2. ✅ `context_engine/parser/adapters/` directory with `python_adapter.py` and `typescript_adapter.py`.
+2. ✅ `context_engine/parser/adapters/` — `python_adapter.py`, `typescript_adapter.py`, `javascript_adapter.py` (auto-discovered via `make_adapter()`).
 3. ✅ `SymbolExtractor` refactored to use registry and auto-detect language.
-4. ✅ 10 unit tests + 10 integration tests for adapter loading and language detection.
+4. ✅ Unit + integration tests for adapter loading and language detection (`tests/integration/test_adapter_registry.py`, per-adapter unit tests).
 
 ### Phase 3.5 ✅ Complete
 
 Graph Completeness extends adapters:
-1. ✅ `extract_imports()` implemented in Python (text-based) and TypeScript (regex-based) adapters.
-2. ✅ `extract_inheritance()` implemented in both adapters for class/interface hierarchies.
-3. ✅ Indexer Phase 5 & 6 create `IMPORTS` (File→File) and `DEPENDS_ON` (Symbol→Symbol) edges.
-4. ✅ Arbitrator BFS expanded to traverse all three edge types (CALLS, IMPORTS, DEPENDS_ON).
-5. ✅ 18 new tests verify complete import/inheritance extraction.
+1. ✅ `extract_imports()` implemented in Python (text-based) and TypeScript/JavaScript (regex/tree-sitter) adapters.
+2. ✅ `extract_inheritance()` implemented in Python and TypeScript adapters for class/interface hierarchies.
+3. ✅ Indexer creates `IMPORTS` (File→File) and `DEPENDS_ON` (Symbol→Symbol) edges from adapter output.
+4. ✅ Axis graph walks and Pass-1 fan profiles consume those dependency edges (replacing the deleted cascade BFS).
+5. ✅ Integration tests verify import/inheritance extraction (`tests/integration/test_graph_completeness.py`).
 
 ### Phase 3.6 ✅ Complete — TypeScript `object_api` surfaces
 
@@ -500,6 +510,7 @@ def test_detect_language_by_extension():
 
 ## 10. Related
 
-- [spec_parser.md](spec_parser.md) — current parser design (replaced by this).
-- [architectura.md §5.2](architectura.md) — schema for `IMPORTS` / `DEPENDS_ON` edges.
-- [road_map.md](road_map.md) — Phase 1 polish, Phase 3.5 extension.
+- [spec_parser.md](spec_parser.md) — parser module layout and indexer integration
+- [spec_indexer.md](spec_indexer.md) — file collection uses registry extensions
+- [architectura.md](architectura.md) — `IMPORTS` / `DEPENDS_ON` in the graph schema
+- [road_map.md](road_map.md) — Phase 1 polish, Phase 3.5 extension

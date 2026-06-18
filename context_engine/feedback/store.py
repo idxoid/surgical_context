@@ -59,7 +59,7 @@ class RetrievalSnapshot:
     mode: str
     question_hash: str
     question_tokens: int
-    resolver_version: str
+    context_pipeline_version: str
     selected_candidates: list[dict[str, Any]]
     documentation: list[dict[str, Any]]
     context_metadata: dict[str, Any]

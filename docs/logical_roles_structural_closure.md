@@ -1,6 +1,12 @@
 # Logical roles and structural closure
 
-This note separates two things that are currently too easy to collapse:
+Separates two things that are easy to collapse in eval and Pass-1 work:
+
+**See also:**
+- [question_structural_role_profiles.md](question_structural_role_profiles.md) — per-question gold `+`/`-` profiles (116 questions)
+- [role_catalog.md](role_catalog.md) / [role_predicates.md](role_predicates.md) — current engine vocabulary and L1/L2 rules
+- [axis_terminology.md](axis_terminology.md) — axis-layer terms (fact, contract, role, …)
+- [engineering_principles.md](engineering_principles.md) — structural-only invariants
 
 - **Logical role**: what the question needs to explain. This is the role a
   benchmark pack or query planner may ask for.
@@ -22,7 +28,8 @@ serves several logical roles.
 
 ## Why this exists
 
-`per_symbol_table.md` shows three problems.
+Per-symbol role diagnostics (e.g. `QA/axis_role_report.py`, benchmark seed vs
+expected analysis) show three problems.
 
 1. One logical role can mean different structures.
    `binding_surface` currently covers route params, request body arguments,

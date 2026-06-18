@@ -2,9 +2,8 @@
 
 Takes a free-text question, classifies it through the L4 intent
 classifier into one or more roles, runs the role-driven retrieval
-primitive for each role, and prints ranked candidates. This is the
-shape the future ``/ask`` endpoint will take when the legacy cascade is
-retired.
+primitive for each role, and prints ranked candidates — the same read
+path ``/ask`` uses via ``run_axis_retrieval``.
 
 Usage::
 

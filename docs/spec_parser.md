@@ -22,7 +22,8 @@ context_engine/parser/
   └── adapters/             # language plugins
       ├── treesitter_base.py
       ├── python_adapter.py
-      └── typescript_adapter.py
+      ├── typescript_adapter.py
+      └── javascript_adapter.py
 ```
 
 ### `SymbolMetadata` (Pydantic model)

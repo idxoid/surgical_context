@@ -83,7 +83,7 @@ delete.
 
 | module | importer | destination |
 |---|---|---|
-| ranker/signal_constants | `indexer/role_clustering.py` (`NOISE_PATH_PATTERNS`) | `context_engine/indexer/signal_constants.py` |
+| ranker/signal_constants | `indexer/role_clustering.py` (`NOISE_PATH_PATTERNS`) | `context_engine/indexer/signal_constants.py` → superseded for retrieval by [file_tier_signal.md](file_tier_signal.md) / `indexer/file_tier.py` |
 
 ## Class C — KEEP / relocate (shared runtime infra)
 
@@ -97,7 +97,7 @@ Not cascade; the axis answer path needs them too.
 | overlay (`InMemoryOverlay`) | main.py | runtime uncommitted-edit overlay; relocate to `context_engine/overlay.py` or keep |
 | doc_resolver (`DocResolver`) | main.py (`/search`, doc context) | doc-chunk retrieval; axis answer path needs docs |
 | types.`Subgraph` | `cache/layered.py` | cache type; relocate to cache or a small shared types module |
-| types.`RESOLVER_VERSION` | main.py | version stamp; relocate |
+| types.`CONTEXT_PIPELINE_VERSION` | main.py | version stamp; relocate |
 
 ## The provider↔consumer boundary (corrected understanding)
 

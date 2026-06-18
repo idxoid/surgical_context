@@ -58,7 +58,7 @@ class RetrievalSnapshot:
     query: str
     intent_distribution: dict[str, float]
     ranker_weights: dict[str, float]
-    resolver_version: str
+    context_pipeline_version: str
     selected_candidates: list[CandidateRecord]   # with scores
     pruned_candidates: list[CandidateRecord]     # with scores + reason
     timestamp: datetime

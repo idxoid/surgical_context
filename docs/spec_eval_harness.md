@@ -16,7 +16,7 @@ Committed under `QA/fixtures/`:
 | `questions_non_python.yaml` | Non-Python repos (express, nestjs, redux_toolkit, vue, …) |
 | `new_questions_python.yaml` | Additional Python questions |
 
-Each question entry includes `repo`, `question`, `expected_files`, and optional `expected_symbols`, `intent`, `mechanism`, `required_roles_canonical`.
+Each question entry includes `repo`, `question`, `expected_files`, and optional `expected_symbols`, `intent`, `mechanism`, `anchor`. Legacy cascade fields (`required_roles`, `required_roles_canonical`) were removed — axis gate validates `file_recall` only.
 
 ## 3. Tools
 
@@ -42,7 +42,7 @@ PYTHONPATH=. python QA/run_full_benchmark_sweep.py
 
 ### 3.2 `QA/axis_analysis.py`
 
-Mechanism/bit coverage audit over question packs (no Neo4j required):
+Extractor inventory + question-pack catalog (no Neo4j required):
 
 ```bash
 PYTHONPATH=. python -m QA.axis_analysis --out /tmp/axis_analysis
@@ -84,6 +84,8 @@ Per-question rows include `file_recall`, `seed_file_recall`, `pool_file_recall`,
 ## 6. Related
 
 - [axis_terminology.md](axis_terminology.md) — vocabulary for roles, contracts, traversal
+- [question_structural_role_profiles.md](question_structural_role_profiles.md) — gold structural profiles per benchmark question (design draft)
+- [logical_roles_structural_closure.md](logical_roles_structural_closure.md) — logical role vs structural closure model
 - [engineering_principles.md](engineering_principles.md) — structural-only invariants
 - [cascade_cleanup_inventory.md](cascade_cleanup_inventory.md) — what was removed and why
 - [spec_sidecar_api.md](spec_sidecar_api.md) — `/ask/axis` and indexing endpoints

@@ -1,7 +1,5 @@
 # Spec — Prompt Contract Observability (Phase 9)
 
-> **Partly superseded (2026-06-15).** Modules named here from the deleted ranking cascade (`ContextArbitrator`/`UnifiedRanker`/`graph_expander`/`qa_benchmark`/etc.) are gone — axis (`context_engine/axis/`) is the context + eval path. Non-cascade content still applies; see `cascade_cleanup_inventory.md`.
-
 
 > **Status:** Partially implemented. Ranking scores, provenance, pruning details, intent metadata, and ranker metadata are already present in the current prompt contract. Remaining gaps are consistent workspace/branch population, doc-anchor type/confidence, and richer stage timing coverage.
 
@@ -40,7 +38,7 @@ Without scores in the contract:
     "assembly": {
       "trace_id": "req_7f3a...",
       "workspace_id": "acme/surgical_context@main",
-      "resolver_version": "context-arbitrator-v2",
+      "context_pipeline_version": "context-axis-v1",
       "cache_hits": ["l1_body"]
     },
     "ranker": {
@@ -200,7 +198,7 @@ class AssemblyMetrics:
     compile_latency_ms: int
     trace_id: str
     workspace_id: str | None
-    resolver_version: str
+    context_pipeline_version: str
 
 # PromptContext gains:
 @dataclass

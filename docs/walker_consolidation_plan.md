@@ -1,5 +1,15 @@
 # Axis walker consolidation — plan
 
+**Status (2026-06): implemented.** `graph_traversal.py` / `AxisGraphTraversal`
+removed. Context expansion uses batched `walk_neighbours_grouped` in
+[context_builder.py](../context_engine/axis/context_builder.py); pool passes
+use [graph_walk.py](../context_engine/axis/graph_walk.py) (Neo4j or in-proc
+adjacency). [query_plan.py](../context_engine/axis/query_plan.py) maps
+`TraversalMode` → edge steps consumed by the grouped walk.
+
+Historical plan below — kept for rationale (precision via edge profiles, N→1
+batching).
+
 Merge the **two** axis graph-walk mechanisms into one core. Latency win;
 recall-neutral target. Does NOT depend on seed-floor (that work is done).
 

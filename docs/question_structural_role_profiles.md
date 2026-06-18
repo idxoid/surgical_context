@@ -1,7 +1,13 @@
 # Question structural role profiles
 
-This document intentionally ignores the current implementation. It is a gold
-design draft for benchmark questions as structural mechanism signatures.
+Design draft — **intentionally ignores the current implementation**. Gold
+target for benchmark questions as structural mechanism signatures (not yet
+machine-readable in fixtures).
+
+**See also:**
+- [logical_roles_structural_closure.md](logical_roles_structural_closure.md) — logical role vs structural closure layer
+- [role_catalog.md](role_catalog.md) — current Pass-1 role vocabulary
+- [spec_eval_harness.md](spec_eval_harness.md) — axis benchmark packs and gate
 
 Scope:
 

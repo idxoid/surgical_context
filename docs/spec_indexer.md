@@ -28,7 +28,7 @@ _INDEXED_EXTENSIONS = {ext for adapter in REGISTRY.supported_adapters() for ext 
 ```
 Currently: `.py`, `.pyi` (Python), `.ts`, `.tsx` (TypeScript).
 
-New languages can be added by creating an adapter in `context_engine/parser/adapters/` — no core changes needed.
+New languages can be added by creating an adapter in `context_engine/parser/adapters/` — no core changes needed. Protocol: [spec_language_adapter.md](spec_language_adapter.md).
 
 ---
 
@@ -177,7 +177,7 @@ The single-file hot path does not currently rebuild the full repository profile.
 
 ### Phase 7 — Repository role taxonomy (Pass 1)
 
-Implemented in `context_engine/indexer/role_clustering.py` + `context_engine/indexer/role_cascade.py`. A per-repository role assignment derived from call-graph topology via a **discriminator-first L1/L2 cascade** (see [role_clustering_architecture.md](role_clustering_architecture.md)). `repository_profile` reports indexability/capabilities only (no keyword mechanism detection). Python import extraction avoids a hand-maintained third-party allow-list.
+Implemented in `context_engine/indexer/role_clustering.py` + `context_engine/indexer/role_cascade.py`. A per-repository role assignment derived from call-graph topology via a **discriminator-first L1/L2 cascade** (see [role_clustering_architecture.md](role_clustering_architecture.md); predicate tables in [role_predicates.md](role_predicates.md)). `repository_profile` reports indexability/capabilities only (no keyword mechanism detection). Python import extraction avoids a hand-maintained third-party allow-list.
 
 **Pipeline order.** The fast pipeline runs Pass 1 between Phase 4 (DocAnchor resolution) and Phase 6 (repository readiness profile), so the pass sees CALLS-family edges, COVERS, INJECTS, HANDLES, DECORATED_BY, INSTANTIATES, USES_TYPE (with `kind`), and RE_EXPORTS-derived features. The single-file hot path does not run Pass 1.
 
@@ -239,7 +239,7 @@ Pass-1 structural roles. See `cascade_cleanup_inventory.md`.
 **Trade-offs.**
 - Predicate thresholds can miss or over-fire on edge cases; fix by adding structural edges/features, not benchmark answer keys (see [engineering_principles.md](engineering_principles.md)).
 - Pass 1 runs on every full project pass, even when changes are small. The "no changed files" branch reuses the existing taxonomy from the Workspace.
-- Some roles remain honestly unmapped until dynamic-dispatch / dataflow gaps are closed (`request_router`, parts of `factory_surface`, and binding/data-shape roles). Phase A return-shape markers are persisted and visible to Pass 1, but they do not yet replace field/iteration/value-flow analysis — see [role_signature_findings.md](role_signature_findings.md).
+- Some roles remain honestly unmapped until dynamic-dispatch / dataflow gaps are closed (`request_router`, parts of `factory_surface`, and binding/data-shape roles). Phase A return-shape markers are persisted and visible to Pass 1, but they do not yet replace field/iteration/value-flow analysis — see the open gaps in [role_catalog.md](role_catalog.md).
 
 ### Fast pipeline — graph enrichment (proxy + degree)
 
@@ -253,6 +253,8 @@ Stats keys: `proxy_bindings`, `proxy_calls_resolved`, `degree_recomputed`.
 **Removed (2026-06):** `framework_hints` and `ts_http_route_hints` wrote `SEMANTIC_HINT` edges via name/regex matching. They were not consumed by the axis read path; cross-language TS↔Python linking is scoped out until structural route/call edges exist.
 
 **Materialized degree (`in_degree` / `out_degree`).** Degree over the call/dep/ref/hint edge set is static topology, so it is computed once at index time and stored on each `Symbol`. The ranker's recovery queries read `coalesce(s.in_degree, 0)` instead of re-aggregating edges per query. The edge-type set counted is fixed in `Neo4jClient._DEGREE_REL_PATTERN` and **must** match what the ranker reads. To stay accurate under incremental `update`, degree is recomputed only over the **affected closure** (changed symbols ∪ their 1-hop neighbors, captured before mutation so a removed symbol's neighbor is still corrected), never globally. Newly created `ProxyBinding` nodes are folded into the closure seed set. Verified on click/flask/celery: 100% coverage, zero mismatch vs. a live recompute.
+
+**Materialized file tier (`file_tier`).** Each symbol row in LanceDB carries a structural file tier (`core`, `test`, `example`, `doc`, `stub`, `reexport`) derived at embed time from path topology + pure-reexport shape — see [file_tier_signal.md](file_tier_signal.md). The axis ranker applies intent-signed tier weights in seed/role retrieval (`role_retrieval.py`); graph walks still use the legacy `is_test_path` fence until step 5 of that spec lands.
 
 ---
 
