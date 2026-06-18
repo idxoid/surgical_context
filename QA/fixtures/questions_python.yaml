@@ -639,7 +639,7 @@ questions:
   - _embed_phase
   expected_files:
   - context_engine/indexer/fast/pipeline.py
-- id: surgical_context_q06_ranking_weights
+- id: surgical_context_q06
   repo: surgical_context
   core12: false
   symbol: apply_intent_axis_boost
@@ -659,7 +659,7 @@ questions:
   - context_engine/axis/role_retrieval.py
   - tests/unit/test_axis_ranking.py
   - QA/axis_benchmark.py
-- id: surgical_context_q06_token_budget_weights
+- id: surgical_context_q08
   repo: surgical_context
   core12: false
   symbol: _apply_token_credit_budget
@@ -679,8 +679,6 @@ questions:
   - context_engine/axis/context_builder.py
   - context_engine/axis/retrieval_budget.py
   - tests/unit/test_context_builder_budget.py
-  - tests/unit/test_retrieval_budget.py
-  - QA/axis_benchmark.py
 - id: surgical_context_q07
   repo: surgical_context
   core12: false
