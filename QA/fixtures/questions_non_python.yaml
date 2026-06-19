@@ -120,24 +120,20 @@ questions:
   - createListenerMiddleware
   expected_files:
   - packages/toolkit/src/listenerMiddleware
-- id: rtk_q07
+- id: rtk_workspace_q07
   repo: redux_toolkit
   core12: false
-  symbol: configureStore
-  question: In this monorepo, which packages are core runtime behavior and which are docs/examples/supporting surfaces?
+  symbol: root
+  question: In this monorepo, which packages/ workspace ships the core @reduxjs/toolkit runtime library, and which top-level directories are the docs/examples support surface rather than shipped runtime code?
   difficulty: medium
   intent: explain_behavior
   expected_mode: workspace
   mechanism: rtk_monorepo_structure
   expected_symbols:
-  - configureStore
-  - createSlice
-  - createApi
+  - "@reduxjs/toolkit"
   expected_files:
-  - packages
-  - docs
+  - packages/toolkit/src
   - examples
-  - website
 - id: rtk_q08
   repo: redux_toolkit
   core12: false
@@ -358,15 +354,19 @@ questions:
   - packages/runtime-core/src/apiWatch.ts
 - id: rtk_new_q01
   repo: redux_toolkit
+  core12: true
   symbol: createEntityAdapter
-  question: How does createEntityAdapter normalize state by maintaining arrays of IDs and dictionary maps of entities?
+  question: How does createEntityAdapter split normalization logic into state_adapter functions and compose the final adapter using object spreading?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: ts_object_composition
   expected_symbols:
   - createEntityAdapter
+  - createStateAdapter
   - getInitialState
-  - addOne
-  - setAll
   expected_files:
-  - packages/toolkit/src/entities/createEntityAdapter.ts
+  - packages/toolkit/src/entities/create_adapter.ts
   - packages/toolkit/src/entities/state_adapter.ts
 - id: rtk_new_q02
   repo: redux_toolkit
@@ -392,13 +392,19 @@ questions:
   - packages/toolkit/src/query/core/buildThunks.ts
 - id: rtk_new_q04
   repo: redux_toolkit
-  symbol: createSelector
-  question: How does createSelector (re-exported from Reselect) memoize derived state to prevent unnecessary React renders?
+  core12: true
+  symbol: createDraftSafeSelector
+  question: How does createDraftSafeSelector wrap Reselect's createSelector to detect Immer draft proxies and adapt memoization safety during state mutations?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: draft_safe_memoization
   expected_symbols:
-  - createSelector
-  - defaultMemoize
+  - createDraftSafeSelector
+  - createDraftSafeSelectorCreator
   expected_files:
-  - packages/toolkit/src/createSelector.ts
+  - packages/toolkit/src/createDraftSafeSelector.ts
+  - packages/toolkit/src/index.ts
 - id: rtk_new_q05
   repo: redux_toolkit
   symbol: extraReducers
@@ -443,15 +449,18 @@ questions:
 - id: express_new_q03
   repo: express
   symbol: params
-  question: How does the router extract parameterized URL segments (e.g., /user/:id) and attach them to req.params?
+  question: How does Express delegate parameterized URL extraction to the external router and interface with req.params using application routing settings?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: external_param_integration
   expected_symbols:
   - params
-  - match
-  - Layer
-  - Route
+  - lazyrouter
+  - request
   expected_files:
-  - lib/router/layer.js
-  - lib/router/index.js
+  - lib/application.js
+  - lib/request.js
 - id: express_new_q04
   repo: express
   symbol: locals
@@ -466,14 +475,16 @@ questions:
 - id: express_new_q05
   repo: express
   symbol: next
-  question: What happens internally in the Layer iteration when a middleware calls next(err) with an argument?
+  question: How does Express capture and handle errors that bubble out of the external router's next(err) pipeline within the application's final callback?
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: external_error_bubbling
   expected_symbols:
+  - handle
   - next
-  - handle_error
-  - Layer
   expected_files:
-  - lib/router/index.js
-  - lib/router/layer.js
+  - lib/application.js
 - id: express_new_q06
   repo: express
   symbol: view
