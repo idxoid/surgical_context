@@ -267,7 +267,10 @@ class LanceDBClient:
             self._index_profile = resolve_index_profile(index_profile)
         else:
             self._index_profile = active_index_profile()
-        self._db = lancedb.connect(DB_PATH)
+        # Storage opens lazily (see the table properties below): constructing a
+        # client touches no Lance connection or tables, so import and test setup
+        # stay side-effect free and different profiles can coexist in one process.
+        self._db_conn: Any = None
         self._model = None
         model_metadata = get_model_metadata(EMBED_MODEL)
         if model_metadata is None:
@@ -286,12 +289,6 @@ class LanceDBClient:
             if self._index_profile.name == AXIS_PYTHON_V1_PROFILE
             else set()
         )
-        self._table = self._open_or_reset_table(
-            self._index_profile.docs_table,
-            DOCS_SCHEMA,
-            required_columns={"id", "workspace_id", "file_path", "chunk", "pending", "vector"},
-        )
-        self._ensure_docs_optional_columns(self._table)
         self._symbols_schema = _symbols_schema_for_profile(self._index_profile)
         self._symbol_required_columns = {
             "uid",
@@ -302,40 +299,101 @@ class LanceDBClient:
             "vector",
             *self._symbol_axis_columns,
         }
-        self._sym_table = self._open_or_reset_table(
-            self._index_profile.symbols_table,
-            self._symbols_schema,
-            required_columns=self._symbol_required_columns,
-        )
+        # Lazily-opened table handles (backing fields for the table properties).
+        self._docs_table: Any = None
+        self._sym_table_obj: Any = None
+        self._axis_adjacency_table_obj: Any = None
+        self._axis_adjacency_external_table_obj: Any = None
         self._workspace_sym_tables: dict[str, Any] = {}
         self._workspace_adj_tables: dict[str, Any] = {}
         self._workspace_adj_external_tables: dict[str, Any] = {}
-        self._axis_adjacency_table = self._open_or_reset_table(
-            AXIS_ADJACENCY_TABLE,
-            AXIS_ADJACENCY_SCHEMA,
-            required_columns={
-                "workspace_id",
-                "uid",
-                "name",
-                "file_path",
-                "kind",
-                "out_edges_json",
-                "in_edges_json",
-            },
-        )
-        self._axis_adjacency_external_table = self._open_or_reset_table(
-            AXIS_ADJACENCY_EXTERNAL_TABLE,
-            AXIS_ADJACENCY_EXTERNAL_SCHEMA,
-            required_columns={
-                "workspace_id",
-                "sym_to_ext_json",
-                "ext_to_sym_json",
-            },
-        )
 
     @property
     def index_profile_name(self) -> str:
         return self._index_profile.name
+
+    @property
+    def _db(self):
+        # Lazy: open the Lance connection on first storage access, not at construction.
+        if self._db_conn is None:
+            self._db_conn = lancedb.connect(DB_PATH)
+        return self._db_conn
+
+    @property
+    def _table(self):
+        if self._docs_table is None:
+            self._docs_table = self._open_or_reset_table(
+                self._index_profile.docs_table,
+                DOCS_SCHEMA,
+                required_columns={"id", "workspace_id", "file_path", "chunk", "pending", "vector"},
+            )
+            self._ensure_docs_optional_columns(self._docs_table)
+        return self._docs_table
+
+    @property
+    def _sym_table(self):
+        if self._sym_table_obj is None:
+            self._sym_table_obj = self._open_or_reset_table(
+                self._index_profile.symbols_table,
+                self._symbols_schema,
+                required_columns=self._symbol_required_columns,
+            )
+        return self._sym_table_obj
+
+    @property
+    def _axis_adjacency_table(self):
+        if self._axis_adjacency_table_obj is None:
+            self._axis_adjacency_table_obj = self._open_or_reset_table(
+                AXIS_ADJACENCY_TABLE,
+                AXIS_ADJACENCY_SCHEMA,
+                required_columns={
+                    "workspace_id",
+                    "uid",
+                    "name",
+                    "file_path",
+                    "kind",
+                    "out_edges_json",
+                    "in_edges_json",
+                },
+            )
+        return self._axis_adjacency_table_obj
+
+    @property
+    def _axis_adjacency_external_table(self):
+        if self._axis_adjacency_external_table_obj is None:
+            self._axis_adjacency_external_table_obj = self._open_or_reset_table(
+                AXIS_ADJACENCY_EXTERNAL_TABLE,
+                AXIS_ADJACENCY_EXTERNAL_SCHEMA,
+                required_columns={
+                    "workspace_id",
+                    "sym_to_ext_json",
+                    "ext_to_sym_json",
+                },
+            )
+        return self._axis_adjacency_external_table_obj
+
+    # Setters keep the historical mutable-attribute contract (tests and reset
+    # paths assign these directly); they write the lazy backing field so a set
+    # value short-circuits the open-on-first-read.
+    @_db.setter
+    def _db(self, value):
+        self._db_conn = value
+
+    @_table.setter
+    def _table(self, value):
+        self._docs_table = value
+
+    @_sym_table.setter
+    def _sym_table(self, value):
+        self._sym_table_obj = value
+
+    @_axis_adjacency_table.setter
+    def _axis_adjacency_table(self, value):
+        self._axis_adjacency_table_obj = value
+
+    @_axis_adjacency_external_table.setter
+    def _axis_adjacency_external_table(self, value):
+        self._axis_adjacency_external_table_obj = value
 
     def _axis_symbol_payload(self, symbol: dict) -> dict[str, object]:
         if not self._symbol_axis_columns:
