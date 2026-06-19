@@ -1,11 +1,67 @@
 """Multi-user Neo4j Aura client with fallback to local Neo4j."""
 
+from __future__ import annotations
+
 import logging
 import os
+from typing import Any
+
+from neo4j import GraphDatabase
 
 from context_engine.database.neo4j_client import Neo4jClient
 
 logger = logging.getLogger(__name__)
+
+
+def connect_neo4j_driver(
+    *,
+    aura_username: str | None = None,
+    aura_password: str | None = None,
+    aura_instance_name: str | None = None,
+    local_uri: str | None = None,
+    local_user: str | None = None,
+    local_password: str | None = None,
+) -> tuple[Any, bool, bool]:
+    """Connect once with Aura-first fallback. Returns (driver, use_aura, local_fallback)."""
+    aura_username = aura_username or os.getenv("NEO4JAURA_USERNAME")
+    aura_password = aura_password or os.getenv("NEO4JAURA_PASSWORD")
+    aura_instance_name = aura_instance_name or os.getenv("NEO4J_INSTANCENAME")
+    local_uri = local_uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    local_user = local_user or os.getenv("NEO4J_USER", "neo4j")
+    local_password = local_password or os.getenv("NEO4J_PASSWORD", "password")
+
+    if aura_username and aura_password and aura_instance_name:
+        try:
+            aura_uri = AuraClient._build_aura_uri(aura_instance_name)
+            driver = GraphDatabase.driver(aura_uri, auth=(aura_username, aura_password))
+            with driver.session() as session:
+                session.run("RETURN 1").consume()
+            logger.info(
+                "Connected to Neo4j Aura (%s) as %s",
+                aura_instance_name,
+                aura_username,
+            )
+            return driver, True, False
+        except Exception as exc:
+            logger.warning("Aura connection failed: %s. Falling back to local Neo4j.", exc)
+            try:
+                driver = GraphDatabase.driver(
+                    local_uri,
+                    auth=(local_user, local_password),
+                )
+                with driver.session() as session:
+                    session.run("RETURN 1").consume()
+                logger.info("Connected to local Neo4j (%s) as fallback", local_uri)
+                return driver, False, True
+            except Exception as exc2:
+                logger.error("Both Aura and local Neo4j failed: %s", exc2)
+                raise
+
+    driver = GraphDatabase.driver(local_uri, auth=(local_user, local_password))
+    with driver.session() as session:
+        session.run("RETURN 1").consume()
+    logger.info("Connected to local Neo4j (%s) as %s", local_uri, local_user)
+    return driver, False, False
 
 
 class AuraClient(Neo4jClient):
@@ -20,63 +76,53 @@ class AuraClient(Neo4jClient):
         local_user: str | None = None,
         local_password: str | None = None,
         user_id: str | None = None,
+        *,
+        driver: Any | None = None,
+        use_aura: bool | None = None,
+        local_fallback: bool | None = None,
     ):
-        """
-        Initialize Aura client with fallback to local Neo4j.
-
-        Args:
-            aura_username: Aura username (env: NEO4JAURA_USERNAME)
-            aura_password: Aura password (env: NEO4JAURA_PASSWORD)
-            aura_instance_name: Aura instance name (env: NEO4J_INSTANCENAME)
-            local_uri: Local Neo4j URI (env: NEO4J_URI)
-            local_user: Local Neo4j user (env: NEO4J_USER)
-            local_password: Local Neo4j password (env: NEO4J_PASSWORD)
-            user_id: User identifier for multi-user tracking (env: USER_ID or auto-detected)
-        """
-        # Load from env if not provided
-        aura_username = aura_username or os.getenv("NEO4JAURA_USERNAME")
-        aura_password = aura_password or os.getenv("NEO4JAURA_PASSWORD")
-        aura_instance_name = aura_instance_name or os.getenv("NEO4J_INSTANCENAME")
-        local_uri = local_uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        local_user = local_user or os.getenv("NEO4J_USER", "neo4j")
-        local_password = local_password or os.getenv("NEO4J_PASSWORD", "password")
         self.user_id = user_id or os.getenv("USER_ID", "anonymous")
 
-        self.use_aura = False
-        self.local_fallback = False
+        if driver is not None:
+            super().__init__(driver=driver)
+            self.use_aura = bool(use_aura)
+            self.local_fallback = bool(local_fallback)
+            return
 
-        # Try Aura first
-        if aura_username and aura_password and aura_instance_name:
-            try:
-                aura_uri = self._build_aura_uri(aura_instance_name)
-                super().__init__(aura_uri, aura_username, aura_password)
-                self.use_aura = True
-                logger.info(f"✅ Connected to Neo4j Aura ({aura_instance_name}) as {aura_username}")
-            except Exception as e:
-                logger.warning(f"⚠️ Aura connection failed: {e}. Falling back to local Neo4j.")
-                self.use_aura = False
-                try:
-                    super().__init__(local_uri, local_user, local_password)
-                    self.local_fallback = True
-                    logger.info(f"✅ Connected to local Neo4j ({local_uri}) as fallback")
-                except Exception as e2:
-                    logger.error(f"❌ Both Aura and local Neo4j failed: {e2}")
-                    raise
-        else:
-            # No Aura config, use local Neo4j
-            super().__init__(local_uri, local_user, local_password)
-            logger.info(f"✅ Connected to local Neo4j ({local_uri}) as {local_user}")
+        connected_driver, self.use_aura, self.local_fallback = connect_neo4j_driver(
+            aura_username=aura_username,
+            aura_password=aura_password,
+            aura_instance_name=aura_instance_name,
+            local_uri=local_uri,
+            local_user=local_user,
+            local_password=local_password,
+        )
+        self.driver = connected_driver
+        self._owns_driver = True
+
+    @classmethod
+    def from_driver(
+        cls,
+        driver: Any,
+        *,
+        user_id: str = "anonymous",
+        use_aura: bool = False,
+        local_fallback: bool = False,
+    ) -> AuraClient:
+        """Request-scoped view over a process-wide driver (does not close the driver)."""
+        return cls(
+            user_id=user_id,
+            driver=driver,
+            use_aura=use_aura,
+            local_fallback=local_fallback,
+        )
 
     @staticmethod
     def _build_aura_uri(instance_name: str) -> str:
         """Build Aura URI from instance name."""
-        # Aura URI format: neo4j+s://{instance-id}.databases.neo4j.io
         if "databases.neo4j.io" in instance_name:
-            # Already a full URI-like string
             return f"neo4j+s://{instance_name}"
-        else:
-            # Just the instance ID
-            return f"neo4j+s://{instance_name}.databases.neo4j.io"
+        return f"neo4j+s://{instance_name}.databases.neo4j.io"
 
     def add_user_metadata(self, node_type: str, node_id: str, metadata: dict):
         """Add user-specific metadata to a node (e.g., last_modified_by, modified_at)."""

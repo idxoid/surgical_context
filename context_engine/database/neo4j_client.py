@@ -1,6 +1,7 @@
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 from neo4j import GraphDatabase
 
@@ -53,11 +54,26 @@ def _batched_class_api_edges(
 
 
 class Neo4jClient:
-    def __init__(self, uri, user, password):
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+    def __init__(
+        self,
+        uri: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+        *,
+        driver: Any | None = None,
+    ):
+        if driver is not None:
+            self.driver = driver
+            self._owns_driver = False
+        else:
+            if uri is None or user is None or password is None:
+                raise ValueError("uri, user, and password are required when driver is omitted")
+            self.driver = GraphDatabase.driver(uri, auth=(user, password))
+            self._owns_driver = True
 
     def close(self):
-        self.driver.close()
+        if self._owns_driver:
+            self.driver.close()
 
     def ensure_workspace(self, workspace_id: str = DEFAULT_WORKSPACE_ID):
         workspace = _split_workspace_id(workspace_id)

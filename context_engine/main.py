@@ -33,6 +33,7 @@ from context_engine.context_types import (
     SymbolContext,
 )
 from context_engine.database.lancedb_client import LanceDBClient
+from context_engine.database.provider import close_database_provider
 from context_engine.database.session import db_session
 from context_engine.doc_resolver import DocResolver
 from context_engine.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
@@ -1482,6 +1483,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         git_delta_poller.close()
         index_queue.close()
+        close_database_provider()
 
 
 app = FastAPI(title="Surgical Context Sidecar", lifespan=_app_lifespan)
