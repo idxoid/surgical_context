@@ -1,6 +1,6 @@
 import textwrap
 
-from context_engine.axis import PythonAxisExtractor
+from context_engine.parser.adapters.python_axis_extractor import PythonAxisExtractor
 
 
 def _profile(source: str, qualified_name: str, file_path: str = "pkg/tasks.py"):

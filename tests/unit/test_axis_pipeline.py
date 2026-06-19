@@ -221,3 +221,51 @@ def test_intent_budget_threads_proximity_utility_to_context_builder(stub_stages,
     assert utility_score_fn is not None
     assert utility_score_fn(_cand("near", "/x/near.py", score=0.5)) == pytest.approx(0.65)
     assert utility_score_fn(_cand("far", "/elsewhere/far.py", score=0.5)) == 0.5
+
+
+def test_seed_files_use_doc_anchor_bridge_not_doc_anchor_owners(stub_stages, monkeypatch):
+    import context_engine.axis.doc_anchor_bridge as _bridge_mod
+    import context_engine.axis.role_retrieval as _retr_mod
+
+    monkeypatch.setattr(
+        _retr_mod,
+        "find_seeds_by_doc_anchor",
+        lambda *a, **k: [
+            RoleCandidate(
+                uid="iface-uid",
+                name="CanActivate",
+                file_path="/x/can-activate.interface.ts",
+                role="doc_anchor",
+                satisfying_contracts=(),
+                satisfying_kinds=(),
+                contract_count=0,
+                kind_count=0,
+                vector_distance=0.1,
+                score=0.9,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        _bridge_mod,
+        "expand_doc_anchor_bridge",
+        lambda seeds, **k: [
+            RoleCandidate(
+                uid="consumer-uid",
+                name="GuardsConsumer",
+                file_path="/x/guards-consumer.ts",
+                role="doc_anchor_bridge",
+                satisfying_contracts=(),
+                satisfying_kinds=("reverse_uses_type",),
+                contract_count=0,
+                kind_count=1,
+                vector_distance=None,
+                score=0.35,
+            )
+        ],
+    )
+
+    result = _run()
+
+    assert "/x/can-activate.interface.ts" not in result.seed_files
+    assert "/x/guards-consumer.ts" in result.seed_files
+    assert result.raw_by_role["doc_anchor_bridge"][0].uid == "consumer-uid"

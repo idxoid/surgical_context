@@ -62,6 +62,35 @@ class PythonAdapter(TreeSitterAdapter):
     def ts_language_name(self) -> str:
         return "python"
 
+    def extract_axis_facts(
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        tree=None,
+        symbols: list[SymbolMetadata] | None = None,
+        project_root: str | None = None,
+    ):
+        """Return common symbol facts plus Python AST-physical axis facts."""
+        from context_engine.parser.adapters.python_axis_extractor import PythonAxisExtractor
+
+        facts = super().extract_axis_facts(
+            source_code,
+            file_path,
+            tree=tree,
+            symbols=symbols,
+            project_root=project_root,
+        )
+        try:
+            py_facts = PythonAxisExtractor().extract_facts(
+                source_code,
+                file_path,
+                project_root=project_root,
+            )
+        except SyntaxError:
+            py_facts = []
+        return [*facts, *py_facts]
+
     @property
     def symbol_query(self) -> str:
         return """
@@ -346,6 +375,15 @@ class PythonAdapter(TreeSitterAdapter):
                         symbol.iterates_attr_call = True
                     if it.get("assembles_mapping_in_loop"):
                         symbol.assembles_mapping_in_loop = True
+        from context_engine.parser.docstring_extract import attach_docstrings
+
+        attach_docstrings(
+            symbols,
+            source_code,
+            file_path,
+            tree=tree,
+            language="python",
+        )
         return symbols
 
     def _function_iteration_shapes(self, tree) -> dict[str, dict[str, bool]]:

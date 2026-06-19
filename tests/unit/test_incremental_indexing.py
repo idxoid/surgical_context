@@ -446,6 +446,53 @@ def run(x: int):
         assert json.loads(lance.rows[0]["axis_container_kinds_json"]) == []
         assert json.loads(lance.rows[0]["axis_contracts_json"]) == []
 
+    def test_fast_embed_phase_reuses_axis_facts_from_parse(self, tmp_path):
+        source = """
+@app.task(name="jobs.run")
+def run(x: int):
+    return {"x": x}
+"""
+        path = tmp_path / "pkg" / "tasks.py"
+        path.parent.mkdir()
+        path.write_text(source, encoding="utf-8")
+        from context_engine.indexer.fast.extractor import FastExtractor
+
+        extracted = FastExtractor(
+            project_root=str(tmp_path),
+            include_axis_facts=True,
+        ).extract_all(str(path))
+        assert extracted is not None
+        assert extracted.axis_facts is not None
+        run_symbol = next(s for s in extracted.symbols if s.name == "run")
+        diff = FileDiff(
+            extracted=extracted,
+            current_uids=[run_symbol.uid],
+            changed_uids=[run_symbol.uid],
+            changed_symbols=[run_symbol],
+        )
+
+        class FakeLance:
+            index_profile_name = AXIS_PYTHON_V1_PROFILE
+
+            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+                self.rows = symbols
+
+        lance = FakeLance()
+
+        encoded, removed = _embed_phase(
+            [diff],
+            lance,
+            "local/repo@main+axis_python_v1",
+            _NullReporter(),
+            project_path=str(tmp_path),
+        )
+
+        assert encoded == 1
+        assert removed == 0
+        assert {"callable_body", "decorator_application", "return_exit"} <= set(
+            lance.rows[0]["cfg_bits"]
+        )
+
     def test_fast_embed_phase_adds_axis_container_kind_payload(self, tmp_path):
         source = """
 class Settings:

@@ -2,8 +2,12 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from context_engine.axis.schema import AxisFact
 
 
 class SymbolMetadata(BaseModel):
@@ -51,6 +55,10 @@ class SymbolMetadata(BaseModel):
     # React rules-of-hooks surface: top-level function whose name is ``use*``
     # with uppercase 4th character (``useState``, not ``user``).
     is_react_hook: bool = False
+    # In-code documentation: Python docstring (first body literal) or TS/JS
+    # leading ``/** */`` JSDoc above the declaration. Indexed separately as a
+    # doc-anchor facet for weak-seed retrieval.
+    docstring: str = ""
 
 
 @dataclass
@@ -165,13 +173,39 @@ class LanguageAdapter(ABC):
         """
         return []
 
+    def extract_axis_facts(
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        tree=None,
+        symbols: list[SymbolMetadata] | None = None,
+        project_root: str | None = None,
+    ) -> list["AxisFact"]:
+        """Extract language-owned structural facts for the axis compiler.
+
+        The default implementation maps parser ``SymbolMetadata`` into the
+        shared axis vocabulary. Language adapters can add richer AST facts on
+        top while keeping indexer orchestration language-neutral.
+        """
+        from context_engine.parser.adapters.symbol_axis_extractor import SymbolAxisExtractor
+
+        symbol_rows = symbols if symbols is not None else self.extract_symbols(source_code, file_path)
+        return SymbolAxisExtractor().extract(symbol_rows, file_path).facts
+
     def extract_all(
-        self, source_code: str, file_path: str
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        include_axis_facts: bool = False,
+        project_root: str | None = None,
     ) -> tuple[
         list[SymbolMetadata],
         list[dict],
         list[ImportEdge],
         list[InheritanceEdge],
+        list["AxisFact"] | None,
     ]:
         """One-shot extraction of every per-file artifact.
 
@@ -180,9 +214,20 @@ class LanguageAdapter(ABC):
         overrides this to parse once and reuse the AST. Adapters that
         don't extend ``TreeSitterAdapter`` get the default fallback for
         free.
+
+        When ``include_axis_facts`` is true the fifth return value is the
+        axis fact list; otherwise it is ``None`` (not computed).
         """
         symbols = self.extract_symbols(source_code, file_path)
         calls = self.extract_calls_from_source(source_code, file_path)
         imports = self.extract_imports(source_code, file_path)
         inheritance = self.extract_inheritance(source_code, file_path)
-        return symbols, calls, imports, inheritance
+        axis_facts = None
+        if include_axis_facts:
+            axis_facts = self.extract_axis_facts(
+                source_code,
+                file_path,
+                symbols=symbols,
+                project_root=project_root,
+            )
+        return symbols, calls, imports, inheritance, axis_facts

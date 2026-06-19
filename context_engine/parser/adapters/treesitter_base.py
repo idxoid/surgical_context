@@ -241,8 +241,15 @@ class TreeSitterAdapter(LanguageAdapter):
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
 
-    def extract_all(self, source_code: str, file_path: str):
-        """Parse once, then run all four extractions over the same AST.
+    def extract_all(
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        include_axis_facts: bool = False,
+        project_root: str | None = None,
+    ):
+        """Parse once, then run all extractions over the same AST.
 
         Tree-sitter trees are immutable and cheap to share across queries
         within a single thread. ``FastExtractor`` already gives each worker
@@ -254,4 +261,13 @@ class TreeSitterAdapter(LanguageAdapter):
         calls = self.extract_calls_from_source(source_code, file_path, tree=tree)
         imports = self.extract_imports(source_code, file_path, tree=tree)
         inheritance = self.extract_inheritance(source_code, file_path, tree=tree)
-        return symbols, calls, imports, inheritance
+        axis_facts = None
+        if include_axis_facts:
+            axis_facts = self.extract_axis_facts(
+                source_code,
+                file_path,
+                tree=tree,
+                symbols=symbols,
+                project_root=project_root,
+            )
+        return symbols, calls, imports, inheritance, axis_facts

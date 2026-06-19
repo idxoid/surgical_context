@@ -168,6 +168,11 @@ def is_core_tier(tier: str) -> bool:
     return tier == TIER_CORE
 
 
+def is_doc_anchor_indexable_tier(tier: str) -> bool:
+    """Doc-anchor seed targets library code only — skip structural noise tiers."""
+    return is_core_tier(tier)
+
+
 __all__ = [
     "TIERS",
     "TIER_CORE",
@@ -179,4 +184,5 @@ __all__ = [
     "classify_file_tier",
     "is_pure_reexport_source",
     "is_core_tier",
+    "is_doc_anchor_indexable_tier",
 ]

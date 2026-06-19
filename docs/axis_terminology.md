@@ -32,7 +32,7 @@ Current implementation status:
 
 | layer | status |
 |---|---|
-| L1 extractor | implemented for Python in `context_engine.axis.python_extractor` |
+| L1 extractor | adapter-owned: `python_axis_extractor`, `typescript_axis_extractor`, plus shared `symbol_axis_extractor` |
 | L2 container kind | implemented in `context_engine.axis.container_kind` |
 | L3 contract compiler | implemented in `context_engine.axis.contract_compiler` |
 | L4 role resolver | not implemented in the axis stack |
@@ -45,7 +45,7 @@ as roles.
 ## Rules of use
 
 - **Never write a role at the extractor level.** The extractor emits axis bits;
-  any role-shaped name in `python_extractor.py` is a defect.
+  any role-shaped name in the language axis extractor is a defect.
 - **Never write a framework name in a contract.** Contracts are parameterised
   by container kind; the kind discriminates Flask/FastAPI/Celery without
   naming them.

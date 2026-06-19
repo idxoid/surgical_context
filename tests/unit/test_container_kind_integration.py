@@ -1,7 +1,7 @@
 import textwrap
 
-from context_engine.axis import PythonAxisExtractor
 from context_engine.axis.container_kind import ContainerKindClassifier, NullGraphProbe
+from context_engine.parser.adapters.python_axis_extractor import PythonAxisExtractor
 
 
 class _MarkerProbe(NullGraphProbe):

@@ -1,4 +1,4 @@
-"""Axis fact extraction layer."""
+"""Axis vocabulary, profiles, contracts, and query planning."""
 
 from context_engine.axis.contract_compiler import (
     AxisContractCompiler,
@@ -6,7 +6,6 @@ from context_engine.axis.contract_compiler import (
     AxisContractMatch,
     container_kind_matches_from_json,
 )
-from context_engine.axis.python_extractor import PythonAxisExtractor
 from context_engine.axis.query_plan import (
     AxisQueryPlan,
     AxisQueryRequest,
@@ -16,7 +15,6 @@ from context_engine.axis.query_plan import (
     render_lance_predicate,
 )
 from context_engine.axis.schema import AxisExtraction, AxisFact, AxisProfile
-from context_engine.axis.symbol_extractor import SymbolAxisExtractor
 
 __all__ = [
     "AxisContractCompiler",
@@ -29,8 +27,6 @@ __all__ = [
     "AxisQueryRequest",
     "AxisRequirement",
     "GraphExpansionStep",
-    "PythonAxisExtractor",
-    "SymbolAxisExtractor",
     "container_kind_matches_from_json",
     "compile_axis_query",
     "render_lance_predicate",

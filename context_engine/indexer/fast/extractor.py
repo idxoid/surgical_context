@@ -72,6 +72,7 @@ class ExtractedFile:
         "calls",
         "imports",
         "inheritance",
+        "axis_facts",
     )
 
     def __init__(
@@ -83,6 +84,7 @@ class ExtractedFile:
         calls: list[dict],
         imports: list[ImportEdge],
         inheritance: list[InheritanceEdge],
+        axis_facts: list | None = None,
     ):
         self.path = path
         self.source = source
@@ -91,15 +93,24 @@ class ExtractedFile:
         self.calls = calls
         self.imports = imports
         self.inheritance = inheritance
+        # ``None`` = not computed during parse; ``[]`` = computed, file has no facts.
+        self.axis_facts = axis_facts
 
 
 class FastExtractor:
     """Stateless-looking facade backed by thread-local adapters."""
 
-    def __init__(self, project_root: str | None = None, workspace_id: str | None = None):
+    def __init__(
+        self,
+        project_root: str | None = None,
+        workspace_id: str | None = None,
+        *,
+        include_axis_facts: bool = False,
+    ):
         self._adapters = _ThreadLocalAdapters()
         self.project_root = project_root
         self.workspace_id = workspace_id
+        self.include_axis_facts = include_axis_facts
 
     def _resolve_language(self, file_path: str) -> str:
         # Language detection is a pure dict lookup, safe to hit the
@@ -137,7 +148,12 @@ class FastExtractor:
         # tree-sitter adapters this means a single parse; for other
         # adapters it falls back to the four legacy methods (no regression).
         with project_root_scope(self.project_root, self.workspace_id):
-            symbols, calls, imports, inheritance = adapter.extract_all(source, file_path)
+            symbols, calls, imports, inheritance, axis_facts = adapter.extract_all(
+                source,
+                file_path,
+                include_axis_facts=self.include_axis_facts,
+                project_root=self.project_root,
+            )
         for sym in symbols:
             # Matches baseline's coarse 8-tokens-per-line estimate.
             line_count = sym.end_line - sym.start_line + 1
@@ -151,6 +167,7 @@ class FastExtractor:
             calls=calls,
             imports=imports,
             inheritance=inheritance,
+            axis_facts=axis_facts,
         )
 
 

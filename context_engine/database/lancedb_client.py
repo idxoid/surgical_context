@@ -150,6 +150,9 @@ DOCS_SCHEMA = pa.schema(
         pa.field("pending", pa.list_(pa.string())),
         pa.field("vector", pa.list_(pa.float32(), 384)),
         pa.field("embedding_metadata", pa.string()),  # JSON serialized
+        # Owner symbol uid for in-code docstring anchors — fast Stage-1 seed
+        # resolution without a Neo4j COVERS lookup at query time.
+        pa.field("owner_uid", pa.string()),
     ]
 )
 
@@ -288,6 +291,7 @@ class LanceDBClient:
             DOCS_SCHEMA,
             required_columns={"id", "workspace_id", "file_path", "chunk", "pending", "vector"},
         )
+        self._ensure_docs_optional_columns(self._table)
         self._symbols_schema = _symbols_schema_for_profile(self._index_profile)
         self._symbol_required_columns = {
             "uid",
@@ -363,6 +367,18 @@ class LanceDBClient:
         # No in-place migration: reset table and force full reindex.
         self._db.drop_table(name)
         return self._db.create_table(name, schema=schema)
+
+    def _ensure_docs_optional_columns(self, table) -> None:
+        """Add optional doc-table columns in place (no full-table reset)."""
+        try:
+            current = set(table.schema.names)
+        except Exception:
+            return
+        if "owner_uid" not in current:
+            try:
+                table.add_columns({"owner_uid": "cast('' as string)"})
+            except Exception:
+                pass
 
     def _open_workspace_partition_table(
         self,
@@ -527,6 +543,151 @@ class LanceDBClient:
     def scan_docs_workspace(self, workspace_id: str) -> list[dict]:
         """All doc chunks for a workspace (used by DocAnchor linking)."""
         return self._scan_table_by_workspace(self._table, workspace_id)
+
+    def scan_doc_anchors_workspace(self, workspace_id: str) -> list[dict]:
+        """Doc-chunk rows tied to an in-code symbol via ``owner_uid``."""
+        try:
+            if "owner_uid" not in set(self._table.schema.names):
+                return []
+        except Exception:
+            return []
+        rows = self.scan_docs_workspace(workspace_id)
+        return [row for row in rows if str(row.get("owner_uid") or "").strip()]
+
+    def search_doc_anchors(
+        self,
+        query_vector: list[float],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        limit: int = 12,
+        oversample: int = 8,
+    ) -> list[dict]:
+        """ANN search over in-code doc anchors for one workspace.
+
+        Uses the Lance vector index instead of scanning every doc row — critical
+        on large Python repos (django ~7k+ docstrings).
+        """
+        try:
+            if "owner_uid" not in set(self._table.schema.names):
+                return []
+        except Exception:
+            return []
+        ws = self._quote_delete_value(workspace_id)
+        k = max(limit, limit * max(1, oversample))
+        try:
+            results = (
+                self._table.search(query_vector)
+                .where(
+                    f"workspace_id = '{ws}' AND owner_uid IS NOT NULL AND owner_uid != ''",
+                    prefilter=True,
+                )
+                .limit(k)
+                .to_list()
+            )
+        except Exception:
+            return []
+        return [row for row in results if str(row.get("owner_uid") or "").strip()]
+
+    def upsert_symbol_docstring_rows(
+        self,
+        rows: list[dict],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> int:
+        """Embed and upsert in-code docstring anchor rows (one row per symbol)."""
+        if not rows:
+            return 0
+        if progress_callback:
+            progress_callback(f"doc-anchor embed: rows={len(rows)}")
+        vectors = self._embed(
+            [str(row.get("chunk") or "") for row in rows],
+            progress_callback=progress_callback,
+        )
+        payload: list[dict] = []
+        for row, vec in zip(rows, vectors, strict=False):
+            chunk = str(row.get("chunk") or "")
+            metadata = EmbeddingMetadata(
+                model_name=EMBED_MODEL,
+                model_version=self._model_metadata.version,
+                chunk_hash=compute_chunk_hash(chunk),
+                embedding_hash=compute_embedding_hash(vec),
+            )
+            payload.append(
+                {
+                    "id": str(row["id"]),
+                    "workspace_id": workspace_id,
+                    "file_path": str(row["file_path"]),
+                    "chunk": chunk,
+                    "pending": [],
+                    "vector": vec,
+                    "embedding_metadata": json.dumps(
+                        {
+                            "model_name": metadata.model_name,
+                            "model_version": metadata.model_version,
+                            "chunk_hash": metadata.chunk_hash,
+                            "embedding_hash": metadata.embedding_hash,
+                        }
+                    ),
+                    "owner_uid": str(row.get("owner_uid") or ""),
+                }
+            )
+        chunk_ids = [row["id"] for row in payload]
+        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
+        for start in range(0, len(chunk_ids), batch_size):
+            batch = chunk_ids[start : start + batch_size]
+            predicate = " OR ".join(
+                (
+                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                    f"AND id = '{self._quote_delete_value(chunk_id)}')"
+                )
+                for chunk_id in batch
+            )
+            try:
+                self._table.delete(predicate)
+            except Exception:
+                pass
+        add_batch_size = max(batch_size, 512)
+        for start in range(0, len(payload), add_batch_size):
+            self._table.add(payload[start : start + add_batch_size])
+        return len(payload)
+
+    def delete_doc_anchors_by_owner_uids(
+        self,
+        owner_uids: list[str],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> None:
+        """Remove doc-anchor rows whose ``owner_uid`` was tombstoned."""
+        uids = [uid for uid in owner_uids if uid]
+        if not uids:
+            return
+        try:
+            if "owner_uid" not in set(self._table.schema.names):
+                return
+        except Exception:
+            return
+        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
+        for start in range(0, len(uids), batch_size):
+            batch = uids[start : start + batch_size]
+            predicate = " OR ".join(
+                (
+                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                    f"AND owner_uid = '{self._quote_delete_value(uid)}')"
+                )
+                for uid in batch
+            )
+            try:
+                self._table.delete(predicate)
+            except Exception:
+                for uid in batch:
+                    try:
+                        self._table.delete(
+                            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                            f"AND owner_uid = '{self._quote_delete_value(uid)}')"
+                        )
+                    except Exception:
+                        pass
 
     def scan_symbols_workspace(
         self,
@@ -887,6 +1048,7 @@ class LanceDBClient:
                             "embedding_hash": metadata.embedding_hash,
                         }
                     ),
+                    "owner_uid": "",
                 }
             )
 
@@ -950,6 +1112,7 @@ class LanceDBClient:
                     "pending": pending,
                     "vector": vector,
                     "embedding_metadata": embedding_metadata,
+                    "owner_uid": str(row.get("owner_uid") or ""),
                 }
             ]
         )
@@ -995,6 +1158,7 @@ class LanceDBClient:
                     "pending": pending,
                     "vector": vector,
                     "embedding_metadata": row.get("embedding_metadata") or "{}",
+                    "owner_uid": str(row.get("owner_uid") or ""),
                 }
             )
 

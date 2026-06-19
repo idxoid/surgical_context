@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
 from context_engine.parser.adapters.ts_package_aliases import resolve_package_subpath
 from context_engine.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
@@ -77,6 +78,45 @@ class JavaScriptAdapter(TreeSitterAdapter):
     @property
     def ts_language_name(self) -> str:
         return "typescript"
+
+    def extract_axis_facts(
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        tree=None,
+        symbols: list[SymbolMetadata] | None = None,
+        project_root: str | None = None,
+    ):
+        """Return common symbol facts plus JavaScript AST-physical axis facts."""
+        from context_engine.parser.adapters.javascript_axis_extractor import (
+            JavaScriptAxisExtractor,
+        )
+
+        facts = super().extract_axis_facts(
+            source_code,
+            file_path,
+            tree=tree,
+            symbols=symbols,
+            project_root=project_root,
+        )
+        if tree is None:
+            tree = self._parse(source_code)
+        js_facts = JavaScriptAxisExtractor(self).extract_facts(
+            source_code,
+            file_path,
+            tree=tree,
+        )
+        return [*facts, *js_facts]
+
+    @staticmethod
+    def _iter_nodes(node):
+        yield from TypeScriptAdapter._iter_nodes(node)
+
+    _node_text = staticmethod(TypeScriptAdapter._node_text)
+
+    def _string_literal_text(self, node) -> str:
+        return TypeScriptAdapter._string_literal_text(self, node)
 
     @property
     def symbol_query(self) -> str:
@@ -323,6 +363,15 @@ class JavaScriptAdapter(TreeSitterAdapter):
         ts_helpers._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
         ts_helpers._mark_react_hook_symbols(symbols)
         ts_helpers._mark_behavioral_shape_symbols(symbols, tree)
+        from context_engine.parser.docstring_extract import attach_docstrings
+
+        attach_docstrings(
+            symbols,
+            source_code,
+            file_path,
+            tree=tree,
+            language=self.language_name,
+        )
         return symbols
 
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:

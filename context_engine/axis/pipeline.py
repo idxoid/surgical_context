@@ -43,6 +43,7 @@ from context_engine.axis import (
     axis_ranking,
     context_builder,
     cross_role_boost,
+    doc_anchor_bridge,
     impact_traversal,
     inheritance_ancestors,
     intent_classifier,
@@ -80,10 +81,12 @@ class AxisRetrievalResult:
     """Everything the three consumers need, shaped by none of them.
 
     ``raw_by_role`` is the final pool (post intersection + intent-axis
-    boost); ``seed_files`` is the pure-retrieval layer captured *before*
-    any pool expansion; ``candidates_for_context`` is the flattened list
-    actually fed to context expansion (already capped when the caller
-    passed ``context_seeds_per_role``); ``bundles`` is empty when
+    boost); ``seed_files`` is the retrieval layer before broad pool
+    expansion (intent roles, vector_seed, and doc-anchor *bridge*
+    implementors — not the doc-anchor owner files themselves);
+    ``candidates_for_context`` is the flattened list actually fed to
+    context expansion (already capped when the caller passed
+    ``context_seeds_per_role``); ``bundles`` is empty when
     ``with_context`` is false.
     """
 
@@ -179,8 +182,9 @@ def run_axis_retrieval(
             with tr.stage("adjacency"):
                 graph_walk_inproc.load_adjacency(db, workspace_id)
 
-    # Seed layer — pure vector/role retrieval, captured BEFORE any
-    # graph-walk pool expansion (lookahead is itself a pool pass).
+    # Seed layer — intent-role retrieval plus role-agnostic vector seeds.
+    # Doc-anchor owner paths are excluded; bridge implementors are included
+    # once ``doc_anchor_bridge`` runs (see below).
     seed_files: set[str] = {
         getattr(c, "file_path", "") or "" for cands in raw_by_role.values() for c in cands
     }
@@ -214,7 +218,35 @@ def run_axis_retrieval(
             impact_mode=impact_mode,
             prescanned=scanned,
         )
+        raw_by_role["doc_anchor"] = role_retrieval.find_seeds_by_doc_anchor(
+            workspace_id,
+            question,
+            embed_fn=_embed,
+            limit=seed_limit,
+            impact_mode=impact_mode,
+            prescanned=scanned,
+            lance=lance,
+        )
+
+    # Doc-anchor vector search lands on interface/docstring owners; seed
+    # recall wants the reverse-USES_TYPE implementors (``doc_anchor_bridge``),
+    # not those owner files.
+    doc_anchor_seeds = raw_by_role.get("doc_anchor") or []
+    if doc_anchor_seeds:
+        with tr.stage("doc_anchor_bridge"):
+            raw_by_role["doc_anchor_bridge"] = doc_anchor_bridge.expand_doc_anchor_bridge(
+                doc_anchor_seeds,
+                db=db,
+                workspace_id=workspace_id,
+                prescanned=scanned,
+                include_tests=include_tests_in_walks,
+            )
+
     seed_files |= {getattr(c, "file_path", "") or "" for c in raw_by_role.get("vector_seed", [])}
+    seed_files |= {
+        getattr(c, "file_path", "") or ""
+        for c in raw_by_role.get("doc_anchor_bridge", [])
+    }
 
     # Structural-neighbour pass — file-level adjacency via undirected
     # AFFECTS, plus the upward inheritance walk and the reactive phased

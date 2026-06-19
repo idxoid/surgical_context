@@ -589,7 +589,7 @@ Implemented runtime modules:
 
 | layer | module | output |
 |---|---|---|
-| L1 axis facts | `context_engine.axis.python_extractor` | `AxisFact`, `AxisProfile` |
+| L1 axis facts | `context_engine.parser.adapters.python_axis_extractor` | `AxisFact`, `AxisProfile` |
 | L2 container kinds | `context_engine.axis.container_kind` | `ContainerKindMatch` |
 | graph probe | `context_engine.axis.graph_probe` | structural marker/probe answers |
 | L3 contracts | `context_engine.axis.contract_compiler` | `AxisContractMatch` |

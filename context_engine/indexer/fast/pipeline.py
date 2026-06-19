@@ -11,9 +11,9 @@ Pipeline stages:
 2. hash_phase — parallel sha256 over all collected files; compared against
    Neo4j-stored File.hash to produce ``changed_files``.
 3. parse_phase — parallel ``FastExtractor.extract_all`` per changed file,
-   using per-thread adapter instances. Each worker also queries the
-   existing symbol index for its file so the diff can be computed without
-   a second pass.
+   using per-thread adapter instances. On ``axis_python_v1`` profiles, axis
+   facts are extracted here (same tree-sitter parse) and cached on
+   ``ExtractedFile.axis_facts`` for reuse in embed_phase.
 4. graph_phase — on the main thread, apply every per-file graph mutation
    via the existing ``Neo4jClient`` methods.
 5. embed_phase — one global ``upsert_symbol_embeddings`` call with every
@@ -262,9 +262,15 @@ def _parse_phase(
     workers: int,
     job_log: IndexJobLog,
     reporter: ProgressReporter,
+    *,
+    include_axis_facts: bool = False,
 ) -> list[FileDiff]:
     """Parallel extraction + diff computation."""
-    extractor = FastExtractor(project_root=project_path, workspace_id=workspace_id)
+    extractor = FastExtractor(
+        project_root=project_path,
+        workspace_id=workspace_id,
+        include_axis_facts=include_axis_facts,
+    )
     results: list[FileDiff] = []
 
     def _task(path: str) -> FileDiff | None:
@@ -1233,26 +1239,26 @@ def _axis_payloads_for_extracted_file(
     index keeps a qualified-name fallback so signature-normalization drift does
     not silently drop physical AST facts.
     """
-    from context_engine.axis import PythonAxisExtractor
     from context_engine.axis.container_kind import ContainerKindClassifier, GraphContextProbe
     from context_engine.axis.contract_compiler import AxisContractCompiler
     from context_engine.axis.schema import AxisExtraction, AxisFact, AxisProfile
-    from context_engine.axis.symbol_extractor import SymbolAxisExtractor
+    from context_engine.parser.registry import REGISTRY
 
-    extraction = SymbolAxisExtractor().extract(ex.symbols, ex.path)
-    if ex.path.endswith((".py", ".pyi")):
+    if ex.axis_facts is not None:
+        facts = ex.axis_facts
+    else:
         try:
-            py_extraction = PythonAxisExtractor().extract(
+            adapter = REGISTRY.get_adapter(REGISTRY.detect_language(ex.path))
+        except ValueError:
+            facts = []
+        else:
+            facts = adapter.extract_axis_facts(
                 ex.source,
                 ex.path,
+                symbols=ex.symbols,
                 project_root=project_path or None,
             )
-        except SyntaxError:
-            py_extraction = AxisExtraction(file_path=ex.path, facts=[])
-        extraction = AxisExtraction(
-            file_path=ex.path,
-            facts=[*extraction.facts, *py_extraction.facts],
-        )
+    extraction = AxisExtraction(file_path=ex.path, facts=facts)
 
     base_probe = graph_probe if graph_probe is not None else None
     contract_compiler = AxisContractCompiler()
@@ -1801,6 +1807,7 @@ def run_fast_indexing(
             parse_workers,
             job_log,
             reporter,
+            include_axis_facts=profile.name == AXIS_PYTHON_V1_PROFILE,
         )
         stats["parsed"] = len(diffs)
         stats["timings_sec"]["parse"] = round(time.perf_counter() - t_stage, 3)
@@ -2072,11 +2079,37 @@ def run_fast_indexing(
         )
         stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
 
-        # Stage 7: resolve pending DocAnchors (unchanged)
+        # Stage 7: docstring anchors + resolve pending DocAnchors
         t_stage = time.perf_counter()
-        from context_engine.indexer.anchor import resolve_pending_anchors
+        from context_engine.indexer.anchor import ingest_symbol_docstrings, resolve_pending_anchors
 
         reporter.stage_start("docs", total=1)
+        all_symbols = []
+        removed_uids: list[str] = []
+        file_tier_by_path: dict[str, str] = {}
+        from context_engine.indexer.file_tier import classify_file_tier, is_pure_reexport_source
+
+        for diff in diffs:
+            ex = diff.extracted
+            tier_path = os.path.relpath(ex.path, project_path) if project_path else ex.path
+            tier_value = classify_file_tier(
+                tier_path,
+                pure_reexport=is_pure_reexport_source(ex.source),
+            )
+            file_tier_by_path[tier_path] = tier_value
+            file_tier_by_path[ex.path] = tier_value
+            all_symbols.extend(ex.symbols)
+            removed_uids.extend(diff.removed_uids)
+        doc_stats = ingest_symbol_docstrings(
+            db,
+            lance,
+            all_symbols,
+            workspace_id=workspace_id,
+            allowed_prefixes=[project_path],
+            removed_owner_uids=removed_uids,
+            file_tier_by_path=file_tier_by_path,
+        )
+        stats["docstring_anchors"] = doc_stats
         resolve_pending_anchors(
             db,
             lance,

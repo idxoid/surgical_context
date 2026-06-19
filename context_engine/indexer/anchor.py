@@ -543,8 +543,19 @@ def _matches_allowed_prefix(file_path: str | None, prefixes: list[str]) -> bool:
         return True
     if not file_path:
         return False
-    resolved = str(Path(file_path).resolve())
-    return any(resolved == prefix or resolved.startswith(f"{prefix}/") for prefix in prefixes)
+    path = Path(file_path)
+    candidates: list[str] = []
+    if path.is_absolute():
+        candidates.append(str(path.resolve()))
+    else:
+        for prefix in prefixes:
+            candidates.append(str((Path(prefix) / path).resolve()))
+        candidates.append(str(path.resolve()))
+    for resolved in candidates:
+        for prefix in prefixes:
+            if resolved == prefix or resolved.startswith(f"{prefix}/"):
+                return True
+    return False
 
 
 def _load_name_to_uid(
@@ -981,3 +992,150 @@ def resolve_pending_anchors(
     print(f"DocAnchor: resolved {resolved_total} pending links.")
     if resolved_total:
         _bump_graph_version(neo4j, workspace_id)
+
+
+def _symbol_docstring_chunk_id(file_path: str, owner_uid: str) -> str:
+    return f"{file_path}::doc::{owner_uid}"
+
+
+def _resolve_indexed_symbol_uid(neo4j: Neo4jClient, workspace_id: str, sym) -> str | None:
+    """Map a freshly-parsed symbol to the uid already stored in Neo4j."""
+    owner_uid = str(getattr(sym, "uid", "") or "")
+    qualified_name = str(getattr(sym, "qualified_name", "") or "")
+    name = str(getattr(sym, "name", "") or "")
+    file_path = str(getattr(sym, "file_path", "") or "")
+    with neo4j.driver.session() as session:
+        if owner_uid:
+            rec = session.run(
+                "MATCH (s:Symbol {workspace_id: $ws, uid: $uid}) RETURN s.uid AS uid LIMIT 1",
+                ws=workspace_id,
+                uid=owner_uid,
+            ).single()
+            if rec:
+                return str(rec["uid"])
+        if qualified_name:
+            rec = session.run(
+                """
+                MATCH (s:Symbol {workspace_id: $ws, qualified_name: $qn})
+                RETURN s.uid AS uid
+                LIMIT 1
+                """,
+                ws=workspace_id,
+                qn=qualified_name,
+            ).single()
+            if rec:
+                return str(rec["uid"])
+        if name and file_path:
+            rec = session.run(
+                """
+                MATCH (s:Symbol {workspace_id: $ws, name: $name})
+                WHERE coalesce(s.file_path, '') = $file_path
+                   OR s.file_path ENDS WITH $file_path
+                RETURN s.uid AS uid
+                LIMIT 1
+                """,
+                ws=workspace_id,
+                name=name,
+                file_path=file_path,
+            ).single()
+            if rec:
+                return str(rec["uid"])
+    return None
+
+
+def ingest_symbol_docstrings(
+    neo4j: Neo4jClient,
+    lance: LanceDBClient,
+    symbols: list,
+    *,
+    workspace_id: str = DEFAULT_WORKSPACE_ID,
+    allowed_prefixes: list[str] | None = None,
+    removed_owner_uids: list[str] | None = None,
+    file_tier_by_path: dict[str, str] | None = None,
+) -> dict[str, int]:
+    """Index in-code docstrings as doc-anchor rows + direct COVERS edges.
+
+    Each symbol with a non-empty ``docstring`` gets a Lance doc-chunk row
+    (``owner_uid`` set for Stage-1 resolution) and a ``DocAnchor`` with
+    ``COVERS→owner_uid`` at ``resolver='definition'``, ``confidence=1.0``.
+
+    Symbols in non-core file tiers (``test``, ``example``, ``stub``, …) are
+    skipped — doc-anchor seed targets library code, not structural noise.
+    """
+    from context_engine.indexer.file_tier import classify_file_tier, is_doc_anchor_indexable_tier
+
+    prefixes = _normalize_allowed_prefixes(allowed_prefixes)
+    delete_by_owner = getattr(lance, "delete_doc_anchors_by_owner_uids", None)
+    if callable(delete_by_owner) and removed_owner_uids:
+        delete_by_owner(removed_owner_uids, workspace_id=workspace_id)
+
+    lance_rows: list[dict] = []
+    anchor_rows: list[dict] = []
+    cover_rows: list[dict] = []
+    skipped_noise = 0
+    tiers = file_tier_by_path or {}
+
+    for sym in symbols:
+        docstring = str(getattr(sym, "docstring", "") or "").strip()
+        file_path = str(getattr(sym, "file_path", "") or "")
+        if not docstring or not file_path:
+            continue
+        if not _matches_allowed_prefix(file_path, prefixes):
+            continue
+        tier = tiers.get(file_path) or classify_file_tier(file_path)
+        if not is_doc_anchor_indexable_tier(tier):
+            skipped_noise += 1
+            continue
+        owner_uid = _resolve_indexed_symbol_uid(neo4j, workspace_id, sym)
+        if not owner_uid:
+            continue
+        chunk_id = _symbol_docstring_chunk_id(file_path, owner_uid)
+        lance_rows.append(
+            {
+                "id": chunk_id,
+                "file_path": file_path,
+                "chunk": docstring,
+                "owner_uid": owner_uid,
+            }
+        )
+        anchor_rows.append(
+            {
+                "chunk_id": chunk_id,
+                "file_path": file_path,
+                "doc_type": "code",
+            }
+        )
+        cover_rows.append(
+            {
+                "chunk_id": chunk_id,
+                "links": [
+                    {
+                        "uid": owner_uid,
+                        "anchor_type": "definition",
+                        "confidence": 1.0,
+                        "primary_bias": 1.0,
+                        "resolver": "definition",
+                    }
+                ],
+                "resolver": "definition",
+            }
+        )
+
+    if not lance_rows:
+        return {"anchors": 0, "covers": 0, "rows": 0, "skipped_noise": skipped_noise}
+
+    upsert = getattr(lance, "upsert_symbol_docstring_rows", None)
+    if not callable(upsert):
+        return {"anchors": 0, "covers": 0, "rows": 0, "skipped_noise": skipped_noise}
+    upsert(lance_rows, workspace_id=workspace_id)
+
+    with neo4j.driver.session() as session:
+        session.execute_write(_write_anchors, anchor_rows, workspace_id)
+        session.execute_write(_add_covers_edges_batch, cover_rows, workspace_id)
+    _bump_graph_version(neo4j, workspace_id)
+    return {
+        "anchors": len(anchor_rows),
+        "covers": len(cover_rows),
+        "rows": len(lance_rows),
+        "skipped_noise": skipped_noise,
+    }

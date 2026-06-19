@@ -665,9 +665,154 @@ def _scan_distances(scan: WorkspaceScan, query_text, embed_fn):
         return None
 
 
+def find_seeds_by_doc_anchor(
+    workspace_id: str,
+    query_text: str,
+    *,
+    embed_fn,
+    limit: int = 12,
+    lance_db_path: str = "./data/lancedb",
+    include_tests: bool = False,
+    impact_mode: bool = False,
+    prescanned: WorkspaceScan | None = None,
+    lance=None,
+) -> list[RoleCandidate]:
+    """Vector-search in-code docstring anchors → owner symbol seeds."""
+    import numpy as np
+
+    if not query_text or embed_fn is None:
+        return []
+    if lance is None:
+        try:
+            from context_engine.database.lancedb_client import LanceDBClient
+            from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+
+            lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+        except Exception:
+            return []
+    scan_docs = getattr(lance, "scan_doc_anchors_workspace", None)
+    search_docs = getattr(lance, "search_doc_anchors", None)
+    if not callable(scan_docs) and not callable(search_docs):
+        return []
+
+    scan = (
+        prescanned
+        if prescanned is not None
+        else scan_workspace_rows(
+            workspace_id,
+            lance_db_path=lance_db_path,
+            include_tests=include_tests,
+        )
+    )
+
+    try:
+        qv = embed_fn(query_text)
+        if hasattr(qv, "tolist"):
+            qv = qv.tolist()
+        qv_arr = np.asarray(qv, dtype=np.float32)
+    except Exception:
+        return []
+
+    if callable(search_docs):
+        try:
+            rows = search_docs(qv, workspace_id=workspace_id, limit=limit)
+        except Exception:
+            rows = []
+    else:
+        rows = []
+
+    if not rows and callable(scan_docs):
+        try:
+            all_rows = scan_docs(workspace_id)
+        except Exception:
+            return []
+        if not all_rows:
+            return []
+        vectors = []
+        kept: list[dict] = []
+        for row in all_rows:
+            vector = row.get("vector")
+            owner_uid = str(row.get("owner_uid") or "").strip()
+            if not owner_uid or vector is None:
+                continue
+            if hasattr(vector, "tolist"):
+                vector = vector.tolist()
+            if not vector:
+                continue
+            kept.append(row)
+            vectors.append(vector)
+        if not kept:
+            return []
+        matrix = np.asarray(vectors, dtype=np.float32)
+        distances = np.linalg.norm(matrix - qv_arr, axis=1)
+        n = len(kept)
+        k = min(limit, n)
+        nearest = np.argpartition(distances, k - 1)[:k] if k < n else np.arange(n)
+        nearest = nearest[np.argsort(distances[nearest])]
+        rows = []
+        for idx in nearest:
+            row = dict(kept[int(idx)])
+            row["_distance"] = float(distances[int(idx)])
+            rows.append(row)
+
+    if not rows:
+        return []
+
+    scored: list[tuple[float, float, dict]] = []
+    for row in rows:
+        owner_uid = str(row.get("owner_uid") or "")
+        owner = scan.rows_by_uid.get(owner_uid) or {}
+        distance = row.get("_distance")
+        if distance is None:
+            vector = row.get("vector")
+            if vector is not None:
+                if hasattr(vector, "tolist"):
+                    vector = vector.tolist()
+                distance = float(np.linalg.norm(np.asarray(vector, dtype=np.float32) - qv_arr))
+            else:
+                distance = float("inf")
+        else:
+            distance = float(distance)
+        tier_w = _tier_weight(
+            str(owner.get("file_tier") or "core"),
+            impact_mode=impact_mode,
+        )
+        adjusted = distance / max(tier_w, 1e-6)
+        scored.append((adjusted, distance, row))
+
+    scored.sort(key=lambda item: item[0])
+    k = min(limit, len(scored))
+
+    out: list[RoleCandidate] = []
+    for adjusted, distance, row in scored[:k]:
+        owner_uid = str(row.get("owner_uid") or "")
+        owner = scan.rows_by_uid.get(owner_uid) or {}
+        tier_w = _tier_weight(
+            str(owner.get("file_tier") or "core"),
+            impact_mode=impact_mode,
+        )
+        out.append(
+            RoleCandidate(
+                uid=owner_uid,
+                name=str(owner.get("name") or ""),
+                qualified_name=str(owner.get("qualified_name") or ""),
+                file_path=str(row.get("file_path") or owner.get("file_path") or ""),
+                role="doc_anchor",
+                satisfying_contracts=(),
+                satisfying_kinds=(),
+                contract_count=0,
+                kind_count=0,
+                vector_distance=distance,
+                score=_semantic_score(distance) * tier_w,
+            )
+        )
+    return out
+
+
 __all__ = [
     "RoleCandidate",
     "WorkspaceScan",
+    "find_seeds_by_doc_anchor",
     "find_seeds_by_vector",
     "find_symbols_by_role",
     "find_symbols_by_roles",

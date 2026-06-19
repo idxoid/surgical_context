@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
+from context_engine.axis.schema import AxisExtraction
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
 
@@ -1070,3 +1071,42 @@ export function index() {
         sym = next(s for s in symbols if s.name == "index")
         assert sym.returns_mapping is True
         assert sym.returns_constructed_type is False
+
+    def test_extract_axis_facts_adds_typescript_ast_bits(self, adapter):
+        source = """
+@Controller("users")
+export class AppController extends BaseController {
+  @Get(":id")
+  find(@Param("id") id: string): Foo {
+    this.cache = new Map();
+    return this.service.fetch(id);
+  }
+}
+"""
+        facts = adapter.extract_axis_facts(source, "src/app.controller.ts")
+        profiles = AxisExtraction("src/app.controller.ts", facts).profiles_by_qualified_name
+
+        class_profile = profiles["src.app.controller.AppController"]
+        assert {"decorator_application"} <= class_profile.cfg_bits
+        assert {"decorator_attachment", "decorator_shape", "inheritance"} <= (
+            class_profile.struct_bits
+        )
+
+        method_profile = profiles["src.app.controller.AppController.find"]
+        assert {
+            "call_site",
+            "constructor_call",
+            "decorator_application",
+            "method_dispatch",
+            "return_exit",
+        } <= method_profile.cfg_bits
+        assert {
+            "attr_write",
+            "call_argument",
+            "constructor_value",
+            "parameter_input",
+            "return_output",
+        } <= method_profile.dfg_bits
+        assert {"annotation", "decorator_attachment", "parameter_decl"} <= (
+            method_profile.struct_bits
+        )

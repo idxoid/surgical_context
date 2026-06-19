@@ -226,6 +226,36 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def ts_language_name(self) -> str:
         return "typescript"
 
+    def extract_axis_facts(
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        tree=None,
+        symbols: list[SymbolMetadata] | None = None,
+        project_root: str | None = None,
+    ):
+        """Return common symbol facts plus TypeScript AST-physical axis facts."""
+        from context_engine.parser.adapters.typescript_axis_extractor import (
+            TypeScriptAxisExtractor,
+        )
+
+        facts = super().extract_axis_facts(
+            source_code,
+            file_path,
+            tree=tree,
+            symbols=symbols,
+            project_root=project_root,
+        )
+        if tree is None:
+            tree = self._parse(source_code)
+        ts_facts = TypeScriptAxisExtractor(self).extract_facts(
+            source_code,
+            file_path,
+            tree=tree,
+        )
+        return [*facts, *ts_facts]
+
     @property
     def symbol_query(self) -> str:
         return """
@@ -389,6 +419,17 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
         self._mark_react_hook_symbols(symbols)
         self._mark_behavioral_shape_symbols(symbols, tree)
+        if tree is None:
+            tree = self._parse(source_code)
+        from context_engine.parser.docstring_extract import attach_docstrings
+
+        attach_docstrings(
+            symbols,
+            source_code,
+            file_path,
+            tree=tree,
+            language=self.language_name,
+        )
         return symbols
 
     # Return-shape constructor names (``return new Map()`` → mapping). Plain
