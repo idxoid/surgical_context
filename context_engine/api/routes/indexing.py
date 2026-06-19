@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 
 from context_engine.api.errors import INDEX_FAILED_REASON, PUBLIC_INTERNAL_ERROR
 from context_engine.api.schemas import (
@@ -28,6 +28,8 @@ from context_engine.indexer.service import IndexingService
 
 logger = logging.getLogger(__name__)
 
+router = APIRouter(tags=["indexing"])
+
 
 @dataclass(frozen=True)
 class IndexingRouteDeps:
@@ -47,6 +49,12 @@ def _require_deps() -> IndexingRouteDeps:
 _deps: IndexingRouteDeps | None = None
 
 
+def configure_indexing_routes(deps: IndexingRouteDeps) -> None:
+    global _deps
+    _deps = deps
+
+
+@router.post("/index", response_model=StatusPathResponse)
 def index(
     req: IndexRequest,
     x_user_id: str = Header(None),
@@ -107,6 +115,7 @@ def index(
     return {"status": "indexed", "path": str(project_root)}
 
 
+@router.post("/index/file", response_model=IndexFileResponse)
 def index_file_endpoint(
     req: IndexFileRequest,
     x_user_id: str = Header(None),
@@ -167,6 +176,7 @@ def index_file_endpoint(
     }
 
 
+@router.post("/index/files", response_model=IndexFilesResponse)
 def index_files_endpoint(
     req: IndexFilesRequest,
     x_user_id: str = Header(None),
@@ -266,6 +276,7 @@ def index_files_endpoint(
     }
 
 
+@router.post("/index/git-delta")
 def index_git_delta_endpoint(
     req: IndexGitDeltaRequest,
     x_user_id: str = Header(None),
@@ -304,6 +315,7 @@ def index_git_delta_endpoint(
     return {"status": "ok", "workspace_id": workspace_id, **stats}
 
 
+@router.get("/index/git-delta/status")
 def index_git_delta_status(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
@@ -313,6 +325,7 @@ def index_git_delta_status(
     return {"status": "ok", "poller": deps.state.git_delta_poller.snapshot()}
 
 
+@router.get("/index/queue", response_model=IndexQueueStatusResponse)
 def index_queue_status(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
@@ -322,6 +335,7 @@ def index_queue_status(
     return {"status": "ok", "queue": deps.main.index_queue.snapshot()}
 
 
+@router.get("/index/manifest")
 def index_manifest_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
@@ -344,6 +358,7 @@ def index_manifest_endpoint(
     return manifest
 
 
+@router.post("/index/docs", response_model=StatusPathResponse)
 def index_docs_endpoint(
     req: IndexDocsRequest,
     x_user_id: str = Header(None),
@@ -364,17 +379,3 @@ def index_docs_endpoint(
 
     index_docs(safe_docs_path, workspace_id=index_workspace_id)
     return {"status": "indexed", "path": safe_docs_path}
-
-
-def register_indexing_routes(app: FastAPI, deps: IndexingRouteDeps) -> None:
-    """Attach /index* handlers to the FastAPI app."""
-    global _deps
-    _deps = deps
-    app.post("/index", response_model=StatusPathResponse)(index)
-    app.post("/index/file", response_model=IndexFileResponse)(index_file_endpoint)
-    app.post("/index/files", response_model=IndexFilesResponse)(index_files_endpoint)
-    app.post("/index/git-delta")(index_git_delta_endpoint)
-    app.get("/index/git-delta/status")(index_git_delta_status)
-    app.get("/index/queue", response_model=IndexQueueStatusResponse)(index_queue_status)
-    app.get("/index/manifest")(index_manifest_endpoint)
-    app.post("/index/docs", response_model=StatusPathResponse)(index_docs_endpoint)
