@@ -96,9 +96,16 @@ that workspace. The root is set when you run `POST /index` (manifest field
 | Path outside the indexed project tree | `403` |
 | Incremental index / file fallback before first full index | `400` |
 
-Relative paths in API requests are resolved under the project root. The smoke
-test and `local_dev.py` index `context_engine/axis` (or the full repo in
-`--full-repo` mode) so the default workspace has a registered root.
+Relative paths in API requests are resolved under the project root. On first
+`POST /index`, the sidecar registers the resolved `project_path` as the workspace
+sandbox root. The **repo segment** of the workspace id must match that directory's
+basename (same rule as the VS Code extension: `local/<folder-name>@<ref>`).
+
+The smoke test indexes `context_engine/axis` by default and therefore derives
+`local/axis@<git-ref>` automatically. Full-repo smoke (`--full-repo`) uses the
+repository root and aligns with `local/surgical_context@<git-ref>`. Override
+only with `--workspace-id` when you need a fixed scope; it must still match the
+indexed directory basename or registration returns **403**.
 
 With `AUTH_REQUIRED=false` (local default), this prevents other local processes
 from using the sidecar as a generic file reader. See

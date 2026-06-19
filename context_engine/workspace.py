@@ -63,6 +63,17 @@ class WorkspaceResolver:
         return "branch"
 
 
+def assert_workspace_repo_matches_project_root(project_root: Path | str, workspace_id: str) -> None:
+    """Raise ValueError when the workspace repo segment disagrees with the project root basename."""
+    root = Path(project_root).resolve()
+    repo = WorkspaceResolver().from_header(workspace_id).repo
+    if root.name != repo:
+        raise ValueError(
+            f"Project directory name '{root.name}' does not match workspace repo '{repo}' "
+            f"in '{workspace_id}'"
+        )
+
+
 def current_git_ref(project_path: str) -> str | None:
     """Return the active Git branch or short commit SHA for a project path."""
     try:

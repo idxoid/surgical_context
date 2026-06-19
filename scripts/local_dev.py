@@ -98,12 +98,24 @@ def _python_cmd() -> list[str]:
     return [sys.executable]
 
 
-def _sidecar_env() -> dict[str, str]:
+def _sidecar_env(*, default_workspace_id: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(ROOT))
     env.setdefault("LANCEDB_PATH", str(ROOT / "data" / "lancedb"))
-    env.setdefault("DEFAULT_WORKSPACE_ID", "local/surgical_context@main")
+    env.setdefault(
+        "DEFAULT_WORKSPACE_ID",
+        default_workspace_id or "local/surgical_context@main",
+    )
     return env
+
+
+def _resolve_smoke_workspace_id(project_path: Path, explicit: str) -> str:
+    from context_engine.workspace import WorkspaceResolver
+
+    return WorkspaceResolver().from_project_path(
+        str(project_path),
+        value=explicit.strip() or None,
+    ).id
 
 
 def _api_url(base_url: str, path: str, query: dict[str, str] | None = None) -> str:
@@ -435,7 +447,9 @@ def _ensure_sidecar_for_smoke(
         print(f"\n[smoke] sidecar is not reachable at {base_url}; starting temporary sidecar")
         cmd = sidecar_command(args)
         print(f"$ {_display_cmd(cmd)}")
-        process = subprocess.Popen(cmd, cwd=ROOT, env=_sidecar_env())
+        process = subprocess.Popen(
+            cmd, cwd=ROOT, env=_sidecar_env(default_workspace_id=workspace_id)
+        )
         try:
             health = _wait_for_health(
                 base_url=base_url,
@@ -455,11 +469,21 @@ def smoke(args: argparse.Namespace) -> int:
         base_url = args.base_url.rstrip("/")
     else:
         base_url = f"http://{args.host}:{args.port}"
-    workspace_id = args.workspace_id
     default_project_path = ROOT if args.full_repo else SMOKE_PROJECT_DIR
     default_docs_path = ROOT / "docs" if args.full_repo else SMOKE_DOCS_PATH
     project_path = Path(args.project_path or default_project_path).resolve()
     docs_path = Path(args.docs_path or default_docs_path).resolve()
+    workspace_id = _resolve_smoke_workspace_id(project_path, args.workspace_id)
+    if args.workspace_id.strip():
+        from context_engine.workspace import assert_workspace_repo_matches_project_root
+
+        try:
+            assert_workspace_repo_matches_project_root(project_path, workspace_id)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{exc}. Use --workspace-id local/{project_path.name}@main, "
+                "or index the full repo with --full-repo."
+            ) from exc
 
     if args.dry_run:
         print(
@@ -714,7 +738,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Existing sidecar URL. Defaults to http://<host>:<port>.",
     )
-    smoke_parser.add_argument("--workspace-id", default="local/surgical_context@main")
+    smoke_parser.add_argument(
+        "--workspace-id",
+        default="",
+        help=(
+            "X-Workspace header. Defaults to local/<project-dir-basename>@<git-ref> "
+            "derived from --project-path (required for sandbox registration)."
+        ),
+    )
     smoke_parser.add_argument(
         "--project-path",
         default="",
