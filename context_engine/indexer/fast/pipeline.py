@@ -148,6 +148,7 @@ def _clear_derived_edges_for_diffs(
         ("reexports", "delete_reexports_for_file"),
         ("instantiations", "delete_instantiations_for_file"),
         ("hooks", "delete_hooks_for_file"),
+        ("metadata_bridges", "delete_metadata_bridges_for_file"),
     )
     reporter.stage_start("clear_derived_edges", total=len(diffs) * len(per_file_deleters))
     for diff in diffs:
@@ -486,21 +487,26 @@ def _proxy_binding_phase(
     same variable, orphaning the ``PROXY_OF`` anchor from the imports /
     re-exports that resolve to the variable node.
     """
-    from context_engine.parser.adapters.python_adapter import PythonAdapter
+    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_proxy = getattr(db, "link_proxy_bindings", None)
     reporter.stage_start("proxy_bindings", total=1)
     bindings: list[dict] = []
     if callable(link_proxy):
-        adapter = PythonAdapter()
         with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
-                if not ex.path.endswith((".py", ".pyi")):
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_proxy = getattr(adapter, "extract_proxy_bindings", None)
+                if not callable(extract_proxy):
                     continue
                 try:
-                    bindings.extend(adapter.extract_proxy_bindings(ex.source, ex.path))
+                    bindings.extend(extract_proxy(ex.source, ex.path))
                 except Exception:
                     continue
         if bindings:
@@ -663,30 +669,77 @@ def _hook_phase(
     type references, and the same ``project_root_scope`` requirement so site
     uids match stored nodes. See ``Neo4jClient.link_hooks`` for the two layers.
     """
-    from context_engine.parser.adapters.python_adapter import PythonAdapter
+    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_hooks = getattr(db, "link_hooks", None)
     reporter.stage_start("hooks", total=1)
     hooks: list[dict] = []
     if callable(link_hooks):
-        py_adapter = PythonAdapter()
-        extract = getattr(py_adapter, "extract_hooks", None)
-        if callable(extract):
-            with project_root_scope(project_path or None, workspace_id):
-                for diff in diffs:
-                    ex = diff.extracted
-                    if not ex.path.endswith((".py", ".pyi")):
-                        continue
-                    try:
-                        hooks.extend(extract(ex.source, ex.path))
-                    except Exception:
-                        continue
+        with project_root_scope(project_path or None, workspace_id):
+            for diff in diffs:
+                ex = diff.extracted
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_hooks = getattr(adapter, "extract_hooks", None)
+                if not callable(extract_hooks):
+                    continue
+                try:
+                    hooks.extend(extract_hooks(ex.source, ex.path))
+                except Exception:
+                    continue
             if hooks:
                 link_hooks(hooks, workspace_id=workspace_id)
     reporter.step("hooks")
     reporter.stage_end("hooks")
     return len(hooks)
+
+
+def _metadata_bridge_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create METADATA_BRIDGE edges from reflect-metadata producer/consumer facts.
+
+    The TS/JS analog of the hook/event archetype: a decorator's
+    ``Reflect.defineMetadata(KEY, …)`` and its scanner's
+    ``Reflect.getMetadata(KEY, …)`` are linked only by the shared KEY constant.
+    Runs after ``_apply_graph`` (site symbols must exist) under
+    ``project_root_scope`` so site uids match stored nodes, like hooks.
+    """
+    from context_engine.parser.registry import REGISTRY
+    from context_engine.parser.uid import project_root_scope
+
+    link_bridges = getattr(db, "link_metadata_bridges", None)
+    reporter.stage_start("metadata_bridges", total=1)
+    facts: list[dict] = []
+    if callable(link_bridges):
+        with project_root_scope(project_path or None, workspace_id):
+            for diff in diffs:
+                ex = diff.extracted
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_bridges = getattr(adapter, "extract_metadata_bridges", None)
+                if not callable(extract_bridges):
+                    continue
+                try:
+                    facts.extend(extract_bridges(ex.source, ex.path))
+                except Exception:
+                    continue
+            if facts:
+                link_bridges(facts, workspace_id=workspace_id)
+    reporter.step("metadata_bridges")
+    reporter.stage_end("metadata_bridges")
+    return len(facts)
 
 
 def _attr_access_phase(
@@ -703,21 +756,26 @@ def _attr_access_phase(
     module-level vars) exist. Same ``project_root_scope`` requirement as
     decorators / type references — uids must match stored nodes.
     """
-    from context_engine.parser.adapters.python_adapter import PythonAdapter
+    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_attr = getattr(db, "link_attr_accesses", None)
     reporter.stage_start("attr_accesses", total=1)
     accesses: list[dict] = []
     if callable(link_attr):
-        py_adapter = PythonAdapter()
         with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
-                if not ex.path.endswith((".py", ".pyi")):
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_attr = getattr(adapter, "extract_attr_accesses", None)
+                if not callable(extract_attr):
                     continue
                 try:
-                    accesses.extend(py_adapter.extract_attr_accesses(ex.source, ex.path))
+                    accesses.extend(extract_attr(ex.source, ex.path))
                 except Exception:
                     continue
         if accesses:
@@ -838,21 +896,26 @@ def _reexport_phase(
     Gives public surface symbols a ``reexport_in`` signal orthogonal to call/type
     fan-in (whose callers live in user code excluded from clustering).
     """
-    from context_engine.parser.adapters.python_adapter import PythonAdapter
+    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_reexports = getattr(db, "link_reexports", None)
     reporter.stage_start("reexports", total=1)
     reexports: list[dict] = []
     if callable(link_reexports):
-        adapter = PythonAdapter()
         with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
-                if not ex.path.endswith((".py", ".pyi")):
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_re = getattr(adapter, "extract_reexports", None)
+                if not callable(extract_re):
                     continue
                 try:
-                    reexports.extend(adapter.extract_reexports(ex.source, ex.path))
+                    reexports.extend(extract_re(ex.source, ex.path))
                 except Exception:
                     continue
         if reexports:
@@ -877,21 +940,26 @@ def _instantiation_phase(
     uids match stored nodes. Feeds the factory_surface role an explicit construction
     signal distinct from a plain caller.
     """
-    from context_engine.parser.adapters.python_adapter import PythonAdapter
+    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_inst = getattr(db, "link_instantiations", None)
     reporter.stage_start("instantiations", total=1)
     instantiations: list[dict] = []
     if callable(link_inst):
-        adapter = PythonAdapter()
         with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
-                if not ex.path.endswith((".py", ".pyi")):
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_inst = getattr(adapter, "extract_instantiations", None)
+                if not callable(extract_inst):
                     continue
                 try:
-                    instantiations.extend(adapter.extract_instantiations(ex.source, ex.path))
+                    instantiations.extend(extract_inst(ex.source, ex.path))
                 except Exception:
                     continue
         if instantiations:
@@ -913,21 +981,26 @@ def _injection_phase(
     Static DI binding fact, like USES_TYPE. Runs after `_apply_graph` so providers
     exist, under project_root_scope so owner uids match stored nodes.
     """
-    from context_engine.parser.adapters.python_adapter import PythonAdapter
+    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_inj = getattr(db, "link_injections", None)
     reporter.stage_start("injections", total=1)
     injections: list[dict] = []
     if callable(link_inj):
-        adapter = PythonAdapter()
         with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
                 ex = diff.extracted
-                if not ex.path.endswith((".py", ".pyi")):
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_inj = getattr(adapter, "extract_injections", None)
+                if not callable(extract_inj):
                     continue
                 try:
-                    injections.extend(adapter.extract_injections(ex.source, ex.path))
+                    injections.extend(extract_inj(ex.source, ex.path))
                 except Exception:
                     continue
         if injections:
@@ -1139,6 +1212,14 @@ class _PeerAwarePeerProbe:
             return 0
         return self._base.outgoing_injects_count(symbol_uid)
 
+    def metadata_bridge_keys(self, symbol_uid):
+        if self._base is None:
+            return ()
+        fn = getattr(self._base, "metadata_bridge_keys", None)
+        if not callable(fn):
+            return ()
+        return fn(symbol_uid)
+
 
 def _axis_payloads_for_extracted_file(
     ex: ExtractedFile,
@@ -1152,21 +1233,26 @@ def _axis_payloads_for_extracted_file(
     index keeps a qualified-name fallback so signature-normalization drift does
     not silently drop physical AST facts.
     """
-    if not ex.path.endswith((".py", ".pyi")):
-        return {}
     from context_engine.axis import PythonAxisExtractor
     from context_engine.axis.container_kind import ContainerKindClassifier, GraphContextProbe
     from context_engine.axis.contract_compiler import AxisContractCompiler
-    from context_engine.axis.schema import AxisFact, AxisProfile
+    from context_engine.axis.schema import AxisExtraction, AxisFact, AxisProfile
+    from context_engine.axis.symbol_extractor import SymbolAxisExtractor
 
-    try:
-        extraction = PythonAxisExtractor().extract(
-            ex.source,
-            ex.path,
-            project_root=project_path or None,
+    extraction = SymbolAxisExtractor().extract(ex.symbols, ex.path)
+    if ex.path.endswith((".py", ".pyi")):
+        try:
+            py_extraction = PythonAxisExtractor().extract(
+                ex.source,
+                ex.path,
+                project_root=project_path or None,
+            )
+        except SyntaxError:
+            py_extraction = AxisExtraction(file_path=ex.path, facts=[])
+        extraction = AxisExtraction(
+            file_path=ex.path,
+            facts=[*extraction.facts, *py_extraction.facts],
         )
-    except SyntaxError:
-        return {}
 
     base_probe = graph_probe if graph_probe is not None else None
     contract_compiler = AxisContractCompiler()
@@ -1184,7 +1270,35 @@ def _axis_payloads_for_extracted_file(
     # the stub profile, the classifier never runs for those uids and the
     # catalogue stays silent on consumer-style ``app = FastAPI()`` /
     # ``current_app = LocalProxy(...)`` patterns.
-    profiles_by_uid: dict[str, AxisProfile] = dict(extraction.profiles)
+    parser_uid_by_qn = {s.qualified_name: s.uid for s in ex.symbols if s.qualified_name}
+    profiles_by_uid: dict[str, AxisProfile] = {}
+    for profile in extraction.profiles.values():
+        target_uid = parser_uid_by_qn.get(profile.qualified_name, profile.symbol_uid)
+        target = profiles_by_uid.get(target_uid)
+        if target is None:
+            target = AxisProfile(
+                symbol_uid=target_uid,
+                qualified_name=profile.qualified_name,
+                symbol_kind=profile.symbol_kind,
+            )
+            profiles_by_uid[target_uid] = target
+        for fact in profile.facts:
+            if fact.symbol_uid == target_uid:
+                target.add_fact(fact)
+                continue
+            target.add_fact(
+                AxisFact(
+                    symbol_uid=target_uid,
+                    qualified_name=fact.qualified_name,
+                    symbol_kind=fact.symbol_kind,
+                    axis=fact.axis,
+                    bit=fact.bit,
+                    line=fact.line,
+                    evidence=fact.evidence,
+                    ast_kind=fact.ast_kind,
+                    payload=dict(fact.payload),
+                )
+            )
     for sym in ex.symbols:
         if sym.kind != "variable":
             continue
@@ -1833,6 +1947,14 @@ def run_fast_indexing(
         t_stage = time.perf_counter()
         stats["hooks_linked"] = _hook_phase(diffs, db, workspace_id, reporter, project_path)
         stats["timings_sec"]["hooks"] = round(time.perf_counter() - t_stage, 3)
+
+        # Stage 4.669c: METADATA_BRIDGE edges (reflect-metadata producer→consumer).
+        # The TS/JS reflect-metadata archetype; edge-only like hooks, not in degree.
+        t_stage = time.perf_counter()
+        stats["metadata_bridges_linked"] = _metadata_bridge_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["metadata_bridges"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.67: INJECTS edges (DI bindings). Like USES_TYPE, not in degree.
         t_stage = time.perf_counter()

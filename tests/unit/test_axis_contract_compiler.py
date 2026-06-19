@@ -70,6 +70,25 @@ def test_metadata_carrier_compiles_to_key_roundtrip_contract():
     }
 
 
+def test_metadata_bridge_kind_compiles_to_key_roundtrip_contract():
+    profile = _profile([_fact("struct", "function_def")])
+    marker = ContainerKindMatch(
+        kind="metadata_carrier",
+        symbol_uid=profile.symbol_uid,
+        qualified_name=profile.qualified_name,
+        evidence_bits=(),
+        evidence_probes=("graph_context:metadata_bridge",),
+        payload={"bridge_keys": ["pkg.constants.GUARDS_METADATA"]},
+    )
+
+    contracts = AxisContractCompiler().compile(profile, [marker])
+
+    assert [c.contract for c in contracts] == ["metadata_key_roundtrip"]
+    assert contracts[0].required_bits == ()
+    assert contracts[0].evidence_probes == ("graph_context:metadata_bridge",)
+    assert contracts[0].payload["bridge_keys"] == ["pkg.constants.GUARDS_METADATA"]
+
+
 def test_callable_chain_compiles_to_container_dispatch_contract():
     profile = _profile(
         [

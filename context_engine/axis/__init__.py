@@ -16,6 +16,7 @@ from context_engine.axis.query_plan import (
     render_lance_predicate,
 )
 from context_engine.axis.schema import AxisExtraction, AxisFact, AxisProfile
+from context_engine.axis.symbol_extractor import SymbolAxisExtractor
 
 __all__ = [
     "AxisContractCompiler",
@@ -29,6 +30,7 @@ __all__ = [
     "AxisRequirement",
     "GraphExpansionStep",
     "PythonAxisExtractor",
+    "SymbolAxisExtractor",
     "container_kind_matches_from_json",
     "compile_axis_query",
     "render_lance_predicate",

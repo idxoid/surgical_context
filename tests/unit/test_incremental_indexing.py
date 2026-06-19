@@ -504,6 +504,95 @@ class Settings:
             "data_shape_declaration",
         }
 
+    def test_fast_embed_phase_adds_typescript_metadata_bridge_payload(self, tmp_path):
+        source = """
+export class GuardsContextCreator {
+  create() {
+    return this.createContext();
+  }
+}
+"""
+        path = tmp_path / "guards-context-creator.ts"
+        path.write_text(source, encoding="utf-8")
+        symbol = SymbolMetadata(
+            uid="create-uid",
+            name="create",
+            kind="function",
+            start_line=3,
+            end_line=5,
+            content_hash="hash",
+            file_path=str(path),
+            qualified_name="guards-context-creator.GuardsContextCreator.create",
+            signature="create()->_",
+            signature_hash="sig",
+            signature_status="resolved",
+            language="typescript",
+        )
+        diff = FileDiff(
+            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
+            current_uids=[symbol.uid],
+            changed_uids=[symbol.uid],
+            changed_symbols=[symbol],
+        )
+
+        class FakeLance:
+            index_profile_name = AXIS_PYTHON_V1_PROFILE
+
+            def __init__(self):
+                self.rows = []
+
+            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+                self.rows = symbols
+
+        class BridgeProbe:
+            def metadata_bridge_keys(self, symbol_uid):
+                return ("packages.common.constants.GUARDS_METADATA",)
+
+            def outgoing_kind_edges(self, symbol_uid, kinds):
+                return 0
+
+            def library_marker_kinds(self, symbol_uid):
+                return set()
+
+            def caller_package_dispersion(self, symbol_uid):
+                return 0.0
+
+            def is_cfg_driver(self, symbol_uid):
+                return False
+
+            def outgoing_handles_count(self, symbol_uid):
+                return 0
+
+            def outgoing_injects_count(self, symbol_uid):
+                return 0
+
+            def peer_container_kinds_for(self, qualified_name_prefix):
+                return set()
+
+            def is_event_signal(self, symbol_uid):
+                return False
+
+        lance = FakeLance()
+
+        _embed_phase(
+            [diff],
+            lance,
+            "local/repo@main+axis_python_v1",
+            _NullReporter(),
+            project_path=str(tmp_path),
+            graph_probe=BridgeProbe(),
+        )
+
+        row = lance.rows[0]
+        assert {"callable_body"} <= set(row["cfg_bits"])
+        assert {"callable_value"} <= set(row["dfg_bits"])
+        assert {"function_def"} <= set(row["struct_bits"])
+        matches = json.loads(row["axis_container_kinds_json"])
+        contracts = json.loads(row["axis_contracts_json"])
+        assert {match["kind"] for match in matches} == {"metadata_carrier"}
+        assert {contract["contract"] for contract in contracts} == {"metadata_key_roundtrip"}
+        assert row["container_kinds"] == ["metadata_carrier"]
+
     def test_fast_embed_phase_uses_graph_probe_for_marker_only_container_kind(self, tmp_path):
         source = "def run():\n    return 1\n"
         path = tmp_path / "routes.py"

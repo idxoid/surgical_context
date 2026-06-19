@@ -223,6 +223,18 @@ def _compile_metadata_key_roundtrip(
     kind = _kind_match(matches, "metadata_carrier")
     if kind is None:
         return None
+    if "graph_context:metadata_bridge" in kind.evidence_probes:
+        return AxisContractMatch(
+            contract="metadata_key_roundtrip",
+            symbol_uid=profile.symbol_uid,
+            qualified_name=profile.qualified_name,
+            required_bits=(),
+            evidence_bits=(),
+            container_kind=kind.kind,
+            evidence_probes=kind.evidence_probes,
+            traversal_mode="deferred_binding_flow",
+            payload=dict(kind.payload),
+        )
     return _match_from_kind(
         contract="metadata_key_roundtrip",
         profile=profile,

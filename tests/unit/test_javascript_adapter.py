@@ -276,3 +276,14 @@ res.json = function json(obj) {
         call = next(call for call in calls if call.get("callee_name") == "send")
         assert call["caller_uid"] == adapter._property_method_uid("response.js", "res", "json")
         assert call["callee_uid"] == adapter._property_method_uid("response.js", "res", "send")
+
+    def test_extract_calls_guess_unresolved_identifier(self, adapter):
+        source = """
+function bootstrap() {
+  mixpanel.track('evt');
+}
+"""
+        calls = adapter.extract_calls_from_source(source, "bootstrap.js")
+        call = next(c for c in calls if c.get("callee_name") == "track")
+        assert call["rel_type"] == "CALLS_GUESS"
+        assert call["resolver"] == "js-ambiguity-gate-v1"

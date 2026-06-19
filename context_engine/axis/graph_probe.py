@@ -85,6 +85,7 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         self._inherits_error_dispatch_cache: dict[str, bool] = {}
         self._proxy_topology_cache: dict[str, bool] = {}
         self._inherits_proxy_object_cache: dict[str, bool] = {}
+        self._metadata_bridge_keys_by_uid: dict[str, tuple[str, ...]] | None = None
 
     def has_proxy_object_topology(self, symbol_uid: str) -> bool:
         cached = self._proxy_topology_cache.get(symbol_uid)
@@ -160,6 +161,31 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         )
         self._inherits_proxy_object_cache[symbol_uid] = hit
         return hit
+
+    def metadata_bridge_keys(self, symbol_uid: str) -> tuple[str, ...]:
+        """Return metadata keys for bridge endpoints in this workspace.
+
+        Loaded in one workspace scan because the classifier asks this question
+        for many symbols during embedding.
+        """
+        if self._metadata_bridge_keys_by_uid is None:
+            query = """
+            MATCH (s:Symbol)-[r:METADATA_BRIDGE]-(:Symbol)
+            WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s)
+            RETURN s.uid AS uid, collect(DISTINCT r.key) AS keys
+            """
+            try:
+                with self.db.driver.session() as session:
+                    rows = session.run(query, workspace_id=self.workspace_id)
+                    self._metadata_bridge_keys_by_uid = {
+                        str(row["uid"]): tuple(sorted(str(k) for k in row["keys"] if k))
+                        for row in rows
+                        if row.get("uid")
+                    }
+            except Exception:
+                self._metadata_bridge_keys_by_uid = {}
+        return self._metadata_bridge_keys_by_uid.get(symbol_uid, ())
 
     def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
         if not key_name:

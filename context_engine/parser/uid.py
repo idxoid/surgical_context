@@ -136,6 +136,7 @@ def qualified_name_for(node, source_code: str, file_path: str) -> str:
             "function_declaration",
             "method_definition",
             "class_declaration",
+            "abstract_class_declaration",
         }:
             name_node = current.child_by_field_name("name")
             if name_node is not None:
@@ -158,7 +159,7 @@ def signature_from_node(node, source_code: str, language: str = "python") -> tup
         return None, "unresolved"
     name = _node_text(name_node)
 
-    if node.type in {"class_definition", "class_declaration"}:
+    if node.type in {"class_definition", "class_declaration", "abstract_class_declaration"}:
         return f"{name}()->_", "resolved"
 
     params_node = node.child_by_field_name("parameters")

@@ -121,6 +121,14 @@ class GraphContextProbe(Protocol):
         """True when ``symbol_uid`` inherits ``proxy_object`` from a
         ``DEPENDS_ON`` ancestor that already carries the kind."""
 
+    def metadata_bridge_keys(self, symbol_uid: str) -> tuple[str, ...]:
+        """Metadata keys for ``METADATA_BRIDGE`` edges incident to this symbol.
+
+        A producer or consumer endpoint of this edge participates in a proven
+        reflect-metadata write/read roundtrip even though the local AST profile
+        naturally contains only one side of the operation.
+        """
+
 
 class NullGraphProbe:
     """Default probe: no graph context available, every probe returns 'no'."""
@@ -161,6 +169,9 @@ class NullGraphProbe:
     def inherits_proxy_object(self, symbol_uid: str) -> bool:
         return False
 
+    def metadata_bridge_keys(self, symbol_uid: str) -> tuple[str, ...]:
+        return ()
+
 
 def _probe_has_proxy_object_topology(probe: GraphContextProbe, symbol_uid: str) -> bool:
     fn = getattr(probe, "has_proxy_object_topology", None)
@@ -192,6 +203,36 @@ def _probe_inherits_error_dispatch(probe: GraphContextProbe, symbol_uid: str) ->
     if not callable(fn):
         return False
     return bool(fn(symbol_uid))
+
+
+def _probe_metadata_bridge_keys(probe: GraphContextProbe, symbol_uid: str) -> tuple[str, ...]:
+    fn = getattr(probe, "metadata_bridge_keys", None)
+    if not callable(fn):
+        return ()
+    try:
+        return tuple(str(k) for k in (fn(symbol_uid) or ()) if k)
+    except Exception:
+        return ()
+
+
+def _metadata_bridge_match(
+    profile: AxisProfile,
+    probe: GraphContextProbe,
+) -> ContainerKindMatch | None:
+    bridge_keys = _probe_metadata_bridge_keys(probe, profile.symbol_uid)
+    if not bridge_keys:
+        return None
+    return ContainerKindMatch(
+        kind="metadata_carrier",
+        symbol_uid=profile.symbol_uid,
+        qualified_name=profile.qualified_name,
+        evidence_bits=(),
+        evidence_probes=("graph_context:metadata_bridge",),
+        payload={
+            "bridge_keys": list(bridge_keys[:8]),
+            "bridge_key_count": len(bridge_keys),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -408,12 +449,12 @@ def _classify_metadata_carrier(
     writes = _dfg(profile, "keyed_write")
     reads = _dfg(profile, "keyed_read")
     if not writes or not reads:
-        return None
+        return _metadata_bridge_match(profile, probe)
     write_keys = {str(f.payload.get("key", "")) for f in writes if f.payload.get("key")}
     read_keys = {str(f.payload.get("key", "")) for f in reads if f.payload.get("key")}
     shared = write_keys & read_keys
     if not shared:
-        return None
+        return _metadata_bridge_match(profile, probe)
     return ContainerKindMatch(
         kind="metadata_carrier",
         symbol_uid=profile.symbol_uid,

@@ -57,7 +57,10 @@ ALL_AXES: frozenset[str] = frozenset(
 # reactive walk at once.
 AXIS_EDGES: dict[str, tuple[str, ...]] = {
     Axis.CONTROL: EdgeProfile.CALLS,
-    Axis.REGISTRY: ("DECORATED_BY", "HANDLES", "INSTANTIATES"),
+    # METADATA_BRIDGE is IoC binding (reflect-metadata decorator → scanner); it
+    # is only ever produced by the TS/JS indexer, so naming it here is
+    # Python-neutral while letting the reactive first-hop traverse it.
+    Axis.REGISTRY: ("DECORATED_BY", "HANDLES", "INSTANTIATES", "METADATA_BRIDGE"),
     Axis.STRUCTURAL: (
         "DEPENDS_ON",
         "EXTENDS_EXTERNAL",

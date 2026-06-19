@@ -1,4 +1,5 @@
 import json
+from collections import defaultdict
 from pathlib import Path
 
 from neo4j import GraphDatabase
@@ -37,6 +38,11 @@ _CLASS_API_EDGE_DELETE_BATCH_SIZE = 5000
 # more than this many declarations carry the name — an ambiguous name is an
 # honest gap, not a fan of guessed edges.
 HOOK_AMBIGUITY_MAX = 3
+
+# Reflect-metadata bridge fan-out cap. A metadata key with this many producers OR
+# consumers is a generic framework key (``__guards__``-style); pairing it would
+# wire a dense hub instead of a precise decorator→scanner link, so skip it.
+METADATA_BRIDGE_FANOUT_MAX = 12
 
 
 def _batched_class_api_edges(
@@ -500,7 +506,10 @@ class Neo4jClient:
                 s.returns_sequence = symbol.returns_sequence,
                 s.returns_constructed_type = symbol.returns_constructed_type,
                 s.iterates_attr_call = symbol.iterates_attr_call,
-                s.assembles_mapping_in_loop = symbol.assembles_mapping_in_loop
+                s.assembles_mapping_in_loop = symbol.assembles_mapping_in_loop,
+                s.is_getter = symbol.is_getter,
+                s.is_setter = symbol.is_setter,
+                s.is_react_hook = symbol.is_react_hook
             MERGE (f)-[c:CONTAINS {workspace_id: $workspace_id}]->(s)
             SET c.range = [symbol.start, symbol.end],
                 c.start_line = symbol.start,
@@ -1359,6 +1368,38 @@ class Neo4jClient:
             ).single()
             if not rec or int(rec["updated"] or 0) == 0:
                 break
+        # Event-dispatcher inheritance: ``extends EventEmitter`` / ``extends Subject``
+        # bases are often external npm types with no in-graph Symbol. Mark the
+        # subclass so downstream passes can treat it as a dispatch container.
+        event_rows = [
+            {"subclass_uid": edge.subclass_uid}
+            for edge in inheritance_edges
+            if edge.superclass_name.rsplit(".", 1)[-1] in _EVENT_DISPATCH_BASES
+        ]
+        if event_rows:
+            tx.run(
+                """
+                UNWIND $rows AS row
+                MATCH (s:Symbol {uid: row.subclass_uid})
+                SET s.inherits_event_dispatcher = true
+                """,
+                rows=event_rows,
+            )
+        for _ in range(6):
+            rec = tx.run(
+                """
+                MATCH (sf:File {workspace_id: $workspace_id})-[:CONTAINS]->(sub:Symbol)
+                      -[r:DEPENDS_ON]->(base:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                  AND coalesce(sub.inherits_event_dispatcher, false) = false
+                  AND coalesce(base.inherits_event_dispatcher, false) = true
+                SET sub.inherits_event_dispatcher = true
+                RETURN count(DISTINCT sub) AS updated
+                """,
+                workspace_id=workspace_id,
+            ).single()
+            if not rec or int(rec["updated"] or 0) == 0:
+                break
 
     def link_proxy_bindings(
         self,
@@ -1816,6 +1857,33 @@ class Neo4jClient:
             workspace_id=workspace_id,
             ambig_max=HOOK_AMBIGUITY_MAX,
         )
+        # Handler registration (Express ``app.use(mw)``, interceptors, RxJS
+        # ``.subscribe(handler)``): resolve the registered handler by bare name
+        # without requiring a class HAS_API surface.
+        tx.run(
+            """
+            UNWIND $hooks AS h
+            WITH h WHERE coalesce(h.target_kind, '') = 'handler'
+            MATCH (site:Symbol {uid: h.site_uid})
+            MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(decl:Symbol)
+            WHERE decl.name = h.hook_name
+              AND coalesce(decl.kind, '') IN ['function', 'method']
+            WITH site, h, collect(DISTINCT decl) AS decls
+            WHERE size(decls) >= 1 AND size(decls) <= $ambig_max
+            UNWIND decls AS decl
+            WITH site, h, decl
+            WHERE site <> decl
+            FOREACH (_ IN CASE WHEN h.kind = 'config' THEN [1] ELSE [] END |
+                MERGE (site)-[r:EVENT_SUB {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'event-handler-v1', r.via = coalesce(h.via, ''))
+            FOREACH (_ IN CASE WHEN h.kind = 'exec' THEN [1] ELSE [] END |
+                MERGE (site)-[r:EVENT_PUB {workspace_id: $workspace_id, hook_name: h.hook_name}]->(decl)
+                SET r.resolver = 'event-handler-v1', r.via = coalesce(h.via, ''))
+            """,
+            hooks=hooks,
+            workspace_id=workspace_id,
+            ambig_max=HOOK_AMBIGUITY_MAX,
+        )
         # pub/sub co-occurrence prune: ``.connect``/``.send`` are generic verbs, so
         # an event target is kept only when it has the signal shape — subscribed
         # via ``@receiver`` (idiom is signal-specific), OR both connect-ed AND
@@ -1902,6 +1970,94 @@ class Neo4jClient:
                 """
                 MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(site:Symbol)
                 OPTIONAL MATCH (site)-[r:EVENT_SUB|EVENT_PUB|HOOK_CONFIG|HOOK_EXEC]->()
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
+    def link_metadata_bridges(
+        self,
+        facts: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Create ``METADATA_BRIDGE`` edges from reflect-metadata producer/consumer facts.
+
+        Producers (``Reflect.defineMetadata`` / ``SetMetadata``) and consumers
+        (``Reflect.getMetadata`` / ``Reflector.get*``) are paired by the shared
+        metadata-key qualified name (see ``extract_metadata_bridges``). A read
+        whose key has no producer in the workspace yields no edge — the
+        precision gate that lets generic ``reflector.get`` reads abstain. The
+        edge points producer→consumer; the walk traverses it undirected.
+        """
+        if not facts:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_metadata_bridges, facts, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_metadata_bridges(tx, facts, workspace_id):
+        if not facts:
+            return
+        defines: dict[str, set[str]] = defaultdict(set)
+        reads: dict[str, set[str]] = defaultdict(set)
+        for fact in facts:
+            site = fact.get("site_uid")
+            key = fact.get("key_qn")
+            role = fact.get("role")
+            if not site or not key:
+                continue
+            if role == "define":
+                defines[key].add(site)
+            elif role == "read":
+                reads[key].add(site)
+
+        pairs: list[dict] = []
+        for key, producers in defines.items():
+            consumers = reads.get(key)
+            if not consumers:
+                continue
+            if (
+                len(producers) > METADATA_BRIDGE_FANOUT_MAX
+                or len(consumers) > METADATA_BRIDGE_FANOUT_MAX
+            ):
+                continue
+            for producer in producers:
+                for consumer in consumers:
+                    if producer == consumer:
+                        continue
+                    pairs.append({"producer": producer, "consumer": consumer, "key": key})
+        if not pairs:
+            return
+        tx.run(
+            """
+            UNWIND $pairs AS p
+            MATCH (d:Symbol {uid: p.producer})
+            MATCH (r:Symbol {uid: p.consumer})
+            MERGE (d)-[e:METADATA_BRIDGE {workspace_id: $workspace_id, key: p.key}]->(r)
+            SET e.resolver = 'ts-metadata-bridge-v1'
+            """,
+            pairs=pairs,
+            workspace_id=workspace_id,
+        )
+
+    def delete_metadata_bridges_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear METADATA_BRIDGE edges incident to a symbol in ``file_path`` (either end)."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(site:Symbol)
+                OPTIONAL MATCH (site)-[r:METADATA_BRIDGE]-()
                 WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 DELETE r
                 """,
@@ -2615,6 +2771,9 @@ def _symbol_row(symbol: SymbolMetadata) -> dict[str, object]:
         "returns_constructed_type": bool(symbol.returns_constructed_type),
         "iterates_attr_call": bool(symbol.iterates_attr_call),
         "assembles_mapping_in_loop": bool(symbol.assembles_mapping_in_loop),
+        "is_getter": bool(symbol.is_getter),
+        "is_setter": bool(symbol.is_setter),
+        "is_react_hook": bool(symbol.is_react_hook),
     }
 
 
@@ -2799,6 +2958,19 @@ _BUILTIN_EXCEPTION_BASES: frozenset[str] = frozenset(
         "GeneratorExit",
         "KeyboardInterrupt",
         "SystemExit",
+    }
+)
+
+# Standard JS/TS event-dispatcher bases (Node ``events.EventEmitter``, RxJS
+# ``Subject`` family). Like builtin exceptions these are usually external types;
+# direct ``extends EventEmitter`` is an AST fact for dispatch-surface topology.
+_EVENT_DISPATCH_BASES: frozenset[str] = frozenset(
+    {
+        "EventEmitter",
+        "Subject",
+        "BehaviorSubject",
+        "ReplaySubject",
+        "AsyncSubject",
     }
 )
 

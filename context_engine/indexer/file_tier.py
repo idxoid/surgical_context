@@ -49,7 +49,20 @@ TIERS: tuple[str, ...] = (
 # Full path-segment match only, so ``contests`` / ``startests`` never
 # get fenced. ``t`` is Celery's convention (``t/unit``, ``t/integration``).
 _TEST_DIR_SEGMENTS: frozenset[str] = frozenset(
-    {"tests", "test", "t", "qa", "__tests__", "testfixtures", "__testfixtures__"}
+    {
+        "tests",
+        "test",
+        "t",
+        "qa",
+        "__tests__",
+        "testfixtures",
+        "__testfixtures__",
+        # Monorepo end-to-end test apps (NestJS ``integration/``); ``t/integration``
+        # already matched via ``t`` so Celery is unaffected. Provably 0 Python
+        # bench files reclassify — TS-monorepo noise only.
+        "integration",
+        "e2e",
+    }
 )
 _TEST_FILE_NAME_RE: re.Pattern[str] = re.compile(
     r"^("
@@ -69,6 +82,7 @@ _EXAMPLE_DIR_SEGMENTS: frozenset[str] = frozenset(
         "tutorials",
         "demo",
         "demos",
+        "sample",
         "samples",
         "docs_src",
         "benchmarks",

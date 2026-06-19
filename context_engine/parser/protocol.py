@@ -44,6 +44,13 @@ class SymbolMetadata(BaseModel):
     # pattern (assemble a mapping per element) from a pure orchestrator.
     iterates_attr_call: bool = False  # ``for X in obj.attr: … X.method()``
     assembles_mapping_in_loop: bool = False  # ``for X in obj.attr: … result[K] = …``
+    # TS/JS class accessor markers — ``get prop()`` / ``set prop(v)`` method_definition
+    # nodes. Distinct from ordinary methods for descriptor / indirection surfaces.
+    is_getter: bool = False
+    is_setter: bool = False
+    # React rules-of-hooks surface: top-level function whose name is ``use*``
+    # with uppercase 4th character (``useState``, not ``user``).
+    is_react_hook: bool = False
 
 
 @dataclass

@@ -4,9 +4,11 @@ import re
 from pathlib import Path
 
 from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
+from context_engine.parser.adapters.ts_package_aliases import resolve_package_subpath
 from context_engine.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from context_engine.parser.uid import (
     compute_uid,
+    current_project_root,
     module_name_from_path,
     normalize_signature,
     qualified_name_for,
@@ -313,7 +315,32 @@ class JavaScriptAdapter(TreeSitterAdapter):
             )
             existing_names.add(name)
             existing_uids.add(symbols[-1].uid)
+        if tree is None:
+            tree = self._parse(source_code)
+        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+
+        ts_helpers = TypeScriptAdapter()
+        ts_helpers._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
+        ts_helpers._mark_react_hook_symbols(symbols)
+        ts_helpers._mark_behavioral_shape_symbols(symbols, tree)
         return symbols
+
+    def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+
+        return TypeScriptAdapter.extract_proxy_bindings(self, source_code, file_path, tree=tree)
+
+    def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+
+        return TypeScriptAdapter.extract_hooks(self, source_code, file_path, tree=tree)
+
+    def extract_metadata_bridges(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+
+        return TypeScriptAdapter.extract_metadata_bridges(self, source_code, file_path, tree=tree)
 
     def should_include_variable_symbol(
         self,
@@ -541,11 +568,12 @@ class JavaScriptAdapter(TreeSitterAdapter):
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
-        """Extract JavaScript calls with direct vs dynamic dispatch classification."""
+        """Extract JavaScript calls with ambiguity-gated resolution."""
+        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+
         if tree is None:
             tree = self._parse(source_code)
 
-        # Flatten captures from matches into (node, tag) tuples
         captures = []
         for _match_id, captures_dict in iter_ts_query_matches(
             self.language,
@@ -566,6 +594,15 @@ class JavaScriptAdapter(TreeSitterAdapter):
         symbol_uids = {str(symbol.uid) for symbol in symbols}
 
         import_bindings = self._extract_import_bindings(source_code, file_path)
+        from context_engine.parser.adapters.ts_scope_graph import TsScopeGraph
+
+        ts = TypeScriptAdapter()
+        scope_graph = TsScopeGraph.build(
+            tree.root_node,
+            import_bindings=import_bindings,
+            node_text=TypeScriptAdapter._node_text,
+            normalize_require=lambda path: self._normalize_import_source(file_path, path),
+        )
         calls = []
         for node, tag in captures:
             if tag != "call":
@@ -574,11 +611,11 @@ class JavaScriptAdapter(TreeSitterAdapter):
             func_node = node.child_by_field_name("function")
             if func_node is None and node.type == "new_expression":
                 func_node = node.child_by_field_name("constructor")
-            if not func_node:
+            if func_node is None:
                 continue
 
             parent = self._enclosing_symbol_owner(node)
-            if not parent:
+            if parent is None:
                 continue
 
             caller_uid = self._caller_uid_for_indexed_owner(
@@ -589,19 +626,32 @@ class JavaScriptAdapter(TreeSitterAdapter):
             )
             if not caller_uid:
                 continue
+
+            call_at_byte = node.start_byte
+            call_kind = "construct" if node.type == "new_expression" else "call"
+            skip_call = False
             callee_uid = None
             call_name = ""
-            rel_type = "CALLS_DIRECT"
-            tier = "direct"
-            confidence = 1.0
-            call_kind = "construct" if node.type == "new_expression" else "call"
+            callee_qn = ""
+            rel_type = "CALLS_GUESS"
+            tier = "guess"
+            confidence = 0.4
+            resolver = "js-ambiguity-gate-v1"
 
             if func_node.type == "identifier":
                 call_name = source_code[func_node.start_byte : func_node.end_byte]
-                if call_name in import_bindings:
-                    rel_type = "CALLS_IMPORTED"
-                    tier = "imported"
-                    confidence = 0.9
+                rel_type, tier, confidence, _, callee_uid, skip_call, callee_qn = (
+                    ts._classify_identifier_call(
+                        call_name,
+                        import_bindings=import_bindings,
+                        by_name=by_name,
+                        scope_graph=scope_graph,
+                        at_byte=call_at_byte,
+                    )
+                )
+                resolver = (
+                    "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
+                )
             elif func_node.type == "member_expression":
                 named_children = [child for child in func_node.children if child.is_named]
                 if len(named_children) < 2:
@@ -610,21 +660,35 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 method_node = named_children[-1]
                 receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
                 call_name = source_code[method_node.start_byte : method_node.end_byte]
-                rel_type = "CALLS_DYNAMIC"
-                tier = "dynamic"
-                confidence = 0.7
-                if receiver_text == "this":
-                    callee_uid = self._resolve_method_uid(
-                        parent,
+                rel_type, tier, confidence, _, callee_uid, skip_call, callee_qn = (
+                    ts._classify_member_call(
+                        receiver_text,
                         call_name,
-                        by_name,
-                        source_code=source_code,
+                        parent=parent,
+                        import_bindings=import_bindings,
+                        by_name=by_name,
+                        scope_graph=scope_graph,
+                        at_byte=call_at_byte,
                     )
-                elif receiver_text in import_bindings:
-                    rel_type = "CALLS_IMPORTED"
-                    tier = "imported"
+                )
+                resolved = self._resolve_method_uid(
+                    parent,
+                    call_name,
+                    by_name,
+                    source_code=source_code,
+                )
+                if receiver_text == "this" and resolved:
+                    callee_uid = resolved
+                    rel_type = "CALLS_SCOPED"
+                    tier = "scoped"
                     confidence = 0.9
+                resolver = (
+                    "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
+                )
             else:
+                continue
+
+            if skip_call:
                 continue
 
             if callee_uid == caller_uid:
@@ -636,14 +700,16 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 "rel_type": rel_type,
                 "tier": tier,
                 "confidence": confidence,
-                "resolver": "js-scope-v1",
+                "resolver": resolver,
                 "call_site_line": node.start_point[0] + 1,
                 "call_kind": call_kind,
             }
             if callee_uid:
                 call["callee_uid"] = callee_uid
             if rel_type == "CALLS_IMPORTED":
-                if func_node.type == "identifier":
+                if callee_qn:
+                    call["callee_qualified_name"] = callee_qn
+                elif func_node.type == "identifier":
                     call["callee_qualified_name"] = import_bindings[call_name]
                 else:
                     receiver_node = [child for child in func_node.children if child.is_named][0]
@@ -742,8 +808,25 @@ class JavaScriptAdapter(TreeSitterAdapter):
         if not source:
             return ""
         if not source.startswith("."):
+            project_root = current_project_root()
+            if project_root:
+                aliased = resolve_package_subpath(project_root, source)
+                if aliased:
+                    resolved = Path(aliased)
+                    for candidate in (
+                        resolved.with_suffix(".js"),
+                        resolved.with_suffix(".jsx"),
+                        resolved / "index.js",
+                    ):
+                        if candidate.exists():
+                            return module_name_from_path(str(candidate))
             return source.replace("/", ".")
         base = Path(file_path).parent
+        project_root = current_project_root()
+        if project_root:
+            base = (Path(project_root) / base).resolve()
+        else:
+            base = base.resolve()
         resolved = (base / source).resolve()
         candidates = [
             resolved.with_suffix(".js"),

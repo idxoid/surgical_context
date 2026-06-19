@@ -58,6 +58,7 @@ class _StubProbe:
         inherits_error_dispatch: bool = False,
         has_proxy_topology: bool = False,
         inherits_proxy_object: bool = False,
+        metadata_bridge_keys: tuple[str, ...] = (),
     ) -> None:
         self._marker_kinds = marker_kinds or set()
         self._dispersion = dispersion
@@ -68,6 +69,7 @@ class _StubProbe:
         self._inherits_error_dispatch = inherits_error_dispatch
         self._has_proxy_topology = has_proxy_topology
         self._inherits_proxy_object = inherits_proxy_object
+        self._metadata_bridge_keys = metadata_bridge_keys
 
     def library_marker_kinds(self, symbol_uid: str) -> set[str]:
         return set(self._marker_kinds)
@@ -77,6 +79,9 @@ class _StubProbe:
 
     def inherits_proxy_object(self, symbol_uid: str) -> bool:
         return self._inherits_proxy_object
+
+    def metadata_bridge_keys(self, symbol_uid: str) -> tuple[str, ...]:
+        return self._metadata_bridge_keys
 
     def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
         return key_name in self._exception_type_keys
@@ -322,6 +327,24 @@ def test_metadata_carrier_ignores_missing_key_payload():
     )
     classifier = ContainerKindClassifier(NullGraphProbe())
     assert "metadata_carrier" not in {m.kind for m in classifier.classify(profile)}
+
+
+def test_metadata_carrier_matches_metadata_bridge_endpoint():
+    profile = _profile(
+        [_fact("struct", "function_def", uid="u:create", qn="pkg.Creator.create")],
+        uid="u:create",
+        qn="pkg.Creator.create",
+        kind="function",
+    )
+    classifier = ContainerKindClassifier(
+        _StubProbe(metadata_bridge_keys=("pkg.constants.GUARDS_METADATA",))
+    )
+
+    match = next(m for m in classifier.classify(profile) if m.kind == "metadata_carrier")
+
+    assert match.evidence_bits == ()
+    assert match.evidence_probes == ("graph_context:metadata_bridge",)
+    assert match.payload["bridge_keys"] == ["pkg.constants.GUARDS_METADATA"]
 
 
 # ---------------------------------------------------------------------------
