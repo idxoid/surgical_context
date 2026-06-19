@@ -85,6 +85,8 @@ class EdgeProfile:
         "EVENT_SUB",
         "EVENT_PUB",
         "METADATA_BRIDGE",
+        "CALLS_ENDPOINT",
+        "IMPLEMENTS_ENDPOINT",
     )
 
     # Reverse-CALLS for "who calls X". Same set as CALLS — direction is
@@ -120,6 +122,8 @@ class EdgeProfile:
         "EVENT_SUB",
         "EVENT_PUB",
         "METADATA_BRIDGE",
+        "CALLS_ENDPOINT",
+        "IMPLEMENTS_ENDPOINT",
     )
 
 

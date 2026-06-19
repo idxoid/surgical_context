@@ -269,3 +269,55 @@ def test_seed_files_use_doc_anchor_bridge_not_doc_anchor_owners(stub_stages, mon
     assert "/x/can-activate.interface.ts" not in result.seed_files
     assert "/x/guards-consumer.ts" in result.seed_files
     assert result.raw_by_role["doc_anchor_bridge"][0].uid == "consumer-uid"
+
+
+def test_seed_files_use_http_endpoint_bridge_callers(stub_stages, monkeypatch):
+    import context_engine.axis.http_endpoint_bridge as _http_bridge_mod
+    import context_engine.axis.role_retrieval as _retr_mod
+
+    monkeypatch.setattr(
+        _retr_mod,
+        "find_seeds_by_vector",
+        lambda *a, **k: [
+            RoleCandidate(
+                uid="handler-uid",
+                name="ask",
+                file_path="/x/context_engine/main.py",
+                role="vector_seed",
+                satisfying_contracts=(),
+                satisfying_kinds=(),
+                contract_count=0,
+                kind_count=0,
+                vector_distance=0.1,
+                score=0.9,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        _http_bridge_mod,
+        "expand_http_endpoint_bridge",
+        lambda seeds, **k: [
+            RoleCandidate(
+                uid="provider-uid",
+                name="handleAsk",
+                file_path="/x/extension/src/providers/SurgicalContextViewProvider.ts",
+                role="http_endpoint_bridge",
+                satisfying_contracts=(),
+                satisfying_kinds=("http_client_caller",),
+                contract_count=0,
+                kind_count=1,
+                vector_distance=None,
+                score=0.36,
+            )
+        ],
+    )
+
+    result = axis_pipeline.run_axis_retrieval(
+        "How does the VS Code extension send an ask request?",
+        workspace_id="ws",
+        db=object(),
+        lance=_FakeLance(),
+    )
+
+    assert "/x/extension/src/providers/SurgicalContextViewProvider.ts" in result.seed_files
+    assert result.raw_by_role["http_endpoint_bridge"][0].uid == "provider-uid"

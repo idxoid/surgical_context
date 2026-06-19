@@ -44,6 +44,7 @@ from context_engine.axis import (
     context_builder,
     cross_role_boost,
     doc_anchor_bridge,
+    http_endpoint_bridge,
     impact_traversal,
     inheritance_ancestors,
     intent_classifier,
@@ -246,6 +247,32 @@ def run_axis_retrieval(
     seed_files |= {
         getattr(c, "file_path", "") or ""
         for c in raw_by_role.get("doc_anchor_bridge", [])
+    }
+
+    http_bridge_roles = {m.role for m in intent} | {
+        "routing_surface",
+        "trace_dependency",
+        "vector_seed",
+    }
+    http_bridge_seeds = [
+        c
+        for role in http_bridge_roles
+        for c in raw_by_role.get(role, [])
+        if getattr(c, "uid", "")
+    ]
+    if http_bridge_seeds:
+        with tr.stage("http_endpoint_bridge"):
+            raw_by_role["http_endpoint_bridge"] = http_endpoint_bridge.expand_http_endpoint_bridge(
+                http_bridge_seeds,
+                db=db,
+                workspace_id=workspace_id,
+                prescanned=scanned,
+                include_tests=include_tests_in_walks,
+            )
+
+    seed_files |= {
+        getattr(c, "file_path", "") or ""
+        for c in raw_by_role.get("http_endpoint_bridge", [])
     }
 
     # Structural-neighbour pass — file-level adjacency via undirected

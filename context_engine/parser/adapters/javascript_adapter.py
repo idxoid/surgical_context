@@ -391,6 +391,13 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
         return TypeScriptAdapter.extract_metadata_bridges(self, source_code, file_path, tree=tree)
 
+    def extract_http_endpoints(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+
+        return TypeScriptAdapter.extract_http_endpoints(self, source_code, file_path, tree=tree)
+
     def should_include_variable_symbol(
         self,
         node,

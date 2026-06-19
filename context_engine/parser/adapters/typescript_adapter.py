@@ -120,6 +120,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         }
     )
     _HOOK_REGISTER_CALLEE_NAMES = frozenset({"use", "subscribe"})
+    _CONTROLLER_DECORATORS = frozenset({"Controller"})
     # Node ``EventEmitter``, DOM events, RxJS ``Subject.next`` — pub/sub surfaces.
     _EVENT_CONFIG_CALLEES = frozenset(
         {"on", "once", "addListener", "addEventListener"}
@@ -1638,6 +1639,237 @@ class TypeScriptAdapter(TreeSitterAdapter):
             site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
             emit(site_uid, key_qn, key_name, role, via)
         return out
+
+    def extract_http_endpoints(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """HTTP client/server endpoint facts for cross-language graph bridges.
+
+        Emits ``implement`` facts for route handlers (NestJS decorators, Express
+        ``app.get('/path', handler)``) and ``call`` facts for literal-path HTTP
+        clients (``post('/ask')``, ``fetch('/health')``, ``axios.post(...)``).
+        """
+        from context_engine.indexer.http_endpoint import (
+            HTTP_CLIENT_CALLEES,
+            HTTP_ROUTE_REGISTER_CALLEES,
+            combine_controller_path,
+            normalize_http_method,
+            normalize_http_path,
+            path_from_template_text,
+        )
+
+        if tree is None:
+            tree = self._parse(source_code)
+        out: list[dict] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        controller_prefix_by_class: dict[str, str] = {}
+
+        def emit(site_uid: str, method: str, path: str, role: str, via: str) -> None:
+            normalized_method = normalize_http_method(method)
+            normalized_path = normalize_http_path(path)
+            if not site_uid or not normalized_method or not normalized_path:
+                return
+            key = (site_uid, normalized_method, normalized_path, role)
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(
+                {
+                    "site_uid": site_uid,
+                    "method": normalized_method,
+                    "path": normalized_path,
+                    "role": role,
+                    "via": via,
+                    "file_path": file_path,
+                }
+            )
+
+        for deco in self._iter_nodes(tree.root_node):
+            if deco.type != "decorator":
+                continue
+            base = self._decorator_base_name(deco)
+            if base not in self._CONTROLLER_DECORATORS:
+                continue
+            parent = deco.parent
+            if parent is None:
+                continue
+            if parent.type in self._DECORATABLE_NODE_TYPES:
+                decorated = parent
+            else:
+                decorated = self._decoratable_sibling_after(parent, deco)
+            if decorated is None or decorated.type not in self._CLASS_DECL_TYPES:
+                continue
+            class_uid = self._uid_for_node(decorated, source_code, file_path)
+            prefix = self._http_path_from_decorator(deco)
+            if class_uid and prefix is not None:
+                controller_prefix_by_class[class_uid] = prefix
+
+        for deco in self._iter_nodes(tree.root_node):
+            if deco.type != "decorator":
+                continue
+            base = self._decorator_base_name(deco)
+            method = normalize_http_method(base)
+            if not method:
+                continue
+            parent = deco.parent
+            if parent is None:
+                continue
+            if parent.type in self._DECORATABLE_NODE_TYPES:
+                decorated = parent
+            else:
+                decorated = self._decoratable_sibling_after(parent, deco)
+            if decorated is None:
+                continue
+            site_uid = self._uid_for_node(decorated, source_code, file_path)
+            if not site_uid:
+                continue
+            subpath = self._http_path_from_decorator(deco) or ""
+            class_uid = self._enclosing_class_uid(decorated, source_code, file_path)
+            prefix = controller_prefix_by_class.get(class_uid, "")
+            path = combine_controller_path(prefix, subpath) if prefix else normalize_http_path(subpath or "/")
+            emit(site_uid, method, path, "implement", f"@{base}")
+
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "call_expression":
+                continue
+            func = node.child_by_field_name("function")
+            if func is None:
+                continue
+
+            if func.type == "member_expression":
+                path_parts = self._member_expression_path(func)
+                if not path_parts:
+                    continue
+                callee = path_parts[-1]
+                if callee in HTTP_ROUTE_REGISTER_CALLEES:
+                    method = normalize_http_method(callee)
+                    route_path = self._http_path_from_call_argument(node, 0)
+                    if not method or not route_path:
+                        continue
+                    handler_uid = self._http_handler_uid_from_call(
+                        node, source_code, file_path
+                    )
+                    if handler_uid:
+                        emit(
+                            handler_uid,
+                            method,
+                            route_path,
+                            "implement",
+                            ".".join(path_parts),
+                        )
+                    continue
+                if callee in HTTP_CLIENT_CALLEES or (
+                    len(path_parts) >= 2 and path_parts[-2] in {"axios", "http", "HttpService"}
+                ):
+                    method = normalize_http_method(callee)
+                    if callee == "fetch":
+                        method = method or "GET"
+                    if not method:
+                        continue
+                    route_path = self._http_path_from_call_argument(node, 0)
+                    if not route_path:
+                        continue
+                    owner = self._enclosing_symbol_owner(node)
+                    if owner is None:
+                        continue
+                    site_uid = self._http_call_site_uid(node, source_code, file_path)
+                    emit(site_uid, method, route_path, "call", ".".join(path_parts))
+                continue
+
+            if func.type == "identifier":
+                callee = self._node_text(func)
+                if callee == "fetch":
+                    method = "GET"
+                elif callee in HTTP_CLIENT_CALLEES:
+                    method = normalize_http_method(callee)
+                else:
+                    continue
+                route_path = self._http_path_from_call_argument(node, 0)
+                if not route_path:
+                    continue
+                owner = self._enclosing_symbol_owner(node)
+                if owner is None:
+                    continue
+                site_uid = self._http_call_site_uid(node, source_code, file_path)
+                emit(site_uid, method, route_path, "call", callee)
+
+        return out
+
+    def _http_call_site_uid(self, node, source_code: str, file_path: str) -> str:
+        from context_engine.parser.uid import compute_uid, module_name_from_path, normalize_signature
+
+        line = node.start_point[0] + 1
+        for name, (start_line, end_line) in self._exported_object_api_ranges(source_code).items():
+            if start_line <= line <= end_line:
+                qualified_name = f"{module_name_from_path(file_path)}.{name}"
+                signature = normalize_signature(f"{name}()->_", self.language_name)
+                return compute_uid(qualified_name, signature, self.language_name)
+        owner = self._enclosing_symbol_owner(node)
+        if owner is None:
+            return ""
+        return self._caller_uid_for_owner(owner, source_code, file_path) or ""
+
+    def _enclosing_class_uid(self, node, source_code: str, file_path: str) -> str:
+        parent = node.parent
+        while parent:
+            if parent.type in self._CLASS_DECL_TYPES:
+                return self._uid_for_node(parent, source_code, file_path)
+            parent = parent.parent
+        return ""
+
+    def _http_path_from_decorator(self, deco) -> str | None:
+        for child in deco.children:
+            if child.type != "call_expression":
+                continue
+            path = self._http_path_from_call_argument(child, 0)
+            return path if path is not None else ""
+        return ""
+
+    def _http_path_from_call_argument(self, call_node, index: int) -> str:
+        from context_engine.indexer.http_endpoint import (
+            normalize_http_path,
+            path_from_template_text,
+        )
+
+        arg = self._nth_positional_argument(call_node, index)
+        if arg is None:
+            return ""
+        if arg.type == "string":
+            return normalize_http_path(self._string_literal_text(arg))
+        if arg.type == "template_string":
+            fragments: list[str] = []
+            for child in arg.children:
+                if child.type == "string_fragment":
+                    fragments.append(self._node_text(child))
+            return path_from_template_text("".join(fragments))
+        return ""
+
+    def _http_handler_uid_from_call(
+        self, call_node, source_code: str, file_path: str
+    ) -> str:
+        handler_arg = self._nth_positional_argument(call_node, 1)
+        if handler_arg is None:
+            return ""
+        if handler_arg.type == "identifier":
+            return self._uid_for_symbol_name(handler_arg, source_code, file_path)
+        owner = self._enclosing_symbol_owner(call_node)
+        if owner is None:
+            return ""
+        return self._caller_uid_for_owner(owner, source_code, file_path)
+
+    def _uid_for_symbol_name(self, name_node, source_code: str, file_path: str) -> str:
+        name = self._node_text(name_node)
+        if not name:
+            return ""
+        tree = self._parse(source_code)
+        for node in self._iter_nodes(tree.root_node):
+            if node.type not in {"function_declaration", "method_definition"}:
+                continue
+            name_field = node.child_by_field_name("name")
+            if name_field is None or self._node_text(name_field) != name:
+                continue
+            return self._uid_for_node(node, source_code, file_path)
+        return ""
 
     def _resolve_metadata_key(
         self, arg, import_bindings: dict[str, str], module: str

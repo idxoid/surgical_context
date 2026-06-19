@@ -149,6 +149,7 @@ def _clear_derived_edges_for_diffs(
         ("instantiations", "delete_instantiations_for_file"),
         ("hooks", "delete_hooks_for_file"),
         ("metadata_bridges", "delete_metadata_bridges_for_file"),
+        ("http_endpoints", "delete_http_endpoints_for_file"),
     )
     reporter.stage_start("clear_derived_edges", total=len(diffs) * len(per_file_deleters))
     for diff in diffs:
@@ -745,6 +746,43 @@ def _metadata_bridge_phase(
                 link_bridges(facts, workspace_id=workspace_id)
     reporter.step("metadata_bridges")
     reporter.stage_end("metadata_bridges")
+    return len(facts)
+
+
+def _http_endpoint_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create CALLS_ENDPOINT / IMPLEMENTS_ENDPOINT edges via shared ApiEndpoint nodes."""
+    from context_engine.parser.registry import REGISTRY
+    from context_engine.parser.uid import project_root_scope
+
+    link_endpoints = getattr(db, "link_http_endpoints", None)
+    reporter.stage_start("http_endpoints", total=1)
+    facts: list[dict] = []
+    if callable(link_endpoints):
+        with project_root_scope(project_path or None, workspace_id):
+            for diff in diffs:
+                ex = diff.extracted
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_endpoints = getattr(adapter, "extract_http_endpoints", None)
+                if not callable(extract_endpoints):
+                    continue
+                try:
+                    facts.extend(extract_endpoints(ex.source, ex.path))
+                except Exception:
+                    continue
+            if facts:
+                link_endpoints(facts, workspace_id=workspace_id)
+    reporter.step("http_endpoints")
+    reporter.stage_end("http_endpoints")
     return len(facts)
 
 
@@ -1962,6 +2000,12 @@ def run_fast_indexing(
             diffs, db, workspace_id, reporter, project_path
         )
         stats["timings_sec"]["metadata_bridges"] = round(time.perf_counter() - t_stage, 3)
+
+        t_stage = time.perf_counter()
+        stats["http_endpoints_linked"] = _http_endpoint_phase(
+            diffs, db, workspace_id, reporter, project_path
+        )
+        stats["timings_sec"]["http_endpoints"] = round(time.perf_counter() - t_stage, 3)
 
         # Stage 4.67: INJECTS edges (DI bindings). Like USES_TYPE, not in degree.
         t_stage = time.perf_counter()

@@ -2065,6 +2065,101 @@ class Neo4jClient:
                 workspace_id=workspace_id,
             )
 
+    def link_http_endpoints(
+        self,
+        facts: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Materialize ``ApiEndpoint`` nodes and client/server bridge edges.
+
+        ``implement`` facts become ``IMPLEMENTS_ENDPOINT``; ``call`` facts become
+        ``CALLS_ENDPOINT``. Endpoints are keyed by ``method:path`` fingerprint
+        within the workspace so TS clients and Python handlers can meet on the
+        same node in a monorepo.
+        """
+        if not facts:
+            return
+        with self.driver.session() as session:
+            session.execute_write(self._create_http_endpoints, facts, workspace_id)
+            session.run(
+                """
+                MATCH (w:Workspace {id: $workspace_id})
+                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                """,
+                workspace_id=workspace_id,
+            )
+
+    @staticmethod
+    def _create_http_endpoints(tx, facts, workspace_id):
+        from context_engine.indexer.http_endpoint import endpoint_fingerprint
+
+        implement_rows: list[dict] = []
+        call_rows: list[dict] = []
+        for fact in facts:
+            site_uid = fact.get("site_uid")
+            method = fact.get("method")
+            path = fact.get("path")
+            role = fact.get("role")
+            via = fact.get("via") or ""
+            if not site_uid or not method or not path or role not in {"implement", "call"}:
+                continue
+            row = {
+                "site_uid": site_uid,
+                "method": method,
+                "path": path,
+                "fingerprint": endpoint_fingerprint(method, path),
+                "via": via,
+            }
+            if role == "implement":
+                implement_rows.append(row)
+            else:
+                call_rows.append(row)
+
+        if implement_rows:
+            tx.run(
+                """
+                UNWIND $rows AS row
+                MERGE (e:ApiEndpoint {workspace_id: $workspace_id, fingerprint: row.fingerprint})
+                SET e.method = row.method, e.path = row.path
+                WITH e, row
+                MATCH (s:Symbol {uid: row.site_uid})
+                MERGE (s)-[r:IMPLEMENTS_ENDPOINT {workspace_id: $workspace_id}]->(e)
+                SET r.via = row.via, r.resolver = 'http-endpoint-v1'
+                """,
+                rows=implement_rows,
+                workspace_id=workspace_id,
+            )
+        if call_rows:
+            tx.run(
+                """
+                UNWIND $rows AS row
+                MERGE (e:ApiEndpoint {workspace_id: $workspace_id, fingerprint: row.fingerprint})
+                SET e.method = row.method, e.path = row.path
+                WITH e, row
+                MATCH (s:Symbol {uid: row.site_uid})
+                MERGE (s)-[r:CALLS_ENDPOINT {workspace_id: $workspace_id}]->(e)
+                SET r.via = row.via, r.resolver = 'http-endpoint-v1'
+                """,
+                rows=call_rows,
+                workspace_id=workspace_id,
+            )
+
+    def delete_http_endpoints_for_file(
+        self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ):
+        """Clear HTTP endpoint bridge edges for symbols defined in ``file_path``."""
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[:CONTAINS]->(site:Symbol)
+                OPTIONAL MATCH (site)-[r:IMPLEMENTS_ENDPOINT|CALLS_ENDPOINT]->(:ApiEndpoint)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                path=file_path,
+                workspace_id=workspace_id,
+            )
+
     def link_attr_accesses(
         self,
         accesses: list[dict],

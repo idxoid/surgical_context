@@ -80,9 +80,19 @@ TypeScript support is intentionally simpler than Python scoped/imported resoluti
 
 **Exported object APIs.** `export const SidecarClient = { ask(...) { ... } }` is indexed as one `object_api` symbol (`signature_status: object_api_export`). Nested methods are not separate top-level symbols. Call extraction attributes HTTP helper calls to the object surface. See `tests/unit/test_typescript_adapter.py`.
 
-### 3.3 Cross-language HTTP (scoped out)
+### 3.3 Cross-language HTTP
 
-Cross-language TS client → Python handler linking was previously attempted via regex-based `SEMANTIC_HINT` edges (`framework_hints`, `ts_http_route_hints`). **Removed 2026-06** — not consumed by axis retrieval, not grounded in AST. Revisit when TypeScript indexing emits structural route/call edges into the shared graph.
+Cross-language client → handler linking uses structural endpoint facts:
+
+- Adapters emit ``implement`` / ``call`` facts with ``method`` + literal ``path``
+  (FastAPI decorators, NestJS ``@Get``, Express ``app.get``, TS ``post('/ask')``).
+- Indexer phase ``http_endpoints`` materializes ``ApiEndpoint`` nodes and
+  ``IMPLEMENTS_ENDPOINT`` / ``CALLS_ENDPOINT`` edges (fingerprint ``METHOD:path``).
+- Axis graph walks include both edge types in ``EdgeProfile.PROXIMITY`` /
+  ``BINDING`` so BFS can cross TS client ↔ Python handler in a monorepo.
+
+Regex ``SEMANTIC_HINT`` hints were removed 2026-06; this bridge replaces them
+with AST-grounded path literals only.
 
 ### 3.4 Inheritance and References
 

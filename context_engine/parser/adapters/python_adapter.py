@@ -1017,6 +1017,115 @@ class PythonAdapter(TreeSitterAdapter):
                 )
         return out
 
+    def extract_http_endpoints(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """FastAPI/Flask-style route decorator facts for HTTP endpoint bridges."""
+        from context_engine.indexer.http_endpoint import (
+            HTTP_ROUTE_REGISTER_CALLEES,
+            normalize_http_method,
+            normalize_http_path,
+        )
+
+        _NON_HTTP_DECORATORS = frozenset({"patch", "mock", "Mock", "MagicMock", "spy"})
+
+        if tree is None:
+            tree = self._parse(source_code)
+        out: list[dict] = []
+        seen: set[tuple[str, str, str, str]] = set()
+
+        def emit(site_uid: str, method: str, path: str, via: str) -> None:
+            normalized_method = normalize_http_method(method)
+            normalized_path = normalize_http_path(path)
+            if not site_uid or not normalized_method or not normalized_path:
+                return
+            key = (site_uid, normalized_method, normalized_path, "implement")
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(
+                {
+                    "site_uid": site_uid,
+                    "method": normalized_method,
+                    "path": normalized_path,
+                    "role": "implement",
+                    "via": via,
+                    "file_path": file_path,
+                }
+            )
+
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "decorated_definition":
+                continue
+            defn = node.child_by_field_name("definition")
+            if defn is None or defn.type != "function_definition":
+                continue
+            site_uid = self._uid_for_node(defn, source_code, file_path)
+            if not site_uid:
+                continue
+            for deco in node.children:
+                if deco.type != "decorator":
+                    continue
+                callable_name = self._decorator_callable_name(deco)
+                base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
+                if base in _NON_HTTP_DECORATORS:
+                    continue
+                if base not in HTTP_ROUTE_REGISTER_CALLEES and base != "api_route":
+                    continue
+                route_path, methods = self._http_route_from_decorator(deco)
+                if not route_path:
+                    continue
+                if not methods:
+                    method = normalize_http_method(base if base != "route" else "get")
+                    if method:
+                        emit(site_uid, method, route_path, f"@{callable_name or base}")
+                    continue
+                for method in methods:
+                    emit(site_uid, method, route_path, f"@{callable_name or base}")
+        return out
+
+    def _http_route_from_decorator(self, deco_node) -> tuple[str, list[str]]:
+        from context_engine.indexer.http_endpoint import normalize_http_method
+
+        call_node = None
+        for child in deco_node.children:
+            if child.type == "call":
+                call_node = child
+                break
+        if call_node is None:
+            return "", []
+        route_path = ""
+        methods: list[str] = []
+        arg_list = call_node.child_by_field_name("arguments")
+        if arg_list is not None:
+            positional = 0
+            for child in arg_list.named_children:
+                if child.type == "string" and positional == 0:
+                    raw = self._string_literal_text(child)
+                    if not raw.startswith("/"):
+                        return "", []
+                    route_path = raw
+                    positional += 1
+                elif child.type == "keyword_argument":
+                    key_node = child.child_by_field_name("name")
+                    value_node = child.child_by_field_name("value")
+                    if key_node is None or value_node is None:
+                        continue
+                    key = _node_text(key_node)
+                    if key == "methods" and value_node.type == "list":
+                        for item in value_node.named_children:
+                            if item.type == "string":
+                                method = normalize_http_method(self._string_literal_text(item))
+                                if method:
+                                    methods.append(method)
+                    elif key == "method" and value_node.type == "string":
+                        method = normalize_http_method(self._string_literal_text(value_node))
+                        if method:
+                            methods.append(method)
+                elif child.type == "string":
+                    positional += 1
+        return route_path, methods
+
     def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Hook/event facts — make named-hook & pub/sub boundaries transparent.
 
