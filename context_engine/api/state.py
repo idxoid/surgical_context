@@ -8,7 +8,10 @@ from typing import Any
 
 from context_engine.ai.engine import AIEngine
 from context_engine.api.config import SidecarConfig
+from context_engine.ask.context_builder import AskContextBuilder
+from context_engine.ask.service import AskService
 from context_engine.auth import AuditLog, UserAuth
+from context_engine.cache.layered import default_cache
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.feedback import FeedbackStore
 from context_engine.history import build_history_provider
@@ -40,6 +43,8 @@ class SidecarState:
     git_delta_registry: GitDeltaRegistry
     git_delta_poller: GitDeltaPoller
     indexing_service: IndexingService
+    ask_context_builder: AskContextBuilder
+    ask_service: AskService
 
 
 def build_sidecar_state(config: SidecarConfig) -> SidecarState:
@@ -62,6 +67,8 @@ def build_sidecar_state(config: SidecarConfig) -> SidecarState:
         retention_days=config.history_retention_days,
     )
     git_delta_registry = GitDeltaRegistry()
+    audit_log = AuditLog()
+    feedback_store = FeedbackStore()
     indexing_service = IndexingService(
         overlay=overlay,
         vector_db=vector_db,
@@ -75,6 +82,16 @@ def build_sidecar_state(config: SidecarConfig) -> SidecarState:
         batch_size=config.index_queue_batch_size,
     )
     indexing_service.attach_queue(index_queue)
+    ask_context_builder = AskContextBuilder(overlay=overlay, vector_db=vector_db)
+    ask_service = AskService(
+        overlay=overlay,
+        ai_engine=ai_engine,
+        audit_log=audit_log,
+        feedback_store=feedback_store,
+        context_builder=ask_context_builder,
+        default_cache=default_cache,
+        model_preference=config.model_preference,
+    )
     git_delta_poller = GitDeltaPoller(
         git_delta_registry,
         indexing_service.poll_git_delta_target,
@@ -87,12 +104,14 @@ def build_sidecar_state(config: SidecarConfig) -> SidecarState:
         vector_db=vector_db,
         ai_engine=ai_engine,
         user_auth=UserAuth(),
-        audit_log=AuditLog(),
+        audit_log=audit_log,
         workspace_resolver=WorkspaceResolver(),
-        feedback_store=FeedbackStore(),
+        feedback_store=feedback_store,
         history_provider=history_provider,
         index_queue=index_queue,
         git_delta_registry=git_delta_registry,
         git_delta_poller=git_delta_poller,
         indexing_service=indexing_service,
+        ask_context_builder=ask_context_builder,
+        ask_service=ask_service,
     )
