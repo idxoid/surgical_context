@@ -1,7 +1,10 @@
 """Unit tests for InMemoryOverlay — dirty state handling."""
 
+import time
+
 import pytest
 
+from context_engine.observability.metrics import MetricsRegistry
 from context_engine.overlay import InMemoryOverlay
 
 
@@ -11,7 +14,7 @@ class TestInMemoryOverlay:
     @pytest.fixture
     def overlay(self):
         """Create a fresh overlay instance."""
-        return InMemoryOverlay()
+        return InMemoryOverlay(max_entries=0, ttl_seconds=0, metrics=MetricsRegistry())
 
     def test_update_and_has(self, overlay):
         """Test updating a file and checking existence."""
@@ -139,3 +142,52 @@ class MyClass:
         overlay.update("test.py", "v2\n", dirty=False)
         assert not overlay.is_dirty("test.py")
         assert overlay.read_lines("test.py", 1, 1) == "v2\n"
+
+    def test_cap_evicts_oldest_entry(self):
+        metrics = MetricsRegistry()
+        overlay = InMemoryOverlay(max_entries=2, ttl_seconds=0, metrics=metrics)
+        overlay.update("a.py", "a\n")
+        overlay.update("b.py", "b\n")
+        overlay.update("c.py", "c\n")
+
+        assert not overlay.has("a.py")
+        assert overlay.has("b.py")
+        assert overlay.has("c.py")
+        assert overlay.stats() == {"entries": 2, "bytes": 4}
+
+        rendered = metrics.render_prometheus()
+        assert 'sidecar_overlay_evictions_total{reason="cap"} 1' in rendered
+        assert "sidecar_overlay_entries 2" in rendered
+
+    def test_ttl_evicts_stale_entry(self, monkeypatch):
+        metrics = MetricsRegistry()
+        overlay = InMemoryOverlay(max_entries=0, ttl_seconds=60, metrics=metrics)
+        now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: now)
+
+        overlay.update("stale.py", "old\n")
+        now += 61.0
+        assert not overlay.has("stale.py")
+
+        rendered = metrics.render_prometheus()
+        assert 'sidecar_overlay_evictions_total{reason="ttl"} 1' in rendered
+
+    def test_clear_increments_eviction_metric(self, overlay):
+        overlay.update("test.py", "content\n")
+        overlay.clear("test.py")
+
+        rendered = overlay._metrics.render_prometheus()
+        assert 'sidecar_overlay_evictions_total{reason="clear"} 1' in rendered
+        assert "sidecar_overlay_entries 0" in rendered
+
+    def test_read_refreshes_ttl(self, monkeypatch):
+        metrics = MetricsRegistry()
+        overlay = InMemoryOverlay(max_entries=0, ttl_seconds=60, metrics=metrics)
+        now = 1000.0
+        monkeypatch.setattr(time, "monotonic", lambda: now)
+
+        overlay.update("fresh.py", "keep\n")
+        now += 50.0
+        assert overlay.read_lines("fresh.py", 1, 1) == "keep\n"
+        now += 50.0
+        assert overlay.has("fresh.py")

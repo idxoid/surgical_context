@@ -191,6 +191,7 @@ class MetricsRegistry:
     def __init__(self) -> None:
         self._lock = Lock()
         self._counters: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+        self._gauges: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
 
     def increment(
         self,
@@ -205,6 +206,11 @@ class MetricsRegistry:
     def observe_ms(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         self.increment(f"{name}_ms_sum", value, labels)
         self.increment(f"{name}_ms_count", 1, labels)
+
+    def set_gauge(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
+        metric = (_safe_metric_name(name), _labels_key(labels))
+        with self._lock:
+            self._gauges[metric] = value
 
     def record_trace(self, trace: RequestTrace, status: str) -> None:
         latency_slo = trace.latency_slo()
@@ -259,7 +265,8 @@ class MetricsRegistry:
 
     def render_prometheus(self) -> str:
         with self._lock:
-            rows = sorted(self._counters.items())
+            counter_rows = sorted(self._counters.items())
+            gauge_rows = sorted(self._gauges.items())
         lines = [
             "# HELP sidecar_requests_total Total sidecar requests by endpoint and status.",
             "# TYPE sidecar_requests_total counter",
@@ -275,8 +282,21 @@ class MetricsRegistry:
             "# TYPE sidecar_tokens_total counter",
             "# HELP sidecar_estimated_cost_usd_total Estimated request cost in USD.",
             "# TYPE sidecar_estimated_cost_usd_total counter",
+            "# HELP sidecar_overlay_updates_total Editor overlay buffer writes.",
+            "# TYPE sidecar_overlay_updates_total counter",
+            "# HELP sidecar_overlay_evictions_total Overlay entries removed by reason.",
+            "# TYPE sidecar_overlay_evictions_total counter",
+            "# HELP sidecar_overlay_entries Current in-memory overlay file count.",
+            "# TYPE sidecar_overlay_entries gauge",
+            "# HELP sidecar_overlay_bytes Current in-memory overlay payload size in bytes.",
+            "# TYPE sidecar_overlay_bytes gauge",
         ]
-        for (name, labels), value in rows:
+        for (name, labels), value in counter_rows:
+            value_text = (
+                str(int(value)) if value.is_integer() else f"{value:.6f}".rstrip("0").rstrip(".")
+            )
+            lines.append(f"{name}{_format_labels(labels)} {value_text}")
+        for (name, labels), value in gauge_rows:
             value_text = (
                 str(int(value)) if value.is_integer() else f"{value:.6f}".rstrip("0").rstrip(".")
             )
