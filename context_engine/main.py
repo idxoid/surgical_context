@@ -7,24 +7,64 @@ _install_stderr_filter()
 import hashlib
 import logging
 import os
-from collections.abc import AsyncIterator, Generator
-from contextlib import asynccontextmanager
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import Header, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
 
-from context_engine.ai.engine import AIEngine
+from context_engine.api.app import create_app
+from context_engine.api.config import load_sidecar_config
 from context_engine.api.errors import (
     INDEX_FAILED_REASON,
     LLM_UNREACHABLE_REASON,
     PUBLIC_INTERNAL_ERROR,
     degraded_llm_answer,
 )
+from context_engine.api.schemas import (
+    IMPACT_DEPTH_MAX,
+    IMPACT_DEPTH_MIN,
+    AskAxisRequest,
+    AskAxisResponse,
+    AskRequest,
+    AskResponse,
+    AuditActionsResponse,
+    AuthTokenResponse,
+    AxisCandidateResponse,
+    AxisContextBundleResponse,
+    AxisContextSymbolResponse,
+    AxisIntentMatchResponse,
+    ClearOverlayResponse,
+    CloudStatusResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+    HealthResponse,
+    HistoryAskRecordRequest,
+    HistoryAskRecordResponse,
+    HistoryConversationResponse,
+    HistoryConversationsResponse,
+    HistoryRequestBundleResponse,
+    ImpactResponse,
+    IndexDocsRequest,
+    IndexFileRequest,
+    IndexFileResponse,
+    IndexFilesRequest,
+    IndexFilesResponse,
+    IndexGitDeltaRequest,
+    IndexQueueStatusResponse,
+    IndexRequest,
+    OverlayRequest,
+    OverlayResponse,
+    SearchRequest,
+    SearchResponse,
+    StatusPathResponse,
+    UnifiedSearchRequest,
+    UnifiedSearchResponse,
+    UsersResponse,
+)
 from context_engine.api.sse import format_sse
-from context_engine.auth import AuditLog, UserAuth
+from context_engine.api.state import SidecarState, build_sidecar_state
 from context_engine.cache.layered import default_cache
 from context_engine.context_types import (
     CONTEXT_PIPELINE_VERSION,
@@ -32,15 +72,14 @@ from context_engine.context_types import (
     PromptContext,
     SymbolContext,
 )
-from context_engine.database.lancedb_client import LanceDBClient
-from context_engine.database.provider import close_database_provider
 from context_engine.database.session import db_session
 from context_engine.doc_resolver import DocResolver
-from context_engine.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
-from context_engine.history import build_history_provider, hash_history_text, parse_retention_days
+from context_engine.feedback import FeedbackEvent, RetrievalSnapshot
+from context_engine.history import hash_history_text
 from context_engine.index_profile import effective_index_workspace_id
+from context_engine.indexer.git_delta_poller import GitDeltaTarget
 from context_engine.indexer.job_log import IndexJobLog
-from context_engine.indexer.queue import EnqueueResult, IndexBatchQueue, IndexWorkItem
+from context_engine.indexer.queue import EnqueueResult, IndexWorkItem
 from context_engine.observability import (
     RequestTrace,
     default_metrics,
@@ -48,350 +87,19 @@ from context_engine.observability import (
     estimate_text_tokens,
     new_trace_id,
 )
-from context_engine.overlay import InMemoryOverlay
 from context_engine.search import UnifiedSearchResult, dedupe_and_rank
-from context_engine.workspace import DEFAULT_WORKSPACE_ID, Workspace, WorkspaceResolver
+from context_engine.workspace import DEFAULT_WORKSPACE_ID, Workspace
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-MODEL_PREFERENCE = os.getenv("MODEL_PREFERENCE", "ollama")  # "ollama" | "auto" | "claude"
-ALLOW_CLOUD_LLM = os.getenv("ALLOW_CLOUD_LLM", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes", "on"}
-TRUST_CLIENT_USER_HEADER = os.getenv("TRUST_CLIENT_USER_HEADER", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-TRUST_CLIENT_WORKSPACE_HEADER = os.getenv("TRUST_CLIENT_WORKSPACE_HEADER", "false").lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-INDEX_QUEUE_MAX_PENDING = int(os.getenv("INDEX_QUEUE_MAX_PENDING", "500"))
-INDEX_QUEUE_DEBOUNCE_MS = int(os.getenv("INDEX_QUEUE_DEBOUNCE_MS", "500"))
-INDEX_QUEUE_BATCH_SIZE = int(os.getenv("INDEX_QUEUE_BATCH_SIZE", "50"))
-
-SEARCH_LIMIT_MIN = 1
-SEARCH_LIMIT_MAX = 50
-TOKEN_BUDGET_MIN = 400
-TOKEN_BUDGET_MAX = 32_000
-IMPACT_DEPTH_MIN = 1
-IMPACT_DEPTH_MAX = 4
-
-overlay = InMemoryOverlay()
-vector_db = LanceDBClient()
 
 # Intent label stamped on the non-axis fallback PromptContexts (file/workspace/
 # direct). The legacy keyword IntentClassifier died with the cascade (Phase 5);
 # these are deep fallbacks (axis is the default provider and classifies real
 # intent), so a fixed label matching the legacy default is sufficient metadata.
 _FALLBACK_INTENT = "exploration"
-ai_engine = AIEngine(model_preference=MODEL_PREFERENCE, allow_cloud_llm=ALLOW_CLOUD_LLM)
-if MODEL_PREFERENCE in {"auto", "claude"} and not ALLOW_CLOUD_LLM:
-    logger.info(
-        "Local-first LLM routing: MODEL_PREFERENCE=%s with ALLOW_CLOUD_LLM=false "
-        "— assembled context stays on Ollama even when ANTHROPIC_API_KEY is set.",
-        MODEL_PREFERENCE,
-    )
-user_auth = UserAuth()
-audit_log = AuditLog()
-workspace_resolver = WorkspaceResolver()
-feedback_store = FeedbackStore()
-history_provider = build_history_provider(
-    mode=os.getenv("HISTORY_MODE", "local"),
-    db_path=os.getenv("HISTORY_DB_PATH", "./data/history/surgical_context.sqlite3"),
-    retention_days=parse_retention_days(os.getenv("HISTORY_RETENTION_DAYS", "")),
-)
 
-
-class IndexRequest(BaseModel):
-    project_path: str
-    queue: bool = True
-
-
-class IndexFileRequest(BaseModel):
-    file_path: str
-    queue: bool = True
-
-
-class IndexFilesRequest(BaseModel):
-    file_paths: list[str]
-    queue: bool = True
-
-
-class IndexGitDeltaRequest(BaseModel):
-    project_path: str | None = None
-    queue: bool = True
-
-
-class IndexDocsRequest(BaseModel):
-    docs_path: str
-
-
-class AskRequest(BaseModel):
-    symbol: str | None = None
-    question: str = "What does this code do?"
-    token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
-    file_path: str | None = None
-
-
-class OverlayRequest(BaseModel):
-    file_path: str
-    content: str
-    dirty: bool = True
-
-
-class SearchRequest(BaseModel):
-    query: str
-    limit: int = Field(default=5, ge=SEARCH_LIMIT_MIN, le=SEARCH_LIMIT_MAX)
-
-
-class UnifiedSearchRequest(SearchRequest):
-    symbol: str | None = None
-    include_graph: bool = True
-    token_budget: int = Field(default=2000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
-
-
-class HealthResponse(BaseModel):
-    status: str
-
-
-class StatusPathResponse(BaseModel):
-    status: str
-    path: str
-    queued: int = 0
-    coalesced: int = 0
-    rejected: int = 0
-    queue_depth: int = 0
-
-
-class IndexFileResponse(BaseModel):
-    status: str
-    file_path: str
-    job_id: int = 0
-    workspace_id: str
-    queue_depth: int = 0
-    reason: str = ""
-
-
-class IndexFilesResponse(BaseModel):
-    status: str
-    workspace_id: str
-    results: list[dict[str, Any]]
-    queued: int
-    coalesced: int
-    rejected: int
-    queue_depth: int
-
-
-class IndexQueueStatusResponse(BaseModel):
-    status: str
-    queue: dict[str, Any]
-
-
-class OverlayResponse(BaseModel):
-    file_path: str
-    symbols: list[str]
-
-
-class ClearOverlayResponse(BaseModel):
-    cleared: str
-
-
-class SearchResponse(BaseModel):
-    results: list[dict[str, Any]]
-
-
-class UnifiedSearchResponse(BaseModel):
-    trace_id: str
-    workspace_id: str
-    results: list[dict[str, Any]]
-    total: int
-    index_manifest_id: str | None = None
-    index_manifest_schema_version: int | None = None
-
-
-class AskResponse(BaseModel):
-    model_config = {"protected_namespaces": ()}
-
-    symbol: str
-    answer: str
-    context: dict[str, Any]
-    user: str
-    cloud: bool
-    workspace_id: str
-    trace_id: str
-    feedback_token: str
-    model_route: dict[str, Any]
-    metrics: dict[str, Any]
-    index_manifest_id: str | None = None
-    index_manifest_schema_version: int | None = None
-
-
-class AskAxisRequest(BaseModel):
-    """``/ask/axis`` payload — axis-pipeline-only retrieval shape.
-
-    No symbol anchor: the axis pipeline picks candidates by role intent.
-    ``with_context`` toggles whether expanded code bundles come back; without
-    it the response only carries intent matches + ranked candidates (cheap).
-    ``intent_budget`` is on by default so context rendering uses the same Token
-    Credit path as production ``/ask``.
-    """
-
-    question: str
-    top_roles: int = Field(default=3, ge=1, le=10)
-    intent_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
-    per_role_limit: int = Field(default=7, ge=1, le=50)
-    with_context: bool = True
-    context_seeds_per_role: int | None = Field(default=None, ge=1, le=10)
-    context_per_seed: int = Field(default=4, ge=1, le=20)
-    intent_budget: bool = True
-    token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
-
-
-class AxisIntentMatchResponse(BaseModel):
-    role: str
-    similarity: float
-    description: str
-
-
-class AxisCandidateResponse(BaseModel):
-    uid: str
-    name: str
-    file_path: str
-    role: str
-    satisfying_contracts: list[str]
-    satisfying_kinds: list[str] = Field(default_factory=list)
-    contract_count: int
-    kind_count: int = 0
-    vector_distance: float | None
-    score: float
-
-
-class AxisContextSymbolResponse(BaseModel):
-    uid: str
-    name: str
-    file_path: str
-    role: str
-    distance_from_seed: int
-    expansion_step: str | None
-    code: str | None
-
-
-class AxisContextBundleResponse(BaseModel):
-    role: str
-    seed: AxisContextSymbolResponse
-    related: list[AxisContextSymbolResponse]
-
-
-class AskAxisResponse(BaseModel):
-    """Axis-pipeline response. The endpoint does not call an LLM —
-    callers can plug ``context_bundles`` into their own prompt.
-    """
-
-    question: str
-    workspace_id: str
-    user: str
-    intent_matches: list[AxisIntentMatchResponse]
-    candidates_by_role: dict[str, list[AxisCandidateResponse]]
-    context_bundles: list[AxisContextBundleResponse]
-
-
-class FeedbackRequest(BaseModel):
-    feedback_token: str
-    kind: str
-    details: dict[str, Any] = Field(default_factory=dict)
-    timestamp: str = ""
-
-
-class FeedbackResponse(BaseModel):
-    status: str
-    feedback_token: str
-    kind: str
-    outcome: str
-    workspace_id: str
-    trace_id: str
-
-
-class HistoryAskRecordRequest(BaseModel):
-    conversation_id: str | None = None
-    request_id: str
-    prompt_summary: str = ""
-    prompt_hash: str = ""
-    answer_summary: str = ""
-    answer_hash: str = ""
-    symbol: str = ""
-    trace_id: str = ""
-    feedback_token: str = ""
-    ask_snapshot: dict[str, Any] = Field(default_factory=dict)
-    inspector_snapshot: dict[str, Any] = Field(default_factory=dict)
-    impact_snapshot: dict[str, Any] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class HistoryAskRecordResponse(BaseModel):
-    status: str
-    conversation_id: str
-    user_message_id: str
-    assistant_message_id: str
-    selected_request_id: str
-
-
-class HistoryConversationsResponse(BaseModel):
-    conversations: list[dict[str, Any]]
-
-
-class HistoryConversationResponse(BaseModel):
-    conversation: dict[str, Any]
-    messages: list[dict[str, Any]]
-
-
-class HistoryRequestBundleResponse(BaseModel):
-    message: dict[str, Any]
-    ask_snapshot: dict[str, Any] | None
-    inspector_snapshot: dict[str, Any] | None
-    impact_snapshot: dict[str, Any] | None
-
-
-class ImpactResponse(BaseModel):
-    symbol: str
-    symbol_uid: str
-    file_path: str
-    affected_symbols: list[dict[str, Any]]
-    affected_files: list[str]
-    affected_count: int
-    affected_file_count: int
-    max_depth: int
-
-
-class AuthTokenResponse(BaseModel):
-    token: str
-    user_id: str
-    expires_in_hours: int
-
-
-class UsersResponse(BaseModel):
-    users: list[dict[str, Any]]
-
-
-class CloudStatusResponse(BaseModel):
-    cloud_enabled: bool
-    using_aura: bool
-    using_fallback: bool
-    health: dict[str, Any]
-
-
-class AuditActionsResponse(BaseModel):
-    actions: list[dict[str, Any]]
-    total: int
+state: SidecarState
 
 
 def _header_value(value: Any) -> str | None:
@@ -1259,13 +967,13 @@ def _index_file_now(file_path: str, base_workspace_id: str, user_id: str) -> int
             index_file(
                 file_path,
                 db,
-                vector_db,
+                state.vector_db,
                 extractor,
                 workspace_id=index_workspace_id,
             )
-            resolve_pending_anchors(db, vector_db, workspace_id=index_workspace_id)
+            resolve_pending_anchors(db, state.vector_db, workspace_id=index_workspace_id)
     default_cache.invalidate_files([file_path], base_workspace_id)
-    overlay.clear(file_path, workspace_id=base_workspace_id, user_id=user_id)
+    state.overlay.clear(file_path, workspace_id=base_workspace_id, user_id=user_id)
     return tracked_job_id
 
 
@@ -1371,7 +1079,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                         changed = index_file(
                             path,
                             db,
-                            vector_db,
+                            state.vector_db,
                             extractor,
                             workspace_id=index_workspace_id,
                             skip_affects=True,
@@ -1380,7 +1088,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                         all_changed_uids.extend(changed)
                         indexed_paths.append(path)
                         completed += 1
-                        overlay.clear(path, workspace_id=base_workspace_id, user_id=user_id)
+                        state.overlay.clear(path, workspace_id=base_workspace_id, user_id=user_id)
                 except Exception:
                     logger.exception("Queued indexing failed for %s", path)
                     default_metrics.increment(
@@ -1400,12 +1108,12 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                 adjacency_seeds.update(all_changed_uids)
                 run_axis_incremental_finalize(
                     db,
-                    vector_db,
+                    state.vector_db,
                     index_workspace_id,
                     seed_uids=adjacency_seeds,
                     project_path=batch_project_path,
                 )
-                resolve_pending_anchors(db, vector_db, workspace_id=index_workspace_id)
+                resolve_pending_anchors(db, state.vector_db, workspace_id=index_workspace_id)
                 default_cache.invalidate_files(indexed_paths, base_workspace_id)
                 default_metrics.increment(
                     "sidecar_index_queue_completed_files_total",
@@ -1414,25 +1122,8 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                 )
 
 
-index_queue = IndexBatchQueue(
-    _process_index_batch,
-    max_pending=INDEX_QUEUE_MAX_PENDING,
-    debounce_ms=INDEX_QUEUE_DEBOUNCE_MS,
-    batch_size=INDEX_QUEUE_BATCH_SIZE,
-)
-
-from context_engine.indexer.git_delta_poller import (
-    GitDeltaPoller,
-    GitDeltaRegistry,
-    GitDeltaTarget,
-    poll_interval_seconds,
-)
-
-git_delta_registry = GitDeltaRegistry()
-
-
 def _track_git_delta_target(workspace_id: str, project_path: str, user_id: str) -> None:
-    git_delta_registry.register(workspace_id, project_path, user_id=user_id)
+    state.git_delta_registry.register(workspace_id, project_path, user_id=user_id)
 
 
 def _apply_git_head_delta_for_workspace(
@@ -1463,7 +1154,7 @@ def _apply_git_head_delta_for_workspace(
     return apply_git_head_delta(
         str(project_root),
         db=db,
-        lance=vector_db,
+        lance=state.vector_db,
         workspace_id=workspace_id,
         user_id=user_id,
         index_file_fn=_index_one,
@@ -1483,26 +1174,32 @@ def _poll_git_delta_target(target: GitDeltaTarget) -> dict[str, Any] | None:
         )
 
 
-git_delta_poller = GitDeltaPoller(
-    git_delta_registry,
-    _poll_git_delta_target,
-    interval_seconds=poll_interval_seconds(),
-    auto_start=False,
+state = build_sidecar_state(
+    load_sidecar_config(),
+    process_index_batch=_process_index_batch,
+    poll_git_delta_target=_poll_git_delta_target,
 )
 
+config = state.config
+MODEL_PREFERENCE = config.model_preference
+ALLOW_CLOUD_LLM = config.allow_cloud_llm
+AUTH_REQUIRED = config.auth_required
+TRUST_CLIENT_USER_HEADER = config.trust_client_user_header
+TRUST_CLIENT_WORKSPACE_HEADER = config.trust_client_workspace_header
 
-@asynccontextmanager
-async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    git_delta_poller.start()
-    try:
-        yield
-    finally:
-        git_delta_poller.close()
-        index_queue.close()
-        close_database_provider()
+overlay = state.overlay
+vector_db = state.vector_db
+ai_engine = state.ai_engine
+user_auth = state.user_auth
+audit_log = state.audit_log
+workspace_resolver = state.workspace_resolver
+feedback_store = state.feedback_store
+history_provider = state.history_provider
+index_queue = state.index_queue
+git_delta_registry = state.git_delta_registry
+git_delta_poller = state.git_delta_poller
 
-
-app = FastAPI(title="Surgical Context Sidecar", lifespan=_app_lifespan)
+app = create_app(state)
 
 
 @app.get("/health", response_model=HealthResponse)

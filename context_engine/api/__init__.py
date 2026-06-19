@@ -1,1 +1,1 @@
-"""API helpers and response contracts."""
+"""API helpers, response contracts, Pydantic schemas, and app factory."""
