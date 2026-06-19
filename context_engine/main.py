@@ -16,6 +16,13 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from context_engine.api.app import create_app
 from context_engine.api.config import load_sidecar_config
+from context_engine.api.deps import (
+    canonical_user_id as _canonical_user_id,
+    header_value as _header_value,
+    resolve_request_user,
+    resolve_workspace,
+    resolve_workspace_context,
+)
 from context_engine.api.errors import (
     INDEX_FAILED_REASON,
     LLM_UNREACHABLE_REASON,
@@ -65,6 +72,11 @@ from context_engine.api.schemas import (
 )
 from context_engine.api.sse import format_sse
 from context_engine.api.state import SidecarState, build_sidecar_state
+from context_engine.api.workspace_security import (
+    authorize_workspace_project_root,
+    require_workspace_root_dir,
+    sandbox_path,
+)
 from context_engine.cache.layered import default_cache
 from context_engine.context_types import (
     CONTEXT_PIPELINE_VERSION,
@@ -100,88 +112,6 @@ logger = logging.getLogger(__name__)
 _FALLBACK_INTENT = "exploration"
 
 state: SidecarState
-
-
-def _header_value(value: Any) -> str | None:
-    """Normalize FastAPI Header defaults when route functions are called directly in tests."""
-    return value if isinstance(value, str) and value.strip() else None
-
-
-def _canonical_user_id(value: str | None) -> str:
-    """Canonicalize an explicit user id without creating/updating a user record."""
-    return str(value or "").lower().strip()
-
-
-def _extract_bearer_token(authorization: Any = None) -> str | None:
-    authorization_value = _header_value(authorization)
-    if not authorization_value:
-        return None
-    scheme, _, token = authorization_value.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
-    return token
-
-
-def _resolve_request_user(
-    x_user_id: Any = None,
-    authorization: Any = None,
-    *,
-    require_auth: bool | None = None,
-) -> str:
-    """Resolve the request user and optionally require a valid bearer token."""
-    require_auth = AUTH_REQUIRED if require_auth is None else require_auth
-    token = _extract_bearer_token(authorization)
-    if token is not None:
-        if not user_auth.verify_token(token):
-            raise HTTPException(status_code=401, detail="Invalid or expired bearer token")
-        return user_auth.get_user_from_token(token)
-
-    if require_auth:
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-
-    if TRUST_CLIENT_USER_HEADER:
-        return user_auth.identify_user(_header_value(x_user_id))  # type: ignore[union-attr]
-
-    return user_auth.identify_user(None)
-
-
-def _resolve_workspace_context(
-    x_workspace: Any = None,
-    authorization: Any = None,
-) -> Workspace:
-    token = _extract_bearer_token(authorization)
-    token_workspace: str | None = None
-    if token is not None:
-        if not user_auth.verify_token(token):
-            raise HTTPException(status_code=401, detail="Invalid or expired bearer token")
-        token_workspace = user_auth.get_workspace_from_token(token)
-
-    header_workspace = _header_value(x_workspace)
-    if token_workspace:
-        if header_workspace and header_workspace != token_workspace:
-            raise HTTPException(
-                status_code=403,
-                detail="X-Workspace does not match bearer token workspace",
-            )
-        try:
-            return workspace_resolver.from_header(token_workspace)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if TRUST_CLIENT_WORKSPACE_HEADER:
-        try:
-            return workspace_resolver.from_header(header_workspace)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    try:
-        return workspace_resolver.from_header(DEFAULT_WORKSPACE_ID)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def _resolve_workspace(x_workspace: Any = None, authorization: Any = None) -> str:
-    return _resolve_workspace_context(x_workspace, authorization).id
 
 
 def _resolve_index_workspace(x_workspace: Any = None, authorization: Any = None) -> str:
@@ -409,69 +339,6 @@ def _history_snapshot(
         "symbol": req.symbol,
         "answer_summary": answer_summary,
     }
-
-
-def _require_workspace_root_dir(raw_project_path: str):
-    from context_engine.workspace_paths import resolve_project_root
-
-    try:
-        return resolve_project_root(raw_project_path)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def _authorize_workspace_project_root(
-    project_root: Path,
-    *,
-    workspace: Workspace,
-    db: Any,
-) -> None:
-    from context_engine.workspace_paths import (
-        WorkspaceRootMismatchError,
-        WorkspaceRootNotAllowedError,
-        registered_workspace_root,
-        validate_workspace_project_root,
-    )
-
-    existing = registered_workspace_root(db, workspace.id)
-    try:
-        validate_workspace_project_root(
-            project_root,
-            workspace_repo=workspace.repo,
-            existing_root=existing,
-        )
-    except WorkspaceRootMismatchError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except WorkspaceRootNotAllowedError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-def _sandbox_path(
-    raw_path: str,
-    *,
-    workspace_id: str,
-    db: Any,
-    workspace_root=None,
-) -> str:
-    from context_engine.workspace_paths import (
-        PathOutsideWorkspaceError,
-        WorkspaceRootNotRegisteredError,
-        resolve_path_under_workspace_root,
-    )
-
-    try:
-        return str(
-            resolve_path_under_workspace_root(
-                raw_path,
-                workspace_id=workspace_id,
-                db=db,
-                workspace_root=workspace_root,
-            )
-        )
-    except WorkspaceRootNotRegisteredError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except PathOutsideWorkspaceError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _read_file_context(
@@ -1198,6 +1065,66 @@ history_provider = state.history_provider
 index_queue = state.index_queue
 git_delta_registry = state.git_delta_registry
 git_delta_poller = state.git_delta_poller
+
+
+def _resolve_request_user(
+    x_user_id: Any = None,
+    authorization: Any = None,
+    *,
+    require_auth: bool | None = None,
+) -> str:
+    return resolve_request_user(
+        state,
+        x_user_id,
+        authorization,
+        require_auth=AUTH_REQUIRED if require_auth is None else require_auth,
+        trust_client_user_header=TRUST_CLIENT_USER_HEADER,
+    )
+
+
+def _resolve_workspace_context(
+    x_workspace: Any = None,
+    authorization: Any = None,
+) -> Workspace:
+    return resolve_workspace_context(
+        state,
+        x_workspace,
+        authorization,
+        trust_client_workspace_header=TRUST_CLIENT_WORKSPACE_HEADER,
+    )
+
+
+def _resolve_workspace(x_workspace: Any = None, authorization: Any = None) -> str:
+    return resolve_workspace(state, x_workspace, authorization)
+
+
+def _require_workspace_root_dir(raw_project_path: str) -> Path:
+    return require_workspace_root_dir(raw_project_path)
+
+
+def _authorize_workspace_project_root(
+    project_root: Path,
+    *,
+    workspace: Workspace,
+    db: Any,
+) -> None:
+    authorize_workspace_project_root(project_root, workspace=workspace, db=db)
+
+
+def _sandbox_path(
+    raw_path: str,
+    *,
+    workspace_id: str,
+    db: Any,
+    workspace_root=None,
+) -> str:
+    return sandbox_path(
+        raw_path,
+        workspace_id=workspace_id,
+        db=db,
+        workspace_root=workspace_root,
+    )
+
 
 app = create_app(state)
 
