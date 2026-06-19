@@ -7,6 +7,7 @@ _install_stderr_filter()
 import hashlib
 import logging
 import os
+import sys
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any, cast
@@ -18,16 +19,23 @@ from context_engine.api.app import create_app
 from context_engine.api.config import load_sidecar_config
 from context_engine.api.deps import (
     canonical_user_id as _canonical_user_id,
+)
+from context_engine.api.deps import (
     header_value as _header_value,
+)
+from context_engine.api.deps import (
     resolve_request_user,
     resolve_workspace,
     resolve_workspace_context,
 )
 from context_engine.api.errors import (
-    INDEX_FAILED_REASON,
     LLM_UNREACHABLE_REASON,
     PUBLIC_INTERNAL_ERROR,
     degraded_llm_answer,
+)
+from context_engine.api.routes.indexing import (
+    IndexingRouteDeps,
+    register_indexing_routes,
 )
 from context_engine.api.schemas import (
     IMPACT_DEPTH_MAX,
@@ -53,19 +61,13 @@ from context_engine.api.schemas import (
     HistoryConversationsResponse,
     HistoryRequestBundleResponse,
     ImpactResponse,
-    IndexDocsRequest,
-    IndexFileRequest,
-    IndexFileResponse,
-    IndexFilesRequest,
-    IndexFilesResponse,
-    IndexGitDeltaRequest,
-    IndexQueueStatusResponse,
-    IndexRequest,
+    IndexFileRequest,  # noqa: F401 — re-exported for endpoint tests
+    IndexFilesRequest,  # noqa: F401 — re-exported for endpoint tests
+    IndexRequest,  # noqa: F401 — re-exported for endpoint tests
     OverlayRequest,
     OverlayResponse,
     SearchRequest,
     SearchResponse,
-    StatusPathResponse,
     UnifiedSearchRequest,
     UnifiedSearchResponse,
     UsersResponse,
@@ -814,238 +816,7 @@ def _system_prompt_for_context(ctx: PromptContext) -> str:
     )
 
 
-def _index_file_now(file_path: str, base_workspace_id: str, user_id: str) -> int:
-    from context_engine.indexer.anchor import resolve_pending_anchors
-    from context_engine.indexer.code import hash_file, index_file
-    from context_engine.indexer.git_committed import should_index_file
-    from context_engine.parser.extractor import SymbolExtractor
-
-    if not should_index_file(file_path):
-        return 0
-
-    index_workspace_id = effective_index_workspace_id(base_workspace_id)
-    job_log = IndexJobLog()
-    file_hash = hash_file(file_path)
-    with job_log.track_file_job(file_path, file_hash=file_hash) as tracked_job_id:
-        with db_session(user_id=user_id) as db:
-            extractor = SymbolExtractor()
-            if hasattr(extractor, "project_root"):
-                extractor.project_root = os.path.dirname(file_path)
-            index_file(
-                file_path,
-                db,
-                state.vector_db,
-                extractor,
-                workspace_id=index_workspace_id,
-            )
-            resolve_pending_anchors(db, state.vector_db, workspace_id=index_workspace_id)
-    default_cache.invalidate_files([file_path], base_workspace_id)
-    state.overlay.clear(file_path, workspace_id=base_workspace_id, user_id=user_id)
-    return tracked_job_id
-
-
-def _enqueue_index_file(file_path: str, workspace_id: str, user_id: str) -> EnqueueResult:
-    result = index_queue.enqueue_file(file_path, workspace_id=workspace_id, user_id=user_id)
-    default_metrics.increment(
-        "sidecar_index_queue_events_total",
-        labels={"status": result.status, "workspace": workspace_id},
-    )
-    return result
-
-
-def _enqueue_index_files(
-    file_paths: list[str],
-    workspace_id: str,
-    user_id: str,
-) -> list[EnqueueResult]:
-    return [_enqueue_index_file(path, workspace_id, user_id) for path in file_paths]
-
-
-def _summarize_enqueue_results(results: list[EnqueueResult]) -> dict[str, int]:
-    queued = sum(1 for result in results if result.status == "queued")
-    coalesced = sum(1 for result in results if result.status == "coalesced")
-    rejected = sum(1 for result in results if not result.accepted)
-    queue_depth = max(
-        (result.queue_depth for result in results), default=index_queue.snapshot()["pending"]
-    )
-    return {
-        "queued": queued,
-        "coalesced": coalesced,
-        "rejected": rejected,
-        "queue_depth": queue_depth,
-    }
-
-
-def _process_index_batch(items: list[IndexWorkItem]) -> None:
-    """Process a coalesced file batch and resolve doc anchors once per workspace."""
-    if not items:
-        return
-
-    from collections import defaultdict
-
-    from context_engine.indexer.anchor import resolve_pending_anchors
-    from context_engine.indexer.code import hash_file, index_file, is_indexable_file
-    from context_engine.indexer.git_committed import should_index_file
-    from context_engine.parser.extractor import SymbolExtractor
-
-    grouped: dict[tuple[str, str], list[IndexWorkItem]] = defaultdict(list)
-    for item in items:
-        grouped[(item.user_id, item.workspace_id)].append(item)
-
-    job_log = IndexJobLog()
-    extractor = SymbolExtractor()
-    for (user_id, base_workspace_id), group in grouped.items():
-        index_workspace_id = effective_index_workspace_id(base_workspace_id)
-        existing_paths = [item.file_path for item in group if os.path.isfile(item.file_path)]
-        missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
-        unsupported_paths = [path for path in existing_paths if not is_indexable_file(path)]
-        indexable_paths = [path for path in existing_paths if is_indexable_file(path)]
-        indexable_paths = [path for path in indexable_paths if should_index_file(path)]
-        for path in missing_paths:
-            logger.warning("Skipping queued index for missing file: %s", path)
-            default_metrics.increment(
-                "sidecar_index_queue_skipped_total",
-                labels={"reason": "missing_file", "workspace": base_workspace_id},
-            )
-        for path in unsupported_paths:
-            logger.info("Skipping queued index for unsupported file type: %s", path)
-            default_metrics.increment(
-                "sidecar_index_queue_skipped_total",
-                labels={"reason": "unsupported_extension", "workspace": base_workspace_id},
-            )
-        if not indexable_paths:
-            continue
-        extractor.project_root = os.path.commonpath(indexable_paths) if indexable_paths else None
-
-        current_hashes = {path: hash_file(path) for path in indexable_paths}
-        completed = 0
-        all_changed_uids: list[str] = []
-        indexed_paths: list[str] = []
-        adjacency_seeds: set[str] = set()
-        if len(indexable_paths) == 1:
-            batch_project_path = str(Path(indexable_paths[0]).parent)
-        else:
-            batch_project_path = os.path.commonpath(indexable_paths)
-        with db_session(user_id=user_id) as db:
-            get_file_hashes = getattr(db, "get_file_hashes", None)
-            stored_hashes = (
-                get_file_hashes(indexable_paths, workspace_id=index_workspace_id)
-                if callable(get_file_hashes)
-                else {}
-            )
-            for path in indexable_paths:
-                file_hash = current_hashes[path]
-                if stored_hashes.get(path) == file_hash:
-                    default_metrics.increment(
-                        "sidecar_index_queue_skipped_total",
-                        labels={"reason": "unchanged_hash", "workspace": base_workspace_id},
-                    )
-                    continue
-                try:
-                    with job_log.track_file_job(path, file_hash=file_hash):
-                        changed = index_file(
-                            path,
-                            db,
-                            state.vector_db,
-                            extractor,
-                            workspace_id=index_workspace_id,
-                            skip_affects=True,
-                            collected_adjacency_seeds=adjacency_seeds,
-                        )
-                        all_changed_uids.extend(changed)
-                        indexed_paths.append(path)
-                        completed += 1
-                        state.overlay.clear(path, workspace_id=base_workspace_id, user_id=user_id)
-                except Exception:
-                    logger.exception("Queued indexing failed for %s", path)
-                    default_metrics.increment(
-                        "sidecar_index_queue_failures_total",
-                        labels={"workspace": base_workspace_id},
-                    )
-            if completed:
-                if all_changed_uids:
-                    from context_engine.indexer.affects import AFFECTSIndexer
-
-                    AFFECTSIndexer(db).rebuild_affects(
-                        list(dict.fromkeys(all_changed_uids)),
-                        workspace_id=index_workspace_id,
-                    )
-                from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
-
-                adjacency_seeds.update(all_changed_uids)
-                run_axis_incremental_finalize(
-                    db,
-                    state.vector_db,
-                    index_workspace_id,
-                    seed_uids=adjacency_seeds,
-                    project_path=batch_project_path,
-                )
-                resolve_pending_anchors(db, state.vector_db, workspace_id=index_workspace_id)
-                default_cache.invalidate_files(indexed_paths, base_workspace_id)
-                default_metrics.increment(
-                    "sidecar_index_queue_completed_files_total",
-                    value=completed,
-                    labels={"workspace": base_workspace_id},
-                )
-
-
-def _track_git_delta_target(workspace_id: str, project_path: str, user_id: str) -> None:
-    state.git_delta_registry.register(workspace_id, project_path, user_id=user_id)
-
-
-def _apply_git_head_delta_for_workspace(
-    *,
-    workspace_id: str,
-    user_id: str,
-    project_root: Path,
-    db: Any,
-    queue: bool,
-) -> dict[str, Any]:
-    from context_engine.indexer.code import index_file
-    from context_engine.indexer.git_delta import apply_git_head_delta
-    from context_engine.parser.extractor import SymbolExtractor
-
-    extractor = SymbolExtractor()
-    if hasattr(extractor, "project_root"):
-        extractor.project_root = str(project_root)
-
-    def _index_one(path: str, db: Any, lance: Any, *, workspace_id: str) -> list[str]:
-        return index_file(
-            path,
-            db,
-            lance,
-            extractor,
-            workspace_id=workspace_id,
-        )
-
-    return apply_git_head_delta(
-        str(project_root),
-        db=db,
-        lance=state.vector_db,
-        workspace_id=workspace_id,
-        user_id=user_id,
-        index_file_fn=_index_one,
-        enqueue_file_fn=_enqueue_index_file,
-        queue=queue,
-    )
-
-
-def _poll_git_delta_target(target: GitDeltaTarget) -> dict[str, Any] | None:
-    with db_session(user_id=target.user_id) as db:
-        return _apply_git_head_delta_for_workspace(
-            workspace_id=target.workspace_id,
-            user_id=target.user_id,
-            project_root=Path(target.project_path),
-            db=db,
-            queue=True,
-        )
-
-
-state = build_sidecar_state(
-    load_sidecar_config(),
-    process_index_batch=_process_index_batch,
-    poll_git_delta_target=_poll_git_delta_target,
-)
+state = build_sidecar_state(load_sidecar_config())
 
 config = state.config
 MODEL_PREFERENCE = config.model_preference
@@ -1065,6 +836,69 @@ history_provider = state.history_provider
 index_queue = state.index_queue
 git_delta_registry = state.git_delta_registry
 git_delta_poller = state.git_delta_poller
+indexing_service = state.indexing_service
+
+
+def _index_file_now(file_path: str, base_workspace_id: str, user_id: str) -> int:
+    import context_engine.indexer.service as index_service_mod
+
+    index_service_mod.db_session = db_session
+    index_service_mod.IndexJobLog = IndexJobLog
+    indexing_service.vector_db = vector_db
+    indexing_service.overlay = overlay
+    return indexing_service.index_file_now(file_path, base_workspace_id, user_id)
+
+
+def _enqueue_index_file(file_path: str, workspace_id: str, user_id: str) -> EnqueueResult:
+    indexing_service.attach_queue(index_queue)
+    return indexing_service.enqueue_index_file(file_path, workspace_id, user_id)
+
+
+def _enqueue_index_files(
+    file_paths: list[str],
+    workspace_id: str,
+    user_id: str,
+) -> list[EnqueueResult]:
+    return indexing_service.enqueue_index_files(file_paths, workspace_id, user_id)
+
+
+def _summarize_enqueue_results(results: list[EnqueueResult]) -> dict[str, int]:
+    return indexing_service.summarize_enqueue_results(results)
+
+
+def _process_index_batch(items: list[IndexWorkItem]) -> None:
+    import context_engine.indexer.service as index_service_mod
+
+    index_service_mod.db_session = db_session
+    indexing_service.vector_db = vector_db
+    indexing_service.overlay = overlay
+    indexing_service.metrics = default_metrics
+    indexing_service.process_index_batch(items)
+
+
+def _track_git_delta_target(workspace_id: str, project_path: str, user_id: str) -> None:
+    indexing_service.track_git_delta_target(workspace_id, project_path, user_id)
+
+
+def _apply_git_head_delta_for_workspace(
+    *,
+    workspace_id: str,
+    user_id: str,
+    project_root: Path,
+    db: Any,
+    queue: bool,
+) -> dict[str, Any]:
+    return indexing_service.apply_git_head_delta_for_workspace(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        project_root=project_root,
+        db=db,
+        queue=queue,
+    )
+
+
+def _poll_git_delta_target(target: GitDeltaTarget) -> dict[str, Any] | None:
+    return indexing_service.poll_git_delta_target(target)
 
 
 def _resolve_request_user(
@@ -1128,6 +962,26 @@ def _sandbox_path(
 
 app = create_app(state)
 
+register_indexing_routes(
+    app,
+    IndexingRouteDeps(
+        main=sys.modules[__name__],
+        state=state,
+        indexing=indexing_service,
+    ),
+)
+
+from context_engine.api.routes import indexing as _indexing_routes
+
+index = _indexing_routes.index  # noqa: F401 — re-exported for endpoint tests
+index_docs_endpoint = _indexing_routes.index_docs_endpoint  # noqa: F401
+index_file_endpoint = _indexing_routes.index_file_endpoint  # noqa: F401
+index_files_endpoint = _indexing_routes.index_files_endpoint  # noqa: F401
+index_git_delta_endpoint = _indexing_routes.index_git_delta_endpoint  # noqa: F401
+index_git_delta_status = _indexing_routes.index_git_delta_status  # noqa: F401
+index_manifest_endpoint = _indexing_routes.index_manifest_endpoint  # noqa: F401
+index_queue_status = _indexing_routes.index_queue_status  # noqa: F401
+
 
 @app.get("/health", response_model=HealthResponse)
 def health():
@@ -1137,318 +991,6 @@ def health():
 @app.get("/metrics")
 def metrics():
     return PlainTextResponse(default_metrics.render_prometheus(), media_type="text/plain")
-
-
-@app.post("/index", response_model=StatusPathResponse)
-def index(
-    req: IndexRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-):
-    user_id = _resolve_request_user(x_user_id, authorization)
-    workspace = _resolve_workspace_context(x_workspace, authorization)
-    workspace_id = workspace.id
-    project_root = _require_workspace_root_dir(req.project_path)
-    _track_git_delta_target(workspace_id, str(project_root), user_id)
-
-    with db_session(user_id=user_id) as db:
-        _authorize_workspace_project_root(project_root, workspace=workspace, db=db)
-        if req.queue:
-            from context_engine.indexer.code import _collect_files
-
-            files = _collect_files(str(project_root))
-            safe_files = [
-                _sandbox_path(
-                    file_path,
-                    workspace_id=workspace_id,
-                    db=db,
-                    workspace_root=project_root,
-                )
-                for file_path in files
-            ]
-            from context_engine.retrieval.manifest import register_workspace_project_root
-
-            register_workspace_project_root(
-                db=db,
-                workspace_id=workspace_id,
-                project_path=str(project_root),
-                file_count=len(safe_files),
-            )
-            results = _enqueue_index_files(safe_files, workspace_id, user_id)
-            summary = _summarize_enqueue_results(results)
-            status = "queued"
-            if not safe_files:
-                status = "no_files"
-            elif summary["rejected"]:
-                status = "partial_queued"
-            return {"status": status, "path": str(project_root), **summary}
-
-        from context_engine.indexer.code import _collect_files, run_indexing
-        from context_engine.retrieval.manifest import register_workspace_project_root
-
-        files = _collect_files(str(project_root))
-        register_workspace_project_root(
-            db=db,
-            workspace_id=workspace_id,
-            project_path=str(project_root),
-            file_count=len(files),
-        )
-        run_indexing(str(project_root), workspace_id=workspace_id)
-    return {"status": "indexed", "path": str(project_root)}
-
-
-@app.post("/index/file", response_model=IndexFileResponse)
-def index_file_endpoint(
-    req: IndexFileRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-):
-    user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace, authorization)
-    with db_session(user_id=user_id) as db:
-        safe_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
-    if not os.path.isfile(safe_path):
-        raise HTTPException(status_code=400, detail=f"File not found: {req.file_path}")
-
-    from context_engine.indexer.git_committed import should_index_file
-
-    if not should_index_file(safe_path):
-        return {
-            "status": "skipped",
-            "file_path": safe_path,
-            "job_id": 0,
-            "workspace_id": workspace_id,
-            "reason": "uncommitted_or_untracked",
-        }
-
-    if req.queue:
-        result = _enqueue_index_file(safe_path, workspace_id, user_id)
-        if not result.accepted:
-            raise HTTPException(status_code=429, detail=result.to_dict())
-        return {
-            "status": result.status,
-            "file_path": safe_path,
-            "job_id": 0,
-            "workspace_id": workspace_id,
-            "queue_depth": result.queue_depth,
-            "reason": result.reason,
-        }
-
-    job_id = 0
-    try:
-        job_id = _index_file_now(safe_path, workspace_id, user_id)
-    except Exception as exc:
-        logger.exception("index_file failed for %s", safe_path)
-        job_log = IndexJobLog()
-        job = job_log.get_job(job_id) if job_id else None
-        detail = {
-            "error": PUBLIC_INTERNAL_ERROR,
-            "job_id": job_id,
-            "job_status": job["status"] if job else "unknown",
-        }
-        raise HTTPException(status_code=500, detail=detail) from exc
-    return {
-        "status": "indexed",
-        "file_path": safe_path,
-        "job_id": job_id,
-        "workspace_id": workspace_id,
-    }
-
-
-@app.post("/index/files", response_model=IndexFilesResponse)
-def index_files_endpoint(
-    req: IndexFilesRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-):
-    user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace, authorization)
-    with db_session(user_id=user_id) as db:
-        safe_paths = [
-            _sandbox_path(file_path, workspace_id=workspace_id, db=db)
-            for file_path in req.file_paths
-        ]
-    missing = [
-        EnqueueResult(
-            accepted=False,
-            status="skipped",
-            file_path=file_path,
-            workspace_id=workspace_id,
-            queue_depth=index_queue.snapshot()["pending"],
-            reason="file_not_found",
-        )
-        for file_path in safe_paths
-        if not os.path.isfile(file_path)
-    ]
-    valid_paths = [file_path for file_path in safe_paths if os.path.isfile(file_path)]
-
-    from context_engine.indexer.git_committed import should_index_file
-
-    uncommitted = [
-        EnqueueResult(
-            accepted=False,
-            status="skipped",
-            file_path=file_path,
-            workspace_id=workspace_id,
-            queue_depth=index_queue.snapshot()["pending"],
-            reason="uncommitted_or_untracked",
-        )
-        for file_path in valid_paths
-        if not should_index_file(file_path)
-    ]
-    indexable_paths = [file_path for file_path in valid_paths if should_index_file(file_path)]
-
-    if req.queue:
-        results = [
-            *missing,
-            *uncommitted,
-            *_enqueue_index_files(indexable_paths, workspace_id, user_id),
-        ]
-        summary = _summarize_enqueue_results(results)
-        status = "queued" if not summary["rejected"] else "partial_queued"
-        return {
-            "status": status,
-            "workspace_id": workspace_id,
-            "results": [result.to_dict() for result in results],
-            **summary,
-        }
-
-    sync_results = [*missing, *uncommitted]
-    for file_path in indexable_paths:
-        try:
-            job_id = _index_file_now(file_path, workspace_id, user_id)
-            status = "indexed" if job_id > 0 else "skipped"
-            reason = "" if job_id > 0 else "uncommitted_or_untracked"
-            sync_results.append(
-                EnqueueResult(
-                    accepted=job_id > 0,
-                    status=status,
-                    file_path=file_path,
-                    workspace_id=workspace_id,
-                    queue_depth=index_queue.snapshot()["pending"],
-                    generation=job_id,
-                    reason=reason,
-                )
-            )
-        except Exception:
-            logger.exception("index_files sync failed for %s", file_path)
-            sync_results.append(
-                EnqueueResult(
-                    accepted=False,
-                    status="failed",
-                    file_path=file_path,
-                    workspace_id=workspace_id,
-                    queue_depth=index_queue.snapshot()["pending"],
-                    reason=INDEX_FAILED_REASON,
-                )
-            )
-    summary = _summarize_enqueue_results(sync_results)
-    return {
-        "status": "indexed" if not summary["rejected"] else "partial_indexed",
-        "workspace_id": workspace_id,
-        "results": [result.to_dict() for result in sync_results],
-        **summary,
-    }
-
-
-@app.post("/index/git-delta")
-def index_git_delta_endpoint(
-    req: IndexGitDeltaRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-):
-    """Incremental post-commit sync: index only files in ``prev..HEAD`` git diff."""
-    from context_engine.workspace_paths import registered_workspace_root
-
-    user_id = _resolve_request_user(x_user_id, authorization)
-    workspace = _resolve_workspace_context(x_workspace, authorization)
-    workspace_id = workspace.id
-    with db_session(user_id=user_id) as db:
-        if req.project_path:
-            project_root = _require_workspace_root_dir(req.project_path)
-            _authorize_workspace_project_root(project_root, workspace=workspace, db=db)
-        else:
-            manifest_root = registered_workspace_root(db, workspace_id)
-            if manifest_root is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="project_path required when workspace has no registered project root",
-                )
-            project_root = manifest_root
-        _track_git_delta_target(workspace_id, str(project_root), user_id)
-
-        stats = _apply_git_head_delta_for_workspace(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            project_root=project_root,
-            db=db,
-            queue=req.queue,
-        )
-    return {"status": "ok", "workspace_id": workspace_id, **stats}
-
-
-@app.get("/index/git-delta/status")
-def index_git_delta_status(
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-):
-    _resolve_request_user(x_user_id, authorization)
-    return {"status": "ok", "poller": git_delta_poller.snapshot()}
-
-
-@app.get("/index/queue", response_model=IndexQueueStatusResponse)
-def index_queue_status(
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-):
-    _resolve_request_user(x_user_id, authorization)
-    return {"status": "ok", "queue": index_queue.snapshot()}
-
-
-@app.get("/index/manifest")
-def index_manifest_endpoint(
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-):
-    """Return the latest index manifest stored on the Workspace node (Neo4j)."""
-    user_id = _resolve_request_user(x_user_id, authorization)
-    base_workspace_id = _resolve_workspace(x_workspace, authorization)
-    index_workspace_id = effective_index_workspace_id(base_workspace_id)
-    with db_session(user_id=user_id) as db:
-        get_m = getattr(db, "get_index_manifest", None)
-        manifest = get_m(workspace_id=index_workspace_id) if callable(get_m) else None
-    if not manifest:
-        raise HTTPException(
-            status_code=404,
-            detail="Index manifest not found for this workspace (run indexing first)",
-        )
-    return manifest
-
-
-@app.post("/index/docs", response_model=StatusPathResponse)
-def index_docs_endpoint(
-    req: IndexDocsRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-):
-    user_id = _resolve_request_user(x_user_id, authorization)
-    base_workspace_id = _resolve_workspace(x_workspace, authorization)
-    index_workspace_id = effective_index_workspace_id(base_workspace_id)
-    with db_session(user_id=user_id) as db:
-        safe_docs_path = _sandbox_path(req.docs_path, workspace_id=base_workspace_id, db=db)
-    if not os.path.isdir(safe_docs_path):
-        raise HTTPException(status_code=400, detail=f"Path not found: {req.docs_path}")
-
-    from context_engine.indexer.docs import index_docs
-
-    index_docs(safe_docs_path, workspace_id=index_workspace_id)
-    return {"status": "indexed", "path": safe_docs_path}
 
 
 @app.post("/search", response_model=SearchResponse)

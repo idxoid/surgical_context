@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,10 +15,10 @@ from context_engine.history import build_history_provider
 from context_engine.indexer.git_delta_poller import (
     GitDeltaPoller,
     GitDeltaRegistry,
-    GitDeltaTarget,
     poll_interval_seconds,
 )
-from context_engine.indexer.queue import IndexBatchQueue, IndexWorkItem
+from context_engine.indexer.queue import IndexBatchQueue
+from context_engine.indexer.service import IndexingService
 from context_engine.overlay import InMemoryOverlay
 from context_engine.workspace import WorkspaceResolver
 
@@ -40,14 +39,10 @@ class SidecarState:
     index_queue: IndexBatchQueue
     git_delta_registry: GitDeltaRegistry
     git_delta_poller: GitDeltaPoller
+    indexing_service: IndexingService
 
 
-def build_sidecar_state(
-    config: SidecarConfig,
-    *,
-    process_index_batch: Callable[[list[IndexWorkItem]], None],
-    poll_git_delta_target: Callable[[GitDeltaTarget], dict[str, Any] | None],
-) -> SidecarState:
+def build_sidecar_state(config: SidecarConfig) -> SidecarState:
     overlay = InMemoryOverlay()
     vector_db = LanceDBClient()
     ai_engine = AIEngine(
@@ -66,16 +61,23 @@ def build_sidecar_state(
         db_path=config.history_db_path,
         retention_days=config.history_retention_days,
     )
+    git_delta_registry = GitDeltaRegistry()
+    indexing_service = IndexingService(
+        overlay=overlay,
+        vector_db=vector_db,
+        config=config,
+        git_delta_registry=git_delta_registry,
+    )
     index_queue = IndexBatchQueue(
-        process_index_batch,
+        indexing_service.process_index_batch,
         max_pending=config.index_queue_max_pending,
         debounce_ms=config.index_queue_debounce_ms,
         batch_size=config.index_queue_batch_size,
     )
-    git_delta_registry = GitDeltaRegistry()
+    indexing_service.attach_queue(index_queue)
     git_delta_poller = GitDeltaPoller(
         git_delta_registry,
-        poll_git_delta_target,
+        indexing_service.poll_git_delta_target,
         interval_seconds=poll_interval_seconds(),
         auto_start=False,
     )
@@ -92,4 +94,5 @@ def build_sidecar_state(
         index_queue=index_queue,
         git_delta_registry=git_delta_registry,
         git_delta_poller=git_delta_poller,
+        indexing_service=indexing_service,
     )
