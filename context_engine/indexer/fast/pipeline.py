@@ -1117,6 +1117,112 @@ def _property_api_phase(
     return linked, touched
 
 
+def build_symbol_docs_for_extracted(
+    ex: ExtractedFile,
+    *,
+    changed_uids: set[str],
+    workspace_id: str,
+    project_path: str = "",
+    graph_probe: GraphContextProbe | None = None,
+    include_axis_facts: bool = False,
+) -> list[dict]:
+    """Build Lance symbol rows for changed symbols in one extracted file."""
+    source_lines = ex.source.splitlines()
+    # File tier is a per-file structural property: path topology +
+    # whether the module body is a pure re-export. Computed once per
+    # file and stamped on every symbol row so the axis ranker can
+    # demote noise tiers in seed retrieval (see file_tier.py).
+    # Classify on the path RELATIVE to the indexed project root — the
+    # absolute path carries infra segments (e.g. ``QA/repos/...``) that
+    # would otherwise be mistaken for tier markers.
+    tier_path = os.path.relpath(ex.path, project_path) if project_path else ex.path
+    file_tier_value = classify_file_tier(
+        tier_path, pure_reexport=is_pure_reexport_source(ex.source)
+    )
+    axis_payloads = (
+        _axis_payloads_for_extracted_file(
+            ex,
+            project_path=project_path,
+            graph_probe=graph_probe,
+        )
+        if include_axis_facts and changed_uids
+        else {}
+    )
+    symbol_docs: list[dict] = []
+    for sym in ex.symbols:
+        if sym.uid not in changed_uids:
+            continue
+        code = "\n".join(source_lines[sym.start_line - 1 : sym.end_line])
+        if not include_axis_facts:
+            symbol_docs.append(
+                {
+                    "uid": sym.uid,
+                    "name": sym.name,
+                    "file_path": sym.file_path,
+                    "workspace_id": workspace_id,
+                    "code": code,
+                }
+            )
+            continue
+        row = {
+            "uid": sym.uid,
+            "name": sym.name,
+            "symbol_kind": sym.kind,
+            "qualified_name": sym.qualified_name or "",
+            "file_path": sym.file_path,
+            "workspace_id": workspace_id,
+            "code": code,
+            "file_tier": file_tier_value,
+        }
+        row.update(axis_payloads.get(sym.uid) or axis_payloads.get(sym.qualified_name) or {})
+        symbol_docs.append(row)
+    return symbol_docs
+
+
+def run_axis_incremental_finalize(
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    workspace_id: str,
+    *,
+    seed_uids: set[str] | None = None,
+    project_path: str = "",
+) -> dict[str, int]:
+    """Run workspace-level axis propagation and adjacency after incremental indexing."""
+    if getattr(lance, "index_profile_name", "") != AXIS_PYTHON_V1_PROFILE:
+        return {}
+
+    from context_engine.indexer.fast.error_dispatch_propagation import propagate_error_dispatch
+    from context_engine.indexer.fast.proxy_object_propagation import propagate_proxy_object
+    from context_engine.indexer.fast.registry_class_inheritance import (
+        propagate_error_model_via_inheritance,
+        propagate_registry_class_via_inheritance,
+    )
+
+    stats: dict[str, int] = {}
+    stats["registry_class_propagated"] = propagate_registry_class_via_inheritance(
+        db,
+        lance,
+        workspace_id,
+        project_path=project_path,
+    )
+    stats["error_model_propagated"] = propagate_error_model_via_inheritance(
+        db,
+        lance,
+        workspace_id,
+        project_path=project_path,
+    )
+    stats["error_dispatch_propagated"] = propagate_error_dispatch(db, lance, workspace_id)
+    stats["proxy_object_propagated"] = propagate_proxy_object(db, lance, workspace_id)
+    stats["axis_adjacency_materialized"] = _adjacency_materialization_phase(
+        db,
+        lance,
+        workspace_id,
+        _NullReporter(),
+        seed_uids={uid for uid in (seed_uids or set()) if uid},
+    )
+    return stats
+
+
 def _embed_phase(
     diffs: list[FileDiff],
     lance: LanceDBClient,
@@ -1131,44 +1237,17 @@ def _embed_phase(
     include_axis_facts = getattr(lance, "index_profile_name", "") == AXIS_PYTHON_V1_PROFILE
 
     for diff in diffs:
-        ex = diff.extracted
-        source_lines = ex.source.splitlines()
-        # File tier is a per-file structural property: path topology +
-        # whether the module body is a pure re-export. Computed once per
-        # file and stamped on every symbol row so the axis ranker can
-        # demote noise tiers in seed retrieval (see file_tier.py).
-        # Classify on the path RELATIVE to the indexed project root — the
-        # absolute path carries infra segments (e.g. ``QA/repos/...``) that
-        # would otherwise be mistaken for tier markers.
-        _tier_path = os.path.relpath(ex.path, project_path) if project_path else ex.path
-        file_tier_value = classify_file_tier(
-            _tier_path, pure_reexport=is_pure_reexport_source(ex.source)
-        )
         changed_set = {s.uid for s in diff.changed_symbols}
-        axis_payloads = (
-            _axis_payloads_for_extracted_file(
-                ex,
+        symbol_docs.extend(
+            build_symbol_docs_for_extracted(
+                diff.extracted,
+                changed_uids=changed_set,
+                workspace_id=workspace_id,
                 project_path=project_path,
                 graph_probe=graph_probe,
+                include_axis_facts=include_axis_facts,
             )
-            if include_axis_facts and changed_set
-            else {}
         )
-        for s in ex.symbols:
-            if s.uid not in changed_set:
-                continue
-            row = {
-                "uid": s.uid,
-                "name": s.name,
-                "symbol_kind": s.kind,
-                "qualified_name": s.qualified_name or "",
-                "file_path": s.file_path,
-                "workspace_id": workspace_id,
-                "code": "\n".join(source_lines[s.start_line - 1 : s.end_line]),
-                "file_tier": file_tier_value,
-            }
-            row.update(axis_payloads.get(s.uid) or axis_payloads.get(s.qualified_name) or {})
-            symbol_docs.append(row)
         removed_uids.extend(diff.removed_uids)
 
     # Two indivisible steps: encode+upsert, then delete stale rows.

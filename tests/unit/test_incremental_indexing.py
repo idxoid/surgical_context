@@ -977,5 +977,110 @@ export class GuardsContextCreator {
         assert db.cleared_edges == ["unchanged"]
         assert db.linked_calls == [{"caller_uid": "unchanged", "callee_name": "helper"}]
         assert db.deleted_imports is True
-        assert lance.upserted == []
-        assert lance.deleted == []
+        assert not getattr(lance, "upserted", None)
+        assert not getattr(lance, "deleted", None)
+
+    def test_index_file_emits_axis_payload_for_axis_python_profile(self, tmp_path, monkeypatch):
+        source = """
+class Settings:
+    host: str = "localhost"
+    port: int = 5432
+"""
+        path = tmp_path / "settings.py"
+        path.write_text(source, encoding="utf-8")
+
+        class FakeDb:
+            def get_symbol_index_for_file(self, file_path, workspace_id):
+                return {}
+
+            def degree_neighbor_uids(self, seed_uids, workspace_id):
+                return []
+
+            def upsert_file_structure(self, file_path, file_hash, symbols, workspace_id):
+                self.upserted = [s.uid for s in symbols]
+
+            def prune_symbols_for_file(self, file_path, keep_uids, workspace_id):
+                pass
+
+            def clear_outgoing_symbol_edges(self, symbol_uids, workspace_id):
+                pass
+
+            def link_calls(self, calls, workspace_id):
+                pass
+
+            def delete_imports_for_file(self, file_path, workspace_id):
+                pass
+
+            def link_imports(self, imports, workspace_id):
+                pass
+
+            def link_inheritance(self, inheritance_edges, workspace_id):
+                pass
+
+            def delete_proxy_bindings_for_file(self, file_path, workspace_id):
+                pass
+
+            def delete_decorators_for_file(self, file_path, workspace_id):
+                pass
+
+            def delete_type_references_for_file(self, file_path, workspace_id):
+                pass
+
+            def delete_injections_for_file(self, file_path, workspace_id):
+                pass
+
+            def recompute_degree_for_closure(self, seed_uids, workspace_id):
+                pass
+
+        class FakeLance:
+            index_profile_name = AXIS_PYTHON_V1_PROFILE
+
+            def __init__(self):
+                self.rows = []
+
+            def upsert_symbol_embeddings(self, symbols, *, workspace_id=None, **kwargs):
+                self.rows = symbols
+
+        finalize_calls = []
+
+        monkeypatch.setattr(
+            "context_engine.indexer.affects.AFFECTSIndexer",
+            lambda db: MagicMock(rebuild_affects=lambda uids, workspace_id: None),
+        )
+        monkeypatch.setattr(
+            "context_engine.indexer.external_facts.apply_external_boundary_for_file",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "context_engine.indexer.fast.pipeline.run_axis_incremental_finalize",
+            lambda db, lance, workspace_id, **kwargs: finalize_calls.append(
+                {"workspace_id": workspace_id, **kwargs}
+            )
+            or {},
+        )
+
+        from context_engine.parser.extractor import SymbolExtractor
+
+        extractor = SymbolExtractor()
+        extractor.project_root = str(tmp_path)
+        lance = FakeLance()
+        index_file(
+            str(path),
+            FakeDb(),
+            lance,
+            extractor,
+            workspace_id="local/repo@main+axis_python_v1",
+        )
+
+        settings_row = next(row for row in lance.rows if row.get("symbol_kind") == "class")
+        assert settings_row["qualified_name"]
+        assert {"class_def", "annotation"} <= set(settings_row["struct_bits"])
+        matches = json.loads(settings_row["axis_container_kinds_json"])
+        contracts = json.loads(settings_row["axis_contracts_json"])
+        assert {match["kind"] for match in matches} == {"config_carrier", "data_model"}
+        assert {contract["contract"] for contract in contracts} == {
+            "configuration_carrier",
+            "data_shape_declaration",
+        }
+        assert finalize_calls
+        assert finalize_calls[0]["workspace_id"] == "local/repo@main+axis_python_v1"

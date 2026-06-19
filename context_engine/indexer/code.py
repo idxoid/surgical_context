@@ -9,6 +9,7 @@ import logging
 
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 from context_engine.parser.extractor import SymbolExtractor
 from context_engine.parser.registry import REGISTRY
 from context_engine.silence import install as _silence
@@ -86,12 +87,15 @@ def index_file(
     workspace_id: str = DEFAULT_WORKSPACE_ID,
     *,
     skip_affects: bool = False,
+    collected_adjacency_seeds: set[str] | None = None,
 ) -> list[str]:
     """Index a single file: symbols → calls → embeddings → imports → inheritance → AFFECTS rebuild.
 
     Returns the list of changed symbol UIDs so batch callers can collect them
     and run a single AFFECTS rebuild after all files are processed.
-    Pass ``skip_affects=True`` when the caller will do that itself.
+    Pass ``skip_affects=True`` when the caller will do that itself; batch
+    callers should then invoke ``run_axis_incremental_finalize`` once with the
+    union of ``collected_adjacency_seeds`` from each file.
     """
     from context_engine.indexer.git_committed import should_index_file
 
@@ -140,29 +144,6 @@ def index_file(
 
     with open(file_path, encoding="utf-8") as f:
         source = f.read()
-    lines = source.splitlines()
-    changed_uid_set = set(changed_uids)
-    symbol_docs = [
-        {
-            "uid": s.uid,
-            "name": s.name,
-            "file_path": s.file_path,
-            "workspace_id": workspace_id,
-            "code": "\n".join(lines[s.start_line - 1 : s.end_line]),
-        }
-        for s in symbols
-        if s.uid in changed_uid_set
-    ]
-    try:
-        lance.upsert_symbol_embeddings(symbol_docs, workspace_id=workspace_id)
-    except TypeError:
-        lance.upsert_symbol_embeddings(symbol_docs)
-    delete_symbol_embeddings = getattr(lance, "delete_symbol_embeddings", None)
-    if callable(delete_symbol_embeddings):
-        try:
-            delete_symbol_embeddings(removed_uids, workspace_id=workspace_id)
-        except TypeError:
-            delete_symbol_embeddings(removed_uids)
 
     imports = extractor.extract_imports(file_path)
     delete_imports = getattr(db, "delete_imports_for_file", None)
@@ -248,10 +229,63 @@ def index_file(
         if injections:
             link_injects(injections, workspace_id=workspace_id)
 
+    include_axis_facts = getattr(lance, "index_profile_name", "") == AXIS_PYTHON_V1_PROFILE
+    changed_uid_set = set(changed_uids)
+    if changed_uid_set:
+        from context_engine.indexer.fast.extractor import ExtractedFile
+        from context_engine.indexer.fast.pipeline import build_symbol_docs_for_extracted
+
+        axis_facts = None
+        if include_axis_facts:
+            try:
+                adapter = REGISTRY.get_adapter(REGISTRY.detect_language(file_path))
+                axis_facts = adapter.extract_axis_facts(
+                    source,
+                    file_path,
+                    symbols=symbols,
+                    project_root=project_root or None,
+                )
+            except ValueError:
+                axis_facts = []
+        extracted = ExtractedFile(
+            file_path,
+            source,
+            file_hash,
+            symbols,
+            calls,
+            imports,
+            inheritance,
+            axis_facts=axis_facts,
+        )
+        graph_probe = None
+        if include_axis_facts:
+            from context_engine.axis.graph_probe import Neo4jGraphContextProbe
+
+            graph_probe = Neo4jGraphContextProbe(db, workspace_id)
+        symbol_docs = build_symbol_docs_for_extracted(
+            extracted,
+            changed_uids=changed_uid_set,
+            workspace_id=workspace_id,
+            project_path=project_root,
+            graph_probe=graph_probe,
+            include_axis_facts=include_axis_facts,
+        )
+        try:
+            lance.upsert_symbol_embeddings(symbol_docs, workspace_id=workspace_id)
+        except TypeError:
+            lance.upsert_symbol_embeddings(symbol_docs)
+    delete_symbol_embeddings = getattr(lance, "delete_symbol_embeddings", None)
+    if callable(delete_symbol_embeddings) and removed_uids:
+        try:
+            delete_symbol_embeddings(removed_uids, workspace_id=workspace_id)
+        except TypeError:
+            delete_symbol_embeddings(removed_uids)
+
     # Refresh materialized degree over the affected closure now that edges are
     # relinked. Removed symbols are excluded (they no longer exist); their former
     # neighbors come from the pre-mutation snapshot.
     recompute_degree = getattr(db, "recompute_degree_for_closure", None)
+    degree_seeds: list[str] = []
     if callable(recompute_degree):
         removed_set = set(removed_uids)
         degree_seeds = sorted(
@@ -259,11 +293,24 @@ def index_file(
         )
         if degree_seeds:
             recompute_degree(degree_seeds, workspace_id=workspace_id)
+    if collected_adjacency_seeds is not None and degree_seeds:
+        collected_adjacency_seeds.update(degree_seeds)
 
     if changed_uids and not skip_affects:
         from context_engine.indexer.affects import AFFECTSIndexer
 
         AFFECTSIndexer(db).rebuild_affects(changed_uids, workspace_id=workspace_id)
+
+    if not skip_affects and include_axis_facts:
+        from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
+
+        run_axis_incremental_finalize(
+            db,
+            lance,
+            workspace_id,
+            seed_uids=set(degree_seeds) | changed_uid_set,
+            project_path=project_root,
+        )
 
     return changed_uids
 

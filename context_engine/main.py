@@ -1346,6 +1346,11 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
         completed = 0
         all_changed_uids: list[str] = []
         indexed_paths: list[str] = []
+        adjacency_seeds: set[str] = set()
+        if len(indexable_paths) == 1:
+            batch_project_path = str(Path(indexable_paths[0]).parent)
+        else:
+            batch_project_path = os.path.commonpath(indexable_paths)
         with db_session(user_id=user_id) as db:
             get_file_hashes = getattr(db, "get_file_hashes", None)
             stored_hashes = (
@@ -1370,6 +1375,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                             extractor,
                             workspace_id=index_workspace_id,
                             skip_affects=True,
+                            collected_adjacency_seeds=adjacency_seeds,
                         )
                         all_changed_uids.extend(changed)
                         indexed_paths.append(path)
@@ -1389,6 +1395,16 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                         list(dict.fromkeys(all_changed_uids)),
                         workspace_id=index_workspace_id,
                     )
+                from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
+
+                adjacency_seeds.update(all_changed_uids)
+                run_axis_incremental_finalize(
+                    db,
+                    vector_db,
+                    index_workspace_id,
+                    seed_uids=adjacency_seeds,
+                    project_path=batch_project_path,
+                )
                 resolve_pending_anchors(db, vector_db, workspace_id=index_workspace_id)
                 default_cache.invalidate_files(indexed_paths, base_workspace_id)
                 default_metrics.increment(

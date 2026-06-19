@@ -877,6 +877,78 @@ def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path)
     ) in metric_calls
 
 
+def test_process_index_batch_runs_axis_finalize_after_batch(monkeypatch, tmp_path):
+    main = import_main_with_fakes(monkeypatch)
+    source_file = tmp_path / "settings.py"
+    source_file.write_text(
+        "class Settings:\n    host: str = 'localhost'\n",
+        encoding="utf-8",
+    )
+    changed_uids = ["settings-class-uid"]
+    finalize_calls = []
+
+    monkeypatch.setenv("INDEX_PROFILE", "axis_python_v1")
+    monkeypatch.setattr(
+        "context_engine.indexer.git_committed.should_index_file",
+        lambda file_path, **kwargs: True,
+    )
+    monkeypatch.setattr(main, "vector_db", types.SimpleNamespace(index_profile_name="axis_python_v1"))
+    monkeypatch.setattr(
+        "context_engine.indexer.code.hash_file",
+        lambda file_path: "hash-settings",
+    )
+    monkeypatch.setattr(
+        "context_engine.indexer.code.index_file",
+        lambda path, db, lance, extractor, **kwargs: (
+            kwargs.get("collected_adjacency_seeds", set()).update({"seed-uid"})
+            or changed_uids
+        ),
+    )
+    monkeypatch.setattr(
+        "context_engine.indexer.fast.pipeline.run_axis_incremental_finalize",
+        lambda db, lance, workspace_id, **kwargs: finalize_calls.append(
+            {"workspace_id": workspace_id, **kwargs}
+        )
+        or {},
+    )
+    monkeypatch.setattr(
+        "context_engine.indexer.affects.AFFECTSIndexer",
+        lambda db: types.SimpleNamespace(
+            rebuild_affects=lambda uids, workspace_id: None,
+        ),
+    )
+    monkeypatch.setattr(
+        "context_engine.indexer.anchor.resolve_pending_anchors",
+        lambda db, vector_db, workspace_id=None: None,
+    )
+
+    class HashDb(FakeDb):
+        def get_file_hashes(self, paths, workspace_id=None):
+            return {}
+
+    @contextmanager
+    def batch_db_session(user_id="anonymous"):
+        yield HashDb()
+
+    monkeypatch.setattr(main, "db_session", batch_db_session)
+
+    main._process_index_batch(
+        [
+            main.IndexWorkItem(
+                file_path=str(source_file),
+                workspace_id="local/surgical_context@main",
+                user_id="alice",
+            )
+        ]
+    )
+
+    assert len(finalize_calls) == 1
+    assert finalize_calls[0]["workspace_id"] == "local/surgical_context@main+axis_python_v1"
+    assert changed_uids[0] in finalize_calls[0]["seed_uids"]
+    assert "seed-uid" in finalize_calls[0]["seed_uids"]
+    assert finalize_calls[0]["project_path"] == str(tmp_path)
+
+
 def test_ask_rejects_file_path_outside_workspace_root(monkeypatch, tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
