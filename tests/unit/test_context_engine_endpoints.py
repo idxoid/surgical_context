@@ -896,6 +896,7 @@ def test_ask_rejects_file_path_outside_workspace_root(monkeypatch, tmp_path):
 
 
 def test_impact_endpoint_returns_affected_symbols(monkeypatch):
+    monkeypatch.setenv("INDEX_PROFILE", "axis_python_v1")
     main = import_main_with_fakes(monkeypatch)
     from context_engine.axis import impact_surface
 
@@ -967,6 +968,7 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     assert seen_surface_args[0]["symbol_name"] == "process_payment"
     assert seen_surface_args[0]["file_path"] == "/repo/app.py"
     assert seen_surface_args[0]["max_depth"] == 2
+    assert seen_surface_args[0]["workspace_id"] == "local/surgical_context@main+axis_python_v1"
     assert seen_session_users == ["alice"]
 
 

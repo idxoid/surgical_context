@@ -37,6 +37,7 @@ from context_engine.database.session import db_session
 from context_engine.doc_resolver import DocResolver
 from context_engine.feedback import FeedbackEvent, FeedbackStore, RetrievalSnapshot
 from context_engine.history import build_history_provider, hash_history_text, parse_retention_days
+from context_engine.index_profile import effective_index_workspace_id
 from context_engine.indexer.job_log import IndexJobLog
 from context_engine.indexer.queue import EnqueueResult, IndexBatchQueue, IndexWorkItem
 from context_engine.observability import (
@@ -474,6 +475,11 @@ def _resolve_workspace(x_workspace: Any = None, authorization: Any = None) -> st
     return _resolve_workspace_context(x_workspace, authorization).id
 
 
+def _resolve_index_workspace(x_workspace: Any = None, authorization: Any = None) -> str:
+    """Physical index namespace for the active profile (Neo4j/LanceDB reads/writes)."""
+    return effective_index_workspace_id(_resolve_workspace(x_workspace, authorization))
+
+
 def _start_trace(endpoint: str, x_trace_id: Any = None, workspace_id: str = "") -> RequestTrace:
     return RequestTrace(
         trace_id=new_trace_id(_header_value(x_trace_id)),
@@ -853,14 +859,15 @@ def _context_from_file(
     file_path: str,
     question: str,
     token_budget: int,
-    workspace_id: str,
+    base_workspace_id: str,
+    index_workspace_id: str,
     user_id: str,
     symbol: str | None = None,
 ) -> PromptContext | None:
     anchor_line = _find_symbol_line(file_path, symbol)
     code, is_dirty = _read_file_context(
         file_path,
-        workspace_id=workspace_id,
+        workspace_id=base_workspace_id,
         user_id=user_id,
         token_budget=token_budget,
         anchor_line=anchor_line,
@@ -880,7 +887,11 @@ def _context_from_file(
             provenance=["file"],
         ),
         graph_context=[],
-        documentation=_search_docs(f"{file_path} {question}", limit=3, workspace_id=workspace_id),
+        documentation=_search_docs(
+            f"{file_path} {question}",
+            limit=3,
+            workspace_id=index_workspace_id,
+        ),
         mode="file",
         intent=intent,
         tier_tokens={"code": estimate_text_tokens(code)},
@@ -890,10 +901,10 @@ def _context_from_file(
 
 
 def _context_from_workspace(
-    question: str, token_budget: int, *, workspace_id: str
+    question: str, token_budget: int, *, index_workspace_id: str
 ) -> PromptContext | None:
-    docs = _search_docs(question, limit=5, workspace_id=workspace_id)
-    symbols = _search_symbols(question, limit=5, workspace_id=workspace_id)
+    docs = _search_docs(question, limit=5, workspace_id=index_workspace_id)
+    symbols = _search_symbols(question, limit=5, workspace_id=index_workspace_id)
     if not docs and not symbols:
         return None
 
@@ -939,7 +950,8 @@ def _context_from_direct(question: str, token_budget: int) -> PromptContext:
 def _context_from_axis(
     question: str,
     *,
-    workspace_id: str,
+    base_workspace_id: str,
+    index_workspace_id: str,
     db: Any,
     token_budget: int = 6000,
     anchor_path: str | None = None,
@@ -962,7 +974,7 @@ def _context_from_axis(
     lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
     result = run_axis_retrieval(
         question,
-        workspace_id=workspace_id,
+        workspace_id=index_workspace_id,
         db=db,
         lance=lance,
         intent_budget=True,
@@ -980,7 +992,7 @@ def _context_from_axis(
     return axis_bundles_to_prompt_context(
         result.bundles,
         question=question,
-        workspace_id=workspace_id,
+        workspace_id=base_workspace_id,
         intent=intent,
         trace_id=trace_id,
         render_mode=result.render_mode,
@@ -1067,7 +1079,13 @@ def _ask_axis_first_enabled() -> bool:
 
 
 def _try_axis_context(
-    *, req: AskRequest, workspace_id: str, db: Any, anchor_path: str | None = None, user_id: str
+    *,
+    req: AskRequest,
+    base_workspace_id: str,
+    index_workspace_id: str,
+    db: Any,
+    anchor_path: str | None = None,
+    user_id: str,
 ) -> PromptContext | None:
     """Best-effort axis context. Any failure (missing axis index, db/Lance
     error) degrades to ``None`` so the remaining fallback ladder can answer.
@@ -1077,7 +1095,8 @@ def _try_axis_context(
     try:
         return _context_from_axis(
             req.question,
-            workspace_id=workspace_id,
+            base_workspace_id=base_workspace_id,
+            index_workspace_id=index_workspace_id,
             db=db,
             token_budget=req.token_budget,
             anchor_path=anchor_path,
@@ -1095,19 +1114,22 @@ def _resolve_ask_context(
     workspace_id: str,
     db: Any,
 ) -> PromptContext:
+    base_workspace_id = workspace_id
+    index_workspace_id = effective_index_workspace_id(base_workspace_id)
     # Sandbox the IDE anchor file UP FRONT (Phase 5): it feeds BOTH the axis
     # anchor and the file-tier fallback, so an out-of-workspace path must be
     # rejected before either provider uses it (_sandbox_path raises 403).
     safe_file_path = ""
     if req.file_path:
-        safe_file_path = _sandbox_path(req.file_path, workspace_id=workspace_id, db=db)
+        safe_file_path = _sandbox_path(req.file_path, workspace_id=base_workspace_id, db=db)
 
     # Axis is the default symbol-tier provider. On nothing-renderable / failure
     # we fall straight through to the file -> workspace -> direct providers below.
     if _ask_axis_first_enabled():
         axis_ctx = _try_axis_context(
             req=req,
-            workspace_id=workspace_id,
+            base_workspace_id=base_workspace_id,
+            index_workspace_id=index_workspace_id,
             db=db,
             anchor_path=safe_file_path or None,
             user_id=user_id,
@@ -1125,7 +1147,8 @@ def _resolve_ask_context(
             file_path=safe_file_path,
             question=req.question,
             token_budget=req.token_budget,
-            workspace_id=workspace_id,
+            base_workspace_id=base_workspace_id,
+            index_workspace_id=index_workspace_id,
             user_id=user_id,
             symbol=req.symbol,
         )
@@ -1134,7 +1157,9 @@ def _resolve_ask_context(
             return file_ctx
 
     workspace_ctx = _context_from_workspace(
-        req.question, req.token_budget, workspace_id=workspace_id
+        req.question,
+        req.token_budget,
+        index_workspace_id=index_workspace_id,
     )
     if workspace_ctx:
         _mark_ask_fallback(workspace_ctx, req, "workspace", symbol_error)
@@ -1213,7 +1238,7 @@ def _system_prompt_for_context(ctx: PromptContext) -> str:
     )
 
 
-def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
+def _index_file_now(file_path: str, base_workspace_id: str, user_id: str) -> int:
     from context_engine.indexer.anchor import resolve_pending_anchors
     from context_engine.indexer.code import hash_file, index_file
     from context_engine.indexer.git_committed import should_index_file
@@ -1222,6 +1247,7 @@ def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
     if not should_index_file(file_path):
         return 0
 
+    index_workspace_id = effective_index_workspace_id(base_workspace_id)
     job_log = IndexJobLog()
     file_hash = hash_file(file_path)
     with job_log.track_file_job(file_path, file_hash=file_hash) as tracked_job_id:
@@ -1234,11 +1260,11 @@ def _index_file_now(file_path: str, workspace_id: str, user_id: str) -> int:
                 db,
                 vector_db,
                 extractor,
-                workspace_id=workspace_id,
+                workspace_id=index_workspace_id,
             )
-            resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
-    default_cache.invalidate_files([file_path], workspace_id)
-    overlay.clear(file_path, workspace_id=workspace_id, user_id=user_id)
+            resolve_pending_anchors(db, vector_db, workspace_id=index_workspace_id)
+    default_cache.invalidate_files([file_path], base_workspace_id)
+    overlay.clear(file_path, workspace_id=base_workspace_id, user_id=user_id)
     return tracked_job_id
 
 
@@ -1292,7 +1318,8 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
 
     job_log = IndexJobLog()
     extractor = SymbolExtractor()
-    for (user_id, workspace_id), group in grouped.items():
+    for (user_id, base_workspace_id), group in grouped.items():
+        index_workspace_id = effective_index_workspace_id(base_workspace_id)
         existing_paths = [item.file_path for item in group if os.path.isfile(item.file_path)]
         missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
         unsupported_paths = [path for path in existing_paths if not is_indexable_file(path)]
@@ -1302,13 +1329,13 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
             logger.warning("Skipping queued index for missing file: %s", path)
             default_metrics.increment(
                 "sidecar_index_queue_skipped_total",
-                labels={"reason": "missing_file", "workspace": workspace_id},
+                labels={"reason": "missing_file", "workspace": base_workspace_id},
             )
         for path in unsupported_paths:
             logger.info("Skipping queued index for unsupported file type: %s", path)
             default_metrics.increment(
                 "sidecar_index_queue_skipped_total",
-                labels={"reason": "unsupported_extension", "workspace": workspace_id},
+                labels={"reason": "unsupported_extension", "workspace": base_workspace_id},
             )
         if not indexable_paths:
             continue
@@ -1321,7 +1348,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
         with db_session(user_id=user_id) as db:
             get_file_hashes = getattr(db, "get_file_hashes", None)
             stored_hashes = (
-                get_file_hashes(indexable_paths, workspace_id=workspace_id)
+                get_file_hashes(indexable_paths, workspace_id=index_workspace_id)
                 if callable(get_file_hashes)
                 else {}
             )
@@ -1330,7 +1357,7 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                 if stored_hashes.get(path) == file_hash:
                     default_metrics.increment(
                         "sidecar_index_queue_skipped_total",
-                        labels={"reason": "unchanged_hash", "workspace": workspace_id},
+                        labels={"reason": "unchanged_hash", "workspace": base_workspace_id},
                     )
                     continue
                 try:
@@ -1340,18 +1367,18 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
                             db,
                             vector_db,
                             extractor,
-                            workspace_id=workspace_id,
+                            workspace_id=index_workspace_id,
                             skip_affects=True,
                         )
                         all_changed_uids.extend(changed)
                         indexed_paths.append(path)
                         completed += 1
-                        overlay.clear(path, workspace_id=workspace_id, user_id=user_id)
+                        overlay.clear(path, workspace_id=base_workspace_id, user_id=user_id)
                 except Exception:
                     logger.exception("Queued indexing failed for %s", path)
                     default_metrics.increment(
                         "sidecar_index_queue_failures_total",
-                        labels={"workspace": workspace_id},
+                        labels={"workspace": base_workspace_id},
                     )
             if completed:
                 if all_changed_uids:
@@ -1359,14 +1386,14 @@ def _process_index_batch(items: list[IndexWorkItem]) -> None:
 
                     AFFECTSIndexer(db).rebuild_affects(
                         list(dict.fromkeys(all_changed_uids)),
-                        workspace_id=workspace_id,
+                        workspace_id=index_workspace_id,
                     )
-                resolve_pending_anchors(db, vector_db, workspace_id=workspace_id)
-                default_cache.invalidate_files(indexed_paths, workspace_id)
+                resolve_pending_anchors(db, vector_db, workspace_id=index_workspace_id)
+                default_cache.invalidate_files(indexed_paths, base_workspace_id)
                 default_metrics.increment(
                     "sidecar_index_queue_completed_files_total",
                     value=completed,
-                    labels={"workspace": workspace_id},
+                    labels={"workspace": base_workspace_id},
                 )
 
 
@@ -1748,10 +1775,11 @@ def index_manifest_endpoint(
 ):
     """Return the latest index manifest stored on the Workspace node (Neo4j)."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace, authorization)
+    base_workspace_id = _resolve_workspace(x_workspace, authorization)
+    index_workspace_id = effective_index_workspace_id(base_workspace_id)
     with db_session(user_id=user_id) as db:
         get_m = getattr(db, "get_index_manifest", None)
-        manifest = get_m(workspace_id=workspace_id) if callable(get_m) else None
+        manifest = get_m(workspace_id=index_workspace_id) if callable(get_m) else None
     if not manifest:
         raise HTTPException(
             status_code=404,
@@ -1768,15 +1796,16 @@ def index_docs_endpoint(
     x_workspace: str = Header(None),
 ):
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace, authorization)
+    base_workspace_id = _resolve_workspace(x_workspace, authorization)
+    index_workspace_id = effective_index_workspace_id(base_workspace_id)
     with db_session(user_id=user_id) as db:
-        safe_docs_path = _sandbox_path(req.docs_path, workspace_id=workspace_id, db=db)
+        safe_docs_path = _sandbox_path(req.docs_path, workspace_id=base_workspace_id, db=db)
     if not os.path.isdir(safe_docs_path):
         raise HTTPException(status_code=400, detail=f"Path not found: {req.docs_path}")
 
     from context_engine.indexer.docs import index_docs
 
-    index_docs(safe_docs_path, workspace_id=workspace_id)
+    index_docs(safe_docs_path, workspace_id=index_workspace_id)
     return {"status": "indexed", "path": safe_docs_path}
 
 
@@ -1788,8 +1817,8 @@ def search(
     x_workspace: str = Header(None),
 ):
     _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace, authorization)
-    return {"results": _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)}
+    index_workspace_id = _resolve_index_workspace(x_workspace, authorization)
+    return {"results": _vector_search_docs(req.query, req.limit, workspace_id=index_workspace_id)}
 
 
 def _axis_graph_neighbors(
@@ -1854,13 +1883,14 @@ def unified_search(
 ):
     """Blend doc vectors, symbol vectors, and optional graph neighbors into one ranked list."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace, authorization)
-    trace = _start_trace("/search/unified", x_trace_id, workspace_id)
+    base_workspace_id = _resolve_workspace(x_workspace, authorization)
+    index_workspace_id = effective_index_workspace_id(base_workspace_id)
+    trace = _start_trace("/search/unified", x_trace_id, base_workspace_id)
     status = "ok"
     results: list[UnifiedSearchResult] = []
     try:
         with trace.stage("vector_docs"):
-            docs = _vector_search_docs(req.query, req.limit, workspace_id=workspace_id)
+            docs = _vector_search_docs(req.query, req.limit, workspace_id=index_workspace_id)
         for rank, doc in enumerate(docs):
             score = doc.get("score")
             results.append(
@@ -1877,7 +1907,7 @@ def unified_search(
             )
 
         with trace.stage("vector_symbols"):
-            symbols = _vector_search_symbols(req.query, req.limit, workspace_id=workspace_id)
+            symbols = _vector_search_symbols(req.query, req.limit, workspace_id=index_workspace_id)
         if symbols:
             for rank, symbol in enumerate(symbols):
                 score = symbol.get("score")
@@ -1905,7 +1935,7 @@ def unified_search(
                         Any,
                         _axis_graph_neighbors(
                             symbol=req.symbol,
-                            workspace_id=workspace_id,
+                            workspace_id=index_workspace_id,
                             user_id=user_id,
                             limit=req.limit,
                         ),
@@ -1915,10 +1945,10 @@ def unified_search(
         ranked = dedupe_and_rank(results, req.limit)
         trace.token_counts["query"] = estimate_text_tokens(req.query)
         with db_session(user_id=user_id) as db:
-            mid, sv = _index_manifest_fields(db, workspace_id)
+            mid, sv = _index_manifest_fields(db, index_workspace_id)
         return {
             "trace_id": trace.trace_id,
-            "workspace_id": workspace_id,
+            "workspace_id": base_workspace_id,
             "results": ranked,
             "total": len(ranked),
             "index_manifest_id": mid,
@@ -2059,7 +2089,7 @@ def ask(
                 audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
 
             _attach_trace_metadata(ctx, trace)
-            _attach_index_manifest(ctx, db, workspace_id)
+            _attach_index_manifest(ctx, db, effective_index_workspace_id(workspace_id))
             feedback_token = feedback_store.issue_token()
             ctx.feedback_token = feedback_token
             with trace.stage("feedback_snapshot"):
@@ -2118,8 +2148,9 @@ def ask_axis(
     from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace, authorization)
-    trace = _start_trace("/ask/axis", x_trace_id, workspace_id)
+    base_workspace_id = _resolve_workspace(x_workspace, authorization)
+    index_workspace_id = effective_index_workspace_id(base_workspace_id)
+    trace = _start_trace("/ask/axis", x_trace_id, base_workspace_id)
     status = "ok"
 
     try:
@@ -2133,7 +2164,7 @@ def ask_axis(
         with db_session(user_id=user_id) as db:
             result = run_axis_retrieval(
                 req.question,
-                workspace_id=workspace_id,
+                workspace_id=index_workspace_id,
                 db=db,
                 lance=lance,
                 top_roles=req.top_roles,
@@ -2201,7 +2232,7 @@ def ask_axis(
         )
         return AskAxisResponse(
             question=req.question,
-            workspace_id=workspace_id,
+            workspace_id=base_workspace_id,
             user=user_id,
             intent_matches=intent_payload,
             candidates_by_role=candidates_by_role,
@@ -2624,21 +2655,22 @@ def impact(
 ):
     """Return downstream dependents affected by a change to the given symbol."""
     user_id = _resolve_request_user(x_user_id, authorization)
-    workspace_id = _resolve_workspace(x_workspace, authorization)
+    base_workspace_id = _resolve_workspace(x_workspace, authorization)
+    index_workspace_id = effective_index_workspace_id(base_workspace_id)
     with db_session(user_id=user_id) as db:
         from context_engine.axis.impact_surface import build_impact_surface
 
-        symbol_uid = db.get_symbol_uid_by_name(symbol, workspace_id=workspace_id)
+        symbol_uid = db.get_symbol_uid_by_name(symbol, workspace_id=index_workspace_id)
         if not symbol_uid:
             raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
 
-        symbol_file = db.get_file_path_for_symbol(symbol_uid, workspace_id=workspace_id)
+        symbol_file = db.get_file_path_for_symbol(symbol_uid, workspace_id=index_workspace_id)
         surface = build_impact_surface(
             db=db,
             symbol_uid=symbol_uid,
             symbol_name=symbol,
             file_path=symbol_file,
-            workspace_id=workspace_id,
+            workspace_id=index_workspace_id,
             max_depth=max_depth,
         )
         affected_symbols = surface["affected_symbols"]

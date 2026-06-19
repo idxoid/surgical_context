@@ -78,3 +78,24 @@ def resolve_index_profile(value: str | None = None) -> IndexProfile:
 
 def active_index_profile() -> IndexProfile:
     return resolve_index_profile(os.getenv(INDEX_PROFILE_ENV))
+
+
+def effective_index_workspace_id(
+    base_workspace_id: str,
+    *,
+    profile: IndexProfile | None = None,
+) -> str:
+    """Map client-facing workspace id to the physical index namespace."""
+    return (profile or active_index_profile()).workspace_id(base_workspace_id)
+
+
+def base_workspace_id(effective_workspace_id: str) -> str:
+    """Strip a known index-profile suffix; return input unchanged when none matches."""
+    base = effective_workspace_id.strip()
+    if not base:
+        return base
+    for profile in _PROFILES.values():
+        suffix = profile.workspace_suffix
+        if suffix and base.endswith(suffix):
+            return base[: -len(suffix)]
+    return base

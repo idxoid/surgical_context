@@ -112,10 +112,14 @@ def _sidecar_env(*, default_workspace_id: str | None = None) -> dict[str, str]:
 def _resolve_smoke_workspace_id(project_path: Path, explicit: str) -> str:
     from context_engine.workspace import WorkspaceResolver
 
-    return WorkspaceResolver().from_project_path(
-        str(project_path),
-        value=explicit.strip() or None,
-    ).id
+    return (
+        WorkspaceResolver()
+        .from_project_path(
+            str(project_path),
+            value=explicit.strip() or None,
+        )
+        .id
+    )
 
 
 def _api_url(base_url: str, path: str, query: dict[str, str] | None = None) -> str:

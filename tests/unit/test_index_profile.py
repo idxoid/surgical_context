@@ -5,6 +5,8 @@ from context_engine.index_profile import (
     INDEX_PROFILE_ENV,
     LEGACY_INDEX_PROFILE,
     active_index_profile,
+    base_workspace_id,
+    effective_index_workspace_id,
     resolve_index_profile,
 )
 
@@ -40,3 +42,19 @@ def test_active_profile_reads_environment(monkeypatch):
 def test_unknown_profile_is_rejected():
     with pytest.raises(ValueError, match="Unknown index profile"):
         resolve_index_profile("missing")
+
+
+def test_effective_index_workspace_id_applies_active_profile(monkeypatch):
+    monkeypatch.setenv(INDEX_PROFILE_ENV, AXIS_PYTHON_V1_PROFILE)
+    assert effective_index_workspace_id("local/repo@main") == "local/repo@main+axis_python_v1"
+
+
+def test_effective_index_workspace_id_is_idempotent_for_suffixed_input(monkeypatch):
+    monkeypatch.setenv(INDEX_PROFILE_ENV, AXIS_PYTHON_V1_PROFILE)
+    suffixed = "local/repo@main+axis_python_v1"
+    assert effective_index_workspace_id(suffixed) == suffixed
+
+
+def test_base_workspace_id_strips_profile_suffix():
+    assert base_workspace_id("local/repo@main+axis_python_v1") == "local/repo@main"
+    assert base_workspace_id("local/repo@main") == "local/repo@main"

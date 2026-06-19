@@ -57,11 +57,18 @@ def _patch_pipeline(monkeypatch, result):
     monkeypatch.setattr(_lance_mod, "LanceDBClient", lambda **_: object())
 
 
+def _axis_ids(base: str = "ws") -> dict[str, str]:
+    return {"base_workspace_id": base, "index_workspace_id": f"{base}+axis_python_v1"}
+
+
 def test_context_from_axis_builds_prompt_context(monkeypatch):
     _patch_pipeline(monkeypatch, _result([_bundle()]))
 
     ctx = context_engine_main._context_from_axis(
-        "how does routing work", workspace_id="ws", db=object(), trace_id="t1"
+        "how does routing work",
+        db=object(),
+        trace_id="t1",
+        **_axis_ids(),
     )
 
     assert ctx is not None
@@ -80,7 +87,9 @@ def test_context_from_axis_returns_none_when_no_bundles(monkeypatch):
     _patch_pipeline(monkeypatch, _result([]))
 
     ctx = context_engine_main._context_from_axis(
-        "how does routing work", workspace_id="ws", db=object()
+        "how does routing work",
+        db=object(),
+        **_axis_ids(),
     )
     assert ctx is None
 
@@ -90,9 +99,35 @@ def test_context_from_axis_empty_intent_passes_blank(monkeypatch):
     result.intent = []  # no classified intent
     _patch_pipeline(monkeypatch, result)
 
-    ctx = context_engine_main._context_from_axis("q", workspace_id="ws", db=object())
+    ctx = context_engine_main._context_from_axis(
+        "q",
+        db=object(),
+        **_axis_ids(),
+    )
     assert ctx is not None
     assert ctx.intent == ""
+
+
+def test_context_from_axis_queries_index_workspace(monkeypatch):
+    seen: dict[str, str] = {}
+
+    def fake_run(_question, **kwargs):
+        seen["workspace_id"] = kwargs["workspace_id"]
+        return _result([_bundle()])
+
+    import context_engine.axis.pipeline as _pipeline_mod
+    import context_engine.database.lancedb_client as _lance_mod
+
+    monkeypatch.setattr(_pipeline_mod, "run_axis_retrieval", fake_run)
+    monkeypatch.setattr(_lance_mod, "LanceDBClient", lambda **_: object())
+
+    context_engine_main._context_from_axis(
+        "q",
+        base_workspace_id="local/repo@main",
+        index_workspace_id="local/repo@main+axis_python_v1",
+        db=object(),
+    )
+    assert seen["workspace_id"] == "local/repo@main+axis_python_v1"
 
 
 # --- the Phase-1a adapter, directly (shipped test-free) -------------------
