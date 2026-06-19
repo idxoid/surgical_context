@@ -85,6 +85,8 @@ class EdgeProfile:
         "EVENT_SUB",
         "EVENT_PUB",
         "METADATA_BRIDGE",
+        "HOOK_CONFIG",
+        "HOOK_EXEC",
         "CALLS_ENDPOINT",
         "IMPLEMENTS_ENDPOINT",
     )
@@ -122,6 +124,8 @@ class EdgeProfile:
         "EVENT_SUB",
         "EVENT_PUB",
         "METADATA_BRIDGE",
+        "HOOK_CONFIG",
+        "HOOK_EXEC",
         "CALLS_ENDPOINT",
         "IMPLEMENTS_ENDPOINT",
     )

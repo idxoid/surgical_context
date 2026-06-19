@@ -84,38 +84,21 @@ def _collect_http_clients(db, workspace_id: str, seed_uids: list[str]) -> dict[s
     return out
 
 
-def _caller_boost(name: str, file_path: str) -> float:
-    path = (file_path or "").replace("\\", "/")
-    lowered = (name or "").lower()
-    if path.endswith("/extension.ts") or path.endswith("extension/src/extension.ts"):
-        return 1.0
-    if "viewprovider" in path.lower() or lowered in {"handleask", "handlewebviewmessage", "activate"}:
-        return 0.95
-    if "provider" in path.lower() or "/panels/" in path.lower():
-        return 0.85
-    if "/extension/" in path:
-        return 0.75
-    return 0.5
-
-
 def _rank_http_callers(
     neighbours: list[Neighbour],
     *,
     rows_by_uid: dict[str, dict],
 ) -> list[Neighbour]:
-    def _key(n: Neighbour) -> tuple[float, float, float, str]:
+    """Structural ranking: keep ``core`` tier only, then order by ``reach`` (how
+    many client seeds reach the caller — the entry-point surface), then shallower
+    depth, then uid. No symbol-name or path literals.
+    """
+
+    def _key(n: Neighbour) -> tuple[float, float, str]:
         row = rows_by_uid.get(n.uid) or {}
-        tier = str(row.get("file_tier") or "core")
-        if tier != "core":
-            return (-1.0, -1.0, -1.0, n.uid or "")
-        path = n.file_path or str(row.get("file_path") or "")
-        name = n.name or str(row.get("name") or "")
-        return (
-            float(n.reach),
-            _caller_boost(name, path),
-            -float(n.depth),
-            n.uid or "",
-        )
+        if str(row.get("file_tier") or "core") != "core":
+            return (-1.0, -1.0, n.uid or "")
+        return (float(n.reach), -float(n.depth), n.uid or "")
 
     ranked = [n for n in neighbours if _key(n)[0] >= 0.0]
     ranked.sort(key=_key, reverse=True)

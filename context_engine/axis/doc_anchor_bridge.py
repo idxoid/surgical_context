@@ -41,40 +41,24 @@ def _seed_idf_weights(seed_uids: list[str], *, db, workspace_id: str) -> dict[st
     return weights
 
 
-def _core_library_boost(file_path: str) -> float:
-    """Prefer ``packages/core`` implementations over sample/integration noise."""
-    path = (file_path or "").replace("\\", "/")
-    if "/packages/core/" in path or path.startswith("packages/core/"):
-        return 1.0
-    if "/packages/common/" in path or path.startswith("packages/common/"):
-        return 0.85
-    if "/integration/" in path or "/sample/" in path:
-        return 0.2
-    return 0.5
-
-
 def _rank_bridge_neighbours(
     neighbours: list[Neighbour],
     *,
     rows_by_uid: dict[str, dict],
 ) -> list[Neighbour]:
-    """Rank reverse-USES_TYPE neighbours before capping.
+    """Rank reverse-USES_TYPE neighbours before capping — structural only.
 
-    Walk order is depth/reach-biased but not domain-aware — interceptors from
-    a ``NestInterceptor`` doc seed can crowd out ``GuardsConsumer`` from a
-    ``CanActivate`` seed when the global cap fires early. Sort by structural
-    centrality (``reach``), then library-path boost, then uid for stability.
+    Drop non-``core`` tier (the file-tier signal already classifies
+    sample/integration/test noise), then order by ``reach`` (how many seeds
+    reach the node — structural centrality), then shallower depth, then uid for
+    stability. No symbol-name or library-path literals.
     """
 
-    def _key(n: Neighbour) -> tuple[float, float, float, float, str]:
+    def _key(n: Neighbour) -> tuple[float, float, str]:
         row = rows_by_uid.get(n.uid) or {}
-        tier = str(row.get("file_tier") or "core")
-        if tier != "core":
-            return (-1.0, -1.0, -1.0, -1.0, n.uid or "")
-        path = n.file_path or str(row.get("file_path") or "")
-        name = n.name or str(row.get("name") or "")
-        consumerish = 1.0 if name.endswith(("Consumer", "ContextCreator")) else 0.0
-        return (float(n.reach), _core_library_boost(path), consumerish, -float(n.depth), n.uid or "")
+        if str(row.get("file_tier") or "core") != "core":
+            return (-1.0, -1.0, n.uid or "")
+        return (float(n.reach), -float(n.depth), n.uid or "")
 
     ranked = [n for n in neighbours if _key(n)[0] >= 0.0]
     ranked.sort(key=_key, reverse=True)
