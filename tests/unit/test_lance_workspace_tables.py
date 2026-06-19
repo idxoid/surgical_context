@@ -50,7 +50,6 @@ def test_workspace_partition_table_exists_opens_off_catalog_datasets(tmp_path, m
 
 def test_drop_workspace_partition_table_removes_off_catalog_dataset(tmp_path, monkeypatch):
     import lancedb
-    import pyarrow as pa
 
     monkeypatch.setenv("LANCEDB_PATH", str(tmp_path))
     db = lancedb.connect(str(tmp_path))

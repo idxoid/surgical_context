@@ -122,9 +122,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
     _HOOK_REGISTER_CALLEE_NAMES = frozenset({"use", "subscribe"})
     _CONTROLLER_DECORATORS = frozenset({"Controller"})
     # Node ``EventEmitter``, DOM events, RxJS ``Subject.next`` — pub/sub surfaces.
-    _EVENT_CONFIG_CALLEES = frozenset(
-        {"on", "once", "addListener", "addEventListener"}
-    )
+    _EVENT_CONFIG_CALLEES = frozenset({"on", "once", "addListener", "addEventListener"})
     _EVENT_EXEC_CALLEES = frozenset({"emit", "dispatchEvent", "next"})
     _EVENT_DISPATCH_BASES = frozenset(
         {
@@ -656,7 +654,11 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 fn = n.child_by_field_name("function")
                 if fn is not None and fn.type == "member_expression":
                     obj = fn.child_by_field_name("object")
-                    if obj is not None and obj.type == "identifier" and cls._node_text(obj) == loop_var:
+                    if (
+                        obj is not None
+                        and obj.type == "identifier"
+                        and cls._node_text(obj) == loop_var
+                    ):
                         return True
             for child in n.children:
                 stack.append(child)
@@ -687,10 +689,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
     @staticmethod
     def _is_react_hook_name(name: str) -> bool:
         return (
-            len(name) > 3
-            and name.startswith("use")
-            and name[3].isupper()
-            and name.isidentifier()
+            len(name) > 3 and name.startswith("use") and name[3].isupper() and name.isidentifier()
         )
 
     def _mark_react_hook_symbols(self, symbols: list[SymbolMetadata]) -> None:
@@ -1314,7 +1313,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
                         continue
                     for param in params.named_children:
                         for provider_name in self._parameter_decorator_provider_names(param):
-                            prov_qn = self._resolve_type_name(provider_name, import_bindings, module)
+                            prov_qn = self._resolve_type_name(
+                                provider_name, import_bindings, module
+                            )
                             key = (owner_uid, prov_qn)
                             if key in seen:
                                 continue
@@ -1475,8 +1476,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
             owner = self._enclosing_symbol_owner(node)
             if owner is None:
                 continue
-            site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
-            if not site_uid:
+            call_site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
+            if not call_site_uid:
                 continue
 
             if callee in self._EVENT_CONFIG_CALLEES or callee in self._EVENT_EXEC_CALLEES:
@@ -1485,7 +1486,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     receiver = path[0] if path else ""
                     if receiver.isidentifier():
                         emit(
-                            site_uid,
+                            call_site_uid,
                             receiver,
                             kind="exec",
                             target_kind="object",
@@ -1493,7 +1494,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                         )
                     else:
                         emit(
-                            site_uid,
+                            call_site_uid,
                             "",
                             kind="exec",
                             target_kind="object",
@@ -1506,7 +1507,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 topic_is_identifier = bool(topic) and topic.isidentifier()
                 if topic_is_identifier:
                     emit(
-                        site_uid,
+                        call_site_uid,
                         topic,
                         kind=kind,
                         target_kind="method",
@@ -1516,7 +1517,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     handler_name = self._second_positional_identifier(node)
                     if handler_name:
                         emit(
-                            site_uid,
+                            call_site_uid,
                             handler_name,
                             kind="config",
                             target_kind="handler",
@@ -1524,7 +1525,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                         )
                 if not topic_is_identifier:
                     emit(
-                        site_uid,
+                        call_site_uid,
                         "",
                         kind=kind,
                         target_kind="method",
@@ -1540,7 +1541,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 continue
             via = "interceptors" if "interceptors" in path else callee
             emit(
-                site_uid,
+                call_site_uid,
                 handler_name,
                 kind="config",
                 target_kind="handler",
@@ -1618,8 +1619,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 else:
                     continue
             elif (
-                func.type == "identifier"
-                and self._node_text(func) in self._METADATA_DEFINE_HELPERS
+                func.type == "identifier" and self._node_text(func) in self._METADATA_DEFINE_HELPERS
             ):
                 role, via = "define", self._node_text(func)
             else:
@@ -1636,13 +1636,13 @@ class TypeScriptAdapter(TreeSitterAdapter):
             owner = self._enclosing_symbol_owner(node)
             if owner is None:
                 continue
-            site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
-            emit(site_uid, key_qn, key_name, role, via)
+            bridge_site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
+            if not bridge_site_uid:
+                continue
+            emit(bridge_site_uid, key_qn, key_name, role, via)
         return out
 
-    def extract_http_endpoints(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_http_endpoints(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """HTTP client/server endpoint facts for cross-language graph bridges.
 
         Emits ``implement`` facts for route handlers (NestJS decorators, Express
@@ -1655,7 +1655,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
             combine_controller_path,
             normalize_http_method,
             normalize_http_path,
-            path_from_template_text,
         )
 
         if tree is None:
@@ -1726,7 +1725,11 @@ class TypeScriptAdapter(TreeSitterAdapter):
             subpath = self._http_path_from_decorator(deco) or ""
             class_uid = self._enclosing_class_uid(decorated, source_code, file_path)
             prefix = controller_prefix_by_class.get(class_uid, "")
-            path = combine_controller_path(prefix, subpath) if prefix else normalize_http_path(subpath or "/")
+            path = (
+                combine_controller_path(prefix, subpath)
+                if prefix
+                else normalize_http_path(subpath or "/")
+            )
             emit(site_uid, method, path, "implement", f"@{base}")
 
         for node in self._iter_nodes(tree.root_node):
@@ -1746,9 +1749,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     route_path = self._http_path_from_call_argument(node, 0)
                     if not method or not route_path:
                         continue
-                    handler_uid = self._http_handler_uid_from_call(
-                        node, source_code, file_path
-                    )
+                    handler_uid = self._http_handler_uid_from_call(node, source_code, file_path)
                     if handler_uid:
                         emit(
                             handler_uid,
@@ -1796,7 +1797,11 @@ class TypeScriptAdapter(TreeSitterAdapter):
         return out
 
     def _http_call_site_uid(self, node, source_code: str, file_path: str) -> str:
-        from context_engine.parser.uid import compute_uid, module_name_from_path, normalize_signature
+        from context_engine.parser.uid import (
+            compute_uid,
+            module_name_from_path,
+            normalize_signature,
+        )
 
         line = node.start_point[0] + 1
         for name, (start_line, end_line) in self._exported_object_api_ranges(source_code).items():
@@ -1844,9 +1849,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return path_from_template_text("".join(fragments))
         return ""
 
-    def _http_handler_uid_from_call(
-        self, call_node, source_code: str, file_path: str
-    ) -> str:
+    def _http_handler_uid_from_call(self, call_node, source_code: str, file_path: str) -> str:
         handler_arg = self._nth_positional_argument(call_node, 1)
         if handler_arg is None:
             return ""
@@ -1855,7 +1858,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         owner = self._enclosing_symbol_owner(call_node)
         if owner is None:
             return ""
-        return self._caller_uid_for_owner(owner, source_code, file_path)
+        return self._caller_uid_for_owner(owner, source_code, file_path) or ""
 
     def _uid_for_symbol_name(self, name_node, source_code: str, file_path: str) -> str:
         name = self._node_text(name_node)
@@ -1884,7 +1887,11 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return "", "", False
         if arg.type == "identifier":
             name = self._node_text(arg)
-            return self._resolve_type_name(name, import_bindings, module), name, name in import_bindings
+            return (
+                self._resolve_type_name(name, import_bindings, module),
+                name,
+                name in import_bindings,
+            )
         if arg.type == "member_expression":
             path = self._member_expression_path(arg)
             if len(path) < 2:

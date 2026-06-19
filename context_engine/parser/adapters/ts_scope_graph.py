@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 
 @dataclass
@@ -90,8 +90,7 @@ class TsScopeGraph:
 
     def _snapshot(self) -> list[_ScopeLayer]:
         return [
-            _ScopeLayer(kind=layer.kind, bindings=dict(layer.bindings))
-            for layer in self._layers
+            _ScopeLayer(kind=layer.kind, bindings=dict(layer.bindings)) for layer in self._layers
         ]
 
     def _commit(self, decl_byte: int) -> None:

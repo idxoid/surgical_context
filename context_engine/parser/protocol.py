@@ -190,7 +190,9 @@ class LanguageAdapter(ABC):
         """
         from context_engine.parser.adapters.symbol_axis_extractor import SymbolAxisExtractor
 
-        symbol_rows = symbols if symbols is not None else self.extract_symbols(source_code, file_path)
+        symbol_rows = (
+            symbols if symbols is not None else self.extract_symbols(source_code, file_path)
+        )
         return SymbolAxisExtractor().extract(symbol_rows, file_path).facts
 
     def extract_all(

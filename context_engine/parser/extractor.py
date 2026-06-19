@@ -1,7 +1,8 @@
+from typing import Any, cast
+
 from context_engine.parser.protocol import SymbolMetadata
 from context_engine.parser.registry import REGISTRY
 from context_engine.parser.uid import project_root_scope
-from typing import Any, cast
 
 
 class SymbolExtractor:

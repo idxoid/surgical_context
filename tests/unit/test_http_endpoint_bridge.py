@@ -25,7 +25,12 @@ class TestTypeScriptHttpEndpointExtraction:
         adapter = TypeScriptAdapter()
         source = Path("extension/src/sidecarClient.ts").read_text()
         path = "extension/src/sidecarClient.ts"
-        from context_engine.parser.uid import compute_uid, module_name_from_path, normalize_signature, project_root_scope
+        from context_engine.parser.uid import (
+            compute_uid,
+            module_name_from_path,
+            normalize_signature,
+            project_root_scope,
+        )
 
         with project_root_scope("/home/idxoid/surgical_context", "ws"):
             rows = adapter.extract_http_endpoints(source, path)
@@ -66,9 +71,7 @@ export class CatsController {
 """
         rows = adapter.extract_http_endpoints(source, "src/cats.controller.ts")
         assert any(
-            r["role"] == "implement"
-            and r["method"] == "GET"
-            and r["path"] == "/cats/:id"
+            r["role"] == "implement" and r["method"] == "GET" and r["path"] == "/cats/:id"
             for r in rows
         )
 
@@ -97,10 +100,7 @@ async def ask():
 """
         rows = adapter.extract_http_endpoints(source, "context_engine/main.py")
         assert any(
-            r["role"] == "implement"
-            and r["method"] == "POST"
-            and r["path"] == "/ask"
-            for r in rows
+            r["role"] == "implement" and r["method"] == "POST" and r["path"] == "/ask" for r in rows
         )
 
     def test_api_route_with_methods_kwarg(self):

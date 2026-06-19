@@ -246,8 +246,7 @@ def run_axis_retrieval(
 
     seed_files |= {getattr(c, "file_path", "") or "" for c in raw_by_role.get("vector_seed", [])}
     seed_files |= {
-        getattr(c, "file_path", "") or ""
-        for c in raw_by_role.get("doc_anchor_bridge", [])
+        getattr(c, "file_path", "") or "" for c in raw_by_role.get("doc_anchor_bridge", [])
     }
 
     http_bridge_roles = {m.role for m in intent} | {
@@ -256,10 +255,7 @@ def run_axis_retrieval(
         "vector_seed",
     }
     http_bridge_seeds = [
-        c
-        for role in http_bridge_roles
-        for c in raw_by_role.get(role, [])
-        if getattr(c, "uid", "")
+        c for role in http_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
     ]
     if http_bridge_seeds:
         with tr.stage("http_endpoint_bridge"):
@@ -272,8 +268,7 @@ def run_axis_retrieval(
             )
 
     seed_files |= {
-        getattr(c, "file_path", "") or ""
-        for c in raw_by_role.get("http_endpoint_bridge", [])
+        getattr(c, "file_path", "") or "" for c in raw_by_role.get("http_endpoint_bridge", [])
     }
 
     hook_bridge_roles = {m.role for m in intent} | {
@@ -283,10 +278,7 @@ def run_axis_retrieval(
         "binding_surface",
     }
     hook_bridge_seeds = [
-        c
-        for role in hook_bridge_roles
-        for c in raw_by_role.get(role, [])
-        if getattr(c, "uid", "")
+        c for role in hook_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
     ]
     if hook_bridge_seeds:
         with tr.stage("hook_api_bridge"):
@@ -299,8 +291,7 @@ def run_axis_retrieval(
             )
 
     seed_files |= {
-        getattr(c, "file_path", "") or ""
-        for c in raw_by_role.get("hook_api_bridge", [])
+        getattr(c, "file_path", "") or "" for c in raw_by_role.get("hook_api_bridge", [])
     }
 
     # Structural-neighbour pass — file-level adjacency via undirected

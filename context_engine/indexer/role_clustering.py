@@ -15,7 +15,7 @@ import os
 from collections import Counter, defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence, cast
+from typing import cast
 
 from context_engine.indexer.external_boundary import EXTERNAL_INTEGRATION_PLUMBING_ROOTS
 from context_engine.indexer.role_cascade import (

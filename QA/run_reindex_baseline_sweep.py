@@ -15,9 +15,9 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 from QA.axis_benchmark import REPO_TO_WORKSPACE
 from QA.reset_databases import _default_repo_checkout_path, _repo_meta_from_pack
-from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 
 ROOT = Path(__file__).resolve().parent.parent
 QUESTIONS = ROOT / "QA" / "fixtures" / "questions_python.yaml"

@@ -27,8 +27,6 @@ This is read-only; no graph writes, no Lance mutations.
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 import json
 import os
 from collections import defaultdict
@@ -784,7 +782,7 @@ def find_seeds_by_doc_anchor(
     k = min(limit, len(scored))
 
     out: list[RoleCandidate] = []
-    for adjusted, distance, row in scored[:k]:
+    for _adjusted, distance, row in scored[:k]:
         owner_uid = str(row.get("owner_uid") or "")
         owner = scan.rows_by_uid.get(owner_uid) or {}
         tier_w = _tier_weight(

@@ -1,8 +1,8 @@
 """TreeSitterAdapter — base class for tree-sitter-based language parsers."""
 
 from abc import abstractmethod
+from collections.abc import Iterator
 from hashlib import sha256
-from typing import Iterator
 
 from tree_sitter import Language, Parser, Query, QueryCursor
 

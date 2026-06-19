@@ -88,8 +88,10 @@ def _query_class_inheritance_context(
     of DEPENDS_ON edges up to 6 hops.
     """
     with db.driver.session() as session:
-        return cast(list[dict[str, Any]], session.run(
-            """
+        return cast(
+            list[dict[str, Any]],
+            session.run(
+                """
             MATCH (f:File {workspace_id: $ws})-[:CONTAINS]->(c:Symbol {kind: 'class'})
             OPTIONAL MATCH (c)-[:DEPENDS_ON*1..6 {workspace_id: $ws}]->(a:Symbol)
             WHERE a.kind = 'class'
@@ -99,8 +101,9 @@ def _query_class_inheritance_context(
                    c.parsed_base_names AS parsed_base_names,
                    collect(DISTINCT a.uid) AS ancestor_uids
             """,
-            ws=workspace_id,
-        ).data())
+                ws=workspace_id,
+            ).data(),
+        )
 
 
 def _query_classes_by_local_qn(

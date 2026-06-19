@@ -49,10 +49,10 @@ def test_python_adapter_attaches_docstring():
 
 def test_typescript_adapter_attaches_jsdoc():
     source = textwrap.dedent(
-        '''
+        """
         /** Nest module metadata. */
         export class AppModule {}
-        '''
+        """
     )
     symbols = TypeScriptAdapter().extract_symbols(source, "src/app.module.ts")
     assert symbols[0].docstring == "Nest module metadata."
@@ -60,11 +60,11 @@ def test_typescript_adapter_attaches_jsdoc():
 
 def test_typescript_jsdoc_skips_decorators():
     source = textwrap.dedent(
-        '''
+        """
         /** Module metadata. */
         @Module({})
         export class FeatureModule {}
-        '''
+        """
     )
     adapter = TypeScriptAdapter()
     tree = adapter._parse(source)
@@ -74,10 +74,10 @@ def test_typescript_jsdoc_skips_decorators():
 
 def test_javascript_adapter_attaches_jsdoc():
     source = textwrap.dedent(
-        '''
+        """
         /** Factory helper. */
         function create() {}
-        '''
+        """
     )
     symbols = JavaScriptAdapter().extract_symbols(source, "lib/create.js")
     assert symbols[0].docstring == "Factory helper."

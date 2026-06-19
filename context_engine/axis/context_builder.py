@@ -472,9 +472,7 @@ def _fold_class_symbols(
                 body_blocks.append(_indent_block(sig))
             else:
                 keep_full = member.distance_from_seed == 0 or member.name == "__init__"
-                body_blocks.append(
-                    _indent_block((member.code or "") if keep_full else sig or "")
-                )
+                body_blocks.append(_indent_block((member.code or "") if keep_full else sig or ""))
         code = "\n".join([class_header, *(body_blocks or ["    ..."])])
         first = min(members, key=lambda m: (m.distance_from_seed, m.uid))
         out.append(

@@ -18,9 +18,11 @@ def test_javascript_axis_extractor_emits_loop_and_assignment_bits():
         function onEvent() {}
         """
     )
-    profile = JavaScriptAxisExtractor(adapter).extract(source, "lib/install.js").profiles_by_qualified_name[
-        "lib.install.install"
-    ]
+    profile = (
+        JavaScriptAxisExtractor(adapter)
+        .extract(source, "lib/install.js")
+        .profiles_by_qualified_name["lib.install.install"]
+    )
 
     assert {"call_site", "loop_driver", "method_dispatch", "value_call"} <= profile.cfg_bits
     assert {

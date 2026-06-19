@@ -20,9 +20,7 @@ class TestPythonImports:
         assert len(imports) == 0
 
     def test_keeps_internal_imports(self, adapter):
-        source = (
-            "from context_engine.database.neo4j_client import Neo4jClient\nimport context_engine.context_types"
-        )
+        source = "from context_engine.database.neo4j_client import Neo4jClient\nimport context_engine.context_types"
         imports = adapter.extract_imports(source, "test.py")
         assert len(imports) == 2
         names = {imp.target_module_name for imp in imports}

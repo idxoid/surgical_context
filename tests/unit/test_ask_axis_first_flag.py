@@ -29,7 +29,9 @@ def test_flag_off_never_calls_axis(monkeypatch):
     # Fall through to direct_llm when axis is disabled.
     monkeypatch.setattr(context_engine_main, "_context_from_workspace", lambda *_a, **_k: None)
 
-    ctx = context_engine_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
+    ctx = context_engine_main._resolve_ask_context(
+        req=_req(), user_id="u", workspace_id="ws", db=object()
+    )
     assert _ask_level(ctx) == "direct_llm"
 
 
@@ -39,7 +41,9 @@ def test_flag_on_axis_wins(monkeypatch):
     sentinel = object.__new__(type("Ctx", (), {}))  # bare object with a __dict__
     monkeypatch.setattr(context_engine_main, "_context_from_axis", lambda _q, **_k: sentinel)
 
-    ctx = context_engine_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
+    ctx = context_engine_main._resolve_ask_context(
+        req=_req(), user_id="u", workspace_id="ws", db=object()
+    )
     assert ctx is sentinel
     assert _ask_level(ctx) == "axis"
 
@@ -49,7 +53,9 @@ def test_flag_on_axis_none_falls_through(monkeypatch):
     monkeypatch.setattr(context_engine_main, "_context_from_axis", lambda _q, **_k: None)
     monkeypatch.setattr(context_engine_main, "_context_from_workspace", lambda *_a, **_k: None)
 
-    ctx = context_engine_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
+    ctx = context_engine_main._resolve_ask_context(
+        req=_req(), user_id="u", workspace_id="ws", db=object()
+    )
     assert _ask_level(ctx) == "direct_llm"
 
 
@@ -63,5 +69,7 @@ def test_flag_on_axis_error_falls_through(monkeypatch):
     monkeypatch.setattr(context_engine_main, "_context_from_workspace", lambda *_a, **_k: None)
 
     # Must not raise — degrades to direct_llm.
-    ctx = context_engine_main._resolve_ask_context(req=_req(), user_id="u", workspace_id="ws", db=object())
+    ctx = context_engine_main._resolve_ask_context(
+        req=_req(), user_id="u", workspace_id="ws", db=object()
+    )
     assert _ask_level(ctx) == "direct_llm"

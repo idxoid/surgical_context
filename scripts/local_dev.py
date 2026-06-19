@@ -627,15 +627,15 @@ def up(args: argparse.Namespace) -> int:
         time.sleep(args.launch_delay)
         if args.launch_code:
             launch_code(args)
-        return context_engine.wait()
+        return sidecar.wait()
     except KeyboardInterrupt:
         print("\nStopping context_engine...")
-        context_engine.terminate()
+        sidecar.terminate()
         try:
-            return context_engine.wait(timeout=5)
+            return sidecar.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            context_engine.kill()
-            return context_engine.wait()
+            sidecar.kill()
+            return sidecar.wait()
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:

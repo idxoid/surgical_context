@@ -214,9 +214,9 @@ def summarize_axis_contract_report(rows: list[AxisContractReportRow]) -> dict[st
             if contract.traversal_mode:
                 traversal_modes[str(contract.traversal_mode)] += 1
         for diagnostic in row.diagnostics:
-            contract = str(diagnostic.get("contract") or "")
-            if contract:
-                diagnostics[contract] += 1
+            diag_contract = str(diagnostic.get("contract") or "")
+            if diag_contract:
+                diagnostics[diag_contract] += 1
 
     return {
         "rows": len(rows),

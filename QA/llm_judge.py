@@ -412,7 +412,7 @@ def judge_question_matrix(
     efforts: tuple[Effort, ...] | None = None,
     providers: tuple[Provider, ...] | None = None,
     max_workers: int = 6,
-) -> dict[str, JudgeResult | dict]:
+) -> dict[str, JudgeResult | dict | str]:
     """Run claude+codex judges for each effort tier in parallel.
 
     Returns:

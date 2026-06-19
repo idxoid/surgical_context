@@ -9,10 +9,8 @@ This folder contains the current product and technical documentation for the `co
 ### **For Understanding the System**
 - **[architectura.md](docs/architectura.md)** — how all pieces fit together (start here)
 - **[DOCS_STYLE_GUIDE.md](docs/DOCS_STYLE_GUIDE.md)** — doc types (Spec / Architecture / Concept / Design draft)
-- **[product_direction_memo.md](docs/product_direction_memo.md)** — canonical product thesis, scope boundaries, and validation plan
 - **[concept.md](docs/concept.md)** — compact product identity (pointer document)
 - **[idea_summary.md](docs/idea_summary.md)** — one-screen pitch summary (pointer document)
-- **[project_gap_analysis.md](docs/project_gap_analysis.md)** — short index to the merged project analysis
 
 ### **For Implementation**
 
@@ -54,9 +52,6 @@ This folder contains the current product and technical documentation for the `co
 
 ### **Planning & Review**
 - **[road_map.md](docs/road_map.md)** — phases and timelines
-- **[product_direction_memo.md](docs/product_direction_memo.md)** — narrow product direction before the next fork
-- **[project_gap_analysis.md](docs/project_gap_analysis.md)** — index for current gaps and supporting specs
-- **[architectural_review.md](docs/architectural_review.md)** — archived historical review (canonical architecture now in `architectura.md`)
 
 ---
 

@@ -14,9 +14,9 @@ from pathlib import Path
 
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 from context_engine.indexer.anchor import ingest_symbol_docstrings
 from context_engine.indexer.fast.pipeline import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
-from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 from context_engine.parser.registry import REGISTRY
 
 

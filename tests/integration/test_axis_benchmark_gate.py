@@ -25,13 +25,13 @@ from pathlib import Path
 
 import pytest
 
+from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 from QA.axis_benchmark import (
     _load_pack,
     assert_p7_baseline,
     run_axis_pack,
     summarise,
 )
-from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACK = REPO_ROOT / "QA/fixtures/questions_python.yaml"
@@ -88,9 +88,7 @@ def test_p7_surgical_context_axis_file_recall(
         questions,
         per_role_limit=int(caps["per_role_limit"]),
         max_impacted=int(caps["max_impacted"]),
-        context_seeds_per_role=(
-            None if context_seed_cap is None else int(context_seed_cap)
-        ),
+        context_seeds_per_role=(None if context_seed_cap is None else int(context_seed_cap)),
         intent_budget=bool(caps["intent_budget"]),
         workspace_overrides={"surgical_context": surgical_context_workspace},
     )

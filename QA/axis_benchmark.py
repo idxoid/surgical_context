@@ -383,10 +383,7 @@ def run_axis_pack(
 ) -> list[QuestionResult]:
     """Run the axis benchmark over an in-memory question list."""
     owned_db = db is None
-    owned_lance = lance is None
-    active_db = (
-        db if db is not None else Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-    )
+    active_db = db if db is not None else Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
     active_lance = (
         lance if lance is not None else LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
     )

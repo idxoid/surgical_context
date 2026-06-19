@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, cast
 
 from context_engine.axis.schema import AxisExtraction, AxisFact, AxisName
 from context_engine.parser.uid import (
@@ -13,9 +13,12 @@ from context_engine.parser.uid import (
 )
 
 if TYPE_CHECKING:
+    from context_engine.parser.adapters.javascript_adapter import JavaScriptAdapter
     from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
-_CONTAINER_MUTATION_METHODS = frozenset({"push", "pop", "shift", "unshift", "splice", "set", "delete"})
+_CONTAINER_MUTATION_METHODS = frozenset(
+    {"push", "pop", "shift", "unshift", "splice", "set", "delete"}
+)
 _CONTAINER_READ_METHODS = frozenset({"get", "has"})
 
 
@@ -55,7 +58,7 @@ class TypeScriptAxisExtractor:
         }
     )
 
-    def __init__(self, adapter: TypeScriptAdapter) -> None:
+    def __init__(self, adapter: TypeScriptAdapter | JavaScriptAdapter) -> None:
         self.adapter = adapter
 
     def extract(
@@ -360,7 +363,7 @@ class TypeScriptAxisExtractor:
             return
         fn = node.child_by_field_name("function")
         callee = self._callee_name(fn)
-        payload = {"callee": callee} if callee else {}
+        payload: dict[str, object] = {"callee": callee} if callee else {}
         emit(owner, node, "cfg", "call_site", payload=payload)
         if self._is_member_call(node):
             emit(owner, node, "cfg", "method_dispatch", payload=payload)
@@ -480,19 +483,49 @@ class TypeScriptAxisExtractor:
             container = self._dotted_name(left.child_by_field_name("object"))
             key = left.child_by_field_name("index")
             key_payload = self._key_payload(key, source)
-            payload = {"target": self._expr_text(left, source), "container": container, **key_payload}
-            emit(owner, left, "dfg", "subscript_write", payload=payload)
-            emit(owner, left, "dfg", "container_write_value", payload=payload)
-            emit(owner, left, "dfg", "keyed_write", payload={**payload, **self._keyed_write_payload(key, right, source, container)})
+            subscript_payload = cast(
+                dict[str, object],
+                {
+                    "target": self._expr_text(left, source),
+                    "container": container,
+                    **key_payload,
+                },
+            )
+            emit(owner, left, "dfg", "subscript_write", payload=subscript_payload)
+            emit(owner, left, "dfg", "container_write_value", payload=subscript_payload)
+            emit(
+                owner,
+                left,
+                "dfg",
+                "keyed_write",
+                payload={
+                    **subscript_payload,
+                    **self._keyed_write_payload(key, right, source, container),
+                },
+            )
             if key_payload.get("key_literal"):
-                emit(owner, key, "struct", "literal_key", payload={**key_payload, "context": "subscript_write"})
-        elif left is not None and right is not None and left.type == "identifier" and right.type == "identifier":
+                emit(
+                    owner,
+                    key,
+                    "struct",
+                    "literal_key",
+                    payload={**key_payload, "context": "subscript_write"},
+                )
+        elif (
+            left is not None
+            and right is not None
+            and left.type == "identifier"
+            and right.type == "identifier"
+        ):
             emit(
                 owner,
                 left,
                 "dfg",
                 "aliasing",
-                payload={"target": self.adapter._node_text(left), "source": self.adapter._node_text(right)},
+                payload={
+                    "target": self.adapter._node_text(left),
+                    "source": self.adapter._node_text(right),
+                },
             )
         if right is not None:
             self._emit_value_origin(owner, right, emit, destination="assignment")
@@ -534,7 +567,11 @@ class TypeScriptAxisExtractor:
                 "assignment_binding",
                 payload={"target": self._expr_text(left, source), "source_kind": "loop_target"},
             )
-        if right is not None and node.type in {"for_in_statement", "for_of_statement", "for_statement"}:
+        if right is not None and node.type in {
+            "for_in_statement",
+            "for_of_statement",
+            "for_statement",
+        }:
             emit(
                 owner,
                 right,
@@ -552,7 +589,11 @@ class TypeScriptAxisExtractor:
         if owner is None:
             return
         inner = self._first_named_child(node)
-        if inner is not None and inner.type == "assignment_expression" and self._is_using_declaration(inner):
+        if (
+            inner is not None
+            and inner.type == "assignment_expression"
+            and self._is_using_declaration(inner)
+        ):
             self._emit_using_facts(inner, source, file_path, emit, is_async=True, await_node=node)
             return
         emit(owner, node, "cfg", "async_suspend_resume")
@@ -571,7 +612,9 @@ class TypeScriptAxisExtractor:
         if owner is None:
             return
         anchor = await_node or node
-        emit(owner, anchor, "cfg", "context_enter_exit", payload={"kind": "using", "async": is_async})
+        emit(
+            owner, anchor, "cfg", "context_enter_exit", payload={"kind": "using", "async": is_async}
+        )
         if is_async and await_node is not None:
             emit(owner, await_node, "cfg", "async_suspend_resume")
         name = self._using_binding_name(node)
@@ -602,15 +645,25 @@ class TypeScriptAxisExtractor:
             container = self._dotted_name(left.child_by_field_name("object"))
             key = left.child_by_field_name("index")
             key_payload = self._key_payload(key, source)
-            payload = {"target": self._expr_text(left, source), "container": container, **key_payload}
-            emit(owner, left, "dfg", "subscript_write", payload=payload)
-            emit(owner, left, "dfg", "container_write_value", payload=payload)
+            subscript_payload = cast(
+                dict[str, object],
+                {
+                    "target": self._expr_text(left, source),
+                    "container": container,
+                    **key_payload,
+                },
+            )
+            emit(owner, left, "dfg", "subscript_write", payload=subscript_payload)
+            emit(owner, left, "dfg", "container_write_value", payload=subscript_payload)
             emit(
                 owner,
                 left,
                 "dfg",
                 "keyed_write",
-                payload={**payload, **self._keyed_write_payload(key, right, source, container)},
+                payload={
+                    **subscript_payload,
+                    **self._keyed_write_payload(key, right, source, container),
+                },
             )
         if right is not None:
             self._emit_value_shape(owner, right, emit)
@@ -670,7 +723,10 @@ class TypeScriptAxisExtractor:
             node,
             "dfg",
             "attr_read",
-            payload={"attribute": self._member_property(node), "receiver": self._dotted_name(node.child_by_field_name("object"))},
+            payload={
+                "attribute": self._member_property(node),
+                "receiver": self._dotted_name(node.child_by_field_name("object")),
+            },
         )
 
     def _emit_subscript_read_facts(self, node, source: str, file_path: str, emit) -> None:
@@ -686,7 +742,13 @@ class TypeScriptAxisExtractor:
         emit(owner, node, "dfg", "container_read_key", payload=payload)
         emit(owner, node, "dfg", "keyed_read", payload=payload)
         if payload.get("key_literal"):
-            emit(owner, key, "struct", "literal_key", payload={**payload, "context": "subscript_read"})
+            emit(
+                owner,
+                key,
+                "struct",
+                "literal_key",
+                payload={**payload, "context": "subscript_read"},
+            )
 
     def _emit_parameter_facts(self, node, source: str, file_path: str, emit) -> None:
         params = self._parameters_node(node)
@@ -769,7 +831,10 @@ class TypeScriptAxisExtractor:
                 value,
                 "dfg",
                 "call_result_origin",
-                payload={"callee": self._callee_name(value.child_by_field_name("function")), "destination": destination},
+                payload={
+                    "callee": self._callee_name(value.child_by_field_name("function")),
+                    "destination": destination,
+                },
             )
         if value.type == "new_expression":
             payload = {
@@ -786,7 +851,9 @@ class TypeScriptAxisExtractor:
         emit(owner, node, "dfg", "collection_assembly", payload={"shape": shape})
         emit(owner, node, "struct", "literal_shape", payload={"shape": shape})
 
-    def _emit_container_call_facts(self, owner, node, emit, base_payload: dict[str, object]) -> None:
+    def _emit_container_call_facts(
+        self, owner, node, emit, base_payload: dict[str, object]
+    ) -> None:
         fn = node.child_by_field_name("function")
         if fn is None or fn.type != "member_expression":
             return
@@ -800,11 +867,22 @@ class TypeScriptAxisExtractor:
                 if args and args.named_child_count:
                     key = args.named_children[0]
                     key_payload = self._key_payload(key, "")
-                    emit(owner, key, "struct", "literal_key", payload={**key_payload, "context": "container_method_write"})
+                    emit(
+                        owner,
+                        key,
+                        "struct",
+                        "literal_key",
+                        payload={**key_payload, "context": "container_method_write"},
+                    )
         if method in _CONTAINER_READ_METHODS:
             args = node.child_by_field_name("arguments")
             key = args.named_children[0] if args and args.named_child_count else None
-            payload = {**base_payload, "container": container, "method": method, **self._key_payload(key, "")}
+            payload = {
+                **base_payload,
+                "container": container,
+                "method": method,
+                **self._key_payload(key, ""),
+            }
             emit(owner, node, "dfg", "container_read_key", payload=payload)
             emit(owner, node, "dfg", "keyed_read", payload=payload)
 
@@ -935,7 +1013,9 @@ class TypeScriptAxisExtractor:
         type_node = node.child_by_field_name("type")
         if type_node is not None:
             return type_node
-        return next((child for child in node.named_children if child.type == "type_annotation"), None)
+        return next(
+            (child for child in node.named_children if child.type == "type_annotation"), None
+        )
 
     def _generic_type_nodes(self, type_node):
         for child in self.adapter._iter_nodes(type_node):
@@ -976,7 +1056,10 @@ class TypeScriptAxisExtractor:
         if parent is not None:
             if parent.type == "call_expression" and parent.child_by_field_name("function") is node:
                 return False
-            if parent.type == "assignment_expression" and parent.child_by_field_name("left") is node:
+            if (
+                parent.type == "assignment_expression"
+                and parent.child_by_field_name("left") is node
+            ):
                 return False
             if parent.type == "member_expression" and parent.child_by_field_name("object") is node:
                 return False
@@ -985,7 +1068,10 @@ class TypeScriptAxisExtractor:
     def _is_subscript_read(self, node) -> bool:
         parent = node.parent
         if parent is not None:
-            if parent.type == "assignment_expression" and parent.child_by_field_name("left") is node:
+            if (
+                parent.type == "assignment_expression"
+                and parent.child_by_field_name("left") is node
+            ):
                 return False
             if parent.type == "member_expression" and parent.child_by_field_name("object") is node:
                 return False

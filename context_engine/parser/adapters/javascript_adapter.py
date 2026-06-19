@@ -2,10 +2,11 @@
 
 import re
 from pathlib import Path
+from typing import cast
 
-from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
 from context_engine.parser.adapters.ts_package_aliases import resolve_package_subpath
+from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 from context_engine.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from context_engine.parser.uid import (
     compute_uid,
@@ -116,7 +117,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
     _node_text = staticmethod(TypeScriptAdapter._node_text)
 
     def _string_literal_text(self, node) -> str:
-        return TypeScriptAdapter._string_literal_text(self, node)
+        return TypeScriptAdapter._string_literal_text(cast(TypeScriptAdapter, self), node)
 
     @property
     def symbol_query(self) -> str:
@@ -377,26 +378,32 @@ class JavaScriptAdapter(TreeSitterAdapter):
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
-        return TypeScriptAdapter.extract_proxy_bindings(self, source_code, file_path, tree=tree)
+        return TypeScriptAdapter.extract_proxy_bindings(
+            cast(TypeScriptAdapter, self), source_code, file_path, tree=tree
+        )
 
     def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
-        return TypeScriptAdapter.extract_hooks(self, source_code, file_path, tree=tree)
+        return TypeScriptAdapter.extract_hooks(
+            cast(TypeScriptAdapter, self), source_code, file_path, tree=tree
+        )
 
     def extract_metadata_bridges(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
         from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
-        return TypeScriptAdapter.extract_metadata_bridges(self, source_code, file_path, tree=tree)
+        return TypeScriptAdapter.extract_metadata_bridges(
+            cast(TypeScriptAdapter, self), source_code, file_path, tree=tree
+        )
 
-    def extract_http_endpoints(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_http_endpoints(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
-        return TypeScriptAdapter.extract_http_endpoints(self, source_code, file_path, tree=tree)
+        return TypeScriptAdapter.extract_http_endpoints(
+            cast(TypeScriptAdapter, self), source_code, file_path, tree=tree
+        )
 
     def should_include_variable_symbol(
         self,
@@ -705,9 +712,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
                         at_byte=call_at_byte,
                     )
                 )
-                resolver = (
-                    "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
-                )
+                resolver = "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
             elif func_node.type == "member_expression":
                 named_children = [child for child in func_node.children if child.is_named]
                 if len(named_children) < 2:
@@ -738,9 +743,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
                     rel_type = "CALLS_SCOPED"
                     tier = "scoped"
                     confidence = 0.9
-                resolver = (
-                    "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
-                )
+                resolver = "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
             else:
                 continue
 

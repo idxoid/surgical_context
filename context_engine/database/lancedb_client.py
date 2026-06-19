@@ -20,8 +20,8 @@ from context_engine.database.embedding_registry import (
     get_model_metadata,
 )
 from context_engine.database.lance_workspace_tables import (
-    workspace_partition_table_exists,
     drop_workspace_partition_table,
+    workspace_partition_table_exists,
     workspace_partition_table_name,
     workspace_partitioned_enabled,
 )
@@ -1425,9 +1425,7 @@ class LanceDBClient:
         }
         table = self.axis_adjacency_external_table(workspace_id)
         if self._uses_workspace_adjacency_external_partition(table):
-            drop_workspace_partition_table(
-                self._db, AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id
-            )
+            drop_workspace_partition_table(self._db, AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id)
             self._workspace_adj_external_tables.pop(workspace_id, None)
             table = self.axis_adjacency_external_table(workspace_id)
         else:
@@ -1519,9 +1517,7 @@ class LanceDBClient:
             drop_workspace_partition_table(self._db, AXIS_ADJACENCY_TABLE, workspace_id)
             self._workspace_adj_tables.pop(workspace_id, None)
         if hasattr(self, "_workspace_adj_external_tables"):
-            drop_workspace_partition_table(
-                self._db, AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id
-            )
+            drop_workspace_partition_table(self._db, AXIS_ADJACENCY_EXTERNAL_TABLE, workspace_id)
             self._workspace_adj_external_tables.pop(workspace_id, None)
         try:
             self._axis_adjacency_table.delete(predicate)

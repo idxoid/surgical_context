@@ -211,6 +211,7 @@ def test_lancedb_client_set_pending_row_reuses_existing_doc_payload():
                 "pending": ["New"],
                 "vector": [1.0, 2.0],
                 "embedding_metadata": '{"ok":true}',
+                "owner_uid": "",
             }
         ]
     ]

@@ -1,12 +1,10 @@
 import numpy as np
 
 from context_engine.axis.role_retrieval import (
-    RoleCandidate,
     WorkspaceScan,
     find_seeds_by_doc_anchor,
     invalidate_workspace_scan_cache,
 )
-
 
 WORKSPACE = "test-ws"
 
@@ -97,4 +95,6 @@ def test_find_seeds_by_doc_anchor_ranks_and_maps_owner(monkeypatch):
 
 
 def test_find_seeds_by_doc_anchor_empty_without_query():
-    assert find_seeds_by_doc_anchor(WORKSPACE, "", embed_fn=lambda t: [0.0], lance=_FakeLance()) == []
+    assert (
+        find_seeds_by_doc_anchor(WORKSPACE, "", embed_fn=lambda t: [0.0], lance=_FakeLance()) == []
+    )

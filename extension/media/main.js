@@ -1848,7 +1848,7 @@ ${doc.content}`);
       const workspaceId = document.getElementById("workspaceId")?.value || "";
       const modelPreference = document.getElementById("modelPreference")?.value || "auto";
       const authToken = document.getElementById("authToken")?.value || "";
-      const tokenBudget = Number(document.getElementById("tokenBudget")?.value || "4000");
+      const tokenBudget = Number(document.getElementById("tokenBudget")?.value || "6000");
       const lancedbPath = document.getElementById("lancedbPath")?.value || "";
       const historyPath = document.getElementById("historyPath")?.value || "";
       const overlaySync = document.getElementById("overlaySync")?.checked || false;
@@ -1882,7 +1882,7 @@ ${doc.content}`);
         workspaceId: "",
         modelPreference: "auto",
         authToken: "",
-        tokenBudget: 4e3,
+        tokenBudget: 6e3,
         lancedbPath: "./data/lancedb",
         historyPath: "./data/history/surgical_context.sqlite3",
         overlaySync: true,

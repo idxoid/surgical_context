@@ -729,9 +729,7 @@ export function setup(client: any) {
 }
 """
         rows = adapter.extract_hooks(source, "src/client.ts")
-        assert any(
-            r["hook_name"] == "attachToken" and r["via"] == "interceptors" for r in rows
-        )
+        assert any(r["hook_name"] == "attachToken" and r["via"] == "interceptors" for r in rows)
 
     def test_extract_hooks_lifecycle_method(self, adapter):
         source = """
@@ -740,9 +738,7 @@ export class AppService {
 }
 """
         rows = adapter.extract_hooks(source, "src/app.service.ts")
-        assert any(
-            r["hook_name"] == "onModuleInit" and r["target_kind"] == "method" for r in rows
-        )
+        assert any(r["hook_name"] == "onModuleInit" and r["target_kind"] == "method" for r in rows)
 
     def test_extract_hooks_subscribe(self, adapter):
         source = """
@@ -816,9 +812,7 @@ export function bind(el: HTMLElement) {
 }
 """
         rows = adapter.extract_hooks(source, "src/dom.ts")
-        assert any(
-            r["hook_name"] == "click" and r["via"] == "addEventListener" for r in rows
-        )
+        assert any(r["hook_name"] == "click" and r["via"] == "addEventListener" for r in rows)
         assert any(r["hook_name"] == "handleClick" and r["via"] == "addEventListener" for r in rows)
 
     def test_extract_hooks_subject_next(self, adapter):
@@ -991,9 +985,7 @@ export class RolesGuard {
         consumer = "import { KEY } from '@scope/common/constants';\nKEY;\n"
 
         with project_root_scope(str(tmp_path)):
-            bindings, _ = adapter._extract_import_bindings(
-                consumer, "packages/core/scanner.ts"
-            )
+            bindings, _ = adapter._extract_import_bindings(consumer, "packages/core/scanner.ts")
             # ``@scope/common/constants`` must resolve to the in-repo module, not
             # the dotted-external ``@scope.common.constants``.
             assert bindings["KEY"].endswith("packages.common.constants.KEY")

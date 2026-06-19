@@ -1,5 +1,7 @@
 import json
 
+from context_engine.axis.container_kind import ContainerKindMatch
+from context_engine.axis.schema import AxisFact
 from QA.axis_contract_report import (
     axis_profile_from_lance_row,
     build_axis_contract_report,
@@ -7,8 +9,6 @@ from QA.axis_contract_report import (
     summarize_axis_contract_report,
     write_axis_contract_report,
 )
-from context_engine.axis.container_kind import ContainerKindMatch
-from context_engine.axis.schema import AxisFact
 
 
 def _kind_json(match: ContainerKindMatch) -> str:

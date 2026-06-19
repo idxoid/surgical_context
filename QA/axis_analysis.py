@@ -120,7 +120,6 @@ def _string_values_from(node: ast.AST) -> list[str]:
     return []
 
 
-
 # ---------------------------------------------------------------------------
 # L2: container-kind catalogue (analytical sketch).
 #
@@ -520,8 +519,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     rep = run(pack_paths=args.pack, out_dir=args.out)
     s = rep["summary"]
-    print(
-        f"total={s['total_questions']} repos={s['repos']} "
-        f"mechanisms={s['distinct_mechanisms']}"
-    )
+    print(f"total={s['total_questions']} repos={s['repos']} mechanisms={s['distinct_mechanisms']}")
     print(f"Reports: {args.out}/axis_coverage.json  {args.out}/axis_coverage.md")

@@ -1017,9 +1017,7 @@ class PythonAdapter(TreeSitterAdapter):
                 )
         return out
 
-    def extract_http_endpoints(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
+    def extract_http_endpoints(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """FastAPI/Flask-style route decorator facts for HTTP endpoint bridges."""
         from context_engine.indexer.http_endpoint import (
             HTTP_ROUTE_REGISTER_CALLEES,

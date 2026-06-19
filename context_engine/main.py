@@ -26,7 +26,12 @@ from context_engine.api.errors import (
 from context_engine.api.sse import format_sse
 from context_engine.auth import AuditLog, UserAuth
 from context_engine.cache.layered import default_cache
-from context_engine.context_types import CONTEXT_PIPELINE_VERSION, DocChunk, PromptContext, SymbolContext
+from context_engine.context_types import (
+    CONTEXT_PIPELINE_VERSION,
+    DocChunk,
+    PromptContext,
+    SymbolContext,
+)
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.session import db_session
 from context_engine.doc_resolver import DocResolver
@@ -631,9 +636,7 @@ def _record_retrieval_snapshot(
         mode=str(getattr(ctx, "mode", "")),
         question_hash=hashlib.sha256(question.encode()).hexdigest(),
         question_tokens=trace.token_counts.get("user", estimate_text_tokens(question)),
-        context_pipeline_version=getattr(
-            ctx, "context_pipeline_version", CONTEXT_PIPELINE_VERSION
-        ),
+        context_pipeline_version=getattr(ctx, "context_pipeline_version", CONTEXT_PIPELINE_VERSION),
         selected_candidates=selected,
         documentation=documentation,
         context_metadata={
