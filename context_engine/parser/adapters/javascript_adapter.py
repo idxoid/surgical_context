@@ -521,7 +521,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
     def extract_symbol_aliases(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Extract static symbol-level aliases from CommonJS export surfaces."""
         module_name = module_name_from_path(file_path)
-        import_bindings = self._extract_import_bindings(source_code, file_path)
+        import_bindings, _ = self._extract_import_bindings(source_code, file_path)
         aliases: list[dict] = []
         seen: set[tuple[str, str, str, str]] = set()
 
@@ -656,7 +656,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
             by_name.setdefault(symbol.name, []).append(symbol)
         symbol_uids = {str(symbol.uid) for symbol in symbols}
 
-        import_bindings = self._extract_import_bindings(source_code, file_path)
+        import_bindings, _ = self._extract_import_bindings(source_code, file_path)
         from context_engine.parser.adapters.ts_scope_graph import TsScopeGraph
 
         ts = TypeScriptAdapter()
@@ -801,8 +801,11 @@ class JavaScriptAdapter(TreeSitterAdapter):
             current = self._enclosing_symbol_owner(current)
         return None
 
-    def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
+    def _extract_import_bindings(
+        self, source_code: str, file_path: str
+    ) -> tuple[dict[str, str], set[str]]:
         bindings: dict[str, str] = {}
+        module_aliases: set[str] = set()
         for match in re.finditer(
             r"import\s+([^;]+?)\s+from\s+['\"]([^'\"]+)['\"]",
             source_code,
@@ -817,6 +820,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 alias = spec[len("* as ") :].strip()
                 if alias:
                     bindings[alias] = source
+                    module_aliases.add(alias)
             elif "," in spec:
                 default_alias, rest = spec.split(",", 1)
                 default_alias = default_alias.strip()
@@ -841,7 +845,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
             source = self._normalize_import_source(file_path, match.group(2).strip())
             if alias and source:
                 bindings[alias] = source
-        return bindings
+        return bindings, module_aliases
 
     @staticmethod
     def _parse_named_import_bindings(spec: str, source: str, out: dict[str, str]) -> None:
