@@ -42,6 +42,13 @@ module = "tests.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
+# FastAPI special-cases plain ``Request`` for injection (``Request | None``
+# breaks it), yet endpoints carry a ``= None`` default so the route functions
+# stay directly callable in unit tests. Allow the implicit-optional default here.
+module = "context_engine.api.routes.*"
+implicit_optional = true
+
+[[tool.mypy.overrides]]
 module = [
   "anthropic",
   "neo4j",

@@ -23,7 +23,7 @@ def ask(
     authorization: str = Header(None),
     x_workspace: str = Header(None),
     x_trace_id: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Ask about a symbol (with multi-user audit logging)."""
     main = require_main(request)
@@ -62,7 +62,7 @@ def ask_axis(
     authorization: str = Header(None),
     x_workspace: str = Header(None),
     x_trace_id: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Axis-pipeline answer: intent → roles → ranked candidates → context."""
     main = require_main(request)
@@ -100,7 +100,7 @@ def ask_stream(
     authorization: str = Header(None),
     x_workspace: str = Header(None),
     x_trace_id: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Streaming version of /ask endpoint (SSE)."""
     main = require_main(request)

@@ -26,7 +26,7 @@ def auth_token(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Generate a signed token scoped to a workspace.
 
@@ -62,7 +62,7 @@ def auth_token(
 
 @router.get("/auth/users", response_model=UsersResponse)
 def list_users(
-    request: Request | None = None,
+    request: Request = None,
     x_user_id: str = Header(None),
     authorization: str = Header(None),
 ):
@@ -74,7 +74,7 @@ def list_users(
 
 @router.get("/status/cloud", response_model=CloudStatusResponse)
 def cloud_status(
-    request: Request | None = None,
+    request: Request = None,
     x_user_id: str = Header(None),
     authorization: str = Header(None),
 ):
@@ -97,7 +97,7 @@ def audit_actions(
     limit: int = 100,
     x_user_id: str = Header(None),
     authorization: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Get recent audit log entries."""
     main = require_main(request)

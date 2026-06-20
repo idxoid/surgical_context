@@ -23,7 +23,7 @@ def record_history_ask(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Persist a sanitized ask/request snapshot for local dialog history."""
     main = require_main(request)
@@ -162,7 +162,7 @@ def history_conversations(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """List local history conversations for the current workspace and user."""
     main = require_main(request)
@@ -185,7 +185,7 @@ def history_conversation(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Return a sanitized conversation bundle with messages and snapshots."""
     main = require_main(request)
@@ -210,7 +210,7 @@ def history_request_bundle(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Return the snapshots for a selected request in a conversation."""
     main = require_main(request)
