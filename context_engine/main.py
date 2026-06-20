@@ -1,12 +1,16 @@
 """FastAPI sidecar — install stderr filtering before LanceDB / SentenceTransformer import."""
 
+import sys
+from pathlib import Path
+
+if __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from context_engine.silence import install as _install_stderr_filter
 
 _install_stderr_filter()
 
 import logging
-import sys
-from pathlib import Path
 from typing import Any, cast
 
 from fastapi import HTTPException
