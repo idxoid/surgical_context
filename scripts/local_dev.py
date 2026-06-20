@@ -283,9 +283,12 @@ def install_extension(args: argparse.Namespace) -> None:
         raise SystemExit("npm is required to install/compile the extension.")
 
     node_modules = EXTENSION_DIR / "node_modules"
-    if node_modules.exists() and not args.force_npm:
+    deps_ready = node_modules.exists() and (node_modules / "esbuild").exists()
+    if deps_ready and not args.force_npm:
         print("extension/node_modules already exists.")
     else:
+        if node_modules.exists() and not args.force_npm:
+            print("extension/node_modules is incomplete; running npm install.")
         _run(["npm", "install"], cwd=EXTENSION_DIR, dry_run=args.dry_run)
 
     if not args.skip_compile:

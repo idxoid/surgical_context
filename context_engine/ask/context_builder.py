@@ -11,7 +11,11 @@ from context_engine.api.schemas import AskRequest
 from context_engine.context_types import DocChunk, PromptContext, SymbolContext
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.doc_resolver import DocResolver
-from context_engine.index_profile import effective_index_workspace_id
+from context_engine.index_profile import (
+    AXIS_PYTHON_V1_PROFILE,
+    effective_index_workspace_id,
+    resolve_index_profile,
+)
 from context_engine.observability import estimate_text_tokens
 from context_engine.overlay import InMemoryOverlay
 
@@ -26,6 +30,23 @@ class AskContextBuilder:
     def __init__(self, *, overlay: InMemoryOverlay, vector_db: LanceDBClient):
         self.overlay = overlay
         self.vector_db = vector_db
+        self._axis_vector_db: LanceDBClient | None = None
+
+    def lance_for_index_workspace(self, index_workspace_id: str) -> LanceDBClient:
+        """Return a Lance client whose physical tables match ``index_workspace_id``.
+
+        Axis retrieval requires ``symbols_axis_python_v1`` (etc.). When the
+        process-default ``vector_db`` uses the legacy profile, reuse a lazily
+        opened axis-profile client instead of scanning the wrong table.
+        """
+        if self.vector_db.index_profile_name == AXIS_PYTHON_V1_PROFILE:
+            return self.vector_db
+        axis_suffix = resolve_index_profile(AXIS_PYTHON_V1_PROFILE).workspace_suffix
+        if axis_suffix and index_workspace_id.endswith(axis_suffix):
+            if self._axis_vector_db is None:
+                self._axis_vector_db = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+            return self._axis_vector_db
+        return self.vector_db
 
     def find_symbol_line(self, file_path: str, symbol: str | None) -> int | None:
         """Return the 1-based line number of the first definition matching ``symbol``."""
@@ -256,15 +277,12 @@ class AskContextBuilder:
         """Axis-pipeline provider: canonical retrieval -> renderable PromptContext."""
         from context_engine.axis.pipeline import run_axis_retrieval
         from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
-        from context_engine.database.lancedb_client import LanceDBClient
-        from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 
-        lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
         result = run_axis_retrieval(
             question,
             workspace_id=index_workspace_id,
             db=db,
-            lance=lance,
+            lance=self.lance_for_index_workspace(index_workspace_id),
             intent_budget=True,
             base_token_budget=token_budget,
             anchor_path=anchor_path,

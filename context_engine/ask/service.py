@@ -536,16 +536,13 @@ class AskService:
         db: Any,
     ) -> AskAxisResponse:
         from context_engine.axis.pipeline import run_axis_retrieval
-        from context_engine.database.lancedb_client import LanceDBClient
-        from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 
         index_workspace_id = effective_index_workspace_id(base_workspace_id)
-        lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
         result = run_axis_retrieval(
             req.question,
             workspace_id=index_workspace_id,
             db=db,
-            lance=lance,
+            lance=self.context_builder.lance_for_index_workspace(index_workspace_id),
             top_roles=req.top_roles,
             per_role_limit=req.per_role_limit,
             intent_threshold=req.intent_threshold,

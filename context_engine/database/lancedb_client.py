@@ -67,6 +67,7 @@ AXIS_ADJACENCY_TABLE = "axis_adjacency"
 AXIS_ADJACENCY_EXTERNAL_TABLE = "axis_adjacency_external"
 
 _log = logging.getLogger(__name__)
+_SHARED_EMBEDDING_MODELS: dict[str, Any] = {}
 
 
 def _resolve_embed_device() -> str:
@@ -556,13 +557,32 @@ class LanceDBClient:
     def _embedding_model(self):
         """Load the transformer lazily so delete-only paths avoid import + model init."""
         if self._model is None:
+            shared = _SHARED_EMBEDDING_MODELS.get(EMBED_MODEL)
+            if shared is not None:
+                self._model = shared
+                return self._model
             from sentence_transformers import SentenceTransformer
 
             device = _resolve_embed_device()
             self._model = SentenceTransformer(EMBED_MODEL, device=device)
+            _SHARED_EMBEDDING_MODELS[EMBED_MODEL] = self._model
             if device == "cpu":
                 _log.info("Embedding model %s on device=cpu", EMBED_MODEL)
         return self._model
+
+    def warmup(self, *, workspace_id: str | None = None) -> None:
+        """Eagerly open Lance storage and load the embedding model."""
+        _ = self._db
+        if workspace_id:
+            try:
+                _ = self.symbols_table(workspace_id)
+            except Exception:
+                _log.debug(
+                    "Skipping Lance symbols-table warmup for workspace %s",
+                    workspace_id,
+                    exc_info=True,
+                )
+        self._embed(["sidecar warmup"])
 
     @staticmethod
     def _quote_delete_value(value: str) -> str:
