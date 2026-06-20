@@ -57,14 +57,14 @@ This folder contains the current product and technical documentation for the `co
 
 ## Current Truth
 
-The active target is the **Local Developer Product**: a local-first, single-tenant VS Code tool with the Python FastAPI sidecar, local Neo4j graph, local LanceDB vectors, local SQLite history, and an `Ask / Inspect / Impact` workflow. This is the open-source candidate.
+The product is, first and foremost, a **local-first, model-agnostic context engine** for code understanding and change-impact analysis: a Python FastAPI sidecar over a local Neo4j graph, local LanceDB vectors, and local SQLite history, exposing an `Ask / Inspect / Impact` retrieval API. The access surface is interchangeable — the VS Code extension under `extension/` is **one consumer** of that API, not the product itself; the same sidecar serves programmatic/CLI clients and the QA/benchmark harness. This local, single-tenant configuration is the open-source candidate.
 
 The product is now described more narrowly than before:
 
 - **not** a general AI coding platform
 - **yes** a local-first, model-agnostic context engine for code understanding and change impact
 
-The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/axis retrieval modules, structural role retrieval, prompt-context adapters, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
+The repo is organized engine-first: the sidecar, default Neo4j/LanceDB clients, parser/indexer/axis retrieval modules, structural role retrieval, prompt-context adapters, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, and a bounded indexing queue make up the engine; the VS Code extension under `extension/` is one frontend over the sidecar API.
 
 Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, package/module fallback targets for workspace-level questions such as `pydantic.v1`, trace-dependency recovery hardening for sparse import topology (runtime symbol seeding + sibling-directory expansion with explicit recovery provenance), TypeScript `object_api` indexing, a relaxed `trace_dependency` benchmark gate for near-perfect single-axis recall, **workspace path sandboxing** (API + graph-resolved reads under indexed `project_path`; queued `/index` registers root immediately), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_sidecar_api.md](docs/spec_sidecar_api.md) and [road_map.md](docs/road_map.md).
 
