@@ -107,7 +107,13 @@ def bearer_auth(
 
 def import_main_with_fakes(monkeypatch):
     """Import context_engine.main without constructing real LanceDB/LLM clients."""
-    sys.modules.pop("context_engine.main", None)
+    # Client construction moved from main.py into the api.state factory, so the
+    # fake LanceDB/LLM modules below only take effect if api.state (and the app
+    # factory that wires it) are re-imported alongside main. Without this the
+    # fixture is order-dependent: a prior test that imports main first caches
+    # api.state bound to the real clients.
+    for _mod in ("context_engine.main", "context_engine.api.app", "context_engine.api.state"):
+        sys.modules.pop(_mod, None)
     feedback_dir = tempfile.mkdtemp(prefix="context_engine-feedback-test-")
     monkeypatch.setenv("FEEDBACK_SNAPSHOT_PATH", f"{feedback_dir}/snapshots.jsonl")
     monkeypatch.setenv("FEEDBACK_LOG_PATH", f"{feedback_dir}/feedback.jsonl")
