@@ -1,0 +1,211 @@
+import json
+
+from context_engine.axis import graph_walk_inproc
+from context_engine.indexer.fast.adjacency_materialization import (
+    materialize_axis_adjacency,
+    materialize_axis_adjacency_subset,
+)
+
+WORKSPACE = "acme/repo@main+axis_python_v1"
+
+
+class _Result:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _Session:
+    def __init__(self):
+        self.runs = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def run(self, query, **params):
+        self.runs.append((query, params))
+        if "CONTAINS" in query:
+            return _Result(
+                [
+                    {
+                        "uid": "u:caller",
+                        "name": "caller",
+                        "path": "/repo/app.py",
+                        "kind": "function",
+                    },
+                    {
+                        "uid": "u:callee",
+                        "name": "Callee",
+                        "path": "/repo/models.py",
+                        "kind": "class",
+                    },
+                ]
+            )
+        if "NOT x:Symbol" in query:
+            return _Result([])
+        return _Result(
+            [
+                {"au": "u:caller", "bu": "u:callee", "t": "CALLS_DIRECT"},
+                {"au": "u:callee", "bu": "u:caller", "t": "REFERENCES"},
+            ]
+        )
+
+
+class _Driver:
+    def __init__(self, session):
+        self._session = session
+
+    def session(self):
+        return self._session
+
+
+class _Db:
+    def __init__(self):
+        self.session = _Session()
+        self.driver = _Driver(self.session)
+
+
+class _Lance:
+    def __init__(self):
+        self.rows = []
+        self.workspace_id = ""
+        self.upserted = []
+        self.existing_rows = 100
+        self.external: tuple[dict, dict] | None = None
+
+    def replace_axis_adjacency(self, rows, *, workspace_id):
+        self.rows = rows
+        self.workspace_id = workspace_id
+
+    def replace_axis_adjacency_external(self, sym_to_ext, ext_to_sym, *, workspace_id):
+        self.external = (sym_to_ext, ext_to_sym)
+        self.workspace_id = workspace_id
+
+    def upsert_axis_adjacency_rows(self, rows, *, workspace_id):
+        self.upserted.append((workspace_id, rows))
+        self.rows = rows
+        self.workspace_id = workspace_id
+
+    def count_axis_adjacency_workspace(self, workspace_id):
+        return self.existing_rows
+
+
+def test_materialize_axis_adjacency_writes_workspace_rows():
+    db = _Db()
+    lance = _Lance()
+
+    count = materialize_axis_adjacency(db, lance, WORKSPACE)
+
+    assert count == 2
+    assert lance.workspace_id == WORKSPACE
+    assert lance.external is not None
+    by_uid = {row["uid"]: row for row in lance.rows}
+    assert by_uid["u:caller"]["workspace_id"] == WORKSPACE
+    assert json.loads(by_uid["u:caller"]["out_edges_json"]) == {"CALLS_DIRECT": ["u:callee"]}
+    assert json.loads(by_uid["u:callee"]["in_edges_json"]) == {"CALLS_DIRECT": ["u:caller"]}
+
+
+def test_inproc_walk_uses_materialized_lance_rows(monkeypatch):
+    rows = [
+        {
+            "uid": "u:caller",
+            "name": "caller",
+            "file_path": "/repo/app.py",
+            "kind": "function",
+            "out_edges_json": json.dumps({"CALLS_DIRECT": ["u:callee"]}),
+            "in_edges_json": "{}",
+        },
+        {
+            "uid": "u:callee",
+            "name": "Callee",
+            "file_path": "/repo/models.py",
+            "kind": "class",
+            "out_edges_json": "{}",
+            "in_edges_json": json.dumps({"CALLS_DIRECT": ["u:caller"]}),
+        },
+    ]
+    graph_walk_inproc.invalidate_adjacency()
+    monkeypatch.setattr(
+        graph_walk_inproc,
+        "_load_adjacency_from_lance",
+        lambda workspace_id, neo_db=None: graph_walk_inproc._adjacency_from_lance_rows(rows),
+    )
+
+    out = graph_walk_inproc.walk_neighbours(
+        db=object(),
+        workspace_id=WORKSPACE,
+        seed_uids=["u:caller"],
+        edges=("CALLS_DIRECT",),
+        direction="forward",
+        max_hops=1,
+    )
+
+    assert [(n.uid, n.name, n.file_path, n.depth, n.reach) for n in out] == [
+        ("u:callee", "Callee", "/repo/models.py", 1, 1)
+    ]
+
+
+def test_invalidate_adjacency_uids_drops_target_and_cross_refs():
+    rows = [
+        {
+            "uid": "u:a",
+            "name": "A",
+            "file_path": "/repo/a.py",
+            "kind": "function",
+            "out_edges_json": json.dumps({"CALLS_DIRECT": ["u:b"]}),
+            "in_edges_json": "{}",
+        },
+        {
+            "uid": "u:b",
+            "name": "B",
+            "file_path": "/repo/b.py",
+            "kind": "class",
+            "out_edges_json": "{}",
+            "in_edges_json": json.dumps({"CALLS_DIRECT": ["u:a"]}),
+        },
+    ]
+    graph_walk_inproc.invalidate_adjacency()
+    graph_walk_inproc._CACHE[WORKSPACE] = graph_walk_inproc._adjacency_from_lance_rows(rows)
+
+    graph_walk_inproc.invalidate_adjacency_uids(WORKSPACE, {"u:b"})
+
+    cached = graph_walk_inproc._CACHE[WORKSPACE]
+    assert "u:b" not in cached.meta
+    assert "u:b" not in cached.out
+    assert "u:b" not in cached.in_
+    assert cached.out.get("u:a", {}).get("CALLS_DIRECT", set()) == set()
+
+
+def test_materialize_axis_adjacency_subset_upserts_incident_closure():
+    db = _Db()
+    lance = _Lance()
+    lance.existing_rows = 100
+
+    count = materialize_axis_adjacency_subset(db, lance, WORKSPACE, {"u:caller"})
+
+    assert count == 2
+    assert lance.upserted
+    workspace_id, rows = lance.upserted[0]
+    assert workspace_id == WORKSPACE
+    by_uid = {row["uid"]: row for row in rows}
+    assert set(by_uid) == {"u:caller", "u:callee"}
+    assert json.loads(by_uid["u:caller"]["out_edges_json"]) == {"CALLS_DIRECT": ["u:callee"]}
+    assert json.loads(by_uid["u:callee"]["in_edges_json"]) == {"CALLS_DIRECT": ["u:caller"]}
+
+
+def test_materialize_axis_adjacency_subset_falls_back_when_closure_too_large():
+    db = _Db()
+    lance = _Lance()
+    lance.existing_rows = 3
+
+    count = materialize_axis_adjacency_subset(db, lance, WORKSPACE, {"u:caller"})
+
+    assert count == 2
+    assert lance.workspace_id == WORKSPACE
+    assert lance.upserted == []
+    assert len(lance.rows) == 2

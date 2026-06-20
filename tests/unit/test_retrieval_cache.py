@@ -1,7 +1,7 @@
 """Unit tests for retrieval cache primitives."""
 
-from sidecar.cache.layered import CachedBody, InMemoryResponseCache, LayeredCache
-from sidecar.context.types import Subgraph, SubgraphNode
+from context_engine.cache.layered import CachedBody, InMemoryResponseCache, LayeredCache
+from context_engine.context_types import Subgraph, SubgraphNode
 
 
 def test_body_cache_is_keyed_by_file_hash():

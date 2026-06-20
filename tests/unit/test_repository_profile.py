@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sidecar.indexer.repository_profile import (
+from context_engine.indexer.repository_profile import (
     RepositoryProfileInputs,
     build_repository_profile,
     summarize_repository_profile,
@@ -31,7 +31,7 @@ def test_repository_profile_marks_unsupported_symbol_surface(tmp_path: Path):
     assert profile["capabilities"]["impact_analysis"] == "none"
 
 
-def test_repository_profile_detects_generic_archetypes_and_shallow_impact(tmp_path: Path):
+def test_repository_profile_reports_indexability_and_shallow_impact(tmp_path: Path):
     app = tmp_path / "app.py"
     app.write_text(
         "registry = {}\n\n"
@@ -55,26 +55,20 @@ def test_repository_profile_detects_generic_archetypes_and_shallow_impact(tmp_pa
             imports_indexed=2,
             inheritance_indexed=1,
             affects_rebuilt=2,
-            sample_texts=[app.read_text(encoding="utf-8")],
         )
     )
 
     assert profile["indexability"] == "high"
     assert profile["languages"]["supported"]["python"] == 1
     assert profile["mechanism_profile"]["framework_signals"] == []
-    assert {signal["name"] for signal in profile["mechanism_profile"]["archetype_signals"]} >= {
-        "registry_usage",
-        "declarative_modeling",
-    }
-    assert profile["strategy_profile"]["selected_strategy"] == "registration_flow"
-    assert "factory_surface" in profile["strategy_profile"]["role_plan"]
-    assert profile["mechanism_profile"]["archetypes"][0]["type"] == "route_registration"
+    assert profile["strategy_profile"]["selected_strategy"] == "generic_symbol_context"
+    assert profile["strategy_profile"]["role_plan"] == ["docs_or_concept"]
+    assert "mechanism_archetypes" not in profile["strategy_profile"]
     assert profile["capabilities"]["impact_analysis"] == "shallow"
     assert "reachability-based impact candidates" in profile["reasoning_contract"]["allowed"]
     summary = summarize_repository_profile(profile)
-    assert "archetype_signals=" in summary
-    assert "strategy=registration_flow" in summary
-    assert "impact=shallow" in summarize_repository_profile(profile)
+    assert "strategy=generic_symbol_context" in summary
+    assert "impact=shallow" in summary
 
 
 def test_repository_profile_is_plain_db_storable_payload(tmp_path: Path):
@@ -114,5 +108,4 @@ def test_repository_profile_does_not_infer_from_workspace_or_directory_name(tmp_
     )
 
     assert profile["mechanism_profile"]["framework_signals"] == []
-    assert profile["mechanism_profile"]["archetype_signals"] == []
     assert profile["strategy_profile"]["selected_strategy"] == "generic_symbol_context"

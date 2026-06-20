@@ -22,7 +22,7 @@ Neither graph storage nor tenant API graph storage may store raw source code con
 
 ---
 
-## GraphProvider Default: Neo4jClient (`sidecar/database/neo4j_client.py`)
+## GraphProvider Default: Neo4jClient (`context_engine/database/neo4j_client.py`)
 
 ### Connection
 
@@ -70,7 +70,7 @@ Preferred resolution is by `callee_uid`, then `callee_qualified_name`. Name-only
 
 ---
 
-## VectorProvider Default: LanceDBClient (`sidecar/database/lancedb_client.py`)
+## VectorProvider Default: LanceDBClient (`context_engine/database/lancedb_client.py`)
 
 ### Connection
 
@@ -133,7 +133,7 @@ Delete-then-insert for the target `(workspace_id, chunk_id)` row. LanceDB `updat
 
 ---
 
-## HistoryProvider Default: SQLiteHistoryProvider (`sidecar/history/sqlite_provider.py`)
+## HistoryProvider Default: SQLiteHistoryProvider (`context_engine/history/sqlite_provider.py`)
 
 ### Configuration
 

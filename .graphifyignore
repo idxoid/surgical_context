@@ -1,7 +1,0 @@
-QA/
-*.pyc
-__pycache__/
-.git/
-node_modules/
-.env
-.env.local

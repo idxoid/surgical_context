@@ -20,7 +20,7 @@ export class OverlayManager {
     const handle = setTimeout(async () => {
       this.timers.delete(key);
       try {
-        await SidecarClient.overlay(key, event.document.getText());
+        await SidecarClient.overlay(key, event.document.getText(), true);
       } catch {
         // silent — sidecar may be temporarily down; no UI noise on keypress
       }
@@ -36,7 +36,7 @@ export class OverlayManager {
       clearTimeout(t);
       this.timers.delete(key);
     }
-    SidecarClient.deleteOverlay(key).catch(() => {});
+    SidecarClient.overlay(key, doc.getText(), false).catch(() => {});
     this.scheduleSavedFile(key);
   }
 

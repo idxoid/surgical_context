@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sidecar.ai.engine import (
+from context_engine.ai.engine import (
     _MIN_CACHE_TOKENS,
     AIEngine,
     ModelRouter,
@@ -198,10 +198,17 @@ class TestAIEngineRouting:
 class TestAIEngineModels:
     """Test AIEngine model configuration."""
 
-    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "ALLOW_CLOUD_LLM": "true"})
+    @patch.dict(
+        os.environ,
+        {
+            "ANTHROPIC_API_KEY": "test-key",
+            "ALLOW_CLOUD_LLM": "true",
+            "ANTHROPIC_MODEL": "",
+        },
+    )
     def test_claude_model_defaults_to_sonnet_4_6(self):
         """Default Claude model is Sonnet 4.6 (not retired claude-sonnet-4-20250514)."""
-        from sidecar.ai.engine import DEFAULT_CLAUDE_MODEL
+        from context_engine.ai.engine import DEFAULT_CLAUDE_MODEL
 
         engine = AIEngine(model_preference="claude")
         assert engine.claude_model == DEFAULT_CLAUDE_MODEL

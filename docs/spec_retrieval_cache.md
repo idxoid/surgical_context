@@ -1,6 +1,6 @@
 # Spec — Retrieval Cache (Phase 10)
 
-> **Status:** Implemented (`sidecar/cache/layered.py`). L1 (body) and L3 (response) are in production. L2 (subgraph) is implemented but only used by the now-removed graph-only path — it remains available for future use. L3 invalidation via file index is implemented and wired to the indexer.
+> **Status:** Implemented (`context_engine/cache/layered.py`). L1 (body) and L3 (response) are in production. L2 (subgraph) is implemented but only used by the now-removed graph-only path — it remains available for future use. L3 invalidation via file index is implemented and wired to the indexer.
 
 ## 1. Problem
 
@@ -78,7 +78,7 @@ Prompt contract's `metadata.assembly` gains `cache_hits: ["l1_body", "l2_subgrap
 ## 3. API / Interface
 
 ```python
-# sidecar/cache/layered.py (new file)
+# context_engine/cache/layered.py (new file)
 
 class LayeredCache:
     def __init__(self, l1: BodyCache, l2: SubgraphCache, l3: ResponseCache):
@@ -113,7 +113,7 @@ Backend abstraction lets dev run in-memory, prod run Redis.
 | Time passes | LRU evict | LRU evict | TTL expire |
 | Workspace deleted | Flush entries with that `workspace_id` | Flush | Flush |
 
-`LayeredCache.invalidate_files(file_paths, workspace_id)` is the unified call: it fires L1 invalidation for each path and L3 file-index invalidation in one shot. Called by `_index_file_now` (hot path) and `_process_index_batch` (batch path) in `sidecar/main.py`.
+`LayeredCache.invalidate_files(file_paths, workspace_id)` is the unified call: it fires L1 invalidation for each path and L3 file-index invalidation in one shot. Called by `_index_file_now` (hot path) and `_process_index_batch` (batch path) in `context_engine/main.py`.
 
 ## 5. Examples
 
@@ -158,7 +158,7 @@ for node in subgraph.nodes:
 
 ## 8. Related
 
-- [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — subgraph shape cached at L2.
+- spec_token_budget_bfs.md (removed) — subgraph shape cached at L2.
 - [spec_branch_isolation.md](spec_branch_isolation.md) — workspace ID must be in every L2/L3 key.
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — cache hits surface in `metadata.assembly.cache_hits`.
-- [spec_arbitrator.md](spec_arbitrator.md) — arbitrator is the cache integration point.
+- spec_arbitrator.md (removed) — arbitrator is the cache integration point.

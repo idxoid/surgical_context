@@ -1,6 +1,6 @@
 # Spec — UID Stability (Phase 8)
 
-> **Status:** Implemented. Replaces the old `sha256(file_path:name)` scheme with a qualified-name + signature derivation in `sidecar/parser/uid.py`.
+> **Status:** Implemented. Replaces the old `sha256(file_path:name)` scheme with a qualified-name + signature derivation in `context_engine/parser/uid.py`.
 
 ## 1. Problem
 
@@ -32,7 +32,7 @@ uid = sha256(f"{language}:{qualified_name}|{normalized_signature}").hexdigest()[
 
 Where:
 
-- `qualified_name` — dotted path from module root to symbol, e.g. `sidecar.indexer.code.CodeIndexer.run_indexing`.
+- `qualified_name` — dotted path from module root to symbol, e.g. `context_engine.indexer.code.CodeIndexer.run_indexing`.
 - `signature_hash` — SHA-256 over the normalized signature (parameter names dropped; types kept where available).
 
 **Absolute file path is no longer part of the UID.** The implementation derives a module-like qualified name without machine-specific roots, then combines it with the normalized signature.
@@ -92,7 +92,7 @@ No online migration path. The cost of an inconsistent hybrid is higher than the 
 ## 4. API / Interface
 
 ```python
-# sidecar/parser/uid.py
+# context_engine/parser/uid.py
 
 def compute_uid(
     qualified_name: str,
@@ -121,18 +121,18 @@ def qualified_name_for(node: tree_sitter.Node, file_module: str) -> str:
 
 ```python
 # Python — standalone function
-compute_uid("sidecar.indexer.code.run_indexing", "run_indexing(str,bool)->None")
+compute_uid("context_engine.indexer.code.run_indexing", "run_indexing(str,bool)->None")
 # → "a4f9c1e2b7d83f56"
 
 # Python — method
 compute_uid(
-    "sidecar.context.arbitrator.ContextArbitrator.get_context_for_symbol",
-    "get_context_for_symbol(str,str)->PromptContext",
+    "context_engine.database.neo4j_client.Neo4jClient.link_hooks",
+    "link_hooks(list,str)->None",
 )
 # → "1b3e8c02af47d9e1"
 
 # Python — nested
-compute_uid("sidecar.cli.main.<locals>.handler", "handler(Request)->Response")
+compute_uid("context_engine.cli.main.<locals>.handler", "handler(Request)->Response")
 # → "f012c3d4a5b6e789"
 
 # TypeScript — overload

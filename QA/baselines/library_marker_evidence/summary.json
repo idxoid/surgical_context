@@ -1,0 +1,17 @@
+{
+  "by_kind": {
+    "task_register": {
+      "absent": 4,
+      "structurally_backed": 1
+    },
+    "web_route_register": {
+      "absent": 8,
+      "structurally_backed": 4
+    }
+  },
+  "by_status": {
+    "absent": 12,
+    "structurally_backed": 5
+  },
+  "total": 17
+}

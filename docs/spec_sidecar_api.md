@@ -1,11 +1,12 @@
 # Sidecar API — Spec
 
+
 ## Overview
 
 FastAPI process running on localhost. VS Code communicates via HTTP/JSON. Fault-isolated from the editor: if the sidecar blocks on a Cypher query, the editor stays responsive.
 
-Entry point: `sidecar/main.py`
-Start: `uvicorn sidecar.main:app --port 8000`
+Entry point: `context_engine/main.py`
+Start: `uvicorn context_engine.main:app --port 8000`
 
 ---
 
@@ -63,7 +64,7 @@ Any endpoint that reads or indexes files on disk (`POST /index`, `/index/file`, 
 - File/index operations before the workspace is indexed return **`400`** (“no registered project root; POST /index first”).
 - `POST /index` registers the resolved `project_path` directory as the root for that workspace (queued file paths are validated under it).
 
-**Graph-resolved reads:** `ContextArbitrator` / `CodeResolver` and `UnifiedRanker` module sizing use the same root for `file_path` values coming from Neo4j. Paths outside the root return empty code (no disk read). On manifest persist, outside-root `File` nodes are best-effort deleted from the graph.
+**Graph-resolved reads:** indexed symbol bodies come from LanceDB; dirty editor buffers override via the overlay at axis fetch time. Manifest persist best-effort **prunes** outside-root `File` nodes from Neo4j (`workspace_paths.prune_graph_paths_outside_root`). Caller-supplied paths use `_sandbox_path` in `main.py`.
 
 This limits local callers when `AUTH_REQUIRED=false` from using the sidecar to read or index arbitrary readable files, including via stale graph nodes.
 
@@ -76,7 +77,7 @@ Server-side Pydantic limits (invalid values → HTTP **422**):
 | `limit` | `/search`, `/search/unified` | 1–50 | `5` |
 | `token_budget` | `/ask`, `/ask/stream`, `/search/unified` (graph leg) | 400–32 000 | `4000` / `2000` |
 
-Implementation: `SEARCH_LIMIT_*` and `TOKEN_BUDGET_*` in `sidecar/main.py`. Tests: `tests/unit/test_api_bounds.py`.
+Implementation: `SEARCH_LIMIT_*` and `TOKEN_BUDGET_*` in `context_engine/main.py`. Tests: `tests/unit/test_api_bounds.py`.
 
 ---
 
@@ -227,10 +228,10 @@ Assemble surgical context for a symbol and query the LLM.
 
 **Errors:** `/ask` does **not** return `404` when a symbol is missing from the graph. Missing symbols trigger the fallback ladder below; the response is always HTTP `200` with a populated `context` (unless auth/workspace validation fails).
 
-**Context resolution (fallback ladder):** `_resolve_ask_context` in `sidecar/main.py` tries, in order:
+**Context resolution (fallback ladder):** `_resolve_ask_context` in `context_engine/main.py` tries, in order:
 
-1. **Symbol** — when `symbol` is set, `ContextArbitrator.get_context_for_symbol(...)` runs intent classification, workspace-scoped graph expansion, code resolution, and doc retrieval. On success, `context.budget.ask_level` is `"symbol"`.
-2. **File** — when symbol resolution returns an error string and `file_path` is set, assemble context from that file on disk (`ask_level`: `"file"`).
+1. **Axis (default)** — when `ASK_AXIS_FIRST` is enabled (default), `_try_axis_context` runs `run_axis_retrieval` (intent → seeds → pool walks → context expansion) and adapts bundles via `axis_bundles_to_prompt_context`. On success, `context.budget.ask_level` is `"axis"`.
+2. **File** — when axis renders nothing and `file_path` is set, assemble context from that file on disk (`ask_level`: `"file"`).
 3. **Workspace** — vector search over indexed docs + symbols for the question (`ask_level`: `"workspace"`, `mode`: `"workspace"`). Skipped when both searches return nothing.
 4. **Direct LLM** — minimal `PromptContext` with no graph or docs (`ask_level`: `"direct_llm"`, `mode`: `"direct"`). This step always succeeds.
 
@@ -327,7 +328,7 @@ Unified search over symbols, graph neighbors, and docs.
 ```json
 {
   "query": "ranking recovery",
-  "symbol": "UnifiedRanker",
+  "symbol": "run_axis_retrieval",
   "include_graph": true,
   "limit": 10,
   "token_budget": 2000
@@ -435,9 +436,15 @@ Return downstream symbols and files affected by changing a symbol.
 ---
 
 ### POST /auth/token
-Generate a signed bearer token for a user id.
+Generate a signed bearer token.
 
 **Query param:** `user_id=alice`
+
+When `AUTH_REQUIRED=false` (local default), this endpoint is the explicit
+local bootstrap/dev token issuer. When `AUTH_REQUIRED=true`, callers must
+already present a valid `Authorization: Bearer <token>` header and may only
+mint a replacement token for the authenticated user. Requests for another
+`user_id` return `403`.
 
 **Response:**
 ```json
@@ -472,9 +479,12 @@ Report Aura/fallback health from a request-scoped DB session.
 ---
 
 ### GET /audit/actions
-Return recent audit log entries.
+Return recent audit log entries for the authenticated/request user.
 
-**Query params:** `user_id` optional, `limit` default `100`.
+**Query params:** `user_id` optional self-filter, `limit` default `100`.
+
+Omitting `user_id` returns only the requester's actions. Supplying another
+user id returns `403`; the endpoint never returns all users' audit entries.
 
 **Response:**
 ```json
@@ -489,7 +499,10 @@ Return recent audit log entries.
 
 Neo4j access goes through `db_session(...)`, which creates a request-scoped client and closes it after the endpoint finishes. This avoids mutating shared request identity on the global database object.
 
-Protected endpoints accept local `X-User-Id` identity by default for development. Set `AUTH_REQUIRED=true` to require signed bearer tokens from `/auth/token`.
+Protected endpoints accept local `X-User-Id` identity by default for development.
+Issue bootstrap tokens while `AUTH_REQUIRED=false`, then set
+`AUTH_REQUIRED=true` to require signed bearer tokens. In protected mode,
+`/auth/token` only refreshes the authenticated user's own token.
 
 Graph endpoints accept `X-Workspace: tenant/repo@ref`. Neo4j `File`, `CONTAINS`, call, and `AFFECTS` operations are scoped by that workspace id.
 

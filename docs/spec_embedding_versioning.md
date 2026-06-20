@@ -1,5 +1,6 @@
 # Spec — LanceDB Embedding Versioning (Phase 4)
 
+
 > **Status:** Proposed. Prevents silent quality degradation when embedding models are upgraded or swapped. Prerequisite for any multi-model or cross-version search.
 
 ## 1. Problem
@@ -36,7 +37,7 @@ All fields required at write time. No nullable fields.
 A lightweight in-process registry maps model identifiers to expected dimensions:
 
 ```python
-# sidecar/database/embedding_registry.py
+# context_engine/database/embedding_registry.py
 
 KNOWN_MODELS: dict[str, dict] = {
     "sentence-transformers/all-MiniLM-L6-v2": {
@@ -62,7 +63,7 @@ New models are added manually to the registry. This is a deliberate friction —
 When `LanceDBClient` writes an embedding row, it must also write `embedding_metadata`:
 
 ```python
-# sidecar/database/lancedb_client.py
+# context_engine/database/lancedb_client.py
 
 def _build_metadata(self, chunk: str, embedding: list[float]) -> dict:
     return {
@@ -107,23 +108,17 @@ def _assert_model_consistency(self):
 
 **Performance note:** `_assert_model_consistency` is called once per `LanceDBClient` instance, cached after first check. Not per query.
 
-### 2.5 Migration Utility
+### 2.5 Model mismatch recovery
 
-Add a CLI command for inspecting and migrating metadata:
+There is no in-place re-embedding migration. When `EmbeddingModelMismatch` fires:
 
-```bash
-python -m sidecar.database.embedding_migration status
-# Output:
-# Table: docs
-#   Rows: 1240
-#   Models: sentence-transformers/all-MiniLM-L6-v2 (1240)
-#   Stale (missing metadata): 0
+1. Set `EMBED_MODEL` to the target model.
+2. Delete `./data/lancedb` (or the affected workspace partition tables).
+3. Re-index the project.
 
-python -m sidecar.database.embedding_migration migrate --from-model old_model --re-index
-# Re-embeds all rows from old_model using current runtime model.
-```
-
-`migrate` calls the full indexing pipeline on affected source files, not just the LanceDB rows, to guarantee consistency.
+Lazy workspace-partition copy from monolithic Lance tables still runs inside
+`LanceDBClient._maybe_migrate_workspace_partition` when
+`LANCEDB_WORKSPACE_PARTITIONED=true` and a partition is first opened.
 
 ## 3. Schema Changes
 
@@ -148,7 +143,7 @@ Old rows without `embedding_metadata` are tolerated during search if `allow_mixe
 ## 4. New Exceptions
 
 ```python
-# sidecar/context/types.py or sidecar/database/exceptions.py
+# context_engine/context/types.py or context_engine/database/exceptions.py
 
 class EmbeddingModelMismatch(RuntimeError):
     """Raised when indexed embeddings were produced by a different model than the runtime."""
@@ -174,7 +169,7 @@ class LanceDBClient:
         ...
 ```
 
-Callers in `sidecar/main.py`, `QA/qa_benchmark.py`, and tests that construct `LanceDBClient()` continue to work unchanged (default model unchanged). Only callers explicitly switching models need to update.
+Callers in `context_engine/main.py`, `QA/axis_benchmark.py`, and tests that construct `LanceDBClient()` continue to work unchanged (default model unchanged). Only callers explicitly switching models need to update.
 
 ## 6. Tests
 
@@ -193,15 +188,13 @@ Callers in `sidecar/main.py`, `QA/qa_benchmark.py`, and tests that construct `La
 ## 7. Success Criteria
 
 1. Unit tests green.
-2. `qa_benchmark.py --no-index` does not raise `EmbeddingModelMismatch` (existing index is consistent).
-3. Manually running with a different `EMBEDDING_MODEL` env var and a stale index raises a clear error with migration instructions.
-4. `embedding_migration status` correctly identifies stale rows.
+2. `python -m QA.axis_benchmark --pack QA/fixtures/questions_python.yaml --repo <repo>` does not raise `EmbeddingModelMismatch` (existing index is consistent).
+3. Manually running with a different `EMBEDDING_MODEL` env var and a stale index raises a clear error with re-index instructions.
 
 ## 8. Phase Sequencing
 
 Implement after ContextDeduplicator (independent, but lower urgency). Requires updating:
-- `sidecar/database/lancedb_client.py` — write and read paths
-- `sidecar/indexer/docs.py` — pass metadata on write
-- `sidecar/indexer/code.py` — pass metadata on symbol embedding write
-- New: `sidecar/database/embedding_registry.py`
-- New: `sidecar/database/embedding_migration.py`
+- `context_engine/database/lancedb_client.py` — write and read paths
+- `context_engine/indexer/docs.py` — pass metadata on write
+- `context_engine/indexer/code.py` — pass metadata on symbol embedding write
+- New: `context_engine/database/embedding_registry.py`

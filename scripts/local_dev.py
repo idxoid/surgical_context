@@ -29,14 +29,14 @@ ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_DIR = ROOT / "extension"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
-SMOKE_PROJECT_DIR = ROOT / "sidecar" / "context"
-SMOKE_DOCS_DIR = ROOT / "tests" / "fixtures" / "smoke_docs"
+SMOKE_PROJECT_DIR = ROOT / "context_engine" / "axis"
+SMOKE_DOCS_PATH = ROOT / "docs" / "local_development.md"
 
 LOCAL_DIRS = [
     ROOT / "data" / "lancedb",
     ROOT / "data" / "history",
     ROOT / "data" / "neo4j",
-    ROOT / "logs" / "sidecar",
+    ROOT / "logs" / "context_engine",
     ROOT / "logs" / "neo4j",
     ROOT / "import" / "neo4j",
     ROOT / "plugins" / "neo4j",
@@ -98,12 +98,28 @@ def _python_cmd() -> list[str]:
     return [sys.executable]
 
 
-def _sidecar_env() -> dict[str, str]:
+def _sidecar_env(*, default_workspace_id: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(ROOT))
     env.setdefault("LANCEDB_PATH", str(ROOT / "data" / "lancedb"))
-    env.setdefault("DEFAULT_WORKSPACE_ID", "local/surgical_context@main")
+    env.setdefault(
+        "DEFAULT_WORKSPACE_ID",
+        default_workspace_id or "local/surgical_context@main",
+    )
     return env
+
+
+def _resolve_smoke_workspace_id(project_path: Path, explicit: str) -> str:
+    from context_engine.workspace import WorkspaceResolver
+
+    return (
+        WorkspaceResolver()
+        .from_project_path(
+            str(project_path),
+            value=explicit.strip() or None,
+        )
+        .id
+    )
 
 
 def _api_url(base_url: str, path: str, query: dict[str, str] | None = None) -> str:
@@ -315,7 +331,7 @@ def sidecar_command(args: argparse.Namespace) -> list[str]:
         *_python_cmd(),
         "-m",
         "uvicorn",
-        "sidecar.main:app",
+        "context_engine.main:app",
         "--host",
         host,
         "--port",
@@ -429,13 +445,15 @@ def _ensure_sidecar_for_smoke(
                 f"Sidecar is not reachable at {base_url}. Start it with "
                 "`python scripts/local_dev.py sidecar --reload`, or run smoke "
                 "without --no-start-sidecar to let the smoke test start a "
-                "temporary sidecar."
+                "temporary context_engine."
             ) from exc
 
         print(f"\n[smoke] sidecar is not reachable at {base_url}; starting temporary sidecar")
         cmd = sidecar_command(args)
         print(f"$ {_display_cmd(cmd)}")
-        process = subprocess.Popen(cmd, cwd=ROOT, env=_sidecar_env())
+        process = subprocess.Popen(
+            cmd, cwd=ROOT, env=_sidecar_env(default_workspace_id=workspace_id)
+        )
         try:
             health = _wait_for_health(
                 base_url=base_url,
@@ -450,16 +468,26 @@ def _ensure_sidecar_for_smoke(
 
 
 def smoke(args: argparse.Namespace) -> int:
-    """Run a local product smoke test against a running sidecar."""
+    """Run a local product smoke test against a running context_engine."""
     if args.base_url:
         base_url = args.base_url.rstrip("/")
     else:
         base_url = f"http://{args.host}:{args.port}"
-    workspace_id = args.workspace_id
     default_project_path = ROOT if args.full_repo else SMOKE_PROJECT_DIR
-    default_docs_path = ROOT / "docs" if args.full_repo else SMOKE_DOCS_DIR
+    default_docs_path = ROOT / "docs" if args.full_repo else SMOKE_DOCS_PATH
     project_path = Path(args.project_path or default_project_path).resolve()
     docs_path = Path(args.docs_path or default_docs_path).resolve()
+    workspace_id = _resolve_smoke_workspace_id(project_path, args.workspace_id)
+    if args.workspace_id.strip():
+        from context_engine.workspace import assert_workspace_repo_matches_project_root
+
+        try:
+            assert_workspace_repo_matches_project_root(project_path, workspace_id)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{exc}. Use --workspace-id local/{project_path.name}@main, "
+                "or index the full repo with --full-repo."
+            ) from exc
 
     if args.dry_run:
         print(
@@ -621,7 +649,7 @@ def up(args: argparse.Namespace) -> int:
             print(f"$ {_display_cmd(code_command())}")
         return 0
 
-    print("\nStarting sidecar. Press Ctrl+C here to stop it.")
+    print("\nStarting context_engine. Press Ctrl+C here to stop it.")
     sidecar = subprocess.Popen(sidecar_cmd, cwd=ROOT, env=_sidecar_env())
     try:
         time.sleep(args.launch_delay)
@@ -629,7 +657,7 @@ def up(args: argparse.Namespace) -> int:
             launch_code(args)
         return sidecar.wait()
     except KeyboardInterrupt:
-        print("\nStopping sidecar...")
+        print("\nStopping context_engine...")
         sidecar.terminate()
         try:
             return sidecar.wait(timeout=5)
@@ -714,24 +742,34 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Existing sidecar URL. Defaults to http://<host>:<port>.",
     )
-    smoke_parser.add_argument("--workspace-id", default="local/surgical_context@main")
+    smoke_parser.add_argument(
+        "--workspace-id",
+        default="",
+        help=(
+            "X-Workspace header. Defaults to local/<project-dir-basename>@<git-ref> "
+            "derived from --project-path (required for sandbox registration)."
+        ),
+    )
     smoke_parser.add_argument(
         "--project-path",
         default="",
-        help="Code path to index. Defaults to sidecar/context for a fast smoke test.",
+        help="Code path to index. Defaults to context_engine/axis for a fast smoke test.",
     )
     smoke_parser.add_argument(
         "--docs-path",
         default="",
-        help="Docs path to index. Defaults to tests/fixtures/smoke_docs for a fast smoke test.",
+        help="Docs path to index. Defaults to docs/local_development.md for a fast smoke test.",
     )
     smoke_parser.add_argument(
         "--full-repo",
         action="store_true",
         help="Use the full repo and docs/ as smoke index targets.",
     )
-    smoke_parser.add_argument("--symbol", default="ContextArbitrator")
-    smoke_parser.add_argument("--question", default="How does dirty state work?")
+    smoke_parser.add_argument("--symbol", default="run_axis_retrieval")
+    smoke_parser.add_argument(
+        "--question",
+        default="How does the axis retrieval pipeline assemble context?",
+    )
     smoke_parser.add_argument("--token-budget", type=int, default=2000)
     smoke_parser.add_argument("--timeout", type=float, default=10.0)
     smoke_parser.add_argument("--long-timeout", type=float, default=180.0)

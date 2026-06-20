@@ -1,5 +1,6 @@
 # Spec — Prompt Contract Observability (Phase 9)
 
+
 > **Status:** Partially implemented. Ranking scores, provenance, pruning details, intent metadata, and ranker metadata are already present in the current prompt contract. Remaining gaps are consistent workspace/branch population, doc-anchor type/confidence, and richer stage timing coverage.
 
 ## 1. Problem
@@ -37,7 +38,7 @@ Without scores in the contract:
     "assembly": {
       "trace_id": "req_7f3a...",
       "workspace_id": "acme/surgical_context@main",
-      "resolver_version": "context-arbitrator-v2",
+      "context_pipeline_version": "context-axis-v1",
       "cache_hits": ["l1_body"]
     },
     "ranker": {
@@ -51,7 +52,7 @@ Without scores in the contract:
   "primary_source": {
     "symbol": "process_payment",
     "uid": "a4f9c1e2b7d83f56",
-    "file_path": "sidecar/payments.py",
+    "file_path": "context_engine/payments.py",
     "range": [42, 78],
     "code": "...",
     "is_dirty": false,
@@ -67,7 +68,7 @@ Without scores in the contract:
     {
       "symbol": "validate_amount",
       "uid": "...",
-      "file_path": "sidecar/validation.py",
+      "file_path": "context_engine/validation.py",
       "code": "...",
       "relation": "CALLS_DIRECT",
       "direction": "callee",
@@ -121,7 +122,7 @@ Without scores in the contract:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `intent_details.distribution` | dict | Multi-label signal ([spec_multi_label_intent.md](spec_multi_label_intent.md)) |
+| `intent_details.distribution` | dict | Multi-label signal (spec_multi_label_intent.md (removed)) |
 | `intent_details.confidence` | float | Distinguishes strong vs. weak classification |
 | `metadata.assembly.trace_id` | str | Correlate with server logs, OpenTelemetry |
 | `metadata.assembly.workspace_id` | str | Which workspace this context came from ([spec_branch_isolation.md](spec_branch_isolation.md)) |
@@ -170,7 +171,7 @@ Full contract for a typical query: +400 to +800 bytes vs. current. Negligible co
 ## 3. API / Interface
 
 ```python
-# sidecar/context/types.py — extended
+# context_engine/context/types.py — extended
 
 @dataclass
 class CandidateScores:
@@ -197,7 +198,7 @@ class AssemblyMetrics:
     compile_latency_ms: int
     trace_id: str
     workspace_id: str | None
-    resolver_version: str
+    context_pipeline_version: str
 
 # PromptContext gains:
 @dataclass
@@ -249,8 +250,8 @@ if assembly["latency_ms"] > 200:
 
 ## 7. Related
 
-- [spec_unified_ranking.md](spec_unified_ranking.md) — produces the scores this exposes.
-- [spec_multi_label_intent.md](spec_multi_label_intent.md) — source of `intent.distribution`.
+- spec_unified_ranking.md (removed) — produces the scores this exposes.
+- spec_multi_label_intent.md (removed) — source of `intent.distribution`.
 - [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md) — source of `edge_confidence` / `edge_tier`.
 - [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md) — source of `anchor_type` / `anchor_confidence`.
 - [spec_learning_loop.md](spec_learning_loop.md) — consumer of scores + `feedback_token`.

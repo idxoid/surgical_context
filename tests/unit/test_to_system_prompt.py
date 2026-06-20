@@ -1,6 +1,6 @@
 """Tests for PromptContext.to_system_prompt() rendering."""
 
-from sidecar.context.types import DocChunk, PromptContext, SymbolContext
+from context_engine.context_types import DocChunk, PromptContext, SymbolContext
 
 
 def _make_ctx(
@@ -8,7 +8,6 @@ def _make_ctx(
     primary_code: str = "def target(): pass",
     deps: list[dict] | None = None,
     docs: list[dict] | None = None,
-    missing_roles: list[str] | None = None,
     stopped_reason: str = "",
     budget: dict | None = None,
 ) -> PromptContext:
@@ -29,6 +28,7 @@ def _make_ctx(
                 depth=d.get("depth", 1),
                 blended_score=d.get("blended_score", 0.0),
                 code=d.get("code", f"def {d['symbol']}(): pass"),
+                chain_kind=d.get("chain_kind", ""),
             )
         )
     documentation = []
@@ -44,7 +44,6 @@ def _make_ctx(
         primary_source=primary,
         graph_context=graph_context,
         documentation=documentation,
-        missing_roles=missing_roles or [],
         stopped_reason=stopped_reason,
         budget=budget or {},
     )
@@ -95,17 +94,6 @@ def test_dep_annotation_omits_zero_depth_and_zero_score():
 # ---------------------------------------------------------------------------
 
 
-def test_missing_roles_disclaimer_appears_before_target():
-    ctx = _make_ctx(missing_roles=["runtime_surface", "tests"])
-    prompt = ctx.to_system_prompt()
-    disclaimer_pos = prompt.find("# Context note: partial")
-    target_pos = prompt.find("--- TARGET SYMBOL:")
-    assert disclaimer_pos != -1, "missing_roles disclaimer not found"
-    assert disclaimer_pos < target_pos, "disclaimer must precede target block"
-    assert "runtime_surface" in prompt
-    assert "tests" in prompt
-
-
 def test_budget_limit_disclaimer_on_budget_exhausted():
     ctx = _make_ctx(
         stopped_reason="budget_exhausted",
@@ -117,7 +105,7 @@ def test_budget_limit_disclaimer_on_budget_exhausted():
 
 
 def test_no_disclaimer_when_context_is_complete():
-    ctx = _make_ctx(missing_roles=[], stopped_reason="role_complete")
+    ctx = _make_ctx(stopped_reason="")
     prompt = ctx.to_system_prompt()
     assert "Context note" not in prompt
 
@@ -205,6 +193,86 @@ def test_among_callers_shallower_depth_comes_first():
     )
     prompt = ctx.to_system_prompt()
     assert prompt.index("caller_depth1") < prompt.index("caller_depth2")
+
+
+# ---------------------------------------------------------------------------
+# chain_kind priority (single typed signal, replaces provenance string parsing)
+# ---------------------------------------------------------------------------
+
+
+def test_chain_kind_priority_orders_deps_within_callee_group():
+    """Higher CHAIN_PRIORITY sorts earlier; depth & score still break ties."""
+    ctx = _make_ctx(
+        deps=[
+            {"symbol": "plain", "direction": "callee", "depth": 1, "blended_score": 0.99},
+            {"symbol": "relay_a", "direction": "callee", "depth": 1, "chain_kind": "relay"},
+            {"symbol": "callee_a", "direction": "callee", "depth": 2, "chain_kind": "api_callee"},
+            {"symbol": "seed_a", "direction": "callee", "depth": 2, "chain_kind": "query_seed"},
+            {"symbol": "must_a", "direction": "callee", "depth": 3, "chain_kind": "mandatory"},
+        ]
+    )
+    assert [dep.symbol for dep in ctx.ordered_graph_context()] == [
+        "must_a",
+        "seed_a",
+        "callee_a",
+        "relay_a",
+        "plain",
+    ]
+
+
+def test_chain_kind_tie_broken_by_depth_then_score():
+    """Two deps with the same chain_kind sort by depth (shallow first), then score."""
+    ctx = _make_ctx(
+        deps=[
+            {
+                "symbol": "seed_deep_high",
+                "direction": "callee",
+                "depth": 2,
+                "chain_kind": "query_seed",
+                "blended_score": 0.9,
+            },
+            {
+                "symbol": "seed_shallow_low",
+                "direction": "callee",
+                "depth": 1,
+                "chain_kind": "query_seed",
+                "blended_score": 0.1,
+            },
+            {
+                "symbol": "seed_shallow_high",
+                "direction": "callee",
+                "depth": 1,
+                "chain_kind": "query_seed",
+                "blended_score": 0.8,
+            },
+        ]
+    )
+    # shallow before deep; within same depth, higher score first.
+    assert [dep.symbol for dep in ctx.ordered_graph_context()] == [
+        "seed_shallow_high",
+        "seed_shallow_low",
+        "seed_deep_high",
+    ]
+
+
+def test_caller_still_beats_any_chain_kind():
+    """The caller-group axis is the outermost sort key; chain_kind ranks only within a group."""
+    ctx = _make_ctx(
+        deps=[
+            {
+                "symbol": "callee_mandatory",
+                "relation": "HAS_API",
+                "direction": "callee",
+                "depth": 1,
+                "chain_kind": "mandatory",
+            },
+            {"symbol": "caller_plain", "relation": "caller", "direction": "caller", "depth": 1},
+        ]
+    )
+    assert [dep.symbol for dep in ctx.ordered_graph_context()] == [
+        "caller_plain",
+        "callee_mandatory",
+    ]
 
 
 # ---------------------------------------------------------------------------

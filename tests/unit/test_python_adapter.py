@@ -1,6 +1,6 @@
 import pytest
 
-from sidecar.parser.adapters.python_adapter import PythonAdapter
+from context_engine.parser.adapters.python_adapter import PythonAdapter
 
 
 class TestPythonAdapter:
@@ -9,18 +9,26 @@ class TestPythonAdapter:
         return PythonAdapter()
 
     def test_extract_function(self, adapter):
+        # ``extract_symbols`` now also synthesizes one module Symbol per file
+        # so module-scope facts have a coherent caller to attach to.
         source = "def foo(): pass"
         symbols = adapter.extract_symbols(source, "test.py")
-        assert len(symbols) == 1
-        assert symbols[0].name == "foo"
-        assert symbols[0].kind == "function"
+        non_module = [s for s in symbols if s.kind != "module"]
+        assert len(non_module) == 1
+        assert non_module[0].name == "foo"
+        assert non_module[0].kind == "function"
+        # Exactly one module Symbol per file.
+        modules = [s for s in symbols if s.kind == "module"]
+        assert len(modules) == 1
+        assert modules[0].qualified_name == "test"
 
     def test_extract_class(self, adapter):
         source = "class Bar: pass"
         symbols = adapter.extract_symbols(source, "test.py")
-        assert len(symbols) == 1
-        assert symbols[0].name == "Bar"
-        assert symbols[0].kind == "class"
+        non_module = [s for s in symbols if s.kind != "module"]
+        assert len(non_module) == 1
+        assert non_module[0].name == "Bar"
+        assert non_module[0].kind == "class"
 
     def test_extract_multiple_symbols(self, adapter):
         source = """
@@ -32,9 +40,8 @@ class MyClass:
 def func2(): pass
 """
         symbols = adapter.extract_symbols(source, "test.py")
-        assert len(symbols) == 3
-        names = {s.name for s in symbols}
-        assert names == {"func1", "MyClass", "func2"}
+        non_module_names = {s.name for s in symbols if s.kind != "module"}
+        assert non_module_names == {"func1", "MyClass", "func2"}
 
     def test_extract_calls(self, adapter):
         source = """
@@ -62,6 +69,25 @@ def route(root):
         path_call = next(c for c in calls if c.get("callee_name") == "Path")
         assert path_call.get("callee_qualified_name") == "pathlib.Path"
         assert path_call.get("arguments") == ["root"]
+
+    def test_package_init_relative_import_alias_keeps_current_package(self, adapter):
+        source = """
+from ...orm.decl_api import declarative_base as _declarative_base
+
+def declarative_base(*arg, **kw):
+    return _declarative_base(*arg, **kw)
+"""
+        calls = adapter.extract_calls_from_source(
+            source,
+            "QA/repos/sqlalchemy/lib/sqlalchemy/ext/declarative/__init__.py",
+        )
+
+        call = next(c for c in calls if c.get("callee_name") == "_declarative_base")
+        assert call.get("rel_type") == "CALLS_IMPORTED"
+        assert (
+            call.get("callee_qualified_name")
+            == "QA.repos.sqlalchemy.lib.sqlalchemy.orm.decl_api.declarative_base"
+        )
 
     def test_external_module_attribute_sets_qualified_name_and_args(self, adapter):
         source = """
@@ -184,6 +210,96 @@ def run():
         send = next((c for c in calls if c["callee_name"] == "send_task"), None)
         assert send is None or "callee_qualified_name" not in send
 
+    def test_attr_access_excludes_call_callees(self, adapter):
+        # ``obj.method(...)`` is a call, not a data-shape attribute read — the
+        # call resolver owns it. The attribute-access pass must NOT emit a
+        # parallel READS_ATTR for the callee position (which, on an ambiguous
+        # method name, mis-binds to the wrong same-named symbol). The receiver
+        # of an outer access (``self.config`` in ``self.config.get()``) and a
+        # plain value read (``self.config.value``) still emit.
+        source = """
+class Task:
+    def apply_async(self, args=None, **options):
+        app = self._get_app()
+        return app.send_task(self.name, args, **options)
+
+    def reader(self):
+        x = self.config.get('k')
+        return self.config.value
+"""
+        acc = adapter.extract_attr_accesses(source, "pkg/task.py")
+        triples = {(a["accessor_name"], a["attr_name"], a["kind"]) for a in acc}
+        # callees excluded
+        assert ("apply_async", "send_task", "read") not in triples
+        assert ("apply_async", "_get_app", "read") not in triples
+        assert ("reader", "get", "read") not in triples
+        # genuine reads kept
+        assert ("reader", "config", "read") in triples
+        assert ("reader", "value", "read") in triples
+        assert ("apply_async", "name", "read") in triples
+
+    def test_self_method_proxy_call_relink_candidate(self, adapter):
+        # ``app = self._get_app(); app.send_task(...)`` where ``_get_app``
+        # returns an imported global (a lazy proxy at graph time): emit a
+        # points-to relink candidate carrying the returned global's qn. The
+        # proxy → class hop is resolved later at graph time.
+        source = """
+from celery import current_app
+
+class Task:
+    _app = None
+
+    @classmethod
+    def _get_app(cls):
+        if cls._app is None:
+            cls._app = current_app
+        return cls._app
+
+    def apply_async(self, args=None, **options):
+        app = self._get_app()
+        if app.conf.task_always_eager:
+            return self.apply(args)
+        return app.send_task(self.name, args, **options)
+"""
+        cands = adapter.extract_self_method_proxy_calls(source, "celery/app/task.py")
+        send = next((c for c in cands if c["callee_name"] == "send_task"), None)
+        assert send is not None
+        assert send["returns_global_qn"] == "celery.current_app"
+
+    def test_self_method_proxy_call_skips_reassigned_local(self, adapter):
+        # Precision: if the proxy-returning local is reassigned, its type is no
+        # longer known — drop the candidate rather than guess.
+        source = """
+from celery import current_app
+
+class T:
+    @classmethod
+    def _ga(cls):
+        return current_app
+
+    def m(self):
+        a = self._ga()
+        a = something_else()
+        return a.send_task()
+"""
+        cands = adapter.extract_self_method_proxy_calls(source, "p/t.py")
+        assert not any(c["callee_name"] == "send_task" for c in cands)
+
+    def test_self_method_proxy_call_skips_non_proxy_return_method(self, adapter):
+        # The source method must return an imported global; a plain helper
+        # (no return-of-global) produces no candidate.
+        source = """
+class T:
+    def helper(self):
+        return self._make()
+
+    def m(self):
+        x = self.helper()
+        return x.thing()
+"""
+        cands = adapter.extract_self_method_proxy_calls(source, "p/t.py")
+        assert not any(c["callee_name"] == "thing" for c in cands)
+
     def test_proxy_binding_extracted_for_annotated_lazy_proxy(self, adapter):
         # `name: ProxyType = SomeProxy(...)` (Flask current_app shape): emit a proxy
         # binding to ProxyType. Cross-file call forwarding happens at index time
@@ -197,6 +313,27 @@ current_app: FlaskProxy = LocalProxy(_cv_app, "app")
         b = next(b for b in bindings if b["proxy_name"] == "current_app")
         assert b["proxy_qualified_name"] == "pkg.globals.current_app"
         assert b["target_type"] == "pkg.globals.FlaskProxy"
+
+    def test_proxy_binding_extracts_context_attr_binding_for_local_proxy(self, adapter):
+        source = """
+from contextvars import ContextVar
+from werkzeug.local import LocalProxy
+
+from .ctx import AppContext
+
+_cv_app: ContextVar[AppContext] = ContextVar("flask.app_ctx")
+request: RequestProxy = LocalProxy(  # type: ignore[assignment]
+    _cv_app, "request", unbound_message="missing"
+)
+"""
+        bindings = adapter.extract_proxy_bindings(source, "pkg/globals.py")
+        b = next(b for b in bindings if b["proxy_name"] == "request")
+
+        assert b["target_type"] == "pkg.globals.RequestProxy"
+        assert b["context_var"] == "_cv_app"
+        assert b["context_type"] == "pkg.ctx.AppContext"
+        assert b["context_attr"] == "request"
+        assert b["binding_source"] == "context_attr"
 
     def test_proxy_binding_skips_unannotated_proxy(self, adapter):
         # `current_app = Proxy(get_current_app)` (Celery shape, no annotation): the
@@ -230,6 +367,23 @@ def job():
         assert by_decorated["view"] == "route"
         assert by_decorated["job"] == "register"
 
+    def test_extract_decorators_records_dotted_callable_owner(self, adapter):
+        source = """
+from pkg import registry
+
+@registry.Owner.strategy_for(kind="x")
+class Handler:
+    pass
+"""
+        decos = adapter.extract_decorators(source, "app/handlers.py")
+        deco = decos[0]
+
+        assert deco["decorator_name"] == "strategy_for"
+        assert deco["decorator_callable_name"] == "registry.Owner.strategy_for"
+        assert deco["decorator_qualified_name"] == "pkg.registry.Owner.strategy_for"
+        assert deco["decorator_owner_name"] == "registry.Owner"
+        assert deco["decorator_owner_qualified_name"] == "pkg.registry.Owner"
+
     def test_extract_decorators_skips_builtins(self, adapter):
         # property/staticmethod/functools.wraps are machinery, never DECORATED_BY targets.
         source = """
@@ -261,3 +415,116 @@ class C:
 
     def test_file_extensions(self, adapter):
         assert adapter.file_extensions == {".py", ".pyi"}
+
+    def test_extract_injections_links_provider(self, adapter):
+        source = """
+from fastapi import Depends
+
+def get_query():
+    pass
+
+async def read_items(q: str = Depends(get_query)):
+    pass
+"""
+        rows = adapter.extract_injections(source, "app/routes.py")
+        pairs = {(r["owner_name"], r["provider_name"]) for r in rows}
+        # Structural: the wrapped provider symbol, not the marker name.
+        assert ("read_items", "get_query") in pairs
+
+
+class TestInstantiations:
+    @pytest.fixture
+    def adapter(self):
+        return PythonAdapter()
+
+    def _targets(self, adapter, source, path):
+        return {d["type_name"] for d in adapter.extract_instantiations(source, path)}
+
+    def test_literal_construction(self, adapter):
+        source = """
+class Foo:
+    pass
+
+def g():
+    return Foo(1)
+"""
+        assert self._targets(adapter, source, "pkg/e.py") == {"Foo"}
+
+    def test_typed_param_direct_call(self, adapter):
+        # `v: type[X]` called directly constructs X (instantiate-v1).
+        source = """
+from pkg.routing import APIRoute
+
+def build(cls: type[APIRoute]):
+    return cls(1)
+"""
+        assert self._targets(adapter, source, "pkg/a.py") == {"APIRoute"}
+
+    def test_p5_disjunction_of_typed_param_and_self_attr(self, adapter):
+        # P5: `route_class = route_class_override or self.route_class; route_class(...)`
+        # resolves via the type[APIRoute] param operand; self.route_class is unresolved.
+        source = """
+from pkg.routing import APIRoute
+
+class APIRouter:
+    def add_api_route(self, path, route_class_override: type[APIRoute] | None = None):
+        route_class = route_class_override or self.route_class
+        route = route_class(path)
+        return route
+"""
+        assert self._targets(adapter, source, "pkg/routing.py") == {"APIRoute"}
+
+    def test_p5_ternary_unions_both_class_branches(self, adapter):
+        source = """
+from pkg.b import Other
+
+class Local:
+    pass
+
+def build(flag):
+    cls = Local if flag else Other
+    return cls(1)
+"""
+        assert self._targets(adapter, source, "pkg/a.py") == {"Local", "Other"}
+
+    def test_p5_copy_propagation_chain(self, adapter):
+        source = """
+class Widget:
+    pass
+
+def build():
+    a = Widget
+    b = a
+    return b()
+"""
+        assert self._targets(adapter, source, "pkg/w.py") == {"Widget"}
+
+    def test_p5_call_result_is_not_a_class(self, adapter):
+        # Precision: a call result is an instance, never a class object.
+        source = """
+def make():
+    x = factory()
+    y = x()
+    return y
+"""
+        assert self._targets(adapter, source, "pkg/c.py") == set()
+
+    def test_p5_unresolved_self_attr_emits_nothing(self, adapter):
+        # Precision: no instance-attribute typing -> no fabricated construction.
+        source = """
+def f(self):
+    cls = self.something
+    return cls()
+"""
+        assert self._targets(adapter, source, "pkg/d.py") == set()
+
+    def test_type_token_is_not_emitted_as_a_class(self, adapter):
+        # The `type` token inside `type[X]` must not leak as a candidate class.
+        source = """
+from pkg.routing import APIRoute
+
+def build(cls: type[APIRoute]):
+    return cls(1)
+"""
+        names = {d["type_name"] for d in adapter.extract_instantiations(source, "pkg/a.py")}
+        assert "type" not in names

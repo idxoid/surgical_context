@@ -1,4 +1,4 @@
-# Spec: Parser Module (`sidecar/parser/`)
+# Spec: Parser Module (`context_engine/parser/`)
 
 > **Status:** Refactored to ADR-005 plugin architecture (Phase 1 polish complete). See [spec_language_adapter.md](spec_language_adapter.md) for protocol details.
 
@@ -15,14 +15,15 @@ It has no knowledge of Neo4j, LanceDB, or the sidecar API. It takes a file path 
 ### Module Structure
 
 ```
-sidecar/parser/
+context_engine/parser/
   ├── protocol.py           # LanguageAdapter ABC + SymbolMetadata
   ├── registry.py           # LanguageAdapterRegistry (singleton)
   ├── extractor.py          # SymbolExtractor (thin dispatcher)
   └── adapters/             # language plugins
       ├── treesitter_base.py
       ├── python_adapter.py
-      └── typescript_adapter.py
+      ├── typescript_adapter.py
+      └── javascript_adapter.py
 ```
 
 ### `SymbolMetadata` (Pydantic model)
@@ -41,6 +42,10 @@ sidecar/parser/
 | `signature_hash` | `str` | Compact hash of the normalized signature |
 | `signature_status` | `str` | `"resolved"` or `"unresolved"` |
 | `language` | `str` | Adapter language name |
+| `returns_function_expression` | `bool` | Function body has a top-level return of a function expression; used for higher-order factory roles |
+| `returns_mapping` | `bool` | Function body has a top-level return of a mapping shape (`{...}`, `dict(...)`, dict comprehension) |
+| `returns_sequence` | `bool` | Function body has a top-level return of a sequence shape (`[...]`, `list(...)`, tuple, set/comprehension) |
+| `returns_constructed_type` | `bool` | Function body has a top-level return of a constructed type (`SomeType(...)`) |
 
 ---
 
@@ -66,8 +71,9 @@ def extract_from_source(self, source_code: str, file_path: str) -> List[SymbolMe
 ```python
 def extract_calls(self, file_path: str) -> List[dict]
     # Read file from disk, extract call edges
-    # Returns: [{"caller_uid": str, "callee_name": str, "rel_type": str}, ...]
-    # where rel_type ∈ {"CALLS_DIRECT", "CALLS_DYNAMIC", "CALLS_INFERRED"}
+    # Returns call records with resolver metadata:
+    # caller_uid, callee_name, rel_type, confidence, tier, resolver,
+    # and optionally callee_uid or callee_qualified_name.
 ```
 
 ```python
@@ -81,9 +87,9 @@ def extract_calls_from_source(self, source_code: str, file_path: str) -> List[di
 
 ## 4. Registry — Dynamic Adapter Loading
 
-### `LanguageAdapterRegistry` (singleton at `sidecar.parser.registry.REGISTRY`)
+### `LanguageAdapterRegistry` (singleton at `context_engine.parser.registry.REGISTRY`)
 
-Auto-discovers adapters from `sidecar/parser/adapters/*_adapter.py`:
+Auto-discovers adapters from `context_engine/parser/adapters/*_adapter.py`:
 
 ```python
 def get_adapter(language: str) -> LanguageAdapter
@@ -116,6 +122,13 @@ def extract_calls_from_source(self, source_code: str, file_path: str) -> List[di
     # rel_type: "CALLS_DIRECT" (static/overload-safe), "CALLS_DYNAMIC" (dispatch), "CALLS_INFERRED" (string-based)
     # Default (not overridden): "CALLS_DIRECT"
 ```
+
+Adapters may also expose language-specific extraction hooks consumed by the indexer:
+imports, inheritance, decorators, type references, re-exports, instantiations, DI
+bindings, proxy bindings, and return-shape markers. The Python adapter currently
+populates the return-shape booleans during `extract_symbols()` from top-level
+`return` statements only; it deliberately ignores nested functions/classes so an
+inner helper does not paint the outer function as returning a mapping/sequence.
 
 ### TreeSitterAdapter Base Class
 
@@ -150,10 +163,10 @@ The base class handles all tree-sitter parsing; subclass just declares the queri
 
 ## 6. Adding a New Language
 
-Create one file: `sidecar/parser/adapters/go_adapter.py`
+Create one file: `context_engine/parser/adapters/go_adapter.py`
 
 ```python
-from sidecar.parser.adapters.treesitter_base import TreeSitterAdapter
+from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter
 
 class GoAdapter(TreeSitterAdapter):
     @property
@@ -207,12 +220,23 @@ Filter: only names where `name.isupper()` are indexed — avoids noise from loca
 
 ## 9. Known Limitations
 
-- **Shallow call detection.** Only resolves `(call function: (identifier))` — misses method calls (`obj.method()`), chained calls, and calls via attribute access.
-- **No import resolution.** `callee_name` is matched globally by name in Neo4j. If two files define a function with the same name, edges will be incorrectly multi-matched.
-- **No nested class/function scoping.** A method inside a class and a top-level function with the same name produce the same `uid` if they share a `file_path:name` — collision risk in files with method overloading.
-- **File hash is raw bytes hex.** `indexer_main.py` reads the file as bytes and calls `.hex()` — not a proper SHA256 digest. Inconsistent with `content_hash` in `SymbolMetadata`.
+- **Python call resolution is staged, not complete.** Direct/scoped/imported/self,
+  typed collaborator, proxy, re-export, instantiation, and injection facts exist,
+  but dynamic dispatch through dict lookups, unannotated runtime proxies, and
+  cross-function value flow remain out of scope.
+- **Return-shape markers are AST shape only.** `returns_mapping`,
+  `returns_sequence`, and `returns_constructed_type` say what a function returns,
+  not where the returned values came from. They are a foundation for binding/data
+  roles, not full dataflow.
+- **TypeScript and JavaScript have partial parity.** TS/JS adapters expose many
+  structural edges, but Python has the deepest typed collaborator and return-shape
+  path today.
+- **Single-file hot path is intentionally smaller.** Full repository passes run
+  role taxonomy and global enrichment phases; single-file indexing does not rebuild
+  every project-level derived feature.
 
-Phase 3.5 will address limitations via `IMPORTS` and `DEPENDS_ON` edges (imported names, type usage).
+Future phases should add bounded field reads/writes, callable-as-value edges, and
+data-shape propagation before promoting the remaining binding/dataflow roles.
 
 ---
 

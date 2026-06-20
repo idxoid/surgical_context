@@ -26,7 +26,7 @@ Each project indexes itself. The tenant graph only links published project facts
 
 ### Out of Scope
 
-- Scanning sibling repositories from another project's sidecar.
+- Scanning sibling repositories from another project's context_engine.
 - Reading source code from a neighboring project unless that project's own index explicitly published safe metadata.
 - Invoking live external APIs during indexing or retrieval.
 - Storing raw request/response payloads, secrets, auth tokens, or raw prompts in the tenant graph.
@@ -225,6 +225,6 @@ POST /ask
 
 - [architectura.md](architectura.md) - system architecture and ADRs.
 - [road_map.md](road_map.md) - planned Phase 11 work.
-- [spec_unified_ranking.md](spec_unified_ranking.md) - blended ranking model this extends.
+- spec_unified_ranking.md (removed) - blended ranking model this extends.
 - [spec_branch_isolation.md](spec_branch_isolation.md) - workspace and tenant scoping.
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) - scores and provenance in the prompt contract.

@@ -53,7 +53,7 @@ export class ImpactViewProvider implements vscode.WebviewViewProvider {
     switch (message.type) {
       case 'action.showImpact':
         if (message.symbol) {
-          await this.loadImpact(message.symbol);
+          await this.loadImpact(message.symbol, message.maxDepth);
         }
         break;
 
@@ -88,13 +88,13 @@ export class ImpactViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async loadImpact(symbol: string): Promise<void> {
+  private async loadImpact(symbol: string, maxDepth = 3): Promise<void> {
     try {
       this.postMessage({
         type: 'impact.loading',
       });
 
-      const impact = await SidecarClient.impact(symbol);
+      const impact = await SidecarClient.impact(symbol, maxDepth);
       this.postMessage({
         type: 'impact.loaded',
         symbol,

@@ -1,7 +1,7 @@
 import pytest
 
-from sidecar.parser.adapters.python_adapter import PythonAdapter
-from sidecar.parser.uid import project_root_scope
+from context_engine.parser.adapters.python_adapter import PythonAdapter
+from context_engine.parser.uid import project_root_scope
 
 
 class TestPythonImports:
@@ -20,14 +20,12 @@ class TestPythonImports:
         assert len(imports) == 0
 
     def test_keeps_internal_imports(self, adapter):
-        source = (
-            "from sidecar.database.neo4j_client import Neo4jClient\nimport sidecar.context.types"
-        )
+        source = "from context_engine.database.neo4j_client import Neo4jClient\nimport context_engine.context_types"
         imports = adapter.extract_imports(source, "test.py")
         assert len(imports) == 2
         names = {imp.target_module_name for imp in imports}
-        assert "sidecar.database.neo4j_client" in names
-        assert "sidecar.context.types" in names
+        assert "context_engine.database.neo4j_client" in names
+        assert "context_engine.context_types" in names
 
     def test_keeps_repo_local_absolute_imports_even_if_package_name_is_common(self, adapter):
         source = "from pandas.io import read_csv\nimport pandas.errors"
@@ -61,6 +59,17 @@ class TestPythonImports:
         source = "class Child(Parent1, Parent2):\n    pass"
         inheritance = adapter.extract_inheritance(source, "test.py")
         assert len(inheritance) >= 1
+
+    def test_extract_multiline_generic_inheritance_heads(self, adapter):
+        source = """
+class Child(
+    Parent[T],
+    pkg.Mixin,
+):
+    pass
+"""
+        inheritance = adapter.extract_inheritance(source, "test.py")
+        assert [edge.superclass_name for edge in inheritance] == ["Parent", "Mixin"]
 
     def test_no_imports_returns_empty(self, adapter):
         source = "x = 1\ny = 2"

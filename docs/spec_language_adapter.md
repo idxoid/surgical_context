@@ -2,9 +2,19 @@
 
 > **Status:** ✅ Implemented. Multi-language support is pluggable via the adapter registry. New languages add a single adapter file — no core edits. Phase 3.5 Graph Completeness extends adapters with `extract_imports()` and `extract_inheritance()` for richer dependency tracking.
 
+**Code:** [context_engine/parser/protocol.py](../context_engine/parser/protocol.py),
+[context_engine/parser/registry.py](../context_engine/parser/registry.py),
+[context_engine/parser/adapters/](../context_engine/parser/adapters/).
+
+**See also:**
+- [spec_parser.md](spec_parser.md) — `SymbolExtractor`, module layout, indexer handoff
+- [spec_indexer.md](spec_indexer.md) — indexed extensions derived from the registry
+- [role_predicates.md](role_predicates.md) — Pass-1 consumes extraction-time AST markers
+- [spec_call_resolution_pipeline.md](spec_call_resolution_pipeline.md) — call typing after extract
+
 ## 1. Problem
 
-Currently, language-specific parsing logic is scattered across `sidecar/parser/`:
+Currently, language-specific parsing logic is scattered across `context_engine/parser/`:
 - Tree-sitter queries baked into `languages.py` as a `LANGUAGE_CONFIGS` dict.
 - `SymbolExtractor` hard-codes the lookup.
 - Adding a new language (Go, Rust, Java) means editing both files.
@@ -19,7 +29,7 @@ ADR-005 solves this via a plugin architecture: each language implements a protoc
 ```python
 from abc import ABC, abstractmethod
 from typing import List, Optional
-from sidecar.parser.extractor import SymbolMetadata, CallEdge
+from context_engine.parser.extractor import SymbolMetadata, CallEdge
 
 class LanguageAdapter(ABC):
     """Plugin interface for language-specific parsing."""
@@ -46,7 +56,10 @@ class LanguageAdapter(ABC):
             file_path: absolute path (used for UID generation)
         
         Returns:
-            List of SymbolMetadata objects with populated uid, name, kind, start_line, end_line, content_hash.
+            List of SymbolMetadata objects with populated uid, name, kind,
+            start_line, end_line, content_hash, signature fields, language, and
+            optional structural AST markers such as returns_mapping /
+            returns_sequence / returns_constructed_type.
         """
         pass
     
@@ -132,6 +145,19 @@ class InheritanceEdge:
     is_interface: bool     # True if superclass is an interface (TS/Java) vs. a class
 ```
 
+`SymbolMetadata` also carries extraction-time AST markers used by Pass 1:
+
+| Field | Meaning |
+|---|---|
+| `returns_function_expression` | Top-level return yields a function expression; higher-order factory signal |
+| `returns_mapping` | Top-level return yields a mapping shape |
+| `returns_sequence` | Top-level return yields a sequence shape |
+| `returns_constructed_type` | Top-level return yields a capitalized constructed call result |
+
+These markers are monotone booleans: multiple returns OR together. They are
+shape facts, not dataflow; Pass-1 predicates in [role_predicates.md](role_predicates.md)
+read them — they should not imply that the engine knows where each returned value came from.
+
 ## 3. Adapter Registry & Discovery
 
 ### 3.1 `LanguageAdapterRegistry` — Central Catalog
@@ -175,7 +201,7 @@ class LanguageAdapterRegistry:
 
 ### 3.2 Bootstrap — Auto-discover Adapters
 
-On sidecar startup, auto-load all adapters from `sidecar/parser/adapters/`:
+On sidecar startup, auto-load all adapters from `context_engine/parser/adapters/`:
 
 ```python
 def bootstrap_adapters() -> LanguageAdapterRegistry:
@@ -186,7 +212,7 @@ def bootstrap_adapters() -> LanguageAdapterRegistry:
     for module_file in adapters_dir.glob("*_adapter.py"):
         module_name = module_file.stem  # e.g., "python_adapter"
         try:
-            mod = importlib.import_module(f"sidecar.parser.adapters.{module_name}")
+            mod = importlib.import_module(f"context_engine.parser.adapters.{module_name}")
             # Adapters export a `make_adapter()` factory function
             adapter = mod.make_adapter()
             registry.register(adapter)
@@ -242,12 +268,12 @@ class SymbolExtractor:
 
 ## 5. Example: Python Adapter
 
-### 5.1 File: `sidecar/parser/adapters/python_adapter.py`
+### 5.1 File: `context_engine/parser/adapters/python_adapter.py`
 
 ```python
 import tree_sitter_languages
 from hashlib import sha256
-from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
+from context_engine.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
 
 class PythonAdapter(LanguageAdapter):
     """Python language adapter using tree-sitter."""
@@ -347,11 +373,11 @@ def make_adapter() -> LanguageAdapter:
 
 ### 6.1 Go Example
 
-1. **Create adapter file** `sidecar/parser/adapters/go_adapter.py`:
+1. **Create adapter file** `context_engine/parser/adapters/go_adapter.py`:
 
 ```python
 import tree_sitter_languages
-from sidecar.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
+from context_engine.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
 
 class GoAdapter(LanguageAdapter):
     
@@ -406,19 +432,19 @@ def test_go_extract_symbols():
 ### Phase 1 ✅ Complete
 
 Adapter protocol and registry fully implemented:
-1. ✅ `sidecar/parser/protocol.py` with `LanguageAdapter` ABC and data classes.
-2. ✅ `sidecar/parser/adapters/` directory with `python_adapter.py` and `typescript_adapter.py`.
+1. ✅ `context_engine/parser/protocol.py` with `LanguageAdapter` ABC and data classes.
+2. ✅ `context_engine/parser/adapters/` — `python_adapter.py`, `typescript_adapter.py`, `javascript_adapter.py` (auto-discovered via `make_adapter()`).
 3. ✅ `SymbolExtractor` refactored to use registry and auto-detect language.
-4. ✅ 10 unit tests + 10 integration tests for adapter loading and language detection.
+4. ✅ Unit + integration tests for adapter loading and language detection (`tests/integration/test_adapter_registry.py`, per-adapter unit tests).
 
 ### Phase 3.5 ✅ Complete
 
 Graph Completeness extends adapters:
-1. ✅ `extract_imports()` implemented in Python (text-based) and TypeScript (regex-based) adapters.
-2. ✅ `extract_inheritance()` implemented in both adapters for class/interface hierarchies.
-3. ✅ Indexer Phase 5 & 6 create `IMPORTS` (File→File) and `DEPENDS_ON` (Symbol→Symbol) edges.
-4. ✅ Arbitrator BFS expanded to traverse all three edge types (CALLS, IMPORTS, DEPENDS_ON).
-5. ✅ 18 new tests verify complete import/inheritance extraction.
+1. ✅ `extract_imports()` implemented in Python (text-based) and TypeScript/JavaScript (regex/tree-sitter) adapters.
+2. ✅ `extract_inheritance()` implemented in Python and TypeScript adapters for class/interface hierarchies.
+3. ✅ Indexer creates `IMPORTS` (File→File) and `DEPENDS_ON` (Symbol→Symbol) edges from adapter output.
+4. ✅ Axis graph walks and Pass-1 fan profiles consume those dependency edges (replacing the deleted cascade BFS).
+5. ✅ Integration tests verify import/inheritance extraction (`tests/integration/test_graph_completeness.py`).
 
 ### Phase 3.6 ✅ Complete — TypeScript `object_api` surfaces
 
@@ -429,7 +455,7 @@ The TypeScript adapter collapses `export const Foo = { ... }` client objects int
 - nested method symbols inside the object literal are suppressed to reduce graph noise
 - HTTP calls inside the object (`post('/ask')`, `fetch('/health')`) are attributed to the enclosing `object_api` symbol
 
-This enables cross-language trace questions (for example extension `SidecarClient` → sidecar `/ask` handler) when combined with the `ts_http_route_hints` indexer pass.
+Cross-language trace (for example extension `SidecarClient` → sidecar `/ask` handler) is **not** wired today — regex `SEMANTIC_HINT` hints were removed; revisit when TS indexing emits structural route/call edges.
 
 ### Phase 5+
 
@@ -484,6 +510,7 @@ def test_detect_language_by_extension():
 
 ## 10. Related
 
-- [spec_parser.md](spec_parser.md) — current parser design (replaced by this).
-- [architectura.md §5.2](architectura.md) — schema for `IMPORTS` / `DEPENDS_ON` edges.
-- [road_map.md](road_map.md) — Phase 1 polish, Phase 3.5 extension.
+- [spec_parser.md](spec_parser.md) — parser module layout and indexer integration
+- [spec_indexer.md](spec_indexer.md) — file collection uses registry extensions
+- [architectura.md](architectura.md) — `IMPORTS` / `DEPENDS_ON` in the graph schema
+- [road_map.md](road_map.md) — Phase 1 polish, Phase 3.5 extension

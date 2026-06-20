@@ -24,7 +24,7 @@ export type WebviewToHostMessage =
   | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down'; feedbackToken?: string }
   | { type: 'action.openInspector' }
   | { type: 'action.openSettings' }
-  | { type: 'action.showImpact'; symbol?: string }
+  | { type: 'action.showImpact'; symbol?: string; maxDepth?: number }
   | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'action.openDashboard' }
   | { type: 'link.openFile'; filePath: string; line?: number }
@@ -128,7 +128,7 @@ export interface PromptContextPayload {
     assembly?: {
       trace_id?: string;
       workspace_id?: string;
-      resolver_version?: string;
+      context_pipeline_version?: string;
       stage_timings_ms?: Record<string, number>;
       token_counts?: Record<string, number>;
       model_route?: Record<string, unknown>;
@@ -148,6 +148,10 @@ export interface ContextSymbol {
   file_path: string;
   relation?: string;
   direction?: string;
+  role?: string;
+  kind?: string;
+  edge_type?: string;
+  utility_score?: number;
   depth?: number;
   relevance_score?: number;
   scores?: Record<string, number | null>;

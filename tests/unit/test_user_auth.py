@@ -1,6 +1,6 @@
 """Unit tests for user authentication."""
 
-from sidecar.auth import UserAuth
+from context_engine.auth import UserAuth
 
 
 class TestUserAuth:
@@ -44,6 +44,11 @@ class TestUserAuth:
         token = auth.generate_token("alice")
         assert token is not None
         assert auth.get_user_from_token(token) == "alice"
+
+    def test_generate_token_with_workspace_scope(self):
+        auth = UserAuth()
+        token = auth.generate_token("alice", workspace_id="local/repo@main")
+        assert auth.get_workspace_from_token(token) == "local/repo@main"
 
     def test_verify_token_valid(self):
         """Verify valid token."""

@@ -22,6 +22,17 @@
 
 ## 2. Document Types & Structure
 
+| Type | Filename pattern | Purpose |
+|---|---|---|
+| **A — Spec** | `spec_*.md`, `*_signal.md` (when shipped) | Current implementation: code path, API, limits |
+| **B — Architecture** | `architectura.md`, `*_architecture.md` | How components connect; decision records |
+| **C — Concept** | `concept.md`, `*_closure.md`, terminology | Ideas and vocabulary without tying to one module |
+| **D — Design draft** | `question_*_profiles.md`, plans with open steps | Gold target / roadmap; may ignore current code until implemented |
+
+Not cascade leftovers: eval design docs (`question_structural_role_profiles.md`,
+`logical_roles_structural_closure.md`) and shipped signals (`file_tier_signal.md`)
+belong here as first-class types — not footnotes in `cascade_cleanup_inventory.md`.
+
 ### **Type A: Spec** (`spec_*.md`)
 
 Describes the current implementation of a system component. Audience: developers building on it.
@@ -55,7 +66,7 @@ What's on the roadmap. Bullet list.
 ```
 # Anchor Linker — Spec
 
-`sidecar/indexer/anchor.py` — links documentation chunks to code symbols 
+`context_engine/indexer/anchor.py` — links documentation chunks to code symbols 
 via DocAnchor nodes in Neo4j. Enables hybrid retrieval: semantic search 
 finds a doc chunk → graph traversal finds the code it describes.
 
@@ -147,7 +158,7 @@ When the user saves, the overlay is cleared and re-indexing begins.
 **Good:**
 ```python
 # ✓ Specific, copy-paste-able, shows input + output
-calls = extractor.extract_calls("sidecar/indexer/code.py")
+calls = extractor.extract_calls("context_engine/indexer/code.py")
 print(calls[0])
 # Output: {"caller_uid": "abc123", "callee_name": "run_indexing", "rel_type": "CALLS_DIRECT"}
 ```
@@ -213,7 +224,7 @@ See [spec_doc_anchor.md](spec_doc_anchor.md) for DocAnchor semantics.
 
 **Code files:**
 ```markdown
-[sidecar/indexer/code.py:54-60](sidecar/indexer/code.py#L54-L60) — symbol extraction phase
+[context_engine/indexer/code.py:54-60](context_engine/indexer/code.py#L54-L60) — symbol extraction phase
 ```
 
 **External:**
@@ -253,7 +264,7 @@ Goal: Classify function calls by confidence.
 
 **Filenames & paths:**
 ```markdown
-`sidecar/indexer/code.py`       # Local paths always relative to repo root
+`context_engine/indexer/code.py`       # Local paths always relative to repo root
 `config.json`                   # Bare filenames if in same directory
 ```
 
@@ -387,9 +398,13 @@ Before submitting a doc, ask:
 
 ## Examples in This Repo
 
-- **Spec example:** [spec_intent_classifier.md](spec_intent_classifier.md) — 6 intent types with priority orderings
+- **Spec example:** [file_tier_signal.md](file_tier_signal.md) — index-time tier + ranker weights (shipped)
+- **Spec example:** [spec_language_adapter.md](spec_language_adapter.md) — ADR-005 adapter protocol
 - **Architecture example:** [architectura.md](architectura.md) — Section 3 data pipelines + Section 4 workflows
+- **Architecture example:** [role_clustering_architecture.md](role_clustering_architecture.md) — Pass-1 decision record
 - **Concept example:** [concept.md](concept.md) — surgical code retrieval rationale
+- **Concept example:** [logical_roles_structural_closure.md](logical_roles_structural_closure.md) — logical role vs closure value
+- **Design draft example:** [question_structural_role_profiles.md](question_structural_role_profiles.md) — gold benchmark profiles (not yet in YAML)
 - **Limitation + Extension:** [spec_doc_anchor.md](spec_doc_anchor.md#limitations-current) — current gaps + roadmap
 
 ---

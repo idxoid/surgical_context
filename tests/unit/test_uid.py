@@ -1,4 +1,4 @@
-from sidecar.parser.uid import module_name_from_path, project_root_scope
+from context_engine.parser.uid import module_name_from_path, project_root_scope
 
 
 def test_module_name_from_path_with_project_root_preserves_external_repo_structure():

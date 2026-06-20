@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from sidecar.history import (
+from context_engine.history import (
     DisabledHistoryProvider,
     EphemeralSQLiteHistoryProvider,
     SQLiteHistoryProvider,

@@ -107,9 +107,9 @@ Local aliases (`amqp = self.amqp`) inherit the attribute's type within the funct
 
 Confidence: **0.8**, `tier = "typed"`. The edge is emitted with **`rel_type = CALLS_DYNAMIC`** so it participates in every existing graph traversal union; `tier` carries the resolver identity for observability. A dedicated `CALLS_TYPED` edge label can be promoted later once all traversal queries enumerate it.
 
-Implemented in [python_adapter.py](../sidecar/parser/adapters/python_adapter.py) — `_build_attr_type_table`, `_local_alias_types`, `_typed_qualified_target`. When the type is unknown, **no edge is fabricated** (precision over recall).
+Implemented in [python_adapter.py](../context_engine/parser/adapters/python_adapter.py) — `_build_attr_type_table`, `_local_alias_types`, `_typed_qualified_target`. When the type is unknown, **no edge is fabricated** (precision over recall).
 
-**Why this tier exists:** it removes the architectural reason the ranker needed hardcoded "contract symbol" tables / mechanism-packs to answer mainstream-framework questions — the collaborator chains are now real graph edges. See [mechanism_contract_unification](mechanism_contract_unification.md).
+**Why this tier exists:** it removes the architectural reason the ranker needed hardcoded "contract symbol" tables / mechanism-packs to answer mainstream-framework questions — the collaborator chains are now real graph edges. See [engineering_principles.md](engineering_principles.md) and [axis_terminology.md](axis_terminology.md).
 
 ### 2.6 Tier 5 — CALLS_GUESS
 
@@ -124,7 +124,7 @@ If no tier produces a match, the call site is recorded in a `pending_calls` tabl
 ## 3. Pipeline Shape
 
 ```python
-# implemented inside `sidecar/parser/adapters/python_adapter.py`
+# implemented inside `context_engine/parser/adapters/python_adapter.py`
 
 class CallResolver:
     def __init__(self, scope_table: ScopeTable, graph: Neo4jClient):
@@ -159,7 +159,7 @@ Existing `CALLS` edges migrated:
 - `CALLS_DIRECT` if the current edge passes the new resolver → keep.
 - Otherwise downgrade to `CALLS_GUESS` (honest labeling beats flattering).
 
-Migration CLI: `python -m sidecar.indexer.migrate_calls` — walks every file, reparses, rewrites edges.
+Migration CLI: `python -m context_engine.indexer.migrate_calls` — walks every file, reparses, rewrites edges.
 
 ## 5. Examples
 
@@ -212,6 +212,7 @@ they bridge.
 
 - Python `getattr(obj, "method")()` — Tier 4 can detect the shape but not the method name. Recorded in `pending_calls` with a `resolver = "getattr"` hint.
 - Tier 4.5 also infers types from a **method/function return**: `local = self.method()` / `local = func()` resolves when the callee has a `-> Type` annotation or a `return SomeClass(...)` body. Returns of a bare global, `self.attr`, or any non-constructor expression are **not** inferred (their type is not statically present) — e.g. celery's `get_current_app()` returns a thread-local global, so it stays untyped. Inference is file-local; cross-file attribute types resolve only when the qualified target string is self-describing (string-cls) or the class is imported.
+- Phase A return-shape markers (`returns_mapping`, `returns_sequence`, `returns_constructed_type`) are now persisted on `Symbol` nodes for Pass-1 role assignment. They are not call-resolution edges by themselves: `return dict(...)` tells the cascade that a function returns a mapping shape, but it does not identify a callee, field source, or value-flow path.
 - Lazy proxies (`X: T = SomeProxy(...)`) are handled cross-file by the ProxySurface phase (§5.1), but only when the proxy var is **annotated** with its forwarded type. An **un-annotated** proxy (e.g. Celery `current_app = Proxy(get_current_app)`) leaves the proxy's target type unknown — it would require return-type inference on the wrapped callable (`get_current_app() → Celery`), the same planned method-return source. Until then, calls through an un-annotated proxy stay name-only.
 - Stdlib imports (`json`, `os`, `re`) are not indexed — edges to them are omitted, not promoted to `CALLS_GUESS`.
 - TypeScript declaration merging and generic-bound method calls require a deeper TS resolver; current implementation keeps TypeScript on adapter-level extraction plus unique-name fallback in `Neo4jClient.link_calls()`.
@@ -227,5 +228,5 @@ they bridge.
 
 - [spec_uid_stability.md](spec_uid_stability.md) — resolver targets UIDs; stable UIDs are a hard prerequisite.
 - [spec_typed_semantic_edges.md](spec_typed_semantic_edges.md) — edge-type taxonomy this pipeline populates.
-- [spec_token_budget_bfs.md](spec_token_budget_bfs.md) — `confidence` flows into the BFS scoring function as `relation_prior`.
+- spec_token_budget_bfs.md (removed) — `confidence` flows into the BFS scoring function as `relation_prior`.
 - [spec_language_adapter.md](spec_language_adapter.md) — resolver registry lives alongside language adapters.

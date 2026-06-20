@@ -47,7 +47,7 @@ File impact is computed on demand by taking the union of affected symbols for al
 
 ### 2.2 Traversed Relationship Types
 
-`sidecar/indexer/affects.py` uses:
+`context_engine/indexer/affects.py` uses:
 
 ```python
 CALLS_DIRECT
@@ -65,7 +65,7 @@ The index intentionally uses typed call edges rather than the old generic `CALLS
 
 ### 2.3 Materialization Strategy
 
-Implementation: `sidecar.indexer.affects.AFFECTSIndexer`.
+Implementation: `context_engine.indexer.affects.AFFECTSIndexer`.
 
 Constants:
 
@@ -91,18 +91,18 @@ Current implementation stores reachability, not path explanation. All returned a
 
 ### 3.1 Single-File Path
 
-`sidecar/indexer/code.py` keeps synchronous semantics for IDE save/index-file flows:
+`context_engine/indexer/code.py` keeps synchronous semantics for IDE save/index-file flows:
 
 ```python
 if changed_uids:
-    from sidecar.indexer.affects import AFFECTSIndexer
+    from context_engine.indexer.affects import AFFECTSIndexer
 
     AFFECTSIndexer(db).rebuild_affects(changed_uids, workspace_id=workspace_id)
 ```
 
 ### 3.2 Fast Project Path
 
-`sidecar/indexer/fast/pipeline.py` rebuilds AFFECTS once over the union of all changed UIDs:
+`context_engine/indexer/fast/pipeline.py` rebuilds AFFECTS once over the union of all changed UIDs:
 
 ```python
 AFFECTSIndexer(db).rebuild_affects(
@@ -141,7 +141,7 @@ The method finds all symbols contained in the file, follows their `AFFECTS` edge
 
 ### 4.3 `/impact` Endpoint
 
-Implemented in `sidecar/main.py`:
+Implemented in `context_engine/main.py`:
 
 ```http
 GET /impact?symbol=<name>
@@ -219,7 +219,7 @@ Still deferred:
 1. Persist minimum path depth on each `AFFECTS` edge.
 2. Persist `derived_at` and implement explicit staleness detection.
 3. Materialize file-level `AFFECTS` edges if query-time union becomes too slow.
-4. Add a CLI such as `python -m sidecar.indexer.affects rebuild --all`.
+4. Add a CLI such as `python -m context_engine.indexer.affects rebuild --all`.
 5. Use AFFECTS directly for context cache invalidation once cache policy needs it.
 
 ## 8. Phase Sequencing

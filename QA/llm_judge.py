@@ -12,12 +12,14 @@ Effort → model mapping (override per cell with QA_JUDGE_<PROVIDER>_MODEL_<TIER
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
-from typing import Literal
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal
 
 from QA.llm_bridge import BridgeRequest, build_bridge_provider
 
@@ -45,29 +47,38 @@ _DEFAULT_TIER_MODELS: dict[Provider, dict[Effort, str]] = {
 }
 
 _JUDGE_SYSTEM = """\
-You are a strict code-review judge. You will receive a code context block and a question.
+You are a strict code-review judge for the Surgical Context axis pipeline.
+You will receive an axis-ready context packet and a question.
 
 Rules:
-- Answer the question using ONLY the information in the context block. Do not use outside knowledge.
-- After your answer, output a self-assessment block with these lines exactly:
-  VERDICT: <pass|warn|fail>
-  CORRECTNESS: <correct|partial|wrong>
-  GROUNDING: <grounded|mixed|ungrounded>
-  COMPLETENESS: <complete|partial|insufficient>
-  CONTEXT_SUFFICIENT: <yes|no>
-  UNSUPPORTED_CLAIMS: <none|short phrase>
-  MISSING_EVIDENCE: <none|short phrase>
-  NOTES: <optional short phrase or none>
-
-Also include legacy lines (must match CORRECTNESS / CONTEXT_SUFFICIENCY):
-  ANSWER_QUALITY: <correct|partial|wrong>
-  CONTEXT_SUFFICIENCY: <sufficient|overfed|incomplete>
+- Answer the question using ONLY the supplied context packet. Do not use outside knowledge.
+- Treat the packet as the production answer contract: evidence may come from
+  rendered code, symbols, graph neighbors, role/echelon metadata, and budget notes.
+- Cite the concrete files/symbols or short evidence snippets that support the answer.
+- If the packet lacks a required edge, caller, callee, role, or source excerpt, say so
+  instead of filling the gap from memory.
+- Return exactly one JSON object and no surrounding prose:
+  {
+    "answer": "<answer grounded only in the packet>",
+    "verdict": "pass|warn|fail",
+    "correctness": "correct|partial|wrong",
+    "grounding": "grounded|mixed|ungrounded",
+    "completeness": "complete|partial|insufficient",
+    "context_sufficient": "yes|no",
+    "context_sufficiency": "sufficient|overfed|incomplete",
+    "citations": [{"file_path": "<path>", "symbol": "<symbol or empty>", "quote": "<short quote or paraphrase>"}],
+    "evidence_roles_covered": ["<role names from the packet, if present>"],
+    "unsupported_claims": "none|short phrase",
+    "missing_evidence": "none|short phrase",
+    "notes": "none|short phrase"
+  }
 
 Definitions:
   pass/warn/fail — overall judgment: pass=answerable from context; warn=partial; fail=wrong/ungrounded
   grounded — all claims trace to context; mixed — some inference; ungrounded — outside knowledge or hallucination
   complete/partial/insufficient — answer coverage relative to the question
-  CONTEXT_SUFFICIENT yes — context had what was needed; no — retrieval gap (maps to incomplete/overfed context)
+  context_sufficient=yes means the packet had what was needed.
+  context_sufficiency=sufficient means enough and reasonably focused; overfed means enough but noisy; incomplete means retrieval gap.
 """
 
 
@@ -89,6 +100,9 @@ class JudgeResult:
     unsupported_claims: str = "none"
     missing_evidence: str = "none"
     notes: str = ""
+    citations: list[dict[str, str]] = field(default_factory=list)
+    evidence_roles_covered: list[str] = field(default_factory=list)
+    raw_text: str = ""
     latency_ms: int = 0
     error: str | None = None
 
@@ -112,11 +126,14 @@ def bridges_available() -> dict[str, bool]:
 
 
 def _line_value(text: str, key: str) -> str:
-    prefix = f"{key}:"
+    pattern = re.compile(
+        rf"^\s*(?:[-+]\s+|\*\s+)?[`*_]*\s*{re.escape(key)}\s*[`*_]*\s*:\s*(.*)$",
+        re.IGNORECASE,
+    )
     for line in text.splitlines():
-        line = line.strip()
-        if line.upper().startswith(prefix.upper()):
-            return line.split(":", 1)[1].strip()
+        match = pattern.match(line)
+        if match:
+            return match.group(1).strip().strip("`*_").strip()
     return ""
 
 
@@ -130,7 +147,147 @@ def _derive_verdict(aq: AnswerQuality, cs: ContextSufficiency) -> str:
     return "fail"
 
 
-def _parse_verdict(text: str) -> dict[str, str]:
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    for candidate in (stripped, *_json_fence_candidates(stripped)):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    for match in re.finditer(r"\{", text):
+        try:
+            parsed, _end = decoder.raw_decode(text[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _json_fence_candidates(text: str) -> list[str]:
+    return [
+        match.group(1).strip()
+        for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    ]
+
+
+def _normalise(value: Any, allowed: tuple[str, ...], default: str) -> str:
+    raw = str(value or "").strip().lower()
+    return raw if raw in allowed else default
+
+
+def _string_or_none(value: Any, default: str = "none") -> str:
+    if value is None:
+        return default
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, sort_keys=True)
+    text = str(value).strip()
+    return text or default
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip() and value.strip().lower() != "none":
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return []
+
+
+def _citation_list(value: Any) -> list[dict[str, str]]:
+    citations: list[dict[str, str]] = []
+    if not isinstance(value, list):
+        return citations
+    for item in value:
+        if isinstance(item, dict):
+            citations.append(
+                {
+                    "file_path": str(
+                        item.get("file_path") or item.get("path") or item.get("file") or ""
+                    ).strip(),
+                    "symbol": str(item.get("symbol") or "").strip(),
+                    "quote": str(
+                        item.get("quote") or item.get("evidence") or item.get("snippet") or ""
+                    ).strip(),
+                }
+            )
+        elif str(item).strip():
+            citations.append({"file_path": "", "symbol": "", "quote": str(item).strip()})
+    return citations
+
+
+def _parse_json_verdict(parsed: dict[str, Any]) -> dict[str, Any]:
+    aq = _normalise(
+        parsed.get("correctness") or parsed.get("answer_quality"),
+        (
+            "correct",
+            "partial",
+            "wrong",
+        ),
+        "wrong",
+    )
+    ctx_sufficient_raw = parsed.get("context_sufficient")
+    cs = _normalise(
+        parsed.get("context_sufficiency") or parsed.get("context_efficiency"),
+        ("sufficient", "overfed", "incomplete"),
+        "",
+    )
+    if not cs:
+        if isinstance(ctx_sufficient_raw, bool):
+            cs = "sufficient" if ctx_sufficient_raw else "incomplete"
+        else:
+            ctx_text = str(ctx_sufficient_raw or "").strip().lower()
+            cs = "sufficient" if ctx_text == "yes" else "incomplete"
+    if isinstance(ctx_sufficient_raw, bool):
+        context_sufficient = "yes" if ctx_sufficient_raw else "no"
+    else:
+        context_sufficient = _normalise(ctx_sufficient_raw, ("yes", "no"), "")
+        if not context_sufficient:
+            context_sufficient = "yes" if cs in ("sufficient", "overfed") else "no"
+
+    verdict = _normalise(parsed.get("verdict"), ("pass", "warn", "fail"), "")
+    if not verdict:
+        verdict = _derive_verdict(aq, cs)  # type: ignore[arg-type]
+
+    return {
+        "answer": _string_or_none(parsed.get("answer"), ""),
+        "answer_quality": aq,
+        "context_sufficiency": cs,
+        "verdict": verdict,
+        "correctness": aq,
+        "grounding": _normalise(
+            parsed.get("grounding"),
+            ("grounded", "mixed", "ungrounded"),
+            "grounded" if aq == "correct" else "mixed" if aq == "partial" else "ungrounded",
+        ),
+        "completeness": _normalise(
+            parsed.get("completeness"),
+            ("complete", "partial", "insufficient"),
+            "complete" if aq == "correct" else "partial" if aq == "partial" else "insufficient",
+        ),
+        "context_sufficient": context_sufficient,
+        "unsupported_claims": _string_or_none(parsed.get("unsupported_claims")),
+        "missing_evidence": _string_or_none(
+            parsed.get("missing_evidence"),
+            "none" if cs != "incomplete" else "context gap",
+        ),
+        "notes": _string_or_none(parsed.get("notes"), ""),
+        "citations": _citation_list(parsed.get("citations")),
+        "evidence_roles_covered": _string_list(parsed.get("evidence_roles_covered")),
+    }
+
+
+def _parse_verdict(text: str) -> dict[str, Any]:
+    parsed_json = _extract_json_object(text)
+    if parsed_json is not None:
+        return _parse_json_verdict(parsed_json)
+
     aq_raw = _line_value(text, "CORRECTNESS") or _line_value(text, "ANSWER_QUALITY")
     cs_raw = _line_value(text, "CONTEXT_SUFFICIENCY")
     aq: AnswerQuality = "wrong"
@@ -166,6 +323,7 @@ def _parse_verdict(text: str) -> dict[str, str]:
     return {
         "answer_quality": aq,
         "context_sufficiency": cs,
+        "answer": "",
         "verdict": verdict,
         "correctness": correctness,
         "grounding": grounding,
@@ -174,6 +332,8 @@ def _parse_verdict(text: str) -> dict[str, str]:
         "unsupported_claims": unsupported,
         "missing_evidence": missing,
         "notes": notes,
+        "citations": [],
+        "evidence_roles_covered": [],
     }
 
 
@@ -192,7 +352,7 @@ def judge_question_via_bridge(
     """Single judge call via one CLI bridge."""
     bridge_name = "claude-code" if provider == "claude" else "codex"
     model = tier_model(provider, effort)
-    user_content = f"{system_prompt}\n\n---\nQuestion: {question}"
+    user_content = f"Axis context packet:\n{system_prompt}\n\n---\nQuestion: {question}"
     if intent:
         user_content = f"Intent: {intent}\n\n{user_content}"
 
@@ -221,7 +381,7 @@ def judge_question_via_bridge(
     parsed = _parse_verdict(text)
     latency_ms = int((time.monotonic() - t0) * 1000)
     return JudgeResult(
-        answer=text,
+        answer=parsed.get("answer") or text,
         answer_quality=parsed["answer_quality"],  # type: ignore[arg-type]
         context_sufficiency=parsed["context_sufficiency"],  # type: ignore[arg-type]
         provider=provider,
@@ -237,6 +397,9 @@ def judge_question_via_bridge(
         unsupported_claims=parsed["unsupported_claims"],
         missing_evidence=parsed["missing_evidence"],
         notes=parsed["notes"],
+        citations=parsed["citations"],
+        evidence_roles_covered=parsed["evidence_roles_covered"],
+        raw_text=text,
         latency_ms=latency_ms,
     )
 
@@ -249,7 +412,7 @@ def judge_question_matrix(
     efforts: tuple[Effort, ...] | None = None,
     providers: tuple[Provider, ...] | None = None,
     max_workers: int = 6,
-) -> dict[str, JudgeResult | dict]:
+) -> dict[str, JudgeResult | dict | str]:
     """Run claude+codex judges for each effort tier in parallel.
 
     Returns:

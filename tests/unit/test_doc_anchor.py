@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
-from sidecar.indexer import anchor
-from sidecar.indexer.anchor import (
+from context_engine.indexer import anchor
+from context_engine.indexer.anchor import (
     _add_covers_edges,
     _add_covers_edges_batch,
     _anchor_confidence,
@@ -29,6 +29,15 @@ def test_matches_allowed_prefix_accepts_nested_file_only(tmp_path):
 
     assert _matches_allowed_prefix(str(docs_dir / "a.md"), allowed) is True
     assert _matches_allowed_prefix(str(tmp_path / "other" / "a.md"), allowed) is False
+
+
+def test_matches_allowed_prefix_accepts_relative_path_under_project_root(tmp_path):
+    project = tmp_path / "repo"
+    (project / "packages").mkdir(parents=True)
+    allowed = [str(project.resolve())]
+
+    assert _matches_allowed_prefix("packages/common/module.ts", allowed) is True
+    assert _matches_allowed_prefix("/tmp/outside/module.ts", allowed) is False
 
 
 def test_add_covers_edges_uses_unwind_for_bulk_uids():

@@ -5,8 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from sidecar.database.lancedb_client import LanceDBClient
-from sidecar.database.neo4j_client import Neo4jClient
+from context_engine.database.lancedb_client import LanceDBClient
+from context_engine.database.neo4j_client import Neo4jClient
 
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")

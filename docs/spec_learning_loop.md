@@ -58,7 +58,7 @@ class RetrievalSnapshot:
     query: str
     intent_distribution: dict[str, float]
     ranker_weights: dict[str, float]
-    resolver_version: str
+    context_pipeline_version: str
     selected_candidates: list[CandidateRecord]   # with scores
     pruned_candidates: list[CandidateRecord]     # with scores + reason
     timestamp: datetime
@@ -123,7 +123,7 @@ Low coverage means the loop is inert — signals aren't enough to trust. Triage 
 ## 3. API / Interface
 
 ```python
-# sidecar/feedback/types.py (new module)
+# context_engine/feedback/types.py (new module)
 
 @dataclass
 class FeedbackEvent:
@@ -139,7 +139,7 @@ class FeedbackStore:
 ```
 
 ```python
-# sidecar/feedback/ranker_update.py
+# context_engine/feedback/ranker_update.py
 
 class PersonalizedWeights:
     """Per-user deltas over the global ranker weights."""
@@ -194,6 +194,6 @@ requests.post("/feedback", json={
 ## 7. Related
 
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — `feedback_token` and score snapshots originate here.
-- [spec_unified_ranking.md](spec_unified_ranking.md) — consumer of learned weights.
-- [spec_multi_label_intent.md](spec_multi_label_intent.md) — the ML classifier retrained in the slow loop replaces keyword heuristics.
+- spec_unified_ranking.md (removed) — consumer of learned weights.
+- spec_multi_label_intent.md (removed) — the ML classifier retrained in the slow loop replaces keyword heuristics.
 - [spec_eval_harness.md](spec_eval_harness.md) — harness is the gatekeeper; no learned weights ship without passing it.

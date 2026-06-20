@@ -26,12 +26,12 @@ yarn-error.log*
 
 # Local sidecar data, indexes, and benchmark outputs
 data/
-sidecar/data/
+context_engine/data/
 import/
 logs/
 plugins/
 .surgical_context/
-sidecar/.surgical_context/
+context_engine/.surgical_context/
 QA/.bridge/
 QA/data/
 QA/benchmark_artifacts/
@@ -73,3 +73,6 @@ Thumbs.db
 *.bin
 dist_bin/
 my_test_project/
+QA/baselines/
+QA/baseline_*.json
+QA/baseline_reindex_2026-05-30.json

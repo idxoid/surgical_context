@@ -8,10 +8,9 @@ This folder contains the current product and technical documentation for the `co
 
 ### **For Understanding the System**
 - **[architectura.md](docs/architectura.md)** — how all pieces fit together (start here)
-- **[product_direction_memo.md](docs/product_direction_memo.md)** — canonical product thesis, scope boundaries, and validation plan
+- **[DOCS_STYLE_GUIDE.md](docs/DOCS_STYLE_GUIDE.md)** — doc types (Spec / Architecture / Concept / Design draft)
 - **[concept.md](docs/concept.md)** — compact product identity (pointer document)
 - **[idea_summary.md](docs/idea_summary.md)** — one-screen pitch summary (pointer document)
-- **[project_gap_analysis.md](docs/project_gap_analysis.md)** — short index to the merged project analysis
 
 ### **For Implementation**
 
@@ -21,17 +20,20 @@ This folder contains the current product and technical documentation for the `co
 **Code Indexing:**
 - **[spec_indexer.md](docs/spec_indexer.md)** — code extraction, call typing, AFFECTS rebuild
 - **[spec_parser.md](docs/spec_parser.md)** — language adapters, symbol extraction
+- **[role_catalog.md](docs/role_catalog.md)** — structural role vocabulary (Pass 1)
+- **[role_predicates.md](docs/role_predicates.md)** — L1/L2 predicate rules (`role_cascade.py`)
+- **[role_clustering_architecture.md](docs/role_clustering_architecture.md)** — Pass-1 design decisions
 
 **Doc Indexing:**
 - **[spec_doc_indexer.md](docs/spec_doc_indexer.md)** — chunking, embedding, DocAnchor linking
 - **[spec_doc_anchor.md](docs/spec_doc_anchor.md)** — FROM/COVERS relationships
 
 **Context Assembly:**
-- **[spec_arbitrator.md](docs/spec_arbitrator.md)** — current orchestrator contract: unified ranking path, graph-only fallback, and prompt-contract assembly
-- **[spec_intent_classifier.md](docs/spec_intent_classifier.md)** — query intent → content tier ranking (Phase 6 design)
-- **[spec_token_budget_bfs.md](docs/spec_token_budget_bfs.md)** — BFS with token constraints
-- **[spec_context_deduplicator.md](docs/spec_context_deduplicator.md)** — remove redundant symbols
-- **[spec_unified_ranking.md](docs/spec_unified_ranking.md)** — current graph + semantic ranker, role backfill, and score blending
+- **[architectura.md](docs/architectura.md)** — current end-to-end architecture and retrieval flow
+- **[axis_terminology.md](docs/axis_terminology.md)** — vocabulary for axis retrieval, roles, and traversal layers
+- **[file_tier_signal.md](docs/file_tier_signal.md)** — structural file-tier demotion/promotion for seed retrieval
+- **[walker_consolidation_plan.md](docs/walker_consolidation_plan.md)** — axis graph-walk unification (implemented)
+- **[spec_prompt_contract_observability.md](docs/spec_prompt_contract_observability.md)** — prompt contract fields, trace metadata, and observability
 
 **APIs & Infrastructure:**
 - **[spec_sidecar_api.md](docs/spec_sidecar_api.md)** — FastAPI endpoints
@@ -42,38 +44,33 @@ This folder contains the current product and technical documentation for the `co
 - **[spec_tenant_api_graph.md](docs/spec_tenant_api_graph.md)** — future Team/Enterprise tenant-level API contract graph
 
 **Advanced Topics:**
-- **[spec_eval_harness.md](docs/spec_eval_harness.md)** — real-repo benchmark harness, token metrics, and report schema
-- **[benchmark_all_repos_context_comparison.md](docs/benchmark_all_repos_context_comparison.md)** — index to all-repo benchmark snapshots
-- **[benchmark_mechanism_coverage.md](docs/benchmark_mechanism_coverage.md)** — harness metrics and mechanism-coverage analysis
-- **[benchmark_path1_vs_path2.md](docs/benchmark_path1_vs_path2.md)** — LLM Judgment: Surgical Context vs first-time repo read
+- **[spec_eval_harness.md](docs/spec_eval_harness.md)** — axis benchmark harness, question packs, and CI gate
+- **[question_structural_role_profiles.md](docs/question_structural_role_profiles.md)** — gold per-question structural profiles (design draft)
+- **[logical_roles_structural_closure.md](docs/logical_roles_structural_closure.md)** — logical roles vs structural closure values
 - **[spec_embedding_versioning.md](docs/spec_embedding_versioning.md)** — managing embedding model versions
 - **[spec_affects_index.md](docs/spec_affects_index.md)** — reverse dependency index
 
 ### **Planning & Review**
 - **[road_map.md](docs/road_map.md)** — phases and timelines
-- **[product_direction_memo.md](docs/product_direction_memo.md)** — narrow product direction before the next fork
-- **[project_gap_analysis.md](docs/project_gap_analysis.md)** — index for current gaps and supporting specs
-- **[review_findings_2026-04-17.md](docs/review_findings_2026-04-17.md)** — external review recommendations
-- **[architectural_review.md](docs/architectural_review.md)** — archived historical review (canonical architecture now in `architectura.md`)
 
 ---
 
 ## Current Truth
 
-The active target is the **Local Developer Product**: a local-first, single-tenant VS Code tool with the Python FastAPI sidecar, local Neo4j graph, local LanceDB vectors, local SQLite history, and an `Ask / Inspect / Impact` workflow. This is the open-source candidate.
+The product is, first and foremost, a **local-first, model-agnostic context engine** for code understanding and change-impact analysis: a Python FastAPI sidecar over a local Neo4j graph, local LanceDB vectors, and local SQLite history, exposing an `Ask / Inspect / Impact` retrieval API. The access surface is interchangeable — the VS Code extension under `extension/` is **one consumer** of that API, not the product itself; the same sidecar serves programmatic/CLI clients and the QA/benchmark harness. This local, single-tenant configuration is the open-source candidate.
 
 The product is now described more narrowly than before:
 
 - **not** a general AI coding platform
 - **yes** a local-first, model-agnostic context engine for code understanding and change impact
 
-The repo currently includes the sidecar, default Neo4j/LanceDB clients, parser/indexer/context modules, a workspace-scoped unified ranker, canonical role taxonomy normalization, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, bounded indexing queue, and a VS Code extension under `extension/`.
+The repo is organized engine-first: the sidecar, default Neo4j/LanceDB clients, parser/indexer/axis retrieval modules, structural role retrieval, prompt-context adapters, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, and a bounded indexing queue make up the engine; the VS Code extension under `extension/` is one frontend over the sidecar API.
 
-Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, package/module fallback targets for workspace-level questions such as `pydantic.v1`, trace-dependency recovery hardening for sparse import topology (runtime symbol seeding + sibling-directory expansion with explicit recovery provenance), TypeScript `object_api` indexing with cross-language `SEMANTIC_HINT` HTTP route hints (`ts_http_route_hints`), a relaxed `trace_dependency` benchmark gate for near-perfect single-axis recall, **workspace path sandboxing** (API + graph-resolved reads under indexed `project_path`; queued `/index` registers root immediately), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_sidecar_api.md](docs/spec_sidecar_api.md) and [road_map.md](docs/road_map.md).
+Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, package/module fallback targets for workspace-level questions such as `pydantic.v1`, trace-dependency recovery hardening for sparse import topology (runtime symbol seeding + sibling-directory expansion with explicit recovery provenance), TypeScript `object_api` indexing, a relaxed `trace_dependency` benchmark gate for near-perfect single-axis recall, **workspace path sandboxing** (API + graph-resolved reads under indexed `project_path`; queued `/index` registers root immediately), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_sidecar_api.md](docs/spec_sidecar_api.md) and [road_map.md](docs/road_map.md).
 
 The local setup and smoke-test path live in **[local_development.md](docs/local_development.md)** and `scripts/local_dev.py`. The most important open gaps are broader real-repo benchmark coverage beyond the current FastAPI, Redux Toolkit, and Pydantic baselines, continued precision work on broad/doc-heavy retrieval paths, doc-anchor confidence/type scoring, consistent workspace/branch metadata in the prompt contract, and extension synchronization/accessibility polish. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](docs/road_map.md)** for the canonical backlog in this branch.
 
-**Related experiments (external repos, not submodules):** [context-deduplicator](https://github.com/idxoid/context-deduplicator) and [marginal-utility-selector](https://github.com/idxoid/marginal-utility-selector) were early standalone prototypes. Production logic lives in `sidecar/context/` (`PromptCompiler`, `BudgetPruner`, `sidecar/context/deduplicator.py`).
+**Related experiments (external repos, not submodules):** [context-deduplicator](https://github.com/idxoid/context-deduplicator) and [marginal-utility-selector](https://github.com/idxoid/marginal-utility-selector) were early standalone prototypes. Production retrieval now lives in `context_engine/axis/`, with the shared prompt contract in `context_engine/context_types.py`.
 
 ---
 

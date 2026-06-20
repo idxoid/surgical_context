@@ -1,6 +1,6 @@
 # Spec — DocAnchor Confidence & Type (Phase 9)
 
-> **Status:** Implemented in `sidecar/indexer/anchor.py` and consumed by `UnifiedRanker`. Existing flat `COVERS` edges remain readable through fallback defaults; newly indexed docs write `anchor_type`, `confidence`, `primary_bias`, and `resolver`.
+> **Status:** Implemented in `context_engine/indexer/anchor.py` and consumed by the context ranker (axis; the legacy `UnifiedRanker` consumer was removed 2026-06-15). Existing flat `COVERS` edges remain readable through fallback defaults; newly indexed docs write `anchor_type`, `confidence`, `primary_bias`, and `resolver`.
 
 ## 1. Problem
 
@@ -83,7 +83,7 @@ Effect: a chunk that mostly documents `process_payment` but also references `val
 
 ### 2.5 Retrieval Impact
 
-Unified ranker ([spec_unified_ranking.md](spec_unified_ranking.md)) consumes these fields:
+Unified ranker (spec_unified_ranking.md (removed)) consumes these fields:
 
 - Doc candidate graph boost is derived from `primary_bias * confidence * anchor_type_weight`, blended with the linked symbol's graph score.
 - Doc bridge candidates include anchor quality in provenance (`doc-bridge:h1,strength=...,anchor_q=...`).
@@ -157,5 +157,5 @@ c2 = _cover_link(
 
 - [spec_doc_anchor.md](spec_doc_anchor.md) — the DocAnchor node and current `COVERS` edge this extends.
 - [spec_doc_indexer.md](spec_doc_indexer.md) — chunking pipeline upstream of classification.
-- [spec_unified_ranking.md](spec_unified_ranking.md) — consumer of `confidence`, `anchor_type`, `primary_bias`.
+- spec_unified_ranking.md (removed) — consumer of `confidence`, `anchor_type`, `primary_bias`.
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — surfaces `anchor_type` / `anchor_confidence` in the contract.

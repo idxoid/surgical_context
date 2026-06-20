@@ -1,7 +1,7 @@
 import pytest
 
-from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
-from sidecar.parser.uid import project_root_scope
+from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+from context_engine.parser.uid import project_root_scope
 
 
 class TestTypeScriptImports:

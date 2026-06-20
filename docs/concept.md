@@ -18,7 +18,7 @@ Short form:
 
 - `product_direction_memo.md` — product thesis, keep/freeze/drop scope, validation path
 - `architectura.md` — current architecture and implementation status
-- `spec_context_retrieval_layers.md` — retrieval-layer contracts (truth vs hints vs policy)
+- `axis_terminology.md` — axis retrieval vocabulary (roles, contracts, traversal)
 
 ## Stable Product Contract
 

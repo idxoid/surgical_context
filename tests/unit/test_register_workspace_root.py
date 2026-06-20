@@ -1,6 +1,6 @@
 """Tests for early workspace root registration on queued POST /index."""
 
-from sidecar.retrieval.manifest import register_workspace_project_root
+from context_engine.retrieval.manifest import register_workspace_project_root
 
 
 class FakeDb:

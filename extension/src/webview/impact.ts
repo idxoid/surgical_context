@@ -7,16 +7,14 @@ import {
   ImpactResponse,
 } from './shared/protocol';
 import {
-  renderSymbolSummaryCard,
-  renderAffectsGroup,
-  renderFilesGroup,
-  renderActionButtonRow,
   escapeHtml,
+  renderImpactWorkspace,
 } from './shared/impactLayout';
 
 class ImpactPanel {
   private currentSymbol: string | null = null;
   private currentImpact: ImpactResponse | null = null;
+  private currentDepth = 3;
   private isLoading: boolean = false;
 
   constructor() {
@@ -36,6 +34,7 @@ class ImpactPanel {
         case 'impact.loaded':
           this.currentSymbol = message.symbol || null;
           this.currentImpact = message.impact || null;
+          this.currentDepth = this.clampDepth(message.impact?.max_depth || this.currentDepth);
           this.render();
           break;
 
@@ -58,6 +57,7 @@ class ImpactPanel {
           vscode.postMessage({
             type: 'action.showImpact',
             symbol: this.currentSymbol,
+            maxDepth: this.currentDepth,
           });
         }
       });
@@ -87,6 +87,7 @@ class ImpactPanel {
       vscode.postMessage({
         type: 'action.showImpact',
         symbol,
+        maxDepth: this.currentDepth,
       });
     }
   }
@@ -113,28 +114,11 @@ class ImpactPanel {
       return;
     }
 
-    const summaryCard = renderSymbolSummaryCard({
-      symbol: this.currentSymbol,
-      filePath: this.currentImpact.file_path || 'unknown',
-      uid: this.currentImpact.symbol_uid || this.currentSymbol,
-      affectedCount: this.currentImpact.affected_count || this.currentImpact.affected_symbols?.length || 0,
-      fileCount: this.currentImpact.affected_file_count || this.currentImpact.affected_files?.length || 0,
-      maxDepth: this.currentImpact.max_depth || 0,
-      sourceLabel: 'live graph',
-    });
-
-    const affectsGroup = renderAffectsGroup(this.currentImpact.affected_symbols || []);
-    const filesGroup = renderFilesGroup(this.currentImpact.affected_files || [], false);
-    const actionButtons = renderActionButtonRow();
-
     root.innerHTML = `
       <div class="impact-container">
-        ${summaryCard}
-        ${actionButtons}
-        <div class="impact-groups">
-          ${affectsGroup}
-          ${filesGroup}
-        </div>
+        ${renderImpactWorkspace(this.currentImpact, this.currentSymbol, 'live graph', {
+          depth: this.currentDepth,
+        })}
       </div>
     `;
 
@@ -151,6 +135,51 @@ class ImpactPanel {
             type: 'link.openFile',
             filePath,
             line: 1,
+          });
+        }
+      });
+    });
+
+    document.querySelectorAll('.impact-group-header').forEach(header => {
+      header.addEventListener('click', (e: Event) => {
+        const target = e.currentTarget as HTMLElement;
+        const group = target.closest('.impact-group');
+        const content = group?.querySelector('.group-content');
+        if (!group || !content) return;
+
+        const expanded = target.getAttribute('aria-expanded') === 'true';
+        target.setAttribute('aria-expanded', String(!expanded));
+        group.classList.toggle('expanded', !expanded);
+        content.toggleAttribute('hidden', expanded);
+      });
+    });
+
+    document.querySelectorAll('[data-action="showMoreImpact"]').forEach(button => {
+      button.addEventListener('click', (e: Event) => {
+        const target = e.currentTarget as HTMLElement;
+        const group = target.closest('.impact-group');
+        const overflow = group?.querySelector('.impact-overflow');
+        if (!overflow) return;
+        overflow.removeAttribute('hidden');
+        target.remove();
+      });
+    });
+
+    document.querySelectorAll('[data-impact-depth]').forEach(slider => {
+      slider.addEventListener('input', (e: Event) => {
+        const target = e.currentTarget as HTMLInputElement;
+        const depth = this.clampDepth(Number(target.value));
+        const output = target.closest('.impact-depth-control')?.querySelector('output');
+        if (output) output.textContent = `d${depth}`;
+      });
+      slider.addEventListener('change', (e: Event) => {
+        const target = e.currentTarget as HTMLInputElement;
+        this.currentDepth = this.clampDepth(Number(target.value));
+        if (this.currentSymbol) {
+          vscode.postMessage({
+            type: 'action.showImpact',
+            symbol: this.currentSymbol,
+            maxDepth: this.currentDepth,
           });
         }
       });
@@ -176,6 +205,11 @@ class ImpactPanel {
         });
       });
     }
+  }
+
+  private clampDepth(depth: number): number {
+    if (!Number.isFinite(depth)) return 3;
+    return Math.max(1, Math.min(4, Math.round(depth)));
   }
 }
 

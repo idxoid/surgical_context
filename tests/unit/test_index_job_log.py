@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from sidecar.indexer.job_log import IndexJobLog
+from context_engine.indexer.job_log import IndexJobLog
 
 
 class TestIndexJobLog:

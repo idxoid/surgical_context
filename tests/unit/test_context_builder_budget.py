@@ -1,0 +1,745 @@
+"""Phase 1f echelon-2: signature trimming + token-budget packing.
+
+Targets the pure helpers (``_code_signature``, ``_apply_render_and_budget``)
+directly — the graph walk in ``build_context_for_candidates`` is covered by
+the benchmark and the live gate.
+"""
+
+from __future__ import annotations
+
+from context_engine.axis.context_builder import (
+    ContextBundle,
+    ContextSymbol,
+    _apply_render_and_budget,
+    _bundle_token_count,
+    _code_compact,
+    _code_impact_surface,
+    _code_signature,
+    _dedupe_bundles_by_seed_uid,
+    _initial_credit_render,
+    _leader_pool_metrics,
+    _leader_transaction_limit,
+    _mad,
+    _median,
+    _noise_level_from_tail,
+    _render_bundle,
+)
+
+# --- helpers ---------------------------------------------------------------
+
+
+def _sym(
+    uid: str,
+    code: str,
+    *,
+    qualified_name: str = "",
+    file_path: str = "/f.py",
+) -> ContextSymbol:
+    return ContextSymbol(
+        uid=uid,
+        name=uid,
+        file_path=file_path,
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code=code,
+        qualified_name=qualified_name,
+    )
+
+
+# --- _dedupe_bundles_by_seed_uid -------------------------------------------
+
+
+def test_dedupe_bundles_by_seed_uid_keeps_highest_utility():
+    low = ContextBundle(
+        role="seeds",
+        seed=_sym("same", "def low(): pass", file_path="/a.py"),
+        related=(),
+        utility_score=0.3,
+    )
+    high = ContextBundle(
+        role="impact_analysis",
+        seed=_sym("same", "def high(): pass", file_path="/a.py"),
+        related=(),
+        utility_score=0.9,
+    )
+    other = ContextBundle(
+        role="seeds",
+        seed=_sym("other", "def other(): pass", file_path="/b.py"),
+        related=(),
+        utility_score=0.5,
+    )
+    out = _dedupe_bundles_by_seed_uid([low, high, other])
+    assert [b.seed.uid for b in out] == ["same", "other"]
+    assert out[0].utility_score == 0.9
+
+
+def test_token_credit_dedupes_axis_duplicate_symbols_before_packing():
+    dup_a = ContextBundle(
+        role="seeds",
+        seed=_sym("dup", "def dup(): pass", file_path="/a.py"),
+        related=(),
+        utility_score=0.95,
+    )
+    dup_b = ContextBundle(
+        role="structural_neighbour",
+        seed=_sym("dup", "def dup(): pass", file_path="/a.py"),
+        related=(),
+        utility_score=0.10,
+    )
+    unique = ContextBundle(
+        role="seeds",
+        seed=_sym("uniq", "def uniq(): pass", file_path="/b.py"),
+        related=(),
+        utility_score=0.50,
+    )
+    out = _apply_render_and_budget(
+        [dup_a, dup_b, unique],
+        token_budget=20,
+        render_mode="full",
+    )
+    assert len(out) == 2
+    assert {b.seed.uid for b in out} == {"dup", "uniq"}
+
+
+# --- leader noise (MAD tail) ------------------------------------------------
+
+
+def test_median_and_mad():
+    assert _median([1.0, 2.0, 3.0]) == 2.0
+    assert _mad([1.0, 2.0, 3.0]) == 1.0
+
+
+def test_leader_pool_metrics_one_strong_above_noise():
+    from context_engine.axis.context_builder import _BundleStatic
+
+    # 1 strong + 99 weak: noise ~95, only peak symbol clears it → count=1.
+    static = [
+        _BundleStatic(
+            files=frozenset({f"/f{i}.py"}),
+            steps=frozenset(),
+            tier_weight=1.0,
+            impact_mode=False,
+            base_utility=0.05 if i else 1.0,
+            structural_bridge=0.0,
+        )
+        for i in range(100)
+    ]
+    noise, count = _leader_pool_metrics(static)
+    assert 90.0 <= noise <= 99.0
+    assert count == 1
+    assert _leader_transaction_limit(10_000, leader_count=count) == 10_000
+
+
+def test_leader_pool_metrics_counts_symbols_above_noise_floor():
+    from context_engine.axis.context_builder import _BundleStatic
+
+    static = [
+        _BundleStatic(
+            files=frozenset({"/a.py"}),
+            steps=frozenset(),
+            tier_weight=1.0,
+            impact_mode=False,
+            base_utility=1.0,
+            structural_bridge=0.0,
+        ),
+        _BundleStatic(
+            files=frozenset({"/b.py"}),
+            steps=frozenset(),
+            tier_weight=1.0,
+            impact_mode=False,
+            base_utility=0.8,
+            structural_bridge=0.0,
+        ),
+        _BundleStatic(
+            files=frozenset({"/c.py"}),
+            steps=frozenset(),
+            tier_weight=1.0,
+            impact_mode=False,
+            base_utility=0.05,
+            structural_bridge=0.0,
+        ),
+    ]
+    noise, count = _leader_pool_metrics(static)
+    leaders = sum(1 for u in (1.0, 0.8, 0.05) if 100 * u / 1.0 > noise)
+    assert count == max(1, leaders)
+    assert _leader_transaction_limit(10_000, leader_count=count) == int(10_000 / count)
+
+
+def test_noise_level_from_tail_matches_robust_formula():
+    tail = [90.0, 92.0, 94.0, 96.0]
+    assert _noise_level_from_tail(tail) == _median(tail) + 1.4826 * _mad(tail)
+
+
+def test_leader_transaction_limit_single_symbol_gets_full_budget():
+    assert _leader_transaction_limit(10_000, leader_count=1) == 10_000
+
+
+def test_leader_transaction_limit_scales_with_leader_count():
+    assert _leader_transaction_limit(10_000, leader_count=100) == 100
+    assert _leader_transaction_limit(10_000, leader_count=50) == 200
+
+
+# --- _code_signature -------------------------------------------------------
+
+
+def test_signature_function_drops_body_keeps_decorators():
+    code = "@cached\ndef foo(a, b):\n    x = a + b\n    return x\n"
+    assert _code_signature(code) == "@cached\ndef foo(a, b):"
+
+
+def test_signature_multiline_header_survives_to_the_colon():
+    code = "def foo(\n    a: int,\n    b: int,\n) -> int:\n    return a + b\n"
+    assert _code_signature(code) == "def foo(\n    a: int,\n    b: int,\n) -> int:"
+
+
+def test_signature_class_header():
+    assert _code_signature("class Foo(Base):\n    x = 1\n") == "class Foo(Base):"
+
+
+def test_signature_non_callable_is_first_nonempty_line():
+    assert _code_signature("\napp = Flask(__name__)\napp.run()\n") == "app = Flask(__name__)"
+
+
+def test_signature_empty_in_empty_out():
+    assert _code_signature("") == ""
+    assert _code_signature(None) == ""
+
+
+def test_code_compact_keeps_structure_calls_and_returns():
+    code = '''def render(x):
+    """Docstring goes away."""
+    temp = prepare(x)
+    noisy = "x" * 1000
+    if temp:
+        return finish(temp)
+    debug_log("ignored enough to still keep call")
+    return None
+'''
+
+    compact = _code_compact(code)
+
+    assert '"""Docstring goes away."""' not in compact
+    assert "def render(x):" in compact
+    assert "temp = prepare(x)" in compact
+    assert "if temp:" in compact
+    assert "return finish(temp)" in compact
+    assert "return None" in compact
+
+
+# --- _apply_render_and_budget ---------------------------------------------
+
+
+def _bundle(
+    seed_uid: str, seed_code: str, related=(), *, file_path: str = "/f.py"
+) -> ContextBundle:
+    return ContextBundle(
+        role="r",
+        seed=_sym(seed_uid, seed_code, file_path=file_path),
+        related=tuple(_sym(u, c, file_path=file_path) for u, c in related),
+    )
+
+
+def test_no_budget_no_render_is_passthrough():
+    bundles = [_bundle("a", "x" * 40, [("b", "y" * 40)])]
+    assert _apply_render_and_budget(bundles, token_budget=None, render_mode="full") == bundles
+
+
+def test_impact_surface_collapses_multiline_signature_to_one_line():
+    code = "def foo(\n    a: int,\n    b: int,\n) -> int:\n    return a + b\n"
+    assert _code_impact_surface(code) == "def foo("
+
+
+def test_impact_surface_falls_back_to_qualified_name():
+    assert _code_impact_surface("", qualified_name="pkg.mod.fn", name="fn") == "pkg.mod.fn"
+
+
+def test_impact_surface_render_mode_trims_bundle():
+    bundles = [_bundle("a", "def foo(\n    x,\n) -> int:\n    return x\n")]
+    out = _apply_render_and_budget(bundles, token_budget=None, render_mode="impact_surface")
+    assert out[0].seed.code == "def foo("
+
+
+def test_signature_only_trims_every_symbol():
+    bundles = [_bundle("a", "def f(x):\n    return x\n", [("b", "class C:\n    pass\n")])]
+    out = _apply_render_and_budget(bundles, token_budget=None, render_mode="signature_only")
+    assert out[0].seed.code == "def f(x):"
+    assert out[0].related[0].code == "class C:"
+
+
+def test_hybrid_keeps_seed_full_and_signatures_the_rest():
+    # Default full_render_max_depth=0: only the seed (depth 0) stays full;
+    # every expanded neighbour (depth >= 1) collapses to a signature.
+    def _at(uid, depth, code):
+        return ContextSymbol(
+            uid=uid,
+            name=uid,
+            file_path="/f.py",
+            role="r",
+            distance_from_seed=depth,
+            expansion_step=None,
+            code=code,
+        )
+
+    bundle = ContextBundle(
+        role="r",
+        seed=_at("s", 0, "def seed(x):\n    return x\n"),
+        related=(
+            _at("near", 1, "def near(y):\n    return y\n"),
+            _at("far", 2, "def far(z):\n    return z\n"),
+        ),
+    )
+    out = _apply_render_and_budget([bundle], token_budget=None, render_mode="hybrid")
+    assert out[0].seed.code == "def seed(x):\n    return x\n"  # depth 0 full
+    assert out[0].related[0].code == "def near(y):"  # depth 1 signature
+    assert out[0].related[1].code == "def far(z):"  # depth 2 signature
+
+
+def test_hybrid_compact_keeps_seed_compact_and_signatures_the_rest():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym("s", "def seed(x):\n    y = build(x)\n    return y\n"),
+        related=(
+            ContextSymbol(
+                uid="near",
+                name="near",
+                file_path="/f.py",
+                role="r",
+                distance_from_seed=1,
+                expansion_step=None,
+                code="def near(y):\n    return y\n",
+            ),
+        ),
+    )
+
+    [out] = _apply_render_and_budget(
+        [bundle],
+        token_budget=None,
+        render_mode="hybrid_compact",
+    )
+
+    assert out.seed.code.rstrip() == "def seed(x):\n    y = build(x)\n    return y"
+    assert out.related[0].code == "def near(y):"
+
+
+def test_generous_budget_keeps_everything():
+    bundles = [_bundle("a", "x" * 40, [("b", "y" * 40)]), _bundle("c", "z" * 40)]
+    out = _apply_render_and_budget(bundles, token_budget=10_000, render_mode="full")
+    # Ample budget -> the packer keeps every bundle (full render, related intact).
+    # Output is in selection order, so compare as a set.
+    assert {b.seed.uid for b in out} == {"a", "c"}
+    a_bundle = next(b for b in out if b.seed.uid == "a")
+    assert [r.uid for r in a_bundle.related] == ["b"]
+
+
+def test_fold_groups_class_members_and_signatures_siblings():
+    seed = _sym(
+        "target",
+        "    def target(self):\n        value = self.helper()\n        return value\n",
+        qualified_name="pkg.mod.Service.target",
+    )
+    sibling = ContextSymbol(
+        uid="helper",
+        name="helper",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code="    def helper(self):\n        return 1\n",
+        qualified_name="pkg.mod.Service.helper",
+    )
+    bundle = ContextBundle(role="r", seed=seed, related=(sibling,))
+
+    [out] = _apply_render_and_budget([bundle], token_budget=None, render_mode="fold")
+
+    assert out.seed.name == "Service"
+    assert out.seed.qualified_name == "pkg.mod.Service"
+    assert out.related == ()
+    assert out.seed.code == (
+        "class Service:\n"
+        "    def target(self):\n"
+        "        value = self.helper()\n"
+        "        return value\n"
+        "    def helper(self):"
+    )
+
+
+def test_fold_compact_groups_class_members_as_signatures_only():
+    seed = _sym(
+        "target",
+        "    def target(self):\n        value = self.helper()\n        return value\n",
+        qualified_name="pkg.mod.Service.target",
+    )
+    sibling = ContextSymbol(
+        uid="helper",
+        name="helper",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code="    def helper(self):\n        return 1\n",
+        qualified_name="pkg.mod.Service.helper",
+    )
+    bundle = ContextBundle(role="r", seed=seed, related=(sibling,))
+
+    out = _render_bundle(bundle, "fold_compact")
+
+    assert out.render_mode == "fold_compact"
+    assert out.seed.code == ("class Service:\n    def target(self):\n    def helper(self):")
+
+
+def test_fold_leaves_ambiguous_single_method_alone():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym(
+            "target",
+            "def target():\n    return 1\n",
+            qualified_name="pkg.mod.target",
+        ),
+        related=(),
+    )
+
+    [out] = _apply_render_and_budget([bundle], token_budget=None, render_mode="fold")
+
+    assert out == bundle
+
+
+def test_impact_tiered_folds_core_class_and_signatures_the_rest():
+    def _at(uid, code, *, path="/repo/celery/app/task.py", qn=""):
+        return ContextSymbol(
+            uid=uid,
+            name=uid,
+            file_path=path,
+            role="impact_analysis",
+            distance_from_seed=0 if uid == "m1" else 1,
+            expansion_step=None,
+            code=code,
+            qualified_name=qn or uid,
+        )
+
+    bundle = ContextBundle(
+        role="impact_analysis",
+        seed=_at(
+            "m1",
+            "    def route(self, task):\n        pass\n",
+            qn="celery.app.routes.Router.route",
+        ),
+        related=(
+            _at(
+                "m2",
+                "    def lookup_route(self, name):\n        pass\n",
+                qn="celery.app.routes.Router.lookup_route",
+            ),
+        ),
+    )
+    out = _apply_render_and_budget([bundle], token_budget=None, render_mode="impact_tiered")
+    assert out[0].render_mode == "impact_tiered"
+    assert "class Router:" in out[0].seed.code
+    assert "def route(self, task):" in out[0].seed.code
+    assert "def lookup_route(self, name):" in out[0].seed.code
+    assert "pass" not in out[0].seed.code
+
+
+def test_impact_tiered_related_tail_is_one_line_stub():
+    def _at(uid, code, *, depth, path="/repo/celery/app/base.py", qn=""):
+        return ContextSymbol(
+            uid=uid,
+            name=uid,
+            file_path=path,
+            role="impact_analysis",
+            distance_from_seed=depth,
+            expansion_step=None,
+            code=code,
+            qualified_name=qn or uid,
+        )
+
+    bundle = ContextBundle(
+        role="impact_analysis",
+        seed=_at(
+            "s", "def send_task(self, name):\n    pass\n", depth=0, path="/repo/celery/app/base.py"
+        ),
+        related=(
+            _at(
+                "r",
+                "def route(\n    self,\n    task,\n) -> str:\n    pass\n",
+                depth=1,
+                path="/repo/celery/app/routes.py",
+            ),
+        ),
+    )
+    out = _apply_render_and_budget([bundle], token_budget=None, render_mode="impact_tiered")
+    assert out[0].seed.code == "def send_task(self, name):"
+    assert out[0].related[0].code == "def route("
+
+
+def test_impact_tiered_skips_fold_for_test_tier_class():
+    def _at(uid, code, *, path, qn):
+        return ContextSymbol(
+            uid=uid,
+            name=uid,
+            file_path=path,
+            role="impact_analysis",
+            distance_from_seed=0,
+            expansion_step=None,
+            code=code,
+            qualified_name=qn,
+        )
+
+    bundle = ContextBundle(
+        role="impact_analysis",
+        seed=_at(
+            "m1",
+            "    def test_a(self):\n        pass\n",
+            path="/repo/t/unit/test_routes.py",
+            qn="t.unit.test_routes.TestRoutes.test_a",
+        ),
+        related=(
+            _at(
+                "m2",
+                "    def test_b(self):\n        pass\n",
+                path="/repo/t/unit/test_routes.py",
+                qn="t.unit.test_routes.TestRoutes.test_b",
+            ),
+        ),
+    )
+    out = _apply_render_and_budget([bundle], token_budget=None, render_mode="impact_tiered")
+    assert out[0].render_mode == "impact_tiered"
+    assert "class " not in (out[0].seed.code or "")
+    assert "def test_a(self):" in out[0].seed.code
+    assert out[0].seed.code.startswith("def test")
+    assert len(out[0].seed.code.splitlines()) == 1
+
+
+def test_token_credit_respects_render_mode_ceiling():
+    """Impact profile caps at impact_tiered — no upgrade to full."""
+    bundle = ContextBundle(
+        role="impact_analysis",
+        seed=_sym("x", "def x():\n    return 1\n"),
+        related=(),
+        utility_score=1.0,
+    )
+    [out] = _apply_render_and_budget(
+        [bundle],
+        token_budget=10_000,
+        render_mode="impact_tiered",
+    )
+    assert out.render_mode == "impact_tiered"
+    assert "return 1" not in (out.seed.code or "")
+
+
+def test_token_credit_downgrades_oversized_full_candidate_to_signature():
+    code = "def large():\n" + ("    x = 1\n" * 200)
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym("large", code, qualified_name="pkg.mod.large"),
+        related=(),
+        utility_score=1.0,
+    )
+
+    [out] = _apply_render_and_budget(
+        [bundle],
+        token_budget=100,
+        render_mode="full",
+    )
+
+    assert out.render_mode != "full"
+    assert _bundle_token_count(out) <= 100
+    assert out.seed.code.startswith("def large():")
+
+
+def test_token_credit_upgrades_passive_when_surplus_remains():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym("passive", "def passive():\n    return 1\n"),
+        related=(),
+        utility_score=0.5,
+        passive=True,
+    )
+
+    [out] = _apply_render_and_budget(
+        [bundle],
+        token_budget=100,
+        render_mode="full",
+    )
+
+    assert out.render_mode == "full"
+    assert out.seed.code == "def passive():\n    return 1\n"
+
+
+def test_token_credit_coverage_prefers_new_file_over_duplicate_file():
+    same_file_top = ContextBundle(
+        role="r",
+        seed=_sym("same_top", "def same_top():\n    return 1\n", file_path="/a.py"),
+        related=(),
+        utility_score=0.90,
+    )
+    same_file_second = ContextBundle(
+        role="r",
+        seed=_sym(
+            "same_second",
+            "def same_second():\n    return 2\n",
+            file_path="/a.py",
+        ),
+        related=(),
+        utility_score=0.89,
+    )
+    new_file = ContextBundle(
+        role="r",
+        seed=_sym("new_file", "def new_file():\n    return 3\n", file_path="/b.py"),
+        related=(),
+        utility_score=0.75,
+    )
+
+    out = _apply_render_and_budget(
+        [same_file_top, same_file_second, new_file],
+        token_budget=8,
+        render_mode="full",
+    )
+
+    assert [b.seed.uid for b in out] == ["same_top", "new_file"]
+
+
+def test_token_credit_coverage_demotes_example_tier_against_core():
+    example = ContextBundle(
+        role="r",
+        seed=_sym(
+            "example",
+            "def example():\n    return 1\n",
+            file_path="/repo/docs_src/tutorial001.py",
+        ),
+        related=(),
+        utility_score=0.90,
+    )
+    core = ContextBundle(
+        role="r",
+        seed=_sym("core", "def core():\n    return 2\n", file_path="/repo/pkg/core.py"),
+        related=(),
+        utility_score=0.70,
+    )
+
+    out = _apply_render_and_budget(
+        [example, core],
+        token_budget=4,
+        render_mode="full",
+    )
+
+    assert [b.seed.uid for b in out] == ["core"]
+
+
+def test_token_credit_coverage_prefers_structural_bridge_related_file():
+    local = ContextBundle(
+        role="r",
+        seed=_sym("local", "def local():\n    return 1\n", file_path="/repo/pkg/local.py"),
+        related=(),
+        utility_score=0.75,
+    )
+    bridge = ContextBundle(
+        role="r",
+        seed=_sym(
+            "seed",
+            "def seed():\n    return 2\n",
+            file_path="/repo/pkg/topic.py",
+        ),
+        related=(
+            ContextSymbol(
+                uid="api",
+                name="api",
+                file_path="/repo/pkg/api.py",
+                role="r",
+                distance_from_seed=2,
+                expansion_step="hook_transparency",
+                code="def api():\n    return 3\n",
+            ),
+        ),
+        utility_score=0.60,
+    )
+
+    out = _apply_render_and_budget(
+        [local, bridge],
+        token_budget=7,
+        render_mode="full",
+    )
+
+    assert [b.seed.uid for b in out] == ["seed"]
+    assert [sym.uid for sym in out[0].related] == ["api"]
+
+
+def test_token_credit_coverage_prefers_runtime_dispatch_bridge_to_core_file():
+    local = ContextBundle(
+        role="r",
+        seed=_sym("local", "def local():\n    return helper()\n", file_path="/repo/pkg/local.py"),
+        related=(
+            ContextSymbol(
+                uid="helper",
+                name="helper",
+                file_path="/repo/pkg/local.py",
+                role="r",
+                distance_from_seed=1,
+                expansion_step="binding_structure_expansion",
+                code="def helper():\n    return 1\n",
+            ),
+        ),
+        utility_score=0.64,
+    )
+    bridge = ContextBundle(
+        role="r",
+        seed=_sym(
+            "seed",
+            "def seed():\n    return dispatch(value)\n",
+            file_path="/repo/pkg/base.py",
+        ),
+        related=(
+            ContextSymbol(
+                uid="runtime",
+                name="runtime",
+                file_path="/repo/pkg/runtime.py",
+                role="r",
+                distance_from_seed=1,
+                expansion_step="deferred_runtime_dispatch",
+                code="def runtime(value):\n    return value\n",
+            ),
+        ),
+        utility_score=0.50,
+    )
+
+    out = _apply_render_and_budget(
+        [local, bridge],
+        token_budget=9,
+        render_mode="full",
+    )
+
+    assert [b.seed.uid for b in out] == ["seed"]
+    assert [sym.uid for sym in out[0].related] == ["runtime"]
+
+
+def test_token_credit_starts_foldable_active_bundle_as_fold_coverage():
+    fold_bundle = ContextBundle(
+        role="r",
+        seed=_sym(
+            "b_target",
+            "    def target(self):\n        return 1\n",
+            qualified_name="pkg.mod.Service.target",
+        ),
+        related=(
+            ContextSymbol(
+                uid="b_helper",
+                name="helper",
+                file_path="/f.py",
+                role="r",
+                distance_from_seed=1,
+                expansion_step="binding",
+                code="    def helper(self):\n        return 2\n",
+                qualified_name="pkg.mod.Service.helper",
+            ),
+        ),
+        utility_score=0.50,
+    )
+    rendered, cost = _initial_credit_render(
+        fold_bundle,
+        transaction_limit=10_000,
+        full_render_max_depth=0,
+    )
+
+    assert cost == _bundle_token_count(rendered)
+    assert rendered.render_mode == "fold_compact"
+    assert rendered.seed.code == ("class Service:\n    def target(self):\n    def helper(self):")

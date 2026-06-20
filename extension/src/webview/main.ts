@@ -23,10 +23,7 @@ import {
   resizeComposerToFit,
 } from './shared/layout';
 import {
-  renderActionButtonRow,
-  renderAffectsGroup,
-  renderFilesGroup,
-  renderSymbolSummaryCard,
+  renderImpactWorkspace,
 } from './shared/impactLayout';
 import {
   renderDocumentationTab,
@@ -68,6 +65,7 @@ class MainSurface {
   private currentImpact: ImpactResponse | null = null;
   private currentImpactSymbol: string | null = null;
   private currentImpactSource: 'prompt' | 'graph' | null = null;
+  private currentImpactDepth = 3;
   private impactError: string | null = null;
   private impactLoading = false;
   private historyCollapsed = true;
@@ -174,6 +172,7 @@ class MainSurface {
           this.impactLoading = false;
           this.currentImpactSymbol = message.symbol;
           this.currentImpact = message.impact;
+          this.currentImpactDepth = this.clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
           this.currentImpactSource = 'graph';
           this.impactError = null;
           this.render();
@@ -438,30 +437,12 @@ class MainSurface {
         ${this.renderChrome()}
         <div class="surface-title">Impact Analysis</div>
         <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-        ${renderSymbolSummaryCard({
+        ${renderImpactWorkspace(
+          this.currentImpact,
           symbol,
-          filePath: this.currentImpact.file_path || 'unknown',
-          uid: this.currentImpact.symbol_uid || symbol,
-          affectedCount: this.currentImpact.affected_count || this.currentImpact.affected_symbols?.length || 0,
-          fileCount: this.currentImpact.affected_file_count || this.currentImpact.affected_files?.length || 0,
-          maxDepth: this.currentImpact.max_depth || 0,
-          sourceLabel: this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph',
-        })}
-        ${renderActionButtonRow()}
-        <div class="impact-groups">
-          ${renderAffectsGroup(
-            this.currentImpact.affected_symbols || [],
-            this.currentImpactSource === 'prompt' ? 'Selected Prompt Context' : 'Affects',
-            true
-          )}
-          ${renderFilesGroup(this.currentImpact.affected_files || [], false)}
-        </div>
-        <div class="impact-legend">
-          <span><span class="legend-dot direct"></span> direct</span>
-          <span><span class="legend-dot indirect"></span> indirect</span>
-          <span><span class="legend-dot conditional"></span> conditional</span>
-          <span><span class="legend-dot type"></span> via type</span>
-        </div>
+          this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph',
+          { depth: this.currentImpactDepth }
+        )}
         <div class="surface-footer">
           <span>${this.currentImpactSource === 'prompt' ? 'From selected ask' : 'Graph built just now'}</span>
           <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
@@ -597,6 +578,11 @@ class MainSurface {
         }
       });
     }
+
+    document.querySelectorAll('[data-impact-depth]').forEach(slider => {
+      slider.addEventListener('input', event => this.previewImpactDepth(event));
+      slider.addEventListener('change', event => this.changeImpactDepth(event));
+    });
     sendBtn?.addEventListener('click', () => this.askAboutSymbol());
 
     if (!this.keyboardListenerAttached) {
@@ -673,6 +659,9 @@ class MainSurface {
         break;
       case 'openFile':
         this.openFileFromImpact(target);
+        break;
+      case 'showMoreImpact':
+        this.showMoreImpactRows(target);
         break;
       case 'create-refactor-plan':
         this.switchSurface('chat');
@@ -752,7 +741,32 @@ class MainSurface {
     this.postMessage({
       type: 'action.showImpact',
       symbol: selectedSymbol,
+      maxDepth: this.currentImpactDepth,
     });
+  }
+
+  private previewImpactDepth(event: Event): void {
+    const slider = event.currentTarget as HTMLInputElement | null;
+    if (!slider) return;
+    const output = slider.closest('.impact-depth-control')?.querySelector('output');
+    const depth = this.clampImpactDepth(Number(slider.value));
+    if (output) {
+      output.textContent = `d${depth}`;
+    }
+  }
+
+  private changeImpactDepth(event: Event): void {
+    const slider = event.currentTarget as HTMLInputElement | null;
+    if (!slider) return;
+    const depth = this.clampImpactDepth(Number(slider.value));
+    if (depth === this.currentImpactDepth && this.currentImpactSource === 'graph') return;
+    this.currentImpactDepth = depth;
+    this.requestImpactForActiveSymbol();
+  }
+
+  private clampImpactDepth(depth: number): number {
+    if (!Number.isFinite(depth)) return 3;
+    return Math.max(1, Math.min(4, Math.round(depth)));
   }
 
   private openRelatedImpactFiles(): void {
@@ -799,7 +813,7 @@ class MainSurface {
     const workspaceId = (document.getElementById('workspaceId') as HTMLInputElement | null)?.value || '';
     const modelPreference = (document.getElementById('modelPreference') as HTMLSelectElement | null)?.value || 'auto';
     const authToken = (document.getElementById('authToken') as HTMLInputElement | null)?.value || '';
-    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement | null)?.value || '4000');
+    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement | null)?.value || '6000');
     const lancedbPath = (document.getElementById('lancedbPath') as HTMLInputElement | null)?.value || '';
     const historyPath = (document.getElementById('historyPath') as HTMLInputElement | null)?.value || '';
     const overlaySync = (document.getElementById('overlaySync') as HTMLInputElement | null)?.checked || false;
@@ -837,7 +851,7 @@ class MainSurface {
       workspaceId: '',
       modelPreference: 'auto',
       authToken: '',
-      tokenBudget: 4000,
+      tokenBudget: 6000,
       lancedbPath: './data/lancedb',
       historyPath: './data/history/surgical_context.sqlite3',
       overlaySync: true,
@@ -886,6 +900,7 @@ class MainSurface {
     this.currentImpact = null;
     this.currentImpactSymbol = symbol || null;
     this.currentImpactSource = null;
+    this.currentImpactDepth = 3;
     this.impactError = null;
 
     const prompt = this.pendingPrompt || 'Ask about current symbol';
@@ -1009,6 +1024,7 @@ class MainSurface {
       this.currentContextSummary = null;
       this.currentImpact = null;
       this.currentImpactSource = null;
+      this.currentImpactDepth = 3;
       this.showToast('Prompt is still waiting for context.', 'info');
     }
 
@@ -1041,6 +1057,7 @@ class MainSurface {
     this.currentImpact = null;
     this.currentImpactSymbol = null;
     this.currentImpactSource = null;
+    this.currentImpactDepth = 3;
     this.impactError = null;
     this.impactLoading = false;
     this.historyCollapsed = true;
@@ -1069,6 +1086,7 @@ class MainSurface {
       this.currentImpact = null;
       this.currentImpactSymbol = null;
       this.currentImpactSource = null;
+      this.currentImpactDepth = 3;
       this.impactError = null;
     }
 
@@ -1140,6 +1158,7 @@ class MainSurface {
     this.currentImpact = this.impactFromContext(context);
     this.currentImpactSymbol = context.primary_source.symbol;
     this.currentImpactSource = 'prompt';
+    this.currentImpactDepth = this.clampImpactDepth(this.currentImpact.max_depth || this.currentImpactDepth);
     this.impactError = null;
     this.syncSelectedRequestToHost(requestId, context);
   }
@@ -1179,7 +1198,11 @@ class MainSurface {
       file_path: symbol.file_path,
       relation: symbol.relation,
       direction: symbol.direction,
+      role: symbol.role,
+      kind: symbol.kind,
+      edge_type: symbol.edge_type,
       depth: symbol.depth,
+      utility_score: symbol.utility_score,
       relevance_score: symbol.relevance_score,
       is_dirty: symbol.is_dirty,
     }));
@@ -1264,6 +1287,15 @@ class MainSurface {
     header.setAttribute('aria-expanded', String(!expanded));
     group.classList.toggle('expanded', !expanded);
     content.toggleAttribute('hidden', expanded);
+  }
+
+  private showMoreImpactRows(target: HTMLElement): void {
+    const group = target.closest('.impact-group');
+    const overflow = group?.querySelector('.impact-overflow');
+    if (!overflow) return;
+
+    overflow.removeAttribute('hidden');
+    target.remove();
   }
 
   private openFileFromImpact(target: HTMLElement): void {

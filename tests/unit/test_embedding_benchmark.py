@@ -1,6 +1,6 @@
 """Unit tests for the embedding model benchmark harness."""
 
-from sidecar.eval.embedding_benchmark import (
+from context_engine.eval.embedding_benchmark import (
     QuestionRecord,
     SymbolRecord,
     collect_symbols,
@@ -104,17 +104,35 @@ def test_evaluate_model_reports_unavailable_model():
     assert "not cached" in result["error"]
 
 
-def test_collect_symbols_reads_sample_project(sample_project_path):
-    symbols = collect_symbols(sample_project_path)
+def test_collect_symbols_reads_python_files(tmp_path):
+    module = tmp_path / "payments" / "processor.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "def process_payment():\n    validate_amount(1)\n\ndef validate_amount(x):\n    return x\n",
+        encoding="utf-8",
+    )
+    symbols = collect_symbols(tmp_path)
     names = {symbol.name for symbol in symbols}
 
-    assert {"process_payment", "validate_amount", "SpecialOrder", "cached"} <= names
+    assert {"process_payment", "validate_amount"} <= names
     assert all(symbol.code for symbol in symbols)
 
 
-def test_load_questions_reads_golden_set(sample_questions_path):
-    questions = load_questions(sample_questions_path)
+def test_load_questions_reads_yaml_list(tmp_path):
+    questions_path = tmp_path / "questions.yaml"
+    questions_path.write_text(
+        """
+- id: q001
+  symbol: process_payment
+  question: "How does payment validation work?"
+  expected_symbols: [process_payment, validate_amount]
+  difficulty: easy
+  intent: trace_dependency
+""".strip(),
+        encoding="utf-8",
+    )
+    questions = load_questions(questions_path)
 
-    assert len(questions) == 10
+    assert len(questions) == 1
     assert questions[0].id == "q001"
     assert "process_payment" in questions[0].expected_symbols

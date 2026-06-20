@@ -1,5 +1,6 @@
 # Spec — Branch / Workspace Isolation (Phase 8)
 
+
 > **Status:** Implemented for graph reads/writes and dirty overlay isolation. Closes the SaaS correctness gap: the Phase 7 shared Aura graph collapses all branches and users into a single symbol set, guaranteeing drift across workspaces.
 
 ## 1. Problem
@@ -96,7 +97,7 @@ Workspace scoping is enforced **in Cypher**, not in Python filtering — a Pytho
 ## 3. API / Interface
 
 ```python
-# sidecar/workspace.py
+# context_engine/workspace.py
 
 @dataclass
 class Workspace:

@@ -1,11 +1,9 @@
 """Shared pytest fixtures and configuration for evaluation harness."""
 
-from pathlib import Path
-
 import pytest
 
-from sidecar.parser.adapters.python_adapter import PythonAdapter
-from sidecar.parser.adapters.typescript_adapter import TypeScriptAdapter
+from context_engine.parser.adapters.python_adapter import PythonAdapter
+from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
 
 def pytest_addoption(parser):
@@ -20,6 +18,11 @@ def pytest_addoption(parser):
 
 def pytest_collection_modifyitems(config, items):
     """Skip integration tests unless --run-integration is passed."""
+    for item in items:
+        nodeid = str(getattr(item, "path", item.fspath))
+        if "/tests/integration/" in nodeid.replace("\\", "/"):
+            item.add_marker(pytest.mark.integration)
+
     if config.getoption("--run-integration"):
         return
 
@@ -29,18 +32,6 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_integration)
-
-
-@pytest.fixture
-def sample_project_path():
-    """Return the path to the golden fixture project."""
-    return Path(__file__).parent / "fixtures" / "sample_project"
-
-
-@pytest.fixture
-def sample_questions_path():
-    """Return the path to the golden questions file."""
-    return Path(__file__).parent / "fixtures" / "sample_project" / "questions.yaml"
 
 
 @pytest.fixture

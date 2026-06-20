@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from sidecar.auth import AuditLog
+from context_engine.auth import AuditLog
 
 
 class TestAuditLog:

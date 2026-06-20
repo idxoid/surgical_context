@@ -64,7 +64,7 @@ Stop the sidecar with `Ctrl+C`.
 | `data/lancedb/` | LanceDB vector tables | No |
 | `data/history/` | SQLite local history | No |
 | `logs/neo4j/` | Neo4j logs | No |
-| `logs/sidecar/` | sidecar logs | No |
+| `logs/context_engine/` | sidecar logs | No |
 
 The graph provider stores topology and metadata only. Source code stays on the filesystem. History persistence should remain metadata-first until the storage policy explicitly allows raw prompt text, response text, or source snippets.
 
@@ -96,9 +96,16 @@ that workspace. The root is set when you run `POST /index` (manifest field
 | Path outside the indexed project tree | `403` |
 | Incremental index / file fallback before first full index | `400` |
 
-Relative paths in API requests are resolved under the project root. The smoke
-test and `local_dev.py` index `sidecar/context` (or the full repo in
-`--full-repo` mode) so the default workspace has a registered root.
+Relative paths in API requests are resolved under the project root. On first
+`POST /index`, the sidecar registers the resolved `project_path` as the workspace
+sandbox root. The **repo segment** of the workspace id must match that directory's
+basename (same rule as the VS Code extension: `local/<folder-name>@<ref>`).
+
+The smoke test indexes `context_engine/axis` by default and therefore derives
+`local/axis@<git-ref>` automatically. Full-repo smoke (`--full-repo`) uses the
+repository root and aligns with `local/surgical_context@<git-ref>`. Override
+only with `--workspace-id` when you need a fixed scope; it must still match the
+indexed directory basename or registration returns **403**.
 
 With `AUTH_REQUIRED=false` (local default), this prevents other local processes
 from using the sidecar as a generic file reader. See
@@ -136,7 +143,7 @@ Then rerun:
 python scripts/local_dev.py up
 ```
 
-If Neo4j is already running and you only want the sidecar/extension flow:
+If Neo4j is already running and you only want the context_engine/extension flow:
 
 ```bash
 python scripts/local_dev.py up --skip-storage
@@ -159,11 +166,11 @@ The smoke test checks the local daily-driver path:
 - local Neo4j starts through Docker Compose unless `--skip-storage` is passed
 - sidecar `/health` responds; if no sidecar is running, the smoke test starts a temporary sidecar and stops it at the end
 - graph provider status responds
-- code indexing works against the fast default slice: `sidecar/context`
-- docs indexing works against the fast default fixture: `tests/fixtures/smoke_docs`
+- code indexing works against the fast default slice: `context_engine/axis`
+- docs indexing works against `docs/local_development.md` by default (full `docs/` with `--full-repo`)
 - unified search returns a valid response
 - `/ask` returns context and trace metadata
-- `/impact` responds for the smoke symbol
+- `/impact` responds for the smoke symbol (`run_axis_retrieval` by default)
 - `/metrics` returns dashboard-ready sidecar metrics
 
 The default smoke test is intentionally small. Use the full repo mode only when you want a heavier verification pass:

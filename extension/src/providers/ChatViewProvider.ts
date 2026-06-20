@@ -225,20 +225,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
     };
 
+    let stream: ReturnType<typeof SidecarClient.askStream> | null = null;
     try {
-      this.currentAbortController = await SidecarClient.askStream(
+      stream = SidecarClient.askStream(
         targetSymbol,
         prompt,
         callbacks,
         undefined,
         activeFile
       );
+      this.currentAbortController = stream.controller;
+      await stream.done;
     } catch (error) {
       this.postMessage({
         type: 'chat.requestFailed',
         requestId,
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+    } finally {
+      if (stream && this.currentAbortController === stream.controller) {
+        this.currentAbortController = null;
+      }
     }
   }
 

@@ -2,7 +2,7 @@
 
 import json
 
-from sidecar.feedback.store import FeedbackStore, RetrievalSnapshot
+from context_engine.feedback.store import FeedbackStore, RetrievalSnapshot
 
 
 def _snapshot(token: str) -> RetrievalSnapshot:
@@ -16,7 +16,7 @@ def _snapshot(token: str) -> RetrievalSnapshot:
         mode="surgical_full",
         question_hash="hash-q",
         question_tokens=12,
-        resolver_version="test",
+        context_pipeline_version="test",
         selected_candidates=[],
         documentation=[],
         context_metadata={},

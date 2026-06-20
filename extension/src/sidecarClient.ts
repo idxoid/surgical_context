@@ -21,7 +21,7 @@ function authHeaderValue(token: string): string {
   return token.toLowerCase().startsWith('bearer ') ? token : `Bearer ${token}`;
 }
 
-function getTokenBudget(defaultValue = 4000): number {
+function getTokenBudget(defaultValue = 6000): number {
   const config = vscode.workspace.getConfiguration('surgicalContext');
   const configured = config.get<number>('tokenBudget', defaultValue);
   return Number.isFinite(configured) ? Math.max(1000, Math.min(32000, configured)) : defaultValue;
@@ -30,13 +30,29 @@ function getTokenBudget(defaultValue = 4000): number {
 async function getHeaders(authToken = getAuthToken()): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const workspaceId = await resolveWorkspaceId();
+  const token = authToken || (await ensureAuthToken(workspaceId));
   if (workspaceId) {
     headers['X-Workspace'] = workspaceId;
   }
-  if (authToken) {
-    headers.Authorization = authHeaderValue(authToken);
+  if (token) {
+    headers.Authorization = authHeaderValue(token);
   }
   return headers;
+}
+
+async function ensureAuthToken(workspaceId?: string | null): Promise<string> {
+  const res = await fetch(`${getBaseUrl()}/auth/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(workspaceId ? { 'X-Workspace': workspaceId } : {}),
+    },
+  });
+  if (!res.ok) {
+    return '';
+  }
+  const body = (await res.json()) as { token?: string };
+  return body.token?.trim() || '';
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
@@ -107,7 +123,7 @@ export interface PromptContextPayload {
     assembly?: {
       trace_id?: string;
       workspace_id?: string;
-      resolver_version?: string;
+      context_pipeline_version?: string;
       stage_timings_ms?: Record<string, number>;
       token_counts?: Record<string, number>;
       model_route?: Record<string, unknown>;
@@ -220,6 +236,11 @@ export interface IndexFileResponse {
   reason?: string;
 }
 
+export interface AskStreamHandle {
+  controller: AbortController;
+  done: Promise<void>;
+}
+
 export interface IndexFilesResponse {
   status: string;
   workspace_id: string;
@@ -296,8 +317,8 @@ export const SidecarClient = {
     }
   },
 
-  overlay(file_path: string, content: string): Promise<OverlayResponse> {
-    return post('/overlay', { file_path, content });
+  overlay(file_path: string, content: string, dirty = true): Promise<OverlayResponse> {
+    return post('/overlay', { file_path, content, dirty });
   },
 
   async deleteOverlay(file_path: string): Promise<void> {
@@ -325,44 +346,50 @@ export const SidecarClient = {
     });
   },
 
-  async askStream(
+  askStream(
     symbol: string | undefined,
     question: string,
     callbacks: SSECallbacks,
     tokenBudget = getTokenBudget(),
     filePath?: string
-  ): Promise<AbortController> {
+  ): AskStreamHandle {
     const controller = new AbortController();
 
-    try {
-      const res = await fetch(`${getBaseUrl()}/ask/stream`, {
-        method: 'POST',
-        headers: await getHeaders(),
-        body: JSON.stringify({
-          symbol: symbol || null,
-          question,
-          token_budget: tokenBudget,
-          file_path: filePath || null,
-        }),
-        signal: controller.signal,
-      });
+    const done = (async () => {
+      try {
+        const res = await fetch(`${getBaseUrl()}/ask/stream`, {
+          method: 'POST',
+          headers: await getHeaders(),
+          body: JSON.stringify({
+            symbol: symbol || null,
+            question,
+            token_budget: tokenBudget,
+            file_path: filePath || null,
+          }),
+          signal: controller.signal,
+        });
 
-      if (!res.ok) {
-        throw new Error(`Sidecar /ask/stream → ${res.status}`);
+        if (!res.ok) {
+          throw new Error(`Sidecar /ask/stream → ${res.status}`);
+        }
+
+        await parseSSEStream(res, callbacks);
+      } catch (error) {
+        if (!(error instanceof Error && error.name === 'AbortError')) {
+          callbacks.onError?.(error instanceof Error ? error.message : 'Unknown error');
+        }
       }
+    })();
 
-      await parseSSEStream(res, callbacks);
-    } catch (error) {
-      if (!(error instanceof Error && error.name === 'AbortError')) {
-        callbacks.onError?.(error instanceof Error ? error.message : 'Unknown error');
-      }
-    }
-
-    return controller;
+    return { controller, done };
   },
 
-  impact(symbol: string): Promise<ImpactResponse> {
-    return get(`/impact?symbol=${encodeURIComponent(symbol)}`);
+  impact(symbol: string, maxDepth = 3): Promise<ImpactResponse> {
+    const params = new URLSearchParams({
+      symbol,
+      max_depth: String(maxDepth),
+    });
+    return get(`/impact?${params.toString()}`);
   },
 
   cloudStatus(): Promise<CloudStatusResponse> {

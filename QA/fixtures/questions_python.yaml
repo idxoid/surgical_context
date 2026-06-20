@@ -1,0 +1,1491 @@
+repositories:
+- id: celery
+  name: Celery
+  clone_url: https://github.com/celery/celery.git
+  repo_url: https://github.com/celery/celery
+  docs_url: https://docs.celeryq.dev/
+  language: python
+  rationale: Task queue with app registry, broker publish/consume, and result backends—good for async dispatch, worker, and
+    impact benchmarks.
+- id: click
+  name: Click
+  clone_url: https://github.com/pallets/click.git
+  repo_url: https://github.com/pallets/click
+  docs_url: https://click.palletsprojects.com/
+  language: python
+  rationale: Composable CLI toolkit with decorators, Context, ParamType, and help formatting—good for registration, parsing,
+    and error-surface benchmarks.
+- id: dathund
+  name: Dathund
+  project_path: /home/idxoid/dathund/dathund
+  language: python
+  rationale: Pipeline-native security observability with connectors, lineage backends, and cross-connector ChainEngine.
+- id: django
+  name: Django
+  clone_url: https://github.com/django/django.git
+  repo_url: https://github.com/django/django
+  docs_url: https://docs.djangoproject.com/
+  language: python
+  rationale: Large monolithic Python framework with ORM, middleware, and request lifecycle—good for testing architectural
+    knowledge and subsystem interactions.
+- id: fastapi
+  name: FastAPI
+  clone_url: https://github.com/fastapi/fastapi.git
+  repo_url: https://github.com/fastapi/fastapi
+  docs_url: https://fastapi.tiangolo.com/
+  language: python
+  rationale: Framework repo with code, docs, tests, and many dependency/explanation questions.
+- id: flask
+  name: Flask
+  clone_url: https://github.com/pallets/flask.git
+  repo_url: https://github.com/pallets/flask
+  docs_url: https://flask.palletsprojects.com/
+  language: python
+  rationale: Lightweight framework with minimal core and extension system; useful for testing simplified patterns and routing
+    complexity.
+- id: pydantic
+  name: Pydantic
+  clone_url: https://github.com/pydantic/pydantic.git
+  repo_url: https://github.com/pydantic/pydantic
+  docs_url: https://docs.pydantic.dev/
+  language: python
+  rationale: Validation-heavy codebase with Python and core boundary, good for inspect/explain questions.
+- id: sqlalchemy
+  name: SQLAlchemy
+  clone_url: https://github.com/sqlalchemy/sqlalchemy.git
+  repo_url: https://github.com/sqlalchemy/sqlalchemy
+  docs_url: https://docs.sqlalchemy.org/
+  language: python
+  rationale: Python ORM/database toolkit with complex declarative patterns, lazy loading, and query builder architecture—tests
+    sophisticated Python metaprogramming and data access patterns.
+- id: surgical_context
+  name: Surgical Context
+  project_path: /home/idxoid/surgical_context
+  language: python
+  rationale: Dogfood benchmark for context ranker, indexer, VS Code extension, and QA harness on this repo itself.
+questions:
+- id: fastapi_q01
+  repo: fastapi
+  core12: true
+  symbol: FastAPI
+  question: How does FastAPI turn a path operation function into an APIRoute and register it in the app?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: fastapi_route_registration
+  expected_symbols:
+  - FastAPI
+  - APIRoute
+  - add_api_route
+  - api_route
+  expected_files:
+  - fastapi/applications.py
+  - fastapi/routing.py
+- id: fastapi_q02
+  repo: fastapi
+  core12: true
+  symbol: Depends
+  question: How does dependency injection get resolved before the endpoint function is called?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: fastapi_dependency_injection
+  expected_symbols:
+  - Depends
+  - solve_dependencies
+  - get_dependant
+  - Dependant
+  expected_files:
+  - fastapi/dependencies/utils.py
+  - fastapi/dependencies/models.py
+- id: fastapi_q03
+  repo: fastapi
+  core12: true
+  symbol: run_endpoint_function
+  question: Where does FastAPI decide whether a path operation should run as sync or async?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: fastapi_endpoint_execution
+  expected_symbols:
+  - run_endpoint_function
+  - get_request_handler
+  - APIRoute
+  expected_files:
+  - fastapi/routing.py
+- id: fastapi_q04
+  repo: fastapi
+  core12: true
+  symbol: request_body_to_args
+  question: How are request body models validated and then passed into endpoint parameters?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: fastapi_request_body_dependency_resolution
+  expected_symbols:
+  - request_body_to_args
+  - solve_dependencies
+  - get_body_field
+  - get_request_handler
+  expected_files:
+  - fastapi/routing.py
+  - fastapi/dependencies/utils.py
+  - fastapi/params.py
+- id: fastapi_q05
+  repo: fastapi
+  core12: false
+  symbol: get_openapi
+  question: How does FastAPI generate OpenAPI for registered routes?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: fastapi_openapi_generation
+  expected_symbols:
+  - get_openapi
+  - openapi
+  - get_openapi_path
+  expected_files:
+  - fastapi/openapi/utils.py
+  - fastapi/applications.py
+- id: fastapi_q06
+  repo: fastapi
+  core12: false
+  symbol: serialize_response
+  question: If I change response model serialization behavior, what parts of the framework and tests are most likely to break?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: fastapi_serialization_impact
+  expected_symbols:
+  - serialize_response
+  - APIRoute
+  - _serialize_data
+  expected_files:
+  - fastapi/routing.py
+  - fastapi/encoders.py
+  - tests
+- id: fastapi_q07
+  repo: fastapi
+  core12: false
+  symbol: FastAPI
+  question: How are /docs and /redoc routes created and wired into the application?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: fastapi_docs_ui_wiring
+  expected_symbols:
+  - FastAPI
+  - swagger_ui_html
+  - redoc_html
+  - setup
+  expected_files:
+  - fastapi/applications.py
+  - fastapi/openapi/docs.py
+- id: fastapi_q08
+  repo: fastapi
+  core12: false
+  symbol: RouteContext
+  question: Where is RouteContext implemented, and if it does not exist, what is the nearest real mechanism FastAPI uses instead?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: workspace
+  mechanism: nonexistent_symbol_nearest_mechanism
+  expected_symbols:
+  - APIRoute
+  - get_request_handler
+  - Dependant
+  expected_files:
+  - fastapi/routing.py
+  - fastapi/dependencies
+- id: pydantic_q01
+  repo: pydantic
+  core12: true
+  symbol: BaseModel
+  question: How does BaseModel validation flow work in v2 from model construction to validated output?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: pydantic_validation_core_bridge
+  expected_symbols:
+  - BaseModel
+  - model_validate
+  - __pydantic_validator__
+  expected_files:
+  - pydantic/main.py
+  - pydantic/_internal
+- id: pydantic_q02
+  repo: pydantic
+  core12: true
+  symbol: BaseModel
+  question: Which parts of Pydantic are pure Python wrappers and which parts rely on pydantic-core?
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: workspace
+  mechanism: pydantic_python_core_boundary
+  expected_symbols:
+  - BaseModel
+  - SchemaValidator
+  - SchemaSerializer
+  expected_files:
+  - pydantic/main.py
+  - pydantic-core
+- id: pydantic_q03
+  repo: pydantic
+  core12: true
+  symbol: model_dump
+  question: How does model_dump() get from high-level API call to actual serialization logic?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: pydantic_serialization_bridge
+  expected_symbols:
+  - model_dump
+  - __pydantic_serializer__
+  expected_files:
+  - pydantic/main.py
+- id: pydantic_q04
+  repo: pydantic
+  core12: true
+  symbol: model_json_schema
+  question: How does Pydantic build JSON Schema for a model?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: pydantic_json_schema_generation
+  expected_symbols:
+  - model_json_schema
+  - GenerateJsonSchema
+  - json_schema
+  expected_files:
+  - pydantic/json_schema.py
+  - pydantic/main.py
+- id: pydantic_q05
+  repo: pydantic
+  core12: false
+  symbol: v1
+  question: How is backward compatibility with Pydantic v1 exposed in the codebase?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: workspace
+  mechanism: pydantic_v1_compat_surface
+  expected_symbols:
+  - v1
+  - BaseModel
+  expected_files:
+  - pydantic/_migration.py
+  - pydantic/v1
+- id: pydantic_q06
+  repo: pydantic
+  core12: false
+  symbol: Field
+  question: If alias handling changes, what modules, docs, and tests are most likely to be affected?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: pydantic_alias_impact
+  expected_symbols:
+  - Field
+  - AliasChoices
+  - AliasPath
+  expected_files:
+  - pydantic/fields.py
+  - pydantic
+- id: pydantic_q07
+  repo: pydantic
+  core12: false
+  symbol: ValidationError
+  question: Where are validation errors assembled into the final error structure returned to the user?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: pydantic_validation_error_assembly
+  expected_symbols:
+  - ValidationError
+  expected_files:
+  - pydantic
+- id: pydantic_q08
+  repo: pydantic
+  core12: false
+  symbol: SchemaRouter
+  question: Where is SchemaRouter defined, and if it is not real, what components actually coordinate schema generation?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: workspace
+  mechanism: nonexistent_symbol_nearest_mechanism
+  expected_symbols:
+  - GenerateJsonSchema
+  - model_json_schema
+  - json_schema
+  expected_files:
+  - pydantic/json_schema.py
+  - pydantic/main.py
+- id: django_q01
+  repo: django
+  core12: true
+  symbol: WSGIHandler
+  question: How does Django's request handling flow from WSGI entry point through middleware to view dispatch?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: django_wsgi_request_pipeline
+  expected_symbols:
+  - WSGIHandler
+  - get_wsgi_application
+  - load_middleware
+  - _view_middleware
+  expected_files:
+  - django/core/wsgi.py
+  - django/core/handlers/wsgi.py
+  - django/core/handlers/base.py
+- id: django_q02
+  repo: django
+  core12: true
+  symbol: QuerySet
+  question: How does QuerySet lazy evaluation and chaining work internally?
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: django_queryset_lazy_evaluation
+  expected_symbols:
+  - QuerySet
+  - Query
+  - SQLCompiler
+  - _fetch_all
+  expected_files:
+  - django/db/models/query.py
+  - django/db/models/sql/query.py
+  - django/db/models/sql/compiler.py
+- id: django_q03
+  repo: django
+  core12: true
+  symbol: ModelForm
+  question: How does ModelForm map model fields to form fields and handle validation?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: django_modelform_field_mapping
+  expected_symbols:
+  - ModelForm
+  - fields_for_model
+  - ModelFormOptions
+  expected_files:
+  - django/forms/models.py
+- id: django_q04
+  repo: django
+  core12: true
+  symbol: MigrationExecutor
+  question: How does Django's migration system apply and track database schema changes?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: django_migration_execution
+  expected_symbols:
+  - MigrationExecutor
+  - MigrationLoader
+  - Operation
+  expected_files:
+  - django/db/migrations/executor.py
+  - django/db/migrations/loader.py
+  - django/db/migrations/recorder.py
+- id: django_q05
+  repo: django
+  core12: false
+  symbol: Model
+  question: If the ORM field descriptor protocol changes, which parts of Django tests and public APIs would break?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: django_field_descriptor_impact
+  expected_symbols:
+  - Field
+  - Model
+  - DeferredAttribute
+  expected_files:
+  - django/db/models/fields
+  - django/db/models
+  - tests
+- id: flask_q01
+  repo: flask
+  core12: true
+  symbol: Flask
+  question: How does Flask's application factory pattern and request context management work?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: flask_app_context_lifecycle
+  expected_symbols:
+  - Flask
+  - from_environ
+  - AppContext
+  - push
+  expected_files:
+  - src/flask/app.py
+  - src/flask/ctx.py
+- id: flask_q02
+  repo: flask
+  core12: true
+  symbol: Blueprint
+  question: How does Blueprint registration and deferred route registration work in Flask?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: flask_blueprint_registration
+  expected_symbols:
+  - Blueprint
+  - register_blueprint
+  - BlueprintSetupState
+  expected_files:
+  - src/flask/sansio/blueprints.py
+- id: flask_q03
+  repo: flask
+  core12: true
+  symbol: request
+  question: How is the Flask global 'request' proxy implemented and how does it resolve the correct context?
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: flask_proxy_resolution
+  expected_symbols:
+  - request
+  - RequestProxy
+  - _get_current_object
+  expected_files:
+  - src/flask/globals.py
+  - src/flask/wrappers.py
+- id: flask_q04
+  repo: flask
+  core12: true
+  symbol: before_request
+  question: How does Flask's before_request and after_request decorators get invoked during request handling?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: flask_request_hooks
+  expected_symbols:
+  - before_request
+  - after_request
+  - preprocess_request
+  - do_teardown_request
+  expected_files:
+  - src/flask/app.py
+- id: flask_q05
+  repo: flask
+  core12: false
+  symbol: Flask
+  question: If Flask's routing dispatch mechanism changes, what test suites and example code would be affected?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: flask_routing_impact
+  expected_symbols:
+  - route
+  - add_url_rule
+  - create_url_adapter
+  - dispatch_request
+  expected_files:
+  - src/flask/app.py
+  - tests
+- id: sqlalchemy_q01
+  repo: sqlalchemy
+  core12: true
+  symbol: declarative_base
+  question: How does SQLAlchemy's declarative base system map Python classes to database tables?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: sqlalchemy_declarative_mapping
+  expected_symbols:
+  - declarative_base
+  - Column
+  - Table
+  - Mapper
+  expected_files:
+  - lib/sqlalchemy/orm/decl_api.py
+  - lib/sqlalchemy/orm/mapper.py
+- id: sqlalchemy_q02
+  repo: sqlalchemy
+  core12: true
+  symbol: Query
+  question: How does SQLAlchemy Query builder lazily construct and execute SQL statements?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: sqlalchemy_query_lazy_execution
+  expected_symbols:
+  - Query
+  - Select
+  - ClauseElement
+  - compile
+  expected_files:
+  - lib/sqlalchemy/orm/query.py
+  - lib/sqlalchemy/sql
+- id: sqlalchemy_q03
+  repo: sqlalchemy
+  core12: true
+  symbol: Session
+  question: How does SQLAlchemy Session manage object identity, lazy loading, and database transactions?
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: sqlalchemy_session_identity_management
+  expected_symbols:
+  - Session
+  - sessionmaker
+  - Identity
+  - LazyLoader
+  expected_files:
+  - lib/sqlalchemy/orm/session.py
+- id: sqlalchemy_q04
+  repo: sqlalchemy
+  core12: false
+  symbol: relationship
+  question: How do SQLAlchemy relationships handle foreign key resolution and collection management?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: sqlalchemy_relationship_loading
+  expected_symbols:
+  - relationship
+  - RelationshipProperty
+  - Loader
+  expected_files:
+  - lib/sqlalchemy/orm/relationships.py
+  - lib/sqlalchemy/orm/strategies.py
+- id: surgical_context_q01
+  repo: surgical_context
+  core12: true
+  symbol: run_axis_retrieval
+  question: How does the axis pipeline assemble symbol context from intent classification through ranking to a PromptContext?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: surgical_context_axis_context_assembly
+  expected_symbols:
+  - run_axis_retrieval
+  - build_context_for_candidates
+  - axis_bundles_to_prompt_context
+  expected_files:
+  - context_engine/axis/pipeline.py
+  - context_engine/axis/context_builder.py
+  - context_engine/axis/prompt_provider.py
+- id: surgical_context_q02
+  repo: surgical_context
+  core12: true
+  symbol: find_symbols_by_roles
+  question: How does the axis pipeline fuse role/vector seeds and graph-walk neighbours into ranked candidates before the
+    token budget?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: surgical_context_axis_ranking
+  expected_symbols:
+  - find_symbols_by_roles
+  - walk_neighbours
+  - apply_intent_axis_boost
+  - build_context_for_candidates
+  expected_files:
+  - context_engine/axis/role_retrieval.py
+  - context_engine/axis/graph_walk.py
+  - context_engine/axis/axis_ranking.py
+  - context_engine/axis/context_builder.py
+- id: surgical_context_q03
+  repo: surgical_context
+  core12: true
+  symbol: classify_intent
+  question: How does the axis intent classifier map a natural-language question to the intent roles that drive retrieval?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: surgical_context_axis_intent
+  expected_symbols:
+  - classify_intent
+  - IntentMatch
+  - intent_axes
+  expected_files:
+  - context_engine/axis/intent_classifier.py
+  - context_engine/axis/axis_ranking.py
+- id: surgical_context_q04
+  repo: surgical_context
+  core12: false
+  symbol: scan_workspace_rows
+  question: How does the axis pipeline build the candidate pool from role/vector seeds and graph-walk expansion?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: surgical_context_axis_pool
+  expected_symbols:
+  - scan_workspace_rows
+  - find_symbols_by_roles
+  - walk_neighbours
+  - run_axis_retrieval
+  expected_files:
+  - context_engine/axis/role_retrieval.py
+  - context_engine/axis/graph_walk.py
+  - context_engine/axis/pipeline.py
+- id: surgical_context_q05
+  repo: surgical_context
+  core12: false
+  symbol: run_fast_indexing
+  question: How does the fast indexer go from file hashing through parsing, graph updates, embeddings, and AFFECTS rebuild?
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: surgical_context_fast_index_pipeline
+  expected_symbols:
+  - run_fast_indexing
+  - _hash_phase
+  - _parse_phase
+  - _apply_graph
+  - _embed_phase
+  expected_files:
+  - context_engine/indexer/fast/pipeline.py
+- id: surgical_context_q06
+  repo: surgical_context
+  core12: false
+  symbol: apply_intent_axis_boost
+  question: If axis ranking weights change (apply_intent_axis_boost boost/score_ceiling, seed tier demotion in role_retrieval),
+    and the production caps per-role-limit and max-impacted change with them, which unit tests and QA/axis_benchmark
+    paths are most likely to break?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: surgical_context_axis_ranking_weights_impact
+  expected_symbols:
+  - apply_intent_axis_boost
+  - intent_axes
+  - find_seeds_by_vector
+  expected_files:
+  - context_engine/axis/axis_ranking.py
+  - context_engine/axis/role_retrieval.py
+  - tests/unit/test_axis_ranking.py
+  - QA/axis_benchmark.py
+- id: surgical_context_q08
+  repo: surgical_context
+  core12: false
+  symbol: _apply_token_credit_budget
+  question: If token-budget weights change (RetrievalBudget.token_weight, tier/bonus tables in context_builder,
+    _apply_token_credit_budget), and the production flags intent-budget, token-budget, and render-mode change with
+    them, which unit tests and benchmark paths are most likely to break?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: surgical_context_token_budget_weights_impact
+  expected_symbols:
+  - _apply_token_credit_budget
+  - _apply_render_and_budget
+  - budget_for_intent
+  - effective_tokens
+  expected_files:
+  - context_engine/axis/context_builder.py
+  - context_engine/axis/retrieval_budget.py
+  - tests/unit/test_context_builder_budget.py
+- id: surgical_context_q07
+  repo: surgical_context
+  core12: false
+  symbol: SidecarClient
+  question: How does the VS Code extension send an ask-about-symbol request from the webview to the sidecar /ask handler?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: surgical_context_extension_ask_flow
+  expected_symbols:
+  - SidecarClient
+  - ask
+  - SurgicalContextViewProvider
+  - activate
+  expected_files:
+  - extension/src/sidecarClient.ts
+  - extension/src/providers/SurgicalContextViewProvider.ts
+  - extension/src/extension.ts
+  - context_engine/main.py
+- id: dathund_q01
+  repo: dathund
+  core12: true
+  symbol: ChainEngine
+  question: After CorrelationEngine finds a CHAIN match, what post-match gates can reject it before an alert is emitted?
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: dathund_chain_post_match_gates
+  expected_symbols:
+  - ChainEngine
+  - _passes_gates
+  - _lineage_gate
+  - _same_actor_gate
+  - passes_lifecycle_gate
+  expected_files:
+  - src/dathund_core/engine/chain_engine.py
+  - src/dathund_core/engine/lifecycle_gates.py
+- id: dathund_q02
+  repo: dathund
+  core12: true
+  symbol: AsyncPoller
+  question: What is the ordered pipeline inside AsyncPoller.run_once from connector fetch through alert dispatch?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: dathund_poller_poll_cycle
+  expected_symbols:
+  - AsyncPoller
+  - run_once
+  - RuleEngine
+  - CorrelationEngine
+  - ChainEngine
+  expected_files:
+  - src/dathund_core/collector/poller.py
+- id: dathund_q03
+  repo: dathund
+  core12: true
+  symbol: build_lineage_store
+  question: How does Settings.lineage_backend choose between memory, pg-closure, Kuzu, and Memgraph lineage implementations?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: dathund_lineage_backend_factory
+  expected_symbols:
+  - build_lineage_store
+  - MemoryClosureLineageStore
+  - PgClosureLineageStore
+  - KuzuLineageStore
+  expected_files:
+  - src/dathund_core/lineage/factory.py
+  - src/dathund_core/lineage/store.py
+- id: dathund_q04
+  repo: dathund
+  core12: false
+  symbol: effective_event_time_for_chain
+  question: When does ChainEngine use ingested_time instead of event_time as the correlation clock, and how does that widen
+    the match window?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: dathund_time_authority_chain_clock
+  expected_symbols:
+  - effective_event_time_for_chain
+  - effective_chain_window_seconds
+  - extra_skew_seconds_for_events
+  expected_files:
+  - src/dathund_core/engine/time_authority.py
+  - src/dathund_core/engine/chain_engine.py
+  - src/dathund_core/connectors/time_authority_registry.py
+- id: dathund_q05
+  repo: dathund
+  core12: false
+  symbol: CHAIN_001
+  question: What three event stages does CHAIN_001 require, and how does require_lineage_path connect matched events in the
+    graph?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: dathund_chain_001_exfil_pattern
+  expected_symbols:
+  - CHAIN_001
+  - CorrelationRule
+  - require_lineage_path
+  expected_files:
+  - src/dathund_core/plugins/chain_rules/catalog.py
+  - src/dathund_core/engine/chain_engine.py
+  - src/dathund_core/engine/correlation.py
+- id: dathund_q06
+  repo: dathund
+  core12: false
+  symbol: ActorIndex
+  question: How does ActorIndex.same_actor decide two connector-local actor strings refer to the same principal?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: dathund_actor_index_resolution
+  expected_symbols:
+  - ActorIndex
+  - same_actor
+  - ingest
+  expected_files:
+  - src/dathund_core/identity/actor_index.py
+  - src/dathund_core/engine/chain_engine.py
+- id: dathund_q07
+  repo: dathund
+  core12: false
+  symbol: DathundAnalyzer
+  question: Where in the analyzer base class are raw SQL or query fields scrubbed before events are returned?
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: dathund_analyzer_query_privacy
+  expected_symbols:
+  - DathundAnalyzer
+  - scrub_metadata_queries
+  - QueryScrubber
+  expected_files:
+  - src/dathund_core/analyzers/base.py
+  - src/dathund_core/privacy/query_scrubber.py
+- id: dathund_q08
+  repo: dathund
+  core12: false
+  symbol: extend_closure
+  question: How does extend_closure maintain hop-bounded transitive paths when a new LineageObservation edge arrives?
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: dathund_lineage_closure_maintenance
+  expected_symbols:
+  - extend_closure
+  - merge_closure_entry
+  - ClosureEntry
+  expected_files:
+  - src/dathund_core/lineage/closure_logic.py
+  - src/dathund_core/lineage/pg_store.py
+- id: click_q01
+  repo: click
+  core12: false
+  symbol: command
+  question: How is a function registered as a CLI command and attached to a command group in Click?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: click_command_registration
+  expected_symbols:
+  - command
+  - group
+  - Command
+  - Group
+  - get_command
+  - add_command
+  expected_files:
+  - src/click/decorators.py
+  - src/click/core.py
+- id: click_q02
+  repo: click
+  core12: false
+  symbol: Command.invoke
+  question: How does Click parse command-line arguments and pass them to the underlying command function?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: click_invoke_argument_parsing
+  expected_symbols:
+  - Command
+  - invoke
+  - make_context
+  - parse_args
+  - Context
+  expected_files:
+  - src/click/core.py
+  - src/click/parser.py
+- id: click_q03
+  repo: click
+  core12: false
+  symbol: Context
+  question: How does Click's Context object manage state and pass it between parent and child commands?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: click_context_state
+  expected_symbols:
+  - Context
+  - pass_context
+  - pass_obj
+  - invoke
+  expected_files:
+  - src/click/core.py
+  - src/click/decorators.py
+- id: click_q04
+  repo: click
+  core12: false
+  symbol: ParamType.convert
+  question: If I change the validation and conversion logic inside a custom Click ParamType, what parts of the system and
+    tests might break?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: click_paramtype_impact
+  expected_symbols:
+  - ParamType
+  - convert
+  - Option
+  - Argument
+  expected_files:
+  - src/click/types.py
+  - src/click/core.py
+  - tests
+- id: click_q05
+  repo: click
+  core12: false
+  symbol: UsageError
+  question: How does Click handle and format UsageError before displaying the help message to the user?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: click_usage_error_formatting
+  expected_symbols:
+  - UsageError
+  - HelpFormatter
+  - format_usage
+  - echo
+  expected_files:
+  - src/click/exceptions.py
+  - src/click/core.py
+  - src/click/formatting.py
+- id: celery_q01
+  repo: celery
+  core12: false
+  symbol: task
+  question: How does the @app.task decorator register a function into the Celery worker's task registry?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: celery_task_registration
+  expected_symbols:
+  - task
+  - Task
+  - _task_from_fun
+  - TaskRegistry
+  - register
+  expected_files:
+  - celery/app/base.py
+  - celery/app/task.py
+  - celery/app/registry.py
+- id: celery_q02
+  repo: celery
+  core12: false
+  symbol: Task.apply_async
+  question: When a user calls task.delay() and it delegates to apply_async(), how is the task message constructed and sent
+    to the broker?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: celery_task_publish
+  expected_symbols:
+  - Task
+  - delay
+  - apply_async
+  - send_task
+  - create_task_message
+  - send_task_message
+  - Producer
+  expected_files:
+  - celery/app/task.py
+  - celery/app/amqp.py
+  - celery/app/base.py
+- id: celery_q03
+  repo: celery
+  core12: false
+  symbol: Consumer
+  question: How does the Celery worker receive a message from the broker and execute the underlying task function?
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
+  mechanism: celery_worker_consume
+  expected_symbols:
+  - Consumer
+  - on_task_request
+  - TaskPool
+  - Strategy
+  - execute
+  expected_files:
+  - celery/worker/consumer/consumer.py
+  - celery/worker/request.py
+  - celery/worker/strategy.py
+- id: celery_q04
+  repo: celery
+  core12: false
+  symbol: AsyncResult
+  question: How does AsyncResult check the state of a task and retrieve its return value from the backend?
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
+  mechanism: celery_async_result_backend
+  expected_symbols:
+  - AsyncResult
+  - get
+  - backend
+  - result
+  expected_files:
+  - celery/result.py
+  - celery/backends
+- id: celery_q05
+  repo: celery
+  core12: false
+  symbol: Task.apply_async
+  question: If I modify the signature or default routing options in apply_async, what publisher components are affected?
+  difficulty: hard
+  intent: impact_analysis
+  expected_mode: symbol
+  mechanism: celery_apply_async_impact
+  expected_symbols:
+  - Task
+  - apply_async
+  - send_task
+  - Router
+  - _create_task_sender
+  expected_files:
+  - celery/app/task.py
+  - celery/app/base.py
+  - celery/app/routes.py
+  - celery/canvas.py
+- id: fastapi_new_q01
+  repo: fastapi
+  symbol: RequestValidationError
+  question: How does FastAPI catch Pydantic validation errors and transform them into 422 HTTP responses?
+  expected_symbols:
+  - RequestValidationError
+  - request_validation_exception_handler
+  - exception_handler
+  expected_files:
+  - fastapi/exceptions.py
+  - fastapi/exception_handlers.py
+- id: fastapi_new_q02
+  repo: fastapi
+  symbol: BackgroundTasks
+  question: How are BackgroundTasks integrated into the response lifecycle and executed after the response is sent?
+  expected_symbols:
+  - BackgroundTasks
+  - add_task
+  - Response
+  expected_files:
+  - fastapi/background.py
+  - fastapi/routing.py
+- id: fastapi_new_q03
+  repo: fastapi
+  symbol: lifespan
+  question: How does the lifespan async context manager replace startup and shutdown events in modern FastAPI?
+  expected_symbols:
+  - lifespan
+  - Router
+  - FastAPI
+  - asynccontextmanager
+  expected_files:
+  - fastapi/routing.py
+  - fastapi/applications.py
+- id: fastapi_new_q04
+  repo: fastapi
+  symbol: BaseHTTPMiddleware
+  question: What is the execution order and internal mechanism of BaseHTTPMiddleware compared to standard ASGI middleware?
+  expected_symbols:
+  - BaseHTTPMiddleware
+  - dispatch
+  - add_middleware
+  expected_files:
+  - fastapi/applications.py
+  - fastapi/middleware/asyncexitstack.py
+- id: fastapi_new_q05
+  repo: fastapi
+  symbol: WebSocket
+  question: How does FastAPI handle WebSocket handshakes, acceptance, and connection drops (WebSocketDisconnect)?
+  expected_symbols:
+  - WebSocket
+  - accept
+  - receive_text
+  - WebSocketDisconnect
+  expected_files:
+  - fastapi/routing.py
+- id: fastapi_new_q06
+  repo: fastapi
+  symbol: OAuth2PasswordBearer
+  question: How does OAuth2PasswordBearer extract the token from the Authorization header and integrate with Depends?
+  expected_symbols:
+  - OAuth2PasswordBearer
+  - __call__
+  - security_scopes
+  expected_files:
+  - fastapi/security/oauth2.py
+- id: pydantic_new_q01
+  repo: pydantic
+  symbol: field_validator
+  question: How does the @field_validator decorator hook into the pydantic-core validation pipeline?
+  expected_symbols:
+  - field_validator
+  - FieldValidatorDecoratorInfo
+  - Decorator
+  expected_files:
+  - pydantic/functional_validators.py
+  - pydantic/_internal/_decorators.py
+- id: pydantic_new_q02
+  repo: pydantic
+  symbol: computed_field
+  question: How are @computed_field properties evaluated during model_dump() serialization?
+  expected_symbols:
+  - computed_field
+  - computed_field_info
+  - SchemaSerializer
+  expected_files:
+  - pydantic/fields.py
+  - pydantic/_internal/_decorators.py
+- id: pydantic_new_q03
+  repo: pydantic
+  symbol: ConfigDict
+  question: How does strict=True in ConfigDict propagate to the underlying Rust core schema?
+  expected_symbols:
+  - ConfigDict
+  - strict
+  - _generate_schema
+  expected_files:
+  - pydantic/config.py
+  - pydantic/_internal/_generate_schema.py
+- id: pydantic_new_q04
+  repo: pydantic
+  symbol: SecretStr
+  question: How do SecretStr and SecretBytes prevent accidental logging while allowing explicit retrieval?
+  expected_symbols:
+  - SecretStr
+  - get_secret_value
+  - __repr__
+  expected_files:
+  - pydantic/types.py
+- id: pydantic_new_q05
+  repo: pydantic
+  symbol: TypeAdapter
+  question: How does TypeAdapter validate arbitrary Python objects without requiring a BaseModel subclass?
+  expected_symbols:
+  - TypeAdapter
+  - validate_python
+  - _type_adapter
+  expected_files:
+  - pydantic/type_adapter.py
+  - pydantic/_internal/_generate_schema.py
+- id: pydantic_new_q06
+  repo: pydantic
+  symbol: model_validator
+  question: What is the difference in execution context between mode='before' and mode='after' in @model_validator?
+  expected_symbols:
+  - model_validator
+  - ModelValidatorDecoratorInfo
+  expected_files:
+  - pydantic/functional_validators.py
+  - pydantic/_internal/_decorators.py
+- id: django_new_q01
+  repo: django
+  symbol: F
+  question: How do F() expressions compile into atomic SQL statements instead of loading values into Python memory?
+  expected_symbols:
+  - F
+  - resolve_expression
+  - ExpressionNode
+  - compiler
+  expected_files:
+  - django/db/models/expressions.py
+  - django/db/models/sql/compiler.py
+- id: django_new_q02
+  repo: django
+  symbol: Signal
+  question: How does the Django signals framework dispatch events synchronously and manage receiver weak references?
+  expected_symbols:
+  - Signal
+  - send
+  - connect
+  - receiver
+  expected_files:
+  - django/dispatch/dispatcher.py
+- id: django_new_q03
+  repo: django
+  symbol: BaseCommand
+  question: How does the management command system parse arguments via argparse and execute the handle() method?
+  expected_symbols:
+  - BaseCommand
+  - execute
+  - handle
+  - create_parser
+  expected_files:
+  - django/core/management/base.py
+- id: django_new_q04
+  repo: django
+  symbol: GenericForeignKey
+  question: How does the ContentTypes framework resolve GenericForeignKey using content_type_id and object_id?
+  expected_symbols:
+  - GenericForeignKey
+  - ContentType
+  - get_content_type
+  expected_files:
+  - django/contrib/contenttypes/fields.py
+  - django/contrib/contenttypes/models.py
+- id: django_new_q05
+  repo: django
+  symbol: AUTH_USER_MODEL
+  question: How does Django dynamically resolve the active User model when get_user_model() is called?
+  expected_symbols:
+  - get_user_model
+  - AUTH_USER_MODEL
+  - Apps
+  expected_files:
+  - django/contrib/auth/__init__.py
+  - django/apps/registry.py
+- id: django_new_q06
+  repo: django
+  symbol: TransactionMiddleware
+  question: How does atomic() decorators and transaction middleware wrap database operations in savepoints?
+  expected_symbols:
+  - atomic
+  - savepoint
+  - commit
+  - rollback
+  expected_files:
+  - django/db/transaction.py
+  - django/db/backends/base/base.py
+- id: flask_new_q01
+  repo: flask
+  symbol: session
+  question: How does Flask serialize and sign the session dictionary into a client-side cookie using itsdangerous?
+  expected_symbols:
+  - session
+  - SecureCookieSessionInterface
+  - save_session
+  - open_session
+  expected_files:
+  - src/flask/sessions.py
+  - src/flask/app.py
+- id: flask_new_q02
+  repo: flask
+  symbol: g
+  question: What is the exact scope of the 'g' object, and how is it cleared at the end of the request context?
+  expected_symbols:
+  - g
+  - _app_ctx_stack
+  - teardown_appcontext
+  expected_files:
+  - src/flask/globals.py
+  - src/flask/ctx.py
+- id: flask_new_q03
+  repo: flask
+  symbol: errorhandler
+  question: How does Flask map specific HTTP status codes or Exception classes to custom error handler functions?
+  expected_symbols:
+  - errorhandler
+  - register_error_handler
+  - handle_user_exception
+  expected_files:
+  - src/flask/app.py
+- id: flask_new_q04
+  repo: flask
+  symbol: context_processor
+  question: How do context processors inject default variables into all Jinja templates rendered by the application?
+  expected_symbols:
+  - context_processor
+  - template_context_processors
+  - update_template_context
+  expected_files:
+  - src/flask/app.py
+  - src/flask/templating.py
+- id: flask_new_q05
+  repo: flask
+  symbol: BaseConverter
+  question: How do custom URL converters (like <int:id>) parse route segments and pass typed values to view functions?
+  expected_symbols:
+  - BaseConverter
+  - to_python
+  - to_url
+  - url_map
+  expected_files:
+  - src/flask/app.py
+- id: flask_new_q06
+  repo: flask
+  symbol: AppGroup
+  question: How does Flask integrate with Click to register custom CLI commands using the @app.cli.command decorator?
+  expected_symbols:
+  - AppGroup
+  - cli
+  - with_appcontext
+  expected_files:
+  - src/flask/cli.py
+- id: sqlalchemy_new_q01
+  repo: sqlalchemy
+  symbol: select
+  question: In SQLAlchemy 2.0, how does the select() construct replace the older session.query() for statement compilation?
+  expected_symbols:
+  - select
+  - Select
+  - executable
+  - execute
+  expected_files:
+  - lib/sqlalchemy/sql/selectable.py
+  - lib/sqlalchemy/engine/result.py
+- id: sqlalchemy_new_q02
+  repo: sqlalchemy
+  symbol: selectinload
+  question: How does selectinload differ from joinedload in emitting secondary SQL queries for eager loading collections?
+  expected_symbols:
+  - selectinload
+  - joinedload
+  - Load
+  - _generate
+  expected_files:
+  - lib/sqlalchemy/orm/strategy_options.py
+  - lib/sqlalchemy/orm/strategies.py
+- id: sqlalchemy_new_q03
+  repo: sqlalchemy
+  symbol: event
+  question: How does the @event.listens_for decorator register hooks for ORM lifecycle events (e.g., before_insert)?
+  expected_symbols:
+  - listens_for
+  - listen
+  - Dispatch
+  - MapperEvents
+  expected_files:
+  - lib/sqlalchemy/event/api.py
+  - lib/sqlalchemy/orm/events.py
+- id: sqlalchemy_new_q04
+  repo: sqlalchemy
+  symbol: autoload_with
+  question: How does Table reflection (autoload_with=engine) interrogate the database catalog to build MetaData?
+  expected_symbols:
+  - autoload_with
+  - reflecttable
+  - Inspector
+  expected_files:
+  - lib/sqlalchemy/sql/schema.py
+  - lib/sqlalchemy/engine/reflection.py
+- id: sqlalchemy_new_q05
+  repo: sqlalchemy
+  symbol: AsyncSession
+  question: How does AsyncSession wrap the standard Session to adapt synchronous greenlet execution to Python asyncio?
+  expected_symbols:
+  - AsyncSession
+  - execute
+  - greenlet_spawn
+  expected_files:
+  - lib/sqlalchemy/ext/asyncio/session.py
+  - lib/sqlalchemy/util/concurrency.py
+- id: sqlalchemy_new_q06
+  repo: sqlalchemy
+  symbol: composite
+  question: How does the composite() construct map multiple database columns into a single custom Python dataclass or object?
+  expected_symbols:
+  - composite
+  - CompositeProperty
+  - MapperProperty
+  expected_files:
+  - lib/sqlalchemy/orm/properties.py
+  - lib/sqlalchemy/orm/descriptor_props.py
+- id: click_new_q01
+  repo: click
+  symbol: prompt
+  question: How does click.prompt() handle interactive standard input, hidden passwords, and type casting?
+  expected_symbols:
+  - prompt
+  - DefaultFormatter
+  - visible_prompt
+  - hide_input
+  expected_files:
+  - src/click/termui.py
+- id: click_new_q02
+  repo: click
+  symbol: File
+  question: How does the File parameter type lazily open file handles and handle '-' for stdin/stdout?
+  expected_symbols:
+  - File
+  - convert
+  - open_stream
+  expected_files:
+  - src/click/types.py
+  - src/click/_compat.py
+- id: click_new_q03
+  repo: click
+  symbol: pass_context
+  question: How does the @pass_context decorator inject the current Context instance as the first argument to a command?
+  expected_symbols:
+  - pass_context
+  - Context
+  - invoke
+  expected_files:
+  - src/click/decorators.py
+  - src/click/core.py
+- id: click_new_q04
+  repo: click
+  symbol: CliRunner
+  question: How does CliRunner isolate standard streams (stdout/stderr) and environment variables to test CLI commands?
+  expected_symbols:
+  - CliRunner
+  - invoke
+  - isolation
+  - Result
+  expected_files:
+  - src/click/testing.py
+- id: click_new_q05
+  repo: click
+  symbol: get_command
+  question: How can subclassing Group and overriding get_command() allow for dynamic or lazily loaded subcommands?
+  expected_symbols:
+  - Group
+  - get_command
+  - resolve_command
+  expected_files:
+  - src/click/core.py
+- id: click_new_q06
+  repo: click
+  symbol: Argument
+  question: What is the parsing difference inside Context.parse_args between a positional Argument and an Option?
+  expected_symbols:
+  - Argument
+  - Option
+  - parse_args
+  - add_param
+  expected_files:
+  - src/click/core.py
+  - src/click/parser.py
+- id: celery_new_q01
+  repo: celery
+  symbol: retry
+  question: How does the task.retry() method raise Retry exception to signal the worker to re-queue the task with an ETA delay?
+  expected_symbols:
+  - retry
+  - Retry
+  - autoretry_for
+  - MaxRetriesExceededError
+  expected_files:
+  - celery/app/task.py
+  - celery/exceptions.py
+- id: celery_new_q02
+  repo: celery
+  symbol: CELERY_ROUTES
+  question: How does the Router evaluate CELERY_ROUTES (queues, exchanges, routing_keys) before publishing a task?
+  expected_symbols:
+  - Router
+  - route
+  - expand_destination
+  expected_files:
+  - celery/app/routes.py
+- id: celery_new_q03
+  repo: celery
+  symbol: chain
+  question: How does a Celery canvas chain() link the result of one signature to the arguments of the next?
+  expected_symbols:
+  - chain
+  - Signature
+  - apply_async
+  - link
+  expected_files:
+  - celery/canvas.py
+  - celery/app/task.py
+- id: celery_new_q04
+  repo: celery
+  symbol: Pool
+  question: How does the worker delegate task execution to different pool implementations like prefork vs gevent?
+  expected_symbols:
+  - Pool
+  - TaskPool
+  - apply_async
+  - start
+  expected_files:
+  - celery/concurrency/base.py
+  - celery/concurrency/prefork.py
+- id: celery_new_q05
+  repo: celery
+  symbol: beat
+  question: How does celery beat schedule periodic tasks and send them to the broker at the designated intervals?
+  expected_symbols:
+  - Scheduler
+  - tick
+  - apply_entry
+  - apply_async
+  expected_files:
+  - celery/beat.py
+- id: celery_new_q06
+  repo: celery
+  symbol: SoftTimeLimitExceeded
+  question: How are task soft time limits enforced, and how does the worker signal the process to raise SoftTimeLimitExceeded?
+  expected_symbols:
+  - SoftTimeLimitExceeded
+  - TimeLimitExceeded
+  - set_process_title
+  expected_files:
+  - celery/exceptions.py
+  - celery/worker/state.py
+  - celery/concurrency/prefork.py

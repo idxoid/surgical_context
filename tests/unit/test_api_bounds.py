@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from sidecar.main import (
+from context_engine.api.schemas import (
     SEARCH_LIMIT_MAX,
     SEARCH_LIMIT_MIN,
     TOKEN_BUDGET_MAX,

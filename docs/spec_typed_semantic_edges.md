@@ -1,5 +1,6 @@
 # Spec — Typed Semantic Edges (Phase 5)
 
+
 > **Status:** Implemented for typed call edges and ranker traversal. The graph now supports and consumes `CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`, and `CALLS_GUESS`; legacy `CALLS` is still accepted as a compatibility fallback. `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, and `SEMANTIC_HINT` are supported by traversal/scoring, but parser emission is uneven: inheritance currently writes `DEPENDS_ON` with metadata, not dedicated `IMPLEMENTS`/`OVERRIDES` edges, and `REFERENCES` is schema/ranker-ready but not broadly emitted.
 
 ## 1. Problem
@@ -11,7 +12,7 @@ The original graph used one broad `CALLS` edge for every call-like relationship.
 - a method dispatch through `self` or an object is weaker than a direct function call
 - a heuristic `getattr`/`eval` pattern should not rank like ordinary control flow
 
-Typed semantic edges give BFS, AFFECTS, and UnifiedRanker a confidence signal before semantic search or role backfill even runs.
+Typed semantic edges give axis graph walks and AFFECTS a confidence signal before semantic seed ranking runs.
 
 ## 2. Current Edge Types
 
@@ -35,14 +36,14 @@ Typed semantic edges give BFS, AFFECTS, and UnifiedRanker a confidence signal be
 | `IMPLEMENTS` | Class implements interface/abstract contract | Traversal/scoring support; not broadly emitted |
 | `OVERRIDES` | Method overrides parent method | Traversal/scoring support; not broadly emitted |
 | `REFERENCES` | Weak symbol reference/type-only mention | Schema/scoring support; not broadly emitted |
-| `SEMANTIC_HINT` | Framework/doc-derived semantic relationship | Consumed by UnifiedRanker; produced by framework hint paths |
+| `SEMANTIC_HINT` | Legacy semantic relationship | May exist in older graphs; **no longer produced** (framework/ts_http hints removed 2026-06); not in axis `EdgeProfile` |
 | `IMPORTS` | File-to-file imports | Retained at file level |
 
 ## 3. Detection Logic
 
 ### 3.1 Python Adapter
 
-Implemented in `sidecar/parser/adapters/python_adapter.py`.
+Implemented in `context_engine/parser/adapters/python_adapter.py`.
 
 Current call classification:
 
@@ -67,7 +68,7 @@ Relationship metadata written with calls:
 
 ### 3.2 TypeScript Adapter
 
-Implemented in `sidecar/parser/adapters/typescript_adapter.py`.
+Implemented in `context_engine/parser/adapters/typescript_adapter.py`.
 
 Current call classification:
 
@@ -79,17 +80,19 @@ TypeScript support is intentionally simpler than Python scoped/imported resoluti
 
 **Exported object APIs.** `export const SidecarClient = { ask(...) { ... } }` is indexed as one `object_api` symbol (`signature_status: object_api_export`). Nested methods are not separate top-level symbols. Call extraction attributes HTTP helper calls to the object surface. See `tests/unit/test_typescript_adapter.py`.
 
-### 3.3 Cross-language HTTP hints
+### 3.3 Cross-language HTTP
 
-Implemented in `sidecar/indexer/ts_http_route_hints.py` (fast pipeline stage after `framework_hints`).
+Cross-language client → handler linking uses structural endpoint facts:
 
-When a monorepo contains both TypeScript client code and Python FastAPI handlers:
+- Adapters emit ``implement`` / ``call`` facts with ``method`` + literal ``path``
+  (FastAPI decorators, NestJS ``@Get``, Express ``app.get``, TS ``post('/ask')``).
+- Indexer phase ``http_endpoints`` materializes ``ApiEndpoint`` nodes and
+  ``IMPLEMENTS_ENDPOINT`` / ``CALLS_ENDPOINT`` edges (fingerprint ``METHOD:path``).
+- Axis graph walks include both edge types in ``EdgeProfile.PROXIMITY`` /
+  ``BINDING`` so BFS can cross TS client ↔ Python handler in a monorepo.
 
-1. Python scan extracts `@app.<method>("/path")` decorators and handler function names (test/QA files skipped; `main.py` preferred on duplicate paths).
-2. TypeScript scan finds `export const` object APIs and HTTP path literals in `post/get/fetch(...)` calls.
-3. Matching paths create `SEMANTIC_HINT` edges from the TS `object_api` symbol to the Python handler symbol.
-
-These edges are consumed by `UnifiedRanker` with the same strong prior as other `SEMANTIC_HINT` relationships. They are generic path matching, not repo-name dispatch.
+Regex ``SEMANTIC_HINT`` hints were removed 2026-06; this bridge replaces them
+with AST-grounded path literals only.
 
 ### 3.4 Inheritance and References
 
@@ -119,46 +122,19 @@ Supported modes:
 - `qualified_name` — imported target
 - name fallback — only links if exactly one candidate exists
 
-`sidecar/database/schema_migration.py` supports:
-
-```bash
-python -m sidecar.database.schema_migration status
-python -m sidecar.database.schema_migration create-indexes
-python -m sidecar.database.schema_migration migrate-edges [--drop-old]
-```
-
-The migration converts old `CALLS` edges to `CALLS_DIRECT` conservatively and can create relationship indexes for:
-
-- `CALLS_DIRECT`
-- `CALLS_DYNAMIC`
-- `CALLS_INFERRED`
-- `IMPLEMENTS`
-- `OVERRIDES`
-- `REFERENCES`
-
-The newer `CALLS_SCOPED`, `CALLS_IMPORTED`, and `CALLS_GUESS` types are used by the live parser/ranker path but are not fully reflected in the older migration script's index list.
+Pre-prod and fresh workspaces get typed edges directly from the parser/indexer
+(`CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`,
+`CALLS_GUESS`). Legacy `CALLS` is still accepted as a traversal fallback in
+`Neo4jClient`, but new indexing does not emit it. Wipe + reindex is the supported
+path when graph shape drifts — no separate migration CLI.
 
 ## 5. Retrieval Consumption
 
-### 5.1 GraphExpander
+### 5.1 Axis graph walks
 
-`sidecar/context/graph_expander.py` traverses:
+`context_engine/axis/graph_walk.py` traverses typed edges via `EdgeProfile` whitelists (`axis_profiles.py`). Pool passes call `walk_neighbours` / `walk_neighbours_grouped`. Seed ranking blends structural + semantic scores in `role_retrieval.py`. Legacy `CALLS` remains accepted where stored. `SEMANTIC_HINT` is **not produced** (removed 2026-06) and is not in axis edge profiles.
 
-```cypher
-CALLS
-CALLS_DIRECT
-CALLS_SCOPED
-CALLS_IMPORTED
-CALLS_DYNAMIC
-CALLS_INFERRED
-CALLS_GUESS
-DEPENDS_ON
-IMPLEMENTS
-OVERRIDES
-REFERENCES
-```
-
-Current relation priors:
+Example relation priors (legacy cascade; axis uses profile-specific caps):
 
 ```python
 CALLS_DIRECT_out:   1.0
@@ -182,21 +158,9 @@ OVERRIDES:          1.1
 REFERENCES:         0.3
 ```
 
-### 5.2 UnifiedRanker
-
-`sidecar/context/unified_ranker.py` mirrors the same typed edge priors and additionally consumes `SEMANTIC_HINT` with a strong prior. Typed relationships are used for:
-
-- graph candidate score
-- direction labels
-- strong-relation gating
-- AFFECTS reverse traversal
-- role/backfill recovery queries
-
-Legacy `CALLS` remains accepted and is treated like `CALLS_DIRECT`.
-
 ## 6. AFFECTS Integration
 
-`sidecar/indexer/affects.py` derives reverse dependency reachability from:
+`context_engine/indexer/affects.py` derives reverse dependency reachability from:
 
 ```python
 CALLS_DIRECT
@@ -224,10 +188,8 @@ Implemented coverage includes:
   - Neo4j `link_calls` uses `callee_uid` and batches same resolution mode
 - `tests/integration/test_phase5_validation.py`
   - typed semantic edge smoke validation
-- ranker tests in `tests/unit/test_unified_ranker.py`
-  - typed relation handling in graph candidates and scoring paths
+- axis walk / retrieval tests under `tests/unit/test_axis_*`
 - AFFECTS tests in `tests/unit/test_affects_indexer.py`
-  - typed edge family used for reverse dependency loading
 
 ## 8. Current Success Criteria
 
@@ -235,17 +197,16 @@ Implemented:
 
 1. Parser emits typed call rows for Python and TypeScript.
 2. Neo4j writes typed call relationships with confidence/tier/resolver metadata.
-3. GraphExpander and UnifiedRanker traverse and score typed edges.
+3. Axis graph walks traverse typed edges via `EdgeProfile`.
 4. AFFECTS derives reverse impact from typed edges.
-5. Legacy `CALLS` remains compatible.
+5. Legacy `CALLS` remains compatible where still stored.
 
 Still deferred:
 
 1. Emit dedicated `IMPLEMENTS` / `OVERRIDES` edges instead of only metadata-rich `DEPENDS_ON`.
 2. Emit `REFERENCES` from type annotations/comments.
-3. Update schema migration/index creation for `CALLS_SCOPED`, `CALLS_IMPORTED`, and `CALLS_GUESS`.
-4. Add more parser tests for Python dynamic/inferred edge cases.
-5. Use typed-edge confidence more directly in UnifiedRanker blending, not only relation priors.
+3. Add more parser tests for Python dynamic/inferred edge cases.
+4. Use typed-edge confidence more directly in seed ranking blend, not only hop caps.
 
 ## 9. Phase Sequencing
 
