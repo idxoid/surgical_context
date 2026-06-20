@@ -29,9 +29,7 @@ def connect_neo4j_driver(
     resolved_local_uri = (
         local_uri if local_uri is not None else os.getenv("NEO4J_URI", "bolt://localhost:7687")
     )
-    resolved_local_user = (
-        local_user if local_user is not None else os.getenv("NEO4J_USER", "neo4j")
-    )
+    resolved_local_user = local_user if local_user is not None else os.getenv("NEO4J_USER", "neo4j")
     resolved_local_password = (
         local_password if local_password is not None else os.getenv("NEO4J_PASSWORD", "password")
     )
