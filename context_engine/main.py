@@ -248,7 +248,10 @@ def _index_file_now(file_path: str, base_workspace_id: str, user_id: str) -> int
     import context_engine.indexer.service as index_service_mod
 
     index_service_mod.db_session = db_session
-    index_service_mod.IndexJobLog = IndexJobLog
+    # setattr: IndexJobLog is a class, and a plain ``mod.IndexJobLog = ...``
+    # trips mypy's "Cannot assign to a type" — the assignment is a deliberate
+    # late-bound injection of main's (test-patchable) IndexJobLog.
+    setattr(index_service_mod, "IndexJobLog", IndexJobLog)
     indexing_service.vector_db = vector_db
     indexing_service.overlay = overlay
     return indexing_service.index_file_now(file_path, base_workspace_id, user_id)
