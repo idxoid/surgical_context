@@ -16,7 +16,7 @@ def update_overlay(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
@@ -40,7 +40,7 @@ def clear_overlay(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)

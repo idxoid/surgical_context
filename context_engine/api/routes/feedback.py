@@ -17,7 +17,7 @@ def record_feedback(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Record retrieval feedback against an issued feedback token."""
     main = require_main(request)

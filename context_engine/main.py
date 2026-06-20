@@ -57,7 +57,10 @@ from context_engine.observability import (
     estimate_text_tokens,  # noqa: F401 — route bridge
     new_trace_id,
 )
-from context_engine.workspace import Workspace
+from context_engine.workspace import (
+    DEFAULT_WORKSPACE_ID,  # noqa: F401 — re-exported for tests
+    Workspace,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
