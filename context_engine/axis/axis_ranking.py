@@ -5,7 +5,7 @@ selection (seeds come from role-agnostic vectors, traversal axis comes
 from node kinds). What intent keeps is resource management: depth
 bounding and *ranking*. This module is the ranking half.
 
-The idea idxoid specified: when intent points at a role, the candidates
+When intent points at a role, the candidates
 that sit on the same traversal *axis* as that role are more likely to
 be the answer, so they get a score boost. A routing question
 (``routing_surface`` → REGISTRY/CONTROL axes) boosts candidates whose

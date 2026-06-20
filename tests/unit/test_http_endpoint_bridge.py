@@ -32,7 +32,7 @@ class TestTypeScriptHttpEndpointExtraction:
             project_root_scope,
         )
 
-        with project_root_scope("/home/idxoid/surgical_context", "ws"):
+        with project_root_scope("./", "ws"):
             rows = adapter.extract_http_endpoints(source, path)
             qn = f"{module_name_from_path(path)}.SidecarClient"
             sig = normalize_signature("SidecarClient()->_", "typescript")
