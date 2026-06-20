@@ -9,7 +9,7 @@ process stay isolated. ``_default_deps`` is only a fallback for direct
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from fastapi import Request
 
@@ -35,7 +35,7 @@ def route_deps(request: Request | None = None) -> MainRouteDeps:
     if request is not None:
         deps = getattr(request.app.state, "route_deps", None)
         if deps is not None:
-            return deps
+            return cast(MainRouteDeps, deps)
     if _default_deps is None:
         raise RuntimeError("main routes are not configured")
     return _default_deps

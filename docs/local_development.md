@@ -71,9 +71,11 @@ The graph provider stores topology and metadata only. Source code stays on the f
 ## Workspace Scope
 
 The sidecar uses `DEFAULT_WORKSPACE_ID=local/surgical_context@main` when a request
-does not include `X-Workspace`. The VS Code extension leaves
-`surgicalContext.workspaceId` blank by default; in normal local development it
-derives the header from the first open workspace folder and active Git branch:
+does not carry a workspace-scoped bearer token. Raw `X-Workspace` is ignored by
+default unless `TRUST_CLIENT_WORKSPACE_HEADER=true`. The VS Code extension leaves
+`surgicalContext.workspaceId` blank by default, derives a workspace from the
+first open folder and active Git branch, obtains a token from `/auth/token` with
+that scope, and then sends both the token and header:
 
 ```text
 local/<workspace-folder-name>@<git-branch-or-short-sha>
@@ -83,6 +85,11 @@ Set `surgicalContext.workspaceId` only when you need to force a specific scope
 such as `acme/surgical_context@review-branch`. Leaving it blank avoids the old
 `local/default@main` mismatch and keeps extension requests aligned with the
 sidecar's workspace model.
+
+For controlled curl/script development without bearer tokens, set
+`TRUST_CLIENT_WORKSPACE_HEADER=true` and, only when needed,
+`TRUST_CLIENT_USER_HEADER=true`. Both default to `false`; do not enable them on
+an exposed sidecar.
 
 ### Project root and path sandboxing
 
@@ -197,6 +204,11 @@ If you specifically want to require an already running sidecar:
 python scripts/local_dev.py smoke --no-start-sidecar
 ```
 
+For the default `context_engine/axis` smoke target, an already running sidecar
+must either use the derived `local/axis@<ref>` as `DEFAULT_WORKSPACE_ID` or trust
+the smoke script's `X-Workspace` header. A temporary sidecar started by the smoke
+command receives the derived workspace as its default automatically.
+
 Inside VS Code, use:
 
 - `Surgical Context: Index Workspace`
@@ -227,3 +239,18 @@ ANTHROPIC_MODEL=
 With `ALLOW_CLOUD_LLM=false`, `MODEL_PREFERENCE=auto` never sends assembled context to Anthropic even when a key is present. Set `MODEL_PREFERENCE=claude` only together with `ALLOW_CLOUD_LLM=true`.
 
 **Safety defaults (sidecar):** after `POST /index`, path sandboxing applies to API and graph reads. Search `limit` is capped at 50; `/ask` `token_budget` at 32 000. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing) and [spec_sidecar_api.md](spec_sidecar_api.md#request-validation-bounds).
+
+## Python Quality Gates
+
+The checked-in CI runs these gates in order:
+
+```bash
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+PYTHONPATH=. .venv/bin/mypy context_engine tests
+PYTHONPATH=. .venv/bin/pytest tests/unit -q
+PYTHONPATH=. .venv/bin/pytest tests/integration --run-integration -q
+```
+
+The extension is compiled by `bootstrap`, but it is an example client and is not
+part of the current GitHub Actions workflow.

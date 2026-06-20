@@ -197,7 +197,10 @@ def make_adapter() -> GoAdapter:
     return GoAdapter()
 ```
 
-On next sidecar boot, the registry auto-discovers and registers it. No core edits needed. ✓
+On next sidecar boot, the registry auto-discovers and registers it. No registry or
+collector edit is needed for baseline indexing. Full axis/enrichment parity still
+requires language-specific facts, pipeline integration where applicable, and tests;
+see [spec_language_adapter.md](spec_language_adapter.md).
 
 ---
 
@@ -207,6 +210,7 @@ On next sidecar boot, the registry auto-discovers and registers it. No core edit
 |---|---|---|---|
 | Python | ✅ | `.py`, `.pyi` | TreeSitterAdapter |
 | TypeScript | ✅ | `.ts`, `.tsx` | TreeSitterAdapter |
+| JavaScript | ✅ | `.js`, `.jsx` | TreeSitterAdapter |
 
 ---
 

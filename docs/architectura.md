@@ -1,13 +1,13 @@
 # Surgical Context — Architecture
 
-> **Status:** The active release target is the Local Developer Product: VS Code UI, Python sidecar, local graph/vector/history, and ask/inspect/impact workflows on one developer machine. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, **axis retrieval** (`context_engine/axis/`) as the default `/ask` path, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. The legacy ranking cascade (`ContextArbitrator`, `UnifiedRanker`) was removed 2026-06. Main open gaps: extension polish, setup/smoke-test hardening, broader real-repo benchmark coverage, impact-analysis precision, and provider boundaries around local defaults. See [road_map.md](road_map.md) and [project_gap_analysis.md](project_gap_analysis.md).
+> **Status:** The active release target is the Local Developer Product: a Python context engine with local graph/vector/history defaults and optional VS Code UI. Code indexing, typed call edges, stable UID v2, scoped call resolution, workspace-scoped graph queries, AFFECTS, doc enrichment, **axis retrieval** (`context_engine/axis/`) as the default `/ask` path, model routing, metrics, feedback telemetry, durable index jobs, bounded indexing, and the extension surface are present. The legacy ranking cascade (`ContextArbitrator`, `UnifiedRanker`) was removed in 2026-06. Main open gaps: richer axis-to-prompt observability/doc propagation, extension polish, broader real-repo benchmark validation, impact-analysis precision, and provider boundaries around local defaults. See [road_map.md](road_map.md).
 >
 > **Future layer:** tenant-level API contract graph. Each project indexes and publishes its own safe service/API facts; the tenant graph links those facts across projects and systems without scanning neighboring repositories. This is Team/Enterprise horizon work, not a dependency for the local single-tenant release. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
 ## Section 1: Executive Summary & Goals
 
 ### 1.1. Project Overview
-Surgical Context is an intelligent Context Gateway for VS Code that enhances LLM accuracy and reduces token costs through graph-based dependency analysis.
+Surgical Context is a local-first context engine that enhances LLM grounding and reduces token waste through structural and semantic retrieval. The VS Code extension is one client of the sidecar API, alongside scripts and the QA harness.
 
 Instead of "carpet-bombing" the model with all open files, the system feeds only the specific code snippets and documentation fragments that are mathematically relevant to the user's current task.
 
@@ -44,10 +44,10 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 
 | Component | Stack | Role |
 |---|---|---|
-| **Extension Host** | TypeScript / VS Code API | Manages sidecar lifecycle, proxies webview messages to sidecar, manages file watchers and overlays. |
-| **Webviews** | TypeScript / React | Render Chat Panel, Context Inspector, Impact Explorer, Dashboard. No business logic — dispatch to extension host. |
-| **Sidecar Binary** | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
-| **Storage Provider Layer** | GraphProvider + VectorProvider + HistoryProvider + FS | Provider boundaries around storage. Local defaults: Neo4j, LanceDB, SQLite. Alternate providers are future. |
+| **Extension Host** | TypeScript / VS Code API | Proxies webview messages to an externally started sidecar, derives workspace identity, and manages file watchers/overlays. |
+| **Webviews** | TypeScript + DOM | Render Chat Panel, Context Inspector, Impact Explorer, Dashboard. No React dependency is currently used. |
+| **Sidecar Process** | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
+| **Storage Layer** | Neo4j + LanceDB + SQLite + FS | Concrete local defaults. History has a provider interface; retrieval protocols/fakes exist, while full GraphProvider/VectorProvider wrappers remain staged. |
 | **Tenant API Contract Graph** | GraphProvider metadata layer (future Team layer) | Links project-published service/API manifests across a tenant without cross-project source scanning. |
 
 **Default provider implementations:**
@@ -57,6 +57,22 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 | `GraphProvider` | Neo4j local Docker / customer Neo4j | NebulaGraph, Memgraph, dedicated managed graph service |
 | `VectorProvider` | LanceDB local | Qdrant, Weaviate, pgvector, customer-managed vector services |
 | `HistoryProvider` | SQLite local | encrypted SQLite, Postgres, enterprise audit store, memory-only, disabled |
+
+**Current sidecar module boundaries:**
+
+| Path | Responsibility |
+|---|---|
+| `context_engine/main.py` | Process bootstrap, stderr filtering, compatibility exports used by direct-call tests, and the `app` object. |
+| `context_engine/api/app.py` | FastAPI factory, lifespan, per-app route dependencies, router registration. |
+| `context_engine/api/routes/` | HTTP transport grouped by ask, indexing, search, history, overlay, auth, feedback, impact, and health. |
+| `context_engine/api/schemas/` | Pydantic request/response contracts and public bounds. |
+| `context_engine/api/state.py` | Process-level service construction and ownership. |
+| `context_engine/ask/` | Context-provider fallback ladder and LLM/stream orchestration. |
+| `context_engine/indexer/service.py` | Synchronous, queued, and git-delta indexing orchestration. |
+| `context_engine/axis/` | Active intent, seed, graph-walk, ranking, and context-bundle pipeline. |
+
+HTTP requests resolve route dependencies from `request.app.state`; the fallback
+binding in the route modules exists only for tests that call handlers directly.
 
 ### 2.2. Inter-Process Communication
 VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsive even if a heavy Cypher query blocks the context_engine. Enables future replacement of Python binary with Rust without frontend changes.
@@ -70,9 +86,12 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 | POST | `/index/docs` | ✅ |
 | POST | `/index/file` | ✅ |
 | POST | `/index/files` | ✅ |
+| POST | `/index/git-delta` | ✅ |
+| GET | `/index/git-delta/status` | ✅ |
 | GET | `/index/queue` | ✅ |
 | GET | `/index/manifest` | ✅ |
 | POST | `/ask` | ✅ |
+| POST | `/ask/axis` | ✅ (context-only diagnostic) |
 | POST | `/ask/stream` | ✅ |
 | POST | `/search` | ✅ |
 | POST | `/search/unified` | ✅ |
@@ -94,7 +113,7 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 
 Local development often runs with `AUTH_REQUIRED=false`. Without path checks, any process on the machine could ask the sidecar to read or index arbitrary readable files.
 
-**Rules** (implemented in `context_engine/workspace_paths.py`, enforced in `context_engine/main.py`):
+**Rules** (implemented in `context_engine/workspace_paths.py` and `context_engine/api/workspace_security.py`, enforced by the route layer):
 
 | Step | Behavior |
 |---|---|
@@ -102,7 +121,7 @@ Local development often runs with `AUTH_REQUIRED=false`. Without path checks, an
 | Resolve paths | `/ask` (`file_path`), `/index/file`, `/index/files`, `/index/docs`, and `/overlay` normalize relative paths under that root; absolute paths must still lie inside it (`Path.resolve()` + `relative_to`). |
 | Reject | No manifest yet → HTTP `400`. Path escapes root → HTTP `403`. |
 
-`workspace_paths` + `_sandbox_path` in `main.py` enforce the same root check on caller-supplied paths and IDE anchors. Stale outside-root graph nodes are pruned at index time; overlay reads stay under the registered root. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
+`workspace_paths` plus `sandbox_path()` enforce the same root check on caller-supplied paths and IDE anchors. Stale outside-root graph nodes are pruned at index time; overlay reads stay under the registered root. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
 ### 2.3.2. API request bounds ✅
 
@@ -128,23 +147,23 @@ The system's value proposition rests on three measurable claims: **<200ms contex
 - **Context:** per-candidate expansion + LanceDB code fetch + overlay dirty buffers
 - **Prompt:** `axis_bundles_to_prompt_context` → `PromptContext.to_system_prompt()`
 
-**DocAnchor confidence/type scoring ✅ partially implemented**
-- **Anchor type classification** and **per-edge confidence** are available in the retrieval pipeline.
-- **Primary bias** is available and consumed by ranking.
-- Remaining work is calibration, benchmark coverage expansion, and UI surfacing polish.
+**DocAnchor confidence/type scoring 🚧 indexing complete, active consumption partial**
+- Markdown `COVERS` edges persist `anchor_type`, `confidence`, `primary_bias`, and `resolver`.
+- In-code docstring/JSDoc rows carry `owner_uid`, seed axis retrieval, and feed a bounded reverse-`USES_TYPE` bridge.
+- The normal axis `PromptContext` path does not yet attach general markdown docs or propagate their anchor quality; calibration and UI surfacing remain open.
 
 **Prompt-contract observability ✅ implemented baseline**
 - ✅ **Basic scores**: `{graph_relevance, semantic_score}` per candidate
 - ✅ **Provenance**: why each symbol was selected
 - ✅ **Budget metadata**: `{limit, spent, reserved, pruned_count}`
 - ✅ **Pruned details**: skipped candidates with reason codes
-- ✅ **Ranker metadata** in benchmark output (`metadata.ranker`, assembly timings)
+- ✅ **Ranker counts** in `metadata.ranker` plus assembly timings; the removed cascade's weight snapshot is no longer emitted by the active axis path
 - ✅ **Provider protocols (v1)**: retrieval protocol fakes for tests
-- 🚧 Remaining work: richer UI surfacing and consistency checks across extension surfaces
+- 🚧 Remaining work: propagate live axis scores, intent distribution, pruning details, and ranked docs instead of relying on serializer defaults
 
 **Supporting Infrastructure:**
 - **Structured logs**: per pipeline stage with `trace_id`, `phase`, `duration_ms`
-- **Metrics endpoint** (`GET /metrics`): index duration histogram, `/ask` p50/p95/p99, token counts
+- **Metrics endpoint** (`GET /metrics`): request/stage histograms and counters, index queue counters, token/cost estimates, feedback, cache, and overlay gauges
 - **Axis eval (P7):** `file_recall` on `expected_files` per question pack — no YAML `required_roles` (removed 2026-06)
 - **Benchmark artifacts:** `QA/axis_benchmark.py` → `summary.json` with seed/pool/bundle recall layers
 
@@ -214,8 +233,9 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
   - `[:COVERS {anchor_type, confidence, primary_bias, resolver}]` — code symbols mentioned in chunk, with link quality metadata for ranking
   - Lazy `pending` resolution for forward references (symbols indexed after docs)
 
-**API Contracts (Planned):**
-- Project-owned extraction only: OpenAPI/Swagger, GraphQL SDL, protobuf/gRPC, AsyncAPI, route declarations, generated clients, gateway metadata, and service catalogs inside the current workspace.
+**API Contracts:**
+- **Implemented local slice:** Python FastAPI/Flask and TypeScript/JavaScript HTTP route/client facts are normalized to workspace-local `ApiEndpoint` nodes with `IMPLEMENTS_ENDPOINT` and `CALLS_ENDPOINT` edges.
+- **Planned expansion:** OpenAPI/Swagger, GraphQL SDL, protobuf/gRPC, AsyncAPI, generated clients, gateway metadata, and service catalogs inside the current workspace.
 - Local output: a `ContractManifest` containing safe service, endpoint, schema, event, and call-site metadata for this project.
 - Tenant output: links between published manifests, such as `CALLS_ENDPOINT`, `EXPOSES_ENDPOINT`, `USES_SCHEMA`, `PRODUCES_EVENT`, `CONSUMES_EVENT`, and `DEPENDS_ON_SERVICE`.
 - Explicit boundary: the sidecar never scans neighboring repositories from another project's context. Neighboring projects publish their own facts; the tenant graph only connects those facts.
@@ -229,10 +249,10 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 - **Recovery:** `/index/file` writes an indexing job record before mutating stores, then marks success, failed, or dead-letter state so partial graph/vector failures are visible and retryable.
 
 ### 3.4. Dirty State Handling ✅ Implemented
-`InMemoryOverlay` holds `{(workspace_id, file_path): raw_content}`:
+`InMemoryOverlay` holds `{(workspace_id, user_id, file_path): entry}`:
 - Re-parses symbols on the fly via tree-sitter — no disk I/O.
 - Axis context builder merges dirty overlay bodies at fetch time (`axis/overlay_context.py`).
-- Cleared on file save or editor close (TTL = session).
+- Cleared on file save/editor close and bounded by `OVERLAY_MAX_ENTRIES` (default 256) plus `OVERLAY_TTL_SECONDS` (default 86,400 seconds).
 
 ### 3.5. Pipeline Priority Queue
 | Priority | Trigger | Action |
@@ -251,7 +271,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 3. **Intent classification** (axis `classify_intent`): structural intent roles drive seed/pool routing and file-tier sign (impact vs behaviour).
 4. **Axis retrieval** (`run_axis_retrieval`): workspace scan → role/vector seeds → graph pool passes → cross-role ranking → per-candidate context expansion → `ContextBundle` list.
 5. **Prompt adaptation** (`axis_bundles_to_prompt_context`): bundles → `PromptContext` with provenance, tier tokens, assembly metadata.
-6. **Fallback ladder** (when axis renders nothing or `ASK_AXIS_FIRST=false`): file → workspace vector → direct LLM (`_resolve_ask_context` in `main.py`).
+6. **Fallback ladder** (when axis renders nothing or `ASK_AXIS_FIRST=false`): file → workspace vector → direct LLM (`AskContextBuilder.resolve_ask_context`). Disabling axis does not restore the deleted ranking cascade.
 7. **Overlay merge:** dirty editor buffers from `InMemoryOverlay` override LanceDB bodies at fetch time (`axis/overlay_context.py`).
 8. **LLM call:** if tiers are empty → direct mode. Else → `PromptContext.to_system_prompt()` + Ollama/local or optional cloud route.
 9. Response: `{symbol, answer, context}` — full prompt contract with `intent_details`, scores, provenance, `metadata.assembly`, `feedback_token`.
@@ -291,7 +311,8 @@ Scenario: user edits `process_payment`, hasn't saved.
 | File | `path, hash, last_indexed` | Repository file, entry point for indexing |
 | Symbol | `uid, name, kind, range, hash, token_estimate` | Atomic code unit (function/class/variable) |
 | DocAnchor | `chunk_id` | Doc chunk key — navigates to File via [:FROM], to symbols via [:COVERS] |
-| Commit | `hash, author, timestamp, branch` | Version node for time-travel context (planned) |
+| ApiEndpoint | `workspace_id, fingerprint, method, path` | Workspace-local HTTP client/handler bridge. |
+| Commit | `hash, author, timestamp, branch` | Version node for time-travel context (planned). |
 
 **Planned tenant API labels:**
 
@@ -320,6 +341,13 @@ Scenario: user edits `process_payment`, hasn't saved.
 | COVERS | (DocAnchor)→(Symbol) | Doc chunk describes this code symbol; properties: `anchor_type`, `confidence`, `primary_bias`, `resolver` |
 | MODIFIED_IN | (Symbol)→(Commit) | Symbol change history (planned) |
 
+**Current project-local API relationships:**
+
+| Type | Direction | Description |
+|---|---|---|
+| IMPLEMENTS_ENDPOINT | (Symbol)→(ApiEndpoint) | Local handler implements a normalized HTTP endpoint. |
+| CALLS_ENDPOINT | (Symbol)→(ApiEndpoint) | Local client calls a normalized HTTP endpoint. |
+
 **Planned tenant API relationships:**
 
 | Type | Direction | Description |
@@ -327,7 +355,6 @@ Scenario: user edits `process_payment`, hasn't saved.
 | PUBLISHES_SERVICE | (Workspace)→(Service) | Workspace owns/publishes a service manifest |
 | EXPOSES_ENDPOINT | (Service)→(ApiEndpoint) | Service offers an operation |
 | IMPLEMENTS_ENDPOINT | (Symbol/File)→(ApiEndpoint) | Current-project code implements an endpoint |
-| CALLS_ENDPOINT | (Symbol/File/Service)→(ApiEndpoint) | Current project calls an operation |
 | USES_SCHEMA | (ApiEndpoint/EventTopic)→(ApiSchema) | Operation/topic uses a schema |
 | HAS_FIELD | (ApiSchema)→(ApiField) | Field-level schema structure |
 | PRODUCES_EVENT | (Service)→(EventTopic) | Service publishes an event |
@@ -340,7 +367,7 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
 
 ### 5.3. JSON Prompt Contract
 
-✅ Implemented — `PromptContext.to_dict()` in `context_engine/context/types.py`. Returned under `"context"` key in `/ask` response and re-used by the benchmark as `ready_context.contract`.
+✅ Implemented — `PromptContext.to_dict()` in `context_engine/context_types.py`. Returned under the `"context"` key in `/ask` responses and reused by the benchmark as `ready_context.contract`.
 
 ```json
 {
@@ -366,11 +393,13 @@ Tenant API graph edges are metadata-only. They carry tenant/workspace scope, con
 }
 ```
 
-**Implemented metadata:** `mode`, `intent`, `intent_details` (`primary`, `distribution`, `ambiguous`, `confidence`), `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth` / `direction`, per-candidate `scores`, `provenance`, doc-anchor `anchor_type` / `anchor_confidence` / `primary_bias`, `pruned[]`, `stopped_reason`, `metadata.ranker.candidates_*`, `metadata.ranker.pruned_total_count`, and `metadata.assembly` fields such as `trace_id`, `workspace_id` slot, `context_pipeline_version`, `cache_hits`, `model_route`, and `feedback_token`.
+**Serializer surface:** `mode`, `intent`, `intent_details`, `metadata.query_intent`, `metadata.tiers_used`, `metadata.tier_tokens`, dependency `depth` / `direction`, per-candidate `scores`, `provenance`, doc-anchor fields, `pruned[]`, `stopped_reason`, ranker counts, and `metadata.assembly` fields such as `trace_id`, `workspace_id`, `context_pipeline_version`, `cache_hits`, `model_route`, and `feedback_token`.
+
+**Current propagation caveat:** the active axis adapter reliably populates the selected symbols, code, relation/provenance basics, workspace, trace, and render mode. Several richer fields (score decomposition, intent distribution, pruning details, and general markdown documentation/anchor quality) are still sparse or default-valued.
 
 **Planned metadata:** `tenant_api_context`, `api_direction`, `tenant_link_depth`, service/contract provenance, and tenant API candidate scores. See [spec_tenant_api_graph.md](spec_tenant_api_graph.md).
 
-**Known gap:** project/workspace/branch metadata is not yet populated consistently from the context provider. Doc-anchor type/confidence is implemented for graph-overlap docs; vector-only docs still carry empty/zero anchor defaults.
+**Known gap:** branch identity is encoded inside `workspace_id` rather than exposed as a separate prompt field. General vector-only docs carry empty/zero anchor defaults, and the active axis success path currently returns symbol bundles without a populated `documentation` tier.
 
 ### 5.4. BFS Retrieval Cypher
 
@@ -399,14 +428,14 @@ Current `/index` collects files, compares hashes against stored `File.hash`, and
 7. Re-embed modified symbols into LanceDB `symbols` table.
 8. Resolve pending DocAnchors after the code update.
 9. Mark the indexing job `succeeded`, `failed`, or `dead_letter`.
-10. Debounce, stale-job cancellation, and backpressure for mass editor events remain product hardening items.
+10. The queued path coalesces duplicate saves, applies bounded backpressure, rebuilds AFFECTS once per batch, runs axis propagation/adjacency finalization, resolves anchors, and invalidates retrieval caches. Durable job retries/dead-letter state remain separate from queue coalescing.
 
 ---
 
 ## ADR-001: Separation of Graph Topology and Source Code Content
 **Status:** Accepted
 
-Store only topology in the graph provider. Symbol node contains: `uid`, `name`, `kind`, `range` (start/end lines), `hash`. No source body text — navigate via `(File)-[:CONTAINS]->(Symbol)`. DocAnchor node contains only `chunk_id` — navigate via `[:FROM]` to File, `[:COVERS]` to Symbol. Sidecar reads code text from disk on demand using line coordinates.
+Store only topology in the graph provider. Symbol node contains identity and structural metadata, not source bodies; navigate via `(File)-[:CONTAINS]->(Symbol)`. DocAnchor nodes keep `chunk_id` while text lives in LanceDB. The active axis path reads indexed symbol bodies from LanceDB and overlays unsaved buffers from memory; file fallback may read sandboxed source from disk.
 
 **Why:** Keeps graph storage lightweight for fast topology queries. Source code never goes to the graph provider. Only `hash` update needed when function body changes without structural impact.
 
@@ -414,21 +443,10 @@ Store only topology in the graph provider. Symbol node contains: `uid`, `name`, 
 
 ---
 
-## ADR-002: Python Sidecar for MVP
-**Status:** Accepted
-
-Python 3.12+, compiled to standalone binary with Nuitka at launch.
-
-**Why:** Best ecosystem for tree-sitter, local vector stores, sentence-transformers, and FastAPI. Fast iteration on arbitration logic. Compiled binary ships as single file (50MB+).
-
-**Trade-off:** Performance ceiling on very large graphs (100k+ nodes) may require hot-path rewrite in Rust later.
-
----
-
 ## ADR-003: Pluggable Graph Provider + Local Dirty Overlay
-**Status:** Accepted
+**Status:** Accepted, staged
 
-The primary graph is supplied by the configured `GraphProvider`: local Docker for solo users, customer-managed graph storage for teams, or dedicated managed graph storage for larger customers. Local unsaved changes remain in `InMemoryOverlay` inside the sidecar process. ✅ Overlay implemented.
+Local Neo4j or Aura/fallback supplies the current graph. A complete `GraphProvider` connector abstraction and alternate backends remain staged. Local unsaved changes remain in `InMemoryOverlay` inside the sidecar process. ✅ Overlay implemented.
 
 **Why:** Teams need one source of truth, but storage ownership varies by customer. Local edits don't pollute the configured graph provider. No full re-index per developer.
 

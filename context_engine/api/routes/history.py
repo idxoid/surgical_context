@@ -23,7 +23,7 @@ def record_history_ask(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     """Persist a sanitized ask/request snapshot for local dialog history."""
     main = require_main(request)
@@ -162,7 +162,7 @@ def history_conversations(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     """List local history conversations for the current workspace and user."""
     main = require_main(request)
@@ -185,13 +185,15 @@ def history_conversation(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     """Return a sanitized conversation bundle with messages and snapshots."""
     main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
-    main._history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
+    main._history_conversation_for_scope(
+        conversation_id, workspace_id=workspace_id, user_id=user_id
+    )
     bundle = main.history_provider.get_conversation_bundle(conversation_id)
     if bundle is None:
         raise HTTPException(status_code=404, detail="Unknown history conversation")
@@ -208,13 +210,15 @@ def history_request_bundle(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     """Return the snapshots for a selected request in a conversation."""
     main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
-    main._history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
+    main._history_conversation_for_scope(
+        conversation_id, workspace_id=workspace_id, user_id=user_id
+    )
     bundle = main.history_provider.get_request_bundle(conversation_id, request_id)
     if bundle is None:
         raise HTTPException(status_code=404, detail="Unknown history request")

@@ -1,6 +1,6 @@
 # Spec — Language Adapter Protocol (ADR-005)
 
-> **Status:** ✅ Implemented. Multi-language support is pluggable via the adapter registry. New languages add a single adapter file — no core edits. Phase 3.5 Graph Completeness extends adapters with `extract_imports()` and `extract_inheritance()` for richer dependency tracking.
+> **Status:** Implemented for the registry and baseline adapter contract. A new adapter file is auto-discovered and makes its extensions collectable without a registry edit. Full parity with Python/TypeScript/JavaScript still requires language-specific axis facts, resolution behavior, enrichment bridges, and tests; several fast-pipeline phases intentionally specialize by language.
 
 **Code:** [context_engine/parser/protocol.py](../context_engine/parser/protocol.py),
 [context_engine/parser/registry.py](../context_engine/parser/registry.py),
@@ -14,7 +14,7 @@
 
 ## 1. Problem
 
-Currently, language-specific parsing logic is scattered across `context_engine/parser/`:
+Before ADR-005, language-specific parsing logic was scattered across `context_engine/parser/`:
 - Tree-sitter queries baked into `languages.py` as a `LANGUAGE_CONFIGS` dict.
 - `SymbolExtractor` hard-codes the lookup.
 - Adding a new language (Go, Rust, Java) means editing both files.
@@ -376,19 +376,10 @@ def make_adapter() -> LanguageAdapter:
 1. **Create adapter file** `context_engine/parser/adapters/go_adapter.py`:
 
 ```python
-import tree_sitter_languages
-from context_engine.parser.protocol import LanguageAdapter, SymbolMetadata, CallEdge
+from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter
 
-class GoAdapter(LanguageAdapter):
-    
-    SYMBOL_QUERY = """
-        (function_declaration name: (identifier) @func.name) @func.def
-        (type_declaration (type_spec name: (type_identifier) @type.name) @type.def)
-    """
-    
-    def __init__(self):
-        self.parser = tree_sitter_languages.get_parser("go")
-        self.language = tree_sitter_languages.get_language("go")
+
+class GoAdapter(TreeSitterAdapter):
     
     @property
     def language_name(self) -> str:
@@ -397,20 +388,32 @@ class GoAdapter(LanguageAdapter):
     @property
     def file_extensions(self) -> set[str]:
         return {".go"}
-    
-    def extract_symbols(self, source_code: str, file_path: str) -> list[SymbolMetadata]:
-        # ... tree-sitter queries and symbol extraction
-        pass
-    
-    def extract_calls(self, source_code: str, file_path: str) -> list[CallEdge]:
-        # ... call graph extraction
-        pass
 
-def make_adapter() -> LanguageAdapter:
+    @property
+    def ts_language_name(self) -> str:
+        return "go"
+
+    @property
+    def symbol_query(self) -> str:
+        return """
+            (function_declaration name: (identifier) @func.name) @func.def
+            (type_declaration (type_spec name: (type_identifier) @type.name) @type.def)
+        """
+
+    @property
+    def call_query(self) -> str:
+        return "(call_expression function: (identifier) @call.name) @call.occurrence"
+
+    @property
+    def parent_types(self) -> set[str]:
+        return {"function_declaration", "method_declaration"}
+
+
+def make_adapter() -> GoAdapter:
     return GoAdapter()
 ```
 
-2. **That's it.** On next sidecar boot, `bootstrap_adapters()` auto-discovers and registers the Go adapter. No core edits.
+2. On next sidecar boot, `bootstrap_adapters()` auto-discovers and registers the Go adapter. Its extensions become eligible for baseline collection and the generic symbol/call/import/inheritance handoff without editing the registry or collector.
 
 3. **Add a test** in `tests/unit/test_go_adapter.py`:
 
@@ -426,6 +429,11 @@ def test_go_extract_symbols():
     assert len(symbols) == 1
     assert symbols[0].name == "main"
 ```
+
+4. For production parity, add `extract_axis_facts()` coverage and review the
+   language-specific phases in `context_engine/indexer/fast/pipeline.py`. HTTP,
+   proxy, framework, package/re-export, and other enrichment bridges do not
+   become Go-aware merely because the adapter is registered.
 
 ## 7. Implementation Status
 

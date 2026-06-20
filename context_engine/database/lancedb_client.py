@@ -319,6 +319,10 @@ class LanceDBClient:
             self._db_conn = lancedb.connect(DB_PATH)
         return self._db_conn
 
+    @_db.setter
+    def _db(self, value):
+        self._db_conn = value
+
     @property
     def _table(self):
         if self._docs_table is None:
@@ -330,6 +334,10 @@ class LanceDBClient:
             self._ensure_docs_optional_columns(self._docs_table)
         return self._docs_table
 
+    @_table.setter
+    def _table(self, value):
+        self._docs_table = value
+
     @property
     def _sym_table(self):
         if self._sym_table_obj is None:
@@ -339,6 +347,10 @@ class LanceDBClient:
                 required_columns=self._symbol_required_columns,
             )
         return self._sym_table_obj
+
+    @_sym_table.setter
+    def _sym_table(self, value):
+        self._sym_table_obj = value
 
     @property
     def _axis_adjacency_table(self):
@@ -358,6 +370,10 @@ class LanceDBClient:
             )
         return self._axis_adjacency_table_obj
 
+    @_axis_adjacency_table.setter
+    def _axis_adjacency_table(self, value):
+        self._axis_adjacency_table_obj = value
+
     @property
     def _axis_adjacency_external_table(self):
         if self._axis_adjacency_external_table_obj is None:
@@ -371,25 +387,6 @@ class LanceDBClient:
                 },
             )
         return self._axis_adjacency_external_table_obj
-
-    # Setters keep the historical mutable-attribute contract (tests and reset
-    # paths assign these directly); they write the lazy backing field so a set
-    # value short-circuits the open-on-first-read.
-    @_db.setter
-    def _db(self, value):
-        self._db_conn = value
-
-    @_table.setter
-    def _table(self, value):
-        self._docs_table = value
-
-    @_sym_table.setter
-    def _sym_table(self, value):
-        self._sym_table_obj = value
-
-    @_axis_adjacency_table.setter
-    def _axis_adjacency_table(self, value):
-        self._axis_adjacency_table_obj = value
 
     @_axis_adjacency_external_table.setter
     def _axis_adjacency_external_table(self, value):

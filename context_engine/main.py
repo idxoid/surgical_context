@@ -57,7 +57,7 @@ from context_engine.observability import (
     estimate_text_tokens,  # noqa: F401 — route bridge
     new_trace_id,
 )
-from context_engine.workspace import DEFAULT_WORKSPACE_ID, Workspace
+from context_engine.workspace import Workspace
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -218,7 +218,7 @@ def _history_conversation_for_scope(
         )
     if conversation["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="History conversation belongs to another user")
-    return conversation
+    return cast(dict[str, Any], conversation)
 
 
 def _history_enabled() -> bool:

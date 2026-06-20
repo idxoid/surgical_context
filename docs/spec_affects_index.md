@@ -1,6 +1,6 @@
 # Spec — Reverse Dependency AFFECTS Index (Phase 5)
 
-> **Status:** Implemented for local workspace indexing. `AFFECTSIndexer` materializes workspace-scoped symbol-to-symbol reverse dependency edges, the fast indexer rebuilds them once per project pass, the single-file index path rebuilds them synchronously for changed symbols, and `/impact` exposes affected symbols/files. Current impact analysis is intentionally shallow: it is bounded reverse reachability over the relationships the indexer already understands, not a causal model of behavioral breakage. File-level materialized edges, per-edge depth metadata, staleness tracking, and rebuild CLI remain deferred.
+> **Status:** Implemented for workspace-scoped indexing. `AFFECTSIndexer` materializes symbol-to-symbol reverse dependency edges; full indexing and queued incremental batches rebuild them over changed UIDs. `/impact` no longer reads only AFFECTS: it runs the axis impact surface (reverse callers, structural API/inheritance, then AFFECTS fallback). Impact remains reachability evidence, not a causal proof of behavioral breakage. File-level materialized edges, per-edge depth metadata, staleness tracking, and a rebuild CLI remain deferred.
 
 ## 1. Problem
 
@@ -114,6 +114,14 @@ AFFECTSIndexer(db).rebuild_affects(
 
 The benchmark and fast indexer can skip this phase with `--skip-affects`, which is useful for isolating indexing cost from retrieval quality.
 
+### 3.3 Queued Incremental Path
+
+`IndexingService.process_index_batch()` calls `index_file(..., skip_affects=True)`
+for changed files, rebuilds AFFECTS once over the deduplicated UID union, then
+runs `run_axis_incremental_finalize()` for profile-aware propagation and
+adjacency materialization before resolving pending anchors and invalidating
+caches.
+
 ## 4. Query Interface
 
 ### 4.1 `AFFECTSIndexer.get_affected_symbols(...)`
@@ -141,7 +149,8 @@ The method finds all symbols contained in the file, follows their `AFFECTS` edge
 
 ### 4.3 `/impact` Endpoint
 
-Implemented in `context_engine/main.py`:
+Implemented in `context_engine/api/routes/impact.py` and
+`context_engine/axis/impact_surface.py`:
 
 ```http
 GET /impact?symbol=<name>
@@ -151,8 +160,9 @@ Behavior:
 
 1. Resolve `workspace_id` from `X-Workspace`.
 2. Look up the first symbol matching the provided name in that workspace.
-3. Return affected symbols via `get_affected_symbols`.
-4. Return affected files via `get_affected_files`.
+3. Seed `expand_impact_neighbourhood()` with that symbol.
+4. Traverse reverse calls, structural API/inheritance evidence, and AFFECTS fallback.
+5. Return classified rows plus distinct affected files. `max_depth` is caller-controlled from 1 to 4 (default 3).
 
 Response shape:
 
@@ -165,7 +175,7 @@ Response shape:
   "affected_files": [],
   "affected_count": 0,
   "affected_file_count": 0,
-  "max_depth": 4
+  "max_depth": 3
 }
 ```
 
@@ -199,10 +209,10 @@ Implemented coverage:
 - `tests/unit/test_incremental_indexing.py`
   - single-file path triggers AFFECTS rebuild for changed UIDs
   - skip/no-change paths do not rebuild
-- `tests/unit/test_sidecar_endpoints.py`
-  - `/impact` returns affected symbols/files
-- `tests/integration/test_phase5_validation.py`
-  - integration smoke for populated AFFECTS and impact endpoint
+- `tests/unit/test_context_engine_endpoints.py`
+  - `/impact` returns the structured axis impact surface
+- `tests/unit/test_axis_impact_traversal.py`
+  - direct/reverse/structural/AFFECTS traversal behavior and caps
 
 ## 7. Current Success Criteria
 
@@ -211,7 +221,7 @@ Implemented:
 1. Unit tests for `AFFECTSIndexer` are green.
 2. Single-file indexing rebuilds AFFECTS for changed symbols.
 3. Fast indexing rebuilds AFFECTS once over the union of changed symbols.
-4. `/impact?symbol=<name>` returns affected symbols/files and `max_depth`.
+4. `/impact?symbol=<name>` returns the structured axis impact surface and `max_depth`.
 5. Benchmark reports include `skip_affects` and `affects_rebuilt` indexing stats.
 
 Still deferred:

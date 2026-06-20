@@ -86,7 +86,9 @@ class AskContextBuilder:
         anchor_line: int | None = None,
     ) -> tuple[str, bool]:
         if self.overlay.has(file_path, workspace_id=workspace_id, user_id=user_id):
-            symbols = self.overlay.get_symbols(file_path, workspace_id=workspace_id, user_id=user_id)
+            symbols = self.overlay.get_symbols(
+                file_path, workspace_id=workspace_id, user_id=user_id
+            )
             if symbols:
                 start = min(line_range[0] for line_range in symbols.values())
                 end = max(line_range[1] for line_range in symbols.values())
@@ -125,7 +127,9 @@ class AskContextBuilder:
         if not callable(search_symbols):
             return []
         try:
-            raw_symbols = search_symbols(query, limit=limit, threshold=1.0, workspace_id=workspace_id)
+            raw_symbols = search_symbols(
+                query, limit=limit, threshold=1.0, workspace_id=workspace_id
+            )
         except Exception:
             return []
         return [
@@ -331,7 +335,9 @@ class AskContextBuilder:
     @staticmethod
     def append_context_warning(current: Any, warning: dict[str, str]) -> list[dict[str, str]]:
         warnings = (
-            [item for item in current if isinstance(item, dict)] if isinstance(current, list) else []
+            [item for item in current if isinstance(item, dict)]
+            if isinstance(current, list)
+            else []
         )
         if not any(item.get("code") == warning["code"] for item in warnings):
             warnings.append(warning)
@@ -357,7 +363,9 @@ class AskContextBuilder:
                 {
                     "code": budget["fallback_reason"],
                     "severity": "warning",
-                    "message": (f"Symbol '{req.symbol}' was not found; using {display_level} context."),
+                    "message": (
+                        f"Symbol '{req.symbol}' was not found; using {display_level} context."
+                    ),
                 },
             )
 
@@ -424,6 +432,8 @@ class AskContextBuilder:
             return workspace_ctx
 
         direct_ctx = direct_provider(req.question, req.token_budget)
+        if direct_ctx is None:
+            raise RuntimeError("ask context ladder exhausted without a prompt context")
         self.mark_ask_fallback(direct_ctx, req, "direct_llm", symbol_error)
         return direct_ctx
 

@@ -1,15 +1,15 @@
 # Surgical Context - Road Map
 
 
-> **Status:** This branch (`context-engine-refocus`) treats Surgical Context as a **local-first, model-agnostic context engine for code understanding and change impact**.
+> **Status:** The current engine-first development line treats Surgical Context as a **local-first, model-agnostic context engine for code understanding and change impact**.
 >
-> **Release target:** a Local Developer Product in VS Code with the Python sidecar, local graph/vector/history defaults, and a trustworthy `Ask / Inspect / Impact` loop.
+> **Release target:** a local context engine with a stable Python sidecar API, local graph/vector/history defaults, a trustworthy `Ask / Inspect / Impact` loop, and the VS Code extension as a reference frontend.
 >
 > **Principle:** measure retrieval quality and token efficiency on real repositories before expanding platform scope.
 >
-> **See also:** [concept.md](concept.md), [product_direction_memo.md](product_direction_memo.md), [README.md](../README.md)
+> **See also:** [concept.md](concept.md), [architectura.md](architectura.md), [README.md](../README.md)
 >
-> **Last updated:** 2026-05-28 (`context-engine-refocus`; extension Impact + selected-request sync docs)
+> **Last updated:** 2026-06-19 (axis/doc-anchor indexing, sidecar module split, and current API/storage truth)
 
 ---
 
@@ -19,7 +19,7 @@ The local product is still the canonical next milestone, but the product is now 
 
 ### v0.1 Goal
 
-Deliver a local VS Code tool that can answer:
+Deliver a local engine and reference VS Code client that can answer:
 
 - what does this code do?
 - what supports this answer?
@@ -29,8 +29,8 @@ without wasting tokens or hiding retrieval behavior.
 
 ### In Scope
 
-- VS Code surfaces: Chat, Inspector, Impact, Settings, Dashboard
-- Python sidecar running locally
+- Python sidecar/API running locally
+- reference VS Code surfaces: Chat, Inspector, Impact, Settings, Dashboard
 - local defaults: Neo4j, LanceDB, SQLite
 - retrieval ladder: `symbol -> file -> workspace -> direct_llm`
 - prompt-contract transparency and route visibility
@@ -75,12 +75,12 @@ Active work for the local release. Completed stabilization and phase history are
 
 ### P2 — Retrieval quality and observability
 - [x] Server-side API bounds: `limit` 1–50 on `/search*`, `token_budget` 400–32 000 on `/ask` and `/search/unified` (Pydantic → HTTP 422).
-- [x] Unified Ranker + prompt-contract observability as the active retrieval path (Phase 9.1 / 9.4).
+- [x] Axis retrieval is the active `/ask` provider; the legacy `UnifiedRanker` cascade was removed.
 - [x] Soft fallback ladder: `symbol → file → workspace → direct_llm` (missing symbol is not HTTP 404).
-- [x] Prompt-contract fields: `pruned[]`, ranker weights, `intent.distribution` / `confidence` / `ambiguous`.
+- [~] Prompt-contract schema fields: `scores`, `provenance`, `pruned[]`, ranker counts, and intent details exist; the active axis adapter still leaves several score/distribution/pruning fields sparse or at defaults.
 - [x] Retrieval cache visibility: `metadata.assembly.cache_hits` (L1–L3).
 - [x] Per-user overlay isolation: keys `(workspace_id, user_id, file_path)`.
-- [~] Doc-anchor confidence/type — metadata + ranker consumption shipped; **remaining:** calibration and extension surfacing.
+- [~] DocAnchor confidence/type — COVERS metadata and in-code docstring/JSDoc owner seeds are shipped; **remaining:** calibration plus propagation of general doc evidence/anchor quality into the active axis `PromptContext` and extension.
 - [~] Latency SLO — request/stage metrics for `/ask`, `/ask/stream`, `/search/unified`; index queue counters exist; **remaining:** index-duration SLO gates.
 - [ ] Extension UX: model route, fallback level, token/cost signals easy to inspect.
 - [~] Canonical role coverage — green on control repos; **remaining:** Flask/Django/Express/Vue/NestJS tails (export shape, file recall).
@@ -122,7 +122,7 @@ Ordered execution lanes — do not regress green control repos while working tai
 | 2 | **Python tails** | Close role/file tails in `django` / `flask` (trace/explain only; not impact scope). |
 | 3 | **JS target resolution** | `express` / `vue` / `nestjs` — export shapes and symbol resolution before weight tuning. |
 | 4 | **Extension product** | Finish request-sync persistence; surface route, fallback level, `pruned[]`, cache hits in UI. |
-| 5 | **Doc-anchor polish** | Calibrate confidence/type; stop docs ranking as undifferentiated noise in the inspector. |
+| 5 | **Doc-anchor polish** | Calibrate confidence/type and propagate ranked doc evidence into the active axis prompt/inspector path. |
 | 6 | **Impact (deferred)** | Separate iteration after non-impact lanes stabilize; document shallow `AFFECTS` in UI. |
 
 **Validation rhythm**
@@ -138,9 +138,9 @@ Ordered execution lanes — do not regress green control repos while working tai
 This section preserves the post-MVP hardening record. Completed items remain useful context, but the active product direction is the Local Developer Product backlog above.
 
 ### P0 - Truth, Safety, and API Hardening
-- [x] Refresh `docs/README.md` as the current-truth entry point; archive or label historical analysis when status changes.
+- [x] Refresh the root `README.md` as the current-truth entry point; archive or label historical analysis when status changes.
 - [x] Fix sidecar DB lifecycle: remove mutable request identity from the global client; use request-scoped user context.
-- [x] Move doc resolution inside the arbitration pipeline before `PromptCompiler.compile_with_intent()`.
+- [x] Historical cascade moved doc resolution inside arbitration before prompt compilation. That pipeline was later removed; general markdown propagation into a successful axis prompt is tracked as an active P2 gap above.
 - [x] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.
 - [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
 - [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
@@ -182,7 +182,7 @@ Goal: Working "VS Code ↔ Python Sidecar" prototype with basic parsing.
 ### Infrastructure
 - [x] Docker container with Neo4j and schema configuration (`docker-compose.yml`)
 - [x] Python environment and project scaffold
-- [x] FastAPI/JSON-RPC sidecar entrypoint (`context_engine/main.py`)
+- [x] FastAPI HTTP/JSON sidecar entrypoint (`context_engine/main.py`)
 - [x] Switch Docker image from `neo4j:5.12-enterprise` to `neo4j:5.12-community` for open-source dev baseline (enterprise license only where intentionally required)
 - [x] Move `NEO4J_AUTH` out of `docker-compose.yml` into `.env` with `.env.example` committed
 
@@ -209,19 +209,19 @@ Goal: System can navigate the graph and gather precise context.
 ### Graph Logic
 - [x] Neo4j client: upsert file/symbol nodes (`context_engine/database/neo4j_client.py`)
 - [x] Four-phase indexer: symbols → calls → symbol embeddings → pending resolution (`context_engine/indexer/code.py`)
-- [x] BFS Cypher query for dependency discovery (`context_engine/context/arbitrator.py`)
+- [x] Historical BFS dependency discovery shipped; the arbitrator was later removed and axis graph walks are now active.
 
 ### Data Contract
-- [x] JSON Prompt Contract: typed `PromptContext` with `to_dict()` + `to_system_prompt()` (`context_engine/context/arbitrator.py`)
-- [x] Local LLM integration via Ollama (`context_engine/main.py` — llama3, configurable via `OLLAMA_MODEL`)
+- [x] JSON Prompt Contract: typed `PromptContext` with `to_dict()` + `to_system_prompt()` (`context_engine/context_types.py`)
+- [x] Local LLM integration via Ollama (`context_engine/ai/engine.py` — llama3, configurable via `OLLAMA_MODEL`)
 - [x] Fallback behavior when Ollama is unreachable (clear error, degraded `/ask` that still returns `context`)
 
 ### Dirty State
-- [x] In-Memory Overlay: parse unsaved changes and merge with graph (`context_engine/context/overlay.py`, `POST /overlay`, `DELETE /overlay`)
+- [x] In-Memory Overlay: parse unsaved changes and merge with axis context (`context_engine/overlay.py`, `POST /overlay`, `DELETE /overlay`)
 
 ---
 
-## Phase 2.5: Quality Foundation & Extension UI ✅ COMPLETE
+## Phase 2.5: Quality Foundation & Extension UI — BASELINE SHIPPED
 Goal: Make the system **measurable** before scaling it, and ship a thin client for real-world validation. Without this phase, all later performance and cost claims are unfalsifiable, and the "VS Code integration" premise remains unproven.
 
 > **Specs:** [spec_eval_harness.md](spec_eval_harness.md) (fixture design, metric set, CI contract).
@@ -239,13 +239,13 @@ Goal: Make the system **measurable** before scaling it, and ship a thin client f
 - [x] Latency SLO tracking against 200ms target
 - [x] Distributed tracing via OpenTelemetry (Phase 6, scale phase only)
 
-### Token Accounting ✅ COMPLETE
+### Token Accounting — SCHEMA SHIPPED / AXIS POPULATION PARTIAL
 - [x] Token counter (tiktoken cl100k_base) on every `PromptContext`
 - [x] `PromptContext.token_count()` method
-- [x] Per-request breakdown: `tokens_primary`, `tokens_graph`, `tokens_docs`
-- [x] Baseline: "carpet-bomb" estimation (all files) vs surgical count
+- [~] Per-request fields `tokens_primary`, `tokens_graph`, `tokens_docs` are serialized; the active axis adapter does not yet populate every tier counter.
+- [ ] Keep a reproducible all-files-vs-selected-context token baseline in the current axis benchmark.
 
-### Extension UI (Promoted from Phase 1) ✅ COMPLETE
+### Extension UI (Promoted from Phase 1) — BASELINE SHIPPED
 - [x] Scaffold `extension/` workspace (TypeScript, `package.json`, build pipeline)
 - [x] Basic chat window in VS Code
 - [x] Cursor position capture mechanism
@@ -270,21 +270,23 @@ Goal: Connect the semantic layer via documentation.
 - [x] DocAnchor in Neo4j: `chunk_id`-only node, `[:FROM]` to File, typed/confident `[:COVERS]` to Symbols, lazy `pending` resolution via LanceDB (`context_engine/indexer/anchor.py`)
 
 ### RAG Optimization
-- [x] Hybrid Search: Vector Search (semantics) → Graph Expansion (code) (`/ask` appends top-3 doc chunks to context)
-- [x] Symbol body embeddings: `symbols` LanceDB table for semantic DocAnchor matching (`indexer_main.py` Phase 3)
+- [~] Vector + graph retrieval are both active, but on different paths: axis uses semantic symbol seeding plus graph expansion; general markdown chunks are attached by file/workspace fallbacks, not yet by a successful axis `PromptContext`.
+- [x] Symbol body embeddings: profile-specific `symbols` LanceDB tables for semantic DocAnchor matching (`context_engine/indexer/fast/pipeline.py` and `context_engine/indexer/code.py`)
 - [x] Section-aware doc chunking: headings-first split, word-window fallback (`context_engine/indexer/docs.py`)
-- [x] Gitignore-aware indexer: `pathspec` prunes ignored dirs/files (`indexer_main.py`)
+- [x] Gitignore-aware indexer: `pathspec` prunes ignored dirs/files (`context_engine/indexer/fast/collector.py` and the single-file path in `context_engine/indexer/code.py`)
 - [x] ADR-001 enforced: no data on Neo4j nodes — `file_path` removed from Symbol and DocAnchor
 
 ---
 
-## Phase 3.5: Arbitration & Indexing Robustness ✅ COMPLETE
-Goal: Make retrieval correct and fast on a live developer's laptop. This is what separates "demo" from "daily driver." Token-budget BFS is tuned against the eval harness from Phase 2.5 (now complete).
+## Phase 3.5: Arbitration & Indexing Robustness — HISTORICAL CASCADE MILESTONE
+Goal at the time: make retrieval correct and fast on a live developer's laptop. The cascade implementation described below was later removed; current retrieval and token-credit packing live under `context_engine/axis/`.
 
 > **Spec:** spec_token_budget_bfs.md (removed) — best-first traversal replacing hardcoded `*1..2`, with scoring function, algorithm, contract additions, and tuning protocol.
 
-### Context Budgeting & Ranking ✅ COMPLETE (Token-Budget BFS)
-- [x] Token budget parameter on `/ask` (default 4000)
+### Context Budgeting & Ranking — HISTORICAL IMPLEMENTATION REMOVED
+The following checklist records the deleted cascade implementation. The active axis path keeps the public token-budget bounds and performs intent-aware token-credit packing, but it does not populate every legacy `PromptContext.budget` or per-symbol score field.
+
+- [x] Token budget parameter on `/ask` (current default 6000; bounds 400–32,000)
 - [x] Priority-queue best-first expansion (greedy by relevance score)
 - [x] Re-rank: callers (1.2) > callees (1.0) — callers drive intent
 - [x] Scoring function: relation_prior + fan-in bonus - token cost - distance penalty
@@ -299,7 +301,7 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] `POST /index/file` endpoint for single-file updates (triggered by file save in client)
 - [x] Delete-on-remove: prune Symbol nodes when file changes (`delete_symbols_for_file`)
 - [x] Transactional recovery: write-ahead indexing job log, retry state, and dead-letter queue for partial Neo4j/LanceDB failure
-- [x] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed (optimization, deferred)
+- [x] Symbol-level diff: only re-upsert nodes where `Symbol.hash` changed
 - [x] Background debounce queue: batch rapid-fire saves (`context_engine/indexer/queue.py`, `POST /index/files`)
 - [x] Backpressure for mass IDE events: bounded queue, batch coalescing, and stale job cancellation
 
@@ -307,7 +309,7 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 - [x] `IMPORTS` edge between Files to enable correct cross-module call resolution
 - [x] `DEPENDS_ON` edge for type / interface / import usage (Symbol→Symbol edge type for inheritance/interface dependencies)
 - [x] Unit tests: 18 tests verify `CALLS`, `IMPORTS`, `DEPENDS_ON` edge extraction for Python and TypeScript
-- [x] Arbitrator BFS expanded to traverse all three edge types for context gathering
+- [x] Current axis graph walks consume call, import, dependency, and structural edge profiles; the old Arbitrator BFS was removed.
 
 ### Embedding Quality (DEFERRED — Phase 5)
 - [x] Add reusable embedding benchmark harness for golden-set model comparisons (`python -m context_engine.eval.embedding_benchmark`)
@@ -317,13 +319,15 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 
 ---
 
-## Phase 4: Quality & Scaling (NEXT ITERATION)
-Goal: Reduce token overhead and prepare for multi-model / multi-user environments.
+## Phase 4: Quality & Scaling — HISTORICAL CASCADE MILESTONE
+Goal at the time: reduce token overhead and prepare for multi-model / multi-user environments. Current equivalents are owned by the axis context builder and embedding registry.
 
-> **Reference:** [architectural_review.md](architectural_review.md#phase-4-near-term-wins) — detailed evaluation of all improvement ideas by impact/effort.
+> Historical note: the detailed Phase 4 review was removed after its accepted work was folded into the specs below.
 
-### Context Deduplication ✅ COMPLETE
+### Context Deduplication — HISTORICAL IMPLEMENTATION REMOVED
 > **Spec:** spec_context_deduplicator.md (removed) — insertion point, dedup rules, budget recalculation, test matrix.
+>
+> The old `ContextDeduplicator`/`GraphExpander` pipeline no longer exists. The axis context builder and prompt adapter now deduplicate symbols by UID while assembling bundles; they do not emit the old `budget["dedup_saved"]` metric.
 - [x] Implement `ContextDeduplicator` — pure transform between GraphExpander and PromptCompiler
 - [x] Normalize symbol identity by UID; keep lowest-depth copy on duplicates
 - [x] Collapse overlapping line ranges within same file
@@ -349,7 +353,7 @@ Goal: Reduce token overhead and prepare for multi-model / multi-user environment
 
 ---
 
-## Phase 5: Typed Semantic Edges & Reverse Dependencies ✅ COMPLETE
+## Phase 5: Typed Semantic Edges & Reverse Dependencies — INDEXING SHIPPED / CONSUMPTION EVOLVED
 Goal: Classify function calls by confidence; enable cascade-aware incremental reindexing via reverse-dependency materialization.
 
 > **Specs:** [spec_indexer.md](spec_indexer.md) — Phase 5 AFFECTS rebuild, call type classification. [spec_affects_index.md](spec_affects_index.md) — AFFECTS materialization, cascade invalidation, `/impact` endpoint. [spec_doc_indexer.md](spec_doc_indexer.md) — enhanced FROM edges with doc type classification.
@@ -363,8 +367,8 @@ Goal: Classify function calls by confidence; enable cascade-aware incremental re
 ### AFFECTS Index (Reverse Dependencies) ✅ COMPLETE
 - [x] AFFECTSIndexer class: reverse BFS (depth ≤ 4) to compute transitive dependents
 - [x] `rebuild_affects(modified_symbol_uids)` called synchronously after file index
-- [x] `GET /impact?symbol=<name>` endpoint — returns affected symbols, affected files, impact metrics
-- [x] Enables cascade-aware incremental reindexing (Phase 3.5 dirty tracking + Phase 5 AFFECTS = full incremental pipeline)
+- [x] `GET /impact?symbol=<name>` returns affected symbols, files, and depth metrics through the current bounded axis reverse traversal; it does not read only the materialized `AFFECTS` closure.
+- [x] Incremental indexing rebuilds `AFFECTS`, axis adjacency, role data, endpoint bridges, and DocAnchor resolution after coalesced batches.
 
 ### Enhanced Doc Linking ✅ COMPLETE
 - [x] FROM relation enrichment: typed edges (`"doc"`, `"code"`, `"spec"`, `"architecture"`, `"concept"`, `"idea"`)
@@ -392,19 +396,19 @@ Goal: Classify function calls by confidence; enable cascade-aware incremental re
 | Context assembly | Working (axis `run_axis_retrieval` → `axis_bundles_to_prompt_context`; cascade removed 2026-06) |
 
 ### Deferred to Phase 6+
-- [ ] IMPLEMENTS / OVERRIDES / REFERENCES edge creation (data structure exists, parser detection TODO)
+- [~] `REFERENCES` creation is implemented for static aliases/re-exports; dedicated `IMPLEMENTS` / `OVERRIDES` emission remains incomplete.
 - [ ] Execution semantics (ExecutionEdge with runtime probability) — need empirical call-trace data
 - [ ] Transitive doc reference linking (depth > 1)
 - [ ] Streaming responses & model routing (moved to Phase 6)
 
 ---
 
-## Phase 6: Intent Classification & Graceful Degradation ✅ COMPLETE
-Goal: Adaptive context assembly based on query type; fallback to standard LLM mode when no surgical context available.
+## Phase 6: Intent Classification & Graceful Degradation — HISTORICAL ORCHESTRATION MILESTONE
+Goal: adaptive context assembly based on query type and fallback when no surgical context is available. The original classifier/compiler orchestration described below was later replaced by the axis intent classifier, retrieval budgets, prompt adapter, and ask service.
 
 > **Specs:** spec_intent_classifier.md (removed) — design spec complete; implementation ongoing.
 
-### Phase 6.1: Intent Classifier ✅ COMPLETE
+### Phase 6.1: Intent Classifier — HISTORICAL IMPLEMENTATION REMOVED
 - [x] `IntentClassifier` class with keyword-based intent detection (heuristics, ML upgrade in Phase 7)
 - [x] 7 intent types: navigation, debugging, refactor, exploration, new_feature, design_question, impact_analysis
 - [x] `IntentConfig` with 6-tier priority orderings per intent (code, cross_refs, specs, architecture, concept, idea)
@@ -415,7 +419,7 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 - [x] Unit tests: 17 intent classifier tests + 19 compiler tests (all passing)
 
 ### Phase 6.2: Graceful Degradation in Orchestrator ✅ COMPLETE
-- [x] Integrate `IntentClassifier` with `ContextArbitrator`
+- [x] Historical `IntentClassifier`/`ContextArbitrator` integration shipped; both were later superseded by the axis intent/retrieval path.
 - [x] Call intent detection in `get_context_for_symbol(question)` with optional question parameter
 - [x] Pass intent to `compile_with_intent()` instead of `compile()`
 - [x] Surface `mode` and `intent` in `/ask` response JSON (via PromptContext.to_dict())
@@ -434,7 +438,7 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 - [x] Automatic fallback: Claude → Ollama on error
 - [x] 21 new unit tests covering routing, initialization, model selection
 
-### Phase 6.4: Integration Testing & Observability ✅ COMPLETE
+### Phase 6.4: Integration Testing & Observability — SCHEMA SHIPPED / AXIS POPULATION PARTIAL
 - [x] Test intent classification accuracy on 7 intent types plus prompt-compiler tier behavior
 - [x] Test tier-based budget allocation per intent
 - [x] Test graceful degradation (no matches → standard mode)
@@ -442,7 +446,7 @@ Goal: Adaptive context assembly based on query type; fallback to standard LLM mo
 - [x] Per-tier token counting for observability (code, cross_refs, specs, architecture, concept, idea)
 - [x] Metadata block: query_intent + tiers_used in JSON response
 
-### JSON Prompt Contract — Phase 6 Complete
+### JSON Prompt Contract — SCHEMA COMPLETE / ACTIVE POPULATION PARTIAL
 - [x] `mode` field: "surgical_full" | "surgical_doc_only" | "standard" (6.1)
 - [x] `intent` field: detected query type (6.1)
 - [x] `metadata` block: query_intent, tiers_used, tier_tokens (6.4)
@@ -518,20 +522,20 @@ Goal: Fix the load-bearing identity, resolution, and isolation gaps before retri
 
 ---
 
-## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1, 9.2 initial routing, 9.3 ✅; 9.4 ~90%)
-Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
+## Phase 9: Retrieval & Observability 🚧 ACTIVE
+Goal: keep the axis retrieval path measurable by carrying its intent, candidate, pruning, and document evidence into the prompt contract.
 
 > **Specs:** spec_unified_ranking.md (removed), spec_multi_label_intent.md (removed), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
 >
-> **Current status:** 9.1 (unified ranker), initial 9.2 routing-policy consumption, and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is mostly shipped; remaining work is calibrating mixed-intent policy on real repos and deciding whether hard per-tier budget buckets beat the current soft policy. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
+> **Current status:** the legacy `UnifiedRanker` work below is retained as phase history, but that implementation was removed with the ranking cascade in 2026-06. The live path is `context_engine/axis/`; intent-axis ranking and docstring-anchor retrieval are active, while prompt-contract propagation remains partial. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
 
-### 9.1 Unified Ranker ✅ COMPLETE
+### 9.1 Unified Ranker ✅ HISTORICAL / SUPERSEDED BY AXIS
 - [x] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
 - [x] Blended score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost (per-track normalized)
 - [x] Overlap bonus when both signals fire on the same candidate
 - [x] Budget-fill loop competes symbols and doc chunks on identical terms
 - [x] Weight tuning via eval harness sweep
-- [x] Decompose `UnifiedRanker` internals into focused components under `context_engine/context/ranker/`, while preserving `get_target(...)`, `rank(...)`, `candidates_to_subgraph(...)` contracts used by Arbitrator/QA
+- [x] Historical implementation was decomposed under `context_engine/context/ranker/`; the entire cascade was later removed after the axis cutover.
 - [x] Target disambiguation for duplicate symbol names within one workspace
 - [x] Module/package fallback targets for package-surface questions
 - [x] Topic-aware subsystem noise control for focused API questions, so distant graph links through broad helpers do not crowd out relevant runtime/doc candidates
@@ -547,24 +551,24 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] `ambiguous` signal in the prompt contract for client UX / routing decisions
 > **Decision:** Ship soft multi-label routing first: primary intent still anchors target selection, while strong secondary intents influence roles, priors, floor, and doc ordering. Phase 10 remains the place for learned classification and hard policy calibration.
 
-### 9.3 DocAnchor Confidence & Type ✅ COMPLETE
+### 9.3 DocAnchor Confidence & Type ✅ INDEXING COMPLETE / RETRIEVAL PARTIAL
 - [x] Anchor type classification: definition / example / reference / warning / deprecated
 - [x] Per-edge confidence score (resolver + name mention + heading + code-style mention signals)
 - [x] Multi-symbol weighting: `primary_bias` = 1.0 for single/focal symbol, reduced for secondary symbols
 - [x] Edge properties: `anchor_type`, `confidence`, `primary_bias`, `resolver`
-- [x] UnifiedRanker consumes anchor quality for doc graph boost and DocAnchor bridge provenance
-- [x] Prompt contract surfaces `documentation[].anchor_type`, `anchor_confidence`, `primary_bias`, and nested `anchor`
+- [x] In-code docstring/JSDoc anchors carry `owner_uid` and seed the axis path; the bounded reverse-`USES_TYPE` bridge is implemented.
+- [~] `PromptContext` can serialize `documentation[].anchor_type`, `anchor_confidence`, `primary_bias`, and nested `anchor`; the active axis adapter does not yet populate general markdown documentation in its normal success path.
 
-### 9.4 Prompt Contract Observability 🚧 IN PROGRESS (~90% COMPLETE)
+### 9.4 Prompt Contract Observability 🚧 IN PROGRESS
 - [x] Per-candidate basic `scores` block (graph relevance / semantic score)
 - [x] `provenance` list on every symbol and doc chunk
 - [x] Budget-level `metadata.pruning_reasons`
 - [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, context_pipeline_version
 - [x] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
 - [x] `pruned[]` array — candidates that missed the budget, with reason, scores, cost, roles, noise factor, and provenance
-- [x] `metadata.ranker.weights` — tuning state snapshotted with every response
-- [x] `intent.distribution` + `intent.ambiguous` + `intent.confidence` in the prompt contract
-- [x] Ranker budget policy consumes multi-label intent distribution instead of primary intent only (initial soft policy)
+- [~] `metadata.ranker` — selected/pruned counts are emitted; the removed cascade's weight snapshot is no longer part of the active axis path.
+- [~] `intent.distribution` + `intent.ambiguous` + `intent.confidence` exist in the schema; active axis propagation is incomplete.
+- [ ] Carry axis candidate scores, pruning decisions, intent matches, and ranked doc evidence through `axis_bundles_to_prompt_context` without reconstructing the removed cascade.
 
 ---
 
@@ -626,8 +630,8 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [~] Streaming chat integration with `/ask/stream` JSON-safe SSE events (endpoint + degradation shipped; extension wiring incomplete).
 - [x] Token budget, selected mode, query intent, and model route display.
 - [ ] Keyboard shortcuts and accessibility (ARIA labels, focus management, screen reader support).
-- [ ] VS Code settings UI for sidecar URL, model preference, workspace ID, keyboard shortcuts, and auth token .
-- [ ] Full implementation of all four UI surfaces in TypeScript/React.
+- [~] VS Code settings UI exists for sidecar URL, model preference, workspace ID, token budget, auth token, overlay, storage, and keyboard shortcuts. **Remaining:** model preference is currently extension-local/display state; sidecar routing is still controlled by process environment.
+- [~] Chat, Inspector, Impact, and Dashboard surfaces are implemented in TypeScript/DOM; request restoration, richer axis evidence, and accessibility remain incomplete.
 
 ### 10.6 Storage Provider Connectors
 Goal: define storage boundaries without blocking the local release on alternate database backends. For v0.1, wrap the defaults first: Neo4j, LanceDB, and SQLite. Alternate graph/vector/history providers are Team/Enterprise horizon work.
@@ -692,14 +696,14 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | Eval harness unblocker | **High** | No measurable proof of token/quality gains — all Phase 4+ claims unverified | Phase 2.5: ship fixture + CI ✅ (spec: [spec_eval_harness.md](spec_eval_harness.md)) | ✅ Resolved |
 | Unmeasured quality claims | **High** | "60–80% reduction" cannot be verified without eval harness | Phase 2.5 blocks Phase 4 ✅ (ADR-006) | ✅ Resolved |
 | Missing extension UI | **High** | "VS Code integration" premise unproven; `run_demo.py` doesn't validate product | Phase 2.5: promote extension scaffold from Phase 1 ✅ | ✅ Resolved |
-| Token overhead limit | High | 883t baseline across all queries suggests dedup opportunity | Phase 4: ContextDeduplicator (target 15–40% reduction) ✅ | ✅ Resolved |
-| Embedding model drift | High | Switching embedding models without versioning causes silent quality loss | Phase 4: embedding metadata tracking + migration flag ✅ | ✅ Resolved |
+| Token overhead limit | High | Context expansion can spend budget on redundant or low-utility bodies. | Axis bundles deduplicate by UID and use intent-aware token-credit packing; reproducible all-files-vs-selected token baselines remain open. | 🟡 Mitigated |
+| Embedding model drift | High | Switching embedding models without versioning causes silent quality loss | Embedding metadata and result-set mismatch guards are implemented; recovery is wipe + reindex, not an automated migration. | 🟡 Mitigated |
 | Tree-sitter multi-language | High | Complexity of supporting many languages | ADR-005 LanguageAdapter protocol (spec: [spec_language_adapter.md](spec_language_adapter.md)); formalize in Phase 1 polish, defer extra languages to Phase 3.5 | 🟢 Mitigated |
-| Rigid BFS depth | High | Real questions span modules via `IMPORTS`, inheritance, type flow | Phase 3.5 token-budget BFS ✅ + `IMPORTS` / `INHERITS` edges ✅ + Phase 5 typed edges ✅ | ✅ Resolved |
+| Rigid graph traversal | High | Real questions span modules via calls, imports, inheritance, type flow, and framework bridges. | Axis edge profiles, grouped directional walks, role lookahead, and token-credit packing are active; long-tail validation remains. | 🟡 Mitigated |
 | Missing incremental index | High | Full re-scan on every save breaks the <200ms SLO | Phase 3.5 file-level dirty tracking ✅ + Phase 5 AFFECTS rebuild ✅ | ✅ Resolved |
-| Doc-code semantic linking | **High** | SIMILARITY_THRESHOLD mismatch (0.4 too strict) → 36% resolution rate | Phase 5: threshold tuning (0.4 → 1.5) ✅ → 50%+ resolution | ✅ Resolved |
+| Doc-code semantic linking | **High** | Weak or broad COVERS matches can add noisy documentation evidence. | Typed/confident COVERS edges and owner-linked docstring/JSDoc seeds are implemented; general markdown quality is not yet propagated through normal axis prompts. | 🟡 Mitigated |
 | Embedding leakage to cloud | Medium | Vector inversion can recover source text — contradicts ADR-001 spirit | Phase 7: Security ADR before cloud vector sync | 🟡 Pending Phase 7 |
-| Intent classification immaturity | Medium | Query intent classifier remains heuristic and mixed-query routing still needs real-repo calibration | Keyword classifier, impact intent, distribution/confidence/ambiguous metadata, prompt-contract surfacing, and initial `IntentPolicy` consumption are implemented; learned classification remains Phase 10 | 🟡 Mitigated |
+| Intent classification immaturity | Medium | Mixed queries can still under-serve secondary structural evidence. | The active axis classifier derives structural intent roles and uses them for graph depth and token budgets; learned classification, calibration, and richer prompt metadata remain open. | 🟡 Mitigated |
 | Graceful degradation reliability | Medium | Standard mode must be robust fallback when surgical context unavailable | Tier-aware assembly, mode flag, orchestrator fallback, and degraded context-only `/ask` responses are implemented. | ✅ Resolved |
 | Model Router misclassification | Medium | Misclassification can send a complex task to a cheaper model | Model routing and Claude→Ollama fallback are implemented; remaining mitigation is benchmark tuning and clearer extension surfacing. | 🟡 Mitigated |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
@@ -715,9 +719,9 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | **Unbounded API limits** | **Medium** | Huge `token_budget` / `limit` → local DoS and cloud cost spikes. | Pydantic bounds on request models (`tests/unit/test_api_bounds.py`) | ✅ Resolved |
 | **Retired Claude Sonnet 4.0 model ID** | **Medium** | Hardcoded `claude-sonnet-4-20250514` fails after 2026-06-15 retirement. | Default `claude-sonnet-4-6` + `ANTHROPIC_MODEL` env | ✅ Resolved |
 | **Overlay cross-user leakage** | **Medium** | Shared overlay keys could expose unsaved buffers across users in one workspace. | Overlay keyed by `(workspace_id, user_id, file_path)` | ✅ Resolved |
-| Graph + semantic retrieval siloed | High | Two independent tracks can't arbitrate budget; strong doc hits dropped, weak graph neighbors kept. | Phase 9.1 unified ranker is implemented; current gap is precision/file-recall telemetry and long-tail export/framework shapes (spec_unified_ranking.md (removed)) | 🟡 Mitigated |
-| Primary-intent routing | High | Mixed queries (e.g. debugging+refactor) can be under-served if secondary intent evidence is not seated. | Initial `IntentPolicy` consumes `intent.distribution` for active/secondary intents, weighted tier order, supplemental roles, blended priors, doc-first mode, and weighted ranker floor; remaining work is real-repo calibration and hard per-tier budget evaluation (spec_multi_label_intent.md (removed)) | 🟡 Mitigated |
-| Flat DocAnchor links | Medium | All `COVERS` edges weighted equally regardless of definition vs. example vs. passing mention. | Phase 9.3 implemented: per-edge `anchor_type`, `confidence`, `primary_bias`, and resolver-aware ranker consumption ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)) | ✅ Resolved |
-| Retrieval observability polish | High | Contract fields exist, but extension/debug surfaces still need to make the ranker story easy to inspect. | Phase 9.4 surfaces selected scores/provenance, ranker weights, `pruned[]`, intent metadata, and `intent_policy`; remaining gap is UI consistency ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)) | 🟡 Mitigated |
-| Cache multi-instance gap | Medium | Local cache exists, but multi-instance deployments would need a shared backend. | Phase 10.1 local three-layer cache is implemented and surfaces `metadata.assembly.cache_hits`; Redis/multi-instance cache remains future ([spec_retrieval_cache.md](spec_retrieval_cache.md)) | ✅ Resolved for local |
+| Graph + semantic retrieval siloed | High | Semantic seeds, graph expansion, and documentation can compete without one budget view. | Axis combines semantic symbol seeding with graph expansion and token-credit packing; general markdown still enters only fallback paths. | 🟡 Mitigated |
+| Primary-intent routing | High | Mixed queries (e.g. debugging+refactor) can under-serve secondary evidence. | The axis classifier returns structural intent roles and uses them for retrieval budgets; real-repo calibration and richer prompt serialization remain open. | 🟡 Mitigated |
+| Flat DocAnchor links | Medium | Definition, example, and passing-mention links should not carry equal weight. | `anchor_type`, `confidence`, `primary_bias`, and resolver metadata are persisted; owner anchors feed axis seeds, while general markdown quality consumption remains partial ([spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md)). | 🟡 Mitigated |
+| Retrieval observability polish | High | Contract fields exist, but extension/debug surfaces still need to make the retrieval story easy to inspect. | The serializer exposes scores, provenance, pruning, route, trace, and workspace fields; the active axis adapter leaves several values sparse ([spec_prompt_contract_observability.md](spec_prompt_contract_observability.md)). | 🟡 Mitigated |
+| Cache activation gap | Medium | Three cache APIs exist, but only response caching is active in normal requests. | L3 avoids repeated model calls and is invalidated by indexed files; L1/L2 are dormant and shared/multi-instance backends remain future ([spec_retrieval_cache.md](spec_retrieval_cache.md)). | 🟡 Mitigated |
 | Learning loop incomplete | Medium | Feedback telemetry exists, but retrieval does not yet adapt from usage. | Phase 10.2 has feedback tokens, snapshots, endpoint, privacy boundaries, and counters; EMA tuning, learned `CO_RELEVANT` edges, and training loops remain open ([spec_learning_loop.md](spec_learning_loop.md)) | 🟡 Mitigated |

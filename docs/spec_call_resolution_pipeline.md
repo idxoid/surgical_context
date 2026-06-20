@@ -4,14 +4,14 @@
 
 ## 1. Problem
 
-Current indexer resolves callees by `MATCH (callee:Symbol {name: $name})`. This is a string match across the entire graph. Problems:
+Before the staged resolver, the indexer resolved callees by `MATCH (callee:Symbol {name: $name})`. That graph-wide string match caused:
 
 - **Name collisions:** two `parse()` functions in different modules point at each other or both.
 - **Methods:** `obj.save()` resolves to every `save` in the graph — ORM models, tests, filesystem helpers all collapse together.
 - **Imports / aliases:** `from utils import format as fmt` followed by `fmt(x)` — no link made.
 - **Dynamic dispatch:** `self.handler()` resolved as a single static name instead of an interface method.
 
-The existing `CALLS_DIRECT / CALLS_DYNAMIC / CALLS_INFERRED` split classifies confidence but still runs the **same naive matcher** underneath. Edge type alone does not improve precision.
+The old `CALLS_DIRECT / CALLS_DYNAMIC / CALLS_INFERRED` split classified confidence while still using the same naive matcher underneath. Edge type alone did not improve precision.
 
 ## 2. Design — Resolution as a Pipeline
 

@@ -2,7 +2,8 @@
 
 > **Status:** Kept as a one-screen summary only.
 >
-> Canonical details moved to `product_direction_memo.md` to avoid drift.
+> Canonical details live in [README.md](../README.md),
+> [road_map.md](road_map.md), and [architectura.md](architectura.md).
 
 ## One Sentence
 
@@ -23,6 +24,7 @@ understanding and change impact.
 
 ## Canonical References
 
-- `product_direction_memo.md` — strategy, scope boundaries, validation criteria
-- `concept.md` — compact concept identity
-- `architectura.md` — implementation and architecture state
+- [README.md](../README.md) — product thesis and documentation map
+- [road_map.md](road_map.md) — strategy, scope boundaries, validation criteria
+- [concept.md](concept.md) — compact concept identity
+- [architectura.md](architectura.md) — implementation and architecture state

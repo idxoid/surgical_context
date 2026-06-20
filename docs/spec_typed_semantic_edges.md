@@ -1,7 +1,7 @@
 # Spec — Typed Semantic Edges (Phase 5)
 
 
-> **Status:** Implemented for typed call edges and ranker traversal. The graph now supports and consumes `CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`, and `CALLS_GUESS`; legacy `CALLS` is still accepted as a compatibility fallback. `IMPLEMENTS`, `OVERRIDES`, `REFERENCES`, and `SEMANTIC_HINT` are supported by traversal/scoring, but parser emission is uneven: inheritance currently writes `DEPENDS_ON` with metadata, not dedicated `IMPLEMENTS`/`OVERRIDES` edges, and `REFERENCES` is schema/ranker-ready but not broadly emitted.
+> **Status:** Implemented for typed call edges and axis traversal. The graph supports and consumes `CALLS_DIRECT`, `CALLS_SCOPED`, `CALLS_IMPORTED`, `CALLS_DYNAMIC`, `CALLS_INFERRED`, and `CALLS_GUESS`; legacy `CALLS` remains a compatibility fallback. `REFERENCES` is emitted for static alias/re-export surfaces and consumed by axis profiles. Inheritance still primarily writes `DEPENDS_ON` rather than dedicated `IMPLEMENTS`/`OVERRIDES`. `SEMANTIC_HINT` may exist in old graphs but is no longer produced or traversed by axis.
 
 ## 1. Problem
 
@@ -12,7 +12,7 @@ The original graph used one broad `CALLS` edge for every call-like relationship.
 - a method dispatch through `self` or an object is weaker than a direct function call
 - a heuristic `getattr`/`eval` pattern should not rank like ordinary control flow
 
-Typed semantic edges give axis graph walks and AFFECTS a confidence signal before semantic seed ranking runs.
+Typed semantic edges let axis graph walks choose narrower relationship profiles and let AFFECTS distinguish dependency shapes. Relationship confidence is stored, but the active axis seed ranker does not yet consume it directly.
 
 ## 2. Current Edge Types
 
@@ -20,7 +20,7 @@ Typed semantic edges give axis graph walks and AFFECTS a confidence signal befor
 
 | Edge Type | Meaning | Current source | Confidence/Prior |
 |---|---|---|---|
-| `CALLS_DIRECT` | Direct static call fallback | Python/TS parser, migration | 1.0 |
+| `CALLS_DIRECT` | Direct static call fallback | Python/TS parser | 1.0 |
 | `CALLS_SCOPED` | Python call resolved to a unique symbol in local scope/file graph | Python parser + scoped resolver | 0.9 |
 | `CALLS_IMPORTED` | Python identifier resolved through import binding | Python parser + imports | 0.85 |
 | `CALLS_DYNAMIC` | Method/member dispatch (`self.x()`, `obj.x()`, `this.x()`) | Python/TS parser | 0.7 |
@@ -35,7 +35,7 @@ Typed semantic edges give axis graph walks and AFFECTS a confidence signal befor
 | `DEPENDS_ON` | General type/inheritance/import-style symbol dependency | Implemented |
 | `IMPLEMENTS` | Class implements interface/abstract contract | Traversal/scoring support; not broadly emitted |
 | `OVERRIDES` | Method overrides parent method | Traversal/scoring support; not broadly emitted |
-| `REFERENCES` | Weak symbol reference/type-only mention | Schema/scoring support; not broadly emitted |
+| `REFERENCES` | Static symbol alias/re-export reference | Emitted for supported Python and TS/JS alias surfaces; broader type/comment references remain open |
 | `SEMANTIC_HINT` | Legacy semantic relationship | May exist in older graphs; **no longer produced** (framework/ts_http hints removed 2026-06); not in axis `EdgeProfile` |
 | `IMPORTS` | File-to-file imports | Retained at file level |
 
@@ -104,7 +104,7 @@ Inheritance extraction exists, but `Neo4jClient.link_inheritance(...)` currently
 
 The original design called for dedicated `IMPLEMENTS` and `OVERRIDES` edges. Consumers already include those relationship types, so emitting them later is backward-compatible.
 
-`REFERENCES` indexes and scoring exist, but parser-side reference extraction remains future work.
+`REFERENCES` creation is implemented for supported static aliases and re-exports. Broader references from type annotations, comments, and runtime aliasing remain future work.
 
 ## 4. Graph Writes and Schema
 
@@ -174,7 +174,7 @@ IMPLEMENTS
 OVERRIDES
 ```
 
-This means even guessed/inferred edges can contribute to impact reachability, but their weaker ranking priors still reduce their chance of dominating prompt context.
+Even guessed/inferred edges can therefore contribute to the materialized impact closure. AFFECTS traversal itself does not weight relationship confidence; active prompt retrieval controls breadth through axis edge profiles, depth, caps, and token-credit packing.
 
 ## 7. Tests
 
@@ -183,11 +183,14 @@ Implemented coverage includes:
 - `tests/unit/test_typescript_adapter.py`
   - direct calls become `CALLS_DIRECT`
   - member/`this` calls become `CALLS_DYNAMIC`
-- `tests/unit/test_p1_retrieval_correctness.py`
-  - Python scoped/imported call extraction
-  - Neo4j `link_calls` uses `callee_uid` and batches same resolution mode
-- `tests/integration/test_phase5_validation.py`
-  - typed semantic edge smoke validation
+- `tests/unit/test_python_adapter.py`
+  - Python imported-call classification
+- `tests/unit/test_typescript_adapter.py` and `tests/unit/test_javascript_adapter.py`
+  - scoped/direct/dynamic classification and local `callee_uid` resolution
+- `tests/unit/test_incremental_indexing.py`
+  - typed calls are passed through incremental graph linking
+- `tests/integration/test_graph_completeness.py`
+  - import/inheritance graph smoke validation
 - axis walk / retrieval tests under `tests/unit/test_axis_*`
 - AFFECTS tests in `tests/unit/test_affects_indexer.py`
 

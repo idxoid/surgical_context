@@ -1,6 +1,14 @@
 # Webview Component Model — Spec
 
-`src/webview/*`, `src/ui/*`, `src/protocol/*` — defines the component model, layout rules, local state, and message protocol for Surgical Context webview surfaces. This spec covers the Chat Panel, Context Inspector, Impact Explorer, and Dashboard, with special focus on the approved chat layout: bottom-docked composer, response area above it, and collapsed info groups by default.
+`extension/src/webview/`, `extension/src/webview/shared/`,
+`extension/src/providers/`, and `extension/src/panels/` define the component
+model, layout rules, local state, and message protocol for Surgical Context
+webview surfaces. The implementation uses TypeScript and browser DOM APIs, not
+React.
+
+> **Status:** Implemented baseline plus design guidance. For exact message/DTO
+> unions, `extension/src/webview/shared/protocol.ts` is authoritative; this
+> document intentionally includes planned interaction shapes as well.
 
 ## Overview
 

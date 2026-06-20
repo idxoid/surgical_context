@@ -1,13 +1,17 @@
 # Cascade cleanup — Phase 0 inventory & dependency map
 
-> **✅ DONE 2026-06-15.** The migration described below is complete. axis is the
-> default `/ask` provider (`ASK_AXIS_FIRST=0` rolls back); class A was deleted
+> **✅ DONE 2026-06-15.** The migration described below is complete. Axis is the
+> default `/ask` provider. `ASK_AXIS_FIRST=0` now disables axis and uses the
+> file → workspace → direct-LLM fallback ladder; it cannot restore the deleted
+> cascade. Class A was deleted
 > (commits 8d430dc cutover → 75985cb indexer decouple → 6429811 main.py decouple
-> → eb3da79 delete, ~19.5k LOC). Kept (class C): `context_engine/context/{types,
-> doc_resolver, overlay}`. `reset_databases` re-pointed (f0f7e52); `/search`
+> → eb3da79 delete, ~19.5k LOC). Shared class-C pieces now live at
+> `context_engine/context_types.py`, `context_engine/doc_resolver.py`, and
+> `context_engine/overlay.py`. `reset_databases` re-pointed (f0f7e52); `/search`
 > graph neighbors restored via the axis walk (04d16b4). `role_cascade` is the
 > KEPT structural role engine (misnomer — not the ranking cascade). This doc is
-> retained as the migration record; the plan below is historical.
+> retained as the migration record; paths, line numbers, and importer sets below
+> are snapshots from the migration and are not current architecture guidance.
 
 Migration of the legacy ranking cascade (`context_engine/context/`) to the axis
 pipeline (`context_engine/axis/`). This is the Phase 0 deliverable: the exact

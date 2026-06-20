@@ -30,7 +30,7 @@ Neither graph storage nor tenant API graph storage may store raw source code con
 Neo4jClient(uri, user, password)
 ```
 
-Opens a `neo4j.GraphDatabase.driver` connection. Call `.close()` when done. Sidecar endpoints use request-scoped `db_session(...)`.
+Directly constructed clients own a `neo4j.GraphDatabase.driver` and close it with the client. The sidecar instead uses `DatabaseProvider`: one lazily opened process-wide driver plus request-scoped `AuraClient` views. `db_session(...)` closes only the lightweight view; the FastAPI lifespan closes the shared driver.
 
 ### Schema (ADR-001 compliant)
 
@@ -78,7 +78,7 @@ Preferred resolution is by `callee_uid`, then `callee_qualified_name`. Name-only
 LanceDBClient()
 ```
 
-Opens (or creates) LanceDB at path from `LANCEDB_PATH` env var (default `./data/lancedb`). Creates two tables on first run.
+Connects lazily to LanceDB at `LANCEDB_PATH` (default `./data/lancedb`). Table names and symbol schema depend on the active index profile. The default profile uses `docs`/`symbols`; `axis_python_v1` uses profile-specific doc/symbol tables and also materializes shared or workspace-partitioned adjacency tables.
 
 ### Tables
 
@@ -91,6 +91,8 @@ Opens (or creates) LanceDB at path from `LANCEDB_PATH` env var (default `./data/
 | `chunk` | string | Raw chunk text |
 | `pending` | list[string] | Identifier names not yet linked to a symbol |
 | `vector` | float32[384] | `all-MiniLM-L6-v2` embedding of `chunk` |
+| `embedding_metadata` | string | JSON model/version/content/vector hashes |
+| `owner_uid` | string | Owning symbol for in-code docstring/JSDoc anchors; empty for ordinary markdown chunks |
 
 #### symbols
 | Column | Type | Description |
@@ -101,6 +103,14 @@ Opens (or creates) LanceDB at path from `LANCEDB_PATH` env var (default `./data/
 | `file_path` | string | Source code file |
 | `code` | string | Symbol source lines |
 | `vector` | float32[384] | `all-MiniLM-L6-v2` embedding of `code` |
+| `embedding_metadata` | string | JSON model/version/content/vector hashes |
+
+For `axis_python_v1`, symbol rows additionally carry `symbol_kind`,
+`qualified_name`, AST/CFG/DFG/structural bits, container kinds, evidence and
+contract JSON, `file_tier`, and a signature vector. The `axis_adjacency` and
+`axis_adjacency_external` tables materialize graph-walk inputs; symbol and
+adjacency tables may be physically partitioned per workspace when
+`LANCEDB_WORKSPACE_PARTITIONED=true` (the default).
 
 ### Methods
 
@@ -129,7 +139,7 @@ Delete-then-insert for the target `(workspace_id, chunk_id)` row. LanceDB `updat
 
 ### Embedding Model
 
-`EMBED_MODEL` env var (default `all-MiniLM-L6-v2`). Loaded once at `LanceDBClient.__init__`. 384-dimensional vectors. Runs locally, no network calls after first download.
+`EMBED_MODEL` defaults to `all-MiniLM-L6-v2`. Model metadata is validated at client construction, but the SentenceTransformer itself is loaded lazily on first embed. The default produces 384-dimensional vectors and runs locally after the first model download. Embedding metadata and the content-hash cache are described in [spec_embedding_versioning.md](spec_embedding_versioning.md).
 
 ---
 

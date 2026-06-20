@@ -4,7 +4,7 @@
 
 ## 1. Problem
 
-Current UID:
+UID before Phase 8:
 
 ```python
 uid = sha256(f"{file_path}:{name}").hexdigest()

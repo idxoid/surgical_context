@@ -232,7 +232,9 @@ class AskService:
             mode=str(getattr(ctx, "mode", "")),
             question_hash=hashlib.sha256(question.encode()).hexdigest(),
             question_tokens=trace.token_counts.get("user", estimate_text_tokens(question)),
-            context_pipeline_version=getattr(ctx, "context_pipeline_version", CONTEXT_PIPELINE_VERSION),
+            context_pipeline_version=getattr(
+                ctx, "context_pipeline_version", CONTEXT_PIPELINE_VERSION
+            ),
             selected_candidates=selected,
             documentation=documentation,
             context_metadata={
@@ -417,7 +419,9 @@ class AskService:
             with trace.stage("llm"):
                 response_cache_hit = False
                 degraded_response = False
-                prompt_hash = hashlib.sha256(f"{system_prompt}\n{req.question}".encode()).hexdigest()
+                prompt_hash = hashlib.sha256(
+                    f"{system_prompt}\n{req.question}".encode()
+                ).hexdigest()
                 cached_response = self.default_cache.get_response(prompt_hash, workspace_id)
                 if cached_response:
                     response_cache_hit = True
@@ -435,9 +439,7 @@ class AskService:
                         "trace",
                         self.stream_trace_payload(trace, stage="llm", ctx=ctx),
                     )
-                    yield format_sse(
-                        "chunk", {"type": "chunk", "content": cached_response.answer}
-                    )
+                    yield format_sse("chunk", {"type": "chunk", "content": cached_response.answer})
                 else:
                     try:
                         for chunk in self.ai_engine.stream_chat(

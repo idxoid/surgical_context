@@ -2,12 +2,12 @@
 
 ## Overview
 
-`context_engine/indexer/code.py` — full project code indexing pipeline. Walks a directory, extracts symbols and typed function calls, embeds symbol bodies, resolves pending DocAnchors, rebuilds the AFFECTS reverse-dependency index, and emits a repository readiness profile.
+The indexer has two orchestration layers. `context_engine/indexer/code.py` provides file collection and baseline per-file helpers; `context_engine/indexer/fast/pipeline.py` is the full profile-aware project pipeline used by `run_indexing()`. It extracts symbols and typed edges, embeds axis facts, runs graph enrichment/propagation, materializes adjacency, resolves DocAnchors, rebuilds AFFECTS, and emits repository/index metadata.
 
 Entry points:
 - CLI: `python context_engine/indexer/code.py [path]` (defaults to repo root)
 - Programmatic: `run_indexing(path)`, `index_file(path, db, lance, extractor)`
-- API: `POST /index` via `context_engine/main.py` — registers `project_path` immediately (including `queue=true` via `register_workspace_project_root()` in `context_engine/retrieval/manifest.py`) before batch workers run; see path sandboxing in [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)
+- Service/API: `IndexingService` in `context_engine/indexer/service.py` plus routes in `context_engine/api/routes/indexing.py`. `POST /index` registers `project_path` immediately (including `queue=true`) before batch workers run; see [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
 ---
 
@@ -168,7 +168,7 @@ def index_file(
 - `skip_affects=True` defers the AFFECTS rebuild to the batch caller.
 - When `skip_affects=False` (default, hot path via `/index/file`), AFFECTS is rebuilt synchronously for that file — preserving the on-save latency contract.
 
-Batch callers (`_process_index_batch` in `main.py`, `run_fast_indexing`) collect all changed UIDs across files and call `rebuild_affects` once after the loop, then call `LayeredCache.invalidate_files` for the full set of indexed paths.
+Batch callers (`IndexingService.process_index_batch`, `run_fast_indexing`) collect changed UIDs across files and call `rebuild_affects` once after the loop. The queued service then runs `run_axis_incremental_finalize()` for propagation/adjacency, resolves anchors, and calls `LayeredCache.invalidate_files` for the indexed paths.
 
 ### Phase 6 — Repository readiness profile (project pass)
 
@@ -183,7 +183,7 @@ The fast project indexer builds a repository profile after graph/doc-anchor phas
 
 The result is included under `stats["repository_profile"]`, persisted to the Neo4j `Workspace`, and printed as a compact readiness line. `stats["repository_profile_store"]` is `neo4j_workspace` when persistence succeeds. If a project pass finds no changed files, the fast indexer loads the existing profile from the workspace when available.
 
-The single-file hot path does not currently rebuild the full repository profile.
+The synchronous single-file hot path does not currently rebuild the full repository profile, rerun Pass 1, or execute the queued path's axis incremental finalize step.
 
 ### Phase 7 — Repository role taxonomy (Pass 1)
 
@@ -260,9 +260,18 @@ After per-file symbol/call linking, the fast project indexer (`context_engine/in
 
 Stats keys: `proxy_bindings`, `proxy_calls_resolved`, `degree_recomputed`.
 
+### Fast pipeline — axis facts, adjacency, and docstring anchors
+
+The active `axis_python_v1` profile embeds per-symbol AST/CFG/DFG/structural
+facts, container kinds, contracts, qualified names, and file tiers into the
+profile-specific Lance symbols table. After graph propagation it materializes
+workspace adjacency tables for in-process graph walks. Stage 7 indexes Python
+docstrings and TypeScript/JavaScript JSDoc as doc rows with `owner_uid` plus
+direct `COVERS` edges, then resolves older pending markdown anchors.
+
 **Removed (2026-06):** `framework_hints` and `ts_http_route_hints` wrote `SEMANTIC_HINT` edges via name/regex matching. They were not consumed by the axis read path; cross-language TS↔Python linking is scoped out until structural route/call edges exist.
 
-**Materialized degree (`in_degree` / `out_degree`).** Degree over the call/dep/ref/hint edge set is static topology, so it is computed once at index time and stored on each `Symbol`. The ranker's recovery queries read `coalesce(s.in_degree, 0)` instead of re-aggregating edges per query. The edge-type set counted is fixed in `Neo4jClient._DEGREE_REL_PATTERN` and **must** match what the ranker reads. To stay accurate under incremental `update`, degree is recomputed only over the **affected closure** (changed symbols ∪ their 1-hop neighbors, captured before mutation so a removed symbol's neighbor is still corrected), never globally. Newly created `ProxyBinding` nodes are folded into the closure seed set. Verified on click/flask/celery: 100% coverage, zero mismatch vs. a live recompute.
+**Materialized degree (`in_degree` / `out_degree`).** Degree over the configured call/dependency/reference edge set is static topology, so it is computed at index time and stored on each `Symbol`. Pass-1 role derivation consumes the materialized values instead of re-aggregating edges per symbol. The counted set is fixed in `Neo4jClient._DEGREE_REL_PATTERN`. To stay accurate under incremental updates, degree is recomputed only over the **affected closure** (changed symbols plus their one-hop neighbors, captured before mutation so a removed symbol's neighbor is still corrected), never globally. Newly created `ProxyBinding` nodes are folded into the closure seed set.
 
 **Materialized file tier (`file_tier`).** Each symbol row in LanceDB carries a structural file tier (`core`, `test`, `example`, `doc`, `stub`, `reexport`) derived at embed time from path topology + pure-reexport shape — see [file_tier_signal.md](file_tier_signal.md). The axis ranker applies intent-signed tier weights in seed/role retrieval (`role_retrieval.py`); graph walks still use the legacy `is_test_path` fence until step 5 of that spec lands.
 
@@ -288,14 +297,13 @@ This reduces indexing time for large repos with few changes. Full re-index still
 
 - The repository profile is a conservative first-pass contract, not a deep framework model.
 - Dynamic-surface flags are extension/path heuristics; they guide routing and diagnosis, not mechanism detection.
-- The single-file hot path does not currently refresh the full repository profile or rerun Pass 1.
+- The synchronous single-file hot path does not currently refresh the full repository profile, rerun Pass 1, or run profile-aware propagation/adjacency finalization.
 - Current impact capability is still shallow: AFFECTS reachability does not prove behavioral breakage.
-- Residual ranker fallbacks: removed with the cascade (`mechanism_registry`, `UnifiedRanker`). Pass-1 roles and axis retrieval are the read path.
 
 ---
 
 ## Planned Extensions
 
-- Skip unchanged files using `File.hash` comparison (ADR-001 §hash mismatch = dirty flag)
 - Parallel file processing for large repos (`concurrent.futures.ThreadPoolExecutor`)
 - Single-pass Phase 1+2 (extract symbols and calls in one tree-sitter parse)
+- Bring `/index/file` with `queue=false` to full parity with queued axis finalization, or explicitly retire that narrower path.

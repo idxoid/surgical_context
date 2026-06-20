@@ -26,9 +26,13 @@ def connect_neo4j_driver(
     aura_username = aura_username or os.getenv("NEO4JAURA_USERNAME")
     aura_password = aura_password or os.getenv("NEO4JAURA_PASSWORD")
     aura_instance_name = aura_instance_name or os.getenv("NEO4J_INSTANCENAME")
-    local_uri = local_uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    local_user = local_user or os.getenv("NEO4J_USER", "neo4j")
-    local_password = local_password or os.getenv("NEO4J_PASSWORD", "password")
+    resolved_local_uri = (
+        local_uri if local_uri is not None else os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    )
+    resolved_local_user = local_user if local_user is not None else os.getenv("NEO4J_USER", "neo4j")
+    resolved_local_password = (
+        local_password if local_password is not None else os.getenv("NEO4J_PASSWORD", "password")
+    )
 
     if aura_username and aura_password and aura_instance_name:
         try:
@@ -46,21 +50,24 @@ def connect_neo4j_driver(
             logger.warning("Aura connection failed: %s. Falling back to local Neo4j.", exc)
             try:
                 driver = GraphDatabase.driver(
-                    local_uri,
-                    auth=(local_user, local_password),
+                    resolved_local_uri,
+                    auth=(resolved_local_user, resolved_local_password),
                 )
                 with driver.session() as session:
                     session.run("RETURN 1").consume()
-                logger.info("Connected to local Neo4j (%s) as fallback", local_uri)
+                logger.info("Connected to local Neo4j (%s) as fallback", resolved_local_uri)
                 return driver, False, True
             except Exception as exc2:
                 logger.error("Both Aura and local Neo4j failed: %s", exc2)
                 raise
 
-    driver = GraphDatabase.driver(local_uri, auth=(local_user, local_password))
+    driver = GraphDatabase.driver(
+        resolved_local_uri,
+        auth=(resolved_local_user, resolved_local_password),
+    )
     with driver.session() as session:
         session.run("RETURN 1").consume()
-    logger.info("Connected to local Neo4j (%s) as %s", local_uri, local_user)
+    logger.info("Connected to local Neo4j (%s) as %s", resolved_local_uri, resolved_local_user)
     return driver, False, False
 
 

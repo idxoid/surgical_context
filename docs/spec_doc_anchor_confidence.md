@@ -1,6 +1,6 @@
 # Spec — DocAnchor Confidence & Type (Phase 9)
 
-> **Status:** Implemented in `context_engine/indexer/anchor.py` and consumed by the context ranker (axis; the legacy `UnifiedRanker` consumer was removed 2026-06-15). Existing flat `COVERS` edges remain readable through fallback defaults; newly indexed docs write `anchor_type`, `confidence`, `primary_bias`, and `resolver`.
+> **Status:** COVERS classification/persistence is implemented in `context_engine/indexer/anchor.py`. Existing flat edges remain readable through fallback defaults; newly indexed links write `anchor_type`, `confidence`, `primary_bias`, and `resolver`. Active axis consumption is partial: in-code docstring/JSDoc anchors seed by `owner_uid`, while general markdown COVERS quality is not yet carried into the normal axis `PromptContext`.
 
 ## 1. Problem
 
@@ -83,11 +83,12 @@ Effect: a chunk that mostly documents `process_payment` but also references `val
 
 ### 2.5 Retrieval Impact
 
-Unified ranker (spec_unified_ranking.md (removed)) consumes these fields:
-
-- Doc candidate graph boost is derived from `primary_bias * confidence * anchor_type_weight`, blended with the linked symbol's graph score.
-- Doc bridge candidates include anchor quality in provenance (`doc-bridge:h1,strength=...,anchor_q=...`).
-- Prompt contract entries expose `documentation[].anchor_type`, `documentation[].anchor_confidence`, `documentation[].primary_bias`, and a nested `documentation[].anchor` object.
+The prompt contract can serialize `documentation[].anchor_type`,
+`anchor_confidence`, `primary_bias`, and grouped `anchor` metadata. The removed
+`UnifiedRanker` previously consumed COVERS quality directly. The current axis
+path instead uses in-code `owner_uid` anchors as semantic seeds and a bounded
+reverse-`USES_TYPE` bridge; carrying general markdown COVERS quality into axis
+ranking/prompt assembly remains open.
 
 ## 3. API / Interface
 
@@ -147,6 +148,7 @@ c2 = _cover_link(
 - Heuristic classifier is English-oriented — markers like "Warning:" don't fire in other languages. Mitigation: accept locale-specific keyword lists as config.
 - `primary_bias` is currently a simple focal/secondary heuristic (`1.0` for single-symbol chunks, lower for multi-symbol chunks, heading mentions lifted). Softer distributions (softmax over confidences) possible; defer until harness shows it matters.
 - Anchor type doesn't distinguish between "tutorial example" and "regression example" — both collapse to `example`. Finer taxonomy is Planned.
+- General markdown anchor quality is stored but not yet consumed by the active axis prompt adapter.
 
 ## 6. Planned Extensions
 
@@ -157,5 +159,5 @@ c2 = _cover_link(
 
 - [spec_doc_anchor.md](spec_doc_anchor.md) — the DocAnchor node and current `COVERS` edge this extends.
 - [spec_doc_indexer.md](spec_doc_indexer.md) — chunking pipeline upstream of classification.
-- spec_unified_ranking.md (removed) — consumer of `confidence`, `anchor_type`, `primary_bias`.
+- [doc_anchor_seed_plan.md](doc_anchor_seed_plan.md) — implemented in-code owner seed and bridge.
 - [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) — surfaces `anchor_type` / `anchor_confidence` in the contract.
