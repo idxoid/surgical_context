@@ -2,7 +2,7 @@
 
 ## Overview
 
-`context_engine/doc_anchor.py` — links documentation chunks to code symbols in Neo4j. Enables hybrid retrieval: vector search finds a relevant doc chunk → graph traversal finds the code it describes.
+`context_engine/indexer/anchor.py` links documentation chunks to code symbols in Neo4j. Markdown chunks use identifier/semantic COVERS links; the full fast pipeline also indexes in-code docstrings/JSDoc with an explicit owner symbol for axis seed retrieval.
 
 ---
 
@@ -19,7 +19,7 @@
 `FROM` edges carry a `type` property classifying the relationship. `File` nodes receive a `doc_type` property (`"code"`, `"spec"`, `"architecture"`, `"concept"`, `"idea"`, `"documentation"`, `"roadmap"`, `"review"`) derived from filename patterns.
 `COVERS` edges carry retrieval metadata: `anchor_type` (`definition`, `example`, `reference`, `warning`, `deprecated`), `confidence` (`0..1`), `primary_bias` (focal-vs-secondary symbol weighting), and `resolver` (`identifier`, `semantic`, or `pending_identifier`).
 
-The `chunk_id` is the key back into LanceDB `docs` table to retrieve the actual text.
+The `chunk_id` is the key back into the active profile's LanceDB docs table to retrieve the actual text. In-code docstring/JSDoc rows also carry `owner_uid`; ordinary markdown rows leave it empty.
 
 ---
 
@@ -130,6 +130,7 @@ RETURN DISTINCT spec.path
 - `[:COVERS]` and `[:FROM]` edges are additive — re-indexing docs does not remove stale edges from deleted chunks. Orphaned DocAnchor nodes accumulate until a full graph wipe.
 - `_link_related_docs` only matches filenames; it does not follow transitive doc references (spec references architecture which references concept).
 - Anchor classification is heuristic v1 and English-oriented.
+- The active axis path consumes `owner_uid` docstring/JSDoc anchors directly. General markdown COVERS confidence/type is persisted but is not yet propagated into the normal successful axis `PromptContext`.
 
 ---
 

@@ -1,6 +1,9 @@
 # VS Code Manifest Surface — Spec
 
-`package.json`, `src/extension.ts`, `src/commands/*` — defines the extension manifest, contributed views, commands, menus, configuration, and activation rules for the Surgical Context VS Code extension. This spec describes how the extension should appear to VS Code and how the workbench entry points map to the approved UI surfaces: Chat Panel, Context Inspector, Impact Explorer, and Dashboard.
+`extension/package.json` and `extension/src/extension.ts` define the extension
+manifest, command handlers, contributed views, menus, configuration, and
+activation rules. Command registration currently lives in `extension.ts`; there
+is no separate `src/commands/` directory.
 
 ## Overview
 
@@ -39,13 +42,11 @@ Create a single custom container:
 
 This container owns the default sidebar experience.
 
-### Primary views inside the container
+### Primary view inside the container
 
 | View ID | Type | Title | Purpose |
 |---|---|---|---|
-| `surgicalContext.chat` | `webviewView` | `Chat` | Chat-first ask surface |
-| `surgicalContext.impact` | `treeView` or `webviewView` | `Impact` | Calls, reverse deps, docs, affects |
-| `surgicalContext.status` | `treeView` | `Status` | Compact health, workspace, cloud status |
+| `surgicalContext.main` | `webviewView` | `Surgical Context` | Combined chat/settings/status entry surface |
 
 ### Secondary panels
 
@@ -70,35 +71,25 @@ This container owns the default sidebar experience.
 
 ### Activation events
 
-Use narrow activation where practical.
-
-```json
-{
-  "activationEvents": [
-    "onView:surgicalContext.chat",
-    "onCommand:surgicalContext.askCurrentSymbol",
-    "onCommand:surgicalContext.openInspector",
-    "onCommand:surgicalContext.showImpact",
-    "onCommand:surgicalContext.openDashboard",
-    "workspaceContains:**/.git"
-  ]
-}
-```
-
-`onStartupFinished` is acceptable only if background overlay sync or health polling must start immediately. Otherwise prefer lazy activation.
+`activationEvents` is currently empty. Modern VS Code derives activation from
+the contributed view and commands, so no explicit startup activation is needed.
 
 ### Commands
 
-#### Required commands
+#### Current commands
 
 | Command ID | Title | When to use |
 |---|---|---|
 | `surgicalContext.askCurrentSymbol` | `Ask About Current Symbol` | Main ask workflow |
 | `surgicalContext.askSelection` | `Ask About Selection` | Explicit selection-based ask |
+| `surgicalContext.openChat` | `Open Chat` | Reveal the primary view/chat surface |
 | `surgicalContext.openInspector` | `Open Context Inspector` | Inspect last prompt context |
 | `surgicalContext.showImpact` | `Show Impact` | Open impact surface for active symbol |
 | `surgicalContext.findDocs` | `Find Related Docs` | Retrieve linked or semantic docs |
 | `surgicalContext.openDashboard` | `Open Dashboard` | Open operational dashboard |
+| `surgicalContext.openSettings` | `Open Settings` | Open the extension settings surface |
+| `surgicalContext.moveToSecondarySideBar` | `Move to Secondary Side Bar` | Reposition the primary view |
+| `surgicalContext.indexProject` | `Index Workspace` | Queue/full index the current workspace |
 | `surgicalContext.reindexCurrentFile` | `Reindex Current File` | Force single-file update |
 | `surgicalContext.toggleOverlaySync` | `Toggle Overlay Sync` | Debug or testing workflow |
 | `surgicalContext.searchWorkspace` | `Search Surgical Context` | Semantic/code-aware search |
@@ -134,7 +125,7 @@ Recommended editor/context menu commands:
 
 #### View title actions
 
-Add compact title bar commands to `surgicalContext.chat`:
+Add compact title bar commands to `surgicalContext.main`:
 
 - `Ask About Current Symbol`
 - `Open Context Inspector`
@@ -174,9 +165,15 @@ Do not overload common VS Code defaults. Prefer opt-in bindings.
 |---|---|---|---|
 | `surgicalContext.backendUrl` | `string` | `http://localhost:8000` | Sidecar base URL |
 | `surgicalContext.workspaceId` | `string` | empty | Optional workspace scope override; blank derives from VS Code workspace + Git branch |
+| `surgicalContext.modelPreference` | `string` | `auto` | Extension display/config value; does not currently reconfigure the running sidecar |
+| `surgicalContext.authToken` | `string` | empty | Optional explicit bearer token; blank triggers local token bootstrap |
+| `surgicalContext.tokenBudget` | `number` | `6000` | Ask/stream token budget (extension clamps to 1000–32,000) |
+| `surgicalContext.storage.lancedbPath` | `string` | `./data/lancedb` | Display/config value; sidecar storage still comes from its process environment |
+| `surgicalContext.storage.historyPath` | `string` | `./data/history/surgical_context.sqlite3` | Display/config value; sidecar storage still comes from its process environment |
 | `surgicalContext.overlaySync` | `boolean` | `true` | Enable dirty-state sync |
 | `surgicalContext.chat.autoOpenInspector` | `boolean` | `false` | Open inspector after completed ask |
 | `surgicalContext.dashboard.autoRefreshSeconds` | `number` | `30` | Dashboard polling interval |
+| `surgicalContext.layout.promptForSecondarySideBar` | `boolean` | `true` | Prompt before moving views to the secondary side bar |
 | `surgicalContext.experimental.searchPanel` | `boolean` | `false` | Enable search webview |
 
 #### Suggested setting descriptions
@@ -207,7 +204,7 @@ Example:
         {
           "id": "surgicalContext",
           "title": "Surgical Context",
-          "icon": "media/surgical-context.svg"
+          "icon": "media/icon.svg"
         }
       ]
     }
@@ -223,17 +220,9 @@ Example:
     "views": {
       "surgicalContext": [
         {
-          "id": "surgicalContext.chat",
-          "name": "Chat",
+          "id": "surgicalContext.main",
+          "name": "Surgical Context",
           "type": "webview"
-        },
-        {
-          "id": "surgicalContext.impact",
-          "name": "Impact"
-        },
-        {
-          "id": "surgicalContext.status",
-          "name": "Status"
         }
       ]
     }

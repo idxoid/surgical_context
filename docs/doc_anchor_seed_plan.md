@@ -1,6 +1,10 @@
-# Doc-anchor seed — implementation plan
+# Doc-anchor seed — implementation record
 
-Status: design approved (idxoid 2026-06-18). Roll out on **nestjs first**, then per-repo.
+Status: phases 0–4 implemented (2026-06-19). Lance rows carry `owner_uid`;
+Python docstrings and TypeScript/JavaScript JSDoc are extracted; the fast indexer
+emits owner anchors; axis retrieval uses doc-anchor seeds plus the bounded
+reverse-`USES_TYPE`/file-tier bridge. Real-repo re-indexing and benchmark
+calibration remain rollout work.
 
 ## Why
 
@@ -26,15 +30,16 @@ Rejected alternatives:
 - **doc-FACET-via-min** on the symbol: suffers min-crowding (min ranks a gold worse than
   its best single facet because min lifts every competitor). Separate-anchor-union is immune.
 
-## Reuse: existing DocAnchor infra (dormant)
+## Reused DocAnchor infrastructure
 
 `context_engine/indexer/anchor.py` already has: `DocAnchor(chunk_id)` node,
 `COVERS→Symbol` (owner) + `FROM→File` edges, doc-chunk Lance table `docs_axis_python_v1`
 (`id, workspace_id, file_path, chunk, pending, vector, embedding_metadata`),
-role_clustering `doc_anchor_count` signal, `_add_covers_edges_batch`. Built for **markdown**
-docs, COVERS resolved by **identifier name-match**; currently **0 anchors** (dormant), and
-**axis retrieval never reads it** (doc vector-search lives only in legacy
-`_vector_search_docs` main.py). We repurpose it for in-code docstrings.
+role_clustering `doc_anchor_count` signal, `_add_covers_edges_batch`. It was built
+for markdown docs and identifier/semantic COVERS resolution. The implemented
+extension adds in-code doc rows with `owner_uid`, direct COVERS links, axis seed
+retrieval, and a bounded structural bridge. General markdown docs still use the
+older search/fallback surfaces rather than the normal successful axis prompt path.
 
 ## Approved decisions
 
@@ -91,8 +96,11 @@ docs, COVERS resolved by **identifier name-match**; currently **0 anchors** (dor
 - Gate: new_q02 pool_recall 0.50→1.0; p95 latency unchanged (reverse hop is narrow + tier-filtered).
 
 ## Rollout
-nestjs first (reindex one ws, validate Phases 2-4 against the 2 zeros), then extend to the
-22 weak-seed Python questions across sqlalchemy/django/fastapi/celery, then all benchmark ws.
+
+Code rollout is complete. Operational rollout still requires re-indexing the
+target workspaces because existing Lance/Neo4j rows do not gain docstring anchors
+retroactively. Validate NestJS first, then the weak-seed Python questions across
+SQLAlchemy/Django/FastAPI/Celery, then the remaining benchmark workspaces.
 
 ## Invariants
 Structural only — the doc-anchor is a structural fact (the symbol *has* a docstring) and the

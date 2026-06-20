@@ -17,7 +17,8 @@ Only the first two belong in the extractor.
 
 ## Current extractor coverage
 
-Implemented in [python_extractor.py](../context_engine/axis/python_extractor.py).
+Implemented in [python_axis_extractor.py](../context_engine/parser/adapters/python_axis_extractor.py)
+and wired through the Python language adapter.
 
 ### CFG bits present
 

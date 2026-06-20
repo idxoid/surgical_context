@@ -1,10 +1,10 @@
 # Spec — Learning Loop (Phase 10)
 
-> **Status:** Proposed. Turns the system from a fixed retriever into a self-improving one. Closes the loop: user action → feedback → ranker update. Deliberately last in the sequence — depends on [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md) being shipped first.
+> **Status:** Feedback telemetry slice implemented; adaptive learning proposed. `/ask` and `/ask/stream` issue workspace/user-scoped tokens, append sanitized retrieval snapshots and feedback events to bounded JSONL logs, and expose joined examples. No online weight updates, classifier retraining, CO_RELEVANT edges, or feedback stats endpoint exist yet.
 
 ## 1. Problem
 
-The system today retrieves, answers, and forgets. Every query starts from the same prior weights, the same anchor classifications, the same intent heuristics. Two failure modes compound:
+The system records explicit/implicit feedback, but retrieval still starts from the same structural policy and does not adapt from those events. Two failure modes remain:
 
 - **Silent drift:** ranker weights that were correct last quarter are wrong now; we never find out.
 - **Silent miss:** the right symbol scored 0.4, just under threshold; the user worked around it; we never learned.
@@ -43,7 +43,7 @@ POST /feedback
 }
 ```
 
-Server writes to a JSONL `feedback.log` alongside existing audit log. Append-only; no destructive edits.
+Server writes to `.surgical_context/feedback.jsonl` and keeps retrieval snapshots in `.surgical_context/retrieval_snapshots.jsonl` by default. Paths and rotation limits are configurable with `FEEDBACK_LOG_PATH`, `FEEDBACK_SNAPSHOT_PATH`, `FEEDBACK_JSONL_MAX_BYTES`, and `FEEDBACK_JSONL_MAX_LINES`. Free-text comments are reduced to presence/length metadata before persistence.
 
 ### 2.3 Attribution
 
@@ -55,13 +55,17 @@ class RetrievalSnapshot:
     feedback_token: str
     workspace_id: str
     user_id: str
-    query: str
-    intent_distribution: dict[str, float]
-    ranker_weights: dict[str, float]
+    trace_id: str
+    symbol: str
+    intent: str
+    mode: str
+    question_hash: str
+    question_tokens: int
     context_pipeline_version: str
-    selected_candidates: list[CandidateRecord]   # with scores
-    pruned_candidates: list[CandidateRecord]     # with scores + reason
-    timestamp: datetime
+    selected_candidates: list[dict]
+    documentation: list[dict]
+    context_metadata: dict
+    timestamp: str
 ```
 
 Feedback events join on `feedback_token` to produce labeled examples.
@@ -123,7 +127,7 @@ Low coverage means the loop is inert — signals aren't enough to trust. Triage 
 ## 3. API / Interface
 
 ```python
-# context_engine/feedback/types.py (new module)
+# context_engine/feedback/store.py
 
 @dataclass
 class FeedbackEvent:
@@ -133,9 +137,10 @@ class FeedbackEvent:
     timestamp: datetime
 
 class FeedbackStore:
-    def record(self, event: FeedbackEvent) -> None: ...
-    def snapshot(self, token: str) -> RetrievalSnapshot | None: ...
-    def join_labeled(self, since: datetime) -> Iterator[LabeledExample]: ...
+    def record_snapshot(self, snapshot: RetrievalSnapshot) -> None: ...
+    def get_snapshot(self, token: str) -> RetrievalSnapshot | None: ...
+    def record_feedback(self, event: FeedbackEvent) -> None: ...
+    def feedback_examples(self, limit: int = 200) -> list[dict]: ...
 ```
 
 ```python
@@ -151,15 +156,18 @@ Endpoints:
 
 ```
 POST /feedback                   # record a feedback event
-GET  /feedback/stats?window=24h  # operator dashboard data
+GET  /feedback/stats?window=24h  # planned, not implemented
 ```
 
 ## 4. Examples
 
 ```python
 # 1. Retrieval happens
-ctx = arbitrator.get_context_for_symbol("process_payment", ws, question="why slow?")
-# Response includes: feedback_token = "fbk_9f2a1..."
+response = requests.post("/ask", json={
+    "symbol": "process_payment",
+    "question": "why slow?"
+}).json()
+# response["feedback_token"] == "fbk_9f2a1..."
 
 # 2. User clicks 👎 and notes "I was looking for the timeout logic"
 requests.post("/feedback", json={
@@ -168,13 +176,9 @@ requests.post("/feedback", json={
     "details": {"missing_symbols": ["RequestTimeout.apply"], "comment": "timeout logic"}
 })
 
-# 3. Snapshot is written; nightly job joins token → labeled pair.
-# 4. Grid search finds that bumping `w_rec` to 0.35 would have ranked RequestTimeout higher.
-# 5. Proposed tuning PR opens automatically; a human reviews + merges.
-
-# 6. Learned CO_RELEVANT edge added:
-# (process_payment) -[:CO_RELEVANT {boost: 0.25, evidence_count: 8}]-> (RequestTimeout.apply)
-# Future queries about process_payment now surface RequestTimeout.apply even via pure graph BFS.
+# 3. Snapshot + sanitized feedback event are appended to JSONL.
+# 4. FeedbackStore.feedback_examples() can join the token to a labeled example.
+# Automated tuning and learned edges are future work.
 ```
 
 ## 5. Limitations (current)
@@ -183,6 +187,7 @@ requests.post("/feedback", json={
 - Cross-user generalization is weak at low scale — a 5-person team produces thin gradients. Personalized deltas work fine; global weight updates need more traffic.
 - Feedback loop cannot recover from a *missing* candidate: if the right symbol never made the pool, no signal tells us about it. Mitigation: the `CO_RELEVANT` table can seed future pools from outside the graph's structural reach.
 - Adversarial risk: a malicious user could spam 👎 to degrade retrieval. Mitigate by rate-limiting feedback per user and requiring quorum (N different users) before a signal affects global weights.
+- Current telemetry is append-only local JSONL and is not consumed by the live axis ranker.
 
 ## 6. Planned Extensions
 

@@ -44,9 +44,9 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 
 | Component | Stack | Role |
 |---|---|---|
-| **Extension Host** | TypeScript / VS Code API | Manages sidecar lifecycle, proxies webview messages to sidecar, manages file watchers and overlays. |
+| **Extension Host** | TypeScript / VS Code API | Proxies webview messages to an externally started sidecar, derives workspace identity, and manages file watchers/overlays. |
 | **Webviews** | TypeScript + DOM | Render Chat Panel, Context Inspector, Impact Explorer, Dashboard. No React dependency is currently used. |
-| **Sidecar Binary** | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
+| **Sidecar Process** | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
 | **Storage Layer** | Neo4j + LanceDB + SQLite + FS | Concrete local defaults. History has a provider interface; retrieval protocols/fakes exist, while full GraphProvider/VectorProvider wrappers remain staged. |
 | **Tenant API Contract Graph** | GraphProvider metadata layer (future Team layer) | Links project-published service/API manifests across a tenant without cross-project source scanning. |
 
@@ -435,7 +435,7 @@ Current `/index` collects files, compares hashes against stored `File.hash`, and
 ## ADR-001: Separation of Graph Topology and Source Code Content
 **Status:** Accepted
 
-Store only topology in the graph provider. Symbol node contains: `uid`, `name`, `kind`, `range` (start/end lines), `hash`. No source body text — navigate via `(File)-[:CONTAINS]->(Symbol)`. DocAnchor node contains only `chunk_id` — navigate via `[:FROM]` to File, `[:COVERS]` to Symbol. Sidecar reads code text from disk on demand using line coordinates.
+Store only topology in the graph provider. Symbol node contains identity and structural metadata, not source bodies; navigate via `(File)-[:CONTAINS]->(Symbol)`. DocAnchor nodes keep `chunk_id` while text lives in LanceDB. The active axis path reads indexed symbol bodies from LanceDB and overlays unsaved buffers from memory; file fallback may read sandboxed source from disk.
 
 **Why:** Keeps graph storage lightweight for fast topology queries. Source code never goes to the graph provider. Only `hash` update needed when function body changes without structural impact.
 
@@ -443,21 +443,10 @@ Store only topology in the graph provider. Symbol node contains: `uid`, `name`, 
 
 ---
 
-## ADR-002: Python Sidecar for MVP
-**Status:** Accepted
-
-Python 3.12+, compiled to standalone binary with Nuitka at launch.
-
-**Why:** Best ecosystem for tree-sitter, local vector stores, sentence-transformers, and FastAPI. Fast iteration on arbitration logic. Compiled binary ships as single file (50MB+).
-
-**Trade-off:** Performance ceiling on very large graphs (100k+ nodes) may require hot-path rewrite in Rust later.
-
----
-
 ## ADR-003: Pluggable Graph Provider + Local Dirty Overlay
-**Status:** Accepted
+**Status:** Accepted, staged
 
-The primary graph is supplied by the configured `GraphProvider`: local Docker for solo users, customer-managed graph storage for teams, or dedicated managed graph storage for larger customers. Local unsaved changes remain in `InMemoryOverlay` inside the sidecar process. ✅ Overlay implemented.
+Local Neo4j or Aura/fallback supplies the current graph. A complete `GraphProvider` connector abstraction and alternate backends remain staged. Local unsaved changes remain in `InMemoryOverlay` inside the sidecar process. ✅ Overlay implemented.
 
 **Why:** Teams need one source of truth, but storage ownership varies by customer. Local edits don't pollute the configured graph provider. No full re-index per developer.
 

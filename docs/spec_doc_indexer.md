@@ -4,7 +4,7 @@
 
 `context_engine/indexer/docs.py` — walks a directory for `*.md` files, chunks them, embeds into LanceDB, then links chunks to code symbols in Neo4j via DocAnchor nodes with rich FROM/COVERS relationships.
 
-Entry point: `index_docs(docs_path: str)`, also callable as `python context_engine/indexer/docs.py <path>` or `POST /index/docs` via `context_engine/main.py`.
+Entry point: `index_docs(docs_path: str)`, also callable as `python context_engine/indexer/docs.py <path>` or `POST /index/docs` via `context_engine/api/routes/indexing.py`.
 
 ---
 
@@ -98,7 +98,7 @@ This enables rich knowledge graph queries: given a code symbol, find all doc chu
 | `primary_bias` | `1.0` for a single/focal symbol, lower for secondary symbols in multi-symbol chunks |
 | `resolver` | `identifier`, `semantic`, or `pending_identifier` |
 
-The context ranker (axis; legacy `UnifiedRanker` removed 2026-06-15) consumes these properties when giving vector-retrieved doc chunks graph overlap credit and when using DocAnchor co-mentions as semantic bridge edges.
+The properties are persisted and available to clients/retrieval code. The active axis path currently consumes in-code owner anchors, not general markdown COVERS quality; normal axis success responses therefore do not yet attach these markdown chunks to `PromptContext.documentation`.
 
 ---
 
@@ -107,7 +107,7 @@ The context ranker (axis; legacy `UnifiedRanker` removed 2026-06-15) consumes th
 - Only `*.md` files are indexed. Other doc formats (`.rst`, `.txt`, `.adoc`) are ignored.
 - Section split only handles `#`, `##`, `###` — deeper headings (`####`+) are treated as body text.
 - Chunk IDs are positional — if a section moves within a file, its chunk ID changes and old DocAnchor edges become orphaned until re-indexing.
-- Doc reference extraction uses simple regex (`[text](docs/file.md)` or bare filenames) — does not follow transitive references.
+- Doc reference extraction uses simple regex (a Markdown link targeting `docs/file.md`, or a bare filename) — does not follow transitive references.
 - Semantic threshold `SIMILARITY_THRESHOLD = 1.5` is fixed — not tunable per query (designed for all-MiniLM-L6-v2 model, cosine distance scale 0–2).
 - Anchor type/confidence is heuristic v1 and may need locale or repo-style tuning for non-English docs.
 

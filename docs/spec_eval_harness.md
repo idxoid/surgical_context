@@ -63,7 +63,7 @@ Optional LLM judge over axis benchmark output (qualitative scoring).
 
 ## 4. CI gate (P7)
 
-`tests/integration/test_axis_benchmark_gate.py` indexes this repo under `ci/surgical_context@main`, replays the seven `surgical_context_*` questions, and asserts against:
+`tests/integration/test_axis_benchmark_gate.py` indexes this repo under the active profile derived from `ci/surgical_context@main`, replays the eight `surgical_context_*` questions, and asserts against:
 
 `QA/fixtures/baselines/p7_surgical_context_axis.json`
 

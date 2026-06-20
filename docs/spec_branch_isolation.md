@@ -1,7 +1,7 @@
 # Spec — Branch / Workspace Isolation (Phase 8)
 
 
-> **Status:** Implemented for graph reads/writes and dirty overlay isolation. Closes the SaaS correctness gap: the Phase 7 shared Aura graph collapses all branches and users into a single symbol set, guaranteeing drift across workspaces.
+> **Status:** Implemented for graph/vector reads and writes, profile-aware physical index namespaces, path sandboxing, cache keys, and per-user dirty overlays. Workspace deletion/GC, membership/RBAC, and cross-workspace diff APIs are not implemented.
 
 ## 1. Problem
 
@@ -57,16 +57,24 @@ Same symbol UID, different File per workspace, different `hash` per workspace. R
 
 ### 2.3 Query Scoping
 
-All `/ask`, `/impact`, `/overlay` endpoints accept a workspace header or derive it from the request:
+Graph/context endpoints accept a workspace-scoped bearer token and an optional workspace header:
 
 ```
 X-User-ID: alice
 X-Workspace: acme/surgical_context@feature/new-pricing
 ```
 
-For development compatibility, requests without `X-Workspace` fall back to `DEFAULT_WORKSPACE_ID` (`local/surgical_context@main` by default). The VS Code extension no longer ships a competing static default: when `surgicalContext.workspaceId` is blank, it derives `local/{workspace-folder-name}@{git-branch-or-short-sha}` and sends that; if no workspace folder is open, it omits the header and lets the sidecar fallback apply. Explicit user configuration always wins.
+Bearer-token scope wins; a conflicting header returns `403`. Without a token,
+`X-Workspace` is trusted only when `TRUST_CLIENT_WORKSPACE_HEADER=true`; otherwise
+the sidecar falls back to `DEFAULT_WORKSPACE_ID` (`local/surgical_context@main`).
+The VS Code extension derives `local/{workspace-folder-name}@{git-branch-or-short-sha}`,
+uses it to bootstrap `/auth/token`, and then sends both token and header.
 
-Cypher reads get a `WHERE` clause injected at the arbitrator layer:
+Graph reads and writes pass `workspace_id` into Neo4j methods and relation
+properties; LanceDB queries filter or open a physical workspace partition. The
+active index profile may append a suffix (for example `+axis_python_v1`) to the
+physical graph/vector namespace while API responses retain the base workspace.
+Representative Cypher shape:
 
 ```cypher
 MATCH (s:Symbol {uid: $uid})-[:IN_WORKSPACE]->(w:Workspace {id: $workspace_id})
@@ -75,7 +83,7 @@ MATCH (s)-[r:CALLS_DIRECT|CALLS_DYNAMIC|CALLS_INFERRED]->(n:Symbol)
 RETURN n, r
 ```
 
-Workspace scoping is enforced **in Cypher**, not in Python filtering — a Python-side filter is always one `forgot-to-add-the-where` away from data leak.
+Workspace scoping is enforced in storage queries, not by filtering returned rows in route handlers.
 
 ### 2.4 AFFECTS and DocAnchor
 
@@ -85,14 +93,14 @@ Workspace scoping is enforced **in Cypher**, not in Python filtering — a Pytho
 
 ### 2.5 Overlay
 
-`InMemoryOverlay` was already per-connection. Upgraded to `(user_id, workspace_id)` key. Overlay on `feature/new-pricing` does not leak into `main` queries even when the same user switches branches.
+`InMemoryOverlay` is keyed by `(workspace_id, user_id, file_path)`. Overlay on `feature/new-pricing` does not leak into `main` queries or another user's buffer. Entries are bounded by cap and idle TTL.
 
 ### 2.6 Lifecycle
 
 - **Create workspace:** implicit on first `/index` call with a new `ref`.
 - **Switch workspace:** client passes a new `X-Workspace`; server validates membership, serves from that namespace.
-- **Delete workspace:** `DELETE /workspace/{id}` — cascades to all `IN_WORKSPACE`-linked nodes. Audit log records who deleted what.
-- **Branch rebased / force-pushed:** treated as a new workspace; old one garbage-collected after TTL (default 14 days).
+- **Delete workspace:** not exposed by the sidecar yet.
+- **Branch rebased / force-pushed:** git-delta helpers update registered workspaces, but automatic old-workspace TTL garbage collection is not implemented.
 
 ## 3. API / Interface
 
@@ -108,27 +116,16 @@ class Workspace:
     ref_kind: str   # "branch" | "tag" | "commit"
 
 class WorkspaceResolver:
-    def from_request(self, headers: dict) -> Workspace:
-        """Parse X-Workspace header, validate format, ensure user has access.
-        Raises WorkspaceNotFound / WorkspaceAccessDenied."""
-
-    def ensure_exists(self, ws: Workspace) -> None:
-        """Create Workspace node if absent (idempotent)."""
-
-    def list_for_user(self, user_id: str) -> list[Workspace]:
-        """Return all workspaces the user has touched."""
+    def from_header(self, value: str | None) -> Workspace: ...
+    def from_project_path(self, project_path: str, value: str | None = None) -> Workspace: ...
 ```
 
-Arbitrator gets a workspace parameter threaded through every query method. Signature becomes:
+API dependencies resolve the base workspace; indexing/retrieval translate it to
+the active profile's physical namespace with `effective_index_workspace_id()`.
 
 ```python
-def get_context_for_symbol(
-    self,
-    symbol: str,
-    workspace: Workspace,        # NEW — required
-    question: str = "",
-    ...
-) -> PromptContext: ...
+base_workspace_id = resolve_workspace(...)
+index_workspace_id = effective_index_workspace_id(base_workspace_id)
 ```
 
 ## 4. Examples
@@ -136,20 +133,21 @@ def get_context_for_symbol(
 ```bash
 # Alice indexes feature branch
 curl -X POST http://localhost:8000/index \
-  -H "X-User-ID: alice" \
+  -H "Authorization: Bearer $ALICE_TOKEN" \
   -H "X-Workspace: acme/surgical_context@feature/new-pricing" \
-  -d '{"path": "/repo"}'
+  -H "Content-Type: application/json" \
+  -d '{"project_path": "/repo", "queue": true}'
 
 # Alice asks a question
 curl -X POST http://localhost:8000/ask \
-  -H "X-User-ID: alice" \
+  -H "Authorization: Bearer $ALICE_TOKEN" \
   -H "X-Workspace: acme/surgical_context@feature/new-pricing" \
   -d '{"symbol": "process_payment", "question": "How does pricing work?"}'
 # → sees Alice's branch version
 
 # Bob on main queries the same symbol
 curl -X POST http://localhost:8000/ask \
-  -H "X-User-ID: bob" \
+  -H "Authorization: Bearer $BOB_TOKEN" \
   -H "X-Workspace: acme/surgical_context@main" \
   -d '{"symbol": "process_payment"}'
 # → sees main version — NOT Alice's
@@ -168,7 +166,7 @@ No destructive rebuild needed — additive schema change.
 
 ## 6. Limitations (current)
 
-- **Storage cost scales with branch count.** An active team with 20 feature branches duplicates File/Symbol data 20×. Mitigation: branches auto-purge after N days of inactivity (configurable; default 14).
+- **Storage cost scales with branch count.** Active branches duplicate workspace-scoped graph/vector rows. Automatic workspace GC is not implemented.
 - **Cross-workspace queries are unindexed.** Comparing `process_payment` across branches requires a linear scan. Cheap at low branch count; revisit if teams keep >50 active branches.
 - **No commit-granularity time travel.** `ref_kind: "commit"` works for pinning a workspace to a SHA, but we don't preserve history *within* a workspace. "Show me this function as it was yesterday" is out of scope here; that's a separate versioning project.
 
@@ -183,4 +181,4 @@ No destructive rebuild needed — additive schema change.
 - [spec_uid_stability.md](spec_uid_stability.md) — UIDs must be semantic (not path-based) for cross-workspace identity to work.
 - [spec_overlay.md](spec_overlay.md) — overlay key upgrades to `(user, workspace)`.
 - [spec_sidecar_api.md](spec_sidecar_api.md) — `X-Workspace` header added to every endpoint.
-- ADR-003 — cloud-first SaaS model.
+- [architectura.md](architectura.md) — local-first product boundary and storage architecture.

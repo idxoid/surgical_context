@@ -1,27 +1,35 @@
 # VS Code Extension UI — Spec
 
-`extension/ui/*`, `extension/webview/*` — defines the developer-facing UI contract for the Surgical Context VS Code extension. This spec describes the proposed extension UI based on the approved mockup direction: chat-first layout, evidence inspection, and graph-aware navigation for code exploration. The main UX changes requested for the chat panel are a bottom-docked composer, an auto-expanding response area above it, and collapsed info groups by default. fileciteturn0file0L139-L161 fileciteturn1file0L10-L18
+> **Status:** Implemented baseline with remaining synchronization and accessibility work.
+
+`extension/src/providers/`, `extension/src/panels/`, and
+`extension/src/webview/` define the developer-facing UI. The current direction
+is chat-first with evidence inspection, graph-aware navigation, a bottom-docked
+composer, an expanding response area, and collapsed secondary groups.
+
+Exact host/webview DTOs live in `extension/src/webview/shared/protocol.ts`; code
+wins when the illustrative message unions below lag implementation.
 
 ## Overview
 
-The Surgical Context extension adds a VS Code-native UI for asking questions about the current symbol, inspecting the context sent to the model, and exploring impact across code and docs. The extension is not a generic chatbot. Its primary value is transparent context assembly: the user can see what code symbols, documentation chunks, and metadata were included in a request. The extension UI should expose that value without overwhelming the user. fileciteturn0file0L8-L18 fileciteturn0file0L139-L161
+The Surgical Context extension adds a VS Code-native UI for asking questions about the current symbol, inspecting the context sent to the model, and exploring impact across code and docs. The extension is not a generic chatbot. Its primary value is transparent context assembly: the user can see what code symbols, documentation chunks, and metadata were included in a request.
 
 Primary surfaces:
 
 1. **Chat Panel** — ask questions about the current symbol and read streaming answers.
 2. **Context Inspector** — inspect primary source, graph context, docs, prompt JSON, and token allocation.
 3. **Impact Explorer** — inspect bounded reverse reachability for a symbol, affected files, and prompt-context impact.
-4. **Dashboard** — inspect health, indexing status, token savings, and recent system activity. fileciteturn0file0L20-L31 fileciteturn0file0L54-L67
+4. **Dashboard** — inspect health, indexing status, token signals, and recent system activity.
 
 ## Design
 
 ### Why this UI exists
 
-The backend already supports graph expansion, doc retrieval, dirty-state overlays, streaming responses, impact lookup, health checks, cloud status, and operational signals. A thin chat-only panel would hide the strongest part of the system: explainable context selection. The UI therefore treats the answer and the evidence as first-class peers. fileciteturn0file0L20-L31 fileciteturn0file0L125-L148
+The backend supports graph expansion, vector/doc search, dirty-state overlays, streaming responses, impact lookup, health checks, cloud status, and operational signals. A thin chat-only panel would hide the strongest part of the system: explainable context selection. The UI therefore treats the answer and the evidence as first-class peers.
 
 ### Why the chat panel uses a bottom composer
 
-The approved mockup revision moves the prompt area to the bottom of the panel, keeps the response area above it, and collapses secondary info groups by default. This matches common chat application behavior, reduces visual noise, and keeps the user focused on the active conversation instead of configuration. The answer area should grow naturally with message height; metadata should stay available but unobtrusive. fileciteturn1file0L10-L18
+The prompt area sits at the bottom of the panel, the response area stays above it, and secondary info groups are collapsed by default. The answer area grows with message height while metadata stays available but unobtrusive.
 
 ### Main trade-offs
 
@@ -78,7 +86,7 @@ Top to bottom:
 - The conversation scrolls independently above the composer.
 - The response card grows with content height; it must not force the composer upward until panel height is exhausted.
 - Info groups are collapsed by default and persist their open/closed state per session.
-- The current symbol is inferred from the active editor selection when possible. If no symbol is available, the Ask action falls back to standard mode or prompts the user to select a symbol. fileciteturn0file0L139-L148
+- The current symbol is inferred from the active editor selection when possible. If no symbol is available, the Ask action uses workspace/direct fallback behavior.
 
 #### Minimal component tree
 
@@ -110,7 +118,7 @@ The Context Inspector explains why the model saw specific files, symbols, and do
 
 #### Required data
 
-The inspector consumes the `context` payload returned by `/ask` or `/ask/stream`. The payload includes `primary_source`, `graph_context`, and `documentation`. Implemented metadata already includes `mode`, `intent`, `tiers_used`, `tier_tokens`, `depth`, `direction`, and `relevance_score`. fileciteturn0file0L149-L173
+The inspector consumes the `context` payload returned by `/ask` or `/ask/stream`. The payload includes `primary_source`, `graph_context`, and `documentation`. The serializer includes mode, intent, tiers, depth/direction, scores, provenance, route, trace, and workspace fields, although the active axis adapter still leaves some richer values sparse.
 
 #### Primary use case
 
@@ -133,7 +141,7 @@ The Impact Explorer visualizes likely change impact for the selected symbol. The
 
 Current implementation note: `Affects` maps to materialized `AFFECTS` edges. The prompt-context source is derived from the selected ask's `graph_context` and documentation files, so Inspect and Impact stay attached to the same request. First-class `CALLS_*`, `DEPENDS_ON`, `FROM`, and `COVERS` Impact groups are a later iteration, not the current UI contract.
 
-These sections map directly to the underlying graph model and retrieval strategy. The backend already models `CALLS_*`, `DEPENDS_ON`, `AFFECTS`, `FROM`, and `COVERS` relationships. fileciteturn0file0L180-L197
+These sections map directly to the underlying graph model and retrieval strategy. The backend models `CALLS_*`, `DEPENDS_ON`, `AFFECTS`, `FROM`, and `COVERS` relationships.
 
 #### Actions
 
@@ -158,7 +166,7 @@ The Dashboard is an operational view, not a second chat surface.
 - fallback rate
 - recent audit events
 
-These metrics align with the existing architecture goals and planned observability layer. fileciteturn0file0L41-L52 fileciteturn0file0L54-L67
+These metrics align with the existing architecture goals and observability layer.
 
 ## State Model
 
@@ -246,15 +254,25 @@ export type ExtensionToWebviewMessage =
 | `POST` | `/ask` | Non-streaming fallback |
 | `POST` | `/ask/stream` | Primary chat flow |
 | `POST` | `/search` | Search surface |
+| `POST` | `/search/unified` | Mixed symbol/doc/graph search |
 | `GET` | `/impact` | Impact Explorer |
 | `POST` | `/overlay` | Dirty-file sync |
 | `DELETE` | `/overlay` | Clear overlay on save/close |
+| `POST` | `/index` | Index workspace action |
 | `POST` | `/index/file` | Reindex current file action |
+| `POST` | `/index/files` | Batched save/refactor updates |
+| `POST` | `/index/docs` | Index repository documentation |
+| `GET` | `/index/queue` | Dashboard queue state |
+| `POST` | `/history/ask` | Persist sanitized request/history snapshot |
+| `POST` | `/feedback` | Accept/reject feedback |
+| `POST` | `/auth/token` | Local workspace-scoped token bootstrap |
 | `GET` | `/status/cloud` | Cloud/local mode indicator |
 | `GET` | `/audit/actions` | Dashboard recent activity |
-| `GET` | `/metrics` | Dashboard metrics when implemented |
+| `GET` | `/metrics` | Dashboard metrics |
 
-These endpoints are already implemented or planned in the architecture document. `/metrics` is explicitly marked planned. fileciteturn0file0L20-L31
+All endpoints in this table, including `/metrics`, are implemented. Optional
+providers may still be degraded or unavailable, so the UI must preserve partial
+health states.
 
 ## Interaction Flows
 
@@ -268,7 +286,7 @@ These endpoints are already implemented or planned in the architecture document.
 6. The Chat Panel renders streaming chunks into the latest response card.
 7. When the request completes, the host stores the returned `context` payload.
 8. The `Context Summary` accordion becomes populated.
-9. The user can open the Context Inspector for full evidence. fileciteturn0file0L118-L123 fileciteturn0file0L139-L148
+9. The user can open the Context Inspector for the evidence carried by the current prompt contract.
 
 ### Flow 2: Inspect context
 
@@ -324,14 +342,14 @@ export async function askAboutCurrentSymbol(panel: vscode.WebviewPanel, prompt: 
   panel.webview.postMessage({
     type: 'chat.requestStarted',
     requestId: 'req-123',
-    symbol: 'GraphExpander.expand',
+    symbol: 'run_axis_retrieval',
   });
 
   // The extension host would proxy /ask/stream here.
   panel.webview.postMessage({
     type: 'chat.streamChunk',
     requestId: 'req-123',
-    chunk: 'GraphExpander.expand() performs a bounded expansion...',
+    chunk: 'run_axis_retrieval() assembles ranked axis bundles...',
   });
 }
 ```
@@ -360,11 +378,11 @@ function layoutChatPanel(root: HTMLElement) {
   "environment": {
     "workspace": "local/surgical_context@context-engine-refocus",
     "cloud": "connected",
-    "mode": "surgical",
-    "symbol": "GraphExpander.expand()"
+    "mode": "surgical_full",
+    "symbol": "run_axis_retrieval"
   },
   "contextSummary": {
-    "primary": "GraphExpander.expand",
+    "primary": "run_axis_retrieval",
     "graphSymbols": 6,
     "docChunks": 2,
     "tokens": "3.4k vs est. 14.2k full-open-files"
@@ -381,9 +399,9 @@ function layoutChatPanel(root: HTMLElement) {
 
 - The mockup and this spec define the target UX, not the current shipped extension behavior.
 - The chat panel assumes reliable symbol resolution from the active editor; edge cases for unsupported files are still product work.
-- `/metrics` is planned, so the Dashboard must degrade gracefully when metrics are unavailable. fileciteturn0file0L20-L31
-- Project/workspace/branch metadata in the prompt contract is still planned, so some inspector fields may need placeholder handling. fileciteturn0file0L149-L173
-- Mass editor events and backpressure for indexing are still hardening items; the UI should not assume every dirty update is indexed immediately. fileciteturn0file0L175-L179
+- `/metrics` exists, but the Dashboard must degrade gracefully when the sidecar or an optional provider is unavailable.
+- `workspace_id` is populated; branch identity is encoded inside it rather than exposed as a separate field. Several axis score/intent/pruning fields may still be empty defaults.
+- The bounded queue coalesces mass editor events; the UI should still distinguish queued, coalesced, rejected, and completed work rather than assume every dirty update is indexed immediately.
 
 ## Planned Extensions
 
@@ -392,4 +410,4 @@ function layoutChatPanel(root: HTMLElement) {
 - Add inline diff-aware ask mode for dirty symbols.
 - Add richer token breakdown visualizations in the inspector.
 - Add explicit degraded-state banners for cloud fallback and stale index conditions.
-- Add dashboard cards for prompt-contract observability once runtime metrics ship. fileciteturn0file0L54-L67
+- Extend dashboard cards as richer axis prompt-contract diagnostics become populated.

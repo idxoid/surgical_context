@@ -1,6 +1,6 @@
 # Spec - Tenant API Contract Graph
 
-> **Status:** Future Team/Enterprise layer. Extends project-owned indexes with tenant-level API contract links. This is not required for the Local Developer Product, not cross-project source scanning, and not live API invocation.
+> **Status:** Project-local HTTP endpoint bridging is implemented; tenant publication and cross-workspace linking remain a future Team/Enterprise layer. The current fast indexer extracts Python FastAPI/Flask and TypeScript/JavaScript client/handler facts into workspace-local `ApiEndpoint` nodes with `IMPLEMENTS_ENDPOINT` / `CALLS_ENDPOINT` edges. This spec describes the larger tenant layer, which is not required for the Local Developer Product, not cross-project source scanning, and not live API invocation.
 
 ## 1. Problem
 
@@ -14,6 +14,15 @@ Microservice systems drift at the service boundary: endpoints are renamed, schem
 The system needs cross-project awareness without violating project ownership or privacy.
 
 ## 2. Boundary
+
+### Current local slice
+
+`context_engine/indexer/http_endpoint.py`, language-adapter
+`extract_http_endpoints()` methods, `Neo4jClient.link_http_endpoints()`, and
+`context_engine/axis/http_endpoint_bridge.py` implement a structural bridge
+inside one indexed workspace. Endpoints are keyed by normalized
+`METHOD:path-template` fingerprints. No manifest publication, tenant-wide
+service identity, schema registry, or cross-workspace link exists yet.
 
 Each project indexes itself. The tenant graph only links published project facts.
 
