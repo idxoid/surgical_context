@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 
 from context_engine.api.routes.deps import require_main
 from context_engine.api.schemas import IMPACT_DEPTH_MAX, IMPACT_DEPTH_MIN, ImpactResponse
@@ -17,9 +17,10 @@ def impact(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """Return downstream dependents affected by a change to the given symbol."""
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     index_workspace_id = main.effective_index_workspace_id(base_workspace_id)

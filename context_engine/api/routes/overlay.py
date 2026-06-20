@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
 
 from context_engine.api.routes.deps import require_main
 from context_engine.api.schemas import ClearOverlayResponse, OverlayRequest, OverlayResponse
@@ -16,8 +16,9 @@ def update_overlay(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     with main.db_session(user_id=user_id) as db:
@@ -39,8 +40,9 @@ def clear_overlay(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     with main.db_session(user_id=user_id) as db:

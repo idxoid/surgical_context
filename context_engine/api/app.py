@@ -26,14 +26,17 @@ from context_engine.database.provider import close_database_provider
 
 
 def create_app(state: SidecarState, *, main_module: Any) -> FastAPI:
-    configure_main_routes(MainRouteDeps(main=main_module, state=state))
-    configure_indexing_routes(
-        IndexingRouteDeps(
-            main=main_module,
-            state=state,
-            indexing=state.indexing_service,
-        )
+    main_deps = MainRouteDeps(main=main_module, state=state)
+    indexing_deps = IndexingRouteDeps(
+        main=main_module,
+        state=state,
+        indexing=state.indexing_service,
     )
+    # Direct (non-HTTP) callers — e.g. unit tests invoking route functions
+    # without a Request — fall back to these; the HTTP path resolves per-app
+    # from ``app.state`` below so multiple app instances stay isolated.
+    configure_main_routes(main_deps)
+    configure_indexing_routes(indexing_deps)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -46,6 +49,8 @@ def create_app(state: SidecarState, *, main_module: Any) -> FastAPI:
             close_database_provider()
 
     app = FastAPI(title="Surgical Context Sidecar", lifespan=lifespan)
+    app.state.route_deps = main_deps
+    app.state.indexing_deps = indexing_deps
     app.include_router(health.router)
     app.include_router(indexing.router)
     app.include_router(search.router)

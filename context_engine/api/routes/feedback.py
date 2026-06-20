@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from context_engine.api.routes.deps import require_main
 from context_engine.api.schemas import FeedbackRequest, FeedbackResponse
@@ -17,9 +17,10 @@ def record_feedback(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """Record retrieval feedback against an issued feedback token."""
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     snapshot = main.feedback_store.get_snapshot(req.feedback_token)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from context_engine.api.routes.deps import require_main
 from context_engine.api.schemas import (
@@ -23,9 +23,10 @@ def record_history_ask(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """Persist a sanitized ask/request snapshot for local dialog history."""
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     if not main._history_enabled():
@@ -161,9 +162,10 @@ def history_conversations(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """List local history conversations for the current workspace and user."""
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     if not main._history_enabled():
@@ -183,9 +185,10 @@ def history_conversation(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """Return a sanitized conversation bundle with messages and snapshots."""
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     main._history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)
@@ -205,9 +208,10 @@ def history_request_bundle(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """Return the snapshots for a selected request in a conversation."""
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     main._history_conversation_for_scope(conversation_id, workspace_id=workspace_id, user_id=user_id)

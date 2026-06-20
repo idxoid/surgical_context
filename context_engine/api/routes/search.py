@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
 
 from context_engine.api.routes.deps import require_main
 from context_engine.api.schemas import (
@@ -22,7 +22,7 @@ router = APIRouter(tags=["search"])
 
 
 def _axis_graph_neighbors(
-    *, symbol: str, workspace_id: str, user_id: str, limit: int
+    *, request: Request | None = None, symbol: str, workspace_id: str, user_id: str, limit: int
 ) -> list[dict[str, Any]]:
     """Axis replacement for the deleted arbitrator graph-neighbor enrichment in
     /search/unified: resolve ``symbol`` to its workspace uid(s), then return its
@@ -31,7 +31,7 @@ def _axis_graph_neighbors(
     the search)."""
     from context_engine.axis.graph_walk import EdgeProfile, walk_neighbours
 
-    main = require_main()
+    main = require_main(request)
     try:
         with main.db_session(user_id=user_id) as db:
             with db.driver.session() as session:
@@ -80,8 +80,9 @@ def search(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
-    main = require_main()
+    main = require_main(request)
     main._resolve_request_user(x_user_id, authorization)
     index_workspace_id = main._resolve_index_workspace(x_workspace, authorization)
     return {"results": main._vector_search_docs(req.query, req.limit, workspace_id=index_workspace_id)}
@@ -94,9 +95,10 @@ def unified_search(
     authorization: str = Header(None),
     x_workspace: str = Header(None),
     x_trace_id: str = Header(None),
+    request: Request = None,
 ):
     """Blend doc vectors, symbol vectors, and optional graph neighbors into one ranked list."""
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     index_workspace_id = main.effective_index_workspace_id(base_workspace_id)
@@ -147,6 +149,7 @@ def unified_search(
                     cast(
                         Any,
                         main._axis_graph_neighbors(
+                            request=request,
                             symbol=req.symbol,
                             workspace_id=index_workspace_id,
                             user_id=user_id,

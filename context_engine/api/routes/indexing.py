@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from context_engine.api.errors import INDEX_FAILED_REASON, PUBLIC_INTERNAL_ERROR
 from context_engine.api.schemas import (
@@ -40,18 +40,23 @@ class IndexingRouteDeps:
     indexing: IndexingService
 
 
-def _require_deps() -> IndexingRouteDeps:
-    if _deps is None:
-        raise RuntimeError("indexing routes are not configured")
-    return _deps
-
-
-_deps: IndexingRouteDeps | None = None
+_default_deps: IndexingRouteDeps | None = None
 
 
 def configure_indexing_routes(deps: IndexingRouteDeps) -> None:
-    global _deps
-    _deps = deps
+    """Bind the direct-call fallback deps (HTTP requests resolve per-app)."""
+    global _default_deps
+    _default_deps = deps
+
+
+def _require_deps(request: Request | None = None) -> IndexingRouteDeps:
+    if request is not None:
+        deps = getattr(request.app.state, "indexing_deps", None)
+        if deps is not None:
+            return deps
+    if _default_deps is None:
+        raise RuntimeError("indexing routes are not configured")
+    return _default_deps
 
 
 @router.post("/index", response_model=StatusPathResponse)
@@ -60,8 +65,9 @@ def index(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
-    deps = _require_deps()
+    deps = _require_deps(request)
     main = deps.main
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace = main._resolve_workspace_context(x_workspace, authorization)
@@ -121,8 +127,9 @@ def index_file_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
-    deps = _require_deps()
+    deps = _require_deps(request)
     main = deps.main
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
@@ -182,8 +189,9 @@ def index_files_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
-    deps = _require_deps()
+    deps = _require_deps(request)
     main = deps.main
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
@@ -282,11 +290,12 @@ def index_git_delta_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """Incremental post-commit sync: index only files in ``prev..HEAD`` git diff."""
     from context_engine.workspace_paths import registered_workspace_root
 
-    deps = _require_deps()
+    deps = _require_deps(request)
     main = deps.main
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace = main._resolve_workspace_context(x_workspace, authorization)
@@ -319,8 +328,9 @@ def index_git_delta_endpoint(
 def index_git_delta_status(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
+    request: Request = None,
 ):
-    deps = _require_deps()
+    deps = _require_deps(request)
     deps.main._resolve_request_user(x_user_id, authorization)
     return {"status": "ok", "poller": deps.state.git_delta_poller.snapshot()}
 
@@ -329,8 +339,9 @@ def index_git_delta_status(
 def index_queue_status(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
+    request: Request = None,
 ):
-    deps = _require_deps()
+    deps = _require_deps(request)
     deps.main._resolve_request_user(x_user_id, authorization)
     return {"status": "ok", "queue": deps.main.index_queue.snapshot()}
 
@@ -340,9 +351,10 @@ def index_manifest_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """Return the latest index manifest stored on the Workspace node (Neo4j)."""
-    deps = _require_deps()
+    deps = _require_deps(request)
     main = deps.main
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
@@ -364,8 +376,9 @@ def index_docs_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
-    deps = _require_deps()
+    deps = _require_deps(request)
     main = deps.main
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)

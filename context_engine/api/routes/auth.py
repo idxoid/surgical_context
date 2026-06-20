@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from context_engine.api.routes.deps import require_main
 from context_engine.api.schemas import (
@@ -26,6 +26,7 @@ def auth_token(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
+    request: Request = None,
 ):
     """Generate a signed token scoped to a workspace.
 
@@ -34,7 +35,7 @@ def auth_token(
     token for themselves. X-User-Id is never trusted for identity; workspace
     scope is taken from X-Workspace (or DEFAULT_WORKSPACE_ID).
     """
-    main = require_main()
+    main = require_main(request)
     workspace_id = main._header_value(x_workspace) or DEFAULT_WORKSPACE_ID
     try:
         main.workspace_resolver.from_header(workspace_id)
@@ -60,17 +61,25 @@ def auth_token(
 
 
 @router.get("/auth/users", response_model=UsersResponse)
-def list_users(x_user_id: str = Header(None), authorization: str = Header(None)):
+def list_users(
+    request: Request = None,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
     """List all active users (requires a valid bearer token)."""
-    main = require_main()
+    main = require_main(request)
     main._resolve_request_user(x_user_id, authorization, require_auth=True)
     return {"users": main.user_auth.list_users()}
 
 
 @router.get("/status/cloud", response_model=CloudStatusResponse)
-def cloud_status(x_user_id: str = Header(None), authorization: str = Header(None)):
+def cloud_status(
+    request: Request = None,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+):
     """Get cloud (Aura) connection status."""
-    main = require_main()
+    main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     with main.db_session(user_id=user_id) as db:
         health = db.health_check()
@@ -88,9 +97,10 @@ def audit_actions(
     limit: int = 100,
     x_user_id: str = Header(None),
     authorization: str = Header(None),
+    request: Request = None,
 ):
     """Get recent audit log entries."""
-    main = require_main()
+    main = require_main(request)
     requester = main._resolve_request_user(x_user_id, authorization)
     requested_user = main._canonical_user_id(user_id)
     if requested_user and requested_user != requester:
