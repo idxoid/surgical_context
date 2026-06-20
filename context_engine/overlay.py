@@ -149,7 +149,12 @@ class InMemoryOverlay:
         key = self._key(file_path, workspace_id, user_id)
         entry = self._files[key]
         self._touch(key)
-        metas = self._extractor.extract_from_source(entry.content, file_path)
+        try:
+            metas = self._extractor.extract_from_source(entry.content, file_path)
+        except ValueError:
+            # Config/data files (e.g. .json) can live in overlay for line reads but
+            # have no registered language adapter for symbol extraction.
+            return {}
         return {m.name: (m.start_line, m.end_line) for m in metas}
 
     def stats(self) -> dict[str, int]:

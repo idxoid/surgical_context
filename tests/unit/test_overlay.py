@@ -99,6 +99,10 @@ class MyClass:
         assert isinstance(end, int)
         assert start > 0 and end > 0
 
+    def test_get_symbols_returns_empty_for_unsupported_extension(self, overlay):
+        overlay.update("package.json", '{"name": "demo"}\n')
+        assert overlay.get_symbols("package.json") == {}
+
     def test_multiple_files(self, overlay):
         """Test handling multiple files simultaneously."""
         overlay.update("file1.py", "def foo(): pass\n")
