@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
@@ -53,7 +53,7 @@ def _require_deps(request: Request | None = None) -> IndexingRouteDeps:
     if request is not None:
         deps = getattr(request.app.state, "indexing_deps", None)
         if deps is not None:
-            return deps
+            return cast(IndexingRouteDeps, deps)
     if _default_deps is None:
         raise RuntimeError("indexing routes are not configured")
     return _default_deps
@@ -65,7 +65,7 @@ def index(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     deps = _require_deps(request)
     main = deps.main
@@ -127,7 +127,7 @@ def index_file_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     deps = _require_deps(request)
     main = deps.main
@@ -189,7 +189,7 @@ def index_files_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     deps = _require_deps(request)
     main = deps.main
@@ -290,7 +290,7 @@ def index_git_delta_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     """Incremental post-commit sync: index only files in ``prev..HEAD`` git diff."""
     from context_engine.workspace_paths import registered_workspace_root
@@ -328,7 +328,7 @@ def index_git_delta_endpoint(
 def index_git_delta_status(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     deps = _require_deps(request)
     deps.main._resolve_request_user(x_user_id, authorization)
@@ -339,7 +339,7 @@ def index_git_delta_status(
 def index_queue_status(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     deps = _require_deps(request)
     deps.main._resolve_request_user(x_user_id, authorization)
@@ -351,7 +351,7 @@ def index_manifest_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     """Return the latest index manifest stored on the Workspace node (Neo4j)."""
     deps = _require_deps(request)
@@ -376,7 +376,7 @@ def index_docs_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     deps = _require_deps(request)
     main = deps.main

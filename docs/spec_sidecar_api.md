@@ -8,6 +8,11 @@ FastAPI process running on localhost. VS Code communicates via HTTP/JSON. Fault-
 Entry point: `context_engine/main.py`
 Start: `uvicorn context_engine.main:app --port 8000`
 
+`main.py` is now bootstrap/compatibility glue. The app factory lives in
+`context_engine/api/app.py`; route handlers and Pydantic contracts live under
+`context_engine/api/routes/` and `context_engine/api/schemas/`. Ask and indexing
+orchestration live in `context_engine/ask/` and `context_engine/indexer/service.py`.
+
 ---
 
 ## Configuration
@@ -23,18 +28,25 @@ All via environment variables with defaults:
 | `MODEL_PREFERENCE` | `ollama` | AI routing: `ollama` (local-first default), `auto`, or `claude` |
 | `ALLOW_CLOUD_LLM` | `false` | Must be `true` before `auto`/`claude` may send assembled context to Anthropic, even if `ANTHROPIC_API_KEY` is set |
 | `AUTH_REQUIRED` | `false` | When true, protected endpoints require `Authorization: Bearer <token>` |
+| `TRUST_CLIENT_USER_HEADER` | `false` | Trust unauthenticated `X-User-Id`; intended only for controlled local/test environments |
+| `TRUST_CLIENT_WORKSPACE_HEADER` | `false` | Trust unauthenticated `X-Workspace`; bearer-token workspace scope still works when false |
 | `DEFAULT_WORKSPACE_ID` | `local/surgical_context@main` | Development fallback when `X-Workspace` is absent |
 | `HISTORY_MODE` | `local` | Local history mode: `local`, `ephemeral`, or `disabled` |
 | `HISTORY_DB_PATH` | `./data/history/surgical_context.sqlite3` | SQLite path for local history mode |
 | `HISTORY_RETENTION_DAYS` | unset | Optional non-negative retention window for local history |
+| `INDEX_QUEUE_MAX_PENDING` | `500` | Maximum coalesced pending file keys |
+| `INDEX_QUEUE_DEBOUNCE_MS` | `500` | Save-event debounce window |
+| `INDEX_QUEUE_BATCH_SIZE` | `50` | Maximum files processed per queue batch |
+| `GIT_DELTA_POLL_SECONDS` | `60` | Background poll interval for registered git-delta targets |
+| `OVERLAY_MAX_ENTRIES` | `256` | Process-wide cap for dirty-buffer entries |
+| `OVERLAY_TTL_SECONDS` | `86400` | Idle expiry for dirty-buffer entries; `<=0` disables TTL eviction |
 | `SIDECAR_REQUEST_LATENCY_SLO_MS` | `200` | Request latency SLO target used by metrics and structured logs |
 | `SIDECAR_OTEL_ENABLED` | `false` | When true and OpenTelemetry is installed/configured, request stages emit spans |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Anthropic model ID when cloud routing is enabled. Override via env; do not use retired `claude-sonnet-4-20250514` (API retirement 2026-06-15). |
 
 ### Workspace Identity
 
-The sidecar resolves workspace scope from the optional `X-Workspace` header. The
-canonical format is:
+The canonical workspace format is:
 
 ```text
 {tenant}/{repo}@{ref}
@@ -46,13 +58,14 @@ Example:
 X-Workspace: local/surgical_context@main
 ```
 
-If the header is absent, the sidecar uses `DEFAULT_WORKSPACE_ID`. The VS Code
-extension leaves `surgicalContext.workspaceId` blank by default and derives a
-workspace id from the first open VS Code workspace folder plus the active Git
-branch, e.g. `local/surgical_context@context-engine-refocus`. If a user enters an
-explicit `surgicalContext.workspaceId`, the extension sends that value instead.
-The legacy extension default `local/default@main` is treated as unset and is not
-sent as a header.
+Bearer tokens are workspace-scoped. When a valid token is present, its workspace
+wins and a conflicting `X-Workspace` returns `403`. Without a token, the sidecar
+uses `X-Workspace` only when `TRUST_CLIENT_WORKSPACE_HEADER=true`; otherwise it
+falls back to `DEFAULT_WORKSPACE_ID`. The local VS Code extension derives a
+workspace id from the first open folder plus active Git branch, obtains a token
+from `/auth/token` with that header, then sends both the token and header. An
+explicit `surgicalContext.workspaceId` overrides derivation. The legacy value
+`local/default@main` is treated as unset.
 
 ### Filesystem path sandboxing
 
@@ -64,7 +77,7 @@ Any endpoint that reads or indexes files on disk (`POST /index`, `/index/file`, 
 - File/index operations before the workspace is indexed return **`400`** (“no registered project root; POST /index first”).
 - `POST /index` registers the resolved `project_path` directory as the root for that workspace (queued file paths are validated under it).
 
-**Graph-resolved reads:** indexed symbol bodies come from LanceDB; dirty editor buffers override via the overlay at axis fetch time. Manifest persist best-effort **prunes** outside-root `File` nodes from Neo4j (`workspace_paths.prune_graph_paths_outside_root`). Caller-supplied paths use `_sandbox_path` in `main.py`.
+**Graph-resolved reads:** indexed symbol bodies come from LanceDB; dirty editor buffers override via the overlay at axis fetch time. Manifest persistence best-effort **prunes** outside-root `File` nodes from Neo4j (`workspace_paths.prune_graph_paths_outside_root`). Caller-supplied paths use `sandbox_path()` from `context_engine/api/workspace_security.py`.
 
 This limits local callers when `AUTH_REQUIRED=false` from using the sidecar to read or index arbitrary readable files, including via stale graph nodes.
 
@@ -75,9 +88,9 @@ Server-side Pydantic limits (invalid values → HTTP **422**):
 | Field | Endpoints | Bounds | Default |
 |---|---|---|---|
 | `limit` | `/search`, `/search/unified` | 1–50 | `5` |
-| `token_budget` | `/ask`, `/ask/stream`, `/search/unified` (graph leg) | 400–32 000 | `4000` / `2000` |
+| `token_budget` | `/ask`, `/ask/stream`, `/ask/axis`, `/search/unified` (graph leg) | 400–32 000 | `6000` / `2000` |
 
-Implementation: `SEARCH_LIMIT_*` and `TOKEN_BUDGET_*` in `context_engine/main.py`. Tests: `tests/unit/test_api_bounds.py`.
+Implementation: bounds in `context_engine/api/schemas/common.py`, applied by the request models under `context_engine/api/schemas/`. Tests: `tests/unit/test_api_bounds.py`.
 
 ---
 
@@ -170,6 +183,28 @@ Incrementally index a bounded batch of saved source files.
 
 **Errors:** `400` / `403` same path sandboxing rules as `/index/file` (per path in the batch).
 
+The queued worker groups files by `(user_id, workspace_id)`, skips unchanged
+hashes, rebuilds AFFECTS once for the batch, runs axis propagation and adjacency
+materialization through `run_axis_incremental_finalize()`, resolves pending
+anchors, invalidates caches, and clears saved overlays. The synchronous
+single-file helper preserves the narrower `index_file()` path and does not
+rebuild the full repository profile or Pass-1 taxonomy.
+
+---
+
+### POST /index/git-delta
+
+Apply the committed `previous_head..HEAD` delta for one workspace. `project_path`
+is optional after `/index` has registered a manifest root; `queue` defaults to
+`true`. Changed files are queued or indexed synchronously, deleted paths are
+removed from graph/vector storage, and the new HEAD is persisted for the next
+delta.
+
+### GET /index/git-delta/status
+
+Return the background git-delta poller snapshot. Targets are registered by
+`/index` and `/index/git-delta`; polling defaults to every 60 seconds.
+
 ---
 
 ### GET /index/queue
@@ -196,7 +231,7 @@ Assemble surgical context for a symbol and query the LLM.
 {
   "symbol": "SymbolExtractor",
   "question": "How does call extraction work?",
-  "token_budget": 4000,
+  "token_budget": 6000,
   "file_path": "/absolute/path/to/project/module.py"
 }
 ```
@@ -205,7 +240,7 @@ Assemble surgical context for a symbol and query the LLM.
 |---|---|---|
 | `symbol` | No | When present, surgical context is assembled for this graph symbol first. |
 | `question` | No | Defaults to `"What does this code do?"` |
-| `token_budget` | No | Defaults to `4000`. Server bounds: **400–32 000** (inclusive); out-of-range → HTTP **422**. |
+| `token_budget` | No | Defaults to `6000`. Server bounds: **400–32 000** (inclusive); out-of-range → HTTP **422**. |
 | `file_path` | No | Optional path used when symbol resolution fails (see fallback ladder). Resolved under the workspace `project_path`; relative paths are allowed. Outside root → `403`. |
 
 **Response:**
@@ -228,7 +263,7 @@ Assemble surgical context for a symbol and query the LLM.
 
 **Errors:** `/ask` does **not** return `404` when a symbol is missing from the graph. Missing symbols trigger the fallback ladder below; the response is always HTTP `200` with a populated `context` (unless auth/workspace validation fails).
 
-**Context resolution (fallback ladder):** `_resolve_ask_context` in `context_engine/main.py` tries, in order:
+**Context resolution (fallback ladder):** `AskContextBuilder.resolve_ask_context()` tries, in order:
 
 1. **Axis (default)** — when `ASK_AXIS_FIRST` is enabled (default), `_try_axis_context` runs `run_axis_retrieval` (intent → seeds → pool walks → context expansion) and adapts bundles via `axis_bundles_to_prompt_context`. On success, `context.budget.ask_level` is `"axis"`.
 2. **File** — when axis renders nothing and `file_path` is set, assemble context from that file on disk (`ask_level`: `"file"`).
@@ -245,6 +280,19 @@ When a later step is used after a failed symbol lookup, `context.budget` include
 5. Audit logging records successful and failed query actions.
 6. A privacy-scoped retrieval snapshot is written with an opaque `feedback_token`. The snapshot stores selected candidate metadata and hashes, not raw prompts, code bodies, answers, or free-text comments.
 7. If the selected model is unreachable, `/ask` returns HTTP 200 with a degraded context-only answer, `model_route.degraded=true`, and the full assembled `context`.
+
+---
+
+### POST /ask/axis
+
+Run the axis pipeline directly without calling an LLM. This diagnostic endpoint
+returns intent matches, candidates grouped by role, and optional expanded
+context bundles. It is useful for QA and retrieval inspection; `/ask` remains the
+answer-producing endpoint.
+
+Important request fields include `top_roles` (1–10), `per_role_limit` (1–50),
+`with_context`, `context_seeds_per_role`, `context_per_seed`, `intent_budget`, and
+`token_budget` (400–32,000; default 6,000).
 
 ---
 
@@ -427,11 +475,11 @@ Return downstream symbols and files affected by changing a symbol.
   "affected_files": [],
   "affected_count": 0,
   "affected_file_count": 0,
-  "max_depth": 4
+  "max_depth": 3
 }
 ```
 
-**Implementation note:** symbol UID and file-path lookups go through `Neo4jClient.get_symbol_uid_by_name()` and `Neo4jClient.get_file_path_for_symbol()`. No raw Cypher is written in the route handler. `404` is returned when the symbol is not found in the workspace.
+**Implementation note:** symbol UID and file-path lookups go through `Neo4jClient.get_symbol_uid_by_name()` and `Neo4jClient.get_file_path_for_symbol()`. `build_impact_surface()` then runs the axis impact traversal in this order: reverse callers, structural API/inheritance evidence, and AFFECTS fallback. `max_depth` defaults to 3 and is bounded to 1–4. Returned rows include `depth`, `edge_type`, `kind`, `role`, `zone`, `severity`, and utility/relevance scores. `404` is returned when the symbol is not found in the workspace.
 
 ---
 
@@ -493,16 +541,24 @@ user id returns `403`; the endpoint never returns all users' audit entries.
 
 ---
 
-## Singletons
+## Process State and Lifespan
 
-`overlay` (`InMemoryOverlay`), `vector_db` (`LanceDBClient`), `ai_engine` (`AIEngine`), `user_auth`, `audit_log`, `feedback_store`, and `history_provider` are process-level singletons.
+`SidecarState` owns process-level overlay, LanceDB client, AI engine, auth/audit,
+feedback/history, ask/indexing services, indexing queue, and git-delta poller.
+`create_app()` stores route dependencies on `app.state`, so HTTP requests from
+multiple app instances resolve their own state. Compatibility fallbacks remain
+for unit tests that call route functions directly.
 
-Neo4j access goes through `db_session(...)`, which creates a request-scoped client and closes it after the endpoint finishes. This avoids mutating shared request identity on the global database object.
+Neo4j access goes through `db_session(...)`: each request gets a lightweight
+`AuraClient` view with its own user id over one lazily opened process-wide
+Neo4j driver. Closing the request view does not close the shared driver; the
+FastAPI lifespan closes the driver, queue, and poller on shutdown.
 
-Protected endpoints accept local `X-User-Id` identity by default for development.
-Issue bootstrap tokens while `AUTH_REQUIRED=false`, then set
-`AUTH_REQUIRED=true` to require signed bearer tokens. In protected mode,
-`/auth/token` only refreshes the authenticated user's own token.
+Unauthenticated `X-User-Id` and `X-Workspace` are ignored by default. Enable the
+corresponding `TRUST_CLIENT_*_HEADER` flag only in a controlled local/test
+environment, or use `/auth/token` to issue a signed workspace-scoped token while
+`AUTH_REQUIRED=false`. In protected mode, `/auth/token` only refreshes the
+authenticated user's own token.
 
 Graph endpoints accept `X-Workspace: tenant/repo@ref`. Neo4j `File`, `CONTAINS`, call, and `AFFECTS` operations are scoped by that workspace id.
 

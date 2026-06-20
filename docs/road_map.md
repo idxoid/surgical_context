@@ -7,9 +7,9 @@
 >
 > **Principle:** measure retrieval quality and token efficiency on real repositories before expanding platform scope.
 >
-> **See also:** [concept.md](concept.md), [product_direction_memo.md](product_direction_memo.md), [README.md](../README.md)
+> **See also:** [concept.md](concept.md), [architectura.md](architectura.md), [README.md](../README.md)
 >
-> **Last updated:** 2026-05-28 (`context-engine-refocus`; extension Impact + selected-request sync docs)
+> **Last updated:** 2026-06-19 (axis/doc-anchor indexing, sidecar module split, and current API/storage truth)
 
 ---
 
@@ -75,12 +75,12 @@ Active work for the local release. Completed stabilization and phase history are
 
 ### P2 — Retrieval quality and observability
 - [x] Server-side API bounds: `limit` 1–50 on `/search*`, `token_budget` 400–32 000 on `/ask` and `/search/unified` (Pydantic → HTTP 422).
-- [x] Unified Ranker + prompt-contract observability as the active retrieval path (Phase 9.1 / 9.4).
+- [x] Axis retrieval is the active `/ask` provider; the legacy `UnifiedRanker` cascade was removed.
 - [x] Soft fallback ladder: `symbol → file → workspace → direct_llm` (missing symbol is not HTTP 404).
-- [x] Prompt-contract fields: `pruned[]`, ranker weights, `intent.distribution` / `confidence` / `ambiguous`.
+- [~] Prompt-contract schema fields: `scores`, `provenance`, `pruned[]`, ranker counts, and intent details exist; the active axis adapter still leaves several score/distribution/pruning fields sparse or at defaults.
 - [x] Retrieval cache visibility: `metadata.assembly.cache_hits` (L1–L3).
 - [x] Per-user overlay isolation: keys `(workspace_id, user_id, file_path)`.
-- [~] Doc-anchor confidence/type — metadata + ranker consumption shipped; **remaining:** calibration and extension surfacing.
+- [~] DocAnchor confidence/type — COVERS metadata and in-code docstring/JSDoc owner seeds are shipped; **remaining:** calibration plus propagation of general doc evidence/anchor quality into the active axis `PromptContext` and extension.
 - [~] Latency SLO — request/stage metrics for `/ask`, `/ask/stream`, `/search/unified`; index queue counters exist; **remaining:** index-duration SLO gates.
 - [ ] Extension UX: model route, fallback level, token/cost signals easy to inspect.
 - [~] Canonical role coverage — green on control repos; **remaining:** Flask/Django/Express/Vue/NestJS tails (export shape, file recall).
@@ -122,7 +122,7 @@ Ordered execution lanes — do not regress green control repos while working tai
 | 2 | **Python tails** | Close role/file tails in `django` / `flask` (trace/explain only; not impact scope). |
 | 3 | **JS target resolution** | `express` / `vue` / `nestjs` — export shapes and symbol resolution before weight tuning. |
 | 4 | **Extension product** | Finish request-sync persistence; surface route, fallback level, `pruned[]`, cache hits in UI. |
-| 5 | **Doc-anchor polish** | Calibrate confidence/type; stop docs ranking as undifferentiated noise in the inspector. |
+| 5 | **Doc-anchor polish** | Calibrate confidence/type and propagate ranked doc evidence into the active axis prompt/inspector path. |
 | 6 | **Impact (deferred)** | Separate iteration after non-impact lanes stabilize; document shallow `AFFECTS` in UI. |
 
 **Validation rhythm**
@@ -138,7 +138,7 @@ Ordered execution lanes — do not regress green control repos while working tai
 This section preserves the post-MVP hardening record. Completed items remain useful context, but the active product direction is the Local Developer Product backlog above.
 
 ### P0 - Truth, Safety, and API Hardening
-- [x] Refresh `docs/README.md` as the current-truth entry point; archive or label historical analysis when status changes.
+- [x] Refresh the root `README.md` as the current-truth entry point; archive or label historical analysis when status changes.
 - [x] Fix sidecar DB lifecycle: remove mutable request identity from the global client; use request-scoped user context.
 - [x] Move doc resolution inside the arbitration pipeline before `PromptCompiler.compile_with_intent()`.
 - [x] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.
@@ -320,7 +320,7 @@ Goal: Make retrieval correct and fast on a live developer's laptop. This is what
 ## Phase 4: Quality & Scaling (NEXT ITERATION)
 Goal: Reduce token overhead and prepare for multi-model / multi-user environments.
 
-> **Reference:** [architectural_review.md](architectural_review.md#phase-4-near-term-wins) — detailed evaluation of all improvement ideas by impact/effort.
+> Historical note: the detailed Phase 4 review was removed after its accepted work was folded into the specs below.
 
 ### Context Deduplication ✅ COMPLETE
 > **Spec:** spec_context_deduplicator.md (removed) — insertion point, dedup rules, budget recalculation, test matrix.
@@ -518,20 +518,20 @@ Goal: Fix the load-bearing identity, resolution, and isolation gaps before retri
 
 ---
 
-## Phase 9: Unified Retrieval & Observability 🚧 ACTIVE (9.1, 9.2 initial routing, 9.3 ✅; 9.4 ~90%)
-Goal: Merge graph + semantic retrieval into a single ranked pool; surface the scores in the contract so we can debug, tune, and eventually learn from them.
+## Phase 9: Retrieval & Observability 🚧 ACTIVE
+Goal: keep the axis retrieval path measurable by carrying its intent, candidate, pruning, and document evidence into the prompt contract.
 
 > **Specs:** spec_unified_ranking.md (removed), spec_multi_label_intent.md (removed), [spec_prompt_contract_observability.md](spec_prompt_contract_observability.md), [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md).
 >
-> **Current status:** 9.1 (unified ranker), initial 9.2 routing-policy consumption, and 9.3 (doc-anchor confidence) are shipped. 9.4 (contract observability) is mostly shipped; remaining work is calibrating mixed-intent policy on real repos and deciding whether hard per-tier budget buckets beat the current soft policy. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
+> **Current status:** the legacy `UnifiedRanker` work below is retained as phase history, but that implementation was removed with the ranking cascade in 2026-06. The live path is `context_engine/axis/`; intent-axis ranking and docstring-anchor retrieval are active, while prompt-contract propagation remains partial. Real-repo benchmark warnings now mostly expose file/precision and export-shape tails rather than missing framework-specific defaults.
 
-### 9.1 Unified Ranker ✅ COMPLETE
+### 9.1 Unified Ranker ✅ HISTORICAL / SUPERSEDED BY AXIS
 - [x] `UnifiedRanker.rank()` — single pool from graph BFS + vector search
 - [x] Blended score = α·graph + β·semantic + γ·intent + δ·overlap − ε·cost (per-track normalized)
 - [x] Overlap bonus when both signals fire on the same candidate
 - [x] Budget-fill loop competes symbols and doc chunks on identical terms
 - [x] Weight tuning via eval harness sweep
-- [x] Decompose `UnifiedRanker` internals into focused components under `context_engine/context/ranker/`, while preserving `get_target(...)`, `rank(...)`, `candidates_to_subgraph(...)` contracts used by Arbitrator/QA
+- [x] Historical implementation was decomposed under `context_engine/context/ranker/`; the entire cascade was later removed after the axis cutover.
 - [x] Target disambiguation for duplicate symbol names within one workspace
 - [x] Module/package fallback targets for package-surface questions
 - [x] Topic-aware subsystem noise control for focused API questions, so distant graph links through broad helpers do not crowd out relevant runtime/doc candidates
@@ -547,24 +547,24 @@ Goal: Merge graph + semantic retrieval into a single ranked pool; surface the sc
 - [x] `ambiguous` signal in the prompt contract for client UX / routing decisions
 > **Decision:** Ship soft multi-label routing first: primary intent still anchors target selection, while strong secondary intents influence roles, priors, floor, and doc ordering. Phase 10 remains the place for learned classification and hard policy calibration.
 
-### 9.3 DocAnchor Confidence & Type ✅ COMPLETE
+### 9.3 DocAnchor Confidence & Type ✅ INDEXING COMPLETE / RETRIEVAL PARTIAL
 - [x] Anchor type classification: definition / example / reference / warning / deprecated
 - [x] Per-edge confidence score (resolver + name mention + heading + code-style mention signals)
 - [x] Multi-symbol weighting: `primary_bias` = 1.0 for single/focal symbol, reduced for secondary symbols
 - [x] Edge properties: `anchor_type`, `confidence`, `primary_bias`, `resolver`
-- [x] UnifiedRanker consumes anchor quality for doc graph boost and DocAnchor bridge provenance
-- [x] Prompt contract surfaces `documentation[].anchor_type`, `anchor_confidence`, `primary_bias`, and nested `anchor`
+- [x] In-code docstring/JSDoc anchors carry `owner_uid` and seed the axis path; the bounded reverse-`USES_TYPE` bridge is implemented.
+- [~] `PromptContext` can serialize `documentation[].anchor_type`, `anchor_confidence`, `primary_bias`, and nested `anchor`; the active axis adapter does not yet populate general markdown documentation in its normal success path.
 
-### 9.4 Prompt Contract Observability 🚧 IN PROGRESS (~90% COMPLETE)
+### 9.4 Prompt Contract Observability 🚧 IN PROGRESS
 - [x] Per-candidate basic `scores` block (graph relevance / semantic score)
 - [x] `provenance` list on every symbol and doc chunk
 - [x] Budget-level `metadata.pruning_reasons`
 - [x] `metadata.assembly.*` — per-phase latencies, trace_id, workspace_id, context_pipeline_version
 - [x] Surface target-selection/disambiguation reasoning when multiple same-name symbols exist
 - [x] `pruned[]` array — candidates that missed the budget, with reason, scores, cost, roles, noise factor, and provenance
-- [x] `metadata.ranker.weights` — tuning state snapshotted with every response
-- [x] `intent.distribution` + `intent.ambiguous` + `intent.confidence` in the prompt contract
-- [x] Ranker budget policy consumes multi-label intent distribution instead of primary intent only (initial soft policy)
+- [~] `metadata.ranker` — selected/pruned counts are emitted; the removed cascade's weight snapshot is no longer part of the active axis path.
+- [~] `intent.distribution` + `intent.ambiguous` + `intent.confidence` exist in the schema; active axis propagation is incomplete.
+- [ ] Carry axis candidate scores, pruning decisions, intent matches, and ranked doc evidence through `axis_bundles_to_prompt_context` without reconstructing the removed cascade.
 
 ---
 

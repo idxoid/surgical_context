@@ -57,7 +57,7 @@ from context_engine.observability import (
     estimate_text_tokens,  # noqa: F401 — route bridge
     new_trace_id,
 )
-from context_engine.workspace import DEFAULT_WORKSPACE_ID, Workspace
+from context_engine.workspace import Workspace
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -218,7 +218,7 @@ def _history_conversation_for_scope(
         )
     if conversation["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="History conversation belongs to another user")
-    return conversation
+    return cast(dict[str, Any], conversation)
 
 
 def _history_enabled() -> bool:
@@ -247,8 +247,8 @@ def _history_snapshot(
 def _index_file_now(file_path: str, base_workspace_id: str, user_id: str) -> int:
     import context_engine.indexer.service as index_service_mod
 
-    index_service_mod.db_session = db_session
-    index_service_mod.IndexJobLog = IndexJobLog
+    setattr(index_service_mod, "db_session", db_session)
+    setattr(index_service_mod, "IndexJobLog", IndexJobLog)
     indexing_service.vector_db = vector_db
     indexing_service.overlay = overlay
     return indexing_service.index_file_now(file_path, base_workspace_id, user_id)

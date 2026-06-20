@@ -2,8 +2,9 @@
 
 > **Status:** Consolidated.
 >
-> This file is now a compact concept pointer. Canonical product strategy, scope,
-> and validation live in `product_direction_memo.md`.
+> This file is now a compact concept pointer. Canonical product strategy and
+> backlog live in [road_map.md](road_map.md); implementation truth lives in
+> [architectura.md](architectura.md).
 
 ## Core Identity
 
@@ -16,9 +17,10 @@ Short form:
 
 ## Canonical Sources
 
-- `product_direction_memo.md` — product thesis, keep/freeze/drop scope, validation path
-- `architectura.md` — current architecture and implementation status
-- `axis_terminology.md` — axis retrieval vocabulary (roles, contracts, traversal)
+- [README.md](../README.md) — product thesis and documentation map
+- [road_map.md](road_map.md) — scope boundaries, backlog, and validation path
+- [architectura.md](architectura.md) — current architecture and implementation status
+- [axis_terminology.md](axis_terminology.md) — axis retrieval vocabulary
 
 ## Stable Product Contract
 

@@ -55,7 +55,9 @@ class InMemoryOverlay:
         from context_engine.observability.metrics import default_metrics
 
         self._max_entries = (
-            max_entries if max_entries is not None else _env_int("OVERLAY_MAX_ENTRIES", DEFAULT_OVERLAY_MAX_ENTRIES)
+            max_entries
+            if max_entries is not None
+            else _env_int("OVERLAY_MAX_ENTRIES", DEFAULT_OVERLAY_MAX_ENTRIES)
         )
         self._ttl_seconds = (
             ttl_seconds
@@ -166,9 +168,7 @@ class InMemoryOverlay:
             return 0
         now = now if now is not None else time.monotonic()
         expired = [
-            key
-            for key, entry in self._files.items()
-            if now - entry.updated_at > self._ttl_seconds
+            key for key, entry in self._files.items() if now - entry.updated_at > self._ttl_seconds
         ]
         for key in expired:
             del self._files[key]

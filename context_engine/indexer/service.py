@@ -101,9 +101,7 @@ class IndexingService:
         workspace_id: str,
         user_id: str,
     ) -> list[EnqueueResult]:
-        return [
-            self.enqueue_index_file(path, workspace_id, user_id) for path in file_paths
-        ]
+        return [self.enqueue_index_file(path, workspace_id, user_id) for path in file_paths]
 
     def summarize_enqueue_results(self, results: list[EnqueueResult]) -> dict[str, int]:
         queued = sum(1 for result in results if result.status == "queued")
@@ -159,7 +157,9 @@ class IndexingService:
                 )
             if not indexable_paths:
                 continue
-            extractor.project_root = os.path.commonpath(indexable_paths) if indexable_paths else None
+            extractor.project_root = (
+                os.path.commonpath(indexable_paths) if indexable_paths else None
+            )
 
             current_hashes = {path: hash_file(path) for path in indexable_paths}
             completed = 0

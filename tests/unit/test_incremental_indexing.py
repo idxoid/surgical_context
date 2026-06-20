@@ -1053,10 +1053,9 @@ class Settings:
         )
         monkeypatch.setattr(
             "context_engine.indexer.fast.pipeline.run_axis_incremental_finalize",
-            lambda db, lance, workspace_id, **kwargs: finalize_calls.append(
-                {"workspace_id": workspace_id, **kwargs}
-            )
-            or {},
+            lambda db, lance, workspace_id, **kwargs: (
+                finalize_calls.append({"workspace_id": workspace_id, **kwargs}) or {}
+            ),
         )
 
         from context_engine.parser.extractor import SymbolExtractor

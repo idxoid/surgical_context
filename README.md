@@ -1,6 +1,13 @@
-# Surgical Context Documentation
+# Surgical Context
 
-This folder contains the current product and technical documentation for the `context-engine-refocus` branch.
+**Surgical Context is a local-first, model-agnostic context engine** for code
+understanding and change-impact analysis — a FastAPI sidecar over a local Neo4j
+graph, LanceDB vectors, and SQLite history, exposing an `Ask / Inspect / Impact`
+retrieval API. The VS Code extension under `extension/` is one frontend over
+that API, not the product itself.
+
+This repository contains the current product and technical documentation for
+the engine-first development line.
 
 ---
 
@@ -57,18 +64,15 @@ This folder contains the current product and technical documentation for the `co
 
 ## Current Truth
 
-The product is, first and foremost, a **local-first, model-agnostic context engine** for code understanding and change-impact analysis: a Python FastAPI sidecar over a local Neo4j graph, local LanceDB vectors, and local SQLite history, exposing an `Ask / Inspect / Impact` retrieval API. The access surface is interchangeable — the VS Code extension under `extension/` is **one consumer** of that API, not the product itself; the same sidecar serves programmatic/CLI clients and the QA/benchmark harness. This local, single-tenant configuration is the open-source candidate.
+This branch targets the **local, single-tenant configuration**: the engine and its VS Code frontend running entirely on one developer's machine — local Neo4j graph, local LanceDB vectors, local SQLite history, and local-first LLM defaults. The access surface is interchangeable: the same sidecar API serves the VS Code extension, programmatic/CLI clients, and the QA/benchmark harness. This configuration is the open-source candidate.
 
-The product is now described more narrowly than before:
-
-- **not** a general AI coding platform
-- **yes** a local-first, model-agnostic context engine for code understanding and change impact
+Scope is deliberately narrow: code understanding and change-impact analysis — **not** a general AI coding platform or a multi-tenant service.
 
 The repo is organized engine-first: the sidecar, default Neo4j/LanceDB clients, parser/indexer/axis retrieval modules, structural role retrieval, prompt-context adapters, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, and a bounded indexing queue make up the engine; the VS Code extension under `extension/` is one frontend over the sidecar API.
 
-Recent hardening added request-scoped Neo4j sessions, doc retrieval inside the arbitration pipeline, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, Git branch-change invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, prompt-contract observability fields (`scores`, `provenance`, `pruned`, `ranker` metadata), real-repo benchmark reports with `precision` plus full `ready_context`, topic-aware impact-test filtering, package/module fallback targets for workspace-level questions such as `pydantic.v1`, trace-dependency recovery hardening for sparse import topology (runtime symbol seeding + sibling-directory expansion with explicit recovery provenance), TypeScript `object_api` indexing, a relaxed `trace_dependency` benchmark gate for near-perfect single-axis recall, **workspace path sandboxing** (API + graph-resolved reads under indexed `project_path`; queued `/index` registers root immediately), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_sidecar_api.md](docs/spec_sidecar_api.md) and [road_map.md](docs/road_map.md).
+Recent hardening added request-scoped Neo4j client views over one shared driver, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, profile-aware indexing namespaces, Git-delta invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, and a bounded/coalescing incremental index queue. The active axis path now includes structural role retrieval, in-code docstring/JSDoc anchor seeds, adjacency materialization, and prompt-contract schema fields for scores, provenance, pruning, route, and trace metadata. It also enforces **workspace path sandboxing** (caller paths under the indexed `project_path`), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_sidecar_api.md](docs/spec_sidecar_api.md) and [road_map.md](docs/road_map.md).
 
-The local setup and smoke-test path live in **[local_development.md](docs/local_development.md)** and `scripts/local_dev.py`. The most important open gaps are broader real-repo benchmark coverage beyond the current FastAPI, Redux Toolkit, and Pydantic baselines, continued precision work on broad/doc-heavy retrieval paths, doc-anchor confidence/type scoring, consistent workspace/branch metadata in the prompt contract, and extension synchronization/accessibility polish. Team/Enterprise ideas such as tenant API graph, alternate database connectors, LLM proxy gateway, RBAC, and microservice splitting stay as future horizons. See **[road_map.md](docs/road_map.md)** for the canonical backlog in this branch.
+The local setup and smoke-test path live in **[local_development.md](docs/local_development.md)** and `scripts/local_dev.py`. The benchmark has workspace mappings for 13 repositories across Python and TypeScript/JavaScript, including the dogfood repo; runs still require those workspaces to be pre-indexed. The most important open gaps are engine-side: lifting recall on hard real-repo cases, improving precision on broad/doc-heavy paths, calibrating DocAnchor confidence/type, and carrying richer axis ranking/pruning/doc evidence into the active `PromptContext` rather than leaving serializer fields at defaults. The VS Code frontend still needs request-selection persistence and accessibility polish, but that is secondary to the engine work. Tenant-level API graph publication/linking, alternate database connectors, an LLM proxy gateway, RBAC, and service splitting remain future Team/Enterprise horizons. See **[road_map.md](docs/road_map.md)** for the canonical backlog.
 
 **Related experiments (external repos, not submodules):** [context-deduplicator](https://github.com/idxoid/context-deduplicator) and [marginal-utility-selector](https://github.com/idxoid/marginal-utility-selector) were early standalone prototypes. Production retrieval now lives in `context_engine/axis/`, with the shared prompt contract in `context_engine/context_types.py`.
 

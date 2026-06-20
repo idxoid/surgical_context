@@ -80,12 +80,14 @@ def search(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     main = require_main(request)
     main._resolve_request_user(x_user_id, authorization)
     index_workspace_id = main._resolve_index_workspace(x_workspace, authorization)
-    return {"results": main._vector_search_docs(req.query, req.limit, workspace_id=index_workspace_id)}
+    return {
+        "results": main._vector_search_docs(req.query, req.limit, workspace_id=index_workspace_id)
+    }
 
 
 @router.post("/search/unified", response_model=UnifiedSearchResponse)
@@ -95,7 +97,7 @@ def unified_search(
     authorization: str = Header(None),
     x_workspace: str = Header(None),
     x_trace_id: str = Header(None),
-    request: Request = None,
+    request: Request | None = None,
 ):
     """Blend doc vectors, symbol vectors, and optional graph neighbors into one ranked list."""
     main = require_main(request)
@@ -124,7 +126,9 @@ def unified_search(
             )
 
         with trace.stage("vector_symbols"):
-            symbols = main._vector_search_symbols(req.query, req.limit, workspace_id=index_workspace_id)
+            symbols = main._vector_search_symbols(
+                req.query, req.limit, workspace_id=index_workspace_id
+            )
         if symbols:
             for rank, symbol in enumerate(symbols):
                 score = symbol.get("score")

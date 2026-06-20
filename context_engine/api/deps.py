@@ -40,9 +40,7 @@ def resolve_request_user(
 ) -> str:
     """Resolve the request user and optionally require a valid bearer token."""
     config = state.config
-    require_auth = (
-        require_auth if require_auth is not None else config.auth_required
-    )
+    require_auth = require_auth if require_auth is not None else config.auth_required
     trust_header = (
         trust_client_user_header
         if trust_client_user_header is not None
