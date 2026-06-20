@@ -58,11 +58,16 @@ module = [
   "ollama",
   "sentence_transformers",
   "lancedb",
-  "pyarrow",
-  "pyarrow.compute",
   "yaml",
   "tqdm",
   "opentelemetry",
-  "opentelemetry.*",
 ]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pyarrow.compute exposes and_/equal/is_in as dynamically-generated functions
+# that its type stubs do not declare; treat pyarrow as untyped (Any) so attribute
+# access doesn't trip [attr-defined].
+module = ["pyarrow", "pyarrow.*"]
+follow_imports = "skip"
 ignore_missing_imports = true

@@ -2535,7 +2535,7 @@ class Neo4jClient:
         ).single()
         project_created = int(project_rec["created"] or 0) if project_rec else 0
         external_created = int(external_rec["created"] or 0) if external_rec else 0
-        touched_values = []
+        touched_values: list[str] = []
         if project_rec:
             touched_values.extend(project_rec["touched"] or [])
         if external_rec:
