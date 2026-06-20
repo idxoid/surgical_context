@@ -249,6 +249,7 @@ class AskContextBuilder:
         db: Any,
         token_budget: int = 6000,
         anchor_path: str | None = None,
+        anchor_symbol: str | None = None,
         trace_id: str = "",
         user_id: str = "anonymous",
     ) -> PromptContext | None:
@@ -267,6 +268,7 @@ class AskContextBuilder:
             intent_budget=True,
             base_token_budget=token_budget,
             anchor_path=anchor_path,
+            anchor_symbol=anchor_symbol,
             hook_transparency=True,
             overlay=self.overlay,
             user_id=user_id,
@@ -310,6 +312,7 @@ class AskContextBuilder:
                 db=db,
                 token_budget=req.token_budget,
                 anchor_path=anchor_path,
+                anchor_symbol=req.symbol,
                 user_id=user_id,
             )
         except Exception:

@@ -25,10 +25,23 @@ import re
 
 # Tokens that mark a path segment as part of a test surface. ``t`` is
 # Celery's convention (``t/unit``, ``t/integration``); ``test`` and
-# ``tests`` are the universal ones. We match on full path segments only
-# so a directory called ``contests`` or ``startests`` never gets
-# accidentally fenced.
-_TEST_DIR_SEGMENTS: frozenset[str] = frozenset({"tests", "test", "t"})
+# ``tests`` are the universal ones. ``qa`` covers this repo's ``QA/``
+# harness (mirrors ``file_tier``). We match on full path segments only
+# (case-insensitive) so a directory called ``contests`` or ``startests``
+# never gets accidentally fenced.
+_TEST_DIR_SEGMENTS: frozenset[str] = frozenset(
+    {
+        "tests",
+        "test",
+        "t",
+        "qa",
+        "__tests__",
+        "testfixtures",
+        "__testfixtures__",
+        "integration",
+        "e2e",
+    }
+)
 
 # File-name patterns that mark a single ``.py`` as test surface. The
 # regexes match the full file name (no path).
@@ -50,7 +63,7 @@ def is_test_path(path: str) -> bool:
     norm = path.replace("\\", "/")
     parts = [p for p in norm.split("/") if p]
     for segment in parts[:-1]:  # directory components, excluding the file name
-        if segment in _TEST_DIR_SEGMENTS:
+        if segment.lower() in _TEST_DIR_SEGMENTS:
             return True
     if parts and _TEST_FILE_NAME_RE.match(parts[-1]):
         return True
@@ -67,6 +80,11 @@ _CYPHER_TEST_PATH_EXCLUSION = (
     "  fn.path CONTAINS '/tests/' "
     "  OR fn.path CONTAINS '/test/' "
     "  OR fn.path CONTAINS '/t/' "
+    "  OR fn.path CONTAINS '/qa/' "
+    "  OR fn.path CONTAINS '/QA/' "
+    "  OR fn.path CONTAINS '/__tests__/' "
+    "  OR fn.path CONTAINS '/integration/' "
+    "  OR fn.path CONTAINS '/e2e/' "
     "  OR fn.path ENDS WITH '/conftest.py' "
     "  OR fn.path CONTAINS '/test_' "
     "  OR fn.path ENDS WITH '_test.py'"

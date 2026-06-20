@@ -22,6 +22,8 @@ from context_engine.axis.test_file_filter import (
         "/repo/proj/api/conftest.py",  # conftest at any depth
         "/repo/proj/something_test.py",
         "/repo/proj/test_main.py",
+        "/repo/surgical_context/QA/axis_benchmark.py",
+        "/repo/surgical_context/qa/harness.py",
     ],
 )
 def test_canonical_test_paths_are_flagged(path: str) -> None:
@@ -61,6 +63,8 @@ def test_cypher_clause_excludes_test_surfaces():
         "'/tests/'",
         "'/test/'",
         "'/t/'",
+        "'/qa/'",
+        "'/QA/'",
         "/conftest.py'",
         "/test_'",
         "_test.py'",

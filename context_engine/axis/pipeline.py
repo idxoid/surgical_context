@@ -100,6 +100,64 @@ class AxisRetrievalResult:
     render_mode: str = "full"
 
 
+def _pin_anchor_symbol(
+    candidates: list[RoleCandidate],
+    *,
+    anchor_symbol: str | None,
+    workspace_id: str,
+    db: Any,
+    scanned: Any | None,
+) -> list[RoleCandidate]:
+    """Move ``anchor_symbol`` to the front of the context pool when set.
+
+    Symbol-targeted asks and benchmark questions name the intended seed
+    explicitly; without pinning, homonyms (e.g. ``_StageTimer.stage`` vs
+    ``RequestTrace.stage``) can outrank the real entrypoint on vector
+    similarity alone.
+    """
+    name = (anchor_symbol or "").strip()
+    if not name or not candidates:
+        return candidates
+
+    for index, candidate in enumerate(candidates):
+        if candidate.name == name:
+            if index == 0:
+                return candidates
+            pinned = candidates[index]
+            return [pinned, *[c for i, c in enumerate(candidates) if i != index]]
+
+    uid = ""
+    file_path = ""
+    if scanned is not None:
+        for row in getattr(scanned, "rows", ()) or ():
+            if str(row.get("name") or "") == name:
+                uid = str(row.get("uid") or "")
+                file_path = str(row.get("file_path") or "")
+                break
+    if not uid and db is not None and hasattr(db, "get_symbol_uid_by_name"):
+        uid = db.get_symbol_uid_by_name(name, workspace_id=workspace_id) or ""
+        if uid and hasattr(db, "get_file_path_for_symbol"):
+            file_path = db.get_file_path_for_symbol(uid, workspace_id=workspace_id)
+
+    if not uid:
+        return candidates
+
+    injected = RoleCandidate(
+        uid=uid,
+        name=name,
+        qualified_name="",
+        file_path=file_path,
+        role="anchor_symbol",
+        satisfying_contracts=(),
+        satisfying_kinds=(),
+        contract_count=0,
+        kind_count=0,
+        vector_distance=None,
+        score=1.0,
+    )
+    return [injected, *[c for c in candidates if c.uid != uid]]
+
+
 def run_axis_retrieval(
     question: str,
     *,
@@ -117,6 +175,7 @@ def run_axis_retrieval(
     base_token_budget: int = 6000,
     render_mode_override: str | None = None,
     anchor_path: str | None = None,
+    anchor_symbol: str | None = None,
     hook_transparency: bool = False,
     trace: Any | None = None,
     overlay: Any | None = None,
@@ -431,6 +490,22 @@ def run_axis_retrieval(
         token_budget = budget_profile.effective_tokens(base_token_budget)
         render_mode = (
             budget_profile.render_mode if render_mode_override is None else render_mode_override
+        )
+
+    if anchor_symbol:
+        active = _pin_anchor_symbol(
+            active,
+            anchor_symbol=anchor_symbol,
+            workspace_id=workspace_id,
+            db=db,
+            scanned=scanned,
+        )
+        candidates_for_context = _pin_anchor_symbol(
+            candidates_for_context,
+            anchor_symbol=anchor_symbol,
+            workspace_id=workspace_id,
+            db=db,
+            scanned=scanned,
         )
 
     bundles: list[ContextBundle] = []

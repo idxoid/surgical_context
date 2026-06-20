@@ -137,6 +137,13 @@ def test_context_seeds_per_role_caps_the_pool(stub_stages):
     assert len(result.raw_by_role["routing_surface"]) == 3
 
 
+def test_anchor_symbol_pins_named_candidate_to_context_front(stub_stages):
+    result = _run(anchor_symbol="c")
+
+    assert [c.uid for c in result.candidates_for_context][0] == "c"
+    assert [b.seed.uid for b in result.bundles][0] == "c"
+
+
 def test_runs_without_a_tracer(stub_stages):
     # trace=None must select the null tracer, not raise.
     result = _run(trace=None)
