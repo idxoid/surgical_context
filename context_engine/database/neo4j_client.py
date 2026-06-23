@@ -185,6 +185,29 @@ class Neo4jClient:
                 counts[key] = int(row["count"] if row else 0)
         return counts
 
+    def get_workspace_dashboard_counts(
+        self, workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> dict[str, int]:
+        """Return dashboard graph counts in one workspace-scoped query."""
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (f:File {workspace_id: $workspace_id})
+                OPTIONAL MATCH (f)-[:CONTAINS]->(s:Symbol)
+                OPTIONAL MATCH (:DocAnchor)-[r:COVERS]->(s)
+                WHERE r IS NULL OR coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN count(DISTINCT f) AS files,
+                       count(DISTINCT s) AS symbols,
+                       count(DISTINCT CASE WHEN r IS NOT NULL THEN s END) AS symbols_with_docs
+                """,
+                workspace_id=workspace_id,
+            ).single()
+        return {
+            "files": int(row["files"] if row else 0),
+            "symbols": int(row["symbols"] if row else 0),
+            "symbols_with_docs": int(row["symbols_with_docs"] if row else 0),
+        }
+
     def save_repository_profile(
         self,
         profile: dict,

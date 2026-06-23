@@ -214,6 +214,15 @@ Return the bounded indexing queue snapshot.
 
 ---
 
+### GET /index/stats
+Return live workspace-scoped catalog counts for the operational dashboard.
+
+**Headers:** `X-Workspace` selects the workspace; the active index profile is applied server-side.
+
+**Response:** indexed file and symbol counts from Neo4j, documentation chunk count from LanceDB, symbols linked to documentation, and total local LanceDB storage bytes.
+
+---
+
 ### GET /index/manifest
 Return the current workspace index manifest from Neo4j when available.
 

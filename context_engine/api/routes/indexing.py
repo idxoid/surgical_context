@@ -19,6 +19,7 @@ from context_engine.api.schemas import (
     IndexGitDeltaRequest,
     IndexQueueStatusResponse,
     IndexRequest,
+    IndexStatsResponse,
     StatusPathResponse,
 )
 from context_engine.api.state import SidecarState
@@ -344,6 +345,34 @@ def index_queue_status(
     deps = _require_deps(request)
     deps.main._resolve_request_user(x_user_id, authorization)
     return {"status": "ok", "queue": deps.main.index_queue.snapshot()}
+
+
+@router.get("/index/stats", response_model=IndexStatsResponse)
+def index_stats(
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+    request: Request = None,
+):
+    """Return live catalog counts for the dashboard's active workspace."""
+    deps = _require_deps(request)
+    main = deps.main
+    user_id = main._resolve_request_user(x_user_id, authorization)
+    base_workspace_id = main._resolve_workspace(x_workspace, authorization)
+    workspace_id = main.effective_index_workspace_id(base_workspace_id)
+
+    with main.db_session(user_id=user_id) as db:
+        counts = db.get_workspace_dashboard_counts(workspace_id=workspace_id)
+
+    return {
+        "status": "ok",
+        "workspace_id": workspace_id,
+        "indexed_files": int(counts.get("files") or 0),
+        "indexed_symbols": int(counts.get("symbols") or 0),
+        "doc_chunks": int(deps.state.vector_db.count_docs_workspace(workspace_id)),
+        "symbols_with_docs": int(counts.get("symbols_with_docs") or 0),
+        "storage_bytes": int(deps.state.vector_db.storage_size_bytes()),
+    }
 
 
 @router.get("/index/manifest")

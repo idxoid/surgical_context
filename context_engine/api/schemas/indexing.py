@@ -62,6 +62,16 @@ class IndexQueueStatusResponse(BaseModel):
     queue: dict[str, Any]
 
 
+class IndexStatsResponse(BaseModel):
+    status: str
+    workspace_id: str
+    indexed_files: int
+    indexed_symbols: int
+    doc_chunks: int
+    symbols_with_docs: int
+    storage_bytes: int
+
+
 class OverlayRequest(BaseModel):
     file_path: str
     content: str

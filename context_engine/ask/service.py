@@ -289,6 +289,10 @@ class AskService:
                 db=db,
             )
             ask_anchor = ctx.primary_source.symbol
+            self.metrics.increment(
+                "sidecar_ask_context_total",
+                labels={"mode": ctx.mode, "workspace": workspace_id},
+            )
 
         with trace.stage("prompt"):
             system_prompt = self.system_prompt_for_context(ctx)
@@ -406,6 +410,10 @@ class AskService:
                     db=db,
                 )
                 ask_anchor = ctx.primary_source.symbol
+                self.metrics.increment(
+                    "sidecar_ask_context_total",
+                    labels={"mode": ctx.mode, "workspace": workspace_id},
+                )
 
             with trace.stage("prompt"):
                 system_prompt = self.system_prompt_for_context(ctx)

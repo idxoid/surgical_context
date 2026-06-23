@@ -283,6 +283,16 @@ export interface IndexQueueResponse {
   };
 }
 
+export interface IndexStatsResponse {
+  status: string;
+  workspace_id: string;
+  indexed_files: number;
+  indexed_symbols: number;
+  doc_chunks: number;
+  symbols_with_docs: number;
+  storage_bytes: number;
+}
+
 export interface FeedbackEvent {
   message_id: string;
   feedback_token?: string;
@@ -460,6 +470,10 @@ export const SidecarClient = {
 
   indexQueueStatus(): Promise<IndexQueueResponse> {
     return get('/index/queue');
+  },
+
+  indexStats(): Promise<IndexStatsResponse> {
+    return get('/index/stats');
   },
 
   async submitFeedback(event: FeedbackEvent): Promise<void> {

@@ -83,6 +83,9 @@ class FakeDb:
     def delete_symbols_for_file(self, file_path, workspace_id="local/surgical_context@main"):
         return None
 
+    def get_workspace_dashboard_counts(self, workspace_id="local/surgical_context@main"):
+        return {"files": 12, "symbols": 47, "symbols_with_docs": 9}
+
     def close(self):
         self.closed = True
 
@@ -122,6 +125,13 @@ def import_main_with_fakes(monkeypatch):
     fake_lancedb = types.ModuleType("context_engine.database.lancedb_client")
 
     class FakeLanceDBClient:
+        def count_docs_workspace(self, workspace_id):
+            return 23
+
+        @staticmethod
+        def storage_size_bytes():
+            return 125_000_000
+
         def search(self, query, limit=5):
             return [
                 {
@@ -638,6 +648,23 @@ def test_metrics_endpoint_renders_prometheus_text(monkeypatch):
     assert response.media_type == "text/plain"
     assert "sidecar_requests_total" in response.body.decode()
     assert 'endpoint="/ask"' in response.body.decode()
+    assert 'sidecar_ask_context_total{mode="surgical_full"' in response.body.decode()
+
+
+def test_index_stats_returns_workspace_catalog_counts(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    body = main.index_stats(x_workspace="local/surgical_context@main")
+
+    assert body == {
+        "status": "ok",
+        "workspace_id": "local/surgical_context@main",
+        "indexed_files": 12,
+        "indexed_symbols": 47,
+        "doc_chunks": 23,
+        "symbols_with_docs": 9,
+        "storage_bytes": 125_000_000,
+    }
 
 
 def test_unified_search_blends_docs_and_symbols(monkeypatch):

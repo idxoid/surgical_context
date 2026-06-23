@@ -70,16 +70,16 @@
     <div class="metric-card-grid">
       ${renderMetricCard("Sidecar health", healthLabel(props.health), props.health === "up" ? "Ready for requests" : "Check backend URL", "pulse", healthStatus)}
       ${renderMetricCard("Graph provider", cloudLabel(props.cloudStatus), cloudNote(props.cloudStatus), "cloud", cloudStatus)}
-      ${renderMetricCard("Indexed files", formatNumber(metrics.indexedFiles), "Metric pending from index catalog", "file")}
-      ${renderMetricCard("Indexed symbols", formatNumber(metrics.indexedSymbols), "Metric pending from graph catalog", "code")}
-      ${renderMetricCard("Doc chunks", formatNumber(metrics.docChunks), "Metric pending from docs index", "doc")}
+      ${renderMetricCard("Indexed files", formatNumber(metrics.indexedFiles), metricSourceNote(metrics.indexedFiles, "Graph catalog"), "file")}
+      ${renderMetricCard("Indexed symbols", formatNumber(metrics.indexedSymbols), metricSourceNote(metrics.indexedSymbols, "Graph catalog"), "code")}
+      ${renderMetricCard("Doc chunks", formatNumber(metrics.docChunks), metricSourceNote(metrics.docChunks, "Docs index"), "doc")}
       ${renderMetricCard("Last indexing job", metrics.lastIndexJobStatus || "idle", queueSummary(metrics), "play", queueStatus)}
       ${renderMetricCard("Avg latency (ask)", formatMs(metrics.avgLatencyMs), metrics.requestsTotal ? `${formatNumber(metrics.requestsTotal)} requests observed` : "Waiting for ask traffic", "clock")}
-      ${renderMetricCard("Token savings", formatPercent(metrics.tokenSavingsPercent), metrics.tokensTotal ? `${formatNumber(metrics.tokensTotal)} tokens observed` : "Needs prompt telemetry", "trend")}
-      ${renderMetricCard("Fallback rate", formatPercent(metrics.fallbackRatePercent), "Metric pending from retrieval cache", "sync")}
-      ${renderMetricCard("Context quality", formatPercent(metrics.contextQualityPercent), "Feedback signal pending", "target")}
-      ${renderMetricCard("Symbols with docs", formatNumber(metrics.symbolsWithDocs), "Metric pending from docs links", "book")}
-      ${renderMetricCard("Storage (sidecar)", formatGb(metrics.storageGb), metrics.costUsdTotal ? `$${metrics.costUsdTotal.toFixed(4)} estimated cost` : "Metric pending from storage layer", "db")}
+      ${renderMetricCard("Token savings", formatPercent(metrics.tokenSavingsPercent), metrics.tokensTotal ? "Savings baseline not emitted yet" : "Waiting for ask traffic", "trend")}
+      ${renderMetricCard("Fallback rate", formatPercent(metrics.fallbackRatePercent), metrics.fallbackRatePercent === null ? "Waiting for ask traffic" : "Resolved ask context modes", "sync")}
+      ${renderMetricCard("Context quality", formatPercent(metrics.contextQualityPercent), metrics.contextQualityPercent === null ? "Feedback signal pending" : "Accepted retrieval feedback", "target")}
+      ${renderMetricCard("Symbols with docs", formatNumber(metrics.symbolsWithDocs), metricSourceNote(metrics.symbolsWithDocs, "Documentation links"), "book")}
+      ${renderMetricCard("Storage (sidecar)", formatStorage(metrics.storageGb), metrics.storageGb === null ? "Storage metric unavailable" : "Local LanceDB store", "db")}
     </div>
   `;
   }
@@ -326,8 +326,13 @@
   function formatMs(value) {
     return value === null ? "-" : `${Math.round(value)} ms`;
   }
-  function formatGb(value) {
-    return value === null ? "-" : `${value.toFixed(1)} GB`;
+  function formatStorage(valueGb) {
+    if (valueGb === null) return "-";
+    if (valueGb < 0.1) return `${Math.round(valueGb * 1e3)} MB`;
+    return `${valueGb.toFixed(1)} GB`;
+  }
+  function metricSourceNote(value, source) {
+    return value === null ? `${source} metric unavailable` : source;
   }
   function secondsAgo(timestamp) {
     const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1e3));

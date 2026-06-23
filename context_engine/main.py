@@ -411,6 +411,7 @@ index_git_delta_endpoint = _indexing_routes.index_git_delta_endpoint  # noqa: F4
 index_git_delta_status = _indexing_routes.index_git_delta_status  # noqa: F401
 index_manifest_endpoint = _indexing_routes.index_manifest_endpoint  # noqa: F401
 index_queue_status = _indexing_routes.index_queue_status  # noqa: F401
+index_stats = _indexing_routes.index_stats  # noqa: F401
 list_users = _auth_routes.list_users  # noqa: F401
 metrics = _health_routes.metrics  # noqa: F401
 record_feedback = _feedback_routes.record_feedback  # noqa: F401

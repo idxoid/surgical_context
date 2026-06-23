@@ -263,6 +263,7 @@ export type ExtensionToWebviewMessage =
 | `POST` | `/index/files` | Batched save/refactor updates |
 | `POST` | `/index/docs` | Index repository documentation |
 | `GET` | `/index/queue` | Dashboard queue state |
+| `GET` | `/index/stats` | Dashboard index catalog and storage counts |
 | `POST` | `/history/ask` | Persist sanitized request/history snapshot |
 | `POST` | `/feedback` | Accept/reject feedback |
 | `POST` | `/auth/token` | Local workspace-scoped token bootstrap |

@@ -619,6 +619,31 @@ class LanceDBClient:
         """All doc chunks for a workspace (used by DocAnchor linking)."""
         return self._scan_table_by_workspace(self._table, workspace_id)
 
+    def count_docs_workspace(self, workspace_id: str) -> int:
+        """Row count for one workspace in the documentation table."""
+        ws = self._quote_delete_value(workspace_id)
+        try:
+            return int(self._table.count_rows(f"workspace_id = '{ws}'"))
+        except Exception:
+            return len(self._scan_table_by_workspace(self._table, workspace_id, columns=["id"]))
+
+    @staticmethod
+    def storage_size_bytes() -> int:
+        """Return disk usage for the local LanceDB store (all workspaces)."""
+        root = Path(DB_PATH).expanduser()
+        if not root.exists():
+            return 0
+        if root.is_file():
+            return root.stat().st_size
+        total = 0
+        for path in root.rglob("*"):
+            try:
+                if path.is_file():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+        return total
+
     def scan_doc_anchors_workspace(self, workspace_id: str) -> list[dict]:
         """Doc-chunk rows tied to an in-code symbol via ``owner_uid``."""
         try:

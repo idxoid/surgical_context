@@ -3,6 +3,7 @@ import {
   AuditActionsResponse,
   CloudStatusResponse,
   IndexQueueResponse,
+  IndexStatsResponse,
   SidecarClient,
 } from '../sidecarClient';
 import { getWebviewContent } from '../utils';
@@ -93,28 +94,38 @@ export class DashboardPanel {
     this.postMessage({ type: 'dashboard.loading' });
 
     const healthOk = await SidecarClient.health();
-    const [cloudStatus, auditActions, metricsText, indexQueue] = healthOk
+    const [cloudStatus, auditActions, metricsText, indexQueue, indexStats] = healthOk
       ? await Promise.all([
         this.safeDashboardCall('Cloud status', () => SidecarClient.cloudStatus()),
         this.safeDashboardCall('Recent activity', () => SidecarClient.auditActions(undefined, 10)),
         this.safeDashboardCall('Prometheus metrics', () => SidecarClient.metrics()),
         this.safeDashboardCall('Index queue', () => SidecarClient.indexQueueStatus()),
+        this.safeDashboardCall('Index catalog', () => SidecarClient.indexStats()),
       ])
       : [
         this.emptyDashboardCall<CloudStatusResponse>(),
         this.emptyDashboardCall<AuditActionsResponse>(),
         this.emptyDashboardCall<string>(),
         this.emptyDashboardCall<IndexQueueResponse>(),
+        this.emptyDashboardCall<IndexStatsResponse>(),
       ];
-    const metrics = {
+    const metrics: DashboardMetrics = {
       ...this.emptyDashboardMetrics(),
       ...this.parsePrometheusMetrics(metricsText.value),
       ...this.metricsFromIndexQueue(indexQueue.value),
+      ...this.metricsFromIndexStats(indexStats.value),
     };
+    const hasIndexedCatalog = (metrics.indexedFiles || 0) > 0
+      || (metrics.indexedSymbols || 0) > 0
+      || (metrics.docChunks || 0) > 0;
+    if (metrics.lastIndexJobStatus === 'not indexed' && hasIndexedCatalog) {
+      metrics.lastIndexJobStatus = 'idle';
+    }
     const notices = this.buildDashboardNotices({
       healthOk,
       metricsText,
       indexQueue,
+      indexStats,
       metrics,
     });
     const warnings = this.buildDashboardWarnings({
@@ -123,6 +134,7 @@ export class DashboardPanel {
       auditActions,
       metricsText,
       indexQueue,
+      indexStats,
     });
     const workspaceId = await resolveWorkspaceId();
 
@@ -169,6 +181,7 @@ export class DashboardPanel {
     auditActions: DashboardCallResult<AuditActionsResponse>;
     metricsText: DashboardCallResult<string>;
     indexQueue: DashboardCallResult<IndexQueueResponse>;
+    indexStats: DashboardCallResult<IndexStatsResponse>;
   }): string[] {
     if (!input.healthOk) {
       return [];
@@ -177,6 +190,7 @@ export class DashboardPanel {
     return Array.from(new Set([
       this.cleanWarning(input.cloudStatus.warning, 'Graph provider status is unavailable.'),
       this.cleanWarning(input.auditActions.warning, 'Recent activity is unavailable.'),
+      this.cleanWarning(input.indexStats.warning, 'Index catalog metrics are unavailable.'),
     ].filter((warning): warning is string => Boolean(warning))));
   }
 
@@ -191,6 +205,7 @@ export class DashboardPanel {
     healthOk: boolean;
     metricsText: DashboardCallResult<string>;
     indexQueue: DashboardCallResult<IndexQueueResponse>;
+    indexStats: DashboardCallResult<IndexStatsResponse>;
     metrics: DashboardMetrics;
   }): DashboardNotice[] {
     if (!input.healthOk) {
@@ -228,7 +243,10 @@ export class DashboardPanel {
         action: 'refresh',
         actionLabel: 'Retry',
       });
-    } else if (this.hasNoObservedIndexWork(input.indexQueue.value, input.metrics)) {
+    } else if (
+      input.indexStats.value
+      && this.hasNoObservedIndexWork(input.indexQueue.value, input.metrics)
+    ) {
       notices.push({
         id: 'index-empty',
         level: 'info',
@@ -236,6 +254,17 @@ export class DashboardPanel {
         message: 'Index the workspace to populate graph and vector context before relying on ask or impact results.',
         action: 'indexWorkspace',
         actionLabel: 'Index workspace',
+      });
+    }
+
+    if (!input.indexStats.value) {
+      notices.push({
+        id: 'index-stats-unavailable',
+        level: 'warning',
+        title: 'Index catalog metrics are unavailable',
+        message: 'Restart or update the sidecar to load indexed file, symbol, documentation, and storage counts.',
+        action: 'refresh',
+        actionLabel: 'Retry',
       });
     }
 
@@ -313,13 +342,25 @@ export class DashboardPanel {
     };
   }
 
+  private metricsFromIndexStats(response: IndexStatsResponse | null): Partial<DashboardMetrics> {
+    if (!response) return {};
+
+    return {
+      indexedFiles: response.indexed_files,
+      indexedSymbols: response.indexed_symbols,
+      docChunks: response.doc_chunks,
+      symbolsWithDocs: response.symbols_with_docs,
+      storageGb: response.storage_bytes / 1_000_000_000,
+    };
+  }
+
   private hasNoObservedIndexWork(
     response: IndexQueueResponse,
     metrics: DashboardMetrics
   ): boolean {
-    const hasCatalogMetrics = metrics.indexedFiles !== null
-      || metrics.indexedSymbols !== null
-      || metrics.docChunks !== null;
+    const hasCatalogMetrics = (metrics.indexedFiles || 0) > 0
+      || (metrics.indexedSymbols || 0) > 0
+      || (metrics.docChunks || 0) > 0;
     return !hasCatalogMetrics && !this.hasQueueActivity(response.queue);
   }
 
@@ -342,32 +383,51 @@ export class DashboardPanel {
     let costUsdTotal = 0;
     let askLatencySum = 0;
     let askLatencyCount = 0;
+    let contextModeTotal = 0;
+    let fallbackTotal = 0;
+    let feedbackTotal = 0;
+    let feedbackAccepted = 0;
 
     for (const line of metricsText.split('\n')) {
       const parsed = this.parsePrometheusLine(line);
       if (!parsed) continue;
 
-      if (parsed.name === 'sidecar_requests_total') {
+      const isAskEndpoint = parsed.labels.endpoint === '/ask'
+        || parsed.labels.endpoint === '/ask/stream';
+
+      if (parsed.name === 'sidecar_requests_total' && isAskEndpoint) {
         requestsTotal += parsed.value;
-      } else if (parsed.name === 'sidecar_tokens_total') {
+      } else if (parsed.name === 'sidecar_tokens_total' && isAskEndpoint) {
         tokensTotal += parsed.value;
-      } else if (parsed.name === 'sidecar_estimated_cost_usd_total') {
+      } else if (parsed.name === 'sidecar_estimated_cost_usd_total' && isAskEndpoint) {
         costUsdTotal += parsed.value;
       } else if (
         parsed.name === 'sidecar_request_latency_ms_sum'
-        && parsed.labels.endpoint === '/ask'
+        && isAskEndpoint
       ) {
         askLatencySum += parsed.value;
       } else if (
         parsed.name === 'sidecar_request_latency_ms_count'
-        && parsed.labels.endpoint === '/ask'
+        && isAskEndpoint
       ) {
         askLatencyCount += parsed.value;
+      } else if (parsed.name === 'sidecar_ask_context_total') {
+        contextModeTotal += parsed.value;
+        if (['file', 'workspace', 'direct'].includes(parsed.labels.mode)) {
+          fallbackTotal += parsed.value;
+        }
+      } else if (parsed.name === 'sidecar_feedback_events_total') {
+        feedbackTotal += parsed.value;
+        if (parsed.labels.outcome === 'accept') {
+          feedbackAccepted += parsed.value;
+        }
       }
     }
 
     return {
       avgLatencyMs: askLatencyCount > 0 ? askLatencySum / askLatencyCount : null,
+      fallbackRatePercent: contextModeTotal > 0 ? (fallbackTotal / contextModeTotal) * 100 : null,
+      contextQualityPercent: feedbackTotal > 0 ? (feedbackAccepted / feedbackTotal) * 100 : null,
       requestsTotal: requestsTotal || null,
       tokensTotal: tokensTotal || null,
       costUsdTotal: costUsdTotal || null,
