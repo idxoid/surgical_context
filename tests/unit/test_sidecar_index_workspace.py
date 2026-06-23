@@ -31,6 +31,7 @@ def test_resolve_ask_context_passes_suffixed_workspace_to_axis(monkeypatch):
         db,
         token_budget=6000,
         anchor_path=None,
+        anchor_symbol=None,
         trace_id="",
         user_id="anonymous",
     ):
