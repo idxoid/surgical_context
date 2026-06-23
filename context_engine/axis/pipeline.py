@@ -54,7 +54,7 @@ from context_engine.axis import (
     structural_neighbours,
     trace_traversal,
 )
-from context_engine.axis.context_builder import ContextBundle
+from context_engine.axis.context_builder import ContextBundle, ContextSymbol
 from context_engine.axis.intent_classifier import IntentMatch
 from context_engine.axis.proximity import proximity_boost
 from context_engine.axis.retrieval_budget import ARCHITECTURE, budget_for_intent
@@ -100,6 +100,55 @@ class AxisRetrievalResult:
     render_mode: str = "full"
 
 
+# Synthetic anchor for a symbol that lives only in the editor overlay (typed
+# but not yet indexed). It carries no Neo4j node and no graph edges, so the
+# caller must render it overlay-only and skip every graph walk.
+_OVERLAY_ANCHOR_ROLE = "overlay_anchor"
+
+
+def _overlay_anchor_candidate(
+    overlay: Any | None,
+    *,
+    name: str,
+    file_path: str,
+    workspace_id: str,
+    user_id: str,
+) -> RoleCandidate | None:
+    """Resolve ``name`` against the live editor buffer when the index misses.
+
+    Commit/index is the usual route to a ``uid``; this is the bridge that lets
+    a brand-new symbol parsed in the overlay anchor an ask without one. Returns
+    ``None`` unless the buffer is present and actually defines ``name``.
+    """
+    if overlay is None or not file_path or not name:
+        return None
+    try:
+        if not overlay.has(file_path, workspace_id=workspace_id, user_id=user_id):
+            return None
+        symbols = overlay.get_symbols(file_path, workspace_id=workspace_id, user_id=user_id)
+    except Exception:
+        return None
+    if name not in symbols:
+        return None
+    return RoleCandidate(
+        uid=f"overlay::{workspace_id}::{file_path}::{name}",
+        name=name,
+        qualified_name="",
+        file_path=file_path,
+        role=_OVERLAY_ANCHOR_ROLE,
+        satisfying_contracts=(),
+        satisfying_kinds=(),
+        contract_count=0,
+        kind_count=0,
+        vector_distance=None,
+        score=1.0,
+    )
+
+
+def _is_overlay_anchor(candidate: RoleCandidate | None) -> bool:
+    return candidate is not None and candidate.role == _OVERLAY_ANCHOR_ROLE
+
+
 def _pin_anchor_symbol(
     candidates: list[RoleCandidate],
     *,
@@ -108,6 +157,8 @@ def _pin_anchor_symbol(
     workspace_id: str,
     db: Any,
     scanned: Any | None,
+    overlay: Any | None = None,
+    user_id: str = "anonymous",
 ) -> list[RoleCandidate]:
     """Move ``anchor_symbol`` to the front of the context pool when set.
 
@@ -191,6 +242,17 @@ def _pin_anchor_symbol(
             file_path = db.get_file_path_for_symbol(uid, workspace_id=workspace_id)
 
     if not uid:
+        # Index missed — fall through to the live editor buffer. Commit is not
+        # the only way to anchor an ask; an overlay-parsed symbol is enough.
+        synthetic = _overlay_anchor_candidate(
+            overlay,
+            name=name,
+            file_path=requested_path,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+        if synthetic is not None:
+            return [synthetic, *[c for c in candidates if c.uid != synthetic.uid]]
         return candidates
 
     injected = RoleCandidate(
@@ -254,11 +316,25 @@ def _try_symbol_targeted_retrieval(
         workspace_id=workspace_id,
         db=db,
         scanned=None,
+        overlay=overlay,
+        user_id=user_id,
     )
     if not pinned:
         return None
 
     anchor = pinned[0]
+    if _is_overlay_anchor(anchor):
+        # Brand-new symbol resolved from the editor buffer alone: it has no
+        # graph node, so render its overlay body and skip every walk.
+        return _overlay_only_result(
+            anchor,
+            overlay=overlay,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            with_context=with_context,
+            render_mode=render_mode_override or "full",
+        )
+
     token_budget, render_mode, budget_profile = _symbol_targeted_budget(
         intent_budget=intent_budget,
         base_token_budget=base_token_budget,
@@ -304,6 +380,69 @@ def _try_symbol_targeted_retrieval(
         seed_files=[seed_path] if seed_path else [],
         candidates_for_context=pinned,
         bundles=list(bundles),
+        render_mode=render_mode,
+    )
+
+
+def _overlay_only_result(
+    anchor: RoleCandidate,
+    *,
+    overlay: Any | None,
+    workspace_id: str,
+    user_id: str,
+    with_context: bool,
+    render_mode: str,
+) -> AxisRetrievalResult:
+    """Assemble context for an overlay-only anchor without any graph walk.
+
+    The symbol is not in the index, so there is no adjacency to load and no
+    neighbourhood to expand. The single bundle carries the buffer body — the
+    minimum useful context for an ask about the symbol the user just typed.
+    """
+    bundles: list[ContextBundle] = []
+    if with_context and overlay is not None:
+        code: str | None = None
+        try:
+            symbols = overlay.get_symbols(
+                anchor.file_path, workspace_id=workspace_id, user_id=user_id
+            )
+            span = symbols.get(anchor.name)
+            if span is not None:
+                start, end = span
+                code = overlay.read_lines(
+                    anchor.file_path,
+                    start,
+                    end,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+        except Exception:
+            code = None
+        seed = ContextSymbol(
+            uid=anchor.uid,
+            name=anchor.name,
+            file_path=anchor.file_path,
+            role=_OVERLAY_ANCHOR_ROLE,
+            distance_from_seed=0,
+            expansion_step=None,
+            code=code,
+        )
+        bundles = [
+            ContextBundle(
+                role=_OVERLAY_ANCHOR_ROLE,
+                seed=seed,
+                related=(),
+                render_mode=render_mode,
+            )
+        ]
+
+    seed_path = (anchor.file_path or "").strip()
+    return AxisRetrievalResult(
+        intent=[],
+        raw_by_role={},
+        seed_files=[seed_path] if seed_path else [],
+        candidates_for_context=[anchor],
+        bundles=bundles,
         render_mode=render_mode,
     )
 
