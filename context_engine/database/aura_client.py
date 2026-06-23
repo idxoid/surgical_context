@@ -13,6 +13,10 @@ from context_engine.database.neo4j_client import Neo4jClient
 logger = logging.getLogger(__name__)
 
 
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def connect_neo4j_driver(
     *,
     aura_username: str | None = None,
@@ -33,8 +37,14 @@ def connect_neo4j_driver(
     resolved_local_password = (
         local_password if local_password is not None else os.getenv("NEO4J_PASSWORD", "password")
     )
+    local_only = _env_truthy("NEO4J_LOCAL_ONLY")
 
-    if aura_username and aura_password and aura_instance_name:
+    if (
+        not local_only
+        and aura_username
+        and aura_password
+        and aura_instance_name
+    ):
         try:
             aura_uri = AuraClient._build_aura_uri(aura_instance_name)
             driver = GraphDatabase.driver(aura_uri, auth=(aura_username, aura_password))

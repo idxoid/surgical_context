@@ -10,6 +10,9 @@ from context_engine.ai.engine import (
     AIEngine,
     ModelRouter,
     _build_system_blocks,
+    _ollama_options,
+    _ollama_response_text,
+    _ollama_stream_piece,
     cloud_llm_enabled,
 )
 
@@ -258,3 +261,34 @@ class TestAIEngineModels:
         finally:
             if old_value is not None:
                 os.environ["OLLAMA_MODEL"] = old_value
+
+
+class TestOllamaHelpers:
+    def test_qwen3_defaults_disable_thinking(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_THINK", raising=False)
+        opts = _ollama_options("qwen3:1.7b")
+        assert opts["think"] is False
+        assert opts["num_predict"] == 768
+        assert opts["num_ctx"] == 8192
+
+    def test_ollama_think_env_override(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_THINK", "true")
+        opts = _ollama_options("qwen3:1.7b")
+        assert opts["think"] is True
+
+    def test_ollama_response_text_prefers_content(self):
+        assert _ollama_response_text({"content": "answer", "thinking": "reason"}) == "answer"
+
+    def test_ollama_response_text_falls_back_to_thinking(self):
+        assert _ollama_response_text({"content": "", "thinking": "answer"}) == "answer"
+
+    def test_ollama_stream_piece_yields_thinking_when_content_empty(self):
+        assert _ollama_stream_piece({"content": "", "thinking": "partial"}) == "partial"
+
+    def test_ollama_stream_piece_reads_pydantic_like_message(self):
+        class FakeMessage:
+            content = ""
+            thinking = "streamed"
+
+        assert _ollama_stream_piece(FakeMessage()) == "streamed"
+

@@ -65,3 +65,22 @@ def test_warm_sidecar_skipped_when_disabled(monkeypatch):
     warmup_mod.warm_sidecar(state)
 
     assert state.vector_db.calls == []  # type: ignore[attr-defined]
+
+
+def test_warm_sidecar_neo4j_failure_is_non_fatal(monkeypatch):
+    state = _fake_state()
+    monkeypatch.setenv("SIDECAR_WARMUP_ENABLED", "true")
+
+    class _FailingProvider:
+        def client_for(self, user_id: str = "anonymous"):
+            del user_id
+            raise ConnectionRefusedError("[Errno 111] Connection refused")
+
+    monkeypatch.setattr(
+        "context_engine.database.provider.get_database_provider",
+        lambda: _FailingProvider(),
+    )
+
+    warmup_mod.warm_sidecar(state)  # must not raise
+
+    assert len(state.vector_db.calls) == 1  # type: ignore[attr-defined]

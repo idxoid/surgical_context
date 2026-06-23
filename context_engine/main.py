@@ -6,6 +6,10 @@ from pathlib import Path
 if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from context_engine.env_loader import load_repo_dotenv
+
+load_repo_dotenv()
+
 from context_engine.silence import install as _install_stderr_filter
 
 _install_stderr_filter()

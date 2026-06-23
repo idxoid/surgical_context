@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { symbolFromDefinitionLine } from '../symbolResolution';
 
 export class SurgicalContextCodeLensProvider implements vscode.CodeLensProvider {
   public codeLensProviders: vscode.CodeLens[] = [];
@@ -46,27 +47,4 @@ export class SurgicalContextCodeLensProvider implements vscode.CodeLensProvider 
   resolveCodeLens(codeLens: vscode.CodeLens): vscode.CodeLens {
     return codeLens;
   }
-}
-
-function symbolFromDefinitionLine(line: string): { name: string; character: number } | null {
-  const patterns = [
-    /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/,
-    /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
-    /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[=:]/,
-    /^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|readonly\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/,
-  ];
-  const ignored = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'function']);
-
-  for (const pattern of patterns) {
-    const match = line.match(pattern);
-    const name = match?.[1];
-    if (name && !ignored.has(name)) {
-      return {
-        name,
-        character: match.indexOf(name),
-      };
-    }
-  }
-
-  return null;
 }

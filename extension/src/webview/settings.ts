@@ -8,9 +8,9 @@ import {
 } from './shared/protocol';
 import {
   renderSettingsForm,
+  settingsFormDataFromSettings,
   showFieldStatus,
   showFeedback,
-  SettingsFormData,
 } from './shared/settingsLayout';
 
 class SettingsPanel {
@@ -92,6 +92,8 @@ class SettingsPanel {
     const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement)?.value || '6000');
     const lancedbPath = (document.getElementById('lancedbPath') as HTMLInputElement)?.value || '';
     const historyPath = (document.getElementById('historyPath') as HTMLInputElement)?.value || '';
+    const neo4jUri = (document.getElementById('neo4jUri') as HTMLInputElement)?.value || '';
+    const indexProfile = (document.getElementById('indexProfile') as HTMLSelectElement)?.value || 'axis_python_v1';
     const overlaySync = (document.getElementById('overlaySync') as HTMLInputElement)?.checked || false;
     const autoOpenInspector = (document.getElementById('autoOpenInspector') as HTMLInputElement)?.checked || false;
 
@@ -115,6 +117,8 @@ class SettingsPanel {
         tokenBudget,
         lancedbPath,
         historyPath,
+        neo4jUri,
+        indexProfile,
         overlaySync,
         autoOpenInspector,
       },
@@ -133,6 +137,8 @@ class SettingsPanel {
       tokenBudget: 6000,
       lancedbPath: './data/lancedb',
       historyPath: './data/history/surgical_context.sqlite3',
+      neo4jUri: 'bolt://localhost:7687',
+      indexProfile: 'axis_python_v1',
       overlaySync: true,
       autoOpenInspector: false,
     };
@@ -144,6 +150,8 @@ class SettingsPanel {
     const tokenBudget = document.getElementById('tokenBudget') as HTMLInputElement | null;
     const lancedbPath = document.getElementById('lancedbPath') as HTMLInputElement | null;
     const historyPath = document.getElementById('historyPath') as HTMLInputElement | null;
+    const neo4jUri = document.getElementById('neo4jUri') as HTMLInputElement | null;
+    const indexProfile = document.getElementById('indexProfile') as HTMLSelectElement | null;
     const overlaySync = document.getElementById('overlaySync') as HTMLInputElement | null;
     const autoOpenInspector = document.getElementById('autoOpenInspector') as HTMLInputElement | null;
 
@@ -154,6 +162,8 @@ class SettingsPanel {
     if (tokenBudget) tokenBudget.value = String(defaults.tokenBudget);
     if (lancedbPath) lancedbPath.value = defaults.lancedbPath;
     if (historyPath) historyPath.value = defaults.historyPath;
+    if (neo4jUri) neo4jUri.value = defaults.neo4jUri;
+    if (indexProfile) indexProfile.value = defaults.indexProfile;
     if (overlaySync) overlaySync.checked = defaults.overlaySync;
     if (autoOpenInspector) autoOpenInspector.checked = defaults.autoOpenInspector;
 
@@ -174,19 +184,7 @@ class SettingsPanel {
     const root = document.getElementById('root');
     if (!root || !this.settings) return;
 
-    const formData: SettingsFormData = {
-      backendUrl: this.settings.backendUrl,
-      workspaceId: this.settings.workspaceId,
-      modelPreference: this.settings.modelPreference,
-      authToken: this.settings.authToken,
-      tokenBudget: this.settings.tokenBudget,
-      lancedbPath: this.settings.lancedbPath,
-      historyPath: this.settings.historyPath,
-      overlaySync: this.settings.overlaySync,
-      autoOpenInspector: this.settings.autoOpenInspector,
-    };
-
-    root.innerHTML = renderSettingsForm(formData);
+    root.innerHTML = renderSettingsForm(settingsFormDataFromSettings(this.settings));
     this.setupFormListeners();
   }
 

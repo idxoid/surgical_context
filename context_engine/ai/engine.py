@@ -41,6 +41,62 @@ _CONTEXT_MARKERS = ("--- TARGET SYMBOL:", "--- DEPENDENCIES ---", "--- DOCUMENTA
 _MIN_CACHE_TOKENS = 1024
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _ollama_options(model: str) -> dict[str, Any]:
+    """Build Ollama runtime options from env; tuned for local sidecar latency."""
+    opts: dict[str, Any] = {
+        "num_predict": _env_int("OLLAMA_NUM_PREDICT", 768),
+        "num_ctx": _env_int("OLLAMA_NUM_CTX", 8192),
+    }
+    think_raw = os.getenv("OLLAMA_THINK")
+    if think_raw is not None and think_raw.strip() != "":
+        opts["think"] = _env_flag("OLLAMA_THINK", default=False)
+    elif model.lower().startswith("qwen3"):
+        # Qwen3 defaults to long internal reasoning; disable unless explicitly enabled.
+        opts["think"] = False
+    return opts
+
+
+def _message_text(message: Any, field: str) -> str:
+    """Read a string field from Ollama message payloads (dict or pydantic Message)."""
+    if message is None:
+        return ""
+    if isinstance(message, dict):
+        return str(message.get(field) or "")
+    return str(getattr(message, field, None) or "")
+
+
+def _ollama_response_text(message: Any) -> str:
+    """Return visible assistant text from an Ollama message payload."""
+    content = _message_text(message, "content").strip()
+    if content:
+        return content
+    return _message_text(message, "thinking")
+
+
+def _ollama_stream_piece(message: Any) -> str:
+    """Return the next streamable text piece (Qwen3 may use ``thinking`` when think=false)."""
+    content = _message_text(message, "content")
+    if content:
+        return content
+    return _message_text(message, "thinking")
+
+
+def _ollama_chunk_message(chunk: Any) -> Any:
+    if isinstance(chunk, dict):
+        return chunk.get("message")
+    return getattr(chunk, "message", None)
+
+
 def _build_system_blocks(system_prompt: str) -> list[dict[str, Any]]:
     """Split system_prompt into cacheable API blocks.
 
@@ -275,8 +331,9 @@ class AIEngine:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
+                options=_ollama_options(self.ollama_model),
             )
-            return str(response["message"]["content"])
+            return _ollama_response_text(_ollama_chunk_message(response))
         except Exception as e:
             raise RuntimeError(f"Ollama request failed: {e}") from e
 
@@ -341,9 +398,14 @@ class AIEngine:
                     {"role": "user", "content": user_message},
                 ],
                 stream=True,
+                options=_ollama_options(self.ollama_model),
             )
             for chunk in response:
-                if "message" in chunk and "content" in chunk["message"]:
-                    yield chunk["message"]["content"]
+                message = _ollama_chunk_message(chunk)
+                if message is None:
+                    continue
+                piece = _ollama_stream_piece(message)
+                if piece:
+                    yield piece
         except Exception as e:
             raise RuntimeError(f"Ollama streaming failed: {e}") from e

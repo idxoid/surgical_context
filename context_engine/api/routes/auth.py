@@ -81,13 +81,29 @@ def cloud_status(
     """Get cloud (Aura) connection status."""
     main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
-    with main.db_session(user_id=user_id) as db:
-        health = db.health_check()
+    try:
+        with main.db_session(user_id=user_id) as db:
+            health = db.health_check()
+            return {
+                "cloud_enabled": True,
+                "using_aura": db.is_cloud(),
+                "using_fallback": db.is_fallback(),
+                "health": health,
+            }
+    except Exception as exc:
+        logger.warning("Graph status unavailable: %s", exc)
         return {
-            "cloud_enabled": True,
-            "using_aura": db.is_cloud(),
-            "using_fallback": db.is_fallback(),
-            "health": health,
+            "cloud_enabled": False,
+            "using_aura": False,
+            "using_fallback": False,
+            "health": {
+                "status": "unhealthy",
+                "error": str(exc),
+                "hint": (
+                    "Check NEO4J_PASSWORD in .env matches the Neo4j on NEO4J_URI "
+                    "(docker compose up -d neo4j if port 7687 is free)."
+                ),
+            },
         }
 
 

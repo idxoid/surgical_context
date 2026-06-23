@@ -982,6 +982,9 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     seen_surface_args: list[dict] = []
 
     class FakeDriverDb(FakeDb):
+        def resolve_impact_symbol_uid(self, name, workspace_id="local/surgical_context@main", *, file_path=None):
+            return "symbol-1"
+
         def get_symbol_uid_by_name(self, name, workspace_id="local/surgical_context@main"):
             return "symbol-1"
 
@@ -1080,6 +1083,27 @@ def test_cloud_status_uses_request_user_for_db_session(monkeypatch):
         "health": {"status": "ok"},
     }
     assert seen_session_users == ["alice"]
+
+
+def test_cloud_status_returns_degraded_payload_when_graph_unavailable(monkeypatch):
+    main = import_main_with_fakes(monkeypatch)
+
+    @contextmanager
+    def failing_db_session(user_id="anonymous"):
+        del user_id
+        from neo4j.exceptions import AuthError
+
+        raise AuthError("The client is unauthorized due to authentication failure.")
+
+    monkeypatch.setattr(main, "db_session", failing_db_session)
+
+    body = main.cloud_status(authorization=bearer_auth(main, "alice"))
+
+    assert body["cloud_enabled"] is False
+    assert body["using_aura"] is False
+    assert body["health"]["status"] == "unhealthy"
+    assert "unauthorized" in body["health"]["error"].lower()
+    assert "NEO4J_PASSWORD" in body["health"]["hint"]
 
 
 def test_audit_actions_endpoint_returns_actions(monkeypatch):

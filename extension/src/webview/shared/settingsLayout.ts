@@ -1,3 +1,5 @@
+import type { SettingsData } from './protocol';
+
 export function escapeHtml(text: string): string {
   const div = document.createElement('div');
   div.textContent = text;
@@ -12,8 +14,32 @@ export interface SettingsFormData {
   tokenBudget: number;
   lancedbPath: string;
   historyPath: string;
+  neo4jUri: string;
+  indexProfile: string;
   overlaySync: boolean;
   autoOpenInspector: boolean;
+  graphStatusLabel?: string;
+  graphStatusDetail?: string;
+  graphStatusHealthy?: boolean;
+}
+
+export function settingsFormDataFromSettings(data: SettingsData): SettingsFormData {
+  return {
+    backendUrl: data.backendUrl,
+    workspaceId: data.workspaceId,
+    modelPreference: data.modelPreference,
+    authToken: data.authToken,
+    tokenBudget: data.tokenBudget,
+    lancedbPath: data.lancedbPath,
+    historyPath: data.historyPath,
+    neo4jUri: data.neo4jUri,
+    indexProfile: data.indexProfile,
+    overlaySync: data.overlaySync,
+    autoOpenInspector: data.autoOpenInspector,
+    graphStatusLabel: data.graphStatus?.label,
+    graphStatusDetail: data.graphStatus?.detail,
+    graphStatusHealthy: data.graphStatus?.healthy,
+  };
 }
 
 export function renderSettingsForm(data: SettingsFormData): string {
@@ -109,6 +135,46 @@ export function renderSettingsForm(data: SettingsFormData): string {
           />
           <p class="field-hint" id="tokenBudget-hint">Default context budget used for ask and streaming ask requests</p>
           <div class="field-status" id="tokenBudget-status"></div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Graph (Neo4j)</h3>
+
+        <div class="setting-field">
+          <label for="neo4jUri">Neo4j URI</label>
+          <input
+            type="text"
+            id="neo4jUri"
+            class="setting-input"
+            value="${escapeHtml(data.neo4jUri)}"
+            placeholder="bolt://localhost:7687"
+            aria-label="Neo4j Bolt URI"
+            aria-describedby="neo4jUri-hint"
+          />
+          <p class="field-hint" id="neo4jUri-hint">Sidecar reads NEO4J_URI from the repo <code>.env</code>. Match this for documentation; start graph with <code>docker compose up -d neo4j</code>.</p>
+        </div>
+
+        <div class="setting-field">
+          <label for="indexProfile">Index profile</label>
+          <select
+            id="indexProfile"
+            class="setting-input"
+            aria-label="Sidecar index profile"
+            aria-describedby="indexProfile-hint"
+          >
+            <option value="axis_python_v1" ${data.indexProfile === 'axis_python_v1' ? 'selected' : ''}>axis_python_v1</option>
+            <option value="legacy" ${data.indexProfile === 'legacy' ? 'selected' : ''}>legacy</option>
+          </select>
+          <p class="field-hint" id="indexProfile-hint">Set INDEX_PROFILE in sidecar <code>.env</code> to the same value, then restart sidecar and reindex.</p>
+        </div>
+
+        <div class="setting-field">
+          <label>Graph provider status</label>
+          <div class="field-status ${data.graphStatusHealthy ? 'success' : 'warning'}" style="display:block">
+            ${escapeHtml(data.graphStatusLabel || 'Unknown')}
+          </div>
+          <p class="field-hint">${escapeHtml(data.graphStatusDetail || 'Open Settings to refresh status from /status/cloud.')}</p>
         </div>
       </div>
 

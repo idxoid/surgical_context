@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { resolveDocumentSymbolAtPosition } from './documentSymbolResolver';
+import { resolveSymbolNameFromLine } from './symbolResolution';
 import { SidecarClient } from './sidecarClient';
 
 const DEBOUNCE_MS = 300;
@@ -54,13 +56,23 @@ export class OverlayManager {
     return this.getSymbolAtPosition(editor.document, editor.selection.active);
   }
 
+  async getSymbolAtCursorAsync(editor: vscode.TextEditor): Promise<string | null> {
+    return this.getSymbolAtPositionAsync(editor.document, editor.selection.active);
+  }
+
   getSymbolAtPosition(
     document: vscode.TextDocument,
     position: vscode.Position
   ): string | null {
-    const range = document.getWordRangeAtPosition(position, /[$A-Za-z_][$\w]*/);
-    if (!range) return null;
-    return document.getText(range);
+    const line = document.lineAt(position.line).text;
+    return resolveSymbolNameFromLine(line, position.character);
+  }
+
+  async getSymbolAtPositionAsync(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): Promise<string | null> {
+    return resolveDocumentSymbolAtPosition(document, position);
   }
 
   private scheduleSavedFile(filePath: string): void {

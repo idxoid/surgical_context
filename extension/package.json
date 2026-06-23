@@ -270,6 +270,20 @@
           "default": "./data/history/surgical_context.sqlite3",
           "description": "Local SQLite history path for dialogs and prompt snapshots"
         },
+        "surgicalContext.graph.neo4jUri": {
+          "type": "string",
+          "default": "bolt://localhost:7687",
+          "description": "Neo4j Bolt URI used by the sidecar (configure NEO4J_URI in repo .env and docker compose)"
+        },
+        "surgicalContext.graph.indexProfile": {
+          "type": "string",
+          "default": "axis_python_v1",
+          "enum": [
+            "axis_python_v1",
+            "legacy"
+          ],
+          "description": "Sidecar INDEX_PROFILE for graph/Lance namespaces (axis_python_v1 appends +axis_python_v1 to workspace id)"
+        },
         "surgicalContext.overlaySync": {
           "type": "boolean",
           "default": true,

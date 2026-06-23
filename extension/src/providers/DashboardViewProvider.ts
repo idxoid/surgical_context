@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
 import { SidecarClient } from '../sidecarClient';
+import {
+  graphProviderDetail,
+  graphProviderHealthStatus,
+  graphProviderValue,
+  resolveCloudStatus,
+} from '../graphProviderStatus';
 import { getWebviewContent } from '../utils';
 import {
   AuditAction,
@@ -81,13 +87,7 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
     this.postMessage({
       type: 'dashboard.metricsLoaded',
       health: healthOk ? 'up' : 'down',
-      cloudStatus: cloudStatus?.using_fallback
-        ? 'fallback-local'
-        : cloudStatus?.using_aura
-          ? 'connected'
-          : cloudStatus
-            ? 'local'
-            : 'offline',
+      cloudStatus: resolveCloudStatus(cloudStatus),
       auditActions,
       metrics: this.emptyDashboardMetrics(),
       healthChecks: this.buildHealthChecks(healthOk, cloudStatus, workspaceId),
@@ -140,17 +140,9 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
       {
         id: 'graph',
         label: 'Graph provider',
-        status: cloudStatus ? cloudStatus.using_fallback ? 'warning' : 'ok' : 'error',
-        value: cloudStatus
-          ? cloudStatus.using_fallback
-            ? 'fallback-local'
-            : cloudStatus.using_aura
-              ? 'aura'
-              : 'local'
-          : 'offline',
-        detail: cloudStatus
-          ? 'Graph endpoint responded through /status/cloud.'
-          : 'Could not read graph provider status.',
+        status: graphProviderHealthStatus(cloudStatus),
+        value: graphProviderValue(cloudStatus),
+        detail: graphProviderDetail(cloudStatus),
       },
       {
         id: 'vector',

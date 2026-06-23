@@ -13,6 +13,24 @@ from context_engine.workspace import DEFAULT_WORKSPACE_ID
 logger = logging.getLogger(__name__)
 
 
+def _log_warmup_stage_failure(stage: str, exc: Exception) -> None:
+    """Warmup is best-effort; connection failures are expected when storage is down."""
+    hint = ""
+    if stage == "neo4j":
+        name = type(exc).__name__
+        if name == "AuthError":
+            hint = " (check NEO4J_PASSWORD in .env matches the server on NEO4J_URI)"
+        else:
+            hint = " (start Neo4j: docker compose up -d neo4j)"
+    logger.warning(
+        "Sidecar warmup: %s skipped (%s: %s)%s",
+        stage,
+        type(exc).__name__,
+        exc,
+        hint,
+    )
+
+
 def _warmup_enabled() -> bool:
     return os.getenv("SIDECAR_WARMUP_ENABLED", "true").strip().lower() in {
         "1",
@@ -36,8 +54,8 @@ def warm_sidecar(state: SidecarState) -> None:
     try:
         state.vector_db.warmup(workspace_id=index_workspace_id)
         stages["lance_default"] = round((time.monotonic() - stage_started) * 1000, 2)
-    except Exception:
-        logger.exception("Sidecar warmup: default Lance client failed")
+    except Exception as exc:
+        _log_warmup_stage_failure("lance_default", exc)
         stages["lance_default"] = -1.0
 
     axis_lance = state.ask_context_builder.lance_for_index_workspace(index_workspace_id)
@@ -46,8 +64,8 @@ def warm_sidecar(state: SidecarState) -> None:
         try:
             axis_lance.warmup(workspace_id=index_workspace_id)
             stages["lance_axis"] = round((time.monotonic() - stage_started) * 1000, 2)
-        except Exception:
-            logger.exception("Sidecar warmup: axis Lance client failed")
+        except Exception as exc:
+            _log_warmup_stage_failure("lance_axis", exc)
             stages["lance_axis"] = -1.0
 
     stage_started = time.monotonic()
@@ -57,8 +75,8 @@ def warm_sidecar(state: SidecarState) -> None:
         client = get_database_provider().client_for()
         client.health_check()
         stages["neo4j"] = round((time.monotonic() - stage_started) * 1000, 2)
-    except Exception:
-        logger.exception("Sidecar warmup: Neo4j health check failed")
+    except Exception as exc:
+        _log_warmup_stage_failure("neo4j", exc)
         stages["neo4j"] = -1.0
 
     elapsed_ms = round((time.monotonic() - started) * 1000, 2)

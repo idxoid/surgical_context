@@ -2807,6 +2807,130 @@ class Neo4jClient:
             ).single()
         return result["uid"] if result else None
 
+    def get_symbol_uid_by_name_in_file(
+        self,
+        name: str,
+        file_path: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> str | None:
+        """Return symbol UID when `name` is defined in `file_path` for this workspace."""
+        path = file_path.strip()
+        if not path:
+            return None
+        suffix = f"/{path.rsplit('/', 1)[-1]}"
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
+                WHERE f.path = $path OR f.path ENDS WITH $path OR f.path ENDS WITH $suffix
+                RETURN s.uid AS uid
+                ORDER BY CASE WHEN f.path = $path THEN 0 WHEN f.path ENDS WITH $path THEN 1 ELSE 2 END
+                LIMIT 1
+                """,
+                name=name,
+                workspace_id=workspace_id,
+                path=path,
+                suffix=suffix,
+            ).single()
+        return result["uid"] if result else None
+
+    def list_symbol_impact_candidates(
+        self,
+        name: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> list[dict[str, str | int]]:
+        """Return symbol uids for ``name`` ranked by incoming call edges."""
+        with self.driver.session() as session:
+            rows = session.run(
+                """
+                MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
+                OPTIONAL MATCH (caller:Symbol)-[:CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED]->(s)
+                RETURN s.uid AS uid, f.path AS path, count(DISTINCT caller) AS incoming
+                ORDER BY incoming DESC, path ASC
+                """,
+                name=name,
+                workspace_id=workspace_id,
+            )
+            return [
+                {
+                    "uid": str(row["uid"]),
+                    "path": str(row["path"]),
+                    "incoming": int(row["incoming"] or 0),
+                }
+                for row in rows
+            ]
+
+    @staticmethod
+    def _path_matches_file(stored_path: str, file_path: str) -> bool:
+        stored = stored_path.strip()
+        requested = file_path.strip()
+        if not stored or not requested:
+            return False
+        if stored == requested or stored.endswith(requested):
+            return True
+        return stored.endswith(f"/{requested.rsplit('/', 1)[-1]}")
+
+    @staticmethod
+    def _impact_path_rank(path: str) -> tuple[int, int]:
+        """Prefer canonical source trees over legacy mirror paths."""
+        lowered = path.lower()
+        penalty = 0
+        if "/sidecar/" in lowered or lowered.endswith("/sidecar"):
+            penalty += 10
+        if "/qa/" in lowered:
+            penalty += 5
+        return (penalty, len(path))
+
+    def resolve_impact_symbol_uid(
+        self,
+        name: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        *,
+        file_path: str | None = None,
+    ) -> str | None:
+        """Pick the graph uid most useful for impact (callers win over path match)."""
+        candidates = self.list_symbol_impact_candidates(name, workspace_id=workspace_id)
+        if not candidates:
+            return None
+
+        requested = file_path.strip() if file_path else ""
+        if requested:
+            matched = [
+                candidate
+                for candidate in candidates
+                if self._path_matches_file(str(candidate["path"]), requested)
+            ]
+            if matched:
+                best_matched = max(
+                    matched,
+                    key=lambda candidate: (
+                        int(candidate["incoming"]),
+                        -self._impact_path_rank(str(candidate["path"]))[0],
+                    ),
+                )
+                if int(best_matched["incoming"]) > 0:
+                    return str(best_matched["uid"])
+                # Same basename in another indexed mirror (e.g. sidecar copy) may hold edges.
+                if any(int(candidate["incoming"]) > 0 for candidate in candidates):
+                    best_any = max(
+                        candidates,
+                        key=lambda candidate: (
+                            int(candidate["incoming"]),
+                            -self._impact_path_rank(str(candidate["path"]))[0],
+                        ),
+                    )
+                    return str(best_any["uid"])
+                return str(best_matched["uid"])
+
+        best = max(
+            candidates,
+            key=lambda candidate: (
+                int(candidate["incoming"]),
+                -self._impact_path_rank(str(candidate["path"]))[0],
+            ),
+        )
+        return str(best["uid"])
+
     def get_file_path_for_symbol(
         self, symbol_uid: str, workspace_id: str = DEFAULT_WORKSPACE_ID
     ) -> str:

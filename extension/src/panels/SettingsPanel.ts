@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { getWebviewContent } from '../utils';
 import { WebviewToHostMessage, HostToWebviewMessage } from '../webview/shared/protocol';
 import { SidecarClient } from '../sidecarClient';
-import { readSettings, saveSettings, updateSetting } from '../settings';
+import { readSettings, saveSettings, updateSetting, graphStatusFromCloud } from '../settings';
 
 export class SettingsPanel {
   public static currentPanel: SettingsPanel | undefined;
@@ -30,14 +30,25 @@ export class SettingsPanel {
     );
 
     // Trigger initial load
-    this.loadInitialSettings();
+    void this.pushSettings();
+  }
+
+  private async pushSettings(): Promise<void> {
+    const settings = readSettings();
+    let graphStatus = graphStatusFromCloud(null);
+    try {
+      graphStatus = graphStatusFromCloud(await SidecarClient.cloudStatus());
+    } catch {
+      // keep offline status
+    }
+    this.postMessage({
+      type: 'settings.loaded',
+      settings: { ...settings, graphStatus },
+    });
   }
 
   private loadInitialSettings(): void {
-    // Small delay to ensure webview is ready
-    setTimeout(() => {
-      this.postMessage({ type: 'settings.loaded', settings: readSettings() });
-    }, 100);
+    void this.pushSettings();
   }
 
   public static createOrReveal(extensionUri: vscode.Uri): void {
@@ -64,10 +75,7 @@ export class SettingsPanel {
   private async handleWebviewMessage(message: WebviewToHostMessage): Promise<void> {
     switch (message.type) {
       case 'settings.loaded':
-        this.postMessage({
-          type: 'settings.loaded',
-          settings: readSettings(),
-        });
+        void this.pushSettings();
         break;
 
       case 'settings.save':

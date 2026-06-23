@@ -15,6 +15,12 @@ import {
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
 import { resolveWorkspaceId } from '../workspaceIdentity';
+import {
+  graphProviderDetail,
+  graphProviderHealthStatus,
+  graphProviderValue,
+  resolveCloudStatus,
+} from '../graphProviderStatus';
 
 type DashboardCallResult<T> = {
   value: T | null;
@@ -239,10 +245,7 @@ export class DashboardPanel {
   private resolveCloudStatus(
     cloudStatus: CloudStatusResponse | null
   ): 'connected' | 'fallback-local' | 'local' | 'offline' {
-    if (!cloudStatus) return 'offline';
-    if (cloudStatus.using_fallback) return 'fallback-local';
-    if (cloudStatus.using_aura) return 'connected';
-    return 'local';
+    return resolveCloudStatus(cloudStatus);
   }
 
   private mapAuditActions(response: AuditActionsResponse | null): AuditAction[] {
@@ -396,15 +399,9 @@ export class DashboardPanel {
       {
         id: 'graph',
         label: 'Graph provider',
-        status: input.cloudStatus
-          ? input.cloudStatus.using_fallback
-            ? 'warning'
-            : 'ok'
-          : 'error',
-        value: this.graphProviderValue(input.cloudStatus),
-        detail: input.cloudStatus
-          ? 'Graph endpoint responded through /status/cloud.'
-          : 'Could not read graph provider status.',
+        status: graphProviderHealthStatus(input.cloudStatus),
+        value: graphProviderValue(input.cloudStatus),
+        detail: graphProviderDetail(input.cloudStatus),
       },
       {
         id: 'vector',
@@ -449,13 +446,6 @@ export class DashboardPanel {
           : 'No VS Code workspace folder is open.',
       },
     ];
-  }
-
-  private graphProviderValue(cloudStatus: CloudStatusResponse | null): string {
-    if (!cloudStatus) return 'offline';
-    if (cloudStatus.using_fallback) return 'fallback-local';
-    if (cloudStatus.using_aura) return 'aura';
-    return 'local';
   }
 
   private indexHealthStatus(response: IndexQueueResponse | null): HealthCheckItem['status'] {

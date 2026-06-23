@@ -6,6 +6,24 @@
     div.textContent = text;
     return div.innerHTML;
   }
+  function settingsFormDataFromSettings(data) {
+    return {
+      backendUrl: data.backendUrl,
+      workspaceId: data.workspaceId,
+      modelPreference: data.modelPreference,
+      authToken: data.authToken,
+      tokenBudget: data.tokenBudget,
+      lancedbPath: data.lancedbPath,
+      historyPath: data.historyPath,
+      neo4jUri: data.neo4jUri,
+      indexProfile: data.indexProfile,
+      overlaySync: data.overlaySync,
+      autoOpenInspector: data.autoOpenInspector,
+      graphStatusLabel: data.graphStatus?.label,
+      graphStatusDetail: data.graphStatus?.detail,
+      graphStatusHealthy: data.graphStatus?.healthy
+    };
+  }
   function renderSettingsForm(data) {
     return `
     <div class="settings-form">
@@ -99,6 +117,46 @@
           />
           <p class="field-hint" id="tokenBudget-hint">Default context budget used for ask and streaming ask requests</p>
           <div class="field-status" id="tokenBudget-status"></div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Graph (Neo4j)</h3>
+
+        <div class="setting-field">
+          <label for="neo4jUri">Neo4j URI</label>
+          <input
+            type="text"
+            id="neo4jUri"
+            class="setting-input"
+            value="${escapeHtml(data.neo4jUri)}"
+            placeholder="bolt://localhost:7687"
+            aria-label="Neo4j Bolt URI"
+            aria-describedby="neo4jUri-hint"
+          />
+          <p class="field-hint" id="neo4jUri-hint">Sidecar reads NEO4J_URI from the repo <code>.env</code>. Match this for documentation; start graph with <code>docker compose up -d neo4j</code>.</p>
+        </div>
+
+        <div class="setting-field">
+          <label for="indexProfile">Index profile</label>
+          <select
+            id="indexProfile"
+            class="setting-input"
+            aria-label="Sidecar index profile"
+            aria-describedby="indexProfile-hint"
+          >
+            <option value="axis_python_v1" ${data.indexProfile === "axis_python_v1" ? "selected" : ""}>axis_python_v1</option>
+            <option value="legacy" ${data.indexProfile === "legacy" ? "selected" : ""}>legacy</option>
+          </select>
+          <p class="field-hint" id="indexProfile-hint">Set INDEX_PROFILE in sidecar <code>.env</code> to the same value, then restart sidecar and reindex.</p>
+        </div>
+
+        <div class="setting-field">
+          <label>Graph provider status</label>
+          <div class="field-status ${data.graphStatusHealthy ? "success" : "warning"}" style="display:block">
+            ${escapeHtml(data.graphStatusLabel || "Unknown")}
+          </div>
+          <p class="field-hint">${escapeHtml(data.graphStatusDetail || "Open Settings to refresh status from /status/cloud.")}</p>
         </div>
       </div>
 
@@ -296,6 +354,8 @@
       const tokenBudget = Number(document.getElementById("tokenBudget")?.value || "6000");
       const lancedbPath = document.getElementById("lancedbPath")?.value || "";
       const historyPath = document.getElementById("historyPath")?.value || "";
+      const neo4jUri = document.getElementById("neo4jUri")?.value || "";
+      const indexProfile = document.getElementById("indexProfile")?.value || "axis_python_v1";
       const overlaySync = document.getElementById("overlaySync")?.checked || false;
       const autoOpenInspector = document.getElementById("autoOpenInspector")?.checked || false;
       if (backendUrl && !backendUrl.startsWith("http://") && !backendUrl.startsWith("https://")) {
@@ -316,6 +376,8 @@
           tokenBudget,
           lancedbPath,
           historyPath,
+          neo4jUri,
+          indexProfile,
           overlaySync,
           autoOpenInspector
         }
@@ -331,6 +393,8 @@
         tokenBudget: 6e3,
         lancedbPath: "./data/lancedb",
         historyPath: "./data/history/surgical_context.sqlite3",
+        neo4jUri: "bolt://localhost:7687",
+        indexProfile: "axis_python_v1",
         overlaySync: true,
         autoOpenInspector: false
       };
@@ -341,6 +405,8 @@
       const tokenBudget = document.getElementById("tokenBudget");
       const lancedbPath = document.getElementById("lancedbPath");
       const historyPath = document.getElementById("historyPath");
+      const neo4jUri = document.getElementById("neo4jUri");
+      const indexProfile = document.getElementById("indexProfile");
       const overlaySync = document.getElementById("overlaySync");
       const autoOpenInspector = document.getElementById("autoOpenInspector");
       if (backendUrl) backendUrl.value = defaults.backendUrl;
@@ -350,6 +416,8 @@
       if (tokenBudget) tokenBudget.value = String(defaults.tokenBudget);
       if (lancedbPath) lancedbPath.value = defaults.lancedbPath;
       if (historyPath) historyPath.value = defaults.historyPath;
+      if (neo4jUri) neo4jUri.value = defaults.neo4jUri;
+      if (indexProfile) indexProfile.value = defaults.indexProfile;
       if (overlaySync) overlaySync.checked = defaults.overlaySync;
       if (autoOpenInspector) autoOpenInspector.checked = defaults.autoOpenInspector;
       showFeedback("Reset to default settings", "info");
@@ -366,18 +434,7 @@
     render() {
       const root = document.getElementById("root");
       if (!root || !this.settings) return;
-      const formData = {
-        backendUrl: this.settings.backendUrl,
-        workspaceId: this.settings.workspaceId,
-        modelPreference: this.settings.modelPreference,
-        authToken: this.settings.authToken,
-        tokenBudget: this.settings.tokenBudget,
-        lancedbPath: this.settings.lancedbPath,
-        historyPath: this.settings.historyPath,
-        overlaySync: this.settings.overlaySync,
-        autoOpenInspector: this.settings.autoOpenInspector
-      };
-      root.innerHTML = renderSettingsForm(formData);
+      root.innerHTML = renderSettingsForm(settingsFormDataFromSettings(this.settings));
       this.setupFormListeners();
     }
     postMessage(message) {

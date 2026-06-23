@@ -4,7 +4,7 @@ import { AskHistoryInput, buildAskHistoryRecord } from '../historyRecorder';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
 import { stateManager } from '../state/ExtensionState';
-import { readSettings, saveSettings as persistSettings, updateSetting } from '../settings';
+import { readSettings, saveSettings as persistSettings, graphStatusFromCloud, updateSetting } from '../settings';
 import { buildContextSummary } from '../contextSummary';
 import {
   WebviewToHostMessage,
@@ -89,20 +89,27 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  public async showImpact(symbol?: string, maxDepth = 3): Promise<void> {
+  public async showImpact(symbol?: string, maxDepth = 3, filePath?: string): Promise<void> {
     // Priority: explicit symbol > lastRequest.symbol > editor cursor > fail
     let targetSymbol = symbol;
+    let targetFilePath = filePath;
 
     if (!targetSymbol) {
       const lastRequest = stateManager.getState().lastRequest;
       if (lastRequest?.symbol) {
         targetSymbol = lastRequest.symbol;
       } else {
-        targetSymbol = this.currentEditorSymbol() || undefined;
+        targetSymbol = (await this.currentEditorSymbolAsync()) || undefined;
       }
     }
 
+    if (!targetFilePath) {
+      const editor = vscode.window.activeTextEditor;
+      targetFilePath = editor?.document.fileName;
+    }
+
     if (!targetSymbol) {
+      this.postMessage({ type: 'surface.showImpact' });
       this.postMessage({
         type: 'impact.loadFailed',
         error: 'No symbol selected. Position your cursor on a symbol or ask about it first.',
@@ -110,12 +117,13 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    await this.loadImpact(targetSymbol, maxDepth);
+    this.postMessage({ type: 'surface.showImpact' });
+    await this.loadImpact(targetSymbol, maxDepth, targetFilePath);
   }
 
   public showSettings(): void {
     this.postMessage({ type: 'surface.showSettings' });
-    this.pushSettings();
+    void this.pushSettings();
   }
 
   private initializeSurfaceState(): void {
@@ -215,7 +223,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'action.showImpact':
-        await this.showImpact(message.symbol, message.maxDepth);
+        await this.showImpact(message.symbol, message.maxDepth, message.filePath);
         break;
 
       case 'action.openChat':
@@ -235,7 +243,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'settings.loaded':
-        this.pushSettings();
+        void this.pushSettings();
         break;
 
       case 'settings.save':
@@ -441,10 +449,17 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private pushSettings(): void {
+  private async pushSettings(): Promise<void> {
+    const settings = readSettings();
+    let graphStatus = graphStatusFromCloud(null);
+    try {
+      graphStatus = graphStatusFromCloud(await SidecarClient.cloudStatus());
+    } catch {
+      // keep offline status
+    }
     this.postMessage({
       type: 'settings.loaded',
-      settings: readSettings(),
+      settings: { ...settings, graphStatus },
     });
   }
 
@@ -500,20 +515,32 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     return editor ? this.overlayManager.getSymbolAtCursor(editor) : null;
   }
 
-  private async loadImpact(symbol: string, maxDepth = 3): Promise<void> {
+  private async currentEditorSymbolAsync(): Promise<string | null> {
+    const editor = vscode.window.activeTextEditor;
+    return editor ? this.overlayManager.getSymbolAtCursorAsync(editor) : null;
+  }
+
+  private async loadImpact(symbol: string, maxDepth = 3, filePath?: string): Promise<void> {
     try {
       this.postMessage({ type: 'impact.loading' });
-      const impact = await SidecarClient.impact(symbol, maxDepth);
+      const impact = await SidecarClient.impact(symbol, maxDepth, filePath);
       this.postMessage({
         type: 'impact.loaded',
         symbol,
         impact,
       });
+      if ((impact.affected_count ?? 0) === 0 && (impact.affected_symbols?.length ?? 0) === 0) {
+        void vscode.window.showInformationMessage(
+          `No downstream dependents found for ${symbol}. Try increasing depth or reindexing the workspace.`
+        );
+      }
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
       this.postMessage({
         type: 'impact.loadFailed',
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: message,
       });
+      void vscode.window.showErrorMessage(`Impact analysis failed: ${message}`);
     }
   }
 }

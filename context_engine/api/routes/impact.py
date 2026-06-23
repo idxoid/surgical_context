@@ -14,6 +14,7 @@ router = APIRouter(tags=["impact"])
 def impact(
     symbol: str,
     max_depth: int = Query(default=3, ge=IMPACT_DEPTH_MIN, le=IMPACT_DEPTH_MAX),
+    file_path: str | None = Query(default=None),
     x_user_id: str = Header(None),
     authorization: str = Header(None),
     x_workspace: str = Header(None),
@@ -27,9 +28,27 @@ def impact(
     with main.db_session(user_id=user_id) as db:
         from context_engine.axis.impact_surface import build_impact_surface
 
-        symbol_uid = db.get_symbol_uid_by_name(symbol, workspace_id=index_workspace_id)
+        resolve_uid = getattr(db, "resolve_impact_symbol_uid", None)
+        requested_path = file_path.strip() if isinstance(file_path, str) and file_path.strip() else None
+        if callable(resolve_uid):
+            symbol_uid = resolve_uid(
+                symbol,
+                index_workspace_id,
+                file_path=requested_path,
+            )
+        else:
+            symbol_uid = None
+            if requested_path and hasattr(db, "get_symbol_uid_by_name_in_file"):
+                symbol_uid = db.get_symbol_uid_by_name_in_file(
+                    symbol,
+                    requested_path,
+                    workspace_id=index_workspace_id,
+                )
+            if not symbol_uid:
+                symbol_uid = db.get_symbol_uid_by_name(symbol, workspace_id=index_workspace_id)
         if not symbol_uid:
-            raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
+            hint = f" in {file_path}" if file_path else ""
+            raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found{hint}")
 
         symbol_file = db.get_file_path_for_symbol(symbol_uid, workspace_id=index_workspace_id)
         surface = build_impact_surface(

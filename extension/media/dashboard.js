@@ -64,12 +64,12 @@
   function renderMetricCardGrid(props) {
     const metrics = props.metrics;
     const healthStatus = props.health === "up" ? "success" : "danger";
-    const cloudStatus = props.cloudStatus === "connected" || props.cloudStatus === "local" ? "success" : props.cloudStatus === "fallback-local" ? "warning" : "danger";
+    const cloudStatus = props.cloudStatus === "connected" || props.cloudStatus === "local" || props.cloudStatus === "fallback-local" ? "success" : "danger";
     const queueStatus = metrics.queueFailedBatches && metrics.queueFailedBatches > 0 ? "danger" : metrics.queuePending && metrics.queuePending > 0 ? "warning" : "success";
     return `
     <div class="metric-card-grid">
       ${renderMetricCard("Sidecar health", healthLabel(props.health), props.health === "up" ? "Ready for requests" : "Check backend URL", "pulse", healthStatus)}
-      ${renderMetricCard("Cloud status", cloudLabel(props.cloudStatus), cloudNote(props.cloudStatus), "cloud", cloudStatus)}
+      ${renderMetricCard("Graph provider", cloudLabel(props.cloudStatus), cloudNote(props.cloudStatus), "cloud", cloudStatus)}
       ${renderMetricCard("Indexed files", formatNumber(metrics.indexedFiles), "Metric pending from index catalog", "file")}
       ${renderMetricCard("Indexed symbols", formatNumber(metrics.indexedSymbols), "Metric pending from graph catalog", "code")}
       ${renderMetricCard("Doc chunks", formatNumber(metrics.docChunks), "Metric pending from docs index", "doc")}
@@ -299,16 +299,14 @@
     return "down";
   }
   function cloudLabel(status) {
-    if (status === "connected") return "connected";
-    if (status === "fallback-local") return "fallback";
-    if (status === "local") return "local";
+    if (status === "connected") return "aura";
+    if (status === "local" || status === "fallback-local") return "local";
     return "offline";
   }
   function cloudNote(status) {
-    if (status === "connected") return "Aura graph provider active";
-    if (status === "fallback-local") return "Local fallback active";
-    if (status === "local") return "Local graph provider active";
-    return "Cloud/local status unavailable";
+    if (status === "connected") return "Neo4j Aura connected";
+    if (status === "local" || status === "fallback-local") return "Local Neo4j active";
+    return "Graph provider offline";
   }
   function queueSummary(metrics) {
     const pending = metrics.queuePending ?? 0;

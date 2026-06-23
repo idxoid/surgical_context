@@ -70,7 +70,16 @@ async function get<T>(path: string): Promise<T> {
     method: 'GET',
     headers: await getHeaders(),
   });
-  if (!res.ok) throw new Error(`Sidecar ${path} → ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = `: ${body.detail}`;
+    } catch {
+      // ignore non-json bodies
+    }
+    throw new Error(`Sidecar ${path} → ${res.status}${detail}`);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -384,11 +393,14 @@ export const SidecarClient = {
     return { controller, done };
   },
 
-  impact(symbol: string, maxDepth = 3): Promise<ImpactResponse> {
+  impact(symbol: string, maxDepth = 3, filePath?: string): Promise<ImpactResponse> {
     const params = new URLSearchParams({
       symbol,
       max_depth: String(maxDepth),
     });
+    if (filePath) {
+      params.set('file_path', filePath);
+    }
     return get(`/impact?${params.toString()}`);
   },
 

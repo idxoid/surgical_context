@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { getWebviewContent } from '../utils';
 import { WebviewToHostMessage, HostToWebviewMessage } from '../webview/shared/protocol';
 import { SidecarClient } from '../sidecarClient';
-import { readSettings, saveSettings, updateSetting } from '../settings';
+import { readSettings, saveSettings, updateSetting, graphStatusFromCloud } from '../settings';
 
 export class SettingsViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'surgicalContext.settings';
@@ -36,26 +36,35 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
-        this.loadSettings();
+        void this.pushSettings();
       }
     });
 
-    this.loadSettings();
+    void this.pushSettings();
+  }
+
+  private async pushSettings(): Promise<void> {
+    const settings = readSettings();
+    let graphStatus = graphStatusFromCloud(null);
+    try {
+      graphStatus = graphStatusFromCloud(await SidecarClient.cloudStatus());
+    } catch {
+      // keep offline status
+    }
+    this.postMessage({
+      type: 'settings.loaded',
+      settings: { ...settings, graphStatus },
+    });
   }
 
   private loadSettings(): void {
-    setTimeout(() => {
-      this.postMessage({ type: 'settings.loaded', settings: readSettings() });
-    }, 100);
+    void this.pushSettings();
   }
 
   private async handleWebviewMessage(message: WebviewToHostMessage): Promise<void> {
     switch (message.type) {
       case 'settings.loaded':
-        this.postMessage({
-          type: 'settings.loaded',
-          settings: readSettings(),
-        });
+        void this.pushSettings();
         break;
 
       case 'settings.save':

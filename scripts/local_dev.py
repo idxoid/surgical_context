@@ -26,6 +26,8 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 EXTENSION_DIR = ROOT / "extension"
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
@@ -99,6 +101,9 @@ def _python_cmd() -> list[str]:
 
 
 def _sidecar_env(*, default_workspace_id: str | None = None) -> dict[str, str]:
+    from context_engine.env_loader import load_repo_dotenv
+
+    load_repo_dotenv(path=ENV_FILE)
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(ROOT))
     env.setdefault("LANCEDB_PATH", str(ROOT / "data" / "lancedb"))

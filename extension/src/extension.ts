@@ -43,7 +43,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Poll cloud status
   SidecarClient.cloudStatus().then(status => {
-    const cloudStatus = status.using_fallback ? 'fallback-local' : status.using_aura ? 'connected' : 'local';
+    const cloudStatus = status.using_aura ? 'connected' : 'local';
     stateManager.setState({ cloudStatus });
   }).catch(err => {
     console.warn('Failed to fetch cloud status:', err);
@@ -131,7 +131,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
       pushTargetState(target);
-      await surgicalContextView.showImpact(target.symbol);
+      await surgicalContextView.showImpact(target.symbol, 3, target.filePath);
     }),
 
     vscode.commands.registerCommand('surgicalContext.findDocs', async () => {
@@ -227,7 +227,7 @@ async function resolveSymbolCommandTarget(
   args: unknown[]
 ): Promise<SymbolCommandTarget> {
   const explicit = explicitTargetFromArgs(args);
-  const target = explicit || targetFromActiveEditor(overlayManager);
+  const target = explicit || await targetFromActiveEditorAsync(overlayManager);
 
   if (!target.symbol && target.filePath && target.line !== undefined) {
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(target.filePath));
@@ -235,7 +235,9 @@ async function resolveSymbolCommandTarget(
       clampLine(target.line, document),
       Math.max(0, target.character || 0)
     );
-    target.symbol = overlayManager.getSymbolAtPosition(document, position) || undefined;
+    target.symbol = (
+      await overlayManager.getSymbolAtPositionAsync(document, position)
+    ) || undefined;
   }
 
   return target;
@@ -253,6 +255,17 @@ function explicitTargetFromArgs(args: unknown[]): SymbolCommandTarget | null {
     return {
       filePath: first.fsPath,
       ...targetFromActiveEditorIfSameFile(first.fsPath),
+    };
+  }
+
+  if (first instanceof vscode.Position && args[1] instanceof vscode.TextDocument) {
+    const document = args[1] as vscode.TextDocument;
+    const position = first as vscode.Position;
+    return {
+      filePath: document.fileName,
+      line: position.line,
+      character: position.character,
+      symbol: overlayManager.getSymbolAtPosition(document, position) || undefined,
     };
   }
 
@@ -287,7 +300,22 @@ function targetFromActiveEditor(overlayManager: OverlayManager): SymbolCommandTa
   const position = editor.selection.active;
   return {
     filePath: editor.document.fileName,
-    symbol: overlayManager.getSymbolAtCursor(editor) || undefined,
+    symbol: overlayManager.getSymbolAtPosition(editor.document, position) || undefined,
+    line: position.line,
+    character: position.character,
+  };
+}
+
+async function targetFromActiveEditorAsync(
+  overlayManager: OverlayManager
+): Promise<SymbolCommandTarget> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return {};
+
+  const position = editor.selection.active;
+  return {
+    filePath: editor.document.fileName,
+    symbol: (await overlayManager.getSymbolAtPositionAsync(editor.document, position)) || undefined,
     line: position.line,
     character: position.character,
   };

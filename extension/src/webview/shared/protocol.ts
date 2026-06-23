@@ -24,7 +24,7 @@ export type WebviewToHostMessage =
   | { type: 'feedback.submit'; messageId: string; rating: 'up' | 'down'; feedbackToken?: string }
   | { type: 'action.openInspector' }
   | { type: 'action.openSettings' }
-  | { type: 'action.showImpact'; symbol?: string; maxDepth?: number }
+  | { type: 'action.showImpact'; symbol?: string; filePath?: string; maxDepth?: number }
   | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'action.openDashboard' }
   | { type: 'link.openFile'; filePath: string; line?: number }
@@ -43,6 +43,7 @@ export type HostToWebviewMessage =
   | { type: 'surface.init'; state: ChatSurfaceState }
   | { type: 'surface.showChat' }
   | { type: 'surface.showInspector' }
+  | { type: 'surface.showImpact' }
   | { type: 'surface.showSettings' }
   | { type: 'chat.requestStarted'; requestId: string; symbol?: string }
   | { type: 'chat.streamChunk'; requestId: string; chunk: string }
@@ -225,6 +226,13 @@ export interface DashboardNotice {
   actionLabel?: string;
 }
 
+export interface GraphStatusInfo {
+  mode: string;
+  label: string;
+  detail: string;
+  healthy: boolean;
+}
+
 export interface SettingsData {
   backendUrl: string;
   workspaceId: string;
@@ -233,6 +241,10 @@ export interface SettingsData {
   tokenBudget: number;
   lancedbPath: string;
   historyPath: string;
+  neo4jUri: string;
+  indexProfile: string;
   overlaySync: boolean;
   autoOpenInspector: boolean;
+  /** Live graph status from /status/cloud; not persisted on save. */
+  graphStatus?: GraphStatusInfo;
 }

@@ -35,6 +35,7 @@ import {
 } from './shared/inspectorLayout';
 import {
   renderSettingsForm,
+  settingsFormDataFromSettings,
   showFeedback,
   showFieldStatus,
 } from './shared/settingsLayout';
@@ -104,6 +105,11 @@ class MainSurface {
 
         case 'surface.showInspector':
           this.surface = 'inspector';
+          this.render();
+          break;
+
+        case 'surface.showImpact':
+          this.surface = 'impact';
           this.render();
           break;
 
@@ -181,6 +187,7 @@ class MainSurface {
         case 'impact.loadFailed':
           this.surface = 'impact';
           this.impactLoading = false;
+          this.currentImpact = null;
           this.impactError = message.error;
           this.render();
           break;
@@ -528,7 +535,7 @@ class MainSurface {
         ${this.renderChrome()}
         ${
           this.settings
-            ? renderSettingsForm(this.settings)
+            ? renderSettingsForm(settingsFormDataFromSettings(this.settings))
             : '<div class="loading-state">Loading settings...</div>'
         }
       </section>
@@ -741,6 +748,7 @@ class MainSurface {
     this.postMessage({
       type: 'action.showImpact',
       symbol: selectedSymbol,
+      filePath: this.state?.workspace.activeFile || undefined,
       maxDepth: this.currentImpactDepth,
     });
   }
@@ -816,6 +824,8 @@ class MainSurface {
     const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement | null)?.value || '6000');
     const lancedbPath = (document.getElementById('lancedbPath') as HTMLInputElement | null)?.value || '';
     const historyPath = (document.getElementById('historyPath') as HTMLInputElement | null)?.value || '';
+    const neo4jUri = (document.getElementById('neo4jUri') as HTMLInputElement | null)?.value || '';
+    const indexProfile = (document.getElementById('indexProfile') as HTMLSelectElement | null)?.value || 'axis_python_v1';
     const overlaySync = (document.getElementById('overlaySync') as HTMLInputElement | null)?.checked || false;
     const autoOpenInspector = (document.getElementById('autoOpenInspector') as HTMLInputElement | null)?.checked || false;
 
@@ -839,6 +849,8 @@ class MainSurface {
         tokenBudget,
         lancedbPath,
         historyPath,
+        neo4jUri,
+        indexProfile,
         overlaySync,
         autoOpenInspector,
       },
@@ -854,6 +866,8 @@ class MainSurface {
       tokenBudget: 6000,
       lancedbPath: './data/lancedb',
       historyPath: './data/history/surgical_context.sqlite3',
+      neo4jUri: 'bolt://localhost:7687',
+      indexProfile: 'axis_python_v1',
       overlaySync: true,
       autoOpenInspector: false,
     };
@@ -865,6 +879,8 @@ class MainSurface {
     const tokenBudget = document.getElementById('tokenBudget') as HTMLInputElement | null;
     const lancedbPath = document.getElementById('lancedbPath') as HTMLInputElement | null;
     const historyPath = document.getElementById('historyPath') as HTMLInputElement | null;
+    const neo4jUri = document.getElementById('neo4jUri') as HTMLInputElement | null;
+    const indexProfile = document.getElementById('indexProfile') as HTMLSelectElement | null;
     const overlaySync = document.getElementById('overlaySync') as HTMLInputElement | null;
     const autoOpenInspector = document.getElementById('autoOpenInspector') as HTMLInputElement | null;
 
@@ -875,6 +891,8 @@ class MainSurface {
     if (tokenBudget) tokenBudget.value = String(defaults.tokenBudget);
     if (lancedbPath) lancedbPath.value = defaults.lancedbPath;
     if (historyPath) historyPath.value = defaults.historyPath;
+    if (neo4jUri) neo4jUri.value = defaults.neo4jUri;
+    if (indexProfile) indexProfile.value = defaults.indexProfile;
     if (overlaySync) overlaySync.checked = defaults.overlaySync;
     if (autoOpenInspector) autoOpenInspector.checked = defaults.autoOpenInspector;
 
