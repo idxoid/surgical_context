@@ -582,6 +582,9 @@ class LanceDBClient:
                     workspace_id,
                     exc_info=True,
                 )
+        # Always touch the transformer — ``_embed`` alone can return from a
+        # disk cache hit and leave the first real /ask to pay ~6s cold start.
+        _ = self._embedding_model()
         self._embed(["sidecar warmup"])
 
     @staticmethod

@@ -155,12 +155,56 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     this.pushWorkspaceState();
   }
 
+  private async resolveAskTarget(
+    messageSymbol?: string
+  ): Promise<{ symbol: string | undefined; activeFile: string | undefined }> {
+    const hostState = stateManager.getState();
+    const editor = vscode.window.activeTextEditor;
+    const editorFile = editor?.document.fileName;
+    const cursorSymbol = editor ? await this.currentEditorSymbolAsync() : null;
+    const editorMatches =
+      Boolean(editorFile) &&
+      (!hostState.activeFile || hostState.activeFile === editorFile);
+
+    const symbol =
+      (editorMatches && cursorSymbol) ||
+      hostState.selectedSymbol ||
+      messageSymbol ||
+      cursorSymbol ||
+      undefined;
+    const activeFile =
+      (editorMatches && editorFile) || hostState.activeFile || editorFile || undefined;
+
+    return { symbol, activeFile };
+  }
+
+  public pushWorkspaceTarget(target: { symbol?: string; filePath?: string }): void {
+    if (!target.symbol && !target.filePath) {
+      return;
+    }
+    this.postMessage({
+      type: 'workspace.updated',
+      activeFile: target.filePath || null,
+      symbol: target.symbol || null,
+      isDirty: vscode.window.activeTextEditor?.document.isDirty ?? false,
+    });
+  }
+
   private pushWorkspaceState(): void {
     const editor = vscode.window.activeTextEditor;
     const hostState = stateManager.getState();
+    const editorFile = editor?.document.fileName;
     const cursorSymbol = editor ? this.overlayManager.getSymbolAtCursor(editor) : null;
-    const symbol = hostState.selectedSymbol || cursorSymbol || null;
-    const activeFile = hostState.activeFile || editor?.document.fileName || null;
+    const editorMatches =
+      Boolean(editorFile) &&
+      (!hostState.activeFile || hostState.activeFile === editorFile);
+    const symbol =
+      (editorMatches && cursorSymbol) ||
+      hostState.selectedSymbol ||
+      cursorSymbol ||
+      null;
+    const activeFile =
+      (editorMatches && editorFile) || hostState.activeFile || editorFile || null;
     const isDirty = editor?.document.isDirty ?? false;
 
     this.postMessage({
@@ -298,12 +342,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   private async handleAsk(prompt: string, symbol?: string, conversationId?: string): Promise<void> {
     if (!this.webviewView) return;
 
-    const hostState = stateManager.getState();
-    // CodeLens / command target lives in host state; webview selectedSymbol can lag (retainContextWhenHidden).
-    let targetSymbol =
-      hostState.selectedSymbol || symbol || (await this.currentEditorSymbolAsync()) || undefined;
-    const activeFile =
-      hostState.activeFile || vscode.window.activeTextEditor?.document.fileName;
+    const { symbol: targetSymbol, activeFile } = await this.resolveAskTarget(symbol);
 
     const requestId = `req-${Date.now()}`;
     const answerParts: string[] = [];

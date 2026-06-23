@@ -22,6 +22,16 @@ from context_engine.axis.context_builder import ContextBundle, ContextSymbol
 from context_engine.context_types import PromptContext, SymbolContext
 
 
+def _relation_label(sym: ContextSymbol, *, bundle_role: str) -> str:
+    """Pick a dependency annotation that reflects graph expansion, not seed role."""
+    if sym.expansion_step:
+        return sym.expansion_step
+    if sym.role and sym.role not in ("anchor_symbol", bundle_role):
+        return sym.role
+    role = bundle_role or "related"
+    return "related" if role == "anchor_symbol" else role
+
+
 def _to_symbol_context(
     sym: ContextSymbol,
     *,
@@ -96,7 +106,11 @@ def axis_bundles_to_prompt_context(
                 continue
             seen.add(rel.uid)
             graph_context.append(
-                _to_symbol_context(rel, relation=bundle.role or "related", render_mode=render_mode)
+                _to_symbol_context(
+                    rel,
+                    relation=_relation_label(rel, bundle_role=bundle.role or "related"),
+                    render_mode=render_mode,
+                )
             )
 
     return PromptContext(

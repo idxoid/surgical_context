@@ -2841,21 +2841,36 @@ class Neo4jClient:
         if not path:
             return None
         suffix = f"/{path.rsplit('/', 1)[-1]}"
+        alt_path = ""
+        if "/context_engine/" in path:
+            alt_path = path.replace("/context_engine/", "/sidecar/", 1)
+        elif "/sidecar/" in path:
+            alt_path = path.replace("/sidecar/", "/context_engine/", 1)
         with self.driver.session() as session:
-            result = session.run(
+            rows = session.run(
                 """
                 MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
-                WHERE f.path = $path OR f.path ENDS WITH $path OR f.path ENDS WITH $suffix
-                RETURN s.uid AS uid
-                ORDER BY CASE WHEN f.path = $path THEN 0 WHEN f.path ENDS WITH $path THEN 1 ELSE 2 END
-                LIMIT 1
+                WHERE f.path = $path
+                   OR f.path ENDS WITH $path
+                   OR f.path ENDS WITH $suffix
+                   OR ($alt_path <> "" AND (f.path = $alt_path OR f.path ENDS WITH $alt_path))
+                RETURN s.uid AS uid, f.path AS path
                 """,
                 name=name,
                 workspace_id=workspace_id,
                 path=path,
                 suffix=suffix,
-            ).single()
-        return result["uid"] if result else None
+                alt_path=alt_path,
+            )
+            candidates = [
+                {"uid": str(row["uid"]), "path": str(row["path"] or "")}
+                for row in rows
+                if row.get("uid")
+            ]
+        if not candidates:
+            return None
+        best = min(candidates, key=lambda row: self._impact_path_rank(str(row["path"])))
+        return str(best["uid"])
 
     def list_symbol_impact_candidates(
         self,
@@ -2969,6 +2984,43 @@ class Neo4jClient:
                 workspace_id=workspace_id,
             ).single()
         return result["file_path"] if result else "<unknown>"
+
+    def get_symbol_spans_by_uids(
+        self,
+        uids: list[str],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> dict[str, dict[str, int | str]]:
+        """Return name, file path, and line span for each uid in the workspace."""
+        if not uids:
+            return {}
+        with self.driver.session() as session:
+            rows = list(
+                session.run(
+                    """
+                UNWIND $uids AS uid
+                MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol {uid: uid})
+                RETURN s.uid AS uid,
+                       s.name AS name,
+                       f.path AS file_path,
+                       coalesce(c.start_line, s.range[0], 0) AS start_line,
+                       coalesce(c.end_line, s.range[1], 0) AS end_line
+                """,
+                    uids=list(dict.fromkeys(uids)),
+                    workspace_id=workspace_id,
+                )
+            )
+        out: dict[str, dict[str, int | str]] = {}
+        for row in rows:
+            uid = str(row.get("uid") or "")
+            if not uid:
+                continue
+            out[uid] = {
+                "name": str(row.get("name") or ""),
+                "file_path": str(row.get("file_path") or ""),
+                "start_line": int(row.get("start_line") or 0),
+                "end_line": int(row.get("end_line") or 0),
+            }
+        return out
 
 
 def _split_workspace_id(workspace_id: str) -> dict[str, str]:

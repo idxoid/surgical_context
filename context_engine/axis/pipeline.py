@@ -57,7 +57,7 @@ from context_engine.axis import (
 from context_engine.axis.context_builder import ContextBundle
 from context_engine.axis.intent_classifier import IntentMatch
 from context_engine.axis.proximity import proximity_boost
-from context_engine.axis.retrieval_budget import budget_for_intent
+from context_engine.axis.retrieval_budget import ARCHITECTURE, budget_for_intent
 from context_engine.axis.role_retrieval import RoleCandidate
 
 # Question-shape pseudo-roles: modes, not retrieval roles. They drive the
@@ -117,7 +117,7 @@ def _pin_anchor_symbol(
     similarity alone.
     """
     name = (anchor_symbol or "").strip()
-    if not name or not candidates:
+    if not name:
         return candidates
 
     requested_path = (anchor_path or "").strip()
@@ -130,16 +130,32 @@ def _pin_anchor_symbol(
             return False
         if stored == requested_path or stored.endswith(requested_path):
             return True
+        if requested_path.endswith(stored) or requested_path.endswith(f"/{stored.rsplit('/', 1)[-1]}"):
+            return True
+        if "/context_engine/" in requested_path:
+            alt = requested_path.replace("/context_engine/", "/sidecar/", 1)
+            if stored == alt or stored.endswith(alt):
+                return True
+        elif "/sidecar/" in requested_path:
+            alt = requested_path.replace("/sidecar/", "/context_engine/", 1)
+            if stored == alt or stored.endswith(alt):
+                return True
         return stored.endswith(f"/{requested_path.rsplit('/', 1)[-1]}")
 
     path_matches = [c for c in candidates if c.name == name and _path_matches(c.file_path)]
     if path_matches:
-        pinned = path_matches[0]
-        if candidates[0].uid == pinned.uid:
+        pinned = min(
+            path_matches,
+            key=lambda c: (
+                10 if "/sidecar/" in (c.file_path or "").lower() else 0,
+                len(c.file_path or ""),
+            ),
+        )
+        if candidates and candidates[0].uid == pinned.uid:
             return candidates
         return [pinned, *[c for c in candidates if c.uid != pinned.uid]]
 
-    if not requested_path:
+    if not requested_path and candidates:
         for index, candidate in enumerate(candidates):
             if candidate.name == name:
                 if index == 0:
@@ -193,6 +209,105 @@ def _pin_anchor_symbol(
     return [injected, *[c for c in candidates if c.uid != uid]]
 
 
+def _symbol_targeted_budget(
+    *,
+    intent_budget: bool,
+    base_token_budget: int,
+    render_mode_override: str | None,
+) -> tuple[int | None, str, Any | None]:
+    if not intent_budget:
+        return None, "full", None
+    budget_profile = ARCHITECTURE
+    token_budget = budget_profile.effective_tokens(base_token_budget)
+    render_mode = (
+        budget_profile.render_mode if render_mode_override is None else render_mode_override
+    )
+    return token_budget, render_mode, budget_profile
+
+
+def _try_symbol_targeted_retrieval(
+    *,
+    anchor_symbol: str | None,
+    anchor_path: str | None,
+    workspace_id: str,
+    db: Any,
+    lance: Any,
+    with_context: bool,
+    context_per_seed: int,
+    intent_budget: bool,
+    base_token_budget: int,
+    render_mode_override: str | None,
+    hook_transparency: bool,
+    include_tests_in_walks: bool,
+    overlay: Any | None,
+    user_id: str,
+    trace: Any,
+) -> AxisRetrievalResult | None:
+    """CodeLens / ask-from-code fast path — skip intent embed and pool walks."""
+    if not (anchor_symbol or "").strip():
+        return None
+
+    pinned = _pin_anchor_symbol(
+        [],
+        anchor_symbol=anchor_symbol,
+        anchor_path=anchor_path,
+        workspace_id=workspace_id,
+        db=db,
+        scanned=None,
+    )
+    if not pinned:
+        return None
+
+    anchor = pinned[0]
+    token_budget, render_mode, budget_profile = _symbol_targeted_budget(
+        intent_budget=intent_budget,
+        base_token_budget=base_token_budget,
+        render_mode_override=render_mode_override,
+    )
+
+    from context_engine.axis import graph_walk_inproc
+
+    if graph_walk_inproc.should_use(workspace_id):
+        with trace.stage("adjacency"):
+            graph_walk_inproc.load_adjacency(db, workspace_id)
+
+    bundles: list[ContextBundle] = []
+    if with_context:
+        with trace.stage("context"):
+            bundles = context_builder.build_context_for_candidates(
+                [anchor],
+                workspace_id=workspace_id,
+                db=db,
+                lance=lance,
+                max_per_seed=context_per_seed,
+                hook_transparency=hook_transparency,
+                token_budget=token_budget,
+                render_mode=render_mode,
+                per_transaction_share=(
+                    budget_profile.per_transaction_share if budget_profile else 0.10
+                ),
+                file_soft_cap_share=(
+                    budget_profile.file_soft_cap_share if budget_profile else 0.25
+                ),
+                signature_only_initial=(
+                    budget_profile.signature_only_initial if budget_profile else False
+                ),
+                include_tests=include_tests_in_walks,
+                overlay=overlay,
+                user_id=user_id,
+            )
+
+    seed_path = (anchor.file_path or "").strip()
+    return AxisRetrievalResult(
+        intent=[],
+        raw_by_role={},
+        seed_files=[seed_path] if seed_path else [],
+        candidates_for_context=pinned,
+        bundles=list(bundles),
+        render_mode=render_mode,
+    )
+
+
 def run_axis_retrieval(
     question: str,
     *,
@@ -228,6 +343,28 @@ def run_axis_retrieval(
     """
 
     tr = trace if trace is not None else _NullTrace()
+
+    symbol_targeted = bool((anchor_symbol or "").strip())
+    if symbol_targeted:
+        fast = _try_symbol_targeted_retrieval(
+            anchor_symbol=anchor_symbol,
+            anchor_path=anchor_path,
+            workspace_id=workspace_id,
+            db=db,
+            lance=lance,
+            with_context=with_context,
+            context_per_seed=context_per_seed,
+            intent_budget=intent_budget,
+            base_token_budget=base_token_budget,
+            render_mode_override=render_mode_override,
+            hook_transparency=hook_transparency,
+            include_tests_in_walks=False,
+            overlay=overlay,
+            user_id=user_id,
+            trace=tr,
+        )
+        if fast is not None:
+            return fast
 
     def _embed(text: str):
         return lance._embed([text])[0]  # noqa: SLF001
@@ -505,8 +642,11 @@ def run_axis_retrieval(
     budget_profile = None
     active = candidates_for_context
     utility_score_fn = None
+    symbol_targeted = bool((anchor_symbol or "").strip())
     if intent_budget:
-        budget_profile = budget_for_intent(intent)
+        # CodeLens / ask-from-code names the seed explicitly — prefer full
+        # structural context on that symbol over impact blast-radius stubs.
+        budget_profile = ARCHITECTURE if symbol_targeted else budget_for_intent(intent)
         # S_utility = score (S_vector × W_type, already in the candidate score)
         # + B_proximity (path-locality from the ask anchor). The boost only
         # reorders the packing priority; it does not mutate the candidate score
@@ -544,6 +684,10 @@ def run_axis_retrieval(
             db=db,
             scanned=scanned,
         )
+        # Symbol-targeted ask: expand only the pinned anchor's neighbourhood,
+        # not every vector/role candidate in the pool.
+        if active:
+            active = [active[0]]
 
     bundles: list[ContextBundle] = []
     if with_context and active:

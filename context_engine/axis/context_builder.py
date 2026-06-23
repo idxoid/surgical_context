@@ -26,6 +26,7 @@ from collections import namedtuple
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from context_engine.axis.graph_walk import steps_for_mode, walk_neighbours_grouped
@@ -222,6 +223,77 @@ def _fetch_codes(
         uid: payload.get("code")
         for uid, payload in _fetch_symbol_payloads(lance, workspace_id, uids).items()
     }
+
+
+def _read_symbol_code_from_file(
+    file_path: str,
+    start_line: int,
+    end_line: int,
+    *,
+    workspace_root: Path | None,
+) -> str:
+    from context_engine.workspace_paths import resolve_graph_file_path
+
+    resolved = resolve_graph_file_path(file_path, workspace_root=workspace_root)
+    if not resolved:
+        return ""
+    try:
+        lines = Path(resolved).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    if start_line < 1 or end_line < start_line:
+        return ""
+    return "\n".join(lines[start_line - 1 : end_line])
+
+
+def _hydrate_missing_symbol_code(
+    db,
+    workspace_id: str,
+    uids: set[str],
+    payloads: dict[str, dict[str, str | None]],
+) -> dict[str, dict[str, str | None]]:
+    """Fill empty Lance payloads from on-disk source using Neo4j line spans."""
+    if not uids or db is None:
+        return payloads
+
+    missing = [
+        uid
+        for uid in uids
+        if not str((payloads.get(uid) or {}).get("code") or "").strip()
+    ]
+    if not missing:
+        return payloads
+
+    get_spans = getattr(db, "get_symbol_spans_by_uids", None)
+    if not callable(get_spans):
+        return payloads
+
+    from context_engine.workspace_paths import registered_workspace_root
+
+    workspace_root = registered_workspace_root(db, workspace_id)
+    spans = get_spans(missing, workspace_id=workspace_id)
+    if not spans:
+        return payloads
+
+    out = dict(payloads)
+    for uid in missing:
+        span = spans.get(uid)
+        if not span:
+            continue
+        code = _read_symbol_code_from_file(
+            str(span.get("file_path") or ""),
+            int(span.get("start_line") or 0),
+            int(span.get("end_line") or 0),
+            workspace_root=workspace_root,
+        )
+        if not code.strip():
+            continue
+        row = dict(out.get(uid) or {})
+        row.setdefault("name", str(span.get("name") or ""))
+        row.setdefault("file_path", str(span.get("file_path") or ""))
+        row["code"] = code
+        out[uid] = row
+    return out
 
 
 def _code_signature(code: str | None) -> str:
@@ -1484,6 +1556,13 @@ def build_context_for_candidates(
             user_id=user_id,
         )
 
+    payload_by_uid = _hydrate_missing_symbol_code(
+        db,
+        workspace_id,
+        uids_to_fetch,
+        payload_by_uid,
+    )
+
     def _code(uid: str) -> str | None:
         return payload_by_uid.get(uid, {}).get("code")
 
@@ -1507,7 +1586,7 @@ def build_context_for_candidates(
                 uid=h.uid,
                 name=h.name,
                 file_path=h.file_path,
-                role=cand.role,
+                role=h.step or "related",
                 distance_from_seed=h.depth,
                 expansion_step=h.step,
                 code=_code(h.uid),

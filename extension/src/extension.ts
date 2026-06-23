@@ -109,7 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const target = await resolveSymbolCommandTarget(overlayManager, args);
       await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
-      pushTargetState(target);
+      pushTargetState(target, surgicalContextView);
       surgicalContextView.showChat();
     }),
 
@@ -117,7 +117,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const target = await resolveSymbolCommandTarget(overlayManager, args);
       await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
-      pushTargetState(target);
+      pushTargetState(target, surgicalContextView);
       surgicalContextView.showChat();
     }),
 
@@ -130,7 +130,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const target = await resolveSymbolCommandTarget(overlayManager, args);
       await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
-      pushTargetState(target);
+      pushTargetState(target, surgicalContextView);
       await surgicalContextView.showImpact(target.symbol, 3, target.filePath);
     }),
 
@@ -182,7 +182,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const target = await resolveSymbolCommandTarget(overlayManager, args);
       await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
-      pushTargetState(target);
+      pushTargetState(target, surgicalContextView);
       surgicalContextView.showChat();
     }),
 
@@ -190,7 +190,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const target = await resolveSymbolCommandTarget(overlayManager, args);
       await applySymbolCommandTarget(target);
       await revealSurgicalContextView();
-      pushTargetState(target);
+      pushTargetState(target, surgicalContextView);
       surgicalContextView.showChat();
     }),
 
@@ -351,13 +351,14 @@ async function applySymbolCommandTarget(target: SymbolCommandTarget): Promise<vo
   );
 }
 
-function pushTargetState(target: SymbolCommandTarget): void {
+function pushTargetState(target: SymbolCommandTarget, view?: SurgicalContextViewProvider): void {
   const editor = vscode.window.activeTextEditor;
   stateManager.setState({
     selectedSymbol: target.symbol || undefined,
     activeFile: target.filePath || editor?.document.fileName,
     isDirty: editor?.document.isDirty ?? false,
   });
+  view?.pushWorkspaceTarget(target);
 }
 
 function clampLine(line: number, document: vscode.TextDocument): number {

@@ -150,3 +150,35 @@ def test_adapter_promotes_top_seed_and_dedupes():
 
 def test_adapter_returns_none_on_empty():
     assert axis_bundles_to_prompt_context([], question="q", workspace_id="ws") is None
+
+
+def test_adapter_uses_expansion_step_not_anchor_role_for_related():
+    anchor_bundle = ContextBundle(
+        role="anchor_symbol",
+        seed=ContextSymbol(
+            uid="u:walk",
+            name="walk_neighbours",
+            file_path="/repo/graph_walk.py",
+            role="anchor_symbol",
+            distance_from_seed=0,
+            expansion_step=None,
+            code="def walk_neighbours(...): ...",
+        ),
+        related=(
+            ContextSymbol(
+                uid="u:safe_hops",
+                name="_safe_max_hops",
+                file_path="/repo/graph_walk.py",
+                role="control_call_expansion",
+                distance_from_seed=1,
+                expansion_step="control_call_expansion",
+                code="def _safe_max_hops(...): ...",
+            ),
+        ),
+    )
+    ctx = axis_bundles_to_prompt_context([anchor_bundle], question="q", workspace_id="ws")
+    assert ctx is not None
+    assert ctx.primary_source.symbol == "walk_neighbours"
+    assert len(ctx.graph_context) == 1
+    assert ctx.graph_context[0].symbol == "_safe_max_hops"
+    assert ctx.graph_context[0].relation == "control_call_expansion"

@@ -70,6 +70,16 @@ def warm_sidecar(state: SidecarState) -> None:
 
     stage_started = time.monotonic()
     try:
+        from context_engine.axis import role_retrieval
+
+        role_retrieval.scan_workspace_rows(index_workspace_id, lance=axis_lance)
+        stages["axis_scan"] = round((time.monotonic() - stage_started) * 1000, 2)
+    except Exception as exc:
+        _log_warmup_stage_failure("axis_scan", exc)
+        stages["axis_scan"] = -1.0
+
+    stage_started = time.monotonic()
+    try:
         from context_engine.database.provider import get_database_provider
 
         client = get_database_provider().client_for()

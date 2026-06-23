@@ -141,7 +141,69 @@ def test_anchor_symbol_pins_named_candidate_to_context_front(stub_stages):
     result = _run(anchor_symbol="c")
 
     assert [c.uid for c in result.candidates_for_context][0] == "c"
-    assert [b.seed.uid for b in result.bundles][0] == "c"
+    assert [b.seed.uid for b in result.bundles] == ["c"]
+
+
+def test_anchor_symbol_expands_only_pinned_seed(stub_stages):
+    result = _run(anchor_symbol="b")
+
+    assert len(result.bundles) == 1
+    assert result.bundles[0].seed.uid == "b"
+    assert len(result.candidates_for_context) == 3
+
+
+def test_anchor_symbol_uses_architecture_budget(stub_stages, monkeypatch):
+    import context_engine.axis.context_builder as _ctx_mod
+
+    captured: dict = {}
+
+    def _capture(candidates, **kw):
+        captured["render_mode"] = kw.get("render_mode")
+        captured["token_budget"] = kw.get("token_budget")
+        return []
+
+    monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
+
+    _run(anchor_symbol="c", base_token_budget=4000)
+
+    assert captured["render_mode"] == "hybrid"
+    assert captured["token_budget"] == 8000
+
+
+def test_anchor_symbol_fast_path_skips_intent_embed(stub_stages, monkeypatch):
+    import context_engine.axis.intent_classifier as _intent_mod
+
+    intent_calls: list[str] = []
+
+    def _classify(question, embed_fn, **kwargs):
+        del embed_fn, kwargs
+        intent_calls.append(question)
+        return []
+
+    monkeypatch.setattr(_intent_mod, "classify_intent", _classify)
+
+    class _PinDB:
+        def get_symbol_uid_by_name_in_file(self, name, path, workspace_id=""):
+            del name, workspace_id
+            return "u:walk"
+
+        def get_file_path_for_symbol(self, uid, workspace_id=""):
+            del uid, workspace_id
+            return "/repo/context_engine/axis/graph_walk.py"
+
+    result = axis_pipeline.run_axis_retrieval(
+        "impact of walk_neighbours",
+        workspace_id="ws",
+        db=_PinDB(),
+        lance=_FakeLance(),
+        anchor_symbol="walk_neighbours",
+        anchor_path="/repo/context_engine/axis/graph_walk.py",
+    )
+
+    assert intent_calls == []
+    assert result.intent == []
+    assert len(result.bundles) == 1
+    assert result.bundles[0].seed.uid == "u:walk"
 
 
 def test_anchor_symbol_prefers_file_path_when_disambiguating(stub_stages, monkeypatch):
