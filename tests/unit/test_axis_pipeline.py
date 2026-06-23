@@ -144,6 +144,48 @@ def test_anchor_symbol_pins_named_candidate_to_context_front(stub_stages):
     assert [b.seed.uid for b in result.bundles][0] == "c"
 
 
+def test_anchor_symbol_prefers_file_path_when_disambiguating(stub_stages, monkeypatch):
+    import context_engine.axis.role_retrieval as _retr_mod
+
+    def _dup(name: str, path: str) -> RoleCandidate:
+        return RoleCandidate(
+            uid=f"{name}:{path}",
+            name=name,
+            file_path=path,
+            role="routing_surface",
+            satisfying_contracts=(),
+            satisfying_kinds=(),
+            contract_count=0,
+            kind_count=0,
+            vector_distance=0.5,
+            score=0.8,
+        )
+
+    monkeypatch.setattr(
+        _retr_mod,
+        "find_symbols_by_roles",
+        lambda ws, roles, **k: {
+            r: [
+                _dup("Neighbour", "/repo/stale/run_demo.py"),
+                _dup("Neighbour", "/repo/context_engine/axis/graph_walk.py"),
+            ]
+            for r in roles
+        },
+    )
+
+    result = axis_pipeline.run_axis_retrieval(
+        "trace call chain",
+        workspace_id="ws",
+        db=object(),
+        lance=_FakeLance(),
+        with_context=False,
+        anchor_symbol="Neighbour",
+        anchor_path="/repo/context_engine/axis/graph_walk.py",
+    )
+
+    assert result.candidates_for_context[0].file_path == "/repo/context_engine/axis/graph_walk.py"
+
+
 def test_runs_without_a_tracer(stub_stages):
     # trace=None must select the null tracer, not raise.
     result = _run(trace=None)

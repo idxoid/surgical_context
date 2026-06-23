@@ -157,14 +157,16 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
 
   private pushWorkspaceState(): void {
     const editor = vscode.window.activeTextEditor;
-    const symbol = editor ? this.overlayManager.getSymbolAtCursor(editor) : null;
+    const hostState = stateManager.getState();
+    const cursorSymbol = editor ? this.overlayManager.getSymbolAtCursor(editor) : null;
+    const symbol = hostState.selectedSymbol || cursorSymbol || null;
+    const activeFile = hostState.activeFile || editor?.document.fileName || null;
     const isDirty = editor?.document.isDirty ?? false;
-    const activeFile = editor?.document.fileName ?? null;
 
     this.postMessage({
       type: 'workspace.updated',
       activeFile,
-      symbol: symbol || null,
+      symbol,
       isDirty,
     });
 
@@ -296,8 +298,12 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   private async handleAsk(prompt: string, symbol?: string, conversationId?: string): Promise<void> {
     if (!this.webviewView) return;
 
-    let targetSymbol = symbol || this.currentEditorSymbol() || undefined;
-    const activeFile = vscode.window.activeTextEditor?.document.fileName;
+    const hostState = stateManager.getState();
+    // CodeLens / command target lives in host state; webview selectedSymbol can lag (retainContextWhenHidden).
+    let targetSymbol =
+      hostState.selectedSymbol || symbol || (await this.currentEditorSymbolAsync()) || undefined;
+    const activeFile =
+      hostState.activeFile || vscode.window.activeTextEditor?.document.fileName;
 
     const requestId = `req-${Date.now()}`;
     const answerParts: string[] = [];

@@ -104,6 +104,7 @@ def _pin_anchor_symbol(
     candidates: list[RoleCandidate],
     *,
     anchor_symbol: str | None,
+    anchor_path: str | None = None,
     workspace_id: str,
     db: Any,
     scanned: Any | None,
@@ -119,23 +120,57 @@ def _pin_anchor_symbol(
     if not name or not candidates:
         return candidates
 
-    for index, candidate in enumerate(candidates):
-        if candidate.name == name:
-            if index == 0:
-                return candidates
-            pinned = candidates[index]
-            return [pinned, *[c for i, c in enumerate(candidates) if i != index]]
+    requested_path = (anchor_path or "").strip()
+
+    def _path_matches(stored_path: str) -> bool:
+        if not requested_path:
+            return True
+        stored = stored_path.strip()
+        if not stored:
+            return False
+        if stored == requested_path or stored.endswith(requested_path):
+            return True
+        return stored.endswith(f"/{requested_path.rsplit('/', 1)[-1]}")
+
+    path_matches = [c for c in candidates if c.name == name and _path_matches(c.file_path)]
+    if path_matches:
+        pinned = path_matches[0]
+        if candidates[0].uid == pinned.uid:
+            return candidates
+        return [pinned, *[c for c in candidates if c.uid != pinned.uid]]
+
+    if not requested_path:
+        for index, candidate in enumerate(candidates):
+            if candidate.name == name:
+                if index == 0:
+                    return candidates
+                pinned = candidates[index]
+                return [pinned, *[c for i, c in enumerate(candidates) if i != index]]
 
     uid = ""
     file_path = ""
     if scanned is not None:
         for row in getattr(scanned, "rows", ()) or ():
-            if str(row.get("name") or "") == name:
-                uid = str(row.get("uid") or "")
-                file_path = str(row.get("file_path") or "")
-                break
-    if not uid and db is not None and hasattr(db, "get_symbol_uid_by_name"):
-        uid = db.get_symbol_uid_by_name(name, workspace_id=workspace_id) or ""
+            if str(row.get("name") or "") != name:
+                continue
+            row_path = str(row.get("file_path") or "")
+            if requested_path and row_path and not _path_matches(row_path):
+                continue
+            uid = str(row.get("uid") or "")
+            file_path = row_path
+            break
+    if not uid and db is not None:
+        if requested_path and hasattr(db, "get_symbol_uid_by_name_in_file"):
+            uid = (
+                db.get_symbol_uid_by_name_in_file(
+                    name,
+                    requested_path,
+                    workspace_id=workspace_id,
+                )
+                or ""
+            )
+        elif hasattr(db, "get_symbol_uid_by_name"):
+            uid = db.get_symbol_uid_by_name(name, workspace_id=workspace_id) or ""
         if uid and hasattr(db, "get_file_path_for_symbol"):
             file_path = db.get_file_path_for_symbol(uid, workspace_id=workspace_id)
 
@@ -496,6 +531,7 @@ def run_axis_retrieval(
         active = _pin_anchor_symbol(
             active,
             anchor_symbol=anchor_symbol,
+            anchor_path=anchor_path,
             workspace_id=workspace_id,
             db=db,
             scanned=scanned,
@@ -503,6 +539,7 @@ def run_axis_retrieval(
         candidates_for_context = _pin_anchor_symbol(
             candidates_for_context,
             anchor_symbol=anchor_symbol,
+            anchor_path=anchor_path,
             workspace_id=workspace_id,
             db=db,
             scanned=scanned,
