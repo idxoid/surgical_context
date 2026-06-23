@@ -56,7 +56,11 @@ def build_impact_surface(
         max_hops=walk_depth,
         max_impacted=max_items,
     )
-    rows = [_row_from_candidate(candidate) for candidate in candidates]
+    spans = _symbol_spans(db, candidates, workspace_id=workspace_id)
+    rows = [
+        _row_from_candidate(candidate, span=spans.get(candidate.uid))
+        for candidate in candidates
+    ]
     return {
         "affected_symbols": rows,
         "affected_files": sorted(
@@ -70,10 +74,30 @@ def build_impact_surface(
     }
 
 
-def _row_from_candidate(candidate: RoleCandidate) -> dict[str, Any]:
+def _symbol_spans(
+    db: Any,
+    candidates: list[RoleCandidate],
+    *,
+    workspace_id: str,
+) -> dict[str, dict[str, Any]]:
+    """Load editor navigation coordinates for impact candidates in one query."""
+    get_spans = getattr(db, "get_symbol_spans_by_uids", None)
+    if not callable(get_spans) or not candidates:
+        return {}
+    return get_spans(
+        [candidate.uid for candidate in candidates],
+        workspace_id=workspace_id,
+    )
+
+
+def _row_from_candidate(
+    candidate: RoleCandidate,
+    *,
+    span: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     kind = candidate.satisfying_kinds[0] if candidate.satisfying_kinds else "impact"
     zone, severity, role = _surface_classification(kind)
-    return {
+    row = {
         "uid": candidate.uid,
         "name": candidate.name,
         "symbol": candidate.name,
@@ -90,6 +114,14 @@ def _row_from_candidate(candidate: RoleCandidate) -> dict[str, Any]:
         "relevance_score": candidate.score,
         "satisfying_kinds": list(candidate.satisfying_kinds),
     }
+    if span:
+        start_line = int(span.get("start_line") or 0)
+        end_line = int(span.get("end_line") or 0)
+        if start_line > 0:
+            row["start_line"] = start_line
+        if end_line >= start_line > 0:
+            row["end_line"] = end_line
+    return row
 
 
 def _surface_classification(kind: str) -> tuple[str, str, str]:

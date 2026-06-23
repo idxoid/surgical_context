@@ -547,12 +547,14 @@
     attachEventListeners() {
       document.querySelectorAll("[data-file-path]").forEach((row) => {
         row.addEventListener("click", (e) => {
-          const filePath = e.currentTarget.getAttribute("data-file-path");
+          const target = e.currentTarget;
+          const filePath = target.getAttribute("data-file-path");
+          const line = Number.parseInt(target.getAttribute("data-line") || "1", 10);
           if (filePath) {
             vscode.postMessage({
               type: "link.openFile",
               filePath,
-              line: 1
+              line: Number.isFinite(line) ? line : 1
             });
           }
         });

@@ -129,12 +129,14 @@ class ImpactPanel {
     // Attach row click handlers for opening files
     document.querySelectorAll('[data-file-path]').forEach(row => {
       row.addEventListener('click', (e: Event) => {
-        const filePath = (e.currentTarget as HTMLElement).getAttribute('data-file-path');
+        const target = e.currentTarget as HTMLElement;
+        const filePath = target.getAttribute('data-file-path');
+        const line = Number.parseInt(target.getAttribute('data-line') || '1', 10);
         if (filePath) {
           vscode.postMessage({
             type: 'link.openFile',
             filePath,
-            line: 1,
+            line: Number.isFinite(line) ? line : 1,
           });
         }
       });
