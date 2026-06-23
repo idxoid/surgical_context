@@ -158,6 +158,39 @@ class InMemoryOverlay:
             return {}
         return {m.name: (m.start_line, m.end_line) for m in metas}
 
+    def get_calls(
+        self,
+        file_path: str,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        user_id: str = "anonymous",
+    ) -> list[dict]:
+        self._evict_expired()
+        key = self._key(file_path, workspace_id, user_id)
+        entry = self._files.get(key)
+        if entry is None:
+            return []
+        self._touch(key)
+        try:
+            return self._extractor.extract_calls_from_source(entry.content, file_path)
+        except ValueError:
+            # No symbol-extraction adapter for this extension (config/data file).
+            return []
+
+    def iter_dirty_files(
+        self,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        user_id: str = "anonymous",
+    ) -> list[str]:
+        """File paths of the unsaved (dirty) buffers for one workspace/user."""
+        self._evict_expired()
+        target_ws = _base_workspace_id(workspace_id)
+        target_user = (user_id or "anonymous").lower().strip() or "anonymous"
+        return [
+            file_path
+            for (ws, user, file_path), entry in self._files.items()
+            if ws == target_ws and user == target_user and entry.dirty
+        ]
+
     def stats(self) -> dict[str, int]:
         return {
             "entries": len(self._files),

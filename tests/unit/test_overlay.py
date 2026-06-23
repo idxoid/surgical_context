@@ -145,6 +145,20 @@ class MyClass:
         overlay.clear("svc.py", workspace_id=index, user_id="u")
         assert not overlay.has("svc.py", workspace_id=base, user_id="u")
 
+    def test_get_calls_returns_callee_names(self, overlay):
+        overlay.update("c.py", "def uses():\n    return helper(1)\n")
+        calls = overlay.get_calls("c.py")
+        assert any(call.get("callee_name") == "helper" for call in calls)
+
+    def test_get_calls_empty_for_unsupported_extension(self, overlay):
+        overlay.update("data.json", '{"a": 1}\n')
+        assert overlay.get_calls("data.json") == []
+
+    def test_iter_dirty_files_excludes_saved(self, overlay):
+        overlay.update("dirty.py", "draft\n", dirty=True)
+        overlay.update("saved.py", "final\n", dirty=False)
+        assert overlay.iter_dirty_files() == ["dirty.py"]
+
     def test_dirty_defaults_true(self, overlay):
         overlay.update("test.py", "draft\n")
         assert overlay.is_dirty("test.py")
