@@ -132,6 +132,19 @@ class MyClass:
         assert not overlay.has("test.py", workspace_id=ws, user_id="alice")
         assert overlay.has("test.py", workspace_id=ws, user_id="bob")
 
+    def test_index_profile_suffix_resolves_to_base_buffer(self, overlay):
+        """A buffer stored under the base workspace is found when queried under
+        the profile-suffixed index workspace (axis retrieval) and vice versa."""
+        base = "acme/repo@main"
+        index = "acme/repo@main+axis_python_v1"
+        overlay.update("svc.py", "def handler(): pass\n", workspace_id=base, user_id="u")
+
+        assert overlay.has("svc.py", workspace_id=index, user_id="u")
+        assert "handler" in overlay.read_lines("svc.py", 1, 1, workspace_id=index, user_id="u")
+        # Symmetric: clearing under the index id removes the base-stored buffer.
+        overlay.clear("svc.py", workspace_id=index, user_id="u")
+        assert not overlay.has("svc.py", workspace_id=base, user_id="u")
+
     def test_dirty_defaults_true(self, overlay):
         overlay.update("test.py", "draft\n")
         assert overlay.is_dirty("test.py")

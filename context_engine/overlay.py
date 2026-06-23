@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from context_engine.index_profile import base_workspace_id as _base_workspace_id
 from context_engine.parser.extractor import SymbolExtractor
 from context_engine.workspace import DEFAULT_WORKSPACE_ID
 
@@ -203,4 +204,11 @@ class InMemoryOverlay:
     @staticmethod
     def _key(file_path: str, workspace_id: str, user_id: str) -> tuple[str, str, str]:
         normalized_user = (user_id or "anonymous").lower().strip() or "anonymous"
-        return workspace_id, normalized_user, file_path
+        # The overlay is the editor's buffer cache, scoped to physical files,
+        # not to an index profile. Callers reach it with whatever workspace id
+        # they hold: the /overlay route stores under the *base* id, while axis
+        # retrieval queries under the profile-*suffixed* index id. Collapse both
+        # to the base so a buffer stored on write is found on read regardless of
+        # the active index profile.
+        normalized_ws = _base_workspace_id(workspace_id)
+        return normalized_ws, normalized_user, file_path
