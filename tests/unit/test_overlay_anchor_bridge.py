@@ -123,9 +123,7 @@ def test_run_axis_retrieval_overlay_only_mode(overlay):
     # Overlay-only path returns before intent classification and any walk.
     assert result.intent == []
     assert result.raw_by_role == {}
-    assert [c.uid for c in result.candidates_for_context] == [
-        result.candidates_for_context[0].uid
-    ]
+    assert [c.uid for c in result.candidates_for_context] == [result.candidates_for_context[0].uid]
     assert _is_overlay_anchor(result.candidates_for_context[0])
 
     assert len(result.bundles) == 1

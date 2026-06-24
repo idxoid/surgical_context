@@ -15,7 +15,9 @@ def test_lance_for_index_workspace_reuses_axis_client_for_axis_namespace():
     lance = builder.lance_for_index_workspace("qa_repo/surgical_context@main+axis_python_v1")
 
     assert lance.index_profile_name == AXIS_PYTHON_V1_PROFILE
-    assert lance is builder.lance_for_index_workspace("qa_repo/surgical_context@main+axis_python_v1")
+    assert lance is builder.lance_for_index_workspace(
+        "qa_repo/surgical_context@main+axis_python_v1"
+    )
 
 
 def test_lance_for_index_workspace_uses_process_client_when_profiles_match():

@@ -39,12 +39,7 @@ def connect_neo4j_driver(
     )
     local_only = _env_truthy("NEO4J_LOCAL_ONLY")
 
-    if (
-        not local_only
-        and aura_username
-        and aura_password
-        and aura_instance_name
-    ):
+    if not local_only and aura_username and aura_password and aura_instance_name:
         try:
             aura_uri = AuraClient._build_aura_uri(aura_instance_name)
             driver = GraphDatabase.driver(aura_uri, auth=(aura_username, aura_password))

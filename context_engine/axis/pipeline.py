@@ -181,7 +181,9 @@ def _pin_anchor_symbol(
             return False
         if stored == requested_path or stored.endswith(requested_path):
             return True
-        if requested_path.endswith(stored) or requested_path.endswith(f"/{stored.rsplit('/', 1)[-1]}"):
+        if requested_path.endswith(stored) or requested_path.endswith(
+            f"/{stored.rsplit('/', 1)[-1]}"
+        ):
             return True
         if "/context_engine/" in requested_path:
             alt = requested_path.replace("/context_engine/", "/sidecar/", 1)

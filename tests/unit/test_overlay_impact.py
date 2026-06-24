@@ -24,9 +24,7 @@ def _overlay() -> InMemoryOverlay:
 def test_finds_dirty_caller_of_brand_new_symbol():
     ov = _overlay()
     ov.update("caller.py", "def uses():\n    return brand_new(1)\n", workspace_id=WS, user_id=USER)
-    rows = build_overlay_impact_callers(
-        ov, symbol_name="brand_new", workspace_id=WS, user_id=USER
-    )
+    rows = build_overlay_impact_callers(ov, symbol_name="brand_new", workspace_id=WS, user_id=USER)
     assert len(rows) == 1
     row = rows[0]
     assert row["name"] == "uses"
@@ -45,7 +43,10 @@ def test_saved_buffer_is_not_scanned():
         user_id=USER,
         dirty=False,
     )
-    assert build_overlay_impact_callers(ov, symbol_name="brand_new", workspace_id=WS, user_id=USER) == []
+    assert (
+        build_overlay_impact_callers(ov, symbol_name="brand_new", workspace_id=WS, user_id=USER)
+        == []
+    )
 
 
 def test_recursive_self_call_is_skipped():
@@ -56,13 +57,19 @@ def test_recursive_self_call_is_skipped():
         workspace_id=WS,
         user_id=USER,
     )
-    assert build_overlay_impact_callers(ov, symbol_name="brand_new", workspace_id=WS, user_id=USER) == []
+    assert (
+        build_overlay_impact_callers(ov, symbol_name="brand_new", workspace_id=WS, user_id=USER)
+        == []
+    )
 
 
 def test_no_matching_calls_returns_empty():
     ov = _overlay()
     ov.update("m.py", "def other():\n    return 1\n", workspace_id=WS, user_id=USER)
-    assert build_overlay_impact_callers(ov, symbol_name="brand_new", workspace_id=WS, user_id=USER) == []
+    assert (
+        build_overlay_impact_callers(ov, symbol_name="brand_new", workspace_id=WS, user_id=USER)
+        == []
+    )
 
 
 def test_resolves_under_index_suffixed_workspace():
@@ -78,14 +85,7 @@ def test_resolves_under_index_suffixed_workspace():
 
 def test_multiple_callers_dedup_per_enclosing_symbol():
     ov = _overlay()
-    src = (
-        "def a():\n"
-        "    return brand_new(1)\n"
-        "\n"
-        "def b():\n"
-        "    brand_new(2)\n"
-        "    brand_new(3)\n"
-    )
+    src = "def a():\n    return brand_new(1)\n\ndef b():\n    brand_new(2)\n    brand_new(3)\n"
     ov.update("c.py", src, workspace_id=WS, user_id=USER)
     rows = build_overlay_impact_callers(ov, symbol_name="brand_new", workspace_id=WS, user_id=USER)
     # b calls the target twice but collapses to one row; a is the other caller.

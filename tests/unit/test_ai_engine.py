@@ -291,4 +291,3 @@ class TestOllamaHelpers:
             thinking = "streamed"
 
         assert _ollama_stream_piece(FakeMessage()) == "streamed"
-

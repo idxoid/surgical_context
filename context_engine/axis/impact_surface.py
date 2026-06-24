@@ -58,8 +58,7 @@ def build_impact_surface(
     )
     spans = _symbol_spans(db, candidates, workspace_id=workspace_id)
     rows = [
-        _row_from_candidate(candidate, span=spans.get(candidate.uid))
-        for candidate in candidates
+        _row_from_candidate(candidate, span=spans.get(candidate.uid)) for candidate in candidates
     ]
     return {
         "affected_symbols": rows,

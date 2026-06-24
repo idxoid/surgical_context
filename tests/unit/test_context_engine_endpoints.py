@@ -1009,7 +1009,9 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     seen_surface_args: list[dict] = []
 
     class FakeDriverDb(FakeDb):
-        def resolve_impact_symbol_uid(self, name, workspace_id="local/surgical_context@main", *, file_path=None):
+        def resolve_impact_symbol_uid(
+            self, name, workspace_id="local/surgical_context@main", *, file_path=None
+        ):
             return "symbol-1"
 
         def get_symbol_uid_by_name(self, name, workspace_id="local/surgical_context@main"):

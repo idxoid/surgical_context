@@ -256,11 +256,7 @@ def _hydrate_missing_symbol_code(
     if not uids or db is None:
         return payloads
 
-    missing = [
-        uid
-        for uid in uids
-        if not str((payloads.get(uid) or {}).get("code") or "").strip()
-    ]
+    missing = [uid for uid in uids if not str((payloads.get(uid) or {}).get("code") or "").strip()]
     if not missing:
         return payloads
 

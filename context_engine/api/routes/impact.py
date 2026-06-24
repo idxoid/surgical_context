@@ -68,14 +68,17 @@ def impact(
         safe_path: str | None = None
         if requested_path:
             try:
-                safe_path = main._sandbox_path(requested_path, workspace_id=base_workspace_id, db=db)
+                safe_path = main._sandbox_path(
+                    requested_path, workspace_id=base_workspace_id, db=db
+                )
             except Exception:
                 safe_path = None
 
-        overlay_anchored = bool(safe_path) and overlay.has(
-            safe_path, workspace_id=base_workspace_id, user_id=user_id
-        ) and symbol in overlay.get_symbols(
-            safe_path, workspace_id=base_workspace_id, user_id=user_id
+        overlay_anchored = (
+            bool(safe_path)
+            and overlay.has(safe_path, workspace_id=base_workspace_id, user_id=user_id)
+            and symbol
+            in overlay.get_symbols(safe_path, workspace_id=base_workspace_id, user_id=user_id)
         )
 
         if not symbol_uid and not overlay_anchored:
