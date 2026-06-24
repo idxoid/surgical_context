@@ -45,6 +45,35 @@ def test_resolve_impact_symbol_uid_prefers_requested_file_over_unrelated_callers
     assert uid == "typescript-ask"
 
 
+def test_resolve_impact_symbol_uid_prefers_endpoint_evidence_within_requested_file():
+    db = Neo4jClient.__new__(Neo4jClient)
+
+    def _candidates(name, workspace_id="ws"):
+        return [
+            {
+                "uid": "stale-ask",
+                "path": "/repo/context_engine/api/routes/ask.py",
+                "incoming": 8,
+                "endpoint_edges": 0,
+            },
+            {
+                "uid": "endpoint-ask",
+                "path": "/repo/context_engine/api/routes/ask.py",
+                "incoming": 0,
+                "endpoint_edges": 1,
+            },
+        ]
+
+    db.list_symbol_impact_candidates = _candidates  # type: ignore[method-assign]
+
+    uid = db.resolve_impact_symbol_uid(
+        "ask",
+        "ws",
+        file_path="/repo/context_engine/api/routes/ask.py",
+    )
+    assert uid == "endpoint-ask"
+
+
 def test_resolve_impact_symbol_uid_does_not_cross_files_when_requested_file_is_not_indexed():
     db = Neo4jClient.__new__(Neo4jClient)
 

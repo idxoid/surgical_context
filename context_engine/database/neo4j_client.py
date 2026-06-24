@@ -2877,14 +2877,16 @@ class Neo4jClient:
         name: str,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ) -> list[dict[str, str | int]]:
-        """Return symbol uids for ``name`` ranked by incoming call edges."""
+        """Return symbol candidates with call fan-in and endpoint evidence."""
         with self.driver.session() as session:
             rows = session.run(
                 """
                 MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
                 OPTIONAL MATCH (caller:Symbol)-[:CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED]->(s)
-                RETURN s.uid AS uid, f.path AS path, count(DISTINCT caller) AS incoming
-                ORDER BY incoming DESC, path ASC
+                OPTIONAL MATCH (s)-[endpoint_rel:CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT]->(:ApiEndpoint)
+                RETURN s.uid AS uid, f.path AS path, count(DISTINCT caller) AS incoming,
+                       count(DISTINCT endpoint_rel) AS endpoint_edges
+                ORDER BY endpoint_edges DESC, incoming DESC, path ASC
                 """,
                 name=name,
                 workspace_id=workspace_id,
@@ -2894,6 +2896,7 @@ class Neo4jClient:
                     "uid": str(row["uid"]),
                     "path": str(row["path"]),
                     "incoming": int(row["incoming"] or 0),
+                    "endpoint_edges": int(row["endpoint_edges"] or 0),
                 }
                 for row in rows
             ]
@@ -2946,6 +2949,7 @@ class Neo4jClient:
                 best_matched = max(
                     matched,
                     key=lambda candidate: (
+                        int(candidate.get("endpoint_edges", 0)),
                         int(candidate["incoming"]),
                         -self._impact_path_rank(str(candidate["path"]))[0],
                     ),
@@ -2959,6 +2963,7 @@ class Neo4jClient:
         best = max(
             candidates,
             key=lambda candidate: (
+                int(candidate.get("endpoint_edges", 0)),
                 int(candidate["incoming"]),
                 -self._impact_path_rank(str(candidate["path"]))[0],
             ),
