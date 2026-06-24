@@ -121,6 +121,24 @@ def test_forward_calls_pass_emits_publisher_spine(monkeypatch):
     assert out[0].utility_score == pytest.approx(0.90)
 
 
+def test_http_endpoint_counterpart_surfaces_client_or_handler(monkeypatch):
+    _install(monkeypatch, seed_uids=["u:client"], by_label={})
+    monkeypatch.setattr(
+        impact_traversal,
+        "_http_endpoint_counterparts",
+        lambda *_args, **_kwargs: [
+            _n("u:handler", name="ask", path="/repo/context_engine/api/routes/ask.py")
+        ],
+    )
+
+    out = expand([_seed("u:client")])
+
+    counterpart = next(c for c in out if c.uid == "u:handler")
+    assert counterpart.satisfying_kinds == ("http_endpoint_counterpart",)
+    assert counterpart.edge_type == "CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT"
+    assert counterpart.utility_score == pytest.approx(0.92)
+
+
 def test_hub_gate_uses_production_only_fan_in(monkeypatch):
     """The hub gate must count PRODUCTION callers only — a routing/API node
     hammered by the test suite is not a god utility, and counting test

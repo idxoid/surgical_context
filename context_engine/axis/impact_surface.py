@@ -126,6 +126,8 @@ def _row_from_candidate(
 def _surface_classification(kind: str) -> tuple[str, str, str]:
     if kind == "reverse_calls":
         return "direct", "high", "direct_consumer"
+    if kind == "http_endpoint_counterpart":
+        return "reach", "high", "http_endpoint_counterpart"
     if kind == "structural_api_carrier":
         return "reach", "high", "api_surface"
     if kind == "structural_inheritor":
@@ -138,6 +140,7 @@ def _surface_classification(kind: str) -> tuple[str, str, str]:
 def _edge_type_for_kind(kind: str) -> str:
     return {
         "reverse_calls": "CALLS_*",
+        "http_endpoint_counterpart": "CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT",
         "structural_api_carrier": "HAS_API",
         "structural_inheritor": "EXTENDS_EXTERNAL|INHERITED_API",
         "forward_affects": "AFFECTS",

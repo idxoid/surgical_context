@@ -2951,6 +2951,10 @@ class Neo4jClient:
                     ),
                 )
                 return str(best_matched["uid"])
+            # An explicit editor path is an identity constraint, not a ranking
+            # hint. Falling back to another file here makes common names such
+            # as ``ask`` or ``run`` silently jump across languages/modules.
+            return None
 
         best = max(
             candidates,

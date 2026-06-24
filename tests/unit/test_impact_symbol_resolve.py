@@ -14,7 +14,7 @@ def test_path_matches_file():
     )
     assert not Neo4jClient._path_matches_file(
         "/repo/context_engine/axis/graph_walk.py",
-        "/repo/context_engine/axis/graph_walk.py",
+        "/repo/extension/src/context_engineClient.ts",
     )
 
 
@@ -45,7 +45,7 @@ def test_resolve_impact_symbol_uid_prefers_requested_file_over_unrelated_callers
     assert uid == "typescript-ask"
 
 
-def test_resolve_impact_symbol_uid_uses_callers_when_requested_file_is_not_indexed():
+def test_resolve_impact_symbol_uid_does_not_cross_files_when_requested_file_is_not_indexed():
     db = Neo4jClient.__new__(Neo4jClient)
 
     def _candidates(name, workspace_id="ws"):
@@ -69,4 +69,4 @@ def test_resolve_impact_symbol_uid_uses_callers_when_requested_file_is_not_index
         "ws",
         file_path="/repo/not-yet-indexed/graph_steps.py",
     )
-    assert uid == "active"
+    assert uid is None
