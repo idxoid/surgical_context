@@ -359,17 +359,17 @@ def index_stats(
     main = deps.main
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
-    workspace_id = main.effective_index_workspace_id(base_workspace_id)
+    index_workspace_id = main.effective_index_workspace_id(base_workspace_id)
 
     with main.db_session(user_id=user_id) as db:
-        counts = db.get_workspace_dashboard_counts(workspace_id=workspace_id)
+        counts = db.get_workspace_dashboard_counts(workspace_id=index_workspace_id)
 
     return {
         "status": "ok",
-        "workspace_id": workspace_id,
+        "workspace_id": base_workspace_id,
         "indexed_files": int(counts.get("files") or 0),
         "indexed_symbols": int(counts.get("symbols") or 0),
-        "doc_chunks": int(deps.state.vector_db.count_docs_workspace(workspace_id)),
+        "doc_chunks": int(deps.state.vector_db.count_docs_workspace(index_workspace_id)),
         "symbols_with_docs": int(counts.get("symbols_with_docs") or 0),
         "storage_bytes": int(deps.state.vector_db.storage_size_bytes()),
     }
