@@ -242,12 +242,13 @@ def walk_neighbours(
     """
     from context_engine.axis import graph_walk_inproc
 
+    edge_types = tuple(edges)
     if graph_walk_inproc.should_use(workspace_id):
-        return graph_walk_inproc.walk_neighbours(
+        inproc_rows = graph_walk_inproc.walk_neighbours(
             db,
             workspace_id,
             seed_uids,
-            edges=edges,
+            edges=edge_types,
             direction=direction,
             max_hops=max_hops,
             anchor=anchor,
@@ -255,10 +256,17 @@ def walk_neighbours(
             class_targets_only=class_targets_only,
             limit=limit,
         )
+        if inproc_rows:
+            return inproc_rows
+        # A materialized partition can lag Neo4j after an incremental edge
+        # update.  Treating an empty snapshot walk as authoritative creates a
+        # false "no impact" result until the next full materialization.  Empty
+        # walks are cheap enough to verify against the source of truth; real
+        # leaf nodes still return [] after the Cypher fallback.
     seeds = [u for u in seed_uids if u]
     if not seeds:
         return []
-    rel = _safe_rel_pattern(edges)
+    rel = _safe_rel_pattern(edge_types)
     hops = _safe_max_hops(max_hops)
     if limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("limit must be an integer >= 1")

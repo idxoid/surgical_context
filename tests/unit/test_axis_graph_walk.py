@@ -104,6 +104,25 @@ def test_walk_driver_error_returns_empty():
     assert walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS) == []
 
 
+def test_empty_inproc_walk_falls_back_to_neo4j(monkeypatch):
+    from context_engine.axis import graph_walk_inproc
+
+    monkeypatch.setattr(graph_walk_inproc, "should_use", lambda workspace_id: True)
+    monkeypatch.setattr(graph_walk_inproc, "walk_neighbours", lambda *args, **kwargs: [])
+    db = _FakeDB([_rec("u:caller", name="caller")])
+
+    out = walk_neighbours(
+        db,
+        WORKSPACE,
+        ["u:seed"],
+        edges=(edge for edge in EdgeProfile.CALLS),
+        direction="reverse",
+    )
+
+    assert [row.uid for row in out] == ["u:caller"]
+    assert "CALLS_IMPORTED" in db.session_obj.runs[0][0]
+
+
 # --- walk_neighbours: direction shapes the Cypher --------------------------
 
 

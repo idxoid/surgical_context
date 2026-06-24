@@ -1967,7 +1967,8 @@ ${doc.content}`);
       if (surface === "impact") {
         this.render();
         const selectedSymbol = this.impactTarget().symbol;
-        if ((!this.currentImpact || selectedSymbol && selectedSymbol !== this.currentImpactSymbol) && !this.impactLoading) {
+        const needsGraphImpact = !this.currentImpact || this.currentImpactSource !== "graph" || Boolean(selectedSymbol && selectedSymbol !== this.currentImpactSymbol);
+        if (needsGraphImpact && !this.impactLoading) {
           this.requestImpactForActiveSymbol();
         }
         return;
@@ -2002,6 +2003,12 @@ ${doc.content}`);
       });
     }
     impactTarget() {
+      if (this.currentImpactSource === "graph" && this.currentImpactSymbol) {
+        return {
+          symbol: this.currentImpactSymbol,
+          filePath: this.currentImpactFilePath || void 0
+        };
+      }
       if (this.currentPromptContext) {
         return {
           symbol: this.currentPromptContext.primary_source.symbol,

@@ -730,7 +730,12 @@ class MainSurface {
     if (surface === 'impact') {
       this.render();
       const selectedSymbol = this.impactTarget().symbol;
-      if ((!this.currentImpact || (selectedSymbol && selectedSymbol !== this.currentImpactSymbol)) && !this.impactLoading) {
+      const needsGraphImpact = (
+        !this.currentImpact
+        || this.currentImpactSource !== 'graph'
+        || Boolean(selectedSymbol && selectedSymbol !== this.currentImpactSymbol)
+      );
+      if (needsGraphImpact && !this.impactLoading) {
         this.requestImpactForActiveSymbol();
       }
       return;
@@ -772,6 +777,17 @@ class MainSurface {
   }
 
   private impactTarget(): { symbol?: string; filePath?: string } {
+    // Once a live graph result is loaded, depth changes and refreshes must
+    // stay anchored to that exact symbol. A selected prompt can still be
+    // present in the inspector state; preferring it here silently retargeted
+    // the second request, making a slider move appear to "fix" an empty
+    // impact result with numbers belonging to a different symbol.
+    if (this.currentImpactSource === 'graph' && this.currentImpactSymbol) {
+      return {
+        symbol: this.currentImpactSymbol,
+        filePath: this.currentImpactFilePath || undefined,
+      };
+    }
     if (this.currentPromptContext) {
       return {
         symbol: this.currentPromptContext.primary_source.symbol,
