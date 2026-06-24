@@ -829,6 +829,8 @@ export class GuardsContextCreator {
                 self.cleared_edges = []
                 self.linked_calls = []
                 self.deleted_imports = []
+                self.deleted_http_endpoints = []
+                self.linked_http_endpoints = []
 
             def get_symbol_index_for_file(self, file_path, workspace_id):
                 return {
@@ -851,6 +853,12 @@ export class GuardsContextCreator {
 
             def delete_imports_for_file(self, file_path, workspace_id):
                 self.deleted_imports.append(file_path)
+
+            def delete_http_endpoints_for_file(self, file_path, workspace_id):
+                self.deleted_http_endpoints.append(file_path)
+
+            def link_http_endpoints(self, facts, workspace_id):
+                self.linked_http_endpoints = facts
 
             def link_imports(self, imports, workspace_id):
                 raise AssertionError("No imports expected")
@@ -883,6 +891,16 @@ export class GuardsContextCreator {
             def extract_imports(self, file_path):
                 return []
 
+            def extract_http_endpoints(self, file_path):
+                return [
+                    {
+                        "site_uid": "changed",
+                        "method": "POST",
+                        "path": "/ask",
+                        "role": "call",
+                    }
+                ]
+
             def extract_inheritance(self, file_path):
                 return []
 
@@ -911,6 +929,15 @@ export class GuardsContextCreator {
         assert db.cleared_edges == ["changed", "new"]
         assert db.linked_calls == [{"caller_uid": "changed", "callee_name": "helper"}]
         assert db.deleted_imports == [str(source_file)]
+        assert db.deleted_http_endpoints == [str(source_file)]
+        assert db.linked_http_endpoints == [
+            {
+                "site_uid": "changed",
+                "method": "POST",
+                "path": "/ask",
+                "role": "call",
+            }
+        ]
         assert lance.upserted == ["changed", "new"]
         assert lance.deleted == ["removed"]
         assert rebuilt == ["changed", "new"]

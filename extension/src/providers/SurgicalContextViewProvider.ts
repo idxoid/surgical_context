@@ -11,6 +11,7 @@ import {
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
 import { PromptContextPayload } from '../context_engineClient';
+import { isFileNameSymbol } from '../symbolResolution';
 
 export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'surgicalContext.main';
@@ -591,6 +592,12 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async loadImpact(symbol: string, maxDepth = 3, filePath?: string): Promise<void> {
+    if (isFileNameSymbol(symbol, filePath)) {
+      const message = 'No code symbol selected. Position the cursor inside a method or function.';
+      this.postMessage({ type: 'impact.loadFailed', error: message });
+      void vscode.window.showWarningMessage(`Impact analysis: ${message}`);
+      return;
+    }
     try {
       this.postMessage({ type: 'impact.loading' });
       const impact = await SidecarClient.impact(symbol, maxDepth, filePath);

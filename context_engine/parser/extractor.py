@@ -53,6 +53,17 @@ class SymbolExtractor:
         with project_root_scope(self.project_root):
             return adapter.extract_inheritance(source_code, file_path)
 
+    def extract_http_endpoints(self, file_path: str) -> list[dict]:
+        with open(file_path, encoding="utf-8") as f:
+            source_code = f.read()
+        language = self._resolve_language(file_path)
+        adapter = REGISTRY.get_adapter(language)
+        method = getattr(adapter, "extract_http_endpoints", None)
+        if not callable(method):
+            return []
+        with project_root_scope(self.project_root):
+            return cast(list[dict[Any, Any]], method(source_code, file_path))
+
     def extract_proxy_bindings(self, file_path: str) -> list[dict]:
         with open(file_path, encoding="utf-8") as f:
             source_code = f.read()
