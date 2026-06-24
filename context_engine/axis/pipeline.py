@@ -434,7 +434,11 @@ def _try_symbol_targeted_retrieval(
             )
             if len(bundles) > 1:
                 anchor_index = next(
-                    (index for index, bundle in enumerate(bundles) if bundle.seed.uid == anchor.uid),
+                    (
+                        index
+                        for index, bundle in enumerate(bundles)
+                        if bundle.seed.uid == anchor.uid
+                    ),
                     None,
                 )
                 if anchor_index not in (None, 0):

@@ -216,9 +216,7 @@ def test_anchor_symbol_impact_uses_directional_impact_candidates(stub_stages, mo
     monkeypatch.setattr(
         _intent_mod,
         "classify_intent",
-        lambda *_a, **_k: [
-            IntentMatch(role="impact_analysis", similarity=0.9, description="d")
-        ],
+        lambda *_a, **_k: [IntentMatch(role="impact_analysis", similarity=0.9, description="d")],
     )
 
     caller = RoleCandidate(

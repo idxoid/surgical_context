@@ -456,7 +456,9 @@ def _ensure_context_engine_for_smoke(
                 "temporary context_engine."
             ) from exc
 
-        print(f"\n[smoke] context_engine is not reachable at {base_url}; starting temporary context_engine")
+        print(
+            f"\n[smoke] context_engine is not reachable at {base_url}; starting temporary context_engine"
+        )
         cmd = context_engine_command(args)
         print(f"$ {_display_cmd(cmd)}")
         process = subprocess.Popen(
@@ -714,7 +716,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bootstrap_parser.set_defaults(func=bootstrap)
 
-    context_engine_parser = subparsers.add_parser("context_engine", help="Run the FastAPI context_engine")
+    context_engine_parser = subparsers.add_parser(
+        "context_engine", help="Run the FastAPI context_engine"
+    )
     add_common_args(context_engine_parser)
     context_engine_parser.set_defaults(func=run_context_engine)
 

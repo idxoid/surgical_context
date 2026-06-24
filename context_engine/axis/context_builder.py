@@ -1503,9 +1503,7 @@ def build_context_for_candidates(
     def _utility_score(candidate: RoleCandidate) -> float:
         if utility_score_fn is None:
             return (
-                candidate.utility_score
-                if candidate.utility_score is not None
-                else candidate.score
+                candidate.utility_score if candidate.utility_score is not None else candidate.score
             )
         return utility_score_fn(candidate)
 

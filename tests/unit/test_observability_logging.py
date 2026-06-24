@@ -66,7 +66,9 @@ def test_metrics_registry_tracks_latency_slo_breach(monkeypatch, caplog):
         'context_engine_request_slo_checks_total{endpoint="/ask",status="breached",target_ms="3"} 1'
         in rendered
     )
-    assert 'context_engine_request_slo_violations_total{endpoint="/ask",target_ms="3"} 1' in rendered
+    assert (
+        'context_engine_request_slo_violations_total{endpoint="/ask",target_ms="3"} 1' in rendered
+    )
 
     events = _json_messages(caplog.records)
     request_event = next(event for event in events if event["event"] == "context_engine.request")
