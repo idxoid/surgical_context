@@ -33,6 +33,18 @@
     </button>
   `;
   }
+  function renderIndexWorkspaceButton(isLoading) {
+    return `
+    <button
+      class="primary-action"
+      data-action="indexWorkspace"
+      aria-label="Reindex the current workspace"
+      ${isLoading ? "disabled" : ""}
+    >
+      Reindex workspace
+    </button>
+  `;
+  }
   function renderDashboardWarnings(warnings) {
     if (warnings.length === 0) return "";
     return `
@@ -447,6 +459,7 @@
         return;
       }
       const header = renderDashboardHeader(this.state.workspaceId, this.state.lastUpdate);
+      const indexWorkspaceBtn = renderIndexWorkspaceButton(this.state.isLoading);
       const refreshBtn = renderRefreshButton(this.state.isLoading);
       const warnings = renderDashboardWarnings(this.state.warnings);
       const notices = renderDashboardNotices(this.state.notices);
@@ -464,7 +477,10 @@
       <div class="dashboard-content">
         <div class="dashboard-toolbar">
           ${warnings}
-          ${refreshBtn}
+          <div class="dashboard-actions">
+            ${indexWorkspaceBtn}
+            ${refreshBtn}
+          </div>
         </div>
         ${notices}
         <div class="dashboard-grid">

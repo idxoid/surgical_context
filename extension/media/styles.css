@@ -1211,7 +1211,10 @@ button {
   justify-content: space-between;
 }
 
-.dashboard-toolbar > .refresh-button {
+.dashboard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
 }
 
@@ -1874,6 +1877,10 @@ button {
     grid-template-columns: 1fr;
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .dashboard-actions {
+    margin-left: 0;
   }
 
   .dashboard-meta {

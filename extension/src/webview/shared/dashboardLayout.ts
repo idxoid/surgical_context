@@ -42,6 +42,19 @@ export function renderRefreshButton(isLoading: boolean): string {
   `;
 }
 
+export function renderIndexWorkspaceButton(isLoading: boolean): string {
+  return `
+    <button
+      class="primary-action"
+      data-action="indexWorkspace"
+      aria-label="Reindex the current workspace"
+      ${isLoading ? 'disabled' : ''}
+    >
+      Reindex workspace
+    </button>
+  `;
+}
+
 export function renderDashboardWarnings(warnings: string[]): string {
   if (warnings.length === 0) return '';
 
