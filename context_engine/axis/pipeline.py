@@ -441,7 +441,7 @@ def _try_symbol_targeted_retrieval(
                     ),
                     None,
                 )
-                if anchor_index not in (None, 0):
+                if anchor_index is not None and anchor_index != 0:
                     anchor_bundle = bundles.pop(anchor_index)
                     bundles.insert(0, anchor_bundle)
 
