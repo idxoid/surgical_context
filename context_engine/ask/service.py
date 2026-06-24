@@ -248,7 +248,7 @@ class AskService:
         )
         self.feedback_store.record_snapshot(snapshot)
         self.metrics.increment(
-            "sidecar_feedback_snapshots_total",
+            "context_engine_feedback_snapshots_total",
             labels={"workspace": workspace_id},
         )
 
@@ -290,7 +290,7 @@ class AskService:
             )
             ask_anchor = ctx.primary_source.symbol
             self.metrics.increment(
-                "sidecar_ask_context_total",
+                "context_engine_ask_context_total",
                 labels={"mode": ctx.mode, "workspace": workspace_id},
             )
 
@@ -333,7 +333,7 @@ class AskService:
                     answer = self.degraded_llm_answer(exc)
                     trace.model_route = self.mark_degraded_route(trace.model_route, exc)
                     self.metrics.increment(
-                        "sidecar_llm_degraded_total",
+                        "context_engine_llm_degraded_total",
                         labels={"endpoint": "/ask", "workspace": workspace_id},
                     )
                 else:
@@ -411,7 +411,7 @@ class AskService:
                 )
                 ask_anchor = ctx.primary_source.symbol
                 self.metrics.increment(
-                    "sidecar_ask_context_total",
+                    "context_engine_ask_context_total",
                     labels={"mode": ctx.mode, "workspace": workspace_id},
                 )
 
@@ -464,7 +464,7 @@ class AskService:
                         answer_parts.append(degraded_text)
                         trace.model_route = self.mark_degraded_route(trace.model_route, exc)
                         self.metrics.increment(
-                            "sidecar_llm_degraded_total",
+                            "context_engine_llm_degraded_total",
                             labels={
                                 "endpoint": "/ask/stream",
                                 "workspace": workspace_id,

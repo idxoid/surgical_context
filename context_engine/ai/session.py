@@ -6,7 +6,7 @@ from typing import Any
 class SessionManager:
     def __init__(self):
         # Store config in ~/.config/surgical_context_engine/session.json
-        self.config_dir = Path.home() / ".config" / "surgical_sidecar"
+        self.config_dir = Path.home() / ".config" / "surgical_context_engine"
         self.config_file = self.config_dir / "session.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
 

@@ -3,13 +3,13 @@
 
 > **Status:** The current engine-first development line treats Surgical Context as a **local-first, model-agnostic context engine for code understanding and change impact**.
 >
-> **Release target:** a local context engine with a stable Python sidecar API, local graph/vector/history defaults, a trustworthy `Ask / Inspect / Impact` loop, and the VS Code extension as a reference frontend.
+> **Release target:** a local context engine with a stable Python context_engine API, local graph/vector/history defaults, a trustworthy `Ask / Inspect / Impact` loop, and the VS Code extension as a reference frontend.
 >
 > **Principle:** measure retrieval quality and token efficiency on real repositories before expanding platform scope.
 >
 > **See also:** [concept.md](concept.md), [architectura.md](architectura.md), [README.md](../README.md)
 >
-> **Last updated:** 2026-06-19 (axis/doc-anchor indexing, sidecar module split, and current API/storage truth)
+> **Last updated:** 2026-06-19 (axis/doc-anchor indexing, context_engine module split, and current API/storage truth)
 
 ---
 
@@ -29,7 +29,7 @@ without wasting tokens or hiding retrieval behavior.
 
 ### In Scope
 
-- Python sidecar/API running locally
+- Python context_engine/API running locally
 - reference VS Code surfaces: Chat, Inspector, Impact, Settings, Dashboard
 - local defaults: Neo4j, LanceDB, SQLite
 - retrieval ladder: `symbol -> file -> workspace -> direct_llm`
@@ -44,7 +44,7 @@ without wasting tokens or hiding retrieval behavior.
 - cross-tenant or cross-organization graph traversal
 - broad enterprise RBAC and policy surface
 - mandatory LLM proxy gateway
-- microservice split of the sidecar
+- microservice split of the context_engine
 - parser/indexer rewrites before profiling proves a bottleneck
 - "general autonomous coding agent" competition as a release goal
 
@@ -93,8 +93,8 @@ Active work for the local release. Completed stabilization and phase history are
 - [ ] Multi-repo axis sweep in CI (currently manual via `QA/run_full_benchmark_sweep.py`).
 
 ### P4 — Provider boundaries (defaults first)
-- [ ] Define `GraphProvider` protocol around the methods the sidecar already uses and wrap `Neo4jClient` as the default implementation.
-- [ ] Define `VectorProvider` protocol around the methods the sidecar already uses and wrap `LanceDBClient` as the default implementation.
+- [ ] Define `GraphProvider` protocol around the methods the context_engine already uses and wrap `Neo4jClient` as the default implementation.
+- [ ] Define `VectorProvider` protocol around the methods the context_engine already uses and wrap `LanceDBClient` as the default implementation.
 - [x] Implement SQLite local history with conversations, messages, ask snapshots, inspector snapshots, impact snapshots, retention pruning, and `disabled` / `ephemeral` modes.
 - [~] Add provider config only for local defaults first: history has `local`, `ephemeral`, and `disabled`; graph/vector config boundaries remain.
 - [~] Put storage policy above all providers for prompt text, response text, source snippets, retention, redaction, and sharing. Local history sanitization exists; broader vector/shared/audit policy remains.
@@ -107,7 +107,7 @@ Active work for the local release. Completed stabilization and phase history are
 - [ ] Add customer-managed/dedicated provider modes for graph, vector, and history stores.
 - [ ] Add Tenant API Contract Graph for project-published API facts and tenant-level service links; no neighboring source scans.
 - [ ] Add optional LLM Proxy Gateway transport for organizations that need provider-account policy, auditing, masking, quotas, or fallback outside the context_engine.
-- [ ] Split the sidecar into services only when scale requires it.
+- [ ] Split the context_engine into services only when scale requires it.
 - [ ] Consider Rust/Go/C parser or indexer hot paths only after a performance review proves Python orchestration is the bottleneck.
 
 ---
@@ -129,7 +129,7 @@ Ordered execution lanes — do not regress green control repos while working tai
 - After axis engine changes: run P7 gate (`pytest tests/integration/ --run-integration`) and spot-check `python -m QA.axis_benchmark` on control repos.
 - Full sweep: `python QA/run_full_benchmark_sweep.py` (manual; requires pre-indexed workspaces).
 
-**Docs:** product thesis + safety specs current (maintenance only). Eval: [spec_eval_harness.md](spec_eval_harness.md). API/sandbox: [spec_sidecar_api.md](spec_sidecar_api.md).
+**Docs:** product thesis + safety specs current (maintenance only). Eval: [spec_eval_harness.md](spec_eval_harness.md). API/sandbox: [spec_context_engine_api.md](spec_context_engine_api.md).
 
 ---
 
@@ -139,13 +139,13 @@ This section preserves the post-MVP hardening record. Completed items remain use
 
 ### P0 - Truth, Safety, and API Hardening
 - [x] Refresh the root `README.md` as the current-truth entry point; archive or label historical analysis when status changes.
-- [x] Fix sidecar DB lifecycle: remove mutable request identity from the global client; use request-scoped user context.
+- [x] Fix context_engine DB lifecycle: remove mutable request identity from the global client; use request-scoped user context.
 - [x] Historical cascade moved doc resolution inside arbitration before prompt compilation. That pipeline was later removed; general markdown propagation into a successful axis prompt is tracked as an active P2 gap above.
 - [x] Add typed API response models and JSON-safe SSE framing for `/ask/stream`.
 - [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
 - [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
 - [x] Add auth-boundary enforcement tests for protected endpoints with `AUTH_REQUIRED=true`.
-- [x] Workspace path sandboxing: caller-supplied paths and **graph-resolved** `file_path` values normalized under registered `project_path`; outside root → `403` or empty code; stale Neo4j paths pruned on manifest persist (`context_engine/workspace_paths.py`, `spec_sidecar_api.md`).
+- [x] Workspace path sandboxing: caller-supplied paths and **graph-resolved** `file_path` values normalized under registered `project_path`; outside root → `403` or empty code; stale Neo4j paths pruned on manifest persist (`context_engine/workspace_paths.py`, `spec_context_engine_api.md`).
 - [x] Queued `POST /index` registers workspace root immediately via `register_workspace_project_root()` (extension default `queue=true` no longer leaves `/overlay` / `/index/file` without a manifest).
 - [x] Bounded public API limits: search `limit` 1–50, `token_budget` 400–32 000 (HTTP 422 when out of range).
 - [x] Anthropic default model `claude-sonnet-4-6` (`ANTHROPIC_MODEL` override; retired `claude-sonnet-4-20250514`).
@@ -182,7 +182,7 @@ Goal: Working "VS Code ↔ Python Sidecar" prototype with basic parsing.
 ### Infrastructure
 - [x] Docker container with Neo4j and schema configuration (`docker-compose.yml`)
 - [x] Python environment and project scaffold
-- [x] FastAPI HTTP/JSON sidecar entrypoint (`context_engine/main.py`)
+- [x] FastAPI HTTP/JSON context_engine entrypoint (`context_engine/main.py`)
 - [x] Switch Docker image from `neo4j:5.12-enterprise` to `neo4j:5.12-community` for open-source dev baseline (enterprise license only where intentionally required)
 - [x] Move `NEO4J_AUTH` out of `docker-compose.yml` into `.env` with `.env.example` committed
 
@@ -630,7 +630,7 @@ Goal: Make retrieval cheap at scale and let the system get better from usage. De
 - [~] Streaming chat integration with `/ask/stream` JSON-safe SSE events (endpoint + degradation shipped; extension wiring incomplete).
 - [x] Token budget, selected mode, query intent, and model route display.
 - [ ] Keyboard shortcuts and accessibility (ARIA labels, focus management, screen reader support).
-- [~] VS Code settings UI exists for sidecar URL, model preference, workspace ID, token budget, auth token, overlay, storage, and keyboard shortcuts. **Remaining:** model preference is currently extension-local/display state; sidecar routing is still controlled by process environment.
+- [~] VS Code settings UI exists for context_engine URL, model preference, workspace ID, token budget, auth token, overlay, storage, and keyboard shortcuts. **Remaining:** model preference is currently extension-local/display state; context_engine routing is still controlled by process environment.
 - [~] Chat, Inspector, Impact, and Dashboard surfaces are implemented in TypeScript/DOM; request restoration, richer axis evidence, and accessibility remain incomplete.
 
 ### 10.6 Storage Provider Connectors
@@ -708,7 +708,7 @@ Goal: add tenant-level service/API awareness after the local product is stable. 
 | Model Router misclassification | Medium | Misclassification can send a complex task to a cheaper model | Model routing and Claude→Ollama fallback are implemented; remaining mitigation is benchmark tuning and clearer extension surfacing. | 🟡 Mitigated |
 | Enterprise Neo4j image in dev | Low | Licensing ambiguity for open-source contributors | Switch to `community` edition in Phase 1 polish ✅ | ✅ Resolved |
 | **Incremental index split-brain** | **Critical** | Graph storage can commit symbol/edge changes while vector storage writes fail or the process is killed. Graph/vector stores then disagree silently. | Durable job log + retry/dead-letter states implemented; next: idempotent replay worker or rollback strategy | 🟡 Mitigated |
-| **IDE event storm** | **High** | Mass refactor, find/replace across many files, or `git stash pop` can flood the sidecar with parse/embed/index work. | Bounded sidecar queue + VS Code save batching implemented; next: branch-sync enqueue integration | 🟡 Mitigated |
+| **IDE event storm** | **High** | Mass refactor, find/replace across many files, or `git stash pop` can flood the context_engine with parse/embed/index work. | Bounded context_engine queue + VS Code save batching implemented; next: branch-sync enqueue integration | 🟡 Mitigated |
 | **Git branch cache invalidation** | **High** | Checkout changes many ASTs at once; full reindex is slow, stale graph/vector versions are wrong. | Git state tracker + changed-file detection implemented; next: queue integration and vector cache keys | 🟡 Mitigated |
 | **Local embedding compute cost** | **Medium** | Re-embedding changed symbols on every save can consume CPU/GPU and degrade editor responsiveness. | Content-hash embedding cache + configurable encode batch/throttle/low-priority mode implemented | ✅ Resolved |
 | **UID instability** | **Critical** | Old `sha256(file_path:name)` broke on rename/move and collided on overloads + nested funcs. | Stable UID v2 implemented; migration CLI remains cleanup | 🟡 Mitigated |

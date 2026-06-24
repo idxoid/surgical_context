@@ -84,6 +84,9 @@ def expand_trace_neighbourhood(
                     kind_count=1,
                     vector_distance=None,
                     score=base_score,
+                    depth=n.depth,
+                    edge_type="CALLS_*",
+                    utility_score=base_score / max(1, n.depth),
                 )
             )
             if len(out) >= max_traced:

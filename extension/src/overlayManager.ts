@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { resolveDocumentSymbolAtPosition } from './documentSymbolResolver';
 import { resolveSymbolNameFromLine } from './symbolResolution';
-import { SidecarClient } from './sidecarClient';
+import { SidecarClient } from './context_engineClient';
 
 const DEBOUNCE_MS = 300;
 const SAVE_BATCH_DEBOUNCE_MS = 500;
@@ -24,7 +24,7 @@ export class OverlayManager {
       try {
         await SidecarClient.overlay(key, event.document.getText(), true);
       } catch {
-        // silent — sidecar may be temporarily down; no UI noise on keypress
+        // silent — context_engine may be temporarily down; no UI noise on keypress
       }
     }, DEBOUNCE_MS);
 

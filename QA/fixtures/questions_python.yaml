@@ -683,7 +683,7 @@ questions:
   repo: surgical_context
   core12: false
   symbol: SidecarClient
-  question: How does the VS Code extension send an ask-about-symbol request from the webview to the sidecar /ask handler?
+  question: How does the VS Code extension send an ask-about-symbol request from the webview to the context_engine /ask handler?
   difficulty: medium
   intent: trace_dependency
   expected_mode: symbol
@@ -694,7 +694,7 @@ questions:
   - SurgicalContextViewProvider
   - activate
   expected_files:
-  - extension/src/sidecarClient.ts
+  - extension/src/context_engineClient.ts
   - extension/src/providers/SurgicalContextViewProvider.ts
   - extension/src/extension.ts
   - context_engine/main.py

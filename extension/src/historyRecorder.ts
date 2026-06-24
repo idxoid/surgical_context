@@ -4,7 +4,7 @@ import {
   hashHistoryText,
   safeAnswerSummary,
   safePromptSummary,
-} from './sidecarClient';
+} from './context_engineClient';
 
 export interface AskHistoryInput {
   conversationId?: string;

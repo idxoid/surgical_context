@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SidecarClient } from '../sidecarClient';
+import { SidecarClient } from '../context_engineClient';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
 import { stateManager } from '../state/ExtensionState';
@@ -9,7 +9,7 @@ import {
   HostToWebviewMessage,
   ChatSurfaceState,
 } from '../webview/shared/protocol';
-import { PromptContextPayload } from '../sidecarClient';
+import { PromptContextPayload } from '../context_engineClient';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'surgicalContext.chat';
@@ -81,7 +81,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         isDirty: state.isDirty,
       },
       backend: {
-        sidecarHealth: state.sidecarHealth,
+        context_engineHealth: state.context_engineHealth,
         cloudStatus: state.cloudStatus,
       },
     };
@@ -112,7 +112,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const state = stateManager.getState();
     this.postMessage({
       type: 'backend.updated',
-      sidecarHealth: state.sidecarHealth,
+      context_engineHealth: state.context_engineHealth,
       cloudStatus: state.cloudStatus,
     });
   }

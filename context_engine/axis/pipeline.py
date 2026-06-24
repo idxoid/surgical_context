@@ -35,7 +35,7 @@ Design notes that matter for the seam:
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from context_engine.axis import (
@@ -186,11 +186,11 @@ def _pin_anchor_symbol(
         ):
             return True
         if "/context_engine/" in requested_path:
-            alt = requested_path.replace("/context_engine/", "/sidecar/", 1)
+            alt = requested_path.replace("/context_engine/", "/context_engine/", 1)
             if stored == alt or stored.endswith(alt):
                 return True
-        elif "/sidecar/" in requested_path:
-            alt = requested_path.replace("/sidecar/", "/context_engine/", 1)
+        elif "/context_engine/" in requested_path:
+            alt = requested_path.replace("/context_engine/", "/context_engine/", 1)
             if stored == alt or stored.endswith(alt):
                 return True
         return stored.endswith(f"/{requested_path.rsplit('/', 1)[-1]}")
@@ -200,7 +200,7 @@ def _pin_anchor_symbol(
         pinned = min(
             path_matches,
             key=lambda c: (
-                10 if "/sidecar/" in (c.file_path or "").lower() else 0,
+                10 if "/context_engine/" in (c.file_path or "").lower() else 0,
                 len(c.file_path or ""),
             ),
         )
@@ -275,13 +275,14 @@ def _pin_anchor_symbol(
 
 def _symbol_targeted_budget(
     *,
+    intent: list[IntentMatch],
     intent_budget: bool,
     base_token_budget: int,
     render_mode_override: str | None,
 ) -> tuple[int | None, str, Any | None]:
     if not intent_budget:
         return None, "full", None
-    budget_profile = ARCHITECTURE
+    budget_profile = budget_for_intent(intent)
     token_budget = budget_profile.effective_tokens(base_token_budget)
     render_mode = (
         budget_profile.render_mode if render_mode_override is None else render_mode_override
@@ -298,6 +299,8 @@ def _try_symbol_targeted_retrieval(
     lance: Any,
     with_context: bool,
     context_per_seed: int,
+    max_impacted: int,
+    intent: list[IntentMatch],
     intent_budget: bool,
     base_token_budget: int,
     render_mode_override: str | None,
@@ -307,7 +310,12 @@ def _try_symbol_targeted_retrieval(
     user_id: str,
     trace: Any,
 ) -> AxisRetrievalResult | None:
-    """CodeLens / ask-from-code fast path — skip intent embed and pool walks."""
+    """CodeLens / ask-from-code fast path — pin the seed, skip pool retrieval.
+
+    The question is still classified before this function runs.  A pinned
+    symbol removes seed-search ambiguity; it does not erase whether the user
+    asked for architecture, impact, or a call trace.
+    """
     if not (anchor_symbol or "").strip():
         return None
 
@@ -335,9 +343,11 @@ def _try_symbol_targeted_retrieval(
             user_id=user_id,
             with_context=with_context,
             render_mode=render_mode_override or "full",
+            intent=intent,
         )
 
     token_budget, render_mode, budget_profile = _symbol_targeted_budget(
+        intent=intent,
         intent_budget=intent_budget,
         base_token_budget=base_token_budget,
         render_mode_override=render_mode_override,
@@ -349,11 +359,58 @@ def _try_symbol_targeted_retrieval(
         with trace.stage("adjacency"):
             graph_walk_inproc.load_adjacency(db, workspace_id)
 
+    intent_roles = [match.role for match in intent]
+    intent_similarities = {match.role: match.similarity for match in intent}
+    mode_roles = set(intent_roles) & _MODE_ROLES
+    context_candidates = [anchor]
+    traversal_mode: str | None = "deferred_binding_flow"
+    include_tests = include_tests_in_walks
+
+    if with_context and "impact_analysis" in mode_roles:
+        impact_anchor = replace(
+            anchor,
+            role="impact_analysis",
+            satisfying_kinds=("target_seed",),
+            kind_count=1,
+            depth=0,
+            edge_type="TARGET",
+            utility_score=1.0,
+        )
+        impacted = impact_traversal.expand_impact_neighbourhood(
+            [impact_anchor],
+            db=db,
+            workspace_id=workspace_id,
+            max_impacted=max_impacted,
+            include_tests=True,
+            intent_roles=intent_roles,
+            intent_similarities=intent_similarities,
+        )
+        context_candidates = [impact_anchor, *impacted]
+        traversal_mode = None
+        include_tests = True
+    elif with_context and "trace_dependency" in mode_roles:
+        trace_anchor = replace(
+            anchor,
+            role="trace_dependency",
+            satisfying_kinds=("target_seed",),
+            kind_count=1,
+            depth=0,
+            edge_type="TARGET",
+            utility_score=1.0,
+        )
+        traced = trace_traversal.expand_trace_neighbourhood(
+            [trace_anchor],
+            db=db,
+            workspace_id=workspace_id,
+        )
+        context_candidates = [trace_anchor, *traced]
+        traversal_mode = None
+
     bundles: list[ContextBundle] = []
     if with_context:
         with trace.stage("context"):
             bundles = context_builder.build_context_for_candidates(
-                [anchor],
+                context_candidates,
                 workspace_id=workspace_id,
                 db=db,
                 lance=lance,
@@ -370,17 +427,26 @@ def _try_symbol_targeted_retrieval(
                 signature_only_initial=(
                     budget_profile.signature_only_initial if budget_profile else False
                 ),
-                include_tests=include_tests_in_walks,
+                traversal_mode=traversal_mode,
+                include_tests=include_tests,
                 overlay=overlay,
                 user_id=user_id,
             )
+            if len(bundles) > 1:
+                anchor_index = next(
+                    (index for index, bundle in enumerate(bundles) if bundle.seed.uid == anchor.uid),
+                    None,
+                )
+                if anchor_index not in (None, 0):
+                    anchor_bundle = bundles.pop(anchor_index)
+                    bundles.insert(0, anchor_bundle)
 
     seed_path = (anchor.file_path or "").strip()
     return AxisRetrievalResult(
-        intent=[],
+        intent=list(intent),
         raw_by_role={},
         seed_files=[seed_path] if seed_path else [],
-        candidates_for_context=pinned,
+        candidates_for_context=context_candidates,
         bundles=list(bundles),
         render_mode=render_mode,
     )
@@ -394,6 +460,7 @@ def _overlay_only_result(
     user_id: str,
     with_context: bool,
     render_mode: str,
+    intent: list[IntentMatch] | None = None,
 ) -> AxisRetrievalResult:
     """Assemble context for an overlay-only anchor without any graph walk.
 
@@ -440,7 +507,7 @@ def _overlay_only_result(
 
     seed_path = (anchor.file_path or "").strip()
     return AxisRetrievalResult(
-        intent=[],
+        intent=list(intent or []),
         raw_by_role={},
         seed_files=[seed_path] if seed_path else [],
         candidates_for_context=[anchor],
@@ -485,6 +552,17 @@ def run_axis_retrieval(
 
     tr = trace if trace is not None else _NullTrace()
 
+    def _embed(text: str):
+        return lance._embed([text])[0]  # noqa: SLF001
+
+    with tr.stage("intent"):
+        intent = intent_classifier.classify_intent(
+            question,
+            _embed,
+            top_k=top_roles,
+            threshold=intent_threshold,
+        )
+
     symbol_targeted = bool((anchor_symbol or "").strip())
     if symbol_targeted:
         fast = _try_symbol_targeted_retrieval(
@@ -495,6 +573,8 @@ def run_axis_retrieval(
             lance=lance,
             with_context=with_context,
             context_per_seed=context_per_seed,
+            max_impacted=max_impacted,
+            intent=list(intent),
             intent_budget=intent_budget,
             base_token_budget=base_token_budget,
             render_mode_override=render_mode_override,
@@ -506,17 +586,6 @@ def run_axis_retrieval(
         )
         if fast is not None:
             return fast
-
-    def _embed(text: str):
-        return lance._embed([text])[0]  # noqa: SLF001
-
-    with tr.stage("intent"):
-        intent = intent_classifier.classify_intent(
-            question,
-            _embed,
-            top_k=top_roles,
-            threshold=intent_threshold,
-        )
 
     # Impact questions explicitly ask "what tests are affected". Tests reach
     # the pool ONLY through the dedicated, hub-gated ``impacted_tests`` walk in

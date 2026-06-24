@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SidecarClient } from './sidecarClient';
+import { SidecarClient } from './context_engineClient';
 import { OverlayManager } from './overlayManager';
 import { SurgicalContextCodeLensProvider } from './providers/CodeLensProvider';
 import { SurgicalContextHoverProvider } from './providers/HoverProvider';
@@ -21,19 +21,19 @@ export function activate(context: vscode.ExtensionContext): void {
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = 'surgicalContext.checkHealth';
   statusBarItem.text = '$(loading~spin) Surgical Context';
-  statusBarItem.tooltip = 'Click to check sidecar health';
+  statusBarItem.tooltip = 'Click to check context_engine health';
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
-  // Verify sidecar is reachable and update state (non-blocking)
+  // Verify context_engine is reachable and update state (non-blocking)
   SidecarClient.health().then(ok => {
     stateManager.setState({
-      sidecarHealth: ok ? 'up' : 'down',
+      context_engineHealth: ok ? 'up' : 'down',
     });
     statusBarItem.text = ok ? '$(check) Surgical Context' : '$(warning) Surgical Context';
     statusBarItem.backgroundColor = ok ? undefined : new vscode.ThemeColor('statusBarItem.warningBackground');
     vscode.window.setStatusBarMessage(
-      ok ? '✓ Surgical Context sidecar is ready' : '⚠ Surgical Context sidecar is unreachable',
+      ok ? '✓ Surgical Context context_engine is ready' : '⚠ Surgical Context context_engine is unreachable',
       5000
     );
   }).catch(err => {

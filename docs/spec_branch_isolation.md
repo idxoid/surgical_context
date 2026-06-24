@@ -66,7 +66,7 @@ X-Workspace: acme/surgical_context@feature/new-pricing
 
 Bearer-token scope wins; a conflicting header returns `403`. Without a token,
 `X-Workspace` is trusted only when `TRUST_CLIENT_WORKSPACE_HEADER=true`; otherwise
-the sidecar falls back to `DEFAULT_WORKSPACE_ID` (`local/surgical_context@main`).
+the context_engine falls back to `DEFAULT_WORKSPACE_ID` (`local/surgical_context@main`).
 The VS Code extension derives `local/{workspace-folder-name}@{git-branch-or-short-sha}`,
 uses it to bootstrap `/auth/token`, and then sends both token and header.
 
@@ -99,7 +99,7 @@ Workspace scoping is enforced in storage queries, not by filtering returned rows
 
 - **Create workspace:** implicit on first `/index` call with a new `ref`.
 - **Switch workspace:** client passes a new `X-Workspace`; server validates membership, serves from that namespace.
-- **Delete workspace:** not exposed by the sidecar yet.
+- **Delete workspace:** not exposed by the context_engine yet.
 - **Branch rebased / force-pushed:** git-delta helpers update registered workspaces, but automatic old-workspace TTL garbage collection is not implemented.
 
 ## 3. API / Interface
@@ -180,5 +180,5 @@ No destructive rebuild needed — additive schema change.
 
 - [spec_uid_stability.md](spec_uid_stability.md) — UIDs must be semantic (not path-based) for cross-workspace identity to work.
 - [spec_overlay.md](spec_overlay.md) — overlay key upgrades to `(user, workspace)`.
-- [spec_sidecar_api.md](spec_sidecar_api.md) — `X-Workspace` header added to every endpoint.
+- [spec_context_engine_api.md](spec_context_engine_api.md) — `X-Workspace` header added to every endpoint.
 - [architectura.md](architectura.md) — local-first product boundary and storage architecture.

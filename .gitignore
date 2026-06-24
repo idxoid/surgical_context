@@ -24,7 +24,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Local sidecar data, indexes, and benchmark outputs
+# Local context_engine data, indexes, and benchmark outputs
 data/
 context_engine/data/
 import/

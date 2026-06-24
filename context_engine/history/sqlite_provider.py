@@ -584,7 +584,7 @@ class SQLiteHistoryProvider:
 
 
 class EphemeralSQLiteHistoryProvider(SQLiteHistoryProvider):
-    """SQLite history that is deleted with the current sidecar process."""
+    """SQLite history that is deleted with the current context_engine process."""
 
     mode = "ephemeral"
 

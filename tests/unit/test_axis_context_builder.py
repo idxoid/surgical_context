@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from context_engine.axis.context_builder import build_context_for_candidates
@@ -146,6 +147,36 @@ def test_seed_carries_code_and_zero_depth():
     assert bundle.seed.distance_from_seed == 0
     assert bundle.seed.expansion_step is None
     assert bundle.related == ()
+
+
+def test_flat_impact_candidate_preserves_directional_metadata_and_utility():
+    candidate = replace(
+        _make_candidate("u:caller", "caller", role="impact_analysis", score=0.35),
+        satisfying_contracts=(),
+        satisfying_kinds=("reverse_calls",),
+        contract_count=0,
+        kind_count=1,
+        depth=2,
+        edge_type="CALLS_*",
+        utility_score=0.87,
+    )
+    db = _FakeDB([])
+    lance = _FakeLance([_lance_row("u:caller", "def caller(): target()")])
+
+    [bundle] = build_context_for_candidates(
+        [candidate],
+        workspace_id=WORKSPACE,
+        db=db,
+        lance=lance,
+        traversal_mode=None,
+    )
+
+    assert db._session.runs == []
+    assert bundle.utility_score == 0.87
+    assert bundle.seed.kind == "reverse_calls"
+    assert bundle.seed.direction == "caller"
+    assert bundle.seed.edge_type == "CALLS_*"
+    assert bundle.seed.distance_from_seed == 2
 
 
 def test_expanded_related_symbols_carry_step_and_depth():

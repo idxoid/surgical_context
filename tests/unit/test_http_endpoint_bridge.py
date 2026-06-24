@@ -21,10 +21,10 @@ class TestHttpEndpointNormalization:
 
 
 class TestTypeScriptHttpEndpointExtraction:
-    def test_sidecar_client_posts_ask(self):
+    def test_context_engine_client_posts_ask(self):
         adapter = TypeScriptAdapter()
-        source = Path("extension/src/sidecarClient.ts").read_text()
-        path = "extension/src/sidecarClient.ts"
+        source = Path("extension/src/context_engineClient.ts").read_text()
+        path = "extension/src/context_engineClient.ts"
         from context_engine.parser.uid import (
             compute_uid,
             module_name_from_path,
@@ -36,11 +36,11 @@ class TestTypeScriptHttpEndpointExtraction:
             rows = adapter.extract_http_endpoints(source, path)
             qn = f"{module_name_from_path(path)}.SidecarClient"
             sig = normalize_signature("SidecarClient()->_", "typescript")
-            sidecar_uid = compute_uid(qn, sig, "typescript")
+            context_engine_uid = compute_uid(qn, sig, "typescript")
         calls = [r for r in rows if r["role"] == "call" and r["path"] == "/ask"]
         assert len(calls) == 1
         assert calls[0]["method"] == "POST"
-        assert calls[0]["site_uid"] == sidecar_uid
+        assert calls[0]["site_uid"] == context_engine_uid
 
     def test_express_app_get_registers_handler(self):
         adapter = TypeScriptAdapter()

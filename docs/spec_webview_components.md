@@ -204,7 +204,7 @@ Do not persist transient streaming buffers after dispose.
 ### Message protocol principles
 
 - All messages are typed.
-- Webviews never call sidecar HTTP APIs directly.
+- Webviews never call context_engine HTTP APIs directly.
 - The extension host is the only bridge to VS Code APIs and the context_engine.
 - Every request message has a response, progress, or error path.
 
@@ -241,7 +241,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'impact.loaded'; payload: ImpactDto }
   | { type: 'dashboard.loaded'; payload: DashboardDto }
   | { type: 'workspace.updated'; workspaceId: string; activeFile: string | null; symbol: string | null; isDirty: boolean }
-  | { type: 'backend.updated'; sidecarHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'offline' }
+  | { type: 'backend.updated'; context_engineHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'offline' }
   | { type: 'toast.show'; level: 'info' | 'warning' | 'error'; message: string };
 ```
 

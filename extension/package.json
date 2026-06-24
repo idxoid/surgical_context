@@ -1,7 +1,7 @@
 {
   "name": "surgical-context",
   "displayName": "Surgical Context",
-  "description": "Symbol-level code Q&A powered by a local Python sidecar",
+  "description": "Symbol-level code Q&A powered by a local Python context_engine",
   "version": "0.1.0",
   "publisher": "local-dev",
   "engines": {
@@ -216,7 +216,7 @@
           {
             "id": "viewDashboard",
             "title": "Monitor Health",
-            "description": "Open the Dashboard to see system health, indexing status, and recent activity. Use the Dashboard to track sidecar health and cloud connectivity.\n\n[Open Dashboard](command:surgicalContext.openDashboard)",
+            "description": "Open the Dashboard to see system health, indexing status, and recent activity. Use the Dashboard to track context_engine health and cloud connectivity.\n\n[Open Dashboard](command:surgicalContext.openDashboard)",
             "media": {
               "image": "media/icon.svg",
               "altText": "Surgical Context icon"
@@ -231,7 +231,7 @@
         "surgicalContext.backendUrl": {
           "type": "string",
           "default": "http://localhost:8000",
-          "description": "Base URL of the Surgical Context sidecar backend"
+          "description": "Base URL of the Surgical Context context_engine backend"
         },
         "surgicalContext.workspaceId": {
           "type": "string",
@@ -246,12 +246,12 @@
             "claude",
             "ollama"
           ],
-          "description": "Preferred sidecar model route for ask requests"
+          "description": "Preferred context_engine model route for ask requests"
         },
         "surgicalContext.authToken": {
           "type": "string",
           "default": "",
-          "description": "Bearer token used when the sidecar requires authentication"
+          "description": "Bearer token used when the context_engine requires authentication"
         },
         "surgicalContext.tokenBudget": {
           "type": "number",
@@ -263,7 +263,7 @@
         "surgicalContext.storage.lancedbPath": {
           "type": "string",
           "default": "./data/lancedb",
-          "description": "Local LanceDB path used by the sidecar environment"
+          "description": "Local LanceDB path used by the context_engine environment"
         },
         "surgicalContext.storage.historyPath": {
           "type": "string",
@@ -273,7 +273,7 @@
         "surgicalContext.graph.neo4jUri": {
           "type": "string",
           "default": "bolt://localhost:7687",
-          "description": "Neo4j Bolt URI used by the sidecar (configure NEO4J_URI in repo .env and docker compose)"
+          "description": "Neo4j Bolt URI used by the context_engine (configure NEO4J_URI in repo .env and docker compose)"
         },
         "surgicalContext.graph.indexProfile": {
           "type": "string",
@@ -287,7 +287,7 @@
         "surgicalContext.overlaySync": {
           "type": "boolean",
           "default": true,
-          "description": "Send unsaved editor content to the sidecar so asks use the latest in-memory code"
+          "description": "Send unsaved editor content to the context_engine so asks use the latest in-memory code"
         },
         "surgicalContext.chat.autoOpenInspector": {
           "type": "boolean",

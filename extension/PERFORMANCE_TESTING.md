@@ -110,7 +110,7 @@ These are recommended starting points. Adjust based on your hardware:
 |--------|-----------|-------|
 | Extension Activation | 2000ms | One-time cost |
 | API Latency | 500-1500ms | Network-dependent |
-| Chat First Chunk | 2000ms | Includes sidecar response |
+| Chat First Chunk | 2000ms | Includes context_engine response |
 | Message Render | 100ms | Per message |
 | Tab Switch | 50ms | 60fps target |
 | Memory (Heap) | 500MB | Max usage |

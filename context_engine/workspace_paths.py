@@ -57,7 +57,7 @@ def trusted_workspace_roots() -> list[Path]:
 
     When unset, no extra root restriction is applied beyond workspace identity
     checks. Set to parent directories that may host registered project roots
-    (e.g. ``$HOME`` or ``/home/user/projects``) when the sidecar is reachable
+    (e.g. ``$HOME`` or ``/home/user/projects``) when the context_engine is reachable
     beyond strict localhost trust.
     """
     raw = os.getenv("WORKSPACE_TRUSTED_ROOTS", "").strip()

@@ -234,7 +234,7 @@
     </div>
   `;
   }
-  function renderComposerDock() {
+  function renderComposerDock(isStreaming = false) {
     return `
     <div class="composer-dock">
       <textarea
@@ -245,11 +245,21 @@
         aria-describedby="composer-help"
         rows="1"
       ></textarea>
-      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message">
+      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message" ${isStreaming ? "hidden" : ""}>
         <span class="composer-send-icon" aria-hidden="true">\u27A4</span>
       </button>
+      <button
+        id="composer-stop"
+        class="composer-stop-btn"
+        data-action="stopStreaming"
+        title="Stop response"
+        aria-label="Stop response generation"
+        ${isStreaming ? "" : "hidden"}
+      >
+        <span class="composer-stop-icon" aria-hidden="true"></span>
+      </button>
       <div id="composer-help" class="sr-only">
-        Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer.
+        Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer. While a response is streaming, use Stop to cancel it.
       </div>
     </div>
   `;
@@ -315,7 +325,7 @@
           case "backend.updated":
             if (this.state) {
               this.state.backend = {
-                sidecarHealth: message.sidecarHealth,
+                context_engineHealth: message.context_engineHealth,
                 cloudStatus: message.cloudStatus
               };
               this.updateHeader();
@@ -335,6 +345,7 @@
     setupComposerListeners() {
       const composer = document.getElementById("composer-input");
       const sendBtn = document.getElementById("composer-send");
+      const stopBtn = document.getElementById("composer-stop");
       if (!composer || !sendBtn) return;
       composer.addEventListener("input", () => {
         resizeComposerToFit(composer);
@@ -347,6 +358,7 @@
         }
       });
       sendBtn.addEventListener("click", () => this.askAboutSymbol());
+      stopBtn?.addEventListener("click", () => this.stopStreaming());
       document.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "l") {
           e.preventDefault();
@@ -433,6 +445,10 @@
     askAboutSymbol() {
       const composer = document.getElementById("composer-input");
       if (!composer || !composer.value.trim() || !this.state) return;
+      if (this.currentStreamingRequestId) {
+        this.showToast("Stop the current response before sending another ask.", "info");
+        return;
+      }
       const prompt = composer.value.trim();
       const symbol = this.state.workspace.selectedSymbol || void 0;
       composer.value = "";
@@ -445,6 +461,7 @@
     }
     onRequestStarted(requestId, symbol) {
       this.currentStreamingRequestId = requestId;
+      this.updateComposerStreamingState(true);
       const userMsg = {
         id: `msg-${Date.now()}`,
         type: "user",
@@ -476,6 +493,7 @@
     onRequestCompleted(requestId, answer, context) {
       if (this.currentStreamingRequestId !== requestId) return;
       this.currentStreamingRequestId = null;
+      this.updateComposerStreamingState(false);
       const msg = this.messages.get(requestId);
       if (msg) {
         msg.content = answer;
@@ -493,6 +511,7 @@
     onRequestFailed(requestId, error) {
       if (this.currentStreamingRequestId !== requestId) return;
       this.currentStreamingRequestId = null;
+      this.updateComposerStreamingState(false);
       const msg = this.messages.get(requestId);
       if (msg) {
         msg.status = "error";
@@ -507,6 +526,22 @@
         this.updateConversationView();
       }
       this.currentStreamingRequestId = null;
+      this.updateComposerStreamingState(false);
+    }
+    stopStreaming() {
+      if (!this.currentStreamingRequestId) return;
+      const stopButton = document.getElementById("composer-stop");
+      if (stopButton) stopButton.disabled = true;
+      this.postMessage({ type: "chat.stop", requestId: this.currentStreamingRequestId });
+    }
+    updateComposerStreamingState(isStreaming) {
+      const sendButton = document.getElementById("composer-send");
+      const stopButton = document.getElementById("composer-stop");
+      if (sendButton) sendButton.hidden = isStreaming;
+      if (stopButton) {
+        stopButton.hidden = !isStreaming;
+        stopButton.disabled = false;
+      }
     }
     render() {
       const root = document.getElementById("root");
@@ -531,7 +566,7 @@
       root.innerHTML = `
       <div class="header">
         <span class="header-title">Surgical Context</span>
-        <div class="health-indicator ${this.state.backend.sidecarHealth}"></div>
+        <div class="health-indicator ${this.state.backend.context_engineHealth}"></div>
       </div>
       ${renderActionBar()}
       <div class="conversation-viewport" id="conversation"></div>
@@ -555,7 +590,7 @@
     updateHeader() {
       const indicator = document.querySelector(".health-indicator");
       if (indicator && this.state) {
-        indicator.className = `health-indicator ${this.state.backend.sidecarHealth}`;
+        indicator.className = `health-indicator ${this.state.backend.context_engineHealth}`;
       }
     }
     updateStatusChips() {
@@ -608,7 +643,7 @@
             expandedAccordions: saved.expandedAccordions,
             composerDraft: saved.composerDraft || "",
             workspace: { activeFile: null, selectedSymbol: null, isDirty: false },
-            backend: { sidecarHealth: "degraded", cloudStatus: "offline" }
+            backend: { context_engineHealth: "degraded", cloudStatus: "offline" }
           };
         } else {
           this.state.expandedAccordions = saved.expandedAccordions;

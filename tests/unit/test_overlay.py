@@ -187,8 +187,8 @@ class MyClass:
         assert overlay.stats() == {"entries": 2, "bytes": 4}
 
         rendered = metrics.render_prometheus()
-        assert 'sidecar_overlay_evictions_total{reason="cap"} 1' in rendered
-        assert "sidecar_overlay_entries 2" in rendered
+        assert 'context_engine_overlay_evictions_total{reason="cap"} 1' in rendered
+        assert "context_engine_overlay_entries 2" in rendered
 
     def test_ttl_evicts_stale_entry(self, monkeypatch):
         metrics = MetricsRegistry()
@@ -201,15 +201,15 @@ class MyClass:
         assert not overlay.has("stale.py")
 
         rendered = metrics.render_prometheus()
-        assert 'sidecar_overlay_evictions_total{reason="ttl"} 1' in rendered
+        assert 'context_engine_overlay_evictions_total{reason="ttl"} 1' in rendered
 
     def test_clear_increments_eviction_metric(self, overlay):
         overlay.update("test.py", "content\n")
         overlay.clear("test.py")
 
         rendered = overlay._metrics.render_prometheus()
-        assert 'sidecar_overlay_evictions_total{reason="clear"} 1' in rendered
-        assert "sidecar_overlay_entries 0" in rendered
+        assert 'context_engine_overlay_evictions_total{reason="clear"} 1' in rendered
+        assert "context_engine_overlay_entries 0" in rendered
 
     def test_read_refreshes_ttl(self, monkeypatch):
         metrics = MetricsRegistry()

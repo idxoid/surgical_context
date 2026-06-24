@@ -141,7 +141,7 @@ details; the active axis adapter does not yet do so.
 
 ## 7. Related
 
-- [spec_sidecar_api.md](spec_sidecar_api.md) — `/ask` and streaming transport
+- [spec_context_engine_api.md](spec_context_engine_api.md) — `/ask` and streaming transport
 - [spec_doc_anchor_confidence.md](spec_doc_anchor_confidence.md) — persisted anchor quality
 - [spec_learning_loop.md](spec_learning_loop.md) — feedback consumer
 - [spec_branch_isolation.md](spec_branch_isolation.md) — workspace identity

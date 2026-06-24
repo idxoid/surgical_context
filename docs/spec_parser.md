@@ -6,7 +6,7 @@
 
 The parser module is the ETL entry point. It converts raw source files into structured `SymbolMetadata` objects and call-graph edges that the indexer writes into Neo4j.
 
-It has no knowledge of Neo4j, LanceDB, or the sidecar API. It takes a file path and returns data structures.
+It has no knowledge of Neo4j, LanceDB, or the context_engine API. It takes a file path and returns data structures.
 
 ---
 
@@ -197,7 +197,7 @@ def make_adapter() -> GoAdapter:
     return GoAdapter()
 ```
 
-On next sidecar boot, the registry auto-discovers and registers it. No registry or
+On next context_engine boot, the registry auto-discovers and registers it. No registry or
 collector edit is needed for baseline indexing. Full axis/enrichment parity still
 requires language-specific facts, pipeline integration where applicable, and tests;
 see [spec_language_adapter.md](spec_language_adapter.md).

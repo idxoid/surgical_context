@@ -87,4 +87,4 @@ Per-question rows include `file_recall`, `seed_file_recall`, `pool_file_recall`,
 - [logical_roles_structural_closure.md](logical_roles_structural_closure.md) — logical role vs structural closure model
 - [engineering_principles.md](engineering_principles.md) — structural-only invariants
 - [cascade_cleanup_inventory.md](cascade_cleanup_inventory.md) — what was removed and why
-- [spec_sidecar_api.md](spec_sidecar_api.md) — `/ask/axis` and indexing endpoints
+- [spec_context_engine_api.md](spec_context_engine_api.md) — `/ask/axis` and indexing endpoints

@@ -84,7 +84,7 @@ class InMemoryOverlay:
         if key not in self._files:
             self._evict_for_cap()
         self._files[key] = _OverlayEntry(content=content, dirty=dirty, updated_at=now)
-        self._metrics.increment("sidecar_overlay_updates_total")
+        self._metrics.increment("context_engine_overlay_updates_total")
         self._publish_stats()
 
     def clear(
@@ -95,7 +95,7 @@ class InMemoryOverlay:
     ):
         key = self._key(file_path, workspace_id, user_id)
         if self._files.pop(key, None) is not None:
-            self._metrics.increment("sidecar_overlay_evictions_total", labels={"reason": "clear"})
+            self._metrics.increment("context_engine_overlay_evictions_total", labels={"reason": "clear"})
             self._publish_stats()
 
     def has(
@@ -211,7 +211,7 @@ class InMemoryOverlay:
         ]
         for key in expired:
             del self._files[key]
-            self._metrics.increment("sidecar_overlay_evictions_total", labels={"reason": "ttl"})
+            self._metrics.increment("context_engine_overlay_evictions_total", labels={"reason": "ttl"})
         if expired:
             self._publish_stats()
         return len(expired)
@@ -223,7 +223,7 @@ class InMemoryOverlay:
         while len(self._files) >= self._max_entries:
             oldest_key = min(self._files, key=lambda key: self._files[key].updated_at)
             del self._files[oldest_key]
-            self._metrics.increment("sidecar_overlay_evictions_total", labels={"reason": "cap"})
+            self._metrics.increment("context_engine_overlay_evictions_total", labels={"reason": "cap"})
             evicted += 1
         if evicted:
             self._publish_stats()
@@ -231,8 +231,8 @@ class InMemoryOverlay:
 
     def _publish_stats(self) -> None:
         snapshot = self.stats()
-        self._metrics.set_gauge("sidecar_overlay_entries", snapshot["entries"])
-        self._metrics.set_gauge("sidecar_overlay_bytes", snapshot["bytes"])
+        self._metrics.set_gauge("context_engine_overlay_entries", snapshot["entries"])
+        self._metrics.set_gauge("context_engine_overlay_bytes", snapshot["bytes"])
 
     @staticmethod
     def _key(file_path: str, workspace_id: str, user_id: str) -> tuple[str, str, str]:

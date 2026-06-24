@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { getWebviewContent } from '../utils';
 import { WebviewToHostMessage, HostToWebviewMessage } from '../webview/shared/protocol';
-import { SidecarClient } from '../sidecarClient';
+import { SidecarClient } from '../context_engineClient';
 import { readSettings, saveSettings, updateSetting, graphStatusFromCloud } from '../settings';
 
 export class SettingsViewProvider implements vscode.WebviewViewProvider {
@@ -103,7 +103,7 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
           this.postMessage({
             type: 'settings.testUrlComplete',
             success: ok,
-            message: ok ? '✓ Connection successful' : '✗ Could not connect to sidecar',
+            message: ok ? '✓ Connection successful' : '✗ Could not connect to context_engine',
           });
         } catch (err) {
           this.postMessage({

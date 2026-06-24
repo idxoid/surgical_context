@@ -2843,9 +2843,9 @@ class Neo4jClient:
         suffix = f"/{path.rsplit('/', 1)[-1]}"
         alt_path = ""
         if "/context_engine/" in path:
-            alt_path = path.replace("/context_engine/", "/sidecar/", 1)
-        elif "/sidecar/" in path:
-            alt_path = path.replace("/sidecar/", "/context_engine/", 1)
+            alt_path = path.replace("/context_engine/", "/context_engine/", 1)
+        elif "/context_engine/" in path:
+            alt_path = path.replace("/context_engine/", "/context_engine/", 1)
         with self.driver.session() as session:
             rows = session.run(
                 """
@@ -2900,20 +2900,24 @@ class Neo4jClient:
 
     @staticmethod
     def _path_matches_file(stored_path: str, file_path: str) -> bool:
-        stored = stored_path.strip()
-        requested = file_path.strip()
+        stored = stored_path.strip().replace("\\", "/").rstrip("/")
+        requested = file_path.strip().replace("\\", "/").rstrip("/")
         if not stored or not requested:
             return False
-        if stored == requested or stored.endswith(requested):
+        if (
+            stored == requested
+            or stored.endswith(f"/{requested.lstrip('/')}")
+            or requested.endswith(f"/{stored.lstrip('/')}")
+        ):
             return True
-        return stored.endswith(f"/{requested.rsplit('/', 1)[-1]}")
+        return "/" not in requested and stored.rsplit("/", 1)[-1] == requested
 
     @staticmethod
     def _impact_path_rank(path: str) -> tuple[int, int]:
         """Prefer canonical source trees over legacy mirror paths."""
         lowered = path.lower()
         penalty = 0
-        if "/sidecar/" in lowered or lowered.endswith("/sidecar"):
+        if "/context_engine/" in lowered or lowered.endswith("/context_engine"):
             penalty += 10
         if "/qa/" in lowered:
             penalty += 5
@@ -2926,7 +2930,7 @@ class Neo4jClient:
         *,
         file_path: str | None = None,
     ) -> str | None:
-        """Pick the graph uid most useful for impact (callers win over path match)."""
+        """Resolve an impact target, preserving explicit file identity when possible."""
         candidates = self.list_symbol_impact_candidates(name, workspace_id=workspace_id)
         if not candidates:
             return None
@@ -2946,18 +2950,6 @@ class Neo4jClient:
                         -self._impact_path_rank(str(candidate["path"]))[0],
                     ),
                 )
-                if int(best_matched["incoming"]) > 0:
-                    return str(best_matched["uid"])
-                # Same basename in another indexed mirror (e.g. sidecar copy) may hold edges.
-                if any(int(candidate["incoming"]) > 0 for candidate in candidates):
-                    best_any = max(
-                        candidates,
-                        key=lambda candidate: (
-                            int(candidate["incoming"]),
-                            -self._impact_path_rank(str(candidate["path"]))[0],
-                        ),
-                    )
-                    return str(best_any["uid"])
                 return str(best_matched["uid"])
 
         best = max(

@@ -63,8 +63,10 @@ class MainSurface {
   private selectedPromptRequestId: string | null = null;
   private inspectorTab: InspectorTab = 'primary';
   private pendingPrompt: string | null = null;
+  private pendingAskAnchor: { symbol: string; filePath?: string } | null = null;
   private currentImpact: ImpactResponse | null = null;
   private currentImpactSymbol: string | null = null;
+  private currentImpactFilePath: string | null = null;
   private currentImpactSource: 'prompt' | 'graph' | null = null;
   private currentImpactDepth = 3;
   private impactError: string | null = null;
@@ -92,6 +94,7 @@ class MainSurface {
             this.currentContextSummary = this.summaryFromContext(message.state.lastContext);
             this.currentImpact = this.impactFromContext(message.state.lastContext);
             this.currentImpactSymbol = message.state.lastContext.primary_source.symbol;
+            this.currentImpactFilePath = message.state.lastContext.primary_source.file_path;
             this.currentImpactSource = 'prompt';
             this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
           }
@@ -159,7 +162,7 @@ class MainSurface {
         case 'backend.updated':
           if (this.state) {
             this.state.backend = {
-              sidecarHealth: message.sidecarHealth,
+              context_engineHealth: message.context_engineHealth,
               cloudStatus: message.cloudStatus,
             };
             this.refreshWorkspaceBits();
@@ -177,6 +180,7 @@ class MainSurface {
           this.surface = 'impact';
           this.impactLoading = false;
           this.currentImpactSymbol = message.symbol;
+          this.currentImpactFilePath = message.impact.file_path || null;
           this.currentImpact = message.impact;
           this.currentImpactDepth = this.clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
           this.currentImpactSource = 'graph';
@@ -199,6 +203,7 @@ class MainSurface {
             this.currentContextSummary = this.summaryFromContext(message.context);
             this.currentImpact = this.impactFromContext(message.context);
             this.currentImpactSymbol = message.context.primary_source.symbol;
+            this.currentImpactFilePath = message.context.primary_source.file_path;
             this.currentImpactSource = 'prompt';
           }
           this.render();
@@ -338,7 +343,7 @@ class MainSurface {
         <div class="accordion-stack">
           ${this.renderAccordions()}
         </div>
-        ${renderComposerDock()}
+        ${renderComposerDock(Boolean(this.currentStreamingRequestId))}
         ${renderStatusChips({
           isDirty: this.state.workspace.isDirty,
           graphFirst: true,
@@ -607,7 +612,12 @@ class MainSurface {
     const target = event.currentTarget as HTMLElement;
     const action = target.getAttribute('data-action');
 
-    if (action === 'copy' || action === 'feedback') {
+    if (
+      action === 'copy' ||
+      action === 'copy-json' ||
+      action === 'copy-api-json' ||
+      action === 'feedback'
+    ) {
       event.preventDefault();
       event.stopPropagation();
     }
@@ -656,8 +666,7 @@ class MainSurface {
         }
         break;
       case 'ask-followup':
-        this.switchSurface('chat');
-        this.prefillComposer(
+        this.prefillImpactAsk(
           `What should I check before changing ${this.currentImpactSymbol || 'this symbol'}?`
         );
         break;
@@ -670,9 +679,11 @@ class MainSurface {
       case 'showMoreImpact':
         this.showMoreImpactRows(target);
         break;
+      case 'explainImpact':
+        this.toggleImpactExplanation(target);
+        break;
       case 'create-refactor-plan':
-        this.switchSurface('chat');
-        this.prefillComposer(
+        this.prefillImpactAsk(
           `Create a refactor plan for ${this.currentImpactSymbol || 'this symbol'}.`
         );
         break;
@@ -700,6 +711,13 @@ class MainSurface {
       case 'copy':
         this.copyMessage(target);
         break;
+      case 'copy-json':
+      case 'copy-api-json':
+        this.copyInspectorJson(target);
+        break;
+      case 'stopStreaming':
+        this.stopStreaming();
+        break;
     }
   }
 
@@ -711,7 +729,7 @@ class MainSurface {
 
     if (surface === 'impact') {
       this.render();
-      const selectedSymbol = this.currentPromptContext?.primary_source.symbol || this.state?.workspace.selectedSymbol || undefined;
+      const selectedSymbol = this.impactTarget().symbol;
       if ((!this.currentImpact || (selectedSymbol && selectedSymbol !== this.currentImpactSymbol)) && !this.impactLoading) {
         this.requestImpactForActiveSymbol();
       }
@@ -744,13 +762,32 @@ class MainSurface {
   private requestImpactForActiveSymbol(): void {
     if (this.impactLoading) return;
 
-    const selectedSymbol = this.currentPromptContext?.primary_source.symbol || this.state?.workspace.selectedSymbol || undefined;
+    const target = this.impactTarget();
     this.postMessage({
       type: 'action.showImpact',
-      symbol: selectedSymbol,
-      filePath: this.state?.workspace.activeFile || undefined,
+      symbol: target.symbol,
+      filePath: target.filePath,
       maxDepth: this.currentImpactDepth,
     });
+  }
+
+  private impactTarget(): { symbol?: string; filePath?: string } {
+    if (this.currentPromptContext) {
+      return {
+        symbol: this.currentPromptContext.primary_source.symbol,
+        filePath: this.currentPromptContext.primary_source.file_path,
+      };
+    }
+    if (this.selectedPromptRequestId && this.currentImpactSymbol) {
+      return {
+        symbol: this.currentImpactSymbol,
+        filePath: this.currentImpactFilePath || undefined,
+      };
+    }
+    return {
+      symbol: this.state?.workspace.selectedSymbol || undefined,
+      filePath: this.state?.workspace.activeFile || undefined,
+    };
   }
 
   private previewImpactDepth(event: Event): void {
@@ -795,9 +832,19 @@ class MainSurface {
   private askAboutSymbol(): void {
     const composer = document.getElementById('composer-input') as HTMLTextAreaElement | null;
     if (!composer || !composer.value.trim() || !this.state) return;
+    if (this.currentStreamingRequestId) {
+      this.showToast('Stop the current response before sending another ask.', 'info');
+      return;
+    }
 
     const prompt = composer.value.trim();
+    const anchor = this.pendingAskAnchor;
+    const targetSymbol = anchor?.symbol || this.state.workspace.selectedSymbol || undefined;
+    const targetFilePath = anchor?.filePath || this.state.workspace.activeFile || undefined;
     this.pendingPrompt = prompt;
+    this.pendingAskAnchor = null;
+    this.currentImpactSymbol = targetSymbol || null;
+    this.currentImpactFilePath = targetFilePath || null;
     composer.value = '';
     resizeComposerToFit(composer);
     this.persistState();
@@ -805,7 +852,8 @@ class MainSurface {
     this.postMessage({
       type: 'chat.ask',
       prompt,
-      symbol: this.state.workspace.selectedSymbol || undefined,
+      symbol: targetSymbol,
+      filePath: targetFilePath,
       conversationId: this.currentDialogId,
     });
   }
@@ -912,6 +960,9 @@ class MainSurface {
 
   private onRequestStarted(requestId: string, symbol?: string): void {
     this.currentStreamingRequestId = requestId;
+    if (symbol && this.state) {
+      this.state.workspace.selectedSymbol = symbol;
+    }
     this.selectedPromptRequestId = requestId;
     this.currentPromptContext = null;
     this.currentContextSummary = null;
@@ -975,6 +1026,7 @@ class MainSurface {
     }
     this.persistState();
     this.refreshAccordions();
+    this.updateComposerStreamingState(false);
   }
 
   private onRequestFailed(requestId: string, error: string): void {
@@ -995,6 +1047,7 @@ class MainSurface {
     }
     this.persistState();
     this.updateConversationView();
+    this.updateComposerStreamingState(false);
   }
 
   private onRequestStopped(requestId: string): void {
@@ -1005,6 +1058,31 @@ class MainSurface {
     }
     this.currentStreamingRequestId = null;
     this.persistState();
+    this.updateComposerStreamingState(false);
+  }
+
+  private stopStreaming(): void {
+    if (!this.currentStreamingRequestId) return;
+
+    const stopButton = document.getElementById('composer-stop') as HTMLButtonElement | null;
+    if (stopButton) {
+      stopButton.disabled = true;
+      stopButton.title = 'Stopping response…';
+      stopButton.setAttribute('aria-label', 'Stopping response');
+    }
+    this.postMessage({ type: 'chat.stop', requestId: this.currentStreamingRequestId });
+  }
+
+  private updateComposerStreamingState(isStreaming: boolean): void {
+    const sendButton = document.getElementById('composer-send') as HTMLButtonElement | null;
+    const stopButton = document.getElementById('composer-stop') as HTMLButtonElement | null;
+    if (sendButton) sendButton.hidden = isStreaming;
+    if (stopButton) {
+      stopButton.hidden = !isStreaming;
+      stopButton.disabled = false;
+      stopButton.title = 'Stop response';
+      stopButton.setAttribute('aria-label', 'Stop response generation');
+    }
   }
 
   private updateConversationView(): void {
@@ -1043,6 +1121,11 @@ class MainSurface {
       this.currentImpact = null;
       this.currentImpactSource = null;
       this.currentImpactDepth = 3;
+      const promptMessage = Array.from(this.messages.values()).find(message => (
+        message.type === 'user' && message.requestId === requestId
+      ));
+      this.currentImpactSymbol = promptMessage?.symbol || null;
+      this.currentImpactFilePath = null;
       this.showToast('Prompt is still waiting for context.', 'info');
     }
 
@@ -1072,8 +1155,10 @@ class MainSurface {
     this.currentPromptContext = null;
     this.selectedPromptRequestId = null;
     this.pendingPrompt = null;
+    this.pendingAskAnchor = null;
     this.currentImpact = null;
     this.currentImpactSymbol = null;
+    this.currentImpactFilePath = null;
     this.currentImpactSource = null;
     this.currentImpactDepth = 3;
     this.impactError = null;
@@ -1089,6 +1174,7 @@ class MainSurface {
     if (!dialog) return;
 
     this.persistState();
+    this.pendingAskAnchor = null;
     this.currentDialogId = dialog.id;
     this.messages = new Map(dialog.messages.map(message => [message.id, { ...message }]));
     this.selectedPromptRequestId = dialog.selectedPromptRequestId || this.latestContextRequestId();
@@ -1103,6 +1189,7 @@ class MainSurface {
       this.currentContextSummary = null;
       this.currentImpact = null;
       this.currentImpactSymbol = null;
+      this.currentImpactFilePath = null;
       this.currentImpactSource = null;
       this.currentImpactDepth = 3;
       this.impactError = null;
@@ -1175,6 +1262,7 @@ class MainSurface {
     this.currentContextSummary = this.summaryFromContext(context);
     this.currentImpact = this.impactFromContext(context);
     this.currentImpactSymbol = context.primary_source.symbol;
+    this.currentImpactFilePath = context.primary_source.file_path;
     this.currentImpactSource = 'prompt';
     this.currentImpactDepth = this.clampImpactDepth(this.currentImpact.max_depth || this.currentImpactDepth);
     this.impactError = null;
@@ -1316,6 +1404,17 @@ class MainSurface {
     target.remove();
   }
 
+  private toggleImpactExplanation(target: HTMLElement): void {
+    const item = target.closest('.impact-item');
+    const explanation = item?.querySelector('.impact-explanation') as HTMLElement | null;
+    if (!explanation) return;
+
+    const expanded = target.getAttribute('aria-expanded') === 'true';
+    target.setAttribute('aria-expanded', String(!expanded));
+    target.textContent = expanded ? 'Explain' : 'Hide';
+    explanation.toggleAttribute('hidden', expanded);
+  }
+
   private openFileFromImpact(target: HTMLElement): void {
     const filePath = target.getAttribute('data-file-path');
     if (!filePath) return;
@@ -1350,6 +1449,16 @@ class MainSurface {
     }
   }
 
+  private copyInspectorJson(target: HTMLElement): void {
+    const content = target.closest('.json-viewer')?.querySelector('pre code')?.textContent;
+    if (!content) {
+      this.showToast('JSON is not available to copy.', 'warning');
+      return;
+    }
+
+    this.postMessage({ type: 'clipboard.write', text: content });
+  }
+
   private prefillComposer(text: string): void {
     const composer = document.getElementById('composer-input') as HTMLTextAreaElement | null;
     if (!composer) return;
@@ -1357,6 +1466,24 @@ class MainSurface {
     resizeComposerToFit(composer);
     composer.focus();
     this.persistState();
+  }
+
+  private prefillImpactAsk(text: string): void {
+    const symbol = this.currentImpactSymbol || this.currentPromptContext?.primary_source.symbol;
+    const filePath = this.currentImpact?.file_path || this.currentPromptContext?.primary_source.file_path;
+
+    if (symbol) {
+      this.pendingAskAnchor = { symbol, filePath: filePath || undefined };
+      this.currentImpactSymbol = symbol;
+      this.currentImpactFilePath = filePath || null;
+      if (this.state) {
+        this.state.workspace.selectedSymbol = symbol;
+        if (filePath) this.state.workspace.activeFile = filePath;
+      }
+    }
+
+    this.switchSurface('chat');
+    this.prefillComposer(text);
   }
 
   private persistState(): void {

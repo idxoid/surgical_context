@@ -46,7 +46,7 @@ def record_feedback(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     main.default_metrics.increment(
-        "sidecar_feedback_events_total",
+        "context_engine_feedback_events_total",
         labels={"kind": event.kind, "outcome": event.outcome, "workspace": workspace_id},
     )
     return {

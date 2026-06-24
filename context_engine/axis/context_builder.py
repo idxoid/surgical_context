@@ -63,6 +63,11 @@ class ContextSymbol:
     expansion_step: str | None
     code: str | None
     qualified_name: str = ""
+    kind: str = ""
+    direction: str = "callee"
+    edge_type: str = ""
+    relevance_score: float = 0.0
+    utility_score: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,7 +79,28 @@ class ContextSymbol:
             "expansion_step": self.expansion_step,
             "code": self.code,
             "qualified_name": self.qualified_name,
+            "kind": self.kind,
+            "direction": self.direction,
+            "edge_type": self.edge_type,
+            "relevance_score": self.relevance_score,
+            "utility_score": self.utility_score,
         }
+
+
+_CALLER_KINDS = frozenset(
+    {
+        "reverse_calls",
+        "impacted_tests",
+        "structural_inheritor",
+        "forward_affects",
+        "trace_callers",
+    }
+)
+
+
+def _candidate_direction(candidate: RoleCandidate) -> str:
+    kind = candidate.satisfying_kinds[0] if candidate.satisfying_kinds else ""
+    return "caller" if kind in _CALLER_KINDS else "callee"
 
 
 @dataclass(frozen=True)
@@ -1433,7 +1459,7 @@ def build_context_for_candidates(
     db,
     lance,
     max_per_seed: int = 6,
-    traversal_mode: str = "deferred_binding_flow",
+    traversal_mode: str | None = "deferred_binding_flow",
     include_tests: bool = False,
     hook_transparency: bool = False,
     token_budget: int | None = None,
@@ -1454,7 +1480,9 @@ def build_context_for_candidates(
     ``max_per_seed`` caps how many related symbols come back per seed
     (depth-then-name ordering). ``traversal_mode`` picks the expansion
     pattern from ``AxisQueryPlan``; defaults to deferred-binding
-    because every current contract uses it.
+    because every current contract uses it. ``None`` keeps explicitly
+    supplied impact/trace candidates as a flat, directionally-labelled set
+    without expanding them into siblings through a second graph walk.
 
     ``include_tests`` mirrors the retrieval-pass flag — by default,
     expansion hits that land in conventional test surfaces are
@@ -1474,7 +1502,11 @@ def build_context_for_candidates(
 
     def _utility_score(candidate: RoleCandidate) -> float:
         if utility_score_fn is None:
-            return candidate.score
+            return (
+                candidate.utility_score
+                if candidate.utility_score is not None
+                else candidate.score
+            )
         return utility_score_fn(candidate)
 
     # One batched grouped walk per expansion step over ALL candidate uids,
@@ -1486,7 +1518,8 @@ def build_context_for_candidates(
     # earlier step keeps its (shallower) label on a depth tie.
     all_uids = [c.uid for c in candidates]
     hits_per_seed: dict[str, list[_Hit]] = {u: [] for u in all_uids}
-    for step_name, edges, direction, max_hops in steps_for_mode(traversal_mode):
+    steps = steps_for_mode(traversal_mode) if traversal_mode is not None else ()
+    for step_name, edges, direction, max_hops in steps:
         grouped = walk_neighbours_grouped(
             db,
             workspace_id,
@@ -1572,10 +1605,15 @@ def build_context_for_candidates(
             name=cand.name,
             file_path=cand.file_path,
             role=cand.role,
-            distance_from_seed=0,
+            distance_from_seed=cand.depth or 0,
             expansion_step=None,
             code=_code(cand.uid),
             qualified_name=cand.qualified_name or _qualified_name(cand.uid),
+            kind=cand.satisfying_kinds[0] if cand.satisfying_kinds else "",
+            direction=_candidate_direction(cand),
+            edge_type=cand.edge_type,
+            relevance_score=cand.score,
+            utility_score=cand.utility_score if cand.utility_score is not None else cand.score,
         )
         related = tuple(
             ContextSymbol(

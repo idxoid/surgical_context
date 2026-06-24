@@ -8,7 +8,13 @@
 
 export type WebviewToHostMessage =
   | { type: 'surface.ready' }
-  | { type: 'chat.ask'; prompt: string; symbol?: string; conversationId?: string }
+  | {
+      type: 'chat.ask';
+      prompt: string;
+      symbol?: string;
+      filePath?: string;
+      conversationId?: string;
+    }
   | { type: 'chat.stop'; requestId: string }
   | { type: 'chat.retry'; messageId: string }
   | {
@@ -28,6 +34,7 @@ export type WebviewToHostMessage =
   | { type: 'action.openChat'; prefillSymbol?: string }
   | { type: 'action.openDashboard' }
   | { type: 'link.openFile'; filePath: string; line?: number }
+  | { type: 'clipboard.write'; text: string }
   | { type: 'impact.openFiles'; filePaths: string[] }
   | { type: 'dashboard.refresh' }
   | { type: 'dashboard.indexWorkspace' }
@@ -52,7 +59,7 @@ export type HostToWebviewMessage =
   | { type: 'chat.requestStopped'; requestId: string }
   | { type: 'chat.contextSummary'; summary: ContextSummaryDto }
   | { type: 'workspace.updated'; activeFile: string | null; symbol: string | null; isDirty: boolean }
-  | { type: 'backend.updated'; sidecarHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline' }
+  | { type: 'backend.updated'; context_engineHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline' }
   | { type: 'toast.show'; level: 'info' | 'warning' | 'error'; message: string }
   | { type: 'inspector.loaded'; context: PromptContextPayload | null; symbol?: string; question?: string }
   | { type: 'inspector.notAvailable'; message: string }
@@ -89,7 +96,7 @@ export interface ChatSurfaceState {
     isDirty: boolean;
   };
   backend: {
-    sidecarHealth: 'up' | 'down' | 'degraded';
+    context_engineHealth: 'up' | 'down' | 'degraded';
     cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline';
   };
 }
@@ -115,7 +122,7 @@ export interface ChatMessage {
   error?: string;
 }
 
-// Context types matching sidecar API
+// Context types matching context_engine API
 export interface PromptContextPayload {
   mode: string;
   intent: string;

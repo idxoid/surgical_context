@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SidecarClient } from '../sidecarClient';
+import { SidecarClient } from '../context_engineClient';
 import { AskHistoryInput, buildAskHistoryRecord } from '../historyRecorder';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
@@ -9,7 +9,7 @@ import {
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
-import { PromptContextPayload } from '../sidecarClient';
+import { PromptContextPayload } from '../context_engineClient';
 
 export class MainPanel {
   public static readonly viewType = 'surgicalContext.main';
@@ -105,7 +105,7 @@ export class MainPanel {
           isDirty: state.isDirty,
         },
         backend: {
-          sidecarHealth: state.sidecarHealth,
+          context_engineHealth: state.context_engineHealth,
           cloudStatus: state.cloudStatus,
         },
       },
@@ -132,7 +132,7 @@ export class MainPanel {
     const state = stateManager.getState();
     this.postMessage({
       type: 'backend.updated',
-      sidecarHealth: state.sidecarHealth,
+      context_engineHealth: state.context_engineHealth,
       cloudStatus: state.cloudStatus,
     });
   }
@@ -177,6 +177,16 @@ export class MainPanel {
             );
           }
           vscode.window.showTextDocument(uri, opts);
+        }
+        break;
+
+      case 'clipboard.write':
+        try {
+          await vscode.env.clipboard.writeText(message.text);
+          this.postMessage({ type: 'toast.show', level: 'info', message: 'Copied to clipboard.' });
+        } catch (error) {
+          console.error('Failed to copy text to clipboard:', error);
+          this.postMessage({ type: 'toast.show', level: 'error', message: 'Could not copy to clipboard.' });
         }
         break;
     }

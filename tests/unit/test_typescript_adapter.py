@@ -248,7 +248,7 @@ function bootstrap() {
 
     def test_extract_calls_links_object_api_member_to_imported_surface(self, adapter):
         source = """
-import { SidecarClient } from './sidecarClient';
+import { SidecarClient } from './context_engineClient';
 
 export class SurgicalContextViewProvider {
   runAsk() {
@@ -262,7 +262,7 @@ export class SurgicalContextViewProvider {
         call = next(call for call in calls if call.get("callee_name") == "askStream")
 
         assert call["rel_type"] == "CALLS_IMPORTED"
-        assert call["callee_qualified_name"] == "sidecarClient.SidecarClient"
+        assert call["callee_qualified_name"] == "context_engineClient.SidecarClient"
 
     def test_extract_symbols_includes_exported_interface_via_fallback(self, adapter):
         source = """
@@ -465,7 +465,7 @@ export const SidecarClient = {
   },
 };
 """
-        symbols = adapter.extract_symbols(source, "extension/src/sidecarClient.ts")
+        symbols = adapter.extract_symbols(source, "extension/src/context_engineClient.ts")
         assert {symbol.name for symbol in symbols} == {"SidecarClient"}
         client = symbols[0]
         assert client.kind == "object_api"

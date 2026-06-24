@@ -51,7 +51,7 @@
               Test
             </button>
           </div>
-          <p class="field-hint" id="backendUrl-hint">Base URL where the Surgical Context sidecar is running</p>
+          <p class="field-hint" id="backendUrl-hint">Base URL where the Surgical Context context_engine is running</p>
           <div class="field-status" id="backendUrl-status"></div>
         </div>
 
@@ -63,10 +63,10 @@
             class="setting-input"
             value="${escapeHtml(data.authToken)}"
             placeholder="Leave blank if no authentication required"
-            aria-label="Authentication token for sidecar"
+            aria-label="Authentication token for context_engine"
             aria-describedby="authToken-hint"
           />
-          <p class="field-hint" id="authToken-hint">Token for authenticating with the sidecar if required</p>
+          <p class="field-hint" id="authToken-hint">Token for authenticating with the context_engine if required</p>
         </div>
       </div>
 
@@ -99,7 +99,7 @@
             <option value="claude" ${data.modelPreference === "claude" ? "selected" : ""}>Claude</option>
             <option value="ollama" ${data.modelPreference === "ollama" ? "selected" : ""}>Ollama</option>
           </select>
-          <p class="field-hint" id="modelPreference-hint">Preferred sidecar model route for local asks</p>
+          <p class="field-hint" id="modelPreference-hint">Preferred context_engine model route for local asks</p>
         </div>
 
         <div class="setting-field">
@@ -148,7 +148,7 @@
             <option value="axis_python_v1" ${data.indexProfile === "axis_python_v1" ? "selected" : ""}>axis_python_v1</option>
             <option value="legacy" ${data.indexProfile === "legacy" ? "selected" : ""}>legacy</option>
           </select>
-          <p class="field-hint" id="indexProfile-hint">Set INDEX_PROFILE in sidecar <code>.env</code> to the same value, then restart sidecar and reindex.</p>
+          <p class="field-hint" id="indexProfile-hint">Set INDEX_PROFILE in context_engine <code>.env</code> to the same value, then restart context_engine and reindex.</p>
         </div>
 
         <div class="setting-field">
@@ -175,7 +175,7 @@
               aria-label="LanceDB path"
               aria-describedby="lancedbPath-hint"
             />
-            <p class="field-hint" id="lancedbPath-hint">Local vector index path used by the sidecar environment</p>
+            <p class="field-hint" id="lancedbPath-hint">Local vector index path used by the context_engine environment</p>
           </div>
 
           <div class="setting-field">
@@ -206,7 +206,7 @@
               ${data.overlaySync ? "checked" : ""}
               aria-describedby="overlaySync-hint"
             />
-            <span>Send unsaved content to sidecar</span>
+            <span>Send unsaved content to context_engine</span>
           </label>
           <p class="field-hint" id="overlaySync-hint">When enabled, unsaved editor changes are sent with asks so answers reflect in-memory code</p>
         </div>

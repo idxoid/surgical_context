@@ -43,7 +43,7 @@ def _fake_state(*, axis: _FakeLance | None = None) -> SidecarState:
     return state
 
 
-def test_warm_sidecar_runs_default_and_axis_clients(monkeypatch):
+def test_warm_context_engine_runs_default_and_axis_clients(monkeypatch):
     axis = _FakeLance()
     state = _fake_state(axis=axis)
     monkeypatch.setenv("SIDECAR_WARMUP_ENABLED", "true")
@@ -52,22 +52,22 @@ def test_warm_sidecar_runs_default_and_axis_clients(monkeypatch):
         lambda: _FakeProvider(),
     )
 
-    warmup_mod.warm_sidecar(state)
+    warmup_mod.warm_context_engine(state)
 
     assert len(state.vector_db.calls) == 1  # type: ignore[attr-defined]
     assert len(axis.calls) == 1
 
 
-def test_warm_sidecar_skipped_when_disabled(monkeypatch):
+def test_warm_context_engine_skipped_when_disabled(monkeypatch):
     state = _fake_state()
     monkeypatch.setenv("SIDECAR_WARMUP_ENABLED", "false")
 
-    warmup_mod.warm_sidecar(state)
+    warmup_mod.warm_context_engine(state)
 
     assert state.vector_db.calls == []  # type: ignore[attr-defined]
 
 
-def test_warm_sidecar_neo4j_failure_is_non_fatal(monkeypatch):
+def test_warm_context_engine_neo4j_failure_is_non_fatal(monkeypatch):
     state = _fake_state()
     monkeypatch.setenv("SIDECAR_WARMUP_ENABLED", "true")
 
@@ -81,6 +81,6 @@ def test_warm_sidecar_neo4j_failure_is_non_fatal(monkeypatch):
         lambda: _FailingProvider(),
     )
 
-    warmup_mod.warm_sidecar(state)  # must not raise
+    warmup_mod.warm_context_engine(state)  # must not raise
 
     assert len(state.vector_db.calls) == 1  # type: ignore[attr-defined]

@@ -36,6 +36,7 @@ class SymbolContext:
     uid: str = ""
     range: list[int] = field(default_factory=list)
     kind: str = ""
+    edge_type: str = ""
     direction: str = "callee"
     depth: int = 0
     relevance_score: float = 0.0
@@ -292,6 +293,8 @@ class PromptContext:
             payload["range"] = symbol.range
         if symbol.kind:
             payload["kind"] = symbol.kind
+        if symbol.edge_type:
+            payload["edge_type"] = symbol.edge_type
         return payload
 
     def _ranker_metadata(self) -> dict[str, Any]:

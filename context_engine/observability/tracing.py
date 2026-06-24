@@ -1,6 +1,6 @@
 """Optional OpenTelemetry integration.
 
-OpenTelemetry stays opt-in so local sidecar runs do not need another runtime
+OpenTelemetry stays opt-in so local context_engine runs do not need another runtime
 dependency. When `SIDECAR_OTEL_ENABLED=true` and opentelemetry-api is available,
 request stages create spans using the process-configured tracer provider.
 """

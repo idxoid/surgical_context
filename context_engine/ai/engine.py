@@ -52,7 +52,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _ollama_options(model: str) -> dict[str, Any]:
-    """Build Ollama runtime options from env; tuned for local sidecar latency."""
+    """Build Ollama runtime options from env; tuned for local context_engine latency."""
     opts: dict[str, Any] = {
         "num_predict": _env_int("OLLAMA_NUM_PREDICT", 768),
         "num_ctx": _env_int("OLLAMA_NUM_CTX", 8192),

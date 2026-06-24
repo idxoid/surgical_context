@@ -139,7 +139,7 @@ Links to other ideas or specs that build on this.
 
 ## The Problem
 Users edit code in VS Code while the Neo4j graph is stale. 
-The sidecar needs to answer questions about unpersisted edits.
+The context_engine needs to answer questions about unpersisted edits.
 
 ## The Idea
 `InMemoryOverlay` caches {file_path → raw_content} in memory. 

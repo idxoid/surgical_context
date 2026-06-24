@@ -90,7 +90,7 @@ class IndexingService:
             user_id=user_id,
         )
         self.metrics.increment(
-            "sidecar_index_queue_events_total",
+            "context_engine_index_queue_events_total",
             labels={"status": result.status, "workspace": workspace_id},
         )
         return result
@@ -146,13 +146,13 @@ class IndexingService:
             for path in missing_paths:
                 logger.warning("Skipping queued index for missing file: %s", path)
                 self.metrics.increment(
-                    "sidecar_index_queue_skipped_total",
+                    "context_engine_index_queue_skipped_total",
                     labels={"reason": "missing_file", "workspace": base_workspace_id},
                 )
             for path in unsupported_paths:
                 logger.info("Skipping queued index for unsupported file type: %s", path)
                 self.metrics.increment(
-                    "sidecar_index_queue_skipped_total",
+                    "context_engine_index_queue_skipped_total",
                     labels={"reason": "unsupported_extension", "workspace": base_workspace_id},
                 )
             if not indexable_paths:
@@ -181,7 +181,7 @@ class IndexingService:
                     file_hash = current_hashes[path]
                     if stored_hashes.get(path) == file_hash:
                         self.metrics.increment(
-                            "sidecar_index_queue_skipped_total",
+                            "context_engine_index_queue_skipped_total",
                             labels={"reason": "unchanged_hash", "workspace": base_workspace_id},
                         )
                         continue
@@ -207,7 +207,7 @@ class IndexingService:
                     except Exception:
                         logger.exception("Queued indexing failed for %s", path)
                         self.metrics.increment(
-                            "sidecar_index_queue_failures_total",
+                            "context_engine_index_queue_failures_total",
                             labels={"workspace": base_workspace_id},
                         )
                 if completed:
@@ -235,7 +235,7 @@ class IndexingService:
                     )
                     default_cache.invalidate_files(indexed_paths, base_workspace_id)
                     self.metrics.increment(
-                        "sidecar_index_queue_completed_files_total",
+                        "context_engine_index_queue_completed_files_total",
                         value=completed,
                         labels={"workspace": base_workspace_id},
                     )

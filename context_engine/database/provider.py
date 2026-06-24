@@ -9,7 +9,7 @@ from context_engine.database.aura_client import AuraClient, connect_neo4j_driver
 
 
 class DatabaseProvider:
-    """Own one Neo4j driver for the sidecar process; mint lightweight clients per request."""
+    """Own one Neo4j driver for the context_engine process; mint lightweight clients per request."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()

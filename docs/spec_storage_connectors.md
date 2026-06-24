@@ -204,7 +204,7 @@ The actual Python interfaces can be narrower at first. This sketch names the own
 ## 7. Migration Plan
 
 1. Keep `Neo4jClient` and `LanceDBClient` as concrete defaults. ✅
-2. Introduce retrieval-facing protocols around the methods the sidecar already calls. ✅ for `VectorSearchProvider`, `WorkspaceMetaProvider`, and `GraphDriverProvider`; full `GraphProvider` / `VectorProvider` connector wrappers remain open.
+2. Introduce retrieval-facing protocols around the methods the context_engine already calls. ✅ for `VectorSearchProvider`, `WorkspaceMetaProvider`, and `GraphDriverProvider`; full `GraphProvider` / `VectorProvider` connector wrappers remain open.
 3. Add `HistoryProvider` with SQLite as the first implementation. ✅
 4. Move storage selection into configuration. 🚧 done for history via `HISTORY_MODE`, `HISTORY_DB_PATH`, and `HISTORY_RETENTION_DAYS`; graph/vector provider config remains open.
 5. Add provider capability checks, for example `supports_relationship_properties`, `supports_vector_metadata_filter`, and `supports_transactions`.
