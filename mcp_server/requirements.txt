@@ -1,0 +1,12 @@
+# MCP server deps — installed into the SAME repo venv as context_engine.
+#
+# Install:  .venv/bin/pip install -r mcp_server/requirements.txt
+#
+# These pins keep mcp coexisting with the core server's fastapi==0.110.0, which
+# requires starlette<0.37. A naive `pip install mcp` pulls starlette 1.x +
+# sse-starlette 3.4.x and breaks FastAPI; pinning sse-starlette to 3.0.3 lets the
+# resolver keep starlette 0.36.3. The MCP server uses the STDIO transport only,
+# so it never touches the starlette/uvicorn HTTP path.
+mcp==1.28.0
+starlette==0.36.3
+sse-starlette==3.0.3

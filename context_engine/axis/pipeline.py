@@ -542,6 +542,7 @@ def run_axis_retrieval(
     trace: Any | None = None,
     overlay: Any | None = None,
     user_id: str = "anonymous",
+    intent_override: list[IntentMatch] | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
 
@@ -552,6 +553,11 @@ def run_axis_retrieval(
     run. ``context_seeds_per_role=None`` feeds the entire pool into context
     expansion (the benchmarked behaviour); a positive value caps the
     per-role context seeds.
+
+    ``intent_override`` bypasses the embedding role-classifier: when supplied,
+    those roles drive retrieval directly (the caller picked them). The vector
+    seeds still rerank by embedding, so only role *selection* is replaced. When
+    ``None`` (every existing caller) the classifier runs as before.
     """
 
     tr = trace if trace is not None else _NullTrace()
@@ -560,12 +566,15 @@ def run_axis_retrieval(
         return lance._embed([text])[0]  # noqa: SLF001
 
     with tr.stage("intent"):
-        intent = intent_classifier.classify_intent(
-            question,
-            _embed,
-            top_k=top_roles,
-            threshold=intent_threshold,
-        )
+        if intent_override is not None:
+            intent = list(intent_override)
+        else:
+            intent = intent_classifier.classify_intent(
+                question,
+                _embed,
+                top_k=top_roles,
+                threshold=intent_threshold,
+            )
 
     symbol_targeted = bool((anchor_symbol or "").strip())
     if symbol_targeted:
