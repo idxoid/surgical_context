@@ -24,7 +24,7 @@ export function renderDashboardHeader(workspaceId: string, lastUpdate: number | 
     <div class="dashboard-header">
       <div>
         <h1>Surgical Context Dashboard</h1>
-        <p>Operational overview of your indexing sidecar and context system.</p>
+        <p>Operational overview of your indexing context_engine and context system.</p>
       </div>
       <div class="dashboard-meta">
         <div>Workspace: <span>${escapeHtml(workspaceId)}</span></div>
@@ -38,6 +38,19 @@ export function renderRefreshButton(isLoading: boolean): string {
   return `
     <button class="refresh-button ${isLoading ? 'loading' : ''}" data-action="refresh" ${isLoading ? 'disabled' : ''}>
       ${isLoading ? 'Refreshing...' : 'Refresh'}
+    </button>
+  `;
+}
+
+export function renderIndexWorkspaceButton(isLoading: boolean): string {
+  return `
+    <button
+      class="primary-action"
+      data-action="indexWorkspace"
+      aria-label="Reindex the current workspace"
+      ${isLoading ? 'disabled' : ''}
+    >
+      Reindex workspace
     </button>
   `;
 }
@@ -99,7 +112,7 @@ export function renderMetricCardGrid(props: MetricCardGridProps): string {
       ${renderMetricCard('Fallback rate', formatPercent(metrics.fallbackRatePercent), metrics.fallbackRatePercent === null ? 'Waiting for ask traffic' : 'Resolved ask context modes', 'sync')}
       ${renderMetricCard('Context quality', formatPercent(metrics.contextQualityPercent), metrics.contextQualityPercent === null ? 'Feedback signal pending' : 'Accepted retrieval feedback', 'target')}
       ${renderMetricCard('Symbols with docs', formatNumber(metrics.symbolsWithDocs), metricSourceNote(metrics.symbolsWithDocs, 'Documentation links'), 'book')}
-      ${renderMetricCard('Storage (sidecar)', formatStorage(metrics.storageGb), metrics.storageGb === null ? 'Storage metric unavailable' : 'Local LanceDB store', 'db')}
+      ${renderMetricCard('Storage (context_engine)', formatStorage(metrics.storageGb), metrics.storageGb === null ? 'Storage metric unavailable' : 'Local LanceDB store', 'db')}
     </div>
   `;
 }

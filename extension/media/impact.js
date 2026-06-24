@@ -29,9 +29,9 @@
     ${renderFocusGraph(symbol, model.items)}
     ${renderActionButtonRow()}
     <div class="impact-groups">
-      ${renderImpactZone("Direct Impact", model.direct, "No direct callers or first-hop consumers returned.", true)}
-      ${renderImpactZone("Architectural Reach", model.reach, "No hook, event, config, data, or API reach returned.", true)}
-      ${renderImpactZone("Hidden Risks", model.risks, "No cross-repo or coverage risks returned.", model.risks.length > 0)}
+      ${renderImpactZone("Direct Impact", model.direct, "No direct callers or first-hop consumers returned.", true, symbol)}
+      ${renderImpactZone("Architectural Reach", model.reach, "No hook, event, config, data, or API reach returned.", true, symbol)}
+      ${renderImpactZone("Hidden Risks", model.risks, "No cross-repo or coverage risks returned.", model.risks.length > 0, symbol)}
       ${renderFilesGroup(impact.affected_files || [], false, "Dependencies")}
     </div>
     <div class="impact-legend">
@@ -144,8 +144,10 @@
     const depth = numberField(sym, "depth", "distance", "hops");
     const rawScore = numberField(sym, "utility_score", "relevance_score", "score");
     const category = classifyCategory(sym, filePath, relation);
-    const severity = classifySeverity(category, depth, filePath);
-    const zone = classifyZone(category, depth, filePath);
+    const explicitSeverity = stringField(sym, "severity");
+    const explicitZone = stringField(sym, "zone");
+    const severity = isSeverity(explicitSeverity) ? explicitSeverity : classifySeverity(category, depth, filePath);
+    const zone = isImpactZone(explicitZone) ? explicitZone : classifyZone(category, depth, filePath);
     return {
       source: sym,
       symbolName,
@@ -158,6 +160,12 @@
       depth,
       line: lineFromSymbol(sym)
     };
+  }
+  function isSeverity(value) {
+    return value === "high" || value === "medium" || value === "low";
+  }
+  function isImpactZone(value) {
+    return value === "direct" || value === "reach" || value === "risk";
   }
   function classifyCategory(sym, filePath, relation) {
     const text = [
@@ -251,7 +259,7 @@
     </button>
   `;
   }
-  function renderImpactZone(title, items, emptyText, expanded) {
+  function renderImpactZone(title, items, emptyText, expanded, targetSymbol) {
     const visible = items.slice(0, 6);
     const overflow = items.slice(6);
     if (items.length === 0) {
@@ -270,42 +278,157 @@
         <span>(${items.length})</span>
       </button>
       <div class="group-content" ${expanded ? "" : "hidden"}>
-        ${visible.map(renderImpactItemRow).join("")}
-        ${overflow.length ? renderOverflowRows(overflow) : ""}
+        ${visible.map((item) => renderImpactItemRow(item, targetSymbol)).join("")}
+        ${overflow.length ? renderOverflowRows(overflow, targetSymbol) : ""}
       </div>
     </div>
   `;
   }
-  function renderOverflowRows(items) {
+  function renderOverflowRows(items, targetSymbol) {
     return `
     <div class="impact-overflow" hidden>
-      ${items.map(renderImpactItemRow).join("")}
+      ${items.map((item) => renderImpactItemRow(item, targetSymbol)).join("")}
     </div>
     <button class="impact-show-more" data-action="showMoreImpact">
       Show ${items.length} more
     </button>
   `;
   }
-  function renderImpactItemRow(item) {
+  function renderImpactItemRow(item, targetSymbol) {
     const disabled = item.synthetic ? "disabled" : "";
     const title = item.synthetic ? item.symbolName : `Open ${item.symbolName}`;
+    const explanation = explainImpactItem(item, targetSymbol);
     return `
-    <button
-      type="button"
-      class="impact-row ${item.synthetic ? "impact-risk-row" : ""}"
-      data-action="${item.synthetic ? "noop" : "openFile"}"
-      data-file-path="${escapeHtml(item.filePath)}"
-      data-line="${item.line}"
-      title="${escapeHtml(title)}"
-      ${disabled}
-    >
-      <span class="impact-chevron" aria-hidden="true">\u203A</span>
-      <span class="impact-symbol">${escapeHtml(item.symbolName)}</span>
-      <span class="impact-file">${escapeHtml(item.filePath)}</span>
-      <span class="impact-tag ${item.severity}">${escapeHtml(item.severity)}</span>
-      <span class="impact-tag indirect">${Math.round(item.utilityScore * 100)}%</span>
-      <span class="impact-tag ${item.category === "event" || item.category === "config" ? "conditional" : "direct"}">${escapeHtml(item.category)}</span>
-    </button>
+    <div class="impact-item ${item.synthetic ? "impact-risk-item" : ""}">
+      <div class="impact-item-line">
+        <button
+          type="button"
+          class="impact-row ${item.synthetic ? "impact-risk-row" : ""}"
+          data-action="${item.synthetic ? "noop" : "openFile"}"
+          data-file-path="${escapeHtml(item.filePath)}"
+          data-line="${item.line}"
+          title="${escapeHtml(title)}"
+          ${disabled}
+        >
+          <span class="impact-chevron" aria-hidden="true">\u203A</span>
+          <span class="impact-symbol">${escapeHtml(item.symbolName)}</span>
+          <span class="impact-file">${escapeHtml(item.filePath)}</span>
+          <span class="impact-tag ${item.severity}">${escapeHtml(item.severity)}</span>
+          <span class="impact-tag indirect">${Math.round(item.utilityScore * 100)}%</span>
+          <span class="impact-tag ${item.category === "event" || item.category === "config" ? "conditional" : "direct"}">${escapeHtml(item.category)}</span>
+        </button>
+        <button
+          type="button"
+          class="impact-explain-button"
+          data-action="explainImpact"
+          aria-expanded="false"
+          title="Explain how this item is connected to ${escapeHtml(targetSymbol)}"
+        >Explain</button>
+      </div>
+      ${renderImpactExplanation(explanation)}
+    </div>
+  `;
+  }
+  function explainImpactItem(item, targetSymbol) {
+    const kind = stringField(item.source, "kind") || arrayField(item.source, "satisfying_kinds")[0] || item.relation || item.category;
+    const edge = stringField(item.source, "edge_type", "relation") || item.relation;
+    const role = stringField(item.source, "role");
+    const provenance = arrayField(item.source, "provenance");
+    const depth = item.depth ?? 1;
+    const degraded = item.source.degraded === true;
+    let summary;
+    let path;
+    switch (kind) {
+      case "coverage_gap":
+        summary = `No test symbols or test files were returned with the impact surface for ${targetSymbol}.`;
+        path = `${targetSymbol} \u2192 no returned test coverage`;
+        break;
+      case "reverse_calls":
+      case "overlay_caller":
+        summary = depth <= 1 ? `${item.symbolName} calls or directly consumes ${targetSymbol}.` : `${item.symbolName} reaches ${targetSymbol} through ${depth} reverse call hops.`;
+        path = `${item.symbolName} \u2014${edge || "CALLS_*"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${targetSymbol}`;
+        break;
+      case "forward_calls":
+        summary = `${targetSymbol} calls or dispatches into ${item.symbolName}, so behavior can propagate forward.`;
+        path = `${targetSymbol} \u2014${edge || "CALLS_*"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
+        break;
+      case "impacted_tests":
+        summary = `${item.symbolName} exercises ${targetSymbol} or its downstream call spine.`;
+        path = `${item.symbolName} \u2014test call path, ${depth} hop${depth === 1 ? "" : "s"}\u2192 ${targetSymbol}`;
+        break;
+      case "structural_inheritor":
+        summary = `${item.symbolName} inherits an API or structural contract connected to ${targetSymbol}.`;
+        path = `${item.symbolName} \u2014${edge || "INHERITED_API"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${targetSymbol}`;
+        break;
+      case "structural_api_carrier":
+        summary = `${targetSymbol} carries or exposes the API surface ${item.symbolName}.`;
+        path = `${targetSymbol} \u2014${edge || "HAS_API"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
+        break;
+      case "forward_affects":
+        summary = `${item.symbolName} is in the precomputed downstream impact closure of ${targetSymbol}.`;
+        path = `${targetSymbol} \u2014${edge || "AFFECTS"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
+        break;
+      default:
+        summary = `${item.symbolName} was reached from ${targetSymbol} by the impact graph walk.`;
+        path = `${targetSymbol} \u2014${edge || item.relation}, ${depth} hop${depth === 1 ? "" : "s"}\u2192 ${item.symbolName}`;
+        break;
+    }
+    const risk = explainRisk(item);
+    const evidence = [
+      edge ? `edge ${edge}` : "",
+      kind ? `walk ${kind}` : "",
+      role ? `role ${role}` : "",
+      `depth ${depth}`,
+      `priority ${Math.round(item.utilityScore * 100)}%`,
+      degraded ? "unsaved editor overlay" : "impact response",
+      ...provenance.map((value) => `provenance ${value}`)
+    ].filter(Boolean);
+    return {
+      summary,
+      path,
+      risk,
+      evidence,
+      caveat: item.synthetic ? "This warning is inferred from missing returned evidence; it does not prove that coverage is absent." : degraded ? "This connection comes from unsaved buffers and is name-based, so the impact surface is partial." : depth > 1 ? "The response identifies the traversal and hop count, but does not include every intermediate symbol." : void 0
+    };
+  }
+  function explainRisk(item) {
+    if (item.synthetic) {
+      return "A change may ship without a directly identified regression test.";
+    }
+    if (item.category === "test") {
+      return "The test may fail or need updated expectations when the target contract changes.";
+    }
+    if (item.category === "cross_repo") {
+      return "The dependency crosses a service, package, or repository boundary where coordinated changes are easier to miss.";
+    }
+    if (isDocFile(item.filePath)) {
+      return "Documentation can become stale even when the code continues to compile.";
+    }
+    if (item.category === "api" || item.category === "data") {
+      return "This is a contract boundary; signature or schema changes can affect consumers that are not obvious at the call site.";
+    }
+    if (item.category === "event" || item.category === "config") {
+      return "This connection is indirect or conditional, so it may only surface for particular runtime paths or settings.";
+    }
+    return item.depth !== void 0 && item.depth > 1 ? "The dependency is indirect; failures can surface away from the edited method." : "This is a direct consumer and may break when the target behavior or signature changes.";
+  }
+  function renderImpactExplanation(explanation) {
+    return `
+    <div class="impact-explanation" hidden>
+      <p class="impact-explanation-summary">${escapeHtml(explanation.summary)}</p>
+      <div class="impact-explanation-path">
+        <span>Connection</span>
+        <code>${escapeHtml(explanation.path)}</code>
+      </div>
+      <div class="impact-explanation-risk">
+        <span>Why it matters</span>
+        <p>${escapeHtml(explanation.risk)}</p>
+      </div>
+      <div class="impact-explanation-evidence" aria-label="Connection evidence">
+        ${explanation.evidence.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}
+      </div>
+      ${explanation.caveat ? `<p class="impact-explanation-caveat">${escapeHtml(explanation.caveat)}</p>` : ""}
+    </div>
   `;
   }
   function renderAffectsGroup(affectedSymbols, title = "Affects", expanded = true) {
@@ -579,6 +702,18 @@
           if (!overflow) return;
           overflow.removeAttribute("hidden");
           target.remove();
+        });
+      });
+      document.querySelectorAll('[data-action="explainImpact"]').forEach((button) => {
+        button.addEventListener("click", (e) => {
+          const target = e.currentTarget;
+          const item = target.closest(".impact-item");
+          const explanation = item?.querySelector(".impact-explanation");
+          if (!explanation) return;
+          const expanded = target.getAttribute("aria-expanded") === "true";
+          target.setAttribute("aria-expanded", String(!expanded));
+          target.textContent = expanded ? "Explain" : "Hide";
+          explanation.toggleAttribute("hidden", expanded);
         });
       });
       document.querySelectorAll("[data-impact-depth]").forEach((slider) => {

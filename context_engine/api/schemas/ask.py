@@ -125,3 +125,6 @@ class ImpactResponse(BaseModel):
     affected_count: int
     affected_file_count: int
     max_depth: int
+    # True when the surface is partial: the symbol is not indexed and/or some
+    # rows came from dirty editor buffers (overlay callers), not the graph.
+    degraded: bool = False

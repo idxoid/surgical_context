@@ -54,7 +54,7 @@ The project indexer is responsible only for facts observable inside its workspac
 | Client usage | generated SDK calls, typed HTTP clients, gateway clients | outbound dependency edges |
 | Service metadata | gateway config, service catalog, IaC manifests | service ownership and aliases |
 
-The local sidecar emits a `ContractManifest` for the current workspace. Tenant linking consumes these manifests; it does not pull source from other projects.
+The local context_engine emits a `ContractManifest` for the current workspace. Tenant linking consumes these manifests; it does not pull source from other projects.
 
 ## 4. Data Model
 
@@ -185,7 +185,7 @@ For privacy, provenance may expose service and contract IDs, but not neighboring
 
 ## 8. API / Interface
 
-Planned sidecar additions:
+Planned context_engine additions:
 
 ```python
 POST /index/api-contracts

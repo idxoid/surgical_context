@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SidecarClient } from '../sidecarClient';
+import { SidecarClient } from '../context_engineClient';
 import { AskHistoryInput, buildAskHistoryRecord } from '../historyRecorder';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
@@ -10,7 +10,8 @@ import {
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
-import { PromptContextPayload } from '../sidecarClient';
+import { PromptContextPayload } from '../context_engineClient';
+import { isFileNameSymbol } from '../symbolResolution';
 
 export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'surgicalContext.main';
@@ -144,7 +145,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
           isDirty: state.isDirty,
         },
         backend: {
-          sidecarHealth: state.sidecarHealth,
+          context_engineHealth: state.context_engineHealth,
           cloudStatus: state.cloudStatus,
         },
       },
@@ -156,7 +157,8 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async resolveAskTarget(
-    messageSymbol?: string
+    messageSymbol?: string,
+    messageFilePath?: string
   ): Promise<{ symbol: string | undefined; activeFile: string | undefined }> {
     const hostState = stateManager.getState();
     const editor = vscode.window.activeTextEditor;
@@ -167,13 +169,17 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
       (!hostState.activeFile || hostState.activeFile === editorFile);
 
     const symbol =
+      messageSymbol ||
       (editorMatches && cursorSymbol) ||
       hostState.selectedSymbol ||
-      messageSymbol ||
       cursorSymbol ||
       undefined;
     const activeFile =
-      (editorMatches && editorFile) || hostState.activeFile || editorFile || undefined;
+      messageFilePath ||
+      (editorMatches && editorFile) ||
+      hostState.activeFile ||
+      editorFile ||
+      undefined;
 
     return { symbol, activeFile };
   }
@@ -217,7 +223,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     const state = stateManager.getState();
     this.postMessage({
       type: 'backend.updated',
-      sidecarHealth: state.sidecarHealth,
+      context_engineHealth: state.context_engineHealth,
       cloudStatus: state.cloudStatus,
     });
   }
@@ -232,7 +238,12 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         break;
 
       case 'chat.ask':
-        await this.handleAsk(message.prompt, message.symbol, message.conversationId);
+        await this.handleAsk(
+          message.prompt,
+          message.symbol,
+          message.conversationId,
+          message.filePath
+        );
         break;
 
       case 'chat.stop':
@@ -322,6 +333,16 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         }
         break;
 
+      case 'clipboard.write':
+        try {
+          await vscode.env.clipboard.writeText(message.text);
+          this.postMessage({ type: 'toast.show', level: 'info', message: 'Copied to clipboard.' });
+        } catch (error) {
+          console.error('Failed to copy text to clipboard:', error);
+          this.postMessage({ type: 'toast.show', level: 'error', message: 'Could not copy to clipboard.' });
+        }
+        break;
+
       case 'impact.openFiles':
         await this.openImpactFiles(message.filePaths);
         break;
@@ -339,10 +360,15 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleAsk(prompt: string, symbol?: string, conversationId?: string): Promise<void> {
+  private async handleAsk(
+    prompt: string,
+    symbol?: string,
+    conversationId?: string,
+    filePath?: string
+  ): Promise<void> {
     if (!this.webviewView) return;
 
-    const { symbol: targetSymbol, activeFile } = await this.resolveAskTarget(symbol);
+    const { symbol: targetSymbol, activeFile } = await this.resolveAskTarget(symbol, filePath);
 
     const requestId = `req-${Date.now()}`;
     const answerParts: string[] = [];
@@ -544,7 +570,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
       this.postMessage({
         type: 'settings.testUrlComplete',
         success: ok,
-        message: ok ? 'Connection successful' : 'Could not connect to sidecar',
+        message: ok ? 'Connection successful' : 'Could not connect to context_engine',
       });
     } catch (error) {
       this.postMessage({
@@ -566,6 +592,12 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async loadImpact(symbol: string, maxDepth = 3, filePath?: string): Promise<void> {
+    if (isFileNameSymbol(symbol, filePath)) {
+      const message = 'No code symbol selected. Position the cursor inside a method or function.';
+      this.postMessage({ type: 'impact.loadFailed', error: message });
+      void vscode.window.showWarningMessage(`Impact analysis: ${message}`);
+      return;
+    }
     try {
       this.postMessage({ type: 'impact.loading' });
       const impact = await SidecarClient.impact(symbol, maxDepth, filePath);

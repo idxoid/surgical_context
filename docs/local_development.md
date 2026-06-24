@@ -26,7 +26,7 @@ python scripts/local_dev.py bootstrap
 - starts local Neo4j with `docker compose up -d neo4j`
 - runs `npm install` in `extension/` when needed
 - runs `npm run compile` for the extension
-- prints the next sidecar and VS Code commands
+- prints the next context_engine and VS Code commands
 
 Use `--dry-run` to inspect commands without changing anything:
 
@@ -39,7 +39,7 @@ python scripts/local_dev.py bootstrap --dry-run
 Terminal 1:
 
 ```bash
-python scripts/local_dev.py sidecar --reload
+python scripts/local_dev.py context_engine --reload
 ```
 
 Terminal 2:
@@ -48,13 +48,13 @@ Terminal 2:
 python scripts/local_dev.py code
 ```
 
-Or run the sidecar and launch VS Code from one terminal:
+Or run the context_engine and launch VS Code from one terminal:
 
 ```bash
 python scripts/local_dev.py up --launch-code --reload
 ```
 
-Stop the sidecar with `Ctrl+C`.
+Stop the context_engine with `Ctrl+C`.
 
 ## Local Storage
 
@@ -64,13 +64,13 @@ Stop the sidecar with `Ctrl+C`.
 | `data/lancedb/` | LanceDB vector tables | No |
 | `data/history/` | SQLite local history | No |
 | `logs/neo4j/` | Neo4j logs | No |
-| `logs/context_engine/` | sidecar logs | No |
+| `logs/context_engine/` | context_engine logs | No |
 
 The graph provider stores topology and metadata only. Source code stays on the filesystem. History persistence should remain metadata-first until the storage policy explicitly allows raw prompt text, response text, or source snippets.
 
 ## Workspace Scope
 
-The sidecar uses `DEFAULT_WORKSPACE_ID=local/surgical_context@main` when a request
+The context_engine uses `DEFAULT_WORKSPACE_ID=local/surgical_context@main` when a request
 does not carry a workspace-scoped bearer token. Raw `X-Workspace` is ignored by
 default unless `TRUST_CLIENT_WORKSPACE_HEADER=true`. The VS Code extension leaves
 `surgicalContext.workspaceId` blank by default, derives a workspace from the
@@ -84,16 +84,16 @@ local/<workspace-folder-name>@<git-branch-or-short-sha>
 Set `surgicalContext.workspaceId` only when you need to force a specific scope
 such as `acme/surgical_context@review-branch`. Leaving it blank avoids the old
 `local/default@main` mismatch and keeps extension requests aligned with the
-sidecar's workspace model.
+context_engine's workspace model.
 
 For controlled curl/script development without bearer tokens, set
 `TRUST_CLIENT_WORKSPACE_HEADER=true` and, only when needed,
 `TRUST_CLIENT_USER_HEADER=true`. Both default to `false`; do not enable them on
-an exposed sidecar.
+an exposed context_engine.
 
 ### Project root and path sandboxing
 
-The sidecar only reads or indexes files **under the registered project root** for
+The context_engine only reads or indexes files **under the registered project root** for
 that workspace. The root is set when you run `POST /index` (manifest field
 `project_path`). Until then, `/index/file` and `/ask` with `file_path` return
 `400` (“no registered project root”).
@@ -104,7 +104,7 @@ that workspace. The root is set when you run `POST /index` (manifest field
 | Incremental index / file fallback before first full index | `400` |
 
 Relative paths in API requests are resolved under the project root. On first
-`POST /index`, the sidecar registers the resolved `project_path` as the workspace
+`POST /index`, the context_engine registers the resolved `project_path` as the workspace
 sandbox root. The **repo segment** of the workspace id must match that directory's
 basename (same rule as the VS Code extension: `local/<folder-name>@<ref>`).
 
@@ -115,10 +115,10 @@ only with `--workspace-id` when you need a fixed scope; it must still match the
 indexed directory basename or registration returns **403**.
 
 With `AUTH_REQUIRED=false` (local default), this prevents other local processes
-from using the sidecar as a generic file reader. See
-[spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
+from using the context_engine as a generic file reader. See
+[spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing).
 
-History controls are environment-driven for the local sidecar:
+History controls are environment-driven for the local context_engine:
 
 ```dotenv
 HISTORY_MODE=local
@@ -126,7 +126,7 @@ HISTORY_DB_PATH=./data/history/surgical_context.sqlite3
 HISTORY_RETENTION_DAYS=
 ```
 
-`HISTORY_MODE=disabled` makes `/history/ask` a no-op and returns empty history lists. `HISTORY_MODE=ephemeral` uses a temporary SQLite database for the current sidecar process only. Set `HISTORY_RETENTION_DAYS` to a non-negative integer to prune conversations older than that many days.
+`HISTORY_MODE=disabled` makes `/history/ask` a no-op and returns empty history lists. `HISTORY_MODE=ephemeral` uses a temporary SQLite database for the current context_engine process only. Set `HISTORY_RETENTION_DAYS` to a non-negative integer to prune conversations older than that many days.
 
 ## Useful Checks
 
@@ -171,14 +171,14 @@ The smoke test checks the local daily-driver path:
 - extension bundles exist
 - local data/log paths exist
 - local Neo4j starts through Docker Compose unless `--skip-storage` is passed
-- sidecar `/health` responds; if no sidecar is running, the smoke test starts a temporary sidecar and stops it at the end
+- context_engine `/health` responds; if no context_engine is running, the smoke test starts a temporary context_engine and stops it at the end
 - graph provider status responds
 - code indexing works against the fast default slice: `context_engine/axis`
 - docs indexing works against `docs/local_development.md` by default (full `docs/` with `--full-repo`)
 - unified search returns a valid response
 - `/ask` returns context and trace metadata
 - `/impact` responds for the smoke symbol (`run_axis_retrieval` by default)
-- `/metrics` returns dashboard-ready sidecar metrics
+- `/metrics` returns dashboard-ready context_engine metrics
 
 The default smoke test is intentionally small. Use the full repo mode only when you want a heavier verification pass:
 
@@ -198,15 +198,15 @@ If Neo4j is already running and you do not want the smoke test to manage Docker:
 python scripts/local_dev.py smoke --skip-storage
 ```
 
-If you specifically want to require an already running sidecar:
+If you specifically want to require an already running context_engine:
 
 ```bash
-python scripts/local_dev.py smoke --no-start-sidecar
+python scripts/local_dev.py smoke --no-start-context_engine
 ```
 
-For the default `context_engine/axis` smoke target, an already running sidecar
+For the default `context_engine/axis` smoke target, an already running context_engine
 must either use the derived `local/axis@<ref>` as `DEFAULT_WORKSPACE_ID` or trust
-the smoke script's `X-Workspace` header. A temporary sidecar started by the smoke
+the smoke script's `X-Workspace` header. A temporary context_engine started by the smoke
 command receives the derived workspace as its default automatically.
 
 Inside VS Code, use:
@@ -238,7 +238,7 @@ ANTHROPIC_MODEL=
 
 With `ALLOW_CLOUD_LLM=false`, `MODEL_PREFERENCE=auto` never sends assembled context to Anthropic even when a key is present. Set `MODEL_PREFERENCE=claude` only together with `ALLOW_CLOUD_LLM=true`.
 
-**Safety defaults (sidecar):** after `POST /index`, path sandboxing applies to API and graph reads. Search `limit` is capped at 50; `/ask` `token_budget` at 32 000. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing) and [spec_sidecar_api.md](spec_sidecar_api.md#request-validation-bounds).
+**Safety defaults (context_engine):** after `POST /index`, path sandboxing applies to API and graph reads. Search `limit` is capped at 50; `/ask` `token_budget` at 32 000. Details: [spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing) and [spec_context_engine_api.md](spec_context_engine_api.md#request-validation-bounds).
 
 ## Python Quality Gates
 

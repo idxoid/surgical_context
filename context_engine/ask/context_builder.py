@@ -277,6 +277,7 @@ class AskContextBuilder:
         """Axis-pipeline provider: canonical retrieval -> renderable PromptContext."""
         from context_engine.axis.pipeline import run_axis_retrieval
         from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
+        from context_engine.axis.retrieval_budget import budget_for_intent
 
         result = run_axis_retrieval(
             question,
@@ -292,7 +293,7 @@ class AskContextBuilder:
             user_id=user_id,
         )
         intent = result.intent[0].role if result.intent else ""
-        return axis_bundles_to_prompt_context(
+        ctx = axis_bundles_to_prompt_context(
             result.bundles,
             question=question,
             workspace_id=base_workspace_id,
@@ -300,6 +301,29 @@ class AskContextBuilder:
             trace_id=trace_id,
             render_mode=result.render_mode,
         )
+        if ctx is None:
+            return None
+
+        matches = list(result.intent)
+        ctx.intent_distribution = {match.role: match.similarity for match in matches}
+        ctx.intent_confidence = matches[0].similarity if matches else 0.0
+        ctx.intent_ambiguous = len(matches) > 1
+        profile = budget_for_intent(matches)
+        ctx.intent_effective_mode = profile.name
+        ctx.intent_resolution = {
+            "source": "axis_classifier",
+            "matches": [match.to_dict() for match in matches],
+        }
+        ctx.tier_tokens = {
+            "code": estimate_text_tokens(ctx.primary_source.code),
+            "cross_refs": sum(
+                estimate_text_tokens(symbol.code)
+                for symbol in ctx.graph_context
+                if symbol.code and symbol.code.strip()
+            ),
+        }
+        ctx.budget["intent_profile"] = profile.name
+        return ctx
 
     @staticmethod
     def ask_axis_first_enabled() -> bool:

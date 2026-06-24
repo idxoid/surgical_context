@@ -5,7 +5,7 @@
 
 `context_engine/overlay.py` — holds unsaved file content in memory and re-parses symbols on demand. Enables the axis context builder (`context_engine/axis/overlay_context.py`) to answer questions about code the user is currently editing, before it hits disk.
 
-`POST /overlay` and `DELETE /overlay` validate `file_path` under the workspace project root before touching overlay state (see [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)).
+`POST /overlay` and `DELETE /overlay` validate `file_path` under the workspace project root before touching overlay state (see [spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing)).
 
 ---
 
@@ -50,7 +50,7 @@ Content is cleared when:
 - VS Code sends `DELETE /overlay` on file save
 - VS Code sends `DELETE /overlay` on editor tab close
 
-The sidecar also evicts entries lazily during overlay access/update:
+The context_engine also evicts entries lazily during overlay access/update:
 
 - `OVERLAY_MAX_ENTRIES` defaults to `256`; inserting beyond the cap evicts the least-recently-used entry.
 - `OVERLAY_TTL_SECONDS` defaults to `86400`; idle entries older than the TTL are removed. A value `<=0` disables TTL eviction.

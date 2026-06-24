@@ -1,4 +1,4 @@
-"""FastAPI sidecar — install stderr filtering before LanceDB / SentenceTransformer import."""
+"""FastAPI context_engine — install stderr filtering before LanceDB / SentenceTransformer import."""
 
 import sys
 from pathlib import Path
@@ -20,7 +20,7 @@ from typing import Any, cast
 from fastapi import HTTPException
 
 from context_engine.api.app import create_app
-from context_engine.api.config import load_sidecar_config
+from context_engine.api.config import load_context_engine_config
 from context_engine.api.deps import (
     canonical_user_id as _canonical_user_id,  # noqa: F401 — route bridge
 )
@@ -46,7 +46,7 @@ from context_engine.api.schemas import (
     OverlayRequest,  # noqa: F401 — re-exported for endpoint tests
     UnifiedSearchRequest,  # noqa: F401 — re-exported for endpoint tests
 )
-from context_engine.api.state import SidecarState, build_sidecar_state
+from context_engine.api.state import SidecarState, build_context_engine_state
 from context_engine.api.workspace_security import (
     authorize_workspace_project_root,
     require_workspace_root_dir,
@@ -89,7 +89,7 @@ def _start_trace(endpoint: str, x_trace_id: Any = None, workspace_id: str = "") 
     )
 
 
-state = build_sidecar_state(load_sidecar_config())
+state = build_context_engine_state(load_context_engine_config())
 
 config = state.config
 MODEL_PREFERENCE = config.model_preference

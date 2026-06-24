@@ -131,7 +131,7 @@ A developer asks a question in the Chat Panel, then opens the inspector to verif
 
 ### 3. Impact Explorer
 
-The Impact Explorer visualizes likely change impact for the selected symbol. The current product scope is intentionally shallow: it uses the sidecar's bounded `AFFECTS` graph plus the selected ask's prompt context. It is not a full framework-aware blast-radius engine across codegen, templates, runtime dispatch, and tests.
+The Impact Explorer visualizes likely change impact for the selected symbol. The current product scope is intentionally shallow: it uses the context_engine's bounded `AFFECTS` graph plus the selected ask's prompt context. It is not a full framework-aware blast-radius engine across codegen, templates, runtime dispatch, and tests.
 
 #### Sections
 
@@ -155,7 +155,7 @@ The Dashboard is an operational view, not a second chat surface.
 
 #### Metrics to show
 
-- sidecar health
+- context_engine health
 - cloud status
 - indexed files
 - indexed symbols
@@ -189,13 +189,13 @@ The extension UI should use four state domains.
 | `activeFile` | `string \| null` | Current editor file |
 | `cursorRange` | `Range \| null` | Used to infer symbol under cursor |
 | `isDirty` | `boolean` | Indicates unsaved file state |
-| `overlaySynced` | `boolean` | Whether overlay content was sent to the sidecar |
+| `overlaySynced` | `boolean` | Whether overlay content was sent to the context_engine |
 
 ### Backend state
 
 | Field | Type | Purpose |
 |---|---|---|
-| `sidecarHealth` | `'up' \| 'down' \| 'degraded'` | Health indicator |
+| `context_engineHealth` | `'up' \| 'down' \| 'degraded'` | Health indicator |
 | `cloudStatus` | `'connected' \| 'fallback-local' \| 'offline'` | Provider/backend mode |
 | `workspaceId` | `string` | Current workspace scope. Blank setting means derive from VS Code workspace folder + Git branch; explicit setting overrides derivation. |
 | `authState` | `'ready' \| 'missing-token' \| 'expired'` | Auth-related UX |
@@ -215,7 +215,7 @@ The extension UI should use four state domains.
 The UI has two boundaries:
 
 1. **Webview ↔ extension host**
-2. **Extension host ↔ sidecar HTTP API**
+2. **Extension host ↔ context_engine HTTP API**
 
 ### Webview → extension host messages
 
@@ -241,7 +241,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'chat.completed'; requestId: string; answer: string; context: PromptContextDto }
   | { type: 'chat.failed'; requestId: string; error: string }
   | { type: 'state.editor'; activeFile: string | null; symbol: string | null; isDirty: boolean }
-  | { type: 'state.backend'; sidecarHealth: string; cloudStatus: string; workspaceId: string }
+  | { type: 'state.backend'; context_engineHealth: string; cloudStatus: string; workspaceId: string }
   | { type: 'impact.loaded'; data: ImpactViewDto }
   | { type: 'dashboard.loaded'; data: DashboardDto };
 ```
@@ -400,7 +400,7 @@ function layoutChatPanel(root: HTMLElement) {
 
 - The mockup and this spec define the target UX, not the current shipped extension behavior.
 - The chat panel assumes reliable symbol resolution from the active editor; edge cases for unsupported files are still product work.
-- `/metrics` exists, but the Dashboard must degrade gracefully when the sidecar or an optional provider is unavailable.
+- `/metrics` exists, but the Dashboard must degrade gracefully when the context_engine or an optional provider is unavailable.
 - `workspace_id` is populated; branch identity is encoded inside it rather than exposed as a separate field. Several axis score/intent/pruning fields may still be empty defaults.
 - The bounded queue coalesces mass editor events; the UI should still distinguish queued, coalesced, rejected, and completed work rather than assume every dirty update is indexed immediately.
 

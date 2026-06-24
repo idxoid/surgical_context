@@ -6,7 +6,7 @@ This script keeps the local daily-driver path in one place:
 - prepare ignored data/log directories
 - install and compile the VS Code extension
 - start local Neo4j through Docker Compose
-- run the FastAPI sidecar
+- run the FastAPI context_engine
 - launch VS Code with the extension development path
 """
 
@@ -100,7 +100,7 @@ def _python_cmd() -> list[str]:
     return [sys.executable]
 
 
-def _sidecar_env(*, default_workspace_id: str | None = None) -> dict[str, str]:
+def _context_engine_env(*, default_workspace_id: str | None = None) -> dict[str, str]:
     from context_engine.env_loader import load_repo_dotenv
 
     load_repo_dotenv(path=ENV_FILE)
@@ -332,7 +332,7 @@ def start_storage(args: argparse.Namespace) -> None:
         )
 
 
-def sidecar_command(args: argparse.Namespace) -> list[str]:
+def context_engine_command(args: argparse.Namespace) -> list[str]:
     host = args.host or "127.0.0.1"
     port = str(args.port or 8000)
     cmd = [
@@ -359,10 +359,10 @@ def code_command() -> list[str]:
 
 
 def print_next_steps(args: argparse.Namespace) -> None:
-    sidecar = sidecar_command(args)
+    context_engine = context_engine_command(args)
     code = code_command()
     print("\nNext terminals:")
-    print(f"  1. {_display_cmd(sidecar)}")
+    print(f"  1. {_display_cmd(context_engine)}")
     print(f"  2. {_display_cmd(code)}")
     print("\nUseful checks:")
     print("  python scripts/local_dev.py doctor")
@@ -404,10 +404,10 @@ def bootstrap(args: argparse.Namespace) -> int:
     return 0
 
 
-def run_sidecar(args: argparse.Namespace) -> int:
+def run_context_engine(args: argparse.Namespace) -> int:
     prepare_local_dirs(dry_run=args.dry_run)
-    cmd = sidecar_command(args)
-    return _run(cmd, dry_run=args.dry_run, env=_sidecar_env()).returncode
+    cmd = context_engine_command(args)
+    return _run(cmd, dry_run=args.dry_run, env=_context_engine_env()).returncode
 
 
 def launch_code(args: argparse.Namespace) -> int:
@@ -432,7 +432,7 @@ def _assert_path(path: Path, label: str) -> None:
         raise RuntimeError(f"Missing {label}: {path}")
 
 
-def _ensure_sidecar_for_smoke(
+def _ensure_context_engine_for_smoke(
     args: argparse.Namespace,
     *,
     base_url: str,
@@ -448,25 +448,27 @@ def _ensure_sidecar_for_smoke(
         )
         return health, None
     except RuntimeError as exc:
-        if args.no_start_sidecar:
+        if args.no_start_context_engine:
             raise RuntimeError(
                 f"Sidecar is not reachable at {base_url}. Start it with "
-                "`python scripts/local_dev.py sidecar --reload`, or run smoke "
-                "without --no-start-sidecar to let the smoke test start a "
+                "`python scripts/local_dev.py context_engine --reload`, or run smoke "
+                "without --no-start-context_engine to let the smoke test start a "
                 "temporary context_engine."
             ) from exc
 
-        print(f"\n[smoke] sidecar is not reachable at {base_url}; starting temporary sidecar")
-        cmd = sidecar_command(args)
+        print(
+            f"\n[smoke] context_engine is not reachable at {base_url}; starting temporary context_engine"
+        )
+        cmd = context_engine_command(args)
         print(f"$ {_display_cmd(cmd)}")
         process = subprocess.Popen(
-            cmd, cwd=ROOT, env=_sidecar_env(default_workspace_id=workspace_id)
+            cmd, cwd=ROOT, env=_context_engine_env(default_workspace_id=workspace_id)
         )
         try:
             health = _wait_for_health(
                 base_url=base_url,
                 workspace_id=workspace_id,
-                timeout=args.sidecar_start_timeout,
+                timeout=args.context_engine_start_timeout,
                 request_timeout=min(args.timeout, 2.0),
             )
         except Exception:
@@ -499,13 +501,13 @@ def smoke(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         print(
-            "Smoke would check extension assets, local dirs, sidecar health, indexes, ask, impact, and metrics."
+            "Smoke would check extension assets, local dirs, context_engine health, indexes, ask, impact, and metrics."
         )
         if not args.skip_storage:
             compose = _compose_cmd() or ["docker", "compose"]
             print(f"$ {_display_cmd([*compose, 'up', '-d', 'neo4j'])}")
-        if not args.no_start_sidecar:
-            print(f"$ {_display_cmd(sidecar_command(args))}")
+        if not args.no_start_context_engine:
+            print(f"$ {_display_cmd(context_engine_command(args))}")
         print(f"Project path: {project_path}")
         print(f"Docs path: {docs_path}")
         print(f"Base URL: {base_url}")
@@ -526,11 +528,11 @@ def smoke(args: argparse.Namespace) -> int:
     )
     _smoke_step("Neo4j storage", lambda: start_storage(args))
 
-    sidecar_process = None
+    context_engine_process = None
     try:
-        health, sidecar_process = _smoke_step(
-            "sidecar health",
-            lambda: _ensure_sidecar_for_smoke(
+        health, context_engine_process = _smoke_step(
+            "context_engine health",
+            lambda: _ensure_context_engine_for_smoke(
                 args,
                 base_url=base_url,
                 workspace_id=workspace_id,
@@ -636,42 +638,42 @@ def smoke(args: argparse.Namespace) -> int:
                 timeout=args.timeout,
             ),
         )
-        if "sidecar_" not in metrics:
-            raise RuntimeError("Metrics response did not contain sidecar metrics.")
+        if "context_engine_" not in metrics:
+            raise RuntimeError("Metrics response did not contain context_engine metrics.")
 
         print("\nLocal smoke test passed.")
         return 0
     finally:
-        if sidecar_process is not None:
-            print("[smoke] stopping temporary sidecar")
-            _stop_process(sidecar_process)
+        if context_engine_process is not None:
+            print("[smoke] stopping temporary context_engine")
+            _stop_process(context_engine_process)
 
 
 def up(args: argparse.Namespace) -> int:
     bootstrap(args)
-    sidecar_cmd = sidecar_command(args)
+    context_engine_cmd = context_engine_command(args)
 
     if args.dry_run:
-        print(f"$ {_display_cmd(sidecar_cmd)}")
+        print(f"$ {_display_cmd(context_engine_cmd)}")
         if args.launch_code:
             print(f"$ {_display_cmd(code_command())}")
         return 0
 
     print("\nStarting context_engine. Press Ctrl+C here to stop it.")
-    sidecar = subprocess.Popen(sidecar_cmd, cwd=ROOT, env=_sidecar_env())
+    context_engine = subprocess.Popen(context_engine_cmd, cwd=ROOT, env=_context_engine_env())
     try:
         time.sleep(args.launch_delay)
         if args.launch_code:
             launch_code(args)
-        return sidecar.wait()
+        return context_engine.wait()
     except KeyboardInterrupt:
         print("\nStopping context_engine...")
-        sidecar.terminate()
+        context_engine.terminate()
         try:
-            return sidecar.wait(timeout=5)
+            return context_engine.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            sidecar.kill()
-            return sidecar.wait()
+            context_engine.kill()
+            return context_engine.wait()
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -714,9 +716,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bootstrap_parser.set_defaults(func=bootstrap)
 
-    sidecar_parser = subparsers.add_parser("sidecar", help="Run the FastAPI sidecar")
-    add_common_args(sidecar_parser)
-    sidecar_parser.set_defaults(func=run_sidecar)
+    context_engine_parser = subparsers.add_parser(
+        "context_engine", help="Run the FastAPI context_engine"
+    )
+    add_common_args(context_engine_parser)
+    context_engine_parser.set_defaults(func=run_context_engine)
 
     code_parser = subparsers.add_parser("code", help="Launch VS Code extension dev host")
     code_parser.add_argument(
@@ -725,7 +729,7 @@ def build_parser() -> argparse.ArgumentParser:
     code_parser.set_defaults(func=launch_code)
 
     up_parser = subparsers.add_parser(
-        "up", help="Bootstrap, run sidecar, optionally launch VS Code"
+        "up", help="Bootstrap, run context_engine, optionally launch VS Code"
     )
     add_common_args(up_parser)
     add_storage_args(up_parser)
@@ -735,7 +739,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     up_parser.add_argument("--skip-compile", action="store_true", help="Do not compile extension")
     up_parser.add_argument(
-        "--launch-code", action="store_true", help="Open VS Code after sidecar starts"
+        "--launch-code", action="store_true", help="Open VS Code after context_engine starts"
     )
     up_parser.add_argument(
         "--launch-delay", type=float, default=2.0, help="Seconds to wait before launching VS Code"
@@ -748,7 +752,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument(
         "--base-url",
         default="",
-        help="Existing sidecar URL. Defaults to http://<host>:<port>.",
+        help="Existing context_engine URL. Defaults to http://<host>:<port>.",
     )
     smoke_parser.add_argument(
         "--workspace-id",
@@ -782,15 +786,15 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument("--timeout", type=float, default=10.0)
     smoke_parser.add_argument("--long-timeout", type=float, default=180.0)
     smoke_parser.add_argument(
-        "--sidecar-start-timeout",
+        "--context_engine-start-timeout",
         type=float,
         default=45.0,
-        help="Seconds to wait for a temporary sidecar to become healthy",
+        help="Seconds to wait for a temporary context_engine to become healthy",
     )
     smoke_parser.add_argument(
-        "--no-start-sidecar",
+        "--no-start-context_engine",
         action="store_true",
-        help="Fail if no sidecar is already running",
+        help="Fail if no context_engine is already running",
     )
     smoke_parser.add_argument("--skip-index", action="store_true")
     smoke_parser.add_argument("--skip-docs", action="store_true")

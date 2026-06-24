@@ -170,7 +170,9 @@ def test_anchor_symbol_uses_architecture_budget(stub_stages, monkeypatch):
     assert captured["token_budget"] == 8000
 
 
-def test_anchor_symbol_fast_path_skips_intent_embed(stub_stages, monkeypatch):
+def test_anchor_symbol_fast_path_classifies_question_but_skips_pool_retrieval(
+    stub_stages, monkeypatch
+):
     import context_engine.axis.intent_classifier as _intent_mod
 
     intent_calls: list[str] = []
@@ -178,7 +180,7 @@ def test_anchor_symbol_fast_path_skips_intent_embed(stub_stages, monkeypatch):
     def _classify(question, embed_fn, **kwargs):
         del embed_fn, kwargs
         intent_calls.append(question)
-        return []
+        return [IntentMatch(role="routing_surface", similarity=0.7, description="d")]
 
     monkeypatch.setattr(_intent_mod, "classify_intent", _classify)
 
@@ -200,10 +202,97 @@ def test_anchor_symbol_fast_path_skips_intent_embed(stub_stages, monkeypatch):
         anchor_path="/repo/context_engine/axis/graph_walk.py",
     )
 
-    assert intent_calls == []
-    assert result.intent == []
+    assert intent_calls == ["impact of walk_neighbours"]
+    assert [match.role for match in result.intent] == ["routing_surface"]
     assert len(result.bundles) == 1
     assert result.bundles[0].seed.uid == "u:walk"
+
+
+def test_anchor_symbol_impact_uses_directional_impact_candidates(stub_stages, monkeypatch):
+    import context_engine.axis.context_builder as _ctx_mod
+    import context_engine.axis.impact_traversal as _impact_mod
+    import context_engine.axis.intent_classifier as _intent_mod
+
+    monkeypatch.setattr(
+        _intent_mod,
+        "classify_intent",
+        lambda *_a, **_k: [IntentMatch(role="impact_analysis", similarity=0.9, description="d")],
+    )
+
+    caller = RoleCandidate(
+        uid="u:caller",
+        name="impact",
+        file_path="/repo/context_engine/api/routes/impact.py",
+        role="impact_analysis",
+        satisfying_contracts=(),
+        satisfying_kinds=("reverse_calls",),
+        contract_count=0,
+        kind_count=1,
+        vector_distance=None,
+        score=0.35,
+        depth=1,
+        edge_type="CALLS_*",
+        utility_score=0.9,
+    )
+    impact_kwargs: dict = {}
+
+    def _impact(candidates, **kwargs):
+        impact_kwargs.update(kwargs)
+        assert candidates[0].uid == "u:target"
+        return [caller]
+
+    monkeypatch.setattr(_impact_mod, "expand_impact_neighbourhood", _impact)
+
+    captured: dict = {}
+
+    def _build(candidates, **kwargs):
+        candidates = list(candidates)
+        captured["candidates"] = candidates
+        captured.update(kwargs)
+        bundles = [
+            ContextBundle(
+                role=candidate.role,
+                seed=ContextSymbol(
+                    uid=candidate.uid,
+                    name=candidate.name,
+                    file_path=candidate.file_path,
+                    role=candidate.role,
+                    distance_from_seed=candidate.depth or 0,
+                    expansion_step=None,
+                    code="x",
+                ),
+            )
+            for candidate in candidates
+        ]
+        return list(reversed(bundles))
+
+    monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _build)
+
+    class _PinDB:
+        def get_symbol_uid_by_name_in_file(self, *_a, **_k):
+            return "u:target"
+
+        def get_file_path_for_symbol(self, *_a, **_k):
+            return "/repo/context_engine/api/routes/impact.py"
+
+    result = axis_pipeline.run_axis_retrieval(
+        "What should I check before changing _resolve_committed_uid?",
+        workspace_id="ws",
+        db=_PinDB(),
+        lance=_FakeLance(),
+        anchor_symbol="_resolve_committed_uid",
+        anchor_path="/repo/context_engine/api/routes/impact.py",
+    )
+
+    assert [match.role for match in result.intent] == ["impact_analysis"]
+    assert [candidate.uid for candidate in result.candidates_for_context] == [
+        "u:target",
+        "u:caller",
+    ]
+    assert [bundle.seed.uid for bundle in result.bundles] == ["u:target", "u:caller"]
+    assert captured["traversal_mode"] is None
+    assert captured["include_tests"] is True
+    assert impact_kwargs["include_tests"] is True
 
 
 def test_anchor_symbol_prefers_file_path_when_disambiguating(stub_stages, monkeypatch):

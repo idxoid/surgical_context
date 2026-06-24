@@ -69,6 +69,16 @@ export class InspectorViewProvider implements vscode.WebviewViewProvider {
           vscode.window.showTextDocument(uri, opts);
         }
         break;
+
+      case 'clipboard.write':
+        try {
+          await vscode.env.clipboard.writeText(message.text);
+          void vscode.window.setStatusBarMessage('Copied JSON to clipboard.', 2000);
+        } catch (error) {
+          console.error('Failed to copy JSON to clipboard:', error);
+          void vscode.window.showErrorMessage('Could not copy JSON to clipboard.');
+        }
+        break;
     }
   }
 

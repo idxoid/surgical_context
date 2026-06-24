@@ -301,14 +301,17 @@ class TypeScriptAdapter(TreeSitterAdapter):
         fallback for top-level exported lexical declarations that were not
         surfaced by the AST query.
         """
+        if tree is None:
+            tree = self._parse(source_code)
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
         object_api_ranges = self._exported_object_api_ranges(source_code)
         if object_api_ranges:
-            symbols = [
-                symbol
-                for symbol in symbols
-                if not self._is_nested_object_api_member(symbol, object_api_ranges)
-            ]
+            symbols = self._qualify_exported_object_api_members(
+                symbols,
+                source_code,
+                file_path,
+                tree,
+            )
             symbols = self._merge_exported_object_api_symbols(
                 symbols,
                 source_code,
@@ -405,11 +408,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 )
             )
             existing_names.add(name)
-        # Parse once for the higher-order-factory walk if the caller didn't
-        # hand us a tree — the base extract_symbols may have parsed internally
-        # without returning the result.
-        if tree is None:
-            tree = self._parse(source_code)
         higher_order_factory_names = self._higher_order_factory_names(tree)
         if higher_order_factory_names:
             for symbol in symbols:
@@ -418,8 +416,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
         self._mark_react_hook_symbols(symbols)
         self._mark_behavioral_shape_symbols(symbols, tree)
-        if tree is None:
-            tree = self._parse(source_code)
         from context_engine.parser.docstring_extract import attach_docstrings
 
         attach_docstrings(
@@ -813,17 +809,71 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     return idx
         return None
 
-    @staticmethod
-    def _is_nested_object_api_member(
-        symbol: SymbolMetadata,
-        object_api_ranges: dict[str, tuple[int, int]],
-    ) -> bool:
-        for name, (start_line, end_line) in object_api_ranges.items():
-            if symbol.name == name:
-                return False
-            if start_line <= symbol.start_line <= end_line:
-                return True
-        return False
+    def _qualify_exported_object_api_members(
+        self,
+        symbols: list[SymbolMetadata],
+        source_code: str,
+        file_path: str,
+        tree,
+    ) -> list[SymbolMetadata]:
+        """Keep exported object methods as addressable symbols.
+
+        Tree-sitter exposes ``export const Client = { ask() {} }`` members as
+        ordinary ``method_definition`` nodes, but their default qualified name
+        omits the object owner (``module.ask``).  Preserve the aggregate
+        ``Client`` surface and qualify each direct member as
+        ``module.Client.ask`` so editor targets, calls, and HTTP endpoint facts
+        all share one stable UID.
+        """
+        owner_by_span: dict[tuple[str, int, int], tuple[str, str | None]] = {}
+        for node in self._iter_nodes(tree.root_node):
+            if node.type != "method_definition":
+                continue
+            owner = self._object_literal_owner_variable(node)
+            if owner is None:
+                continue
+            owner_name_node = owner.child_by_field_name("name")
+            method_name_node = node.child_by_field_name("name")
+            if owner_name_node is None or method_name_node is None:
+                continue
+            owner_name = self._node_text(owner_name_node)
+            method_name = self._node_text(method_name_node)
+            if owner_name and method_name:
+                raw_signature, _ = signature_from_node(
+                    node,
+                    source_code,
+                    self.language_name,
+                )
+                owner_by_span[(method_name, node.start_point[0] + 1, node.end_point[0] + 1)] = (
+                    owner_name,
+                    raw_signature,
+                )
+
+        if not owner_by_span:
+            return symbols
+
+        module = module_name_from_path(file_path)
+        qualified: list[SymbolMetadata] = []
+        for symbol in symbols:
+            owner = owner_by_span.get((symbol.name, symbol.start_line, symbol.end_line))
+            if not owner:
+                qualified.append(symbol)
+                continue
+            owner_name, raw_signature = owner
+            qualified_name = f"{module}.{owner_name}.{symbol.name}"
+            qualified.append(
+                symbol.model_copy(
+                    update={
+                        "uid": compute_uid(
+                            qualified_name,
+                            raw_signature,
+                            self.language_name,
+                        ),
+                        "qualified_name": qualified_name,
+                    }
+                )
+            )
+        return qualified
 
     def _merge_exported_object_api_symbols(
         self,
@@ -832,7 +882,14 @@ class TypeScriptAdapter(TreeSitterAdapter):
         file_path: str,
         object_api_ranges: dict[str, tuple[int, int]],
     ) -> list[SymbolMetadata]:
-        by_name = {symbol.name: symbol for symbol in symbols}
+        merged = [
+            symbol
+            for symbol in symbols
+            if not (
+                symbol.name in object_api_ranges
+                and symbol.start_line == object_api_ranges[symbol.name][0]
+            )
+        ]
         lines = source_code.splitlines()
         for name, (start_line, end_line) in object_api_ranges.items():
             if end_line < start_line or start_line < 1:
@@ -840,21 +897,23 @@ class TypeScriptAdapter(TreeSitterAdapter):
             content = "\n".join(lines[start_line - 1 : end_line])
             signature = normalize_signature(f"{name}()->_", self.language_name)
             qualified_name = f"{module_name_from_path(file_path)}.{name}"
-            by_name[name] = SymbolMetadata(
-                uid=compute_uid(qualified_name, signature, self.language_name),
-                name=name,
-                kind="object_api",
-                start_line=start_line,
-                end_line=end_line,
-                content_hash=self._hash(content),
-                file_path=file_path,
-                qualified_name=qualified_name,
-                signature=signature,
-                signature_hash=signature_hash(signature, self.language_name),
-                signature_status="object_api_export",
-                language=self.language_name,
+            merged.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="object_api",
+                    start_line=start_line,
+                    end_line=end_line,
+                    content_hash=self._hash(content),
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash=signature_hash(signature, self.language_name),
+                    signature_status="object_api_export",
+                    language=self.language_name,
+                )
             )
-        return list(by_name.values())
+        return merged
 
     def should_include_variable_symbol(
         self,
@@ -1797,18 +1856,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         return out
 
     def _http_call_site_uid(self, node, source_code: str, file_path: str) -> str:
-        from context_engine.parser.uid import (
-            compute_uid,
-            module_name_from_path,
-            normalize_signature,
-        )
-
-        line = node.start_point[0] + 1
-        for name, (start_line, end_line) in self._exported_object_api_ranges(source_code).items():
-            if start_line <= line <= end_line:
-                qualified_name = f"{module_name_from_path(file_path)}.{name}"
-                signature = normalize_signature(f"{name}()->_", self.language_name)
-                return compute_uid(qualified_name, signature, self.language_name)
         owner = self._enclosing_symbol_owner(node)
         if owner is None:
             return ""
@@ -2392,7 +2439,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                         else:
                             base_leaf = base.rsplit(".", 1)[-1]
                             if base_leaf == receiver_text:
-                                call["callee_qualified_name"] = base
+                                call["callee_qualified_name"] = f"{base}.{call_name}"
                             else:
                                 call["callee_qualified_name"] = f"{base}.{call_name}"
             calls.append(call)
@@ -2835,6 +2882,17 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
     def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
         qualified_name = qualified_name_for(node, source_code, file_path)
+        if node.type == "method_definition":
+            owner = self._object_literal_owner_variable(node)
+            if owner is not None:
+                owner_name_node = owner.child_by_field_name("name")
+                method_name_node = node.child_by_field_name("name")
+                if owner_name_node is not None and method_name_node is not None:
+                    owner_name = self._node_text(owner_name_node)
+                    method_name = self._node_text(method_name_node)
+                    qualified_name = (
+                        f"{module_name_from_path(file_path)}.{owner_name}.{method_name}"
+                    )
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
 
@@ -3005,10 +3063,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def _enclosing_symbol_owner(self, node):
         parent = node.parent
         while parent:
-            if parent.type == "method_definition":
-                var_owner = self._object_literal_owner_variable(parent)
-                if var_owner is not None:
-                    return var_owner
             if parent.type in self.parent_types:
                 return parent
             if parent.type == "variable_declarator" and self._is_top_level_variable_declarator(

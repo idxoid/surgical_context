@@ -248,7 +248,7 @@ function bootstrap() {
 
     def test_extract_calls_links_object_api_member_to_imported_surface(self, adapter):
         source = """
-import { SidecarClient } from './sidecarClient';
+import { SidecarClient } from './context_engineClient';
 
 export class SurgicalContextViewProvider {
   runAsk() {
@@ -262,7 +262,7 @@ export class SurgicalContextViewProvider {
         call = next(call for call in calls if call.get("callee_name") == "askStream")
 
         assert call["rel_type"] == "CALLS_IMPORTED"
-        assert call["callee_qualified_name"] == "sidecarClient.SidecarClient"
+        assert call["callee_qualified_name"] == "context_engineClient.SidecarClient.askStream"
 
     def test_extract_symbols_includes_exported_interface_via_fallback(self, adapter):
         source = """
@@ -454,7 +454,7 @@ export class CatsController {
 """
         assert adapter.extract_decorator_compositions(source, "src/cats.ts") == []
 
-    def test_exported_object_api_indexes_single_surface(self, adapter):
+    def test_exported_object_api_indexes_surface_and_members(self, adapter):
         source = """
 export const SidecarClient = {
   ask() {
@@ -465,11 +465,15 @@ export const SidecarClient = {
   },
 };
 """
-        symbols = adapter.extract_symbols(source, "extension/src/sidecarClient.ts")
-        assert {symbol.name for symbol in symbols} == {"SidecarClient"}
-        client = symbols[0]
+        symbols = adapter.extract_symbols(source, "extension/src/context_engineClient.ts")
+        assert {symbol.name for symbol in symbols} == {"SidecarClient", "ask", "health"}
+        client = next(symbol for symbol in symbols if symbol.name == "SidecarClient")
         assert client.kind == "object_api"
         assert client.signature_status == "object_api_export"
+        ask = next(symbol for symbol in symbols if symbol.name == "ask")
+        health = next(symbol for symbol in symbols if symbol.name == "health")
+        assert ask.qualified_name.endswith(".SidecarClient.ask")
+        assert health.qualified_name.endswith(".SidecarClient.health")
 
     def test_extract_injections_from_constructor_decorator(self, adapter):
         source = """

@@ -30,7 +30,7 @@ Neither graph storage nor tenant API graph storage may store raw source code con
 Neo4jClient(uri, user, password)
 ```
 
-Directly constructed clients own a `neo4j.GraphDatabase.driver` and close it with the client. The sidecar instead uses `DatabaseProvider`: one lazily opened process-wide driver plus request-scoped `AuraClient` views. `db_session(...)` closes only the lightweight view; the FastAPI lifespan closes the shared driver.
+Directly constructed clients own a `neo4j.GraphDatabase.driver` and close it with the client. The context_engine instead uses `DatabaseProvider`: one lazily opened process-wide driver plus request-scoped `AuraClient` views. `db_session(...)` closes only the lightweight view; the FastAPI lifespan closes the shared driver.
 
 ### Schema (ADR-001 compliant)
 
@@ -164,7 +164,7 @@ History is metadata-first. The provider persists conversations, messages, select
 - `save_ask_snapshot(...)`, `save_inspector_snapshot(...)`, `save_impact_snapshot(...)`
 - `get_conversation_bundle(...)`, `get_request_bundle(...)`
 
-`DisabledHistoryProvider` returns empty/no-op results. `EphemeralSQLiteHistoryProvider` uses a temporary SQLite database for the current sidecar process.
+`DisabledHistoryProvider` returns empty/no-op results. `EphemeralSQLiteHistoryProvider` uses a temporary SQLite database for the current context_engine process.
 
 ---
 

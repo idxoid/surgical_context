@@ -8,22 +8,24 @@ walks over the shared ``graph_walk`` core:
 
   1. **Reverse CFG** — every caller that reaches a seed via ``CALLS_*``
      within ``max_hops``. "Who calls X".
-  2. **Forward call spine** — the publisher/dependency chain X *drives*
+  2. **HTTP endpoint counterpart** — client and handler symbols joined through
+     the same workspace-local ``ApiEndpoint`` fingerprint.
+  3. **Forward call spine** — the publisher/dependency chain X *drives*
      via outgoing ``CALLS_*`` (``apply_async -> send_task -> route ->
      send_task_message``). High global-fan-in nodes (shared utility hubs:
      a logging/coercion helper called from everywhere) are gated out by
      comparing each node's fan-in to the closure's own median, so the
      spine stays the dispatch path and not the repo's plumbing.
-  3. **Impacted tests** — reverse ``CALLS_*`` from the seeds ∪ the gated
+  4. **Impacted tests** — reverse ``CALLS_*`` from the seeds ∪ the gated
      forward spine, kept to *test* files only: the tests that exercise
      the changed symbol or any production component on its call spine.
      This is the "and tests affected" half of an impact question, and it
      rides the SAME hub gate — without it, reverse-walking from a utility
      hub pulls in the entire suite.
-  4. **Structural inheritors / API carriers** — incoming
+  5. **Structural inheritors / API carriers** — incoming
      ``EXTENDS_EXTERNAL`` / ``INHERITED_API`` ("who inherits X") and
      outgoing ``HAS_API`` ("what API surface X carries").
-  5. **Forward impact closure** — the indexer's pre-computed ``AFFECTS``
+  6. **Forward impact closure** — the indexer's pre-computed ``AFFECTS``
      edges walked outward; broad fallback after the precise walks.
 
 Each walk is workspace-scoped through the ``File-CONTAINS-Symbol`` join.
@@ -40,6 +42,8 @@ from statistics import median
 from context_engine.axis.graph_walk import EdgeProfile, Neighbour, call_fan_in, walk_neighbours
 from context_engine.axis.role_retrieval import RoleCandidate
 from context_engine.axis.test_file_filter import is_test_path
+
+_HTTP_ENDPOINT_EDGES = ("CALLS_ENDPOINT", "IMPLEMENTS_ENDPOINT")
 
 # Intent roles whose canonical question shape asks about registration,
 # routing, binding, or task publishing — the downstream dispatch spine,
@@ -140,7 +144,17 @@ def expand_impact_neighbourhood(
         exclude_tests=exclude_tests,
     )
 
-    # 2. Forward CALLS spine — the publisher/dependency chain the change
+    # Client/server counterpart through a shared ApiEndpoint. This cannot use
+    # the in-process Symbol→Symbol adjacency because ApiEndpoint is an
+    # intentional non-Symbol bridge node.
+    http_endpoint_counterparts = _http_endpoint_counterparts(
+        db,
+        workspace_id,
+        seed_uids,
+        exclude_tests=exclude_tests,
+    )
+
+    # 3. Forward CALLS spine — the publisher/dependency chain the change
     #    drives. Production only (tests come from walk 3); hub-gated so the
     #    chain is the dispatch path, not the repo's shared plumbing.
     forward_calls = walk_neighbours(
@@ -154,7 +168,7 @@ def expand_impact_neighbourhood(
     )
     spine = _hub_gate(db, workspace_id, forward_calls, hub_fanin_factor)
 
-    # 3. Impacted tests — reverse CALLS from seeds ∪ gated spine, tests only.
+    # 4. Impacted tests — reverse CALLS from seeds ∪ gated spine, tests only.
     impacted_tests: list[Neighbour] = []
     if include_tests:
         anchor = seed_uids + [n.uid for n in spine]
@@ -169,7 +183,7 @@ def expand_impact_neighbourhood(
         )
         impacted_tests = [n for n in reverse_from_spine if is_test_path(n.file_path)]
 
-    # 4. Structural dependents / API carriers.
+    # 5. Structural dependents / API carriers.
     structural_inheritor = walk_neighbours(
         db,
         workspace_id,
@@ -189,7 +203,7 @@ def expand_impact_neighbourhood(
         exclude_tests=exclude_tests,
     )
 
-    # 5. Broad pre-computed dataflow closure.
+    # 6. Broad pre-computed dataflow closure.
     forward_affects = walk_neighbours(
         db,
         workspace_id,
@@ -202,6 +216,11 @@ def expand_impact_neighbourhood(
 
     walks: list[tuple[str, str, list[Neighbour]]] = [
         ("reverse_calls", "CALLS_*", reverse_calls),
+        (
+            "http_endpoint_counterpart",
+            "CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT",
+            http_endpoint_counterparts,
+        ),
         ("forward_calls", "CALLS_*", spine),
         ("impacted_tests", "CALLS_*", impacted_tests),
         ("structural_inheritor", "EXTENDS_EXTERNAL|INHERITED_API", structural_inheritor),
@@ -243,6 +262,56 @@ def expand_impact_neighbourhood(
     return ranked[:max_impacted]
 
 
+def _http_endpoint_counterparts(
+    db,
+    workspace_id: str,
+    seed_uids: list[str],
+    *,
+    exclude_tests: bool,
+) -> list[Neighbour]:
+    """Return the opposite side of workspace-local client↔handler bridges."""
+    if not seed_uids:
+        return []
+    test_clause = ""
+    if exclude_tests:
+        from context_engine.axis.test_file_filter import cypher_test_exclusion_clause
+
+        test_clause = f"AND {cypher_test_exclusion_clause('fn')}"
+    query = f"""
+    UNWIND $seed_uids AS su
+    MATCH (:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(s:Symbol {{uid: su}})
+    MATCH (s)-[source_rel:CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT]->(endpoint:ApiEndpoint)
+          <-[target_rel:CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT]-(n:Symbol)
+    MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
+    WHERE type(source_rel) <> type(target_rel)
+      AND source_rel.workspace_id = $workspace_id
+      AND target_rel.workspace_id = $workspace_id
+      {test_clause}
+    RETURN n.uid AS uid, coalesce(n.name, '') AS name, fn.path AS file_path,
+           1 AS depth, count(DISTINCT su) AS reach
+    ORDER BY reach DESC, uid ASC
+    """
+    try:
+        with db.driver.session() as session:
+            return [
+                Neighbour(
+                    uid=str(row.get("uid") or ""),
+                    name=str(row.get("name") or ""),
+                    file_path=str(row.get("file_path") or ""),
+                    depth=1,
+                    reach=int(row.get("reach") or 1),
+                )
+                for row in session.run(
+                    query,
+                    seed_uids=seed_uids,
+                    workspace_id=workspace_id,
+                )
+                if row.get("uid")
+            ]
+    except Exception:
+        return []
+
+
 def _hub_gate(
     db,
     workspace_id: str,
@@ -275,6 +344,7 @@ def _impact_utility(tag: str, depth: int, *, publisher_spine: bool = False) -> f
         base = {
             "forward_calls": 0.95,
             "reverse_calls": 0.90,
+            "http_endpoint_counterpart": 0.92,
             "impacted_tests": 0.80,
             "structural_api_carrier": 0.86,
             "structural_inheritor": 0.82,
@@ -283,6 +353,7 @@ def _impact_utility(tag: str, depth: int, *, publisher_spine: bool = False) -> f
     else:
         base = {
             "reverse_calls": 0.95,
+            "http_endpoint_counterpart": 0.92,
             "forward_calls": 0.90,
             "impacted_tests": 0.80,
             "structural_api_carrier": 0.86,

@@ -201,7 +201,7 @@ class LanguageAdapterRegistry:
 
 ### 3.2 Bootstrap — Auto-discover Adapters
 
-On sidecar startup, auto-load all adapters from `context_engine/parser/adapters/`:
+On context_engine startup, auto-load all adapters from `context_engine/parser/adapters/`:
 
 ```python
 def bootstrap_adapters() -> LanguageAdapterRegistry:
@@ -413,7 +413,7 @@ def make_adapter() -> GoAdapter:
     return GoAdapter()
 ```
 
-2. On next sidecar boot, `bootstrap_adapters()` auto-discovers and registers the Go adapter. Its extensions become eligible for baseline collection and the generic symbol/call/import/inheritance handoff without editing the registry or collector.
+2. On next context_engine boot, `bootstrap_adapters()` auto-discovers and registers the Go adapter. Its extensions become eligible for baseline collection and the generic symbol/call/import/inheritance handoff without editing the registry or collector.
 
 3. **Add a test** in `tests/unit/test_go_adapter.py`:
 
@@ -463,7 +463,7 @@ The TypeScript adapter collapses `export const Foo = { ... }` client objects int
 - nested method symbols inside the object literal are suppressed to reduce graph noise
 - HTTP calls inside the object (`post('/ask')`, `fetch('/health')`) are attributed to the enclosing `object_api` symbol
 
-Cross-language trace (for example extension `SidecarClient` → sidecar `/ask` handler) is **not** wired today — regex `SEMANTIC_HINT` hints were removed; revisit when TS indexing emits structural route/call edges.
+Cross-language trace (for example extension `SidecarClient` → context_engine `/ask` handler) is **not** wired today — regex `SEMANTIC_HINT` hints were removed; revisit when TS indexing emits structural route/call edges.
 
 ### Phase 5+
 

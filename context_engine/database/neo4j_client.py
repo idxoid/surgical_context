@@ -2843,9 +2843,9 @@ class Neo4jClient:
         suffix = f"/{path.rsplit('/', 1)[-1]}"
         alt_path = ""
         if "/context_engine/" in path:
-            alt_path = path.replace("/context_engine/", "/sidecar/", 1)
-        elif "/sidecar/" in path:
-            alt_path = path.replace("/sidecar/", "/context_engine/", 1)
+            alt_path = path.replace("/context_engine/", "/context_engine/", 1)
+        elif "/context_engine/" in path:
+            alt_path = path.replace("/context_engine/", "/context_engine/", 1)
         with self.driver.session() as session:
             rows = session.run(
                 """
@@ -2877,14 +2877,16 @@ class Neo4jClient:
         name: str,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
     ) -> list[dict[str, str | int]]:
-        """Return symbol uids for ``name`` ranked by incoming call edges."""
+        """Return symbol candidates with call fan-in and endpoint evidence."""
         with self.driver.session() as session:
             rows = session.run(
                 """
                 MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {name: $name})
                 OPTIONAL MATCH (caller:Symbol)-[:CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED]->(s)
-                RETURN s.uid AS uid, f.path AS path, count(DISTINCT caller) AS incoming
-                ORDER BY incoming DESC, path ASC
+                OPTIONAL MATCH (s)-[endpoint_rel:CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT]->(:ApiEndpoint)
+                RETURN s.uid AS uid, f.path AS path, count(DISTINCT caller) AS incoming,
+                       count(DISTINCT endpoint_rel) AS endpoint_edges
+                ORDER BY endpoint_edges DESC, incoming DESC, path ASC
                 """,
                 name=name,
                 workspace_id=workspace_id,
@@ -2894,26 +2896,31 @@ class Neo4jClient:
                     "uid": str(row["uid"]),
                     "path": str(row["path"]),
                     "incoming": int(row["incoming"] or 0),
+                    "endpoint_edges": int(row["endpoint_edges"] or 0),
                 }
                 for row in rows
             ]
 
     @staticmethod
     def _path_matches_file(stored_path: str, file_path: str) -> bool:
-        stored = stored_path.strip()
-        requested = file_path.strip()
+        stored = stored_path.strip().replace("\\", "/").rstrip("/")
+        requested = file_path.strip().replace("\\", "/").rstrip("/")
         if not stored or not requested:
             return False
-        if stored == requested or stored.endswith(requested):
+        if (
+            stored == requested
+            or stored.endswith(f"/{requested.lstrip('/')}")
+            or requested.endswith(f"/{stored.lstrip('/')}")
+        ):
             return True
-        return stored.endswith(f"/{requested.rsplit('/', 1)[-1]}")
+        return "/" not in requested and stored.rsplit("/", 1)[-1] == requested
 
     @staticmethod
     def _impact_path_rank(path: str) -> tuple[int, int]:
         """Prefer canonical source trees over legacy mirror paths."""
         lowered = path.lower()
         penalty = 0
-        if "/sidecar/" in lowered or lowered.endswith("/sidecar"):
+        if "/context_engine/" in lowered or lowered.endswith("/context_engine"):
             penalty += 10
         if "/qa/" in lowered:
             penalty += 5
@@ -2926,7 +2933,7 @@ class Neo4jClient:
         *,
         file_path: str | None = None,
     ) -> str | None:
-        """Pick the graph uid most useful for impact (callers win over path match)."""
+        """Resolve an impact target, preserving explicit file identity when possible."""
         candidates = self.list_symbol_impact_candidates(name, workspace_id=workspace_id)
         if not candidates:
             return None
@@ -2942,27 +2949,21 @@ class Neo4jClient:
                 best_matched = max(
                     matched,
                     key=lambda candidate: (
+                        int(candidate.get("endpoint_edges", 0)),
                         int(candidate["incoming"]),
                         -self._impact_path_rank(str(candidate["path"]))[0],
                     ),
                 )
-                if int(best_matched["incoming"]) > 0:
-                    return str(best_matched["uid"])
-                # Same basename in another indexed mirror (e.g. sidecar copy) may hold edges.
-                if any(int(candidate["incoming"]) > 0 for candidate in candidates):
-                    best_any = max(
-                        candidates,
-                        key=lambda candidate: (
-                            int(candidate["incoming"]),
-                            -self._impact_path_rank(str(candidate["path"]))[0],
-                        ),
-                    )
-                    return str(best_any["uid"])
                 return str(best_matched["uid"])
+            # An explicit editor path is an identity constraint, not a ranking
+            # hint. Falling back to another file here makes common names such
+            # as ``ask`` or ``run`` silently jump across languages/modules.
+            return None
 
         best = max(
             candidates,
             key=lambda candidate: (
+                int(candidate.get("endpoint_edges", 0)),
                 int(candidate["incoming"]),
                 -self._impact_path_rank(str(candidate["path"]))[0],
             ),

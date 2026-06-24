@@ -165,11 +165,11 @@ Do not overload common VS Code defaults. Prefer opt-in bindings.
 |---|---|---|---|
 | `surgicalContext.backendUrl` | `string` | `http://localhost:8000` | Sidecar base URL |
 | `surgicalContext.workspaceId` | `string` | empty | Optional workspace scope override; blank derives from VS Code workspace + Git branch |
-| `surgicalContext.modelPreference` | `string` | `auto` | Extension display/config value; does not currently reconfigure the running sidecar |
+| `surgicalContext.modelPreference` | `string` | `auto` | Extension display/config value; does not currently reconfigure the running context_engine |
 | `surgicalContext.authToken` | `string` | empty | Optional explicit bearer token; blank triggers local token bootstrap |
 | `surgicalContext.tokenBudget` | `number` | `6000` | Ask/stream token budget (extension clamps to 1000–32,000) |
-| `surgicalContext.storage.lancedbPath` | `string` | `./data/lancedb` | Display/config value; sidecar storage still comes from its process environment |
-| `surgicalContext.storage.historyPath` | `string` | `./data/history/surgical_context.sqlite3` | Display/config value; sidecar storage still comes from its process environment |
+| `surgicalContext.storage.lancedbPath` | `string` | `./data/lancedb` | Display/config value; context_engine storage still comes from its process environment |
+| `surgicalContext.storage.historyPath` | `string` | `./data/history/surgical_context.sqlite3` | Display/config value; context_engine storage still comes from its process environment |
 | `surgicalContext.overlaySync` | `boolean` | `true` | Enable dirty-state sync |
 | `surgicalContext.chat.autoOpenInspector` | `boolean` | `false` | Open inspector after completed ask |
 | `surgicalContext.dashboard.autoRefreshSeconds` | `number` | `30` | Dashboard polling interval |
@@ -187,7 +187,7 @@ Example:
   "surgicalContext.overlaySync": {
     "type": "boolean",
     "default": true,
-    "description": "Send unsaved editor content to the sidecar so asks use the latest in-memory code."
+    "description": "Send unsaved editor content to the context_engine so asks use the latest in-memory code."
   }
 }
 ```

@@ -287,7 +287,7 @@ export function renderActionBar(active: 'chat' | 'inspector' | 'impact' | 'setti
   `;
 }
 
-export function renderComposerDock(): string {
+export function renderComposerDock(isStreaming = false): string {
   return `
     <div class="composer-dock">
       <textarea
@@ -298,11 +298,21 @@ export function renderComposerDock(): string {
         aria-describedby="composer-help"
         rows="1"
       ></textarea>
-      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message">
+      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message" ${isStreaming ? 'hidden' : ''}>
         <span class="composer-send-icon" aria-hidden="true">➤</span>
       </button>
+      <button
+        id="composer-stop"
+        class="composer-stop-btn"
+        data-action="stopStreaming"
+        title="Stop response"
+        aria-label="Stop response generation"
+        ${isStreaming ? '' : 'hidden'}
+      >
+        <span class="composer-stop-icon" aria-hidden="true"></span>
+      </button>
       <div id="composer-help" class="sr-only">
-        Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer.
+        Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer. While a response is streaming, use Stop to cancel it.
       </div>
     </div>
   `;

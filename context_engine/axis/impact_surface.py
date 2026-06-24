@@ -7,7 +7,7 @@ impact traversal directly instead of inventing a prompt-facing question.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from context_engine.axis.impact_traversal import expand_impact_neighbourhood
 from context_engine.axis.role_retrieval import RoleCandidate
@@ -58,8 +58,7 @@ def build_impact_surface(
     )
     spans = _symbol_spans(db, candidates, workspace_id=workspace_id)
     rows = [
-        _row_from_candidate(candidate, span=spans.get(candidate.uid))
-        for candidate in candidates
+        _row_from_candidate(candidate, span=spans.get(candidate.uid)) for candidate in candidates
     ]
     return {
         "affected_symbols": rows,
@@ -84,9 +83,9 @@ def _symbol_spans(
     get_spans = getattr(db, "get_symbol_spans_by_uids", None)
     if not callable(get_spans) or not candidates:
         return {}
-    return get_spans(
-        [candidate.uid for candidate in candidates],
-        workspace_id=workspace_id,
+    return cast(
+        "dict[str, dict[str, Any]]",
+        get_spans([candidate.uid for candidate in candidates], workspace_id=workspace_id),
     )
 
 
@@ -127,6 +126,8 @@ def _row_from_candidate(
 def _surface_classification(kind: str) -> tuple[str, str, str]:
     if kind == "reverse_calls":
         return "direct", "high", "direct_consumer"
+    if kind == "http_endpoint_counterpart":
+        return "reach", "high", "http_endpoint_counterpart"
     if kind == "structural_api_carrier":
         return "reach", "high", "api_surface"
     if kind == "structural_inheritor":
@@ -139,6 +140,7 @@ def _surface_classification(kind: str) -> tuple[str, str, str]:
 def _edge_type_for_kind(kind: str) -> str:
     return {
         "reverse_calls": "CALLS_*",
+        "http_endpoint_counterpart": "CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT",
         "structural_api_carrier": "HAS_API",
         "structural_inheritor": "EXTENDS_EXTERNAL|INHERITED_API",
         "forward_affects": "AFFECTS",

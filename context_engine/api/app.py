@@ -24,7 +24,7 @@ from context_engine.api.routes import (
 from context_engine.api.routes.deps import MainRouteDeps, configure_main_routes
 from context_engine.api.routes.indexing import IndexingRouteDeps, configure_indexing_routes
 from context_engine.api.state import SidecarState
-from context_engine.api.warmup import warm_sidecar
+from context_engine.api.warmup import warm_context_engine
 from context_engine.database.provider import close_database_provider
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ def create_app(state: SidecarState, *, main_module: Any) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         state.git_delta_poller.start()
-        await asyncio.to_thread(warm_sidecar, state)
+        await asyncio.to_thread(warm_context_engine, state)
         try:
             yield
         finally:

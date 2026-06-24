@@ -89,6 +89,35 @@ def effective_index_workspace_id(
     return (profile or active_index_profile()).workspace_id(base_workspace_id)
 
 
+def index_workspace_lookup_order(base_workspace_id: str) -> list[str]:
+    """Neo4j/Lance namespaces to try when resolving symbols by name.
+
+    The active ``INDEX_PROFILE`` wins first; when it is ``legacy`` but the
+    workspace was indexed under ``axis_python_v1`` (common in local dev),
+    the suffixed namespace is tried next.
+    """
+    base = base_workspace_id.strip()
+    if not base:
+        return []
+    seen: set[str] = set()
+    order: list[str] = []
+
+    def add(candidate: str) -> None:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            order.append(candidate)
+
+    add(effective_index_workspace_id(base))
+    for profile_name in (AXIS_PYTHON_V1_PROFILE, LEGACY_INDEX_PROFILE):
+        add(
+            effective_index_workspace_id(
+                base,
+                profile=resolve_index_profile(profile_name),
+            )
+        )
+    return order
+
+
 def base_workspace_id(effective_workspace_id: str) -> str:
     """Strip a known index-profile suffix; return input unchanged when none matches."""
     base = effective_workspace_id.strip()

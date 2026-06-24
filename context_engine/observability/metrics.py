@@ -1,6 +1,6 @@
 """In-process metrics and request tracing.
 
-The sidecar runs locally, so this intentionally stays dependency-free and exports
+The context_engine runs locally, so this intentionally stays dependency-free and exports
 Prometheus text directly instead of pulling in a global metrics stack.
 """
 
@@ -91,7 +91,7 @@ def estimate_cost_usd(
 ) -> tuple[float, str]:
     """Estimate request cost from optional env-configured per-million-token rates.
 
-    Defaults stay at zero because provider pricing changes and this local sidecar
+    Defaults stay at zero because provider pricing changes and this local context_engine
     should not bake stale economics into code. Set e.g. CLAUDE_INPUT_COST_PER_1M
     and CLAUDE_OUTPUT_COST_PER_1M to enable non-zero estimates.
     """
@@ -216,12 +216,12 @@ class MetricsRegistry:
         latency_slo = trace.latency_slo()
         latency_slo_target = _ms_label(latency_slo["target_ms"])
         labels = {"endpoint": trace.endpoint, "status": status}
-        self.increment("sidecar_requests_total", labels=labels)
+        self.increment("context_engine_requests_total", labels=labels)
         self.observe_ms(
-            "sidecar_request_latency", trace.total_latency_ms, {"endpoint": trace.endpoint}
+            "context_engine_request_latency", trace.total_latency_ms, {"endpoint": trace.endpoint}
         )
         self.increment(
-            "sidecar_request_slo_checks_total",
+            "context_engine_request_slo_checks_total",
             labels={
                 "endpoint": trace.endpoint,
                 "status": latency_slo["status"],
@@ -230,21 +230,21 @@ class MetricsRegistry:
         )
         if latency_slo["breached"]:
             self.increment(
-                "sidecar_request_slo_violations_total",
+                "context_engine_request_slo_violations_total",
                 labels={"endpoint": trace.endpoint, "target_ms": latency_slo_target},
             )
         for stage, elapsed in trace.stage_timings_ms.items():
             self.observe_ms(
-                "sidecar_stage_latency",
+                "context_engine_stage_latency",
                 elapsed,
                 {"endpoint": trace.endpoint, "stage": stage},
             )
         for kind, count in trace.token_counts.items():
             self.increment(
-                "sidecar_tokens_total", count, {"endpoint": trace.endpoint, "kind": kind}
+                "context_engine_tokens_total", count, {"endpoint": trace.endpoint, "kind": kind}
             )
         self.increment(
-            "sidecar_estimated_cost_usd_total",
+            "context_engine_estimated_cost_usd_total",
             trace.estimated_cost_usd,
             {"endpoint": trace.endpoint},
         )
@@ -268,32 +268,32 @@ class MetricsRegistry:
             counter_rows = sorted(self._counters.items())
             gauge_rows = sorted(self._gauges.items())
         lines = [
-            "# HELP sidecar_requests_total Total sidecar requests by endpoint and status.",
-            "# TYPE sidecar_requests_total counter",
-            "# HELP sidecar_request_latency_ms Request latency in milliseconds.",
-            "# TYPE sidecar_request_latency_ms summary",
-            "# HELP sidecar_stage_latency_ms Per-stage request latency in milliseconds.",
-            "# TYPE sidecar_stage_latency_ms summary",
-            "# HELP sidecar_request_slo_checks_total Request latency SLO checks by endpoint and result.",
-            "# TYPE sidecar_request_slo_checks_total counter",
-            "# HELP sidecar_request_slo_violations_total Requests exceeding the configured latency SLO.",
-            "# TYPE sidecar_request_slo_violations_total counter",
-            "# HELP sidecar_tokens_total Estimated tokens processed by endpoint and kind.",
-            "# TYPE sidecar_tokens_total counter",
-            "# HELP sidecar_estimated_cost_usd_total Estimated request cost in USD.",
-            "# TYPE sidecar_estimated_cost_usd_total counter",
-            "# HELP sidecar_ask_context_total Ask requests by resolved context mode.",
-            "# TYPE sidecar_ask_context_total counter",
-            "# HELP sidecar_feedback_events_total Retrieval feedback by outcome.",
-            "# TYPE sidecar_feedback_events_total counter",
-            "# HELP sidecar_overlay_updates_total Editor overlay buffer writes.",
-            "# TYPE sidecar_overlay_updates_total counter",
-            "# HELP sidecar_overlay_evictions_total Overlay entries removed by reason.",
-            "# TYPE sidecar_overlay_evictions_total counter",
-            "# HELP sidecar_overlay_entries Current in-memory overlay file count.",
-            "# TYPE sidecar_overlay_entries gauge",
-            "# HELP sidecar_overlay_bytes Current in-memory overlay payload size in bytes.",
-            "# TYPE sidecar_overlay_bytes gauge",
+            "# HELP context_engine_requests_total Total context_engine requests by endpoint and status.",
+            "# TYPE context_engine_requests_total counter",
+            "# HELP context_engine_request_latency_ms Request latency in milliseconds.",
+            "# TYPE context_engine_request_latency_ms summary",
+            "# HELP context_engine_stage_latency_ms Per-stage request latency in milliseconds.",
+            "# TYPE context_engine_stage_latency_ms summary",
+            "# HELP context_engine_request_slo_checks_total Request latency SLO checks by endpoint and result.",
+            "# TYPE context_engine_request_slo_checks_total counter",
+            "# HELP context_engine_request_slo_violations_total Requests exceeding the configured latency SLO.",
+            "# TYPE context_engine_request_slo_violations_total counter",
+            "# HELP context_engine_tokens_total Estimated tokens processed by endpoint and kind.",
+            "# TYPE context_engine_tokens_total counter",
+            "# HELP context_engine_estimated_cost_usd_total Estimated request cost in USD.",
+            "# TYPE context_engine_estimated_cost_usd_total counter",
+            "# HELP context_engine_ask_context_total Ask requests by resolved context mode.",
+            "# TYPE context_engine_ask_context_total counter",
+            "# HELP context_engine_feedback_events_total Retrieval feedback by outcome.",
+            "# TYPE context_engine_feedback_events_total counter",
+            "# HELP context_engine_overlay_updates_total Editor overlay buffer writes.",
+            "# TYPE context_engine_overlay_updates_total counter",
+            "# HELP context_engine_overlay_evictions_total Overlay entries removed by reason.",
+            "# TYPE context_engine_overlay_evictions_total counter",
+            "# HELP context_engine_overlay_entries Current in-memory overlay file count.",
+            "# TYPE context_engine_overlay_entries gauge",
+            "# HELP context_engine_overlay_bytes Current in-memory overlay payload size in bytes.",
+            "# TYPE context_engine_overlay_bytes gauge",
         ]
         for (name, labels), value in counter_rows:
             value_text = (

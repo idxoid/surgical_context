@@ -80,6 +80,12 @@ def test_context_from_axis_builds_prompt_context(monkeypatch):
     assert ctx.primary_source.file_path == "/repo/app.py"
     assert ctx.primary_source.code == "app = FastAPI()"
     assert any(s.symbol == "handler" for s in ctx.graph_context)
+    assert ctx.intent_distribution == {"routing_surface": 0.7}
+    assert ctx.intent_confidence == 0.7
+    assert ctx.intent_effective_mode == "architecture"
+    assert ctx.intent_resolution["source"] == "axis_classifier"
+    assert ctx.tier_tokens["code"] > 0
+    assert ctx.tier_tokens["cross_refs"] > 0
 
 
 def test_context_from_axis_returns_none_when_no_bundles(monkeypatch):
@@ -182,3 +188,54 @@ def test_adapter_uses_expansion_step_not_anchor_role_for_related():
     assert len(ctx.graph_context) == 1
     assert ctx.graph_context[0].symbol == "_safe_max_hops"
     assert ctx.graph_context[0].relation == "control_call_expansion"
+
+
+def test_adapter_preserves_impact_relation_direction_depth_and_score():
+    anchor = ContextBundle(
+        role="impact_analysis",
+        seed=ContextSymbol(
+            uid="u:target",
+            name="target",
+            file_path="/repo/app.py",
+            role="impact_analysis",
+            distance_from_seed=0,
+            expansion_step=None,
+            code="def target(): ...",
+            kind="target_seed",
+            relevance_score=1.0,
+            utility_score=1.0,
+        ),
+        utility_score=1.0,
+    )
+    caller = ContextBundle(
+        role="impact_analysis",
+        seed=ContextSymbol(
+            uid="u:caller",
+            name="caller",
+            file_path="/repo/caller.py",
+            role="impact_analysis",
+            distance_from_seed=1,
+            expansion_step=None,
+            code="def caller(): target()",
+            kind="reverse_calls",
+            direction="caller",
+            edge_type="CALLS_*",
+            relevance_score=0.35,
+            utility_score=0.9,
+        ),
+        utility_score=0.9,
+    )
+
+    ctx = axis_bundles_to_prompt_context([anchor, caller], question="impact", workspace_id="ws")
+
+    assert ctx is not None
+    [dep] = ctx.graph_context
+    assert dep.relation == "reverse_calls"
+    assert dep.direction == "caller"
+    assert dep.edge_type == "CALLS_*"
+    assert dep.depth == 1
+    assert dep.relevance_score == 0.35
+    assert dep.blended_score == 0.9
+    serialized = ctx.to_dict()["graph_context"][0]
+    assert serialized["edge_type"] == "CALLS_*"
+    assert serialized["provenance"] == ["reverse_calls", "CALLS_*"]

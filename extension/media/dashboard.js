@@ -17,7 +17,7 @@
     <div class="dashboard-header">
       <div>
         <h1>Surgical Context Dashboard</h1>
-        <p>Operational overview of your indexing sidecar and context system.</p>
+        <p>Operational overview of your indexing context_engine and context system.</p>
       </div>
       <div class="dashboard-meta">
         <div>Workspace: <span>${escapeHtml(workspaceId)}</span></div>
@@ -30,6 +30,18 @@
     return `
     <button class="refresh-button ${isLoading ? "loading" : ""}" data-action="refresh" ${isLoading ? "disabled" : ""}>
       ${isLoading ? "Refreshing..." : "Refresh"}
+    </button>
+  `;
+  }
+  function renderIndexWorkspaceButton(isLoading) {
+    return `
+    <button
+      class="primary-action"
+      data-action="indexWorkspace"
+      aria-label="Reindex the current workspace"
+      ${isLoading ? "disabled" : ""}
+    >
+      Reindex workspace
     </button>
   `;
   }
@@ -79,7 +91,7 @@
       ${renderMetricCard("Fallback rate", formatPercent(metrics.fallbackRatePercent), metrics.fallbackRatePercent === null ? "Waiting for ask traffic" : "Resolved ask context modes", "sync")}
       ${renderMetricCard("Context quality", formatPercent(metrics.contextQualityPercent), metrics.contextQualityPercent === null ? "Feedback signal pending" : "Accepted retrieval feedback", "target")}
       ${renderMetricCard("Symbols with docs", formatNumber(metrics.symbolsWithDocs), metricSourceNote(metrics.symbolsWithDocs, "Documentation links"), "book")}
-      ${renderMetricCard("Storage (sidecar)", formatStorage(metrics.storageGb), metrics.storageGb === null ? "Storage metric unavailable" : "Local LanceDB store", "db")}
+      ${renderMetricCard("Storage (context_engine)", formatStorage(metrics.storageGb), metrics.storageGb === null ? "Storage metric unavailable" : "Local LanceDB store", "db")}
     </div>
   `;
   }
@@ -447,6 +459,7 @@
         return;
       }
       const header = renderDashboardHeader(this.state.workspaceId, this.state.lastUpdate);
+      const indexWorkspaceBtn = renderIndexWorkspaceButton(this.state.isLoading);
       const refreshBtn = renderRefreshButton(this.state.isLoading);
       const warnings = renderDashboardWarnings(this.state.warnings);
       const notices = renderDashboardNotices(this.state.notices);
@@ -464,7 +477,10 @@
       <div class="dashboard-content">
         <div class="dashboard-toolbar">
           ${warnings}
-          ${refreshBtn}
+          <div class="dashboard-actions">
+            ${indexWorkspaceBtn}
+            ${refreshBtn}
+          </div>
         </div>
         ${notices}
         <div class="dashboard-grid">

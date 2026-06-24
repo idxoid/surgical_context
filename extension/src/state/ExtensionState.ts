@@ -1,4 +1,4 @@
-import { PromptContextPayload } from '../sidecarClient';
+import { PromptContextPayload } from '../context_engineClient';
 
 export interface LastRequest {
   requestId?: string;
@@ -15,7 +15,7 @@ export interface ExtensionState {
   isDirty: boolean;
   lastContext: PromptContextPayload | undefined;
   lastRequest: LastRequest | undefined;
-  sidecarHealth: 'up' | 'down' | 'degraded';
+  context_engineHealth: 'up' | 'down' | 'degraded';
   cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline';
   workspaceId: string;
   authState: 'ready' | 'missing-token' | 'expired';
@@ -27,7 +27,7 @@ export const defaultState: ExtensionState = {
   isDirty: false,
   lastContext: undefined,
   lastRequest: undefined,
-  sidecarHealth: 'degraded',
+  context_engineHealth: 'degraded',
   cloudStatus: 'offline',
   workspaceId: '',
   authState: 'ready',

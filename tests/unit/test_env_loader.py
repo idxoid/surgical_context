@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 from context_engine.env_loader import load_repo_dotenv
 
@@ -11,10 +10,7 @@ from context_engine.env_loader import load_repo_dotenv
 def test_load_repo_dotenv_parses_spaced_keys(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "NEO4J_URI = bolt://localhost:7687\n"
-        "NEO4J_PASSWORD = secret\n"
-        "# comment\n"
-        "EMPTY=\n",
+        "NEO4J_URI = bolt://localhost:7687\nNEO4J_PASSWORD = secret\n# comment\nEMPTY=\n",
         encoding="utf-8",
     )
     monkeypatch.delenv("NEO4J_URI", raising=False)

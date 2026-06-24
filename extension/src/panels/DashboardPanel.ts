@@ -5,7 +5,7 @@ import {
   IndexQueueResponse,
   IndexStatsResponse,
   SidecarClient,
-} from '../sidecarClient';
+} from '../context_engineClient';
 import { getWebviewContent } from '../utils';
 import {
   AuditAction,
@@ -152,7 +152,7 @@ export class DashboardPanel {
         workspaceId,
       }),
       notices,
-      workspaceId: workspaceId || 'sidecar default',
+      workspaceId: workspaceId || 'context_engine default',
       warnings,
     });
   }
@@ -211,10 +211,10 @@ export class DashboardPanel {
     if (!input.healthOk) {
       return [
         {
-          id: 'sidecar-offline',
+          id: 'context_engine-offline',
           level: 'error',
           title: 'Sidecar is offline',
-          message: 'Start the local sidecar and refresh to load graph, vector, index, and audit data.',
+          message: 'Start the local context_engine and refresh to load graph, vector, index, and audit data.',
           action: 'refresh',
           actionLabel: 'Refresh',
         },
@@ -262,7 +262,7 @@ export class DashboardPanel {
         id: 'index-stats-unavailable',
         level: 'warning',
         title: 'Index catalog metrics are unavailable',
-        message: 'Restart or update the sidecar to load indexed file, symbol, documentation, and storage counts.',
+        message: 'Restart or update the context_engine to load indexed file, symbol, documentation, and storage counts.',
         action: 'refresh',
         actionLabel: 'Retry',
       });
@@ -395,28 +395,28 @@ export class DashboardPanel {
       const isAskEndpoint = parsed.labels.endpoint === '/ask'
         || parsed.labels.endpoint === '/ask/stream';
 
-      if (parsed.name === 'sidecar_requests_total' && isAskEndpoint) {
+      if (parsed.name === 'context_engine_requests_total' && isAskEndpoint) {
         requestsTotal += parsed.value;
-      } else if (parsed.name === 'sidecar_tokens_total' && isAskEndpoint) {
+      } else if (parsed.name === 'context_engine_tokens_total' && isAskEndpoint) {
         tokensTotal += parsed.value;
-      } else if (parsed.name === 'sidecar_estimated_cost_usd_total' && isAskEndpoint) {
+      } else if (parsed.name === 'context_engine_estimated_cost_usd_total' && isAskEndpoint) {
         costUsdTotal += parsed.value;
       } else if (
-        parsed.name === 'sidecar_request_latency_ms_sum'
+        parsed.name === 'context_engine_request_latency_ms_sum'
         && isAskEndpoint
       ) {
         askLatencySum += parsed.value;
       } else if (
-        parsed.name === 'sidecar_request_latency_ms_count'
+        parsed.name === 'context_engine_request_latency_ms_count'
         && isAskEndpoint
       ) {
         askLatencyCount += parsed.value;
-      } else if (parsed.name === 'sidecar_ask_context_total') {
+      } else if (parsed.name === 'context_engine_ask_context_total') {
         contextModeTotal += parsed.value;
         if (['file', 'workspace', 'direct'].includes(parsed.labels.mode)) {
           fallbackTotal += parsed.value;
         }
-      } else if (parsed.name === 'sidecar_feedback_events_total') {
+      } else if (parsed.name === 'context_engine_feedback_events_total') {
         feedbackTotal += parsed.value;
         if (parsed.labels.outcome === 'accept') {
           feedbackAccepted += parsed.value;
@@ -446,11 +446,11 @@ export class DashboardPanel {
     const modelPreference = config.get<string>('modelPreference', 'auto');
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
     const queue = input.indexQueue?.queue;
-    const llmDegraded = this.metricValue(input.metricsText, 'sidecar_llm_degraded_total');
+    const llmDegraded = this.metricValue(input.metricsText, 'context_engine_llm_degraded_total');
 
     return [
       {
-        id: 'sidecar',
+        id: 'context_engine',
         label: 'Sidecar',
         status: input.healthOk ? 'ok' : 'error',
         value: input.healthOk ? 'reachable' : 'offline',
@@ -467,9 +467,9 @@ export class DashboardPanel {
         id: 'vector',
         label: 'Vector provider',
         status: input.metricsText ? 'ok' : input.healthOk ? 'warning' : 'error',
-        value: input.metricsText ? 'sidecar-loaded' : 'unknown',
+        value: input.metricsText ? 'context_engine-loaded' : 'unknown',
         detail: input.metricsText
-          ? 'LanceDB client is loaded with the sidecar; retrieval metrics are reachable.'
+          ? 'LanceDB client is loaded with the context_engine; retrieval metrics are reachable.'
           : 'Metrics endpoint unavailable; vector state cannot be inferred.',
       },
       {
@@ -500,7 +500,7 @@ export class DashboardPanel {
         id: 'workspace',
         label: 'Workspace',
         status: workspaceFolders.length > 0 && input.workspaceId ? 'ok' : 'warning',
-        value: input.workspaceId || 'sidecar default',
+        value: input.workspaceId || 'context_engine default',
         detail: workspaceFolders.length > 0
           ? workspaceFolders.map(folder => folder.name).join(', ')
           : 'No VS Code workspace folder is open.',

@@ -82,7 +82,7 @@ class ChatPanel {
         case 'backend.updated':
           if (this.state) {
             this.state.backend = {
-              sidecarHealth: message.sidecarHealth,
+              context_engineHealth: message.context_engineHealth,
               cloudStatus: message.cloudStatus,
             };
             this.updateHeader();
@@ -105,6 +105,7 @@ class ChatPanel {
   private setupComposerListeners(): void {
     const composer = document.getElementById('composer-input') as HTMLTextAreaElement | null;
     const sendBtn = document.getElementById('composer-send') as HTMLButtonElement | null;
+    const stopBtn = document.getElementById('composer-stop') as HTMLButtonElement | null;
 
     if (!composer || !sendBtn) return;
 
@@ -125,6 +126,7 @@ class ChatPanel {
 
     // Send button click
     sendBtn.addEventListener('click', () => this.askAboutSymbol());
+    stopBtn?.addEventListener('click', () => this.stopStreaming());
 
     // Global keyboard shortcut: Cmd+L or Ctrl+L to focus composer
     document.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -224,6 +226,10 @@ class ChatPanel {
   private askAboutSymbol(): void {
     const composer = document.getElementById('composer-input') as HTMLTextAreaElement | null;
     if (!composer || !composer.value.trim() || !this.state) return;
+    if (this.currentStreamingRequestId) {
+      this.showToast('Stop the current response before sending another ask.', 'info');
+      return;
+    }
 
     const prompt = composer.value.trim();
     const symbol = this.state.workspace.selectedSymbol || undefined;
@@ -240,6 +246,7 @@ class ChatPanel {
 
   private onRequestStarted(requestId: string, symbol?: string): void {
     this.currentStreamingRequestId = requestId;
+    this.updateComposerStreamingState(true);
 
     // Add user message card
     const userMsg: ChatMessage = {
@@ -279,6 +286,7 @@ class ChatPanel {
   private onRequestCompleted(requestId: string, answer: string, context: any): void {
     if (this.currentStreamingRequestId !== requestId) return;
     this.currentStreamingRequestId = null;
+    this.updateComposerStreamingState(false);
 
     const msg = this.messages.get(requestId);
     if (msg) {
@@ -300,6 +308,7 @@ class ChatPanel {
   private onRequestFailed(requestId: string, error: string): void {
     if (this.currentStreamingRequestId !== requestId) return;
     this.currentStreamingRequestId = null;
+    this.updateComposerStreamingState(false);
 
     const msg = this.messages.get(requestId);
     if (msg) {
@@ -316,6 +325,24 @@ class ChatPanel {
       this.updateConversationView();
     }
     this.currentStreamingRequestId = null;
+    this.updateComposerStreamingState(false);
+  }
+
+  private stopStreaming(): void {
+    if (!this.currentStreamingRequestId) return;
+    const stopButton = document.getElementById('composer-stop') as HTMLButtonElement | null;
+    if (stopButton) stopButton.disabled = true;
+    this.postMessage({ type: 'chat.stop', requestId: this.currentStreamingRequestId });
+  }
+
+  private updateComposerStreamingState(isStreaming: boolean): void {
+    const sendButton = document.getElementById('composer-send') as HTMLButtonElement | null;
+    const stopButton = document.getElementById('composer-stop') as HTMLButtonElement | null;
+    if (sendButton) sendButton.hidden = isStreaming;
+    if (stopButton) {
+      stopButton.hidden = !isStreaming;
+      stopButton.disabled = false;
+    }
   }
 
   private render(): void {
@@ -346,7 +373,7 @@ class ChatPanel {
     root.innerHTML = `
       <div class="header">
         <span class="header-title">Surgical Context</span>
-        <div class="health-indicator ${this.state.backend.sidecarHealth}"></div>
+        <div class="health-indicator ${this.state.backend.context_engineHealth}"></div>
       </div>
       ${renderActionBar()}
       <div class="conversation-viewport" id="conversation"></div>
@@ -379,7 +406,7 @@ class ChatPanel {
   private updateHeader(): void {
     const indicator = document.querySelector('.health-indicator');
     if (indicator && this.state) {
-      indicator.className = `health-indicator ${this.state.backend.sidecarHealth}`;
+      indicator.className = `health-indicator ${this.state.backend.context_engineHealth}`;
     }
   }
 
@@ -445,7 +472,7 @@ class ChatPanel {
           expandedAccordions: saved.expandedAccordions,
           composerDraft: saved.composerDraft || '',
           workspace: { activeFile: null, selectedSymbol: null, isDirty: false },
-          backend: { sidecarHealth: 'degraded', cloudStatus: 'offline' },
+          backend: { context_engineHealth: 'degraded', cloudStatus: 'offline' },
         };
       } else {
         this.state.expandedAccordions = saved.expandedAccordions;

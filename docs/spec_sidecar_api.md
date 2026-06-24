@@ -3,7 +3,7 @@
 
 ## Overview
 
-FastAPI process running on localhost. VS Code communicates via HTTP/JSON. Fault-isolated from the editor: if the sidecar blocks on a Cypher query, the editor stays responsive.
+FastAPI process running on localhost. VS Code communicates via HTTP/JSON. Fault-isolated from the editor: if the context_engine blocks on a Cypher query, the editor stays responsive.
 
 Entry point: `context_engine/main.py`
 Start: `uvicorn context_engine.main:app --port 8000`
@@ -59,7 +59,7 @@ X-Workspace: local/surgical_context@main
 ```
 
 Bearer tokens are workspace-scoped. When a valid token is present, its workspace
-wins and a conflicting `X-Workspace` returns `403`. Without a token, the sidecar
+wins and a conflicting `X-Workspace` returns `403`. Without a token, the context_engine
 uses `X-Workspace` only when `TRUST_CLIENT_WORKSPACE_HEADER=true`; otherwise it
 falls back to `DEFAULT_WORKSPACE_ID`. The local VS Code extension derives a
 workspace id from the first open folder plus active Git branch, obtains a token
@@ -79,7 +79,7 @@ Any endpoint that reads or indexes files on disk (`POST /index`, `/index/file`, 
 
 **Graph-resolved reads:** indexed symbol bodies come from LanceDB; dirty editor buffers override via the overlay at axis fetch time. Manifest persistence best-effort **prunes** outside-root `File` nodes from Neo4j (`workspace_paths.prune_graph_paths_outside_root`). Caller-supplied paths use `sandbox_path()` from `context_engine/api/workspace_security.py`.
 
-This limits local callers when `AUTH_REQUIRED=false` from using the sidecar to read or index arbitrary readable files, including via stale graph nodes.
+This limits local callers when `AUTH_REQUIRED=false` from using the context_engine to read or index arbitrary readable files, including via stale graph nodes.
 
 ### Request validation bounds
 

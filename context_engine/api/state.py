@@ -1,4 +1,4 @@
-"""Process-wide sidecar service instances."""
+"""Process-wide context_engine service instances."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class SidecarState:
     ask_service: AskService
 
 
-def build_sidecar_state(config: SidecarConfig) -> SidecarState:
+def build_context_engine_state(config: SidecarConfig) -> SidecarState:
     overlay = InMemoryOverlay()
     vector_db = LanceDBClient()
     ai_engine = AIEngine(

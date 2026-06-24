@@ -145,6 +145,20 @@ def index_file(
     with open(file_path, encoding="utf-8") as f:
         source = f.read()
 
+    # Workspace-local client↔handler bridge. The extension's queued
+    # incremental path must refresh these facts too; historically this phase
+    # only ran in the standalone fast indexer, so Reindex Workspace could
+    # never materialize CALLS_ENDPOINT / IMPLEMENTS_ENDPOINT.
+    delete_http_endpoints = getattr(db, "delete_http_endpoints_for_file", None)
+    link_http_endpoints = getattr(db, "link_http_endpoints", None)
+    extract_http_endpoints = getattr(extractor, "extract_http_endpoints", None)
+    if callable(delete_http_endpoints):
+        delete_http_endpoints(file_path, workspace_id=workspace_id)
+    if callable(link_http_endpoints) and callable(extract_http_endpoints):
+        http_endpoints = extract_http_endpoints(file_path)
+        if http_endpoints:
+            link_http_endpoints(http_endpoints, workspace_id=workspace_id)
+
     imports = extractor.extract_imports(file_path)
     delete_imports = getattr(db, "delete_imports_for_file", None)
     if callable(delete_imports):

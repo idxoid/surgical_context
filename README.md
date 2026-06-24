@@ -1,7 +1,7 @@
 # Surgical Context
 
 **Surgical Context is a local-first, model-agnostic context engine** for code
-understanding and change-impact analysis — a FastAPI sidecar over a local Neo4j
+understanding and change-impact analysis — a FastAPI context_engine over a local Neo4j
 graph, LanceDB vectors, and SQLite history, exposing an `Ask / Inspect / Impact`
 retrieval API. The VS Code extension under `extension/` is one frontend over
 that API, not the product itself.
@@ -22,7 +22,7 @@ the engine-first development line.
 ### **For Implementation**
 
 **Local Development:**
-- **[local_development.md](docs/local_development.md)** — local setup, bootstrap, sidecar, and extension dev host
+- **[local_development.md](docs/local_development.md)** — local setup, bootstrap, context_engine, and extension dev host
 
 **Code Indexing:**
 - **[spec_indexer.md](docs/spec_indexer.md)** — code extraction, call typing, AFFECTS rebuild
@@ -43,7 +43,7 @@ the engine-first development line.
 - **[spec_prompt_contract_observability.md](docs/spec_prompt_contract_observability.md)** — prompt contract fields, trace metadata, and observability
 
 **APIs & Infrastructure:**
-- **[spec_sidecar_api.md](docs/spec_sidecar_api.md)** — FastAPI endpoints
+- **[spec_context_engine_api.md](docs/spec_context_engine_api.md)** — FastAPI endpoints
 - **[spec_storage.md](docs/spec_storage.md)** — current Neo4j/LanceDB/SQLite storage behavior
 - **[spec_storage_connectors.md](docs/spec_storage_connectors.md)** — planned Graph/Vector/History provider connector layer
 - **[spec_language_adapter.md](docs/spec_language_adapter.md)** — plugin architecture (ADR-005)
@@ -64,13 +64,13 @@ the engine-first development line.
 
 ## Current Truth
 
-This branch targets the **local, single-tenant configuration**: the engine and its VS Code frontend running entirely on one developer's machine — local Neo4j graph, local LanceDB vectors, local SQLite history, and local-first LLM defaults. The access surface is interchangeable: the same sidecar API serves the VS Code extension, programmatic/CLI clients, and the QA/benchmark harness. This configuration is the open-source candidate.
+This branch targets the **local, single-tenant configuration**: the engine and its VS Code frontend running entirely on one developer's machine — local Neo4j graph, local LanceDB vectors, local SQLite history, and local-first LLM defaults. The access surface is interchangeable: the same context_engine API serves the VS Code extension, programmatic/CLI clients, and the QA/benchmark harness. This configuration is the open-source candidate.
 
 Scope is deliberately narrow: code understanding and change-impact analysis — **not** a general AI coding platform or a multi-tenant service.
 
-The repo is organized engine-first: the sidecar, default Neo4j/LanceDB clients, parser/indexer/axis retrieval modules, structural role retrieval, prompt-context adapters, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, and a bounded indexing queue make up the engine; the VS Code extension under `extension/` is one frontend over the sidecar API.
+The repo is organized engine-first: the context_engine, default Neo4j/LanceDB clients, parser/indexer/axis retrieval modules, structural role retrieval, prompt-context adapters, tests, QA benchmark tooling, metrics, feedback telemetry, durable indexing jobs, and a bounded indexing queue make up the engine; the VS Code extension under `extension/` is one frontend over the context_engine API.
 
-Recent hardening added request-scoped Neo4j client views over one shared driver, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, profile-aware indexing namespaces, Git-delta invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the sidecar API, and a bounded/coalescing incremental index queue. The active axis path now includes structural role retrieval, in-code docstring/JSDoc anchor seeds, adjacency materialization, and prompt-contract schema fields for scores, provenance, pruning, route, and trace metadata. It also enforces **workspace path sandboxing** (caller paths under the indexed `project_path`), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_sidecar_api.md](docs/spec_sidecar_api.md) and [road_map.md](docs/road_map.md).
+Recent hardening added request-scoped Neo4j client views over one shared driver, typed API responses, JSON-safe SSE framing, stable UID v2, scoped call resolution, workspace-scoped graph queries, profile-aware indexing namespaces, Git-delta invalidation helpers, unified search, retrieval caching, feedback tokens, endpoint coverage for the context_engine API, and a bounded/coalescing incremental index queue. The active axis path now includes structural role retrieval, in-code docstring/JSDoc anchor seeds, adjacency materialization, and prompt-contract schema fields for scores, provenance, pruning, route, and trace metadata. It also enforces **workspace path sandboxing** (caller paths under the indexed `project_path`), **bounded API limits** (`limit` 1–50, `token_budget` 400–32k), and **local-first LLM** defaults (`ALLOW_CLOUD_LLM=false`, default Anthropic model `claude-sonnet-4-6`). See [spec_context_engine_api.md](docs/spec_context_engine_api.md) and [road_map.md](docs/road_map.md).
 
 The local setup and smoke-test path live in **[local_development.md](docs/local_development.md)** and `scripts/local_dev.py`. The benchmark has workspace mappings for 13 repositories across Python and TypeScript/JavaScript, including the dogfood repo; runs still require those workspaces to be pre-indexed. The most important open gaps are engine-side: lifting recall on hard real-repo cases, improving precision on broad/doc-heavy paths, calibrating DocAnchor confidence/type, and carrying richer axis ranking/pruning/doc evidence into the active `PromptContext` rather than leaving serializer fields at defaults. The VS Code frontend still needs request-selection persistence and accessibility polish, but that is secondary to the engine work. Tenant-level API graph publication/linking, alternate database connectors, an LLM proxy gateway, RBAC, and service splitting remain future Team/Enterprise horizons. See **[road_map.md](docs/road_map.md)** for the canonical backlog.
 

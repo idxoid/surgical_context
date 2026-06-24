@@ -28,7 +28,7 @@ class SidecarConfig:
     history_retention_days: int | None
 
 
-def load_sidecar_config() -> SidecarConfig:
+def load_context_engine_config() -> SidecarConfig:
     return SidecarConfig(
         model_preference=os.getenv("MODEL_PREFERENCE", "ollama"),
         allow_cloud_llm=_env_bool("ALLOW_CLOUD_LLM", default=False),

@@ -75,6 +75,13 @@ export function isIgnoredSymbol(name: string): boolean {
   return IGNORED_SYMBOLS.has(name);
 }
 
+/** True when a document provider returned its file container as the symbol. */
+export function isFileNameSymbol(name: string, filePath?: string): boolean {
+  if (!name || !filePath) return false;
+  const fileName = filePath.replace(/\\/g, '/').split('/').pop();
+  return fileName === name;
+}
+
 export function isLocalBindingLine(line: string, name: string): boolean {
   const match = line.match(LOCAL_BINDING_PATTERN);
   return match?.[1] === name;

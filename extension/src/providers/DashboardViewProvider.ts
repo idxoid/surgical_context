@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SidecarClient } from '../sidecarClient';
+import { SidecarClient } from '../context_engineClient';
 import {
   graphProviderDetail,
   graphProviderHealthStatus,
@@ -92,7 +92,7 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
       metrics: this.emptyDashboardMetrics(),
       healthChecks: this.buildHealthChecks(healthOk, cloudStatus, workspaceId),
       notices: this.buildDashboardNotices(healthOk),
-      workspaceId: workspaceId || 'sidecar default',
+      workspaceId: workspaceId || 'context_engine default',
       warnings: [],
     });
   }
@@ -131,7 +131,7 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
 
     return [
       {
-        id: 'sidecar',
+        id: 'context_engine',
         label: 'Sidecar',
         status: healthOk ? 'ok' : 'error',
         value: healthOk ? 'reachable' : 'offline',
@@ -148,7 +148,7 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
         id: 'vector',
         label: 'Vector provider',
         status: healthOk ? 'pending' : 'error',
-        value: healthOk ? 'sidecar-loaded' : 'unknown',
+        value: healthOk ? 'context_engine-loaded' : 'unknown',
         detail: healthOk
           ? 'Validated when dashboard metrics or retrieval calls respond.'
           : 'Sidecar is offline.',
@@ -183,10 +183,10 @@ export class DashboardViewProvider implements vscode.WebviewViewProvider {
     if (!healthOk) {
       return [
         {
-          id: 'sidecar-offline',
+          id: 'context_engine-offline',
           level: 'error',
           title: 'Sidecar is offline',
-          message: 'Start the local sidecar and refresh to load graph, vector, index, and audit data.',
+          message: 'Start the local context_engine and refresh to load graph, vector, index, and audit data.',
           action: 'refresh',
           actionLabel: 'Refresh',
         },

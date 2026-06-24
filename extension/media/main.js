@@ -244,7 +244,7 @@
     </div>
   `;
   }
-  function renderComposerDock() {
+  function renderComposerDock(isStreaming = false) {
     return `
     <div class="composer-dock">
       <textarea
@@ -255,11 +255,21 @@
         aria-describedby="composer-help"
         rows="1"
       ></textarea>
-      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message">
+      <button id="composer-send" class="composer-send-btn" title="Send (Enter)" aria-label="Send message" ${isStreaming ? "hidden" : ""}>
         <span class="composer-send-icon" aria-hidden="true">\u27A4</span>
       </button>
+      <button
+        id="composer-stop"
+        class="composer-stop-btn"
+        data-action="stopStreaming"
+        title="Stop response"
+        aria-label="Stop response generation"
+        ${isStreaming ? "" : "hidden"}
+      >
+        <span class="composer-stop-icon" aria-hidden="true"></span>
+      </button>
       <div id="composer-help" class="sr-only">
-        Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer.
+        Press Enter to send. Press Shift+Enter for a new line. Press Cmd+L to focus composer. While a response is streaming, use Stop to cancel it.
       </div>
     </div>
   `;
@@ -301,9 +311,9 @@
     ${renderFocusGraph(symbol, model.items)}
     ${renderActionButtonRow()}
     <div class="impact-groups">
-      ${renderImpactZone("Direct Impact", model.direct, "No direct callers or first-hop consumers returned.", true)}
-      ${renderImpactZone("Architectural Reach", model.reach, "No hook, event, config, data, or API reach returned.", true)}
-      ${renderImpactZone("Hidden Risks", model.risks, "No cross-repo or coverage risks returned.", model.risks.length > 0)}
+      ${renderImpactZone("Direct Impact", model.direct, "No direct callers or first-hop consumers returned.", true, symbol)}
+      ${renderImpactZone("Architectural Reach", model.reach, "No hook, event, config, data, or API reach returned.", true, symbol)}
+      ${renderImpactZone("Hidden Risks", model.risks, "No cross-repo or coverage risks returned.", model.risks.length > 0, symbol)}
       ${renderFilesGroup(impact.affected_files || [], false, "Dependencies")}
     </div>
     <div class="impact-legend">
@@ -416,8 +426,10 @@
     const depth = numberField(sym, "depth", "distance", "hops");
     const rawScore = numberField(sym, "utility_score", "relevance_score", "score");
     const category = classifyCategory(sym, filePath, relation);
-    const severity = classifySeverity(category, depth, filePath);
-    const zone = classifyZone(category, depth, filePath);
+    const explicitSeverity = stringField(sym, "severity");
+    const explicitZone = stringField(sym, "zone");
+    const severity = isSeverity(explicitSeverity) ? explicitSeverity : classifySeverity(category, depth, filePath);
+    const zone = isImpactZone(explicitZone) ? explicitZone : classifyZone(category, depth, filePath);
     return {
       source: sym,
       symbolName,
@@ -430,6 +442,12 @@
       depth,
       line: lineFromSymbol(sym)
     };
+  }
+  function isSeverity(value) {
+    return value === "high" || value === "medium" || value === "low";
+  }
+  function isImpactZone(value) {
+    return value === "direct" || value === "reach" || value === "risk";
   }
   function classifyCategory(sym, filePath, relation) {
     const text = [
@@ -523,7 +541,7 @@
     </button>
   `;
   }
-  function renderImpactZone(title, items, emptyText, expanded) {
+  function renderImpactZone(title, items, emptyText, expanded, targetSymbol) {
     const visible = items.slice(0, 6);
     const overflow = items.slice(6);
     if (items.length === 0) {
@@ -542,42 +560,157 @@
         <span>(${items.length})</span>
       </button>
       <div class="group-content" ${expanded ? "" : "hidden"}>
-        ${visible.map(renderImpactItemRow).join("")}
-        ${overflow.length ? renderOverflowRows(overflow) : ""}
+        ${visible.map((item) => renderImpactItemRow(item, targetSymbol)).join("")}
+        ${overflow.length ? renderOverflowRows(overflow, targetSymbol) : ""}
       </div>
     </div>
   `;
   }
-  function renderOverflowRows(items) {
+  function renderOverflowRows(items, targetSymbol) {
     return `
     <div class="impact-overflow" hidden>
-      ${items.map(renderImpactItemRow).join("")}
+      ${items.map((item) => renderImpactItemRow(item, targetSymbol)).join("")}
     </div>
     <button class="impact-show-more" data-action="showMoreImpact">
       Show ${items.length} more
     </button>
   `;
   }
-  function renderImpactItemRow(item) {
+  function renderImpactItemRow(item, targetSymbol) {
     const disabled = item.synthetic ? "disabled" : "";
     const title = item.synthetic ? item.symbolName : `Open ${item.symbolName}`;
+    const explanation = explainImpactItem(item, targetSymbol);
     return `
-    <button
-      type="button"
-      class="impact-row ${item.synthetic ? "impact-risk-row" : ""}"
-      data-action="${item.synthetic ? "noop" : "openFile"}"
-      data-file-path="${escapeHtml2(item.filePath)}"
-      data-line="${item.line}"
-      title="${escapeHtml2(title)}"
-      ${disabled}
-    >
-      <span class="impact-chevron" aria-hidden="true">\u203A</span>
-      <span class="impact-symbol">${escapeHtml2(item.symbolName)}</span>
-      <span class="impact-file">${escapeHtml2(item.filePath)}</span>
-      <span class="impact-tag ${item.severity}">${escapeHtml2(item.severity)}</span>
-      <span class="impact-tag indirect">${Math.round(item.utilityScore * 100)}%</span>
-      <span class="impact-tag ${item.category === "event" || item.category === "config" ? "conditional" : "direct"}">${escapeHtml2(item.category)}</span>
-    </button>
+    <div class="impact-item ${item.synthetic ? "impact-risk-item" : ""}">
+      <div class="impact-item-line">
+        <button
+          type="button"
+          class="impact-row ${item.synthetic ? "impact-risk-row" : ""}"
+          data-action="${item.synthetic ? "noop" : "openFile"}"
+          data-file-path="${escapeHtml2(item.filePath)}"
+          data-line="${item.line}"
+          title="${escapeHtml2(title)}"
+          ${disabled}
+        >
+          <span class="impact-chevron" aria-hidden="true">\u203A</span>
+          <span class="impact-symbol">${escapeHtml2(item.symbolName)}</span>
+          <span class="impact-file">${escapeHtml2(item.filePath)}</span>
+          <span class="impact-tag ${item.severity}">${escapeHtml2(item.severity)}</span>
+          <span class="impact-tag indirect">${Math.round(item.utilityScore * 100)}%</span>
+          <span class="impact-tag ${item.category === "event" || item.category === "config" ? "conditional" : "direct"}">${escapeHtml2(item.category)}</span>
+        </button>
+        <button
+          type="button"
+          class="impact-explain-button"
+          data-action="explainImpact"
+          aria-expanded="false"
+          title="Explain how this item is connected to ${escapeHtml2(targetSymbol)}"
+        >Explain</button>
+      </div>
+      ${renderImpactExplanation(explanation)}
+    </div>
+  `;
+  }
+  function explainImpactItem(item, targetSymbol) {
+    const kind = stringField(item.source, "kind") || arrayField(item.source, "satisfying_kinds")[0] || item.relation || item.category;
+    const edge = stringField(item.source, "edge_type", "relation") || item.relation;
+    const role = stringField(item.source, "role");
+    const provenance = arrayField(item.source, "provenance");
+    const depth = item.depth ?? 1;
+    const degraded = item.source.degraded === true;
+    let summary;
+    let path;
+    switch (kind) {
+      case "coverage_gap":
+        summary = `No test symbols or test files were returned with the impact surface for ${targetSymbol}.`;
+        path = `${targetSymbol} \u2192 no returned test coverage`;
+        break;
+      case "reverse_calls":
+      case "overlay_caller":
+        summary = depth <= 1 ? `${item.symbolName} calls or directly consumes ${targetSymbol}.` : `${item.symbolName} reaches ${targetSymbol} through ${depth} reverse call hops.`;
+        path = `${item.symbolName} \u2014${edge || "CALLS_*"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${targetSymbol}`;
+        break;
+      case "forward_calls":
+        summary = `${targetSymbol} calls or dispatches into ${item.symbolName}, so behavior can propagate forward.`;
+        path = `${targetSymbol} \u2014${edge || "CALLS_*"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
+        break;
+      case "impacted_tests":
+        summary = `${item.symbolName} exercises ${targetSymbol} or its downstream call spine.`;
+        path = `${item.symbolName} \u2014test call path, ${depth} hop${depth === 1 ? "" : "s"}\u2192 ${targetSymbol}`;
+        break;
+      case "structural_inheritor":
+        summary = `${item.symbolName} inherits an API or structural contract connected to ${targetSymbol}.`;
+        path = `${item.symbolName} \u2014${edge || "INHERITED_API"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${targetSymbol}`;
+        break;
+      case "structural_api_carrier":
+        summary = `${targetSymbol} carries or exposes the API surface ${item.symbolName}.`;
+        path = `${targetSymbol} \u2014${edge || "HAS_API"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
+        break;
+      case "forward_affects":
+        summary = `${item.symbolName} is in the precomputed downstream impact closure of ${targetSymbol}.`;
+        path = `${targetSymbol} \u2014${edge || "AFFECTS"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
+        break;
+      default:
+        summary = `${item.symbolName} was reached from ${targetSymbol} by the impact graph walk.`;
+        path = `${targetSymbol} \u2014${edge || item.relation}, ${depth} hop${depth === 1 ? "" : "s"}\u2192 ${item.symbolName}`;
+        break;
+    }
+    const risk = explainRisk(item);
+    const evidence = [
+      edge ? `edge ${edge}` : "",
+      kind ? `walk ${kind}` : "",
+      role ? `role ${role}` : "",
+      `depth ${depth}`,
+      `priority ${Math.round(item.utilityScore * 100)}%`,
+      degraded ? "unsaved editor overlay" : "impact response",
+      ...provenance.map((value) => `provenance ${value}`)
+    ].filter(Boolean);
+    return {
+      summary,
+      path,
+      risk,
+      evidence,
+      caveat: item.synthetic ? "This warning is inferred from missing returned evidence; it does not prove that coverage is absent." : degraded ? "This connection comes from unsaved buffers and is name-based, so the impact surface is partial." : depth > 1 ? "The response identifies the traversal and hop count, but does not include every intermediate symbol." : void 0
+    };
+  }
+  function explainRisk(item) {
+    if (item.synthetic) {
+      return "A change may ship without a directly identified regression test.";
+    }
+    if (item.category === "test") {
+      return "The test may fail or need updated expectations when the target contract changes.";
+    }
+    if (item.category === "cross_repo") {
+      return "The dependency crosses a service, package, or repository boundary where coordinated changes are easier to miss.";
+    }
+    if (isDocFile(item.filePath)) {
+      return "Documentation can become stale even when the code continues to compile.";
+    }
+    if (item.category === "api" || item.category === "data") {
+      return "This is a contract boundary; signature or schema changes can affect consumers that are not obvious at the call site.";
+    }
+    if (item.category === "event" || item.category === "config") {
+      return "This connection is indirect or conditional, so it may only surface for particular runtime paths or settings.";
+    }
+    return item.depth !== void 0 && item.depth > 1 ? "The dependency is indirect; failures can surface away from the edited method." : "This is a direct consumer and may break when the target behavior or signature changes.";
+  }
+  function renderImpactExplanation(explanation) {
+    return `
+    <div class="impact-explanation" hidden>
+      <p class="impact-explanation-summary">${escapeHtml2(explanation.summary)}</p>
+      <div class="impact-explanation-path">
+        <span>Connection</span>
+        <code>${escapeHtml2(explanation.path)}</code>
+      </div>
+      <div class="impact-explanation-risk">
+        <span>Why it matters</span>
+        <p>${escapeHtml2(explanation.risk)}</p>
+      </div>
+      <div class="impact-explanation-evidence" aria-label="Connection evidence">
+        ${explanation.evidence.map((value) => `<span>${escapeHtml2(value)}</span>`).join("")}
+      </div>
+      ${explanation.caveat ? `<p class="impact-explanation-caveat">${escapeHtml2(explanation.caveat)}</p>` : ""}
+    </div>
   `;
   }
   function renderAffectsGroup(affectedSymbols, title = "Affects", expanded = true) {
@@ -998,7 +1131,7 @@ ${doc.content}`);
               Test
             </button>
           </div>
-          <p class="field-hint" id="backendUrl-hint">Base URL where the Surgical Context sidecar is running</p>
+          <p class="field-hint" id="backendUrl-hint">Base URL where the Surgical Context context_engine is running</p>
           <div class="field-status" id="backendUrl-status"></div>
         </div>
 
@@ -1010,10 +1143,10 @@ ${doc.content}`);
             class="setting-input"
             value="${escapeHtml4(data.authToken)}"
             placeholder="Leave blank if no authentication required"
-            aria-label="Authentication token for sidecar"
+            aria-label="Authentication token for context_engine"
             aria-describedby="authToken-hint"
           />
-          <p class="field-hint" id="authToken-hint">Token for authenticating with the sidecar if required</p>
+          <p class="field-hint" id="authToken-hint">Token for authenticating with the context_engine if required</p>
         </div>
       </div>
 
@@ -1046,7 +1179,7 @@ ${doc.content}`);
             <option value="claude" ${data.modelPreference === "claude" ? "selected" : ""}>Claude</option>
             <option value="ollama" ${data.modelPreference === "ollama" ? "selected" : ""}>Ollama</option>
           </select>
-          <p class="field-hint" id="modelPreference-hint">Preferred sidecar model route for local asks</p>
+          <p class="field-hint" id="modelPreference-hint">Preferred context_engine model route for local asks</p>
         </div>
 
         <div class="setting-field">
@@ -1095,7 +1228,7 @@ ${doc.content}`);
             <option value="axis_python_v1" ${data.indexProfile === "axis_python_v1" ? "selected" : ""}>axis_python_v1</option>
             <option value="legacy" ${data.indexProfile === "legacy" ? "selected" : ""}>legacy</option>
           </select>
-          <p class="field-hint" id="indexProfile-hint">Set INDEX_PROFILE in sidecar <code>.env</code> to the same value, then restart sidecar and reindex.</p>
+          <p class="field-hint" id="indexProfile-hint">Set INDEX_PROFILE in context_engine <code>.env</code> to the same value, then restart context_engine and reindex.</p>
         </div>
 
         <div class="setting-field">
@@ -1122,7 +1255,7 @@ ${doc.content}`);
               aria-label="LanceDB path"
               aria-describedby="lancedbPath-hint"
             />
-            <p class="field-hint" id="lancedbPath-hint">Local vector index path used by the sidecar environment</p>
+            <p class="field-hint" id="lancedbPath-hint">Local vector index path used by the context_engine environment</p>
           </div>
 
           <div class="setting-field">
@@ -1153,7 +1286,7 @@ ${doc.content}`);
               ${data.overlaySync ? "checked" : ""}
               aria-describedby="overlaySync-hint"
             />
-            <span>Send unsaved content to sidecar</span>
+            <span>Send unsaved content to context_engine</span>
           </label>
           <p class="field-hint" id="overlaySync-hint">When enabled, unsaved editor changes are sent with asks so answers reflect in-memory code</p>
         </div>
@@ -1248,8 +1381,10 @@ ${doc.content}`);
       this.selectedPromptRequestId = null;
       this.inspectorTab = "primary";
       this.pendingPrompt = null;
+      this.pendingAskAnchor = null;
       this.currentImpact = null;
       this.currentImpactSymbol = null;
+      this.currentImpactFilePath = null;
       this.currentImpactSource = null;
       this.currentImpactDepth = 3;
       this.impactError = null;
@@ -1273,6 +1408,7 @@ ${doc.content}`);
               this.currentContextSummary = this.summaryFromContext(message.state.lastContext);
               this.currentImpact = this.impactFromContext(message.state.lastContext);
               this.currentImpactSymbol = message.state.lastContext.primary_source.symbol;
+              this.currentImpactFilePath = message.state.lastContext.primary_source.file_path;
               this.currentImpactSource = "prompt";
               this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
             }
@@ -1328,7 +1464,7 @@ ${doc.content}`);
           case "backend.updated":
             if (this.state) {
               this.state.backend = {
-                sidecarHealth: message.sidecarHealth,
+                context_engineHealth: message.context_engineHealth,
                 cloudStatus: message.cloudStatus
               };
               this.refreshWorkspaceBits();
@@ -1344,6 +1480,7 @@ ${doc.content}`);
             this.surface = "impact";
             this.impactLoading = false;
             this.currentImpactSymbol = message.symbol;
+            this.currentImpactFilePath = message.impact.file_path || null;
             this.currentImpact = message.impact;
             this.currentImpactDepth = this.clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
             this.currentImpactSource = "graph";
@@ -1364,6 +1501,7 @@ ${doc.content}`);
               this.currentContextSummary = this.summaryFromContext(message.context);
               this.currentImpact = this.impactFromContext(message.context);
               this.currentImpactSymbol = message.context.primary_source.symbol;
+              this.currentImpactFilePath = message.context.primary_source.file_path;
               this.currentImpactSource = "prompt";
             }
             this.render();
@@ -1483,7 +1621,7 @@ ${doc.content}`);
         <div class="accordion-stack">
           ${this.renderAccordions()}
         </div>
-        ${renderComposerDock()}
+        ${renderComposerDock(Boolean(this.currentStreamingRequestId))}
         ${renderStatusChips({
         isDirty: this.state.workspace.isDirty,
         graphFirst: true,
@@ -1720,7 +1858,7 @@ ${doc.content}`);
     handleAction(event) {
       const target = event.currentTarget;
       const action = target.getAttribute("data-action");
-      if (action === "copy" || action === "feedback") {
+      if (action === "copy" || action === "copy-json" || action === "copy-api-json" || action === "feedback") {
         event.preventDefault();
         event.stopPropagation();
       }
@@ -1768,8 +1906,7 @@ ${doc.content}`);
           }
           break;
         case "ask-followup":
-          this.switchSurface("chat");
-          this.prefillComposer(
+          this.prefillImpactAsk(
             `What should I check before changing ${this.currentImpactSymbol || "this symbol"}?`
           );
           break;
@@ -1782,9 +1919,11 @@ ${doc.content}`);
         case "showMoreImpact":
           this.showMoreImpactRows(target);
           break;
+        case "explainImpact":
+          this.toggleImpactExplanation(target);
+          break;
         case "create-refactor-plan":
-          this.switchSurface("chat");
-          this.prefillComposer(
+          this.prefillImpactAsk(
             `Create a refactor plan for ${this.currentImpactSymbol || "this symbol"}.`
           );
           break;
@@ -1812,6 +1951,13 @@ ${doc.content}`);
         case "copy":
           this.copyMessage(target);
           break;
+        case "copy-json":
+        case "copy-api-json":
+          this.copyInspectorJson(target);
+          break;
+        case "stopStreaming":
+          this.stopStreaming();
+          break;
       }
     }
     switchSurface(surface) {
@@ -1820,8 +1966,9 @@ ${doc.content}`);
       this.persistState();
       if (surface === "impact") {
         this.render();
-        const selectedSymbol = this.currentPromptContext?.primary_source.symbol || this.state?.workspace.selectedSymbol || void 0;
-        if ((!this.currentImpact || selectedSymbol && selectedSymbol !== this.currentImpactSymbol) && !this.impactLoading) {
+        const selectedSymbol = this.impactTarget().symbol;
+        const needsGraphImpact = !this.currentImpact || this.currentImpactSource !== "graph" || Boolean(selectedSymbol && selectedSymbol !== this.currentImpactSymbol);
+        if (needsGraphImpact && !this.impactLoading) {
           this.requestImpactForActiveSymbol();
         }
         return;
@@ -1847,13 +1994,37 @@ ${doc.content}`);
     }
     requestImpactForActiveSymbol() {
       if (this.impactLoading) return;
-      const selectedSymbol = this.currentPromptContext?.primary_source.symbol || this.state?.workspace.selectedSymbol || void 0;
+      const target = this.impactTarget();
       this.postMessage({
         type: "action.showImpact",
-        symbol: selectedSymbol,
-        filePath: this.state?.workspace.activeFile || void 0,
+        symbol: target.symbol,
+        filePath: target.filePath,
         maxDepth: this.currentImpactDepth
       });
+    }
+    impactTarget() {
+      if (this.currentImpactSource === "graph" && this.currentImpactSymbol) {
+        return {
+          symbol: this.currentImpactSymbol,
+          filePath: this.currentImpactFilePath || void 0
+        };
+      }
+      if (this.currentPromptContext) {
+        return {
+          symbol: this.currentPromptContext.primary_source.symbol,
+          filePath: this.currentPromptContext.primary_source.file_path
+        };
+      }
+      if (this.selectedPromptRequestId && this.currentImpactSymbol) {
+        return {
+          symbol: this.currentImpactSymbol,
+          filePath: this.currentImpactFilePath || void 0
+        };
+      }
+      return {
+        symbol: this.state?.workspace.selectedSymbol || void 0,
+        filePath: this.state?.workspace.activeFile || void 0
+      };
     }
     previewImpactDepth(event) {
       const slider = event.currentTarget;
@@ -1891,15 +2062,26 @@ ${doc.content}`);
     askAboutSymbol() {
       const composer = document.getElementById("composer-input");
       if (!composer || !composer.value.trim() || !this.state) return;
+      if (this.currentStreamingRequestId) {
+        this.showToast("Stop the current response before sending another ask.", "info");
+        return;
+      }
       const prompt = composer.value.trim();
+      const anchor = this.pendingAskAnchor;
+      const targetSymbol = anchor?.symbol || this.state.workspace.selectedSymbol || void 0;
+      const targetFilePath = anchor?.filePath || this.state.workspace.activeFile || void 0;
       this.pendingPrompt = prompt;
+      this.pendingAskAnchor = null;
+      this.currentImpactSymbol = targetSymbol || null;
+      this.currentImpactFilePath = targetFilePath || null;
       composer.value = "";
       resizeComposerToFit(composer);
       this.persistState();
       this.postMessage({
         type: "chat.ask",
         prompt,
-        symbol: this.state.workspace.selectedSymbol || void 0,
+        symbol: targetSymbol,
+        filePath: targetFilePath,
         conversationId: this.currentDialogId
       });
     }
@@ -1993,6 +2175,9 @@ ${doc.content}`);
     }
     onRequestStarted(requestId, symbol) {
       this.currentStreamingRequestId = requestId;
+      if (symbol && this.state) {
+        this.state.workspace.selectedSymbol = symbol;
+      }
       this.selectedPromptRequestId = requestId;
       this.currentPromptContext = null;
       this.currentContextSummary = null;
@@ -2049,6 +2234,7 @@ ${doc.content}`);
       }
       this.persistState();
       this.refreshAccordions();
+      this.updateComposerStreamingState(false);
     }
     onRequestFailed(requestId, error) {
       this.currentStreamingRequestId = null;
@@ -2068,6 +2254,7 @@ ${doc.content}`);
       }
       this.persistState();
       this.updateConversationView();
+      this.updateComposerStreamingState(false);
     }
     onRequestStopped(requestId) {
       const message = this.messages.get(requestId);
@@ -2077,6 +2264,28 @@ ${doc.content}`);
       }
       this.currentStreamingRequestId = null;
       this.persistState();
+      this.updateComposerStreamingState(false);
+    }
+    stopStreaming() {
+      if (!this.currentStreamingRequestId) return;
+      const stopButton = document.getElementById("composer-stop");
+      if (stopButton) {
+        stopButton.disabled = true;
+        stopButton.title = "Stopping response\u2026";
+        stopButton.setAttribute("aria-label", "Stopping response");
+      }
+      this.postMessage({ type: "chat.stop", requestId: this.currentStreamingRequestId });
+    }
+    updateComposerStreamingState(isStreaming) {
+      const sendButton = document.getElementById("composer-send");
+      const stopButton = document.getElementById("composer-stop");
+      if (sendButton) sendButton.hidden = isStreaming;
+      if (stopButton) {
+        stopButton.hidden = !isStreaming;
+        stopButton.disabled = false;
+        stopButton.title = "Stop response";
+        stopButton.setAttribute("aria-label", "Stop response generation");
+      }
     }
     updateConversationView() {
       const viewport = document.getElementById("conversation");
@@ -2107,6 +2316,9 @@ ${doc.content}`);
         this.currentImpact = null;
         this.currentImpactSource = null;
         this.currentImpactDepth = 3;
+        const promptMessage = Array.from(this.messages.values()).find((message) => message.type === "user" && message.requestId === requestId);
+        this.currentImpactSymbol = promptMessage?.symbol || null;
+        this.currentImpactFilePath = null;
         this.showToast("Prompt is still waiting for context.", "info");
       }
       this.historyCollapsed = true;
@@ -2133,8 +2345,10 @@ ${doc.content}`);
       this.currentPromptContext = null;
       this.selectedPromptRequestId = null;
       this.pendingPrompt = null;
+      this.pendingAskAnchor = null;
       this.currentImpact = null;
       this.currentImpactSymbol = null;
+      this.currentImpactFilePath = null;
       this.currentImpactSource = null;
       this.currentImpactDepth = 3;
       this.impactError = null;
@@ -2148,6 +2362,7 @@ ${doc.content}`);
       const dialog = this.dialogHistory.find((item) => item.id === dialogId);
       if (!dialog) return;
       this.persistState();
+      this.pendingAskAnchor = null;
       this.currentDialogId = dialog.id;
       this.messages = new Map(dialog.messages.map((message) => [message.id, { ...message }]));
       this.selectedPromptRequestId = dialog.selectedPromptRequestId || this.latestContextRequestId();
@@ -2159,6 +2374,7 @@ ${doc.content}`);
         this.currentContextSummary = null;
         this.currentImpact = null;
         this.currentImpactSymbol = null;
+        this.currentImpactFilePath = null;
         this.currentImpactSource = null;
         this.currentImpactDepth = 3;
         this.impactError = null;
@@ -2212,6 +2428,7 @@ ${doc.content}`);
       this.currentContextSummary = this.summaryFromContext(context);
       this.currentImpact = this.impactFromContext(context);
       this.currentImpactSymbol = context.primary_source.symbol;
+      this.currentImpactFilePath = context.primary_source.file_path;
       this.currentImpactSource = "prompt";
       this.currentImpactDepth = this.clampImpactDepth(this.currentImpact.max_depth || this.currentImpactDepth);
       this.impactError = null;
@@ -2329,6 +2546,15 @@ ${doc.content}`);
       overflow.removeAttribute("hidden");
       target.remove();
     }
+    toggleImpactExplanation(target) {
+      const item = target.closest(".impact-item");
+      const explanation = item?.querySelector(".impact-explanation");
+      if (!explanation) return;
+      const expanded = target.getAttribute("aria-expanded") === "true";
+      target.setAttribute("aria-expanded", String(!expanded));
+      target.textContent = expanded ? "Explain" : "Hide";
+      explanation.toggleAttribute("hidden", expanded);
+    }
     openFileFromImpact(target) {
       const filePath = target.getAttribute("data-file-path");
       if (!filePath) return;
@@ -2357,6 +2583,14 @@ ${doc.content}`);
         navigator.clipboard.writeText(content).then(() => this.showToast("Copied.", "info"));
       }
     }
+    copyInspectorJson(target) {
+      const content = target.closest(".json-viewer")?.querySelector("pre code")?.textContent;
+      if (!content) {
+        this.showToast("JSON is not available to copy.", "warning");
+        return;
+      }
+      this.postMessage({ type: "clipboard.write", text: content });
+    }
     prefillComposer(text) {
       const composer = document.getElementById("composer-input");
       if (!composer) return;
@@ -2364,6 +2598,21 @@ ${doc.content}`);
       resizeComposerToFit(composer);
       composer.focus();
       this.persistState();
+    }
+    prefillImpactAsk(text) {
+      const symbol = this.currentImpactSymbol || this.currentPromptContext?.primary_source.symbol;
+      const filePath = this.currentImpact?.file_path || this.currentPromptContext?.primary_source.file_path;
+      if (symbol) {
+        this.pendingAskAnchor = { symbol, filePath: filePath || void 0 };
+        this.currentImpactSymbol = symbol;
+        this.currentImpactFilePath = filePath || null;
+        if (this.state) {
+          this.state.workspace.selectedSymbol = symbol;
+          if (filePath) this.state.workspace.activeFile = filePath;
+        }
+      }
+      this.switchSurface("chat");
+      this.prefillComposer(text);
     }
     persistState() {
       const composer = document.getElementById("composer-input");

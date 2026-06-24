@@ -7,7 +7,7 @@
 ## Section 1: Executive Summary & Goals
 
 ### 1.1. Project Overview
-Surgical Context is a local-first context engine that enhances LLM grounding and reduces token waste through structural and semantic retrieval. The VS Code extension is one client of the sidecar API, alongside scripts and the QA harness.
+Surgical Context is a local-first context engine that enhances LLM grounding and reduces token waste through structural and semantic retrieval. The VS Code extension is one client of the context_engine API, alongside scripts and the QA harness.
 
 Instead of "carpet-bombing" the model with all open files, the system feeds only the specific code snippets and documentation fragments that are mathematically relevant to the user's current task.
 
@@ -25,14 +25,14 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 
 ### 1.4. Design Principles
 - **Ownership over Hype:** robust data infrastructure, not an API wrapper.
-- **Security by Design:** source code never enters graph storage; vector/history persistence follows explicit storage policy and defaults local. Filesystem access from the sidecar is limited to paths under the workspace **project root** registered at index time (see §2.3.1).
+- **Security by Design:** source code never enters graph storage; vector/history persistence follows explicit storage policy and defaults local. Filesystem access from the context_engine is limited to paths under the workspace **project root** registered at index time (see §2.3.1).
 - **Transparency:** user always sees what context was collected and what it cost.
 
 ### 1.5. Product Layers
 
 | Layer | Purpose | Required for Local v0.1 |
 |---|---|---|
-| **Local Developer Product** | Single-tenant local VS Code tool with sidecar, Neo4j Docker, LanceDB, SQLite history, ask/inspect/impact, and local docs indexing. | Yes |
+| **Local Developer Product** | Single-tenant local VS Code tool with context_engine, Neo4j Docker, LanceDB, SQLite history, ask/inspect/impact, and local docs indexing. | Yes |
 | **Team Layer** | Shared customer-owned storage, admin/user roles, connectable doc sources, and tenant API contract links between project-published manifests. | No |
 | **Enterprise / Platform Layer** | Alternate database connectors, audit/retention stores, LLM proxy gateway transport, dedicated deployments, service split, and performance hot-path rewrites after profiling. | No |
 
@@ -44,7 +44,7 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 
 | Component | Stack | Role |
 |---|---|---|
-| **Extension Host** | TypeScript / VS Code API | Proxies webview messages to an externally started sidecar, derives workspace identity, and manages file watchers/overlays. |
+| **Extension Host** | TypeScript / VS Code API | Proxies webview messages to an externally started context_engine, derives workspace identity, and manages file watchers/overlays. |
 | **Webviews** | TypeScript + DOM | Render Chat Panel, Context Inspector, Impact Explorer, Dashboard. No React dependency is currently used. |
 | **Sidecar Process** | Python + FastAPI | Orchestrator: indexing, graph queries, prompt assembly, LLM calls. |
 | **Storage Layer** | Neo4j + LanceDB + SQLite + FS | Concrete local defaults. History has a provider interface; retrieval protocols/fakes exist, while full GraphProvider/VectorProvider wrappers remain staged. |
@@ -58,7 +58,7 @@ Instead of "carpet-bombing" the model with all open files, the system feeds only
 | `VectorProvider` | LanceDB local | Qdrant, Weaviate, pgvector, customer-managed vector services |
 | `HistoryProvider` | SQLite local | encrypted SQLite, Postgres, enterprise audit store, memory-only, disabled |
 
-**Current sidecar module boundaries:**
+**Current context_engine module boundaries:**
 
 | Path | Responsibility |
 |---|---|
@@ -111,7 +111,7 @@ VS Code ↔ Sidecar via local FastAPI (HTTP/JSON). Ensures editor stays responsi
 
 ### 2.3.1. Filesystem path sandboxing ✅
 
-Local development often runs with `AUTH_REQUIRED=false`. Without path checks, any process on the machine could ask the sidecar to read or index arbitrary readable files.
+Local development often runs with `AUTH_REQUIRED=false`. Without path checks, any process on the machine could ask the context_engine to read or index arbitrary readable files.
 
 **Rules** (implemented in `context_engine/workspace_paths.py` and `context_engine/api/workspace_security.py`, enforced by the route layer):
 
@@ -121,7 +121,7 @@ Local development often runs with `AUTH_REQUIRED=false`. Without path checks, an
 | Resolve paths | `/ask` (`file_path`), `/index/file`, `/index/files`, `/index/docs`, and `/overlay` normalize relative paths under that root; absolute paths must still lie inside it (`Path.resolve()` + `relative_to`). |
 | Reject | No manifest yet → HTTP `400`. Path escapes root → HTTP `403`. |
 
-`workspace_paths` plus `sandbox_path()` enforce the same root check on caller-supplied paths and IDE anchors. Stale outside-root graph nodes are pruned at index time; overlay reads stay under the registered root. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
+`workspace_paths` plus `sandbox_path()` enforce the same root check on caller-supplied paths and IDE anchors. Stale outside-root graph nodes are pruned at index time; overlay reads stay under the registered root. Details: [spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing).
 
 ### 2.3.2. API request bounds ✅
 
@@ -173,7 +173,7 @@ Without complete prompt-contract observability, production claims in §1.3 remai
 
 ### 2.5. Extension User Interface Layer
 
-The VS Code extension provides a thin UI layer that exposes the sidecar's capabilities through four integrated surfaces: **Chat Panel**, **Context Inspector**, **Impact Explorer**, and **Dashboard**. The UI is deliberately transparent — users can see the exact code symbols, documentation, and metadata sent to the LLM, with token accounting and evidence trails.
+The VS Code extension provides a thin UI layer that exposes the context_engine's capabilities through four integrated surfaces: **Chat Panel**, **Context Inspector**, **Impact Explorer**, and **Dashboard**. The UI is deliberately transparent — users can see the exact code symbols, documentation, and metadata sent to the LLM, with token accounting and evidence trails.
 
 **Surfaces:**
 
@@ -182,7 +182,7 @@ The VS Code extension provides a thin UI layer that exposes the sidecar's capabi
 | **Chat Panel** | Default entry point; ask about current symbol with streaming response | WebviewView (sidebar) |
 | **Context Inspector** | Inspect primary source, graph neighbors, docs, prompt JSON, token breakdown | WebviewPanel (modal) |
 | **Impact Explorer** | Show callers, callees, dependencies, docs, and AFFECTS for a symbol | TreeView + WebviewPanel |
-| **Dashboard** | Operational overview: sidecar health, indexing status, token savings, recent activity | WebviewPanel |
+| **Dashboard** | Operational overview: context_engine health, indexing status, token savings, recent activity | WebviewPanel |
 
 **Protocol:**
 
@@ -238,7 +238,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 - **Planned expansion:** OpenAPI/Swagger, GraphQL SDL, protobuf/gRPC, AsyncAPI, generated clients, gateway metadata, and service catalogs inside the current workspace.
 - Local output: a `ContractManifest` containing safe service, endpoint, schema, event, and call-site metadata for this project.
 - Tenant output: links between published manifests, such as `CALLS_ENDPOINT`, `EXPOSES_ENDPOINT`, `USES_SCHEMA`, `PRODUCES_EVENT`, `CONSUMES_EVENT`, and `DEPENDS_ON_SERVICE`.
-- Explicit boundary: the sidecar never scans neighboring repositories from another project's context. Neighboring projects publish their own facts; the tenant graph only connects those facts.
+- Explicit boundary: the context_engine never scans neighboring repositories from another project's context. Neighboring projects publish their own facts; the tenant graph only connects those facts.
 
 ### 3.3. Load — Incremental Upsert
 - **GraphProvider:** upsert by stable UID — only changed nodes/edges are written. Neo4j is the current default implementation.
@@ -289,7 +289,7 @@ This layering ensures webviews remain stateless and dumb; all business logic sta
 ### 4.3. Version Arbitration (Dirty State)
 Scenario: user edits `process_payment`, hasn't saved.
 1. VS Code sends `POST /overlay` with file content on every keypress.
-2. On `POST /ask`, the sidecar detects overlay for this file.
+2. On `POST /ask`, the context_engine detects overlay for this file.
 3. Reads dirty symbol body from memory; all other dependencies from stable Neo4j graph.
 4. LLM sees current work-in-progress surrounded by stable project structure.
 
@@ -446,7 +446,7 @@ Store only topology in the graph provider. Symbol node contains identity and str
 ## ADR-003: Pluggable Graph Provider + Local Dirty Overlay
 **Status:** Accepted, staged
 
-Local Neo4j or Aura/fallback supplies the current graph. A complete `GraphProvider` connector abstraction and alternate backends remain staged. Local unsaved changes remain in `InMemoryOverlay` inside the sidecar process. ✅ Overlay implemented.
+Local Neo4j or Aura/fallback supplies the current graph. A complete `GraphProvider` connector abstraction and alternate backends remain staged. Local unsaved changes remain in `InMemoryOverlay` inside the context_engine process. ✅ Overlay implemented.
 
 **Why:** Teams need one source of truth, but storage ownership varies by customer. Local edits don't pollute the configured graph provider. No full re-index per developer.
 
@@ -498,7 +498,7 @@ Managed deployments and marketplace readiness are blocked on the Local Developer
 
 Each project indexes itself and publishes safe API contract metadata into a tenant-scoped graph. Tenant-level retrieval traverses only those published facts. It does not scan neighboring repositories, read neighboring source files, or invoke live APIs.
 
-**Why:** Microservice architectures need cross-project context, but source ownership and privacy boundaries are non-negotiable. Published service manifests let teams connect endpoints, schemas, clients, events, and ownership without turning one sidecar into a tenant-wide crawler.
+**Why:** Microservice architectures need cross-project context, but source ownership and privacy boundaries are non-negotiable. Published service manifests let teams connect endpoints, schemas, clients, events, and ownership without turning one context_engine into a tenant-wide crawler.
 
 **Design:**
 - Project indexers extract local API facts: route declarations, OpenAPI/GraphQL/protobuf/AsyncAPI contracts, generated client calls, SDK usage, event topics, and service metadata.

@@ -21,7 +21,7 @@ export function graphStatusFromCloud(cloud: CloudStatusResponse | null): GraphSt
     return {
       mode: 'offline',
       label: 'Unreachable',
-      detail: 'Sidecar /status/cloud did not respond. Start the sidecar and check Sidecar URL.',
+      detail: 'Sidecar /status/cloud did not respond. Start the context_engine and check Sidecar URL.',
       healthy: false,
     };
   }
@@ -41,7 +41,7 @@ export function graphStatusFromCloud(cloud: CloudStatusResponse | null): GraphSt
       label: healthy ? 'Local Neo4j' : 'Local Neo4j (fallback)',
       detail: healthy
         ? 'Local graph is healthy. Aura is configured but unreachable — set NEO4J_LOCAL_ONLY=1 in repo .env to skip Aura.'
-        : 'Aura is unavailable; sidecar fell back to local Docker Neo4j (NEO4J_URI in repo .env).',
+        : 'Aura is unavailable; context_engine fell back to local Docker Neo4j (NEO4J_URI in repo .env).',
       healthy,
     };
   }

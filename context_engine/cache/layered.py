@@ -1,7 +1,7 @@
 """In-process retrieval caches for context assembly.
 
 The interfaces mirror the Phase 10 cache spec while keeping the default backend
-dependency-free for local sidecar use. Redis/disk implementations can slot in
+dependency-free for local context_engine use. Redis/disk implementations can slot in
 behind the same LayeredCache facade later.
 """
 

@@ -40,7 +40,7 @@ def _warmup_enabled() -> bool:
     }
 
 
-def warm_sidecar(state: SidecarState) -> None:
+def warm_context_engine(state: SidecarState) -> None:
     """Preload Lance, embeddings, and Neo4j so the first ask avoids cold start."""
     if not _warmup_enabled():
         logger.info("Sidecar warmup skipped (SIDECAR_WARMUP_ENABLED=false)")

@@ -22,7 +22,7 @@ and `LayeredCache.invalidate_files(...)` removes every entry for an indexed file
 
 The implementation is currently dormant: active body resolution does not call
 `LayeredCache.get_body()` or `put_body()`. Its hit/miss counters therefore remain
-zero in ordinary sidecar requests.
+zero in ordinary context_engine requests.
 
 ### L2 - Subgraph Cache
 
@@ -114,7 +114,7 @@ does not emit the previously proposed per-layer eviction reasons.
 - L2 and L3 keys include `workspace_id`; L1 keys use absolute file path + hash.
 - L3 can be shared by users in the same workspace when the rendered prompt is
   identical; `user_id` is not part of the key.
-- All layers are process-local and are lost on sidecar restart.
+- All layers are process-local and are lost on context_engine restart.
 - LRU bounds memory; only L3 also expires entries by time.
 - No workspace-delete cache flush API is implemented because workspace deletion
   itself is not implemented.

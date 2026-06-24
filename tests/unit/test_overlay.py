@@ -132,6 +132,33 @@ class MyClass:
         assert not overlay.has("test.py", workspace_id=ws, user_id="alice")
         assert overlay.has("test.py", workspace_id=ws, user_id="bob")
 
+    def test_index_profile_suffix_resolves_to_base_buffer(self, overlay):
+        """A buffer stored under the base workspace is found when queried under
+        the profile-suffixed index workspace (axis retrieval) and vice versa."""
+        base = "acme/repo@main"
+        index = "acme/repo@main+axis_python_v1"
+        overlay.update("svc.py", "def handler(): pass\n", workspace_id=base, user_id="u")
+
+        assert overlay.has("svc.py", workspace_id=index, user_id="u")
+        assert "handler" in overlay.read_lines("svc.py", 1, 1, workspace_id=index, user_id="u")
+        # Symmetric: clearing under the index id removes the base-stored buffer.
+        overlay.clear("svc.py", workspace_id=index, user_id="u")
+        assert not overlay.has("svc.py", workspace_id=base, user_id="u")
+
+    def test_get_calls_returns_callee_names(self, overlay):
+        overlay.update("c.py", "def uses():\n    return helper(1)\n")
+        calls = overlay.get_calls("c.py")
+        assert any(call.get("callee_name") == "helper" for call in calls)
+
+    def test_get_calls_empty_for_unsupported_extension(self, overlay):
+        overlay.update("data.json", '{"a": 1}\n')
+        assert overlay.get_calls("data.json") == []
+
+    def test_iter_dirty_files_excludes_saved(self, overlay):
+        overlay.update("dirty.py", "draft\n", dirty=True)
+        overlay.update("saved.py", "final\n", dirty=False)
+        assert overlay.iter_dirty_files() == ["dirty.py"]
+
     def test_dirty_defaults_true(self, overlay):
         overlay.update("test.py", "draft\n")
         assert overlay.is_dirty("test.py")
@@ -160,8 +187,8 @@ class MyClass:
         assert overlay.stats() == {"entries": 2, "bytes": 4}
 
         rendered = metrics.render_prometheus()
-        assert 'sidecar_overlay_evictions_total{reason="cap"} 1' in rendered
-        assert "sidecar_overlay_entries 2" in rendered
+        assert 'context_engine_overlay_evictions_total{reason="cap"} 1' in rendered
+        assert "context_engine_overlay_entries 2" in rendered
 
     def test_ttl_evicts_stale_entry(self, monkeypatch):
         metrics = MetricsRegistry()
@@ -174,15 +201,15 @@ class MyClass:
         assert not overlay.has("stale.py")
 
         rendered = metrics.render_prometheus()
-        assert 'sidecar_overlay_evictions_total{reason="ttl"} 1' in rendered
+        assert 'context_engine_overlay_evictions_total{reason="ttl"} 1' in rendered
 
     def test_clear_increments_eviction_metric(self, overlay):
         overlay.update("test.py", "content\n")
         overlay.clear("test.py")
 
         rendered = overlay._metrics.render_prometheus()
-        assert 'sidecar_overlay_evictions_total{reason="clear"} 1' in rendered
-        assert "sidecar_overlay_entries 0" in rendered
+        assert 'context_engine_overlay_evictions_total{reason="clear"} 1' in rendered
+        assert "context_engine_overlay_entries 0" in rendered
 
     def test_read_refreshes_ttl(self, monkeypatch):
         metrics = MetricsRegistry()

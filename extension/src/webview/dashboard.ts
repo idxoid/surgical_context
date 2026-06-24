@@ -12,6 +12,7 @@ import {
   renderMetricCardGrid,
   renderAuditEventsCard,
   renderDashboardHeader,
+  renderIndexWorkspaceButton,
   renderRefreshButton,
   renderDashboardWarnings,
   renderDashboardNotices,
@@ -127,6 +128,7 @@ class DashboardPanel {
     }
 
     const header = renderDashboardHeader(this.state.workspaceId, this.state.lastUpdate);
+    const indexWorkspaceBtn = renderIndexWorkspaceButton(this.state.isLoading);
     const refreshBtn = renderRefreshButton(this.state.isLoading);
     const warnings = renderDashboardWarnings(this.state.warnings);
     const notices = renderDashboardNotices(this.state.notices);
@@ -145,7 +147,10 @@ class DashboardPanel {
       <div class="dashboard-content">
         <div class="dashboard-toolbar">
           ${warnings}
-          ${refreshBtn}
+          <div class="dashboard-actions">
+            ${indexWorkspaceBtn}
+            ${refreshBtn}
+          </div>
         </div>
         ${notices}
         <div class="dashboard-grid">

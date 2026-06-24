@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SidecarClient } from './sidecarClient';
+import { SidecarClient } from './context_engineClient';
 
 export class ChatPanel {
   private static instance: ChatPanel | undefined;

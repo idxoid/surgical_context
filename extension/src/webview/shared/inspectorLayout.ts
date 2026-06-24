@@ -1,4 +1,4 @@
-import { PromptContextPayload } from '../../sidecarClient';
+import { PromptContextPayload } from '../../context_engineClient';
 
 export function escapeHtml(text: string): string {
   const map: { [key: string]: string } = {

@@ -12,21 +12,81 @@ def test_path_matches_file():
         "/repo/context_engine/axis/graph_walk.py",
         "context_engine/axis/graph_walk.py",
     )
+    assert not Neo4jClient._path_matches_file(
+        "/repo/context_engine/axis/graph_walk.py",
+        "/repo/extension/src/context_engineClient.ts",
+    )
 
 
-def test_resolve_impact_symbol_uid_prefers_candidate_with_callers():
+def test_resolve_impact_symbol_uid_prefers_requested_file_over_unrelated_callers():
     db = Neo4jClient.__new__(Neo4jClient)
 
     def _candidates(name, workspace_id="ws"):
         return [
             {
-                "uid": "ctx",
+                "uid": "typescript-ask",
+                "path": "/repo/extension/src/context_engineClient.ts",
+                "incoming": 0,
+            },
+            {
+                "uid": "python-ask",
+                "path": "/repo/context_engine/api/routes/ask.py",
+                "incoming": 5,
+            },
+        ]
+
+    db.list_symbol_impact_candidates = _candidates  # type: ignore[method-assign]
+
+    uid = db.resolve_impact_symbol_uid(
+        "ask",
+        "ws",
+        file_path="/repo/extension/src/context_engineClient.ts",
+    )
+    assert uid == "typescript-ask"
+
+
+def test_resolve_impact_symbol_uid_prefers_endpoint_evidence_within_requested_file():
+    db = Neo4jClient.__new__(Neo4jClient)
+
+    def _candidates(name, workspace_id="ws"):
+        return [
+            {
+                "uid": "stale-ask",
+                "path": "/repo/context_engine/api/routes/ask.py",
+                "incoming": 8,
+                "endpoint_edges": 0,
+            },
+            {
+                "uid": "endpoint-ask",
+                "path": "/repo/context_engine/api/routes/ask.py",
+                "incoming": 0,
+                "endpoint_edges": 1,
+            },
+        ]
+
+    db.list_symbol_impact_candidates = _candidates  # type: ignore[method-assign]
+
+    uid = db.resolve_impact_symbol_uid(
+        "ask",
+        "ws",
+        file_path="/repo/context_engine/api/routes/ask.py",
+    )
+    assert uid == "endpoint-ask"
+
+
+def test_resolve_impact_symbol_uid_does_not_cross_files_when_requested_file_is_not_indexed():
+    db = Neo4jClient.__new__(Neo4jClient)
+
+    def _candidates(name, workspace_id="ws"):
+        return [
+            {
+                "uid": "quiet",
                 "path": "/repo/context_engine/axis/graph_walk.py",
                 "incoming": 0,
             },
             {
-                "uid": "mirror",
-                "path": "/repo/sidecar/axis/graph_walk.py",
+                "uid": "active",
+                "path": "/repo/context_engine/axis/graph_walk.py",
                 "incoming": 2,
             },
         ]
@@ -36,6 +96,6 @@ def test_resolve_impact_symbol_uid_prefers_candidate_with_callers():
     uid = db.resolve_impact_symbol_uid(
         "steps_for_mode",
         "ws",
-        file_path="/repo/context_engine/axis/graph_walk.py",
+        file_path="/repo/not-yet-indexed/graph_steps.py",
     )
-    assert uid == "mirror"
+    assert uid is None

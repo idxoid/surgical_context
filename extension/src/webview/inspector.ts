@@ -182,15 +182,7 @@ class InspectorPanel {
     const copyBtn = document.querySelector('[data-action="copy-json"]');
     if (copyBtn) {
       copyBtn.addEventListener('click', () => {
-        const jsonContent = JSON.stringify(this.context, null, 2);
-        navigator.clipboard.writeText(jsonContent).then(() => {
-          const btn = copyBtn as HTMLElement;
-          const original = btn.textContent;
-          btn.textContent = 'Copied!';
-          setTimeout(() => {
-            btn.textContent = original;
-          }, 2000);
-        });
+        this.copyJsonFromViewer(copyBtn as HTMLElement);
       });
     }
 
@@ -198,76 +190,16 @@ class InspectorPanel {
     const copyApiBtn = document.querySelector('[data-action="copy-api-json"]');
     if (copyApiBtn) {
       copyApiBtn.addEventListener('click', () => {
-        const primary = this.context?.primary_source;
-        const graphItems = this.context?.graph_context || [];
-        const docs = this.context?.documentation || [];
-
-        const systemPrompt = this._buildSystemPromptForCopy();
-        const apiPayload = {
-          api_request: {
-            model: 'claude-opus-4-7',
-            max_tokens: 8096,
-            system: systemPrompt,
-            messages: [
-              {
-                role: 'user',
-                content: '(User query would appear here)',
-              },
-            ],
-          },
-          context_metadata: {
-            mode: this.context?.mode,
-            intent: this.context?.intent,
-            assembly_metadata: this.context?.metadata?.assembly,
-            tier_tokens: this.context?.metadata?.tier_tokens,
-            budget_info: this.context?.budget,
-          },
-        };
-
-        const jsonContent = JSON.stringify(apiPayload, null, 2);
-        navigator.clipboard.writeText(jsonContent).then(() => {
-          const btn = copyApiBtn as HTMLElement;
-          const original = btn.textContent;
-          btn.textContent = 'Copied!';
-          setTimeout(() => {
-            btn.textContent = original;
-          }, 2000);
-        });
+        this.copyJsonFromViewer(copyApiBtn as HTMLElement);
       });
     }
   }
 
-  private _buildSystemPromptForCopy(): string {
-    const primary = this.context?.primary_source;
-    const graphItems = this.context?.graph_context || [];
-    const docs = this.context?.documentation || [];
+  private copyJsonFromViewer(button: HTMLElement): void {
+    const content = button.closest('.json-viewer')?.querySelector('pre code')?.textContent;
+    if (!content) return;
 
-    const blocks: string[] = [
-      `--- TARGET SYMBOL: ${primary?.symbol || 'unknown'} ---`,
-    ];
-
-    if (primary?.code) {
-      blocks.push(primary.code);
-    }
-
-    if (graphItems.length > 0) {
-      blocks.push('\n--- DEPENDENCIES ---');
-      for (const dep of graphItems) {
-        blocks.push(`\n# From ${dep.symbol} [${dep.relation}]:`);
-        if (dep.code) {
-          blocks.push(dep.code);
-        }
-      }
-    }
-
-    if (docs.length > 0) {
-      blocks.push('\n--- DOCUMENTATION ---');
-      for (const doc of docs) {
-        blocks.push(`[${doc.source_file}]\n${doc.content}`);
-      }
-    }
-
-    return blocks.join('\n');
+    vscode.postMessage({ type: 'clipboard.write', text: content });
   }
 
   private persistTabState(): void {

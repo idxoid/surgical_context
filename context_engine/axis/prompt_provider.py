@@ -44,13 +44,25 @@ def _to_symbol_context(
         file_path=sym.file_path,
         relation=relation,
         uid=sym.uid,
-        kind="",
+        kind=sym.kind,
+        edge_type=sym.edge_type,
+        direction=sym.direction,
         depth=sym.distance_from_seed,
+        relevance_score=sym.relevance_score,
+        graph_score=sym.utility_score,
         blended_score=blended_score,
         render_mode=render_mode,
         code=sym.code or "",
-        provenance=[sym.expansion_step] if sym.expansion_step else [],
+        provenance=[value for value in (sym.expansion_step, sym.kind, sym.edge_type) if value],
     )
+
+
+def _seed_relation(bundle: ContextBundle) -> str:
+    if bundle.role in {"impact_analysis", "trace_dependency"}:
+        kind = bundle.seed.kind
+        if kind and kind != "target_seed":
+            return kind
+    return bundle.role or "related"
 
 
 def axis_bundles_to_prompt_context(
@@ -97,7 +109,8 @@ def axis_bundles_to_prompt_context(
             graph_context.append(
                 _to_symbol_context(
                     bundle.seed,
-                    relation=bundle.role or "related",
+                    relation=_seed_relation(bundle),
+                    blended_score=bundle.utility_score,
                     render_mode=render_mode,
                 )
             )

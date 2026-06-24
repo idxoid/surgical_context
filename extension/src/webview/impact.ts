@@ -167,6 +167,20 @@ class ImpactPanel {
       });
     });
 
+    document.querySelectorAll('[data-action="explainImpact"]').forEach(button => {
+      button.addEventListener('click', (e: Event) => {
+        const target = e.currentTarget as HTMLElement;
+        const item = target.closest('.impact-item');
+        const explanation = item?.querySelector('.impact-explanation') as HTMLElement | null;
+        if (!explanation) return;
+
+        const expanded = target.getAttribute('aria-expanded') === 'true';
+        target.setAttribute('aria-expanded', String(!expanded));
+        target.textContent = expanded ? 'Explain' : 'Hide';
+        explanation.toggleAttribute('hidden', expanded);
+      });
+    });
+
     document.querySelectorAll('[data-impact-depth]').forEach(slider => {
       slider.addEventListener('input', (e: Event) => {
         const target = e.currentTarget as HTMLInputElement;

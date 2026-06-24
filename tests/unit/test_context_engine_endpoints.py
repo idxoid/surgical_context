@@ -646,9 +646,9 @@ def test_metrics_endpoint_renders_prometheus_text(monkeypatch):
     response = main.metrics()
 
     assert response.media_type == "text/plain"
-    assert "sidecar_requests_total" in response.body.decode()
+    assert "context_engine_requests_total" in response.body.decode()
     assert 'endpoint="/ask"' in response.body.decode()
-    assert 'sidecar_ask_context_total{mode="surgical_full"' in response.body.decode()
+    assert 'context_engine_ask_context_total{mode="surgical_full"' in response.body.decode()
 
 
 def test_index_stats_returns_workspace_catalog_counts(monkeypatch):
@@ -904,7 +904,7 @@ def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path)
     )
 
     assert (
-        "sidecar_index_queue_skipped_total",
+        "context_engine_index_queue_skipped_total",
         1,
         {"reason": "unsupported_extension", "workspace": "local/surgical_context@main"},
     ) in metric_calls
@@ -1009,7 +1009,9 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
     seen_surface_args: list[dict] = []
 
     class FakeDriverDb(FakeDb):
-        def resolve_impact_symbol_uid(self, name, workspace_id="local/surgical_context@main", *, file_path=None):
+        def resolve_impact_symbol_uid(
+            self, name, workspace_id="local/surgical_context@main", *, file_path=None
+        ):
             return "symbol-1"
 
         def get_symbol_uid_by_name(self, name, workspace_id="local/surgical_context@main"):
