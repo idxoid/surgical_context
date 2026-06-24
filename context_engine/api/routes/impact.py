@@ -12,6 +12,18 @@ from context_engine.api.schemas import IMPACT_DEPTH_MAX, IMPACT_DEPTH_MIN, Impac
 router = APIRouter(tags=["impact"])
 
 
+def _symbol_in_local_file(file_path: str, symbol: str) -> bool:
+    """True when ``symbol`` is defined in the on-disk ``file_path``."""
+    if not file_path or not symbol:
+        return False
+    try:
+        from context_engine.parser.extractor import SymbolExtractor
+
+        return any(meta.name == symbol for meta in SymbolExtractor().extract(file_path))
+    except (OSError, ValueError):
+        return False
+
+
 def _resolve_committed_uid(
     db: Any,
     symbol: str,
@@ -53,16 +65,23 @@ def impact(
         build_impact_surface,
     )
     from context_engine.axis.overlay_impact import build_overlay_impact_callers
+    from context_engine.index_profile import index_workspace_lookup_order
 
     main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
-    index_workspace_id = main.effective_index_workspace_id(base_workspace_id)
     overlay = main.overlay
     requested_path = file_path.strip() if isinstance(file_path, str) and file_path.strip() else None
 
     with main.db_session(user_id=user_id) as db:
-        symbol_uid = _resolve_committed_uid(db, symbol, index_workspace_id, requested_path)
+        symbol_uid: str | None = None
+        index_workspace_id = main.effective_index_workspace_id(base_workspace_id)
+        for candidate_ws in index_workspace_lookup_order(base_workspace_id):
+            uid = _resolve_committed_uid(db, symbol, candidate_ws, requested_path)
+            if uid:
+                symbol_uid = uid
+                index_workspace_id = candidate_ws
+                break
 
         # Overlay buffers are keyed by the sandboxed path, matching /overlay.
         safe_path: str | None = None
@@ -74,11 +93,18 @@ def impact(
             except Exception:
                 safe_path = None
 
-        overlay_anchored = (
-            bool(safe_path)
+        overlay_symbols: set[str] = set()
+        if (
+            safe_path
+            and overlay is not None
             and overlay.has(safe_path, workspace_id=base_workspace_id, user_id=user_id)
-            and symbol
-            in overlay.get_symbols(safe_path, workspace_id=base_workspace_id, user_id=user_id)
+        ):
+            overlay_symbols = set(
+                overlay.get_symbols(safe_path, workspace_id=base_workspace_id, user_id=user_id)
+            )
+
+        overlay_anchored = bool(safe_path) and (
+            symbol in overlay_symbols or _symbol_in_local_file(safe_path or "", symbol)
         )
 
         if not symbol_uid and not overlay_anchored:
