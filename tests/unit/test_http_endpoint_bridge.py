@@ -9,6 +9,7 @@ from context_engine.indexer.http_endpoint import (
     endpoint_fingerprint,
     normalize_http_path,
 )
+from context_engine.parser.adapters.javascript_adapter import JavaScriptAdapter
 from context_engine.parser.adapters.python_adapter import PythonAdapter
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
@@ -80,6 +81,26 @@ export async function ping() {
 """
         rows = adapter.extract_http_endpoints(source, "src/client.ts")
         assert any(r["method"] == "GET" and r["path"] == "/ask/stream" for r in rows)
+
+
+class TestJavaScriptHttpEndpointExtraction:
+    def test_express_app_get_registers_handler(self):
+        adapter = JavaScriptAdapter()
+        source = """
+function handler(req, res) {}
+
+export function register(app) {
+  app.get('/health', handler);
+}
+"""
+        symbols = adapter.extract_symbols(source, "src/app.js")
+        rows = adapter.extract_http_endpoints(source, "src/app.js")
+        handler_uid = next(symbol.uid for symbol in symbols if symbol.name == "handler")
+        route = next(r for r in rows if r["role"] == "implement")
+        assert route["method"] == "GET"
+        assert route["path"] == "/health"
+        assert route["via"] == "app.get"
+        assert route["site_uid"] == handler_uid
 
 
 class TestPythonHttpEndpointExtraction:
