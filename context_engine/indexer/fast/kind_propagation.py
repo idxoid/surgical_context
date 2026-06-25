@@ -157,7 +157,7 @@ def propagate_container_kind_via_inheritance(
         matched_anc = ancestor_uids & carrier_uids
         if not matched_anc:
             continue
-        anc_uid = sorted(matched_anc)[0]
+        anc_uid = min(matched_anc)
         new_kinds, new_json = append_container_kind_match(
             kind=kind,
             uid=uid,

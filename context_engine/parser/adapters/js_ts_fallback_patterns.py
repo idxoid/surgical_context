@@ -2,12 +2,14 @@
 
 import re
 
-PROPERTY_FUNC_API_RE = re.compile(
-    r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
-)
+_IDENT = r"[A-Za-z_$][\w$]*"
+_PROP_ASSIGN = rf"({_IDENT})\.({_IDENT})\s*=\s*"
+_ASYNC = r"(?:async )?"
+_LINE = r"(?m)^[ \t]*"
+_FUNC_TAIL = rf"{_ASYNC}function(?:\s+({_IDENT}))?\b"
+
+PROPERTY_FUNC_API_RE = re.compile(rf"{_LINE}{_PROP_ASSIGN}{_FUNC_TAIL}")
 PROPERTY_ARROW_API_RE = re.compile(
-    r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
+    rf"{_LINE}{_PROP_ASSIGN}{_ASYNC}(?:\([^)]*\)|{_IDENT})\s*=>"
 )
-CHAINED_PROPERTY_FUNC_API_RE = re.compile(
-    r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
-)
+CHAINED_PROPERTY_FUNC_API_RE = re.compile(rf"{_LINE}{_PROP_ASSIGN}{_PROP_ASSIGN}{_FUNC_TAIL}")
