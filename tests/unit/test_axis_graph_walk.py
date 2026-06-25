@@ -12,56 +12,18 @@ from context_engine.axis.graph_walk import (
     cap_by_file,
     walk_neighbours,
 )
-
-WORKSPACE = "qa_repo/test@axis"
-
-
-class _Result:
-    def __init__(self, records):
-        self._records = list(records)
-
-    def __iter__(self):
-        return iter(self._records)
-
-
-class _Session:
-    def __init__(self, records):
-        self._records = list(records)
-        self.runs: list[tuple[str, dict]] = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def run(self, query: str, **params):
-        self.runs.append((query, dict(params)))
-        return _Result(self._records)
-
-
-class _Driver:
-    def __init__(self, session):
-        self._session = session
-
-    def session(self):
-        return self._session
-
-
-class _FakeDB:
-    def __init__(self, records=None):
-        self.session_obj = _Session(records or [])
-        self.driver = _Driver(self.session_obj)
+from tests.unit.axis_helpers import (
+    AXIS_TEST_WORKSPACE,
+    BAD_MAX_HOPS,
+    FakeNeo4jDB,
+    Neo4jDriver,
+    Neo4jSession,
+    graph_row,
+)
 
 
 def _rec(uid, name="n", file_path="/f.py", depth=1, reach=1):
-    return {
-        "uid": uid,
-        "name": name,
-        "file_path": file_path,
-        "depth": depth,
-        "reach": reach,
-    }
+    return graph_row(uid, name, file_path, depth=depth, reach=reach)
 
 
 def _nb(uid, file_path="/f.py", depth=1, reach=1):
@@ -84,24 +46,24 @@ def test_safe_rel_pattern_rejects_injection():
 
 
 def test_walk_empty_seeds_returns_empty():
-    assert walk_neighbours(_FakeDB(), WORKSPACE, [], edges=EdgeProfile.AFFECTS) == []
+    assert walk_neighbours(FakeNeo4jDB(), AXIS_TEST_WORKSPACE, [], edges=EdgeProfile.AFFECTS) == []
 
 
 def test_walk_parses_rows_into_neighbours():
-    db = _FakeDB([_rec("u:a", depth=2, reach=3)])
-    out = walk_neighbours(db, WORKSPACE, ["u:seed"], edges=EdgeProfile.AFFECTS)
+    db = FakeNeo4jDB([_rec("u:a", depth=2, reach=3)])
+    out = walk_neighbours(db, AXIS_TEST_WORKSPACE, ["u:seed"], edges=EdgeProfile.AFFECTS)
     assert len(out) == 1
     assert out[0] == Neighbour("u:a", "n", "/f.py", 2, 3)
 
 
 def test_walk_driver_error_returns_empty():
-    class _BoomSession(_Session):
+    class _BoomSession(Neo4jSession):
         def run(self, query, **params):
             raise RuntimeError("boom")
 
-    db = _FakeDB()
-    db.driver = _Driver(_BoomSession([]))
-    assert walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS) == []
+    db = FakeNeo4jDB()
+    db.driver = Neo4jDriver(_BoomSession([]))
+    assert walk_neighbours(db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS) == []
 
 
 def test_empty_inproc_walk_falls_back_to_neo4j(monkeypatch):
@@ -109,11 +71,11 @@ def test_empty_inproc_walk_falls_back_to_neo4j(monkeypatch):
 
     monkeypatch.setattr(graph_walk_inproc, "should_use", lambda workspace_id: True)
     monkeypatch.setattr(graph_walk_inproc, "walk_neighbours", lambda *args, **kwargs: [])
-    db = _FakeDB([_rec("u:caller", name="caller")])
+    db = FakeNeo4jDB([_rec("u:caller", name="caller")])
 
     out = walk_neighbours(
         db,
-        WORKSPACE,
+        AXIS_TEST_WORKSPACE,
         ["u:seed"],
         edges=(edge for edge in EdgeProfile.CALLS),
         direction="reverse",
@@ -127,38 +89,42 @@ def test_empty_inproc_walk_falls_back_to_neo4j(monkeypatch):
 
 
 def test_forward_direction_emits_outgoing_pattern():
-    db = _FakeDB([])
-    walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS, direction="forward")
+    db = FakeNeo4jDB([])
+    walk_neighbours(
+        db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS, direction="forward"
+    )
     q = db.session_obj.runs[0][0]
     assert "(s)-[r:AFFECTS*1..2]->(n:Symbol)" in q
 
 
 def test_reverse_direction_emits_incoming_pattern():
-    db = _FakeDB([])
-    walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.CALLS, direction="reverse")
+    db = FakeNeo4jDB([])
+    walk_neighbours(db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.CALLS, direction="reverse")
     q = db.session_obj.runs[0][0]
     assert "(n:Symbol)-[r:" in q and "]->(s)" in q
 
 
 def test_undirected_direction_emits_undirected_pattern():
-    db = _FakeDB([])
-    walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS, direction="undirected")
+    db = FakeNeo4jDB([])
+    walk_neighbours(
+        db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS, direction="undirected"
+    )
     q = db.session_obj.runs[0][0]
     assert "(s)-[r:AFFECTS*1..2]-(n:Symbol)" in q
 
 
 def test_max_hops_threaded_into_pattern():
-    db = _FakeDB([])
-    walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS, max_hops=4)
+    db = FakeNeo4jDB([])
+    walk_neighbours(db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS, max_hops=4)
     assert "*1..4" in db.session_obj.runs[0][0]
 
 
-@pytest.mark.parametrize("bad_hops", [0, -1, 1.5, "2", True])
+@pytest.mark.parametrize("bad_hops", BAD_MAX_HOPS)
 def test_walk_rejects_unsafe_max_hops(bad_hops):
     with pytest.raises(ValueError, match="max_hops"):
         walk_neighbours(
-            _FakeDB(),
-            WORKSPACE,
+            FakeNeo4jDB(),
+            AXIS_TEST_WORKSPACE,
             ["u:s"],
             edges=EdgeProfile.AFFECTS,
             max_hops=bad_hops,  # type: ignore[arg-type]
@@ -169,10 +135,10 @@ def test_walk_rejects_unsafe_max_hops(bad_hops):
 
 
 def test_file_classes_anchor_starts_at_classes_and_excludes_same_file():
-    db = _FakeDB([])
+    db = FakeNeo4jDB([])
     walk_neighbours(
         db,
-        WORKSPACE,
+        AXIS_TEST_WORKSPACE,
         ["u:s"],
         edges=EdgeProfile.INHERITANCE,
         direction="forward",
@@ -185,10 +151,10 @@ def test_file_classes_anchor_starts_at_classes_and_excludes_same_file():
 
 
 def test_class_targets_only_filters_neighbour_kind():
-    db = _FakeDB([])
+    db = FakeNeo4jDB([])
     walk_neighbours(
         db,
-        WORKSPACE,
+        AXIS_TEST_WORKSPACE,
         ["u:s"],
         edges=EdgeProfile.INHERITANCE,
         class_targets_only=True,
@@ -197,10 +163,10 @@ def test_class_targets_only_filters_neighbour_kind():
 
 
 def test_exclude_tests_injects_fence_clause():
-    db = _FakeDB([])
+    db = FakeNeo4jDB([])
     walk_neighbours(
         db,
-        WORKSPACE,
+        AXIS_TEST_WORKSPACE,
         ["u:s"],
         edges=EdgeProfile.AFFECTS,
         exclude_tests=True,
@@ -210,10 +176,10 @@ def test_exclude_tests_injects_fence_clause():
 
 
 def test_no_exclude_tests_has_no_fence():
-    db = _FakeDB([])
+    db = FakeNeo4jDB([])
     walk_neighbours(
         db,
-        WORKSPACE,
+        AXIS_TEST_WORKSPACE,
         ["u:s"],
         edges=EdgeProfile.AFFECTS,
         exclude_tests=False,
@@ -222,16 +188,16 @@ def test_no_exclude_tests_has_no_fence():
 
 
 def test_reach_and_depth_aggregation_in_query():
-    db = _FakeDB([])
-    walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS)
+    db = FakeNeo4jDB([])
+    walk_neighbours(db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS)
     q = db.session_obj.runs[0][0]
     assert "count(DISTINCT su) AS reach" in q
     assert "min(size(r)) AS depth" in q
 
 
 def test_walk_filters_traversed_relationships_by_workspace():
-    db = _FakeDB([])
-    walk_neighbours(db, WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS)
+    db = FakeNeo4jDB([])
+    walk_neighbours(db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS)
     q = db.session_obj.runs[0][0]
     assert "all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)" in q
 
@@ -285,20 +251,20 @@ def test_cap_preserves_input_order():
 
 
 def test_call_fan_in_empty_uids_skips_query():
-    db = _FakeDB([])
-    assert call_fan_in(db, WORKSPACE, []) == {}
+    db = FakeNeo4jDB([])
+    assert call_fan_in(db, AXIS_TEST_WORKSPACE, []) == {}
     assert db.session_obj.runs == []
 
 
 def test_call_fan_in_counts_distinct_callers():
-    db = _FakeDB([{"uid": "u:a", "fanin": 7}, {"uid": "u:b", "fanin": 0}])
-    out = call_fan_in(db, WORKSPACE, ["u:a", "u:b"])
+    db = FakeNeo4jDB([{"uid": "u:a", "fanin": 7}, {"uid": "u:b", "fanin": 0}])
+    out = call_fan_in(db, AXIS_TEST_WORKSPACE, ["u:a", "u:b"])
     assert out == {"u:a": 7, "u:b": 0}
 
 
 def test_call_fan_in_query_is_workspace_scoped_caller_count():
-    db = _FakeDB([])
-    call_fan_in(db, WORKSPACE, ["u:a"])
+    db = FakeNeo4jDB([])
+    call_fan_in(db, AXIS_TEST_WORKSPACE, ["u:a"])
     q = db.session_obj.runs[0][0]
     assert "count(DISTINCT caller) AS fanin" in q
     assert "coalesce(r.workspace_id, $workspace_id) = $workspace_id" in q
@@ -306,10 +272,10 @@ def test_call_fan_in_query_is_workspace_scoped_caller_count():
 
 
 def test_call_fan_in_driver_error_returns_empty():
-    class _BoomSession(_Session):
+    class _BoomSession(Neo4jSession):
         def run(self, query, **params):
             raise RuntimeError("boom")
 
-    db = _FakeDB()
-    db.driver = _Driver(_BoomSession([]))
-    assert call_fan_in(db, WORKSPACE, ["u:a"]) == {}
+    db = FakeNeo4jDB()
+    db.driver = Neo4jDriver(_BoomSession([]))
+    assert call_fan_in(db, AXIS_TEST_WORKSPACE, ["u:a"]) == {}

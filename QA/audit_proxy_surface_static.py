@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from context_engine.parser.adapters.python_adapter import PythonAdapter  # noqa: E402
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter  # noqa: E402
+from QA.output_paths import resolve_output_path  # noqa: E402
 
 QA = Path(__file__).resolve().parent
 
@@ -31,11 +32,7 @@ def _read_source(path: Path) -> str | None:
 
 
 def _is_phantom_typed_callee(qn: str) -> bool:
-    return (
-        qn.startswith("builtins.")
-        or qn.count(".") < 2
-        or qn.split(".")[-2] in {"self", "cls"}
-    )
+    return qn.startswith("builtins.") or qn.count(".") < 2 or qn.split(".")[-2] in {"self", "cls"}
 
 
 def _record_typed_call(
@@ -143,8 +140,12 @@ def main() -> int:
     else:
         payload = {"repo": args.repo, "scan": _scan_python_tree(root)}
 
-    out = args.report or f"/tmp/proxy_audit_static_{args.repo}.json"
-    Path(out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    out = resolve_output_path(
+        args.report or None,
+        default_name=f"proxy_audit_static_{args.repo}.json",
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(payload, indent=2))
     print(f"\nReport: {out}")
     return 0

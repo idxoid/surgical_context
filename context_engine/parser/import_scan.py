@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from pathlib import Path
+
+from context_engine.parser.adapters.ts_package_aliases import resolve_package_subpath
+from context_engine.parser.uid import current_project_root, module_name_from_path
 
 
 def read_quoted_literal(source_code: str, start: int) -> tuple[str, int] | None:
@@ -24,6 +29,26 @@ def read_quoted_literal(source_code: str, start: int) -> tuple[str, int] | None:
     return None
 
 
+def _toggle_js_string_quote(ch: str, in_single: bool, in_double: bool) -> tuple[bool, bool] | None:
+    if ch == "'" and not in_double:
+        return (not in_single, in_double)
+    if ch == '"' and not in_single:
+        return (in_single, not in_double)
+    return None
+
+
+def _advance_inside_js_string(source_code: str, index: int) -> int:
+    if source_code[index] == "\\" and index + 1 < len(source_code):
+        return index + 2
+    return index + 1
+
+
+def _skip_js_whitespace(source_code: str, cursor: int) -> int:
+    while cursor < len(source_code) and source_code[cursor] in " \t\n\r":
+        cursor += 1
+    return cursor
+
+
 def find_closing_brace(source_code: str, open_index: int) -> int | None:
     if open_index >= len(source_code) or source_code[open_index] != "{":
         return None
@@ -32,19 +57,13 @@ def find_closing_brace(source_code: str, open_index: int) -> int | None:
     i = open_index
     while i < len(source_code):
         ch = source_code[i]
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            i += 1
-            continue
-        if ch == '"' and not in_single:
-            in_double = not in_double
+        toggled = _toggle_js_string_quote(ch, in_single, in_double)
+        if toggled is not None:
+            in_single, in_double = toggled
             i += 1
             continue
         if in_single or in_double:
-            if ch == "\\" and i + 1 < len(source_code):
-                i += 2
-                continue
-            i += 1
+            i = _advance_inside_js_string(source_code, i)
             continue
         if ch == "{":
             depth += 1
@@ -75,6 +94,23 @@ def is_js_word_at(source_code: str, index: int, word: str) -> bool:
     return before_ok and after_ok
 
 
+def _try_parse_es_import(source_code: str, idx: int) -> tuple[str, str, int] | None:
+    if not is_js_word_at(source_code, idx, "import"):
+        return None
+    cursor = _skip_js_whitespace(source_code, idx + 6)
+    spec_start = cursor
+    from_idx = source_code.find(" from ", cursor)
+    if from_idx < 0 or ";" in source_code[spec_start:from_idx]:
+        return None
+    spec = source_code[spec_start:from_idx].strip()
+    path_cursor = _skip_js_whitespace(source_code, from_idx + 6)
+    parsed = read_quoted_literal(source_code, path_cursor)
+    if parsed is None or not spec:
+        return None
+    source_path, path_cursor = parsed
+    return spec, source_path, path_cursor
+
+
 def iter_es_module_imports(source_code: str) -> Iterator[tuple[str, str]]:
     i = 0
     source_len = len(source_code)
@@ -82,28 +118,43 @@ def iter_es_module_imports(source_code: str) -> Iterator[tuple[str, str]]:
         idx = source_code.find("import", i)
         if idx < 0:
             break
-        if not is_js_word_at(source_code, idx, "import"):
+        parsed = _try_parse_es_import(source_code, idx)
+        if parsed is None:
             i = idx + 6
             continue
-        cursor = idx + 6
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        spec_start = cursor
-        from_idx = source_code.find(" from ", cursor)
-        if from_idx < 0 or ";" in source_code[spec_start:from_idx]:
-            i = idx + 6
-            continue
-        spec = source_code[spec_start:from_idx].strip()
-        path_cursor = from_idx + 6
-        while path_cursor < source_len and source_code[path_cursor] in " \t\n\r":
-            path_cursor += 1
-        parsed = read_quoted_literal(source_code, path_cursor)
-        if parsed is None or not spec:
-            i = idx + 6
-            continue
-        source_path, path_cursor = parsed
+        spec, source_path, i = parsed
         yield spec, source_path
-        i = path_cursor
+
+
+@dataclass(frozen=True)
+class _ConstDestructureScan:
+    next_i: int
+    value: tuple[str, str] | None = None
+    stop: bool = False
+
+
+def _scan_const_destructure_require(source_code: str, idx: int) -> _ConstDestructureScan:
+    if not is_js_word_at(source_code, idx, "const"):
+        return _ConstDestructureScan(idx + 5)
+    cursor = _skip_js_whitespace(source_code, idx + 5)
+    if cursor >= len(source_code) or source_code[cursor] != "{":
+        return _ConstDestructureScan(idx + 5)
+    close_brace = find_closing_brace(source_code, cursor)
+    if close_brace is None:
+        return _ConstDestructureScan(idx, stop=True)
+    inner = source_code[cursor + 1 : close_brace]
+    cursor = _skip_js_whitespace(source_code, close_brace + 1)
+    if cursor >= len(source_code) or source_code[cursor] != "=":
+        return _ConstDestructureScan(idx + 5)
+    cursor = _skip_js_whitespace(source_code, cursor + 1)
+    if not source_code.startswith("require(", cursor):
+        return _ConstDestructureScan(idx + 5)
+    cursor = _skip_js_whitespace(source_code, cursor + len("require("))
+    parsed = read_quoted_literal(source_code, cursor)
+    if parsed is None:
+        return _ConstDestructureScan(idx + 5)
+    source_path, cursor = parsed
+    return _ConstDestructureScan(cursor, value=(inner, source_path))
 
 
 def iter_const_destructure_requires(source_code: str) -> Iterator[tuple[str, str]]:
@@ -113,93 +164,193 @@ def iter_const_destructure_requires(source_code: str) -> Iterator[tuple[str, str
         idx = source_code.find("const", i)
         if idx < 0:
             break
-        if not is_js_word_at(source_code, idx, "const"):
-            i = idx + 5
-            continue
-        cursor = idx + 5
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        if cursor >= source_len or source_code[cursor] != "{":
-            i = idx + 5
-            continue
-        close_brace = find_closing_brace(source_code, cursor)
-        if close_brace is None:
+        scanned = _scan_const_destructure_require(source_code, idx)
+        if scanned.stop:
             break
-        inner = source_code[cursor + 1 : close_brace]
-        cursor = close_brace + 1
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        if cursor >= source_len or source_code[cursor] != "=":
-            i = idx + 5
+        if scanned.value is not None:
+            yield scanned.value
+        i = scanned.next_i
+
+
+_DECL_KEYWORDS = ("const", "let", "var")
+
+
+def _find_earliest_decl_keyword(source_code: str, start: int) -> tuple[int, str] | None:
+    next_match: tuple[int, str] | None = None
+    for keyword in _DECL_KEYWORDS:
+        idx = source_code.find(keyword, start)
+        if idx < 0:
             continue
+        if not is_js_word_at(source_code, idx, keyword):
+            continue
+        if next_match is None or idx < next_match[0]:
+            next_match = (idx, keyword)
+    return next_match
+
+
+def _read_js_identifier(source_code: str, cursor: int) -> tuple[str, int] | None:
+    if cursor >= len(source_code) or not _is_js_identifier_char(source_code[cursor], first=True):
+        return None
+    name_start = cursor
+    cursor += 1
+    while cursor < len(source_code) and _is_js_identifier_char(source_code[cursor]):
         cursor += 1
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        if not source_code.startswith("require(", cursor):
-            i = idx + 5
-            continue
-        cursor += len("require(")
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        parsed = read_quoted_literal(source_code, cursor)
-        if parsed is None:
-            i = idx + 5
-            continue
-        source_path, cursor = parsed
-        yield inner, source_path
-        i = cursor
+    return source_code[name_start:cursor], cursor
+
+
+def _parse_require_literal(source_code: str, cursor: int) -> tuple[str, int] | None:
+    cursor = _skip_js_whitespace(source_code, cursor)
+    if not source_code.startswith("require(", cursor):
+        return None
+    cursor = _skip_js_whitespace(source_code, cursor + len("require("))
+    return read_quoted_literal(source_code, cursor)
+
+
+def _try_parse_simple_commonjs_require(
+    source_code: str,
+    idx: int,
+    keyword: str,
+) -> tuple[str, str, int] | None:
+    cursor = _skip_js_whitespace(source_code, idx + len(keyword))
+    ident = _read_js_identifier(source_code, cursor)
+    if ident is None:
+        return None
+    alias, cursor = ident
+    cursor = _skip_js_whitespace(source_code, cursor)
+    if cursor >= len(source_code) or source_code[cursor] != "=":
+        return None
+    parsed = _parse_require_literal(source_code, cursor + 1)
+    if parsed is None or not alias:
+        return None
+    source_path, cursor = parsed
+    return alias, source_path, cursor
 
 
 def iter_simple_commonjs_requires(source_code: str) -> Iterator[tuple[str, str]]:
     i = 0
     source_len = len(source_code)
     while i < source_len:
-        next_match: tuple[int, str] | None = None
-        for keyword in ("const", "let", "var"):
-            idx = source_code.find(keyword, i)
-            if idx < 0:
-                continue
-            if not is_js_word_at(source_code, idx, keyword):
-                continue
-            if next_match is None or idx < next_match[0]:
-                next_match = (idx, keyword)
+        next_match = _find_earliest_decl_keyword(source_code, i)
         if next_match is None:
             break
         idx, keyword = next_match
-        cursor = idx + len(keyword)
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        name_start = cursor
-        if name_start >= source_len or not _is_js_identifier_char(
-            source_code[name_start], first=True
-        ):
+        parsed = _try_parse_simple_commonjs_require(source_code, idx, keyword)
+        if parsed is None:
             i = idx + len(keyword)
             continue
-        cursor = name_start + 1
-        while cursor < source_len and _is_js_identifier_char(source_code[cursor]):
-            cursor += 1
-        alias = source_code[name_start:cursor]
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        if cursor >= source_len or source_code[cursor] != "=":
-            i = idx + len(keyword)
-            continue
-        cursor += 1
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        if not source_code.startswith("require(", cursor):
-            i = idx + len(keyword)
-            continue
-        cursor += len("require(")
-        while cursor < source_len and source_code[cursor] in " \t\n\r":
-            cursor += 1
-        parsed = read_quoted_literal(source_code, cursor)
-        if parsed is None or not alias:
-            i = idx + len(keyword)
-            continue
-        source_path, cursor = parsed
+        alias, source_path, i = parsed
         yield alias, source_path
-        i = cursor
+
+
+def parse_named_import_bindings(spec: str, source: str, out: dict[str, str]) -> None:
+    for part in spec.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if " as " in token:
+            imported, alias = token.split(" as ", 1)
+            imported = imported.strip()
+            alias = alias.strip()
+        elif ":" in token:
+            imported, alias = token.split(":", 1)
+            imported = imported.strip()
+            alias = alias.strip()
+        else:
+            imported = token
+            alias = token
+        if alias and imported:
+            out[alias] = f"{source}.{imported}"
+
+
+def build_js_module_import_bindings(
+    source_code: str,
+    normalize_source: Callable[[str], str],
+) -> tuple[dict[str, str], set[str]]:
+    """Shared ES/CJS import binding table for JavaScript and TypeScript adapters."""
+    bindings: dict[str, str] = {}
+    module_aliases: set[str] = set()
+    for spec, import_source in iter_es_module_imports(source_code):
+        spec = spec.strip()
+        source = normalize_source(import_source.strip())
+        if not spec or not source:
+            continue
+        if spec.startswith("{") and spec.endswith("}"):
+            parse_named_import_bindings(spec[1:-1], source, bindings)
+        elif spec.startswith("* as "):
+            alias = spec[len("* as ") :].strip()
+            if alias:
+                bindings[alias] = source
+                module_aliases.add(alias)
+        elif "," in spec:
+            default_alias, rest = spec.split(",", 1)
+            default_alias = default_alias.strip()
+            if default_alias:
+                bindings[default_alias] = source
+            rest = rest.strip()
+            if rest.startswith("{") and rest.endswith("}"):
+                parse_named_import_bindings(rest[1:-1], source, bindings)
+        else:
+            bindings[spec] = source
+    for body, import_source in iter_const_destructure_requires(source_code):
+        source = normalize_source(import_source.strip())
+        parse_named_import_bindings(body, source, bindings)
+    for alias, import_source in iter_simple_commonjs_requires(source_code):
+        source = normalize_source(import_source.strip())
+        if alias and source:
+            bindings[alias] = source
+    return bindings, module_aliases
+
+
+def collect_js_ts_import_bindings(
+    source_code: str,
+    file_path: str,
+    normalize_import_source: Callable[[str, str], str],
+) -> tuple[dict[str, str], set[str]]:
+    return build_js_module_import_bindings(
+        source_code,
+        lambda import_source: normalize_import_source(file_path, import_source),
+    )
+
+
+def module_name_for_js_resolved_path(resolved: Path) -> str | None:
+    for candidate in (
+        resolved.with_suffix(".js"),
+        resolved.with_suffix(".jsx"),
+        resolved / "index.js",
+    ):
+        if candidate.exists():
+            return module_name_from_path(str(candidate))
+    return None
+
+
+def resolve_import_module_name(
+    file_path: str,
+    source: str,
+    *,
+    module_for_resolved: Callable[[Path], str | None],
+) -> str:
+    if not source:
+        return ""
+    if not source.startswith("."):
+        project_root = current_project_root()
+        if project_root:
+            aliased = resolve_package_subpath(project_root, source)
+            if aliased:
+                mod = module_for_resolved(Path(aliased))
+                if mod:
+                    return mod
+        return source.replace("/", ".")
+    base = Path(file_path).parent
+    project_root = current_project_root()
+    if project_root:
+        base = (Path(project_root) / base).resolve()
+    else:
+        base = base.resolve()
+    resolved = (base / source).resolve()
+    mod = module_for_resolved(resolved)
+    if mod:
+        return mod
+    return source.lstrip("./").replace("/", ".")
 
 
 def _is_python_import_module(name: str) -> bool:
@@ -252,31 +403,48 @@ def _skip_typescript_generic(source: str, start: int) -> int | None:
     return None
 
 
+def _skip_ts_whitespace(body: str, cursor: int) -> int:
+    while cursor < len(body) and body[cursor] in " \t":
+        cursor += 1
+    return cursor
+
+
+def _is_typescript_identifier_start(body: str, index: int) -> bool:
+    ch = body[index]
+    if not (ch.isalpha() or ch in "_$"):
+        return False
+    return index == 0 or not (body[index - 1].isalnum() or body[index - 1] in "_$")
+
+
+def _read_typescript_identifier(body: str, start: int) -> tuple[str, int, int]:
+    end = start + 1
+    body_len = len(body)
+    while end < body_len and (body[end].isalnum() or body[end] in "_$"):
+        end += 1
+    return body[start:end], start, end
+
+
+def _cursor_after_optional_generic(body: str, cursor: int) -> int | None:
+    cursor = _skip_ts_whitespace(body, cursor)
+    if cursor >= len(body) or body[cursor] != "<":
+        return cursor
+    generic_end = _skip_typescript_generic(body, cursor)
+    if generic_end is None:
+        return None
+    return _skip_ts_whitespace(body, generic_end)
+
+
 def iter_typescript_body_call_fallback_names(body: str) -> Iterator[tuple[str, int]]:
     """Yield ``(callee_name, name_start)`` for ``name<...>?(...)`` call shapes."""
     i = 0
     body_len = len(body)
     while i < body_len:
-        ch = body[i]
-        if not (ch.isalpha() or ch in "_$") or (
-            i > 0 and (body[i - 1].isalnum() or body[i - 1] in "_$")
-        ):
+        if not _is_typescript_identifier_start(body, i):
             i += 1
             continue
-        name_start = i
-        i += 1
-        while i < body_len and (body[i].isalnum() or body[i] in "_$"):
-            i += 1
-        name = body[name_start:i]
-        cursor = i
-        while cursor < body_len and body[cursor] in " \t":
-            cursor += 1
-        if cursor < body_len and body[cursor] == "<":
-            generic_end = _skip_typescript_generic(body, cursor)
-            if generic_end is None:
-                continue
-            cursor = generic_end
-            while cursor < body_len and body[cursor] in " \t":
-                cursor += 1
+        name, name_start, i = _read_typescript_identifier(body, i)
+        cursor = _cursor_after_optional_generic(body, i)
+        if cursor is None:
+            continue
         if cursor < body_len and body[cursor] == "(":
             yield name, name_start

@@ -1,6 +1,29 @@
 "use strict";
 (() => {
-  // src/webview/shared/dashboardLayout.ts
+  // src/webview/shared/dashboardDefaults.ts
+  function emptyDashboardMetrics() {
+    return {
+      indexedFiles: null,
+      indexedSymbols: null,
+      docChunks: null,
+      avgLatencyMs: null,
+      tokenSavingsPercent: null,
+      fallbackRatePercent: null,
+      contextQualityPercent: null,
+      symbolsWithDocs: null,
+      storageGb: null,
+      requestsTotal: null,
+      tokensTotal: null,
+      costUsdTotal: null,
+      queuePending: null,
+      queueProcessing: null,
+      queueProcessed: null,
+      queueFailedBatches: null,
+      lastIndexJobStatus: null
+    };
+  }
+
+  // src/webview/shared/html.ts
   function escapeHtml(text) {
     const map = {
       "&": "&amp;",
@@ -9,8 +32,10 @@
       '"': "&quot;",
       "'": "&#039;"
     };
-    return text.replace(/[&<>"']/g, (m) => map[m]);
+    return text.replace(/[&<>"']/g, (char) => map[char]);
   }
+
+  // src/webview/shared/dashboardLayout.ts
   function renderDashboardHeader(workspaceId, lastUpdate) {
     const lastUpdateText = lastUpdate ? `${secondsAgo(lastUpdate)} ago` : "never";
     return `
@@ -373,9 +398,66 @@
     }
     return error.replace(/^Error:\s*/i, "");
   }
+  function renderDashboardLoading() {
+    return `
+    <div class="dashboard-loading">
+      <p>Loading dashboard metrics...</p>
+    </div>
+  `;
+  }
+  function renderDashboardView(state) {
+    if (state.isLoading && !state.lastUpdate) {
+      return renderDashboardLoading();
+    }
+    const header = renderDashboardHeader(state.workspaceId, state.lastUpdate);
+    const indexWorkspaceBtn = renderIndexWorkspaceButton(state.isLoading);
+    const refreshBtn = renderRefreshButton(state.isLoading);
+    const warnings = renderDashboardWarnings(state.warnings);
+    const notices = renderDashboardNotices(state.notices);
+    const metricCards = renderMetricCardGrid({
+      health: state.health || "degraded",
+      cloudStatus: state.cloudStatus || "offline",
+      metrics: state.metrics
+    });
+    const tokenSavingsCard = renderTokenSavingsCard(state.metrics);
+    const indexingJobsCard = renderIndexingJobsCard(state.metrics);
+    const healthChecklistCard = renderHealthChecklistCard(state.healthChecks);
+    const auditCard = renderAuditEventsCard(state.auditActions);
+    return `
+    ${header}
+    <div class="dashboard-content">
+      <div class="dashboard-toolbar">
+        ${warnings}
+        <div class="dashboard-actions">
+          ${indexWorkspaceBtn}
+          ${refreshBtn}
+        </div>
+      </div>
+      ${notices}
+      <div class="dashboard-grid">
+        ${metricCards}
+        <div class="dashboard-main-panels">
+          ${tokenSavingsCard}
+          ${indexingJobsCard}
+        </div>
+        ${healthChecklistCard}
+        ${auditCard}
+      </div>
+    </div>
+  `;
+  }
+
+  // src/webview/shared/webviewRuntime.ts
+  var vscode = acquireVsCodeApi();
+  function bootWebview(init) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", init);
+    } else {
+      init();
+    }
+  }
 
   // src/webview/dashboard.ts
-  var vscode = acquireVsCodeApi();
   var DashboardPanel = class {
     constructor() {
       this.state = {
@@ -450,78 +532,10 @@
     render() {
       const root = document.getElementById("root");
       if (!root) return;
-      if (this.state.isLoading && !this.state.lastUpdate) {
-        root.innerHTML = `
-        <div class="dashboard-loading">
-          <p>Loading dashboard metrics...</p>
-        </div>
-      `;
-        return;
-      }
-      const header = renderDashboardHeader(this.state.workspaceId, this.state.lastUpdate);
-      const indexWorkspaceBtn = renderIndexWorkspaceButton(this.state.isLoading);
-      const refreshBtn = renderRefreshButton(this.state.isLoading);
-      const warnings = renderDashboardWarnings(this.state.warnings);
-      const notices = renderDashboardNotices(this.state.notices);
-      const metricCards = renderMetricCardGrid({
-        health: this.state.health || "degraded",
-        cloudStatus: this.state.cloudStatus || "offline",
-        metrics: this.state.metrics
-      });
-      const tokenSavingsCard = renderTokenSavingsCard(this.state.metrics);
-      const indexingJobsCard = renderIndexingJobsCard(this.state.metrics);
-      const healthChecklistCard = renderHealthChecklistCard(this.state.healthChecks);
-      const auditCard = renderAuditEventsCard(this.state.auditActions);
-      root.innerHTML = `
-      ${header}
-      <div class="dashboard-content">
-        <div class="dashboard-toolbar">
-          ${warnings}
-          <div class="dashboard-actions">
-            ${indexWorkspaceBtn}
-            ${refreshBtn}
-          </div>
-        </div>
-        ${notices}
-        <div class="dashboard-grid">
-          ${metricCards}
-          <div class="dashboard-main-panels">
-            ${tokenSavingsCard}
-            ${indexingJobsCard}
-          </div>
-          ${healthChecklistCard}
-          ${auditCard}
-        </div>
-      </div>
-    `;
+      root.innerHTML = renderDashboardView(this.state);
       this.initializeUI();
     }
   };
-  function emptyDashboardMetrics() {
-    return {
-      indexedFiles: null,
-      indexedSymbols: null,
-      docChunks: null,
-      avgLatencyMs: null,
-      tokenSavingsPercent: null,
-      fallbackRatePercent: null,
-      contextQualityPercent: null,
-      symbolsWithDocs: null,
-      storageGb: null,
-      requestsTotal: null,
-      tokensTotal: null,
-      costUsdTotal: null,
-      queuePending: null,
-      queueProcessing: null,
-      queueProcessed: null,
-      queueFailedBatches: null,
-      lastIndexJobStatus: null
-    };
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => new DashboardPanel());
-  } else {
-    new DashboardPanel();
-  }
+  bootWebview(() => new DashboardPanel());
 })();
 //# sourceMappingURL=dashboard.js.map

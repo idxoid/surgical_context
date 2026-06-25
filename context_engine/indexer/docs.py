@@ -2,12 +2,12 @@ import glob
 import os
 import re
 import time
-from dataclasses import dataclass
 from typing import Any
 
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
 from context_engine.indexer.anchor import link_docs_to_symbols
+from context_engine.indexer.progress import make_progress as _make_progress
 from context_engine.workspace import DEFAULT_WORKSPACE_ID
 
 CHUNK_SIZE = 400
@@ -18,43 +18,6 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
 _HEADING_RE = re.compile(r"^#{1,3} .+", re.MULTILINE)
-
-
-@dataclass
-class _LineProgress:
-    total: int
-    desc: str
-    unit: str = "item"
-    done: int = 0
-    _last_bucket: int = -1
-
-    def __post_init__(self):
-        print(f"{self.desc}: 0/{self.total} {self.unit}")
-
-    def update(self, n: int = 1):
-        self.done += n
-        if self.total <= 0:
-            return
-        percent = min(100, int((self.done / self.total) * 100))
-        bucket = percent // 10
-        if percent == 100 or bucket > self._last_bucket:
-            print(f"{self.desc}: {min(self.done, self.total)}/{self.total} ({percent}%)")
-            self._last_bucket = bucket
-
-    def close(self):
-        if self.total == 0:
-            print(f"{self.desc}: done")
-        elif self.done < self.total:
-            print(f"{self.desc}: {self.total}/{self.total} (100%)")
-
-
-def _make_progress(total: int, desc: str, unit: str = "item"):
-    try:
-        from tqdm import tqdm
-
-        return tqdm(total=total, desc=desc, unit=unit, dynamic_ncols=True, leave=True)
-    except Exception:
-        return _LineProgress(total=total, desc=desc, unit=unit)
 
 
 def _split_by_sections(text: str) -> list[str]:

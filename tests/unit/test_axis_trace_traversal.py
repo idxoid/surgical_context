@@ -2,89 +2,36 @@
 
 from __future__ import annotations
 
-from context_engine.axis.role_retrieval import RoleCandidate
 from context_engine.axis.trace_traversal import expand_trace_neighbourhood
-
-WORKSPACE = "qa_repo/test@axis"
-
-
-class _Result:
-    def __init__(self, records):
-        self._records = list(records)
-
-    def __iter__(self):
-        return iter(self._records)
-
-
-class _Session:
-    """Fake Neo4j session -- trace traversal issues two queries:
-    reverse CALLS, then forward CALLS."""
-
-    def __init__(self, records_by_call: list[list[dict]]):
-        self._records = list(records_by_call)
-        self.runs: list[tuple[str, dict]] = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def run(self, query: str, **params):
-        self.runs.append((query, dict(params)))
-        records = self._records.pop(0) if self._records else []
-        return _Result(records)
-
-
-class _Driver:
-    def __init__(self, session):
-        self._session = session
-
-    def session(self):
-        return self._session
-
-
-class _FakeDB:
-    def __init__(self, records_by_call=None):
-        self._session = _Session(records_by_call or [])
-        self.driver = _Driver(self._session)
-
-
-def _seed(uid: str, *, role: str = "dispatch_surface") -> RoleCandidate:
-    return RoleCandidate(
-        uid=uid,
-        name=uid.split(":")[-1],
-        file_path=f"/tmp/{uid}.py",
-        role=role,
-        satisfying_contracts=(),
-        satisfying_kinds=(),
-        contract_count=0,
-        kind_count=0,
-        vector_distance=None,
-        score=0.5,
-    )
+from tests.unit.axis_helpers import (
+    AXIS_TEST_WORKSPACE,
+    FakeNeo4jDB,
+    graph_row,
+    make_role_candidate,
+)
 
 
 def _record(uid: str, *, name: str = "x", path: str = "/tmp/x.py") -> dict:
-    return {"uid": uid, "name": name, "file_path": path}
+    return graph_row(uid, name, path)
 
 
 def test_no_seeds_returns_empty():
-    assert expand_trace_neighbourhood([], db=_FakeDB(), workspace_id=WORKSPACE) == []
+    assert expand_trace_neighbourhood([], db=FakeNeo4jDB(), workspace_id=AXIS_TEST_WORKSPACE) == []
 
 
 def test_reverse_calls_emit_trace_callers():
-    db = _FakeDB(
+    db = FakeNeo4jDB(
         [
             [_record("u:caller", name="caller")],
             [],
-        ]
+        ],
+        queued=True,
     )
 
     out = expand_trace_neighbourhood(
-        [_seed("u:target")],
+        [make_role_candidate("u:target")],
         db=db,
-        workspace_id=WORKSPACE,
+        workspace_id=AXIS_TEST_WORKSPACE,
     )
 
     assert len(out) == 1
@@ -94,17 +41,18 @@ def test_reverse_calls_emit_trace_callers():
 
 
 def test_forward_calls_emit_trace_callees():
-    db = _FakeDB(
+    db = FakeNeo4jDB(
         [
             [],
             [_record("u:callee", name="callee")],
-        ]
+        ],
+        queued=True,
     )
 
     out = expand_trace_neighbourhood(
-        [_seed("u:target")],
+        [make_role_candidate("u:target")],
         db=db,
-        workspace_id=WORKSPACE,
+        workspace_id=AXIS_TEST_WORKSPACE,
     )
 
     assert len(out) == 1
@@ -114,11 +62,11 @@ def test_forward_calls_emit_trace_callees():
 
 
 def test_trace_walks_only_calls_edges():
-    db = _FakeDB([[], []])
+    db = FakeNeo4jDB([[], []], queued=True)
     expand_trace_neighbourhood(
-        [_seed("u:target")],
+        [make_role_candidate("u:target")],
         db=db,
-        workspace_id=WORKSPACE,
+        workspace_id=AXIS_TEST_WORKSPACE,
     )
 
     assert len(db._session.runs) == 2
@@ -131,17 +79,18 @@ def test_trace_walks_only_calls_edges():
 
 
 def test_duplicate_uids_keep_caller_tag_first():
-    db = _FakeDB(
+    db = FakeNeo4jDB(
         [
             [_record("u:both")],
             [_record("u:both")],
-        ]
+        ],
+        queued=True,
     )
 
     out = expand_trace_neighbourhood(
-        [_seed("u:target")],
+        [make_role_candidate("u:target")],
         db=db,
-        workspace_id=WORKSPACE,
+        workspace_id=AXIS_TEST_WORKSPACE,
     )
 
     assert len(out) == 1
@@ -149,17 +98,18 @@ def test_duplicate_uids_keep_caller_tag_first():
 
 
 def test_seed_and_excluded_uids_are_skipped():
-    db = _FakeDB(
+    db = FakeNeo4jDB(
         [
             [_record("u:target"), _record("u:skip"), _record("u:keep")],
             [],
-        ]
+        ],
+        queued=True,
     )
 
     out = expand_trace_neighbourhood(
-        [_seed("u:target")],
+        [make_role_candidate("u:target")],
         db=db,
-        workspace_id=WORKSPACE,
+        workspace_id=AXIS_TEST_WORKSPACE,
         exclude_uids=["u:skip"],
     )
 
@@ -167,17 +117,18 @@ def test_seed_and_excluded_uids_are_skipped():
 
 
 def test_max_traced_caps_pool_size():
-    db = _FakeDB(
+    db = FakeNeo4jDB(
         [
             [_record(f"u:c{i}") for i in range(20)],
             [],
-        ]
+        ],
+        queued=True,
     )
 
     out = expand_trace_neighbourhood(
-        [_seed("u:target")],
+        [make_role_candidate("u:target")],
         db=db,
-        workspace_id=WORKSPACE,
+        workspace_id=AXIS_TEST_WORKSPACE,
         max_traced=5,
     )
 

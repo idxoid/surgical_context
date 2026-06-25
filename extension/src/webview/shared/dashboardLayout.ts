@@ -1,15 +1,7 @@
 import { AuditAction, DashboardMetrics, DashboardNotice, HealthCheckItem } from './protocol';
+import { escapeHtml } from './html';
 
-export function escapeHtml(text: string): string {
-  const map: Record<string, string> = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;',
-  };
-  return text.replace(/[&<>"']/g, m => map[m]);
-}
+export { escapeHtml };
 
 export interface MetricCardGridProps {
   health: 'up' | 'down' | 'degraded';
@@ -441,4 +433,69 @@ function summarizeError(error: string): string {
   }
 
   return error.replace(/^Error:\s*/i, '');
+}
+
+export interface DashboardViewState {
+  health: 'up' | 'down' | 'degraded' | null;
+  cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline' | null;
+  auditActions: AuditAction[];
+  metrics: DashboardMetrics;
+  healthChecks: HealthCheckItem[];
+  notices: DashboardNotice[];
+  workspaceId: string;
+  warnings: string[];
+  isLoading: boolean;
+  lastUpdate: number | null;
+}
+
+export function renderDashboardLoading(): string {
+  return `
+    <div class="dashboard-loading">
+      <p>Loading dashboard metrics...</p>
+    </div>
+  `;
+}
+
+export function renderDashboardView(state: DashboardViewState): string {
+  if (state.isLoading && !state.lastUpdate) {
+    return renderDashboardLoading();
+  }
+
+  const header = renderDashboardHeader(state.workspaceId, state.lastUpdate);
+  const indexWorkspaceBtn = renderIndexWorkspaceButton(state.isLoading);
+  const refreshBtn = renderRefreshButton(state.isLoading);
+  const warnings = renderDashboardWarnings(state.warnings);
+  const notices = renderDashboardNotices(state.notices);
+  const metricCards = renderMetricCardGrid({
+    health: state.health || 'degraded',
+    cloudStatus: state.cloudStatus || 'offline',
+    metrics: state.metrics,
+  });
+  const tokenSavingsCard = renderTokenSavingsCard(state.metrics);
+  const indexingJobsCard = renderIndexingJobsCard(state.metrics);
+  const healthChecklistCard = renderHealthChecklistCard(state.healthChecks);
+  const auditCard = renderAuditEventsCard(state.auditActions);
+
+  return `
+    ${header}
+    <div class="dashboard-content">
+      <div class="dashboard-toolbar">
+        ${warnings}
+        <div class="dashboard-actions">
+          ${indexWorkspaceBtn}
+          ${refreshBtn}
+        </div>
+      </div>
+      ${notices}
+      <div class="dashboard-grid">
+        ${metricCards}
+        <div class="dashboard-main-panels">
+          ${tokenSavingsCard}
+          ${indexingJobsCard}
+        </div>
+        ${healthChecklistCard}
+        ${auditCard}
+      </div>
+    </div>
+  `;
 }

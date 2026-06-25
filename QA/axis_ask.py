@@ -154,10 +154,7 @@ def _print_context_bundles(bundles: list[Any], *, code_chars: int) -> None:
         for sym in bundle.all_symbols():
             short_path = (sym.file_path or "").split("/")[-1]
             step = sym.expansion_step or "seed"
-            print(
-                f"    [depth={sym.distance_from_seed} step={step}] "
-                f"{sym.name} ({short_path})"
-            )
+            print(f"    [depth={sym.distance_from_seed} step={step}] {sym.name} ({short_path})")
             if sym.code:
                 _print_code_snippet(sym.code, code_chars)
 

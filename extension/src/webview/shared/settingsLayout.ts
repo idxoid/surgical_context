@@ -1,10 +1,7 @@
 import type { SettingsData } from './protocol';
+import { escapeHtml } from './html';
 
-export function escapeHtml(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
+export { escapeHtml };
 
 export interface SettingsFormData {
   backendUrl: string;

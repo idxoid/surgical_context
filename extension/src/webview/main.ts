@@ -1,5 +1,4 @@
-declare function acquireVsCodeApi(): any;
-const vscode = acquireVsCodeApi();
+import { bootWebview, vscode } from './shared/webviewRuntime';
 
 import {
   ChatMessage,
@@ -12,7 +11,6 @@ import {
   SettingsData,
   WebviewToHostMessage,
 } from './shared/protocol';
-import { buildContextSummary } from '../contextSummary';
 import {
   escapeHtml,
   renderAdvancedInfoAccordion,
@@ -24,8 +22,11 @@ import {
   resizeComposerToFit,
 } from './shared/layout';
 import {
+  clampImpactDepth,
   renderImpactWorkspace,
 } from './shared/impactLayout';
+import { hydrateFromPromptContext } from './shared/impactTransforms';
+import { renderImpactSurfaceShell } from './shared/surfaceChrome';
 import {
   renderDocumentationTab,
   renderGraphContextTab,
@@ -94,11 +95,7 @@ class MainSurface {
           this.state = message.state;
           if (message.state.lastContext && !this.currentPromptContext) {
             this.currentPromptContext = message.state.lastContext;
-            this.currentContextSummary = this.summaryFromContext(message.state.lastContext);
-            this.currentImpact = this.impactFromContext(message.state.lastContext);
-            this.currentImpactSymbol = message.state.lastContext.primary_source.symbol;
-            this.currentImpactFilePath = message.state.lastContext.primary_source.file_path;
-            this.currentImpactSource = 'prompt';
+            this.applyHydratedContext(message.state.lastContext);
             this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
           }
           this.render();
@@ -185,7 +182,7 @@ class MainSurface {
           this.currentImpactSymbol = message.symbol;
           this.currentImpactFilePath = message.impact.file_path || null;
           this.currentImpact = message.impact;
-          this.currentImpactDepth = this.clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
+          this.currentImpactDepth = clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
           this.currentImpactSource = 'graph';
           this.impactError = null;
           this.render();
@@ -204,11 +201,7 @@ class MainSurface {
           this.currentPromptContext = message.context;
           this.intentMatches = null;
           if (message.context) {
-            this.currentContextSummary = this.summaryFromContext(message.context);
-            this.currentImpact = this.impactFromContext(message.context);
-            this.currentImpactSymbol = message.context.primary_source.symbol;
-            this.currentImpactFilePath = message.context.primary_source.file_path;
-            this.currentImpactSource = 'prompt';
+            this.applyHydratedContext(message.context);
           }
           this.render();
           break;
@@ -419,59 +412,44 @@ class MainSurface {
     const symbol = this.currentImpactSymbol || this.currentPromptContext?.primary_source.symbol || this.state?.workspace.selectedSymbol || 'No symbol selected';
     const selectedPromptText = this.selectedPromptText();
     const subtitle = selectedPromptText || 'Related code and files for the selected prompt.';
+    const chrome = this.renderChrome();
 
     if (this.impactLoading) {
-      return `
-        <section class="surface surface-impact" aria-label="Impact analysis">
-          ${this.renderChrome()}
-          <div class="surface-title">Impact Analysis</div>
-          <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-          <div class="loading-state">Loading impact analysis...</div>
-        </section>
-      `;
+      return renderImpactSurfaceShell(chrome, subtitle, '<div class="loading-state">Loading impact analysis...</div>');
     }
 
     if (this.impactError) {
-      return `
-        <section class="surface surface-impact" aria-label="Impact analysis">
-          ${this.renderChrome()}
-          <div class="surface-title">Impact Analysis</div>
-          <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-          <div class="error-state">${escapeHtml(this.impactError)}</div>
-          <button class="secondary-action" data-action="openChat">Back to Ask</button>
-        </section>
-      `;
+      return renderImpactSurfaceShell(
+        chrome,
+        subtitle,
+        `<div class="error-state">${escapeHtml(this.impactError)}</div>
+          <button class="secondary-action" data-action="openChat">Back to Ask</button>`,
+      );
     }
 
     if (!this.currentImpact) {
-      return `
-        <section class="surface surface-impact" aria-label="Impact analysis">
-          ${this.renderChrome()}
-          <div class="surface-title">Impact Analysis</div>
-          <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-          <div class="empty-state">Select a symbol to see its impact.</div>
-          <button class="primary-action" data-action="showImpact">Analyze Current Symbol</button>
-        </section>
-      `;
+      return renderImpactSurfaceShell(
+        chrome,
+        subtitle,
+        `<div class="empty-state">Select a symbol to see its impact.</div>
+          <button class="primary-action" data-action="showImpact">Analyze Current Symbol</button>`,
+      );
     }
 
-    return `
-      <section class="surface surface-impact" aria-label="Impact analysis">
-        ${this.renderChrome()}
-        <div class="surface-title">Impact Analysis</div>
-        <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-        ${renderImpactWorkspace(
-          this.currentImpact,
-          symbol,
-          this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph',
-          { depth: this.currentImpactDepth }
-        )}
+    return renderImpactSurfaceShell(
+      chrome,
+      subtitle,
+      `${renderImpactWorkspace(
+        this.currentImpact,
+        symbol,
+        this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph',
+        { depth: this.currentImpactDepth },
+      )}
         <div class="surface-footer">
           <span>${this.currentImpactSource === 'prompt' ? 'From selected ask' : 'Graph built just now'}</span>
           <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
-        </div>
-      </section>
-    `;
+        </div>`,
+    );
   }
 
   private renderInspectorSurface(): string {
@@ -824,7 +802,7 @@ class MainSurface {
     const slider = event.currentTarget as HTMLInputElement | null;
     if (!slider) return;
     const output = slider.closest('.impact-depth-control')?.querySelector('output');
-    const depth = this.clampImpactDepth(Number(slider.value));
+    const depth = clampImpactDepth(Number(slider.value));
     if (output) {
       output.textContent = `d${depth}`;
     }
@@ -833,16 +811,12 @@ class MainSurface {
   private changeImpactDepth(event: Event): void {
     const slider = event.currentTarget as HTMLInputElement | null;
     if (!slider) return;
-    const depth = this.clampImpactDepth(Number(slider.value));
+    const depth = clampImpactDepth(Number(slider.value));
     if (depth === this.currentImpactDepth && this.currentImpactSource === 'graph') return;
     this.currentImpactDepth = depth;
     this.requestImpactForActiveSymbol();
   }
 
-  private clampImpactDepth(depth: number): number {
-    if (!Number.isFinite(depth)) return 3;
-    return Math.max(1, Math.min(4, Math.round(depth)));
-  }
 
   private openRelatedImpactFiles(): void {
     const filePaths = Array.from(new Set(this.currentImpact?.affected_files || []))
@@ -1289,14 +1263,19 @@ class MainSurface {
   private activatePromptContext(requestId: string, context: PromptContextPayload): void {
     this.selectedPromptRequestId = requestId;
     this.currentPromptContext = context;
-    this.currentContextSummary = this.summaryFromContext(context);
-    this.currentImpact = this.impactFromContext(context);
-    this.currentImpactSymbol = context.primary_source.symbol;
-    this.currentImpactFilePath = context.primary_source.file_path;
-    this.currentImpactSource = 'prompt';
-    this.currentImpactDepth = this.clampImpactDepth(this.currentImpact.max_depth || this.currentImpactDepth);
+    this.applyHydratedContext(context);
     this.impactError = null;
     this.syncSelectedRequestToHost(requestId, context);
+  }
+
+  private applyHydratedContext(context: PromptContextPayload): void {
+    const hydrated = hydrateFromPromptContext(context);
+    this.currentContextSummary = hydrated.summary;
+    this.currentImpact = hydrated.impact;
+    this.currentImpactSymbol = hydrated.symbol;
+    this.currentImpactFilePath = hydrated.filePath;
+    this.currentImpactDepth = hydrated.depth;
+    this.currentImpactSource = 'prompt';
   }
 
   private syncSelectedRequestToHost(requestId: string, context: PromptContextPayload): void {
@@ -1322,46 +1301,6 @@ class MainSurface {
       .filter(message => message.context?.primary_source.symbol === context.primary_source.symbol)
       .sort((left, right) => right.timestamp - left.timestamp);
     return bySymbol[0]?.requestId || null;
-  }
-
-  private summaryFromContext(context: PromptContextPayload): ContextSummaryDto {
-    return buildContextSummary(context);
-  }
-
-  private impactFromContext(context: PromptContextPayload): ImpactResponse {
-    const affectedSymbols = context.graph_context.map(symbol => ({
-      symbol: symbol.symbol,
-      file_path: symbol.file_path,
-      relation: symbol.relation,
-      direction: symbol.direction,
-      role: symbol.role,
-      kind: symbol.kind,
-      edge_type: symbol.edge_type,
-      depth: symbol.depth,
-      utility_score: symbol.utility_score,
-      relevance_score: symbol.relevance_score,
-      is_dirty: symbol.is_dirty,
-    }));
-    const affectedFiles = Array.from(new Set(
-      [
-        context.primary_source.file_path,
-        ...context.graph_context.map(symbol => symbol.file_path),
-        ...context.documentation.map(doc => doc.source_file),
-      ].filter(Boolean)
-    ));
-
-    return {
-      symbol: context.primary_source.symbol,
-      symbol_uid: context.primary_source.symbol,
-      file_path: context.primary_source.file_path,
-      affected_symbols: affectedSymbols,
-      affected_files: affectedFiles,
-      affected_count: affectedSymbols.length,
-      affected_file_count: affectedFiles.length,
-      max_depth: affectedSymbols.reduce((max, symbol) => (
-        typeof symbol.depth === 'number' ? Math.max(max, symbol.depth) : max
-      ), 0),
-    };
   }
 
   private selectedPromptText(): string | null {
@@ -1599,8 +1538,4 @@ class MainSurface {
   }
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => new MainSurface());
-} else {
-  new MainSurface();
-}
+bootWebview(() => new MainSurface());

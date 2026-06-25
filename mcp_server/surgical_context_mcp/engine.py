@@ -204,6 +204,47 @@ _EXPLAIN_EDGE_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
+def _read_seed_signature(resolved: str | Path, start_line: int, end_line: int) -> str:
+    from context_engine.axis.context_builder import _code_signature  # noqa: PLC0415
+
+    if start_line < 1 or end_line < start_line:
+        return ""
+    try:
+        lines = Path(resolved).read_text(encoding="utf-8").splitlines()
+        return _code_signature("\n".join(lines[start_line - 1 : end_line]))
+    except OSError:
+        return ""
+
+
+def _group_explain_connections(
+    edge_rows: list[dict],
+    *,
+    max_per_group: int,
+) -> list[ExplainGroup]:
+    buckets: dict[str, list[ExplainConnection]] = {}
+    seen: dict[str, set[tuple[str, str]]] = {}
+    for row in edge_rows:
+        rel = str(row.get("rel") or "")
+        labels = _EXPLAIN_EDGE_LABELS.get(rel)
+        if not labels:
+            continue
+        label = labels[0] if row.get("outgoing") else labels[1]
+        name = str(row.get("name") or "")
+        fp = str(row.get("file_path") or "")
+        if not name:
+            continue
+        key = (name, fp)
+        seen.setdefault(label, set())
+        if key in seen[label]:
+            continue
+        seen[label].add(key)
+        buckets.setdefault(label, []).append(ExplainConnection(name=name, file_path=fp))
+    return [
+        ExplainGroup(label=label, rows=rows[:max_per_group])
+        for label, rows in sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    ]
+
+
 def _common_dir_prefix(paths: list[str]) -> str:
     """Longest shared directory prefix (with trailing /) across ``paths``.
 
@@ -263,7 +304,7 @@ def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str
 
     for sym in syms:
         fp = sym.file_path or ""
-        rel = fp[len(prefix):] if prefix and fp.startswith(prefix) else fp
+        rel = fp[len(prefix) :] if prefix and fp.startswith(prefix) else fp
         meta = f"{sym.role} · d{sym.distance_from_seed}"
         step = sym.expansion_step or ""
         if step and step not in (sym.role, "seed"):
@@ -510,8 +551,7 @@ class AxisEngine:
         ]
         affected_symbols = committed_rows + extra_rows
         affected_files = sorted(
-            set(committed_files)
-            | {r["file_path"] for r in extra_rows if r.get("file_path")}
+            set(committed_files) | {r["file_path"] for r in extra_rows if r.get("file_path")}
         )
         if not symbol_file and requested_path:
             symbol_file = requested_path
@@ -769,9 +809,7 @@ class AxisEngine:
             for r in rows
         ]
 
-    def file_outline(
-        self, file_path: str, workspace_id: str, *, limit: int = 400
-    ) -> FileOutline:
+    def file_outline(self, file_path: str, workspace_id: str, *, limit: int = 400) -> FileOutline:
         """Symbol map of one file (name, kind, start line), ordered top-to-bottom.
         Pure Neo4j — no code bodies."""
         path = file_path.strip()
@@ -908,6 +946,66 @@ class AxisEngine:
             ],
         )
 
+    def _resolve_explain_uid(
+        self,
+        concept: str,
+        workspace_id: str,
+        file_path: str | None,
+    ) -> tuple[str, str]:
+        resolved_via = "exact"
+        with self._lock:
+            self._ensure_db()
+            uid = self._resolve_uid(concept, workspace_id, file_path)
+        if uid:
+            return uid, resolved_via
+        hits = self.search_code(concept, workspace_id, limit=1, kind="symbol")
+        if hits:
+            return str(hits[0].get("uid") or ""), "vector"
+        return "", resolved_via
+
+    def _fetch_explain_seed_data(
+        self,
+        uid: str,
+        workspace_id: str,
+        concept: str,
+        allowed: list[str],
+    ) -> tuple[str, str, str, list[dict]]:
+        from context_engine.workspace_paths import (
+            registered_workspace_root,
+            resolve_graph_file_path,
+        )
+
+        with self._lock:
+            self._ensure_db()
+            spans = self._db.get_symbol_spans_by_uids([uid], workspace_id=workspace_id)
+            span = spans.get(uid) or {}
+            seed_name = str(span.get("name") or concept)
+            seed_file = str(span.get("file_path") or "")
+            start = int(span.get("start_line") or 0)
+            end = int(span.get("end_line") or 0)
+
+            signature = ""
+            root = registered_workspace_root(self._db, workspace_id)
+            resolved = resolve_graph_file_path(seed_file, workspace_root=root)
+            if resolved and start >= 1 and end >= start:
+                signature = _read_seed_signature(resolved, start, end)
+
+            with self._db.driver.session() as session:
+                edge_rows = session.run(
+                    """
+                    MATCH (a:Symbol {uid: $uid})-[r]-(n:Symbol)
+                    MATCH (fn:File {workspace_id: $ws})-[:CONTAINS]->(n)
+                    WHERE type(r) IN $allowed
+                      AND coalesce(r.workspace_id, $ws) = $ws
+                    RETURN type(r) AS rel, (startNode(r) = a) AS outgoing,
+                           coalesce(n.name, '') AS name, fn.path AS file_path
+                    """,
+                    uid=uid,
+                    ws=workspace_id,
+                    allowed=allowed,
+                ).data()
+        return seed_name, seed_file, signature, edge_rows
+
     def explain(
         self,
         concept: str,
@@ -927,90 +1025,18 @@ class AxisEngine:
         from context_engine.axis.graph_walk import EdgeProfile
 
         allowed = sorted(set(EdgeProfile.PROXIMITY) & set(_EXPLAIN_EDGE_LABELS))
-
-        # 1) Resolve concept → seed uid. Exact name is cheap (Neo4j only).
-        resolved_via = "exact"
-        with self._lock:
-            self._ensure_db()
-            uid = self._resolve_uid(concept, workspace_id, file_path)
-
-        if not uid:
-            # Free-text concept: take the nearest symbol by embedding.
-            hits = self.search_code(concept, workspace_id, limit=1, kind="symbol")
-            if hits:
-                uid = str(hits[0].get("uid") or "")
-                resolved_via = "vector"
+        uid, resolved_via = self._resolve_explain_uid(concept, workspace_id, file_path)
         if not uid:
             return ExplainResult(concept=concept, workspace_id=workspace_id, found=False)
 
-        # 2) Seed signature (read body off disk, trim to signature) + 3) edges.
-        from context_engine.axis.context_builder import _code_signature  # noqa: PLC0415
-        from context_engine.workspace_paths import (
-            registered_workspace_root,
-            resolve_graph_file_path,
+        seed_name, seed_file, signature, edge_rows = self._fetch_explain_seed_data(
+            uid,
+            workspace_id,
+            concept,
+            allowed,
         )
-
-        with self._lock:
-            self._ensure_db()
-            spans = self._db.get_symbol_spans_by_uids([uid], workspace_id=workspace_id)
-            span = spans.get(uid) or {}
-            seed_name = str(span.get("name") or concept)
-            seed_file = str(span.get("file_path") or "")
-            start = int(span.get("start_line") or 0)
-            end = int(span.get("end_line") or 0)
-
-            signature = ""
-            root = registered_workspace_root(self._db, workspace_id)
-            resolved = resolve_graph_file_path(seed_file, workspace_root=root)
-            if resolved and start >= 1 and end >= start:
-                try:
-                    lines = Path(resolved).read_text(encoding="utf-8").splitlines()
-                    signature = _code_signature("\n".join(lines[start - 1 : end]))
-                except OSError:
-                    signature = ""
-
-            with self._db.driver.session() as session:
-                edge_rows = session.run(
-                    """
-                    MATCH (a:Symbol {uid: $uid})-[r]-(n:Symbol)
-                    MATCH (fn:File {workspace_id: $ws})-[:CONTAINS]->(n)
-                    WHERE type(r) IN $allowed
-                      AND coalesce(r.workspace_id, $ws) = $ws
-                    RETURN type(r) AS rel, (startNode(r) = a) AS outgoing,
-                           coalesce(n.name, '') AS name, fn.path AS file_path
-                    """,
-                    uid=uid,
-                    ws=workspace_id,
-                    allowed=allowed,
-                ).data()
-
-        # 4) Docs covering the seed.
         docs = self.docs_for(seed_name, workspace_id, file_path=seed_file, limit=10)
-
-        # Group edges by human label; dedupe by (name, file), cap per group.
-        buckets: dict[str, list[ExplainConnection]] = {}
-        seen: dict[str, set[tuple[str, str]]] = {}
-        for row in edge_rows:
-            rel = str(row.get("rel") or "")
-            labels = _EXPLAIN_EDGE_LABELS.get(rel)
-            if not labels:
-                continue
-            label = labels[0] if row.get("outgoing") else labels[1]
-            name = str(row.get("name") or "")
-            fp = str(row.get("file_path") or "")
-            if not name:
-                continue
-            key = (name, fp)
-            seen.setdefault(label, set())
-            if key in seen[label]:
-                continue
-            seen[label].add(key)
-            buckets.setdefault(label, []).append(ExplainConnection(name=name, file_path=fp))
-
-        groups = [
-            ExplainGroup(label=label, rows=rows[:max_per_group])
-            for label, rows in sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-        ]
+        groups = _group_explain_connections(edge_rows, max_per_group=max_per_group)
 
         return ExplainResult(
             concept=concept,

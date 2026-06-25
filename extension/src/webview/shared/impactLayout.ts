@@ -1,15 +1,7 @@
 import type { ImpactResponse } from './protocol';
+import { escapeHtml } from './html';
 
-export function escapeHtml(text: string): string {
-  const map: Record<string, string> = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;',
-  };
-  return text.replace(/[&<>"']/g, m => map[m]);
-}
+export { escapeHtml };
 
 type Severity = 'high' | 'medium' | 'low';
 type ImpactZone = 'direct' | 'reach' | 'risk';
@@ -126,11 +118,13 @@ function renderImpactDepthControl(depth: number, options: ImpactWorkspaceOptions
   `;
 }
 
-function clampDepth(depth: number, options: ImpactWorkspaceOptions): number {
-  const minDepth = options.minDepth ?? 1;
-  const maxDepth = options.maxDepth ?? 4;
+export function clampImpactDepth(depth: number, minDepth = 1, maxDepth = 4): number {
   if (!Number.isFinite(depth)) return 3;
   return Math.max(minDepth, Math.min(maxDepth, Math.round(depth)));
+}
+
+function clampDepth(depth: number, options: ImpactWorkspaceOptions): number {
+  return clampImpactDepth(depth, options.minDepth ?? 1, options.maxDepth ?? 4);
 }
 
 export function renderSymbolSummaryCard(symbolInfo: SymbolInfo): string {

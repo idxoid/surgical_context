@@ -15,6 +15,7 @@ import {
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
+import { emptyDashboardMetrics } from '../webview/shared/dashboardDefaults';
 import { resolveWorkspaceId } from '../workspaceIdentity';
 import {
   graphProviderDetail,
@@ -110,7 +111,7 @@ export class DashboardPanel {
         this.emptyDashboardCall<IndexStatsResponse>(),
       ];
     const metrics: DashboardMetrics = {
-      ...this.emptyDashboardMetrics(),
+      ...emptyDashboardMetrics(),
       ...this.parsePrometheusMetrics(metricsText.value),
       ...this.metricsFromIndexQueue(indexQueue.value),
       ...this.metricsFromIndexStats(indexStats.value),
@@ -295,28 +296,6 @@ export class DashboardPanel {
         details,
       };
     });
-  }
-
-  private emptyDashboardMetrics(): DashboardMetrics {
-    return {
-      indexedFiles: null,
-      indexedSymbols: null,
-      docChunks: null,
-      avgLatencyMs: null,
-      tokenSavingsPercent: null,
-      fallbackRatePercent: null,
-      contextQualityPercent: null,
-      symbolsWithDocs: null,
-      storageGb: null,
-      requestsTotal: null,
-      tokensTotal: null,
-      costUsdTotal: null,
-      queuePending: null,
-      queueProcessing: null,
-      queueProcessed: null,
-      queueFailedBatches: null,
-      lastIndexJobStatus: null,
-    };
   }
 
   private metricsFromIndexQueue(response: IndexQueueResponse | null): Partial<DashboardMetrics> {

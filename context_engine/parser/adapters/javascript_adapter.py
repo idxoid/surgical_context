@@ -1,21 +1,18 @@
 """JavaScript language adapter using tree-sitter."""
 
 import re
-from pathlib import Path
 from typing import cast
 
 from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
-from context_engine.parser.adapters.ts_package_aliases import resolve_package_subpath
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 from context_engine.parser.import_scan import (
-    iter_const_destructure_requires,
-    iter_es_module_imports,
-    iter_simple_commonjs_requires,
+    collect_js_ts_import_bindings,
+    module_name_for_js_resolved_path,
+    resolve_import_module_name,
 )
 from context_engine.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from context_engine.parser.uid import (
     compute_uid,
-    current_project_root,
     module_name_from_path,
     normalize_signature,
     qualified_name_for,
@@ -831,91 +828,14 @@ class JavaScriptAdapter(TreeSitterAdapter):
     def _extract_import_bindings(
         self, source_code: str, file_path: str
     ) -> tuple[dict[str, str], set[str]]:
-        bindings: dict[str, str] = {}
-        module_aliases: set[str] = set()
-        for spec, import_source in iter_es_module_imports(source_code):
-            source = self._normalize_import_source(file_path, import_source.strip())
-            if not spec or not source:
-                continue
-            if spec.startswith("{") and spec.endswith("}"):
-                self._parse_named_import_bindings(spec[1:-1], source, bindings)
-            elif spec.startswith("* as "):
-                alias = spec[len("* as ") :].strip()
-                if alias:
-                    bindings[alias] = source
-                    module_aliases.add(alias)
-            elif "," in spec:
-                default_alias, rest = spec.split(",", 1)
-                default_alias = default_alias.strip()
-                if default_alias:
-                    bindings[default_alias] = source
-                rest = rest.strip()
-                if rest.startswith("{") and rest.endswith("}"):
-                    self._parse_named_import_bindings(rest[1:-1], source, bindings)
-            else:
-                bindings[spec] = source
-        for body, import_source in iter_const_destructure_requires(source_code):
-            source = self._normalize_import_source(file_path, import_source.strip())
-            self._parse_named_import_bindings(body, source, bindings)
-        for alias, import_source in iter_simple_commonjs_requires(source_code):
-            source = self._normalize_import_source(file_path, import_source.strip())
-            if alias and source:
-                bindings[alias] = source
-        return bindings, module_aliases
-
-    @staticmethod
-    def _parse_named_import_bindings(spec: str, source: str, out: dict[str, str]) -> None:
-        for part in spec.split(","):
-            token = part.strip()
-            if not token:
-                continue
-            if " as " in token:
-                imported, alias = token.split(" as ", 1)
-                imported = imported.strip()
-                alias = alias.strip()
-            elif ":" in token:
-                imported, alias = token.split(":", 1)
-                imported = imported.strip()
-                alias = alias.strip()
-            else:
-                imported = token
-                alias = token
-            if alias and imported:
-                out[alias] = f"{source}.{imported}"
+        return collect_js_ts_import_bindings(source_code, file_path, self._normalize_import_source)
 
     def _normalize_import_source(self, file_path: str, source: str) -> str:
-        if not source:
-            return ""
-        if not source.startswith("."):
-            project_root = current_project_root()
-            if project_root:
-                aliased = resolve_package_subpath(project_root, source)
-                if aliased:
-                    resolved = Path(aliased)
-                    for candidate in (
-                        resolved.with_suffix(".js"),
-                        resolved.with_suffix(".jsx"),
-                        resolved / "index.js",
-                    ):
-                        if candidate.exists():
-                            return module_name_from_path(str(candidate))
-            return source.replace("/", ".")
-        base = Path(file_path).parent
-        project_root = current_project_root()
-        if project_root:
-            base = (Path(project_root) / base).resolve()
-        else:
-            base = base.resolve()
-        resolved = (base / source).resolve()
-        candidates = [
-            resolved.with_suffix(".js"),
-            resolved.with_suffix(".jsx"),
-            resolved / "index.js",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return module_name_from_path(str(candidate))
-        return source.lstrip("./").replace("/", ".")
+        return resolve_import_module_name(
+            file_path,
+            source,
+            module_for_resolved=module_name_for_js_resolved_path,
+        )
 
     @classmethod
     def _strip_commonjs_alias_rhs(cls, rhs: str) -> str:

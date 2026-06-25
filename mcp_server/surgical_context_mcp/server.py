@@ -240,8 +240,7 @@ def read_symbol(
     )
     if not r.code:
         return (
-            header
-            + "\n(Source unavailable — the file is outside the indexed workspace root "
+            header + "\n(Source unavailable — the file is outside the indexed workspace root "
             "or could not be read. The span above still locates the definition.)\n"
         )
     return header + "\n```python\n" + r.code.rstrip() + "\n```\n"
@@ -438,10 +437,7 @@ def path(
         symbol_a, symbol_b, workspace_id, file_a=file_a, file_b=file_b, max_hops=max_hops
     )
     if not r.found:
-        return (
-            f"No path from '{symbol_a}' to '{symbol_b}' "
-            f"(workspace: {workspace_id}): {r.reason}."
-        )
+        return f"No path from '{symbol_a}' to '{symbol_b}' (workspace: {workspace_id}): {r.reason}."
     # Interleave node names with the edge type that links each consecutive pair.
     parts = [r.node_names[0]] if r.node_names else []
     for i, rel in enumerate(r.rel_types):
@@ -511,8 +507,7 @@ def set_overlay(file_path: str, content: str, workspace: str | None = None) -> s
     workspace_id = resolve_workspace_id(workspace)
     symbols = _engine.set_overlay(file_path, content, workspace_id)
     head = (
-        f"# Overlay set: {file_path}\n"
-        f"workspace: {workspace_id} · {len(symbols)} symbols parsed\n"
+        f"# Overlay set: {file_path}\nworkspace: {workspace_id} · {len(symbols)} symbols parsed\n"
     )
     if symbols:
         head += "\n" + "\n".join(f"- {s}" for s in symbols[:50])
@@ -618,7 +613,7 @@ def _dedup_code_blocks(text: str, seen: dict[str, bool]) -> tuple[str, int]:
         body = m.group(1)
         if len(body) < 120:
             return m.group(0)
-        key = hashlib.md5(body.encode("utf-8")).hexdigest()  # noqa: S324 — dedup key, not security
+        key = hashlib.sha256(body.encode("utf-8")).hexdigest()
         if key in seen:
             n += 1
             return "```\n(identical code collapsed — shown above in this batch)\n```"
@@ -650,7 +645,7 @@ def batch(ops: list[dict]) -> str:
     """
     if not isinstance(ops, list) or not ops:
         return (
-            'batch: pass a non-empty list of ops, e.g. '
+            "batch: pass a non-empty list of ops, e.g. "
             '[{"tool": "read_symbol", "name": "create_app"}].'
         )
 
@@ -665,8 +660,7 @@ def batch(ops: list[dict]) -> str:
         fn = _BATCHABLE.get(tool)
         if fn is None:
             parts.append(
-                f"## op{i} {tool} — not batchable. "
-                f"Allowed: {', '.join(sorted(_BATCHABLE))}."
+                f"## op{i} {tool} — not batchable. Allowed: {', '.join(sorted(_BATCHABLE))}."
             )
             continue
         args = {k: v for k, v in op.items() if k != "tool"}

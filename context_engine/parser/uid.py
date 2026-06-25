@@ -171,6 +171,14 @@ def signature_from_node(node, source_code: str, language: str = "python") -> tup
     return raw, "resolved"
 
 
+def _step_signature_quote(ch: str, quote: str | None) -> tuple[str | None, bool]:
+    if quote:
+        return (None, True) if ch == quote else (quote, True)
+    if ch in {"'", '"'}:
+        return ch, True
+    return quote, False
+
+
 def _find_matching_paren(text: str, open_index: int) -> int | None:
     if open_index >= len(text) or text[open_index] != "(":
         return None
@@ -179,13 +187,8 @@ def _find_matching_paren(text: str, open_index: int) -> int | None:
     i = open_index
     while i < len(text):
         ch = text[i]
-        if quote:
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in {"'", '"'}:
-            quote = ch
+        quote, handled = _step_signature_quote(ch, quote)
+        if handled:
             i += 1
             continue
         if ch == "(":
@@ -248,39 +251,53 @@ def _return_annotation_from_node(node, source_code: str, language: str) -> str:
     return _typescript_return_annotation_from_header(header)
 
 
+def _anonymous_signature_fallback(raw: str) -> tuple[str, str, str]:
+    return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
+
+
+def _read_signature_name(text: str) -> tuple[str, int] | None:
+    if not text or not (text[0].isalnum() or text[0] in "_$"):
+        return None
+    i = 1
+    while i < len(text) and (text[i].isalnum() or text[i] in "_$"):
+        i += 1
+    return text[:i], i
+
+
+def _parse_signature_return_suffix(suffix: str) -> str | None:
+    if not suffix:
+        return "_"
+    if suffix.startswith("->"):
+        return suffix[2:].strip()
+    if suffix.startswith(":"):
+        return suffix[1:].strip()
+    return None
+
+
 def _split_signature(raw: str) -> tuple[str, str, str]:
     text = raw.strip()
     if not text:
         return "<anonymous>", "", "_"
 
-    i = 0
-    text_len = len(text)
-    if not (text[i].isalnum() or text[i] in "_$"):
-        return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
-    name_start = i
-    i += 1
-    while i < text_len and (text[i].isalnum() or text[i] in "_$"):
-        i += 1
-    name = text[name_start:i]
+    name_info = _read_signature_name(text)
+    if name_info is None:
+        return _anonymous_signature_fallback(raw)
+    name, i = name_info
 
-    while i < text_len and text[i].isspace():
+    while i < len(text) and text[i].isspace():
         i += 1
-    if i >= text_len or text[i] != "(":
-        return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
+    if i >= len(text) or text[i] != "(":
+        return _anonymous_signature_fallback(raw)
 
     close_paren = _find_matching_paren(text, i)
     if close_paren is None:
-        return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
+        return _anonymous_signature_fallback(raw)
 
     params = text[i + 1 : close_paren]
-    suffix = text[close_paren + 1 :].strip()
-    if not suffix:
-        return name, params, "_"
-    if suffix.startswith("->"):
-        return name, params, suffix[2:].strip()
-    if suffix.startswith(":"):
-        return name, params, suffix[1:].strip()
-    return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
+    returns = _parse_signature_return_suffix(text[close_paren + 1 :].strip())
+    if returns is None:
+        return _anonymous_signature_fallback(raw)
+    return name, params, returns
 
 
 def _normalize_params(params: str, language: str) -> list[str]:

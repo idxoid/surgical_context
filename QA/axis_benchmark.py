@@ -299,9 +299,7 @@ def _populate_recall_layers(result: QuestionResult, retrieval: Any) -> None:
     )
 
     result.retrieved_files = _ordered_unique_paths(
-        sym.file_path or ""
-        for bundle in retrieval.bundles
-        for sym in bundle.all_symbols()
+        sym.file_path or "" for bundle in retrieval.bundles for sym in bundle.all_symbols()
     )
     result.file_recall, result.matched_files = _compute_recall(
         result.expected_files, result.retrieved_files

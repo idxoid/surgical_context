@@ -1,34 +1,16 @@
 "use strict";
 (() => {
-  // src/contextSummary.ts
-  function buildContextSummary(context) {
-    const tierTokens = context.metadata.tier_tokens || {};
-    const totalTokens = Object.values(tierTokens).reduce((sum, value) => {
-      return sum + (typeof value === "number" ? value : 0);
-    }, 0);
-    const askLevel = typeof context.budget?.ask_level === "string" ? context.budget.ask_level : "";
-    const warningChips = fallbackWarningChips(context);
-    return {
-      primaryLabel: `${context.primary_source.symbol} in ${context.primary_source.file_path}`,
-      graphCount: context.graph_context.length,
-      docsCount: context.documentation.length,
-      tokenText: `${totalTokens} tokens`,
-      chips: [
-        ...askLevel ? [`level:${askLevel}`] : [],
-        ...warningChips,
-        ...context.metadata.tiers_used || []
-      ]
-    };
-  }
-  function fallbackWarningChips(context) {
-    const budget = context.budget || {};
-    if (budget.fallback_reason !== "symbol_not_found" || typeof budget.ask_level !== "string") {
-      return [];
+  // src/webview/shared/webviewRuntime.ts
+  var vscode = acquireVsCodeApi();
+  function bootWebview(init) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", init);
+    } else {
+      init();
     }
-    return ["warning:symbol not found", `fallback:${budget.ask_level}`];
   }
 
-  // src/webview/shared/layout.ts
+  // src/webview/shared/html.ts
   function escapeHtml(text) {
     const map = {
       "&": "&amp;",
@@ -39,6 +21,8 @@
     };
     return text.replace(/[&<>"']/g, (char) => map[char]);
   }
+
+  // src/webview/shared/layout.ts
   function renderMessageCard(message, selectedRequestId) {
     const isSelected = Boolean(message.requestId && selectedRequestId === message.requestId);
     const isSelectablePrompt = message.type === "user" && Boolean(message.requestId);
@@ -283,16 +267,6 @@
   }
 
   // src/webview/shared/impactLayout.ts
-  function escapeHtml2(text) {
-    const map = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#039;"
-    };
-    return text.replace(/[&<>"']/g, (m) => map[m]);
-  }
   function renderImpactWorkspace(impact, symbol, sourceLabel = "live graph", options = {}) {
     const model = buildImpactModel(impact);
     const depth = clampDepth(options.depth ?? impact.max_depth ?? 3, options);
@@ -344,29 +318,30 @@
     </div>
   `;
   }
-  function clampDepth(depth, options) {
-    const minDepth = options.minDepth ?? 1;
-    const maxDepth = options.maxDepth ?? 4;
+  function clampImpactDepth(depth, minDepth = 1, maxDepth = 4) {
     if (!Number.isFinite(depth)) return 3;
     return Math.max(minDepth, Math.min(maxDepth, Math.round(depth)));
+  }
+  function clampDepth(depth, options) {
+    return clampImpactDepth(depth, options.minDepth ?? 1, options.maxDepth ?? 4);
   }
   function renderSymbolSummaryCard(symbolInfo) {
     return `
     <div class="impact-symbol-card">
       <div class="impact-symbol-title">
         <span class="impact-info-icon" aria-hidden="true">i</span>
-        <strong>${escapeHtml2(symbolInfo.symbol)}</strong>
+        <strong>${escapeHtml(symbolInfo.symbol)}</strong>
       </div>
       <div class="impact-symbol-meta">
         <span>Method</span>
-        <span>${escapeHtml2(symbolInfo.filePath)}</span>
-        <code>${escapeHtml2(symbolInfo.uid)}</code>
+        <span>${escapeHtml(symbolInfo.filePath)}</span>
+        <code>${escapeHtml(symbolInfo.uid)}</code>
       </div>
       <div class="impact-metrics" aria-label="Impact summary">
         ${renderMetric("Symbols", symbolInfo.affectedCount)}
         ${renderMetric("Files", symbolInfo.fileCount)}
         ${renderMetric("Depth", symbolInfo.maxDepth)}
-        ${symbolInfo.sourceLabel ? `<span class="impact-source-chip">${escapeHtml2(symbolInfo.sourceLabel)}</span>` : ""}
+        ${symbolInfo.sourceLabel ? `<span class="impact-source-chip">${escapeHtml(symbolInfo.sourceLabel)}</span>` : ""}
       </div>
     </div>
   `;
@@ -375,7 +350,7 @@
     return `
     <span class="impact-metric">
       <strong>${Number.isFinite(value) ? value : 0}</strong>
-      <span>${escapeHtml2(label)}</span>
+      <span>${escapeHtml(label)}</span>
     </span>
   `;
   }
@@ -501,9 +476,9 @@
   }
   function renderSeverityChip(label, count, tone) {
     return `
-    <span class="impact-severity-chip ${escapeHtml2(tone)}">
+    <span class="impact-severity-chip ${escapeHtml(tone)}">
       <strong>${count}</strong>
-      <span>${escapeHtml2(label)}</span>
+      <span>${escapeHtml(label)}</span>
     </span>
   `;
   }
@@ -512,14 +487,14 @@
     if (focusItems.length === 0) {
       return `
       <div class="impact-focus-card">
-        <div class="impact-focus-center">${escapeHtml2(symbol)}</div>
+        <div class="impact-focus-center">${escapeHtml(symbol)}</div>
         <div class="impact-focus-empty">No high-utility neighbours returned.</div>
       </div>
     `;
     }
     return `
     <div class="impact-focus-card">
-      <div class="impact-focus-center" title="${escapeHtml2(symbol)}">${escapeHtml2(symbol)}</div>
+      <div class="impact-focus-center" title="${escapeHtml(symbol)}">${escapeHtml(symbol)}</div>
       <div class="impact-focus-grid">
         ${focusItems.map(renderFocusNode).join("")}
       </div>
@@ -532,11 +507,11 @@
       type="button"
       class="impact-focus-node ${item.severity}"
       data-action="openFile"
-      data-file-path="${escapeHtml2(item.filePath)}"
+      data-file-path="${escapeHtml(item.filePath)}"
       data-line="${item.line}"
-      title="Open ${escapeHtml2(item.symbolName)}"
+      title="Open ${escapeHtml(item.symbolName)}"
     >
-      <span>${escapeHtml2(item.symbolName)}</span>
+      <span>${escapeHtml(item.symbolName)}</span>
       <small>${Math.round(item.utilityScore * 100)}%</small>
     </button>
   `;
@@ -547,8 +522,8 @@
     if (items.length === 0) {
       return `
       <div class="impact-group">
-        <div class="group-header">${escapeHtml2(title)}</div>
-        <div class="group-content empty">${escapeHtml2(emptyText)}</div>
+        <div class="group-header">${escapeHtml(title)}</div>
+        <div class="group-content empty">${escapeHtml(emptyText)}</div>
       </div>
     `;
     }
@@ -556,7 +531,7 @@
     <div class="impact-group ${expanded ? "expanded" : ""}">
       <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
         <span aria-hidden="true">\u203A</span>
-        <strong>${escapeHtml2(title)}</strong>
+        <strong>${escapeHtml(title)}</strong>
         <span>(${items.length})</span>
       </button>
       <div class="group-content" ${expanded ? "" : "hidden"}>
@@ -587,24 +562,24 @@
           type="button"
           class="impact-row ${item.synthetic ? "impact-risk-row" : ""}"
           data-action="${item.synthetic ? "noop" : "openFile"}"
-          data-file-path="${escapeHtml2(item.filePath)}"
+          data-file-path="${escapeHtml(item.filePath)}"
           data-line="${item.line}"
-          title="${escapeHtml2(title)}"
+          title="${escapeHtml(title)}"
           ${disabled}
         >
           <span class="impact-chevron" aria-hidden="true">\u203A</span>
-          <span class="impact-symbol">${escapeHtml2(item.symbolName)}</span>
-          <span class="impact-file">${escapeHtml2(item.filePath)}</span>
-          <span class="impact-tag ${item.severity}">${escapeHtml2(item.severity)}</span>
+          <span class="impact-symbol">${escapeHtml(item.symbolName)}</span>
+          <span class="impact-file">${escapeHtml(item.filePath)}</span>
+          <span class="impact-tag ${item.severity}">${escapeHtml(item.severity)}</span>
           <span class="impact-tag indirect">${Math.round(item.utilityScore * 100)}%</span>
-          <span class="impact-tag ${item.category === "event" || item.category === "config" ? "conditional" : "direct"}">${escapeHtml2(item.category)}</span>
+          <span class="impact-tag ${item.category === "event" || item.category === "config" ? "conditional" : "direct"}">${escapeHtml(item.category)}</span>
         </button>
         <button
           type="button"
           class="impact-explain-button"
           data-action="explainImpact"
           aria-expanded="false"
-          title="Explain how this item is connected to ${escapeHtml2(targetSymbol)}"
+          title="Explain how this item is connected to ${escapeHtml(targetSymbol)}"
         >Explain</button>
       </div>
       ${renderImpactExplanation(explanation)}
@@ -697,19 +672,19 @@
   function renderImpactExplanation(explanation) {
     return `
     <div class="impact-explanation" hidden>
-      <p class="impact-explanation-summary">${escapeHtml2(explanation.summary)}</p>
+      <p class="impact-explanation-summary">${escapeHtml(explanation.summary)}</p>
       <div class="impact-explanation-path">
         <span>Connection</span>
-        <code>${escapeHtml2(explanation.path)}</code>
+        <code>${escapeHtml(explanation.path)}</code>
       </div>
       <div class="impact-explanation-risk">
         <span>Why it matters</span>
-        <p>${escapeHtml2(explanation.risk)}</p>
+        <p>${escapeHtml(explanation.risk)}</p>
       </div>
       <div class="impact-explanation-evidence" aria-label="Connection evidence">
-        ${explanation.evidence.map((value) => `<span>${escapeHtml2(value)}</span>`).join("")}
+        ${explanation.evidence.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}
       </div>
-      ${explanation.caveat ? `<p class="impact-explanation-caveat">${escapeHtml2(explanation.caveat)}</p>` : ""}
+      ${explanation.caveat ? `<p class="impact-explanation-caveat">${escapeHtml(explanation.caveat)}</p>` : ""}
     </div>
   `;
   }
@@ -717,7 +692,7 @@
     if (affectedSymbols.length === 0) {
       return `
       <div class="impact-group">
-        <div class="group-header">${escapeHtml2(title)}</div>
+        <div class="group-header">${escapeHtml(title)}</div>
         <div class="group-content empty">
           No related symbols found.
         </div>
@@ -738,14 +713,14 @@
           type="button"
           class="impact-row"
           data-action="openFile"
-          data-file-path="${escapeHtml2(filePath)}"
+          data-file-path="${escapeHtml(filePath)}"
           data-line="${line}"
-          title="Open ${escapeHtml2(symbolName)}"
+          title="Open ${escapeHtml(symbolName)}"
         >
           <span class="impact-chevron" aria-hidden="true">\u203A</span>
-          <span class="impact-symbol">${escapeHtml2(symbolName)}</span>
-          <span class="impact-file">${escapeHtml2(filePath)}</span>
-          <span class="impact-tag ${depthClass}">${escapeHtml2(depth || relation)}</span>
+          <span class="impact-symbol">${escapeHtml(symbolName)}</span>
+          <span class="impact-file">${escapeHtml(filePath)}</span>
+          <span class="impact-tag ${depthClass}">${escapeHtml(depth || relation)}</span>
           ${score ? `<span class="impact-tag indirect">${(score * 100).toFixed(0)}%</span>` : ""}
           ${isDirty ? '<span class="impact-tag conditional">dirty</span>' : ""}
         </button>
@@ -755,7 +730,7 @@
     <div class="impact-group ${expanded ? "expanded" : ""}">
       <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
         <span aria-hidden="true">\u203A</span>
-        <strong>${escapeHtml2(title)}</strong>
+        <strong>${escapeHtml(title)}</strong>
         <span>(${affectedSymbols.length})</span>
       </button>
       <div class="group-content" ${expanded ? "" : "hidden"}>
@@ -810,13 +785,13 @@
         type="button"
         class="impact-row impact-file-row"
         data-action="openFile"
-        data-file-path="${escapeHtml2(filePath)}"
+        data-file-path="${escapeHtml(filePath)}"
         data-line="1"
-        title="Open ${escapeHtml2(filePath)}"
+        title="Open ${escapeHtml(filePath)}"
       >
         <span class="impact-chevron" aria-hidden="true">\u203A</span>
         <span class="impact-symbol">File</span>
-        <span class="impact-file">${escapeHtml2(filePath)}</span>
+        <span class="impact-file">${escapeHtml(filePath)}</span>
         <span class="impact-tag indirect">related</span>
       </button>
     `).join("");
@@ -824,7 +799,7 @@
     <div class="impact-group ${expanded ? "expanded" : ""}">
       <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
         <span aria-hidden="true">\u203A</span>
-        <strong>${escapeHtml2(title)}</strong>
+        <strong>${escapeHtml(title)}</strong>
         <span>(${uniquePaths.length})</span>
       </button>
       <div class="group-content" ${expanded ? "" : "hidden"}>
@@ -849,17 +824,91 @@
   `;
   }
 
-  // src/webview/shared/inspectorLayout.ts
-  function escapeHtml3(text) {
-    const map = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#039;"
+  // src/contextSummary.ts
+  function buildContextSummary(context) {
+    const tierTokens = context.metadata.tier_tokens || {};
+    const totalTokens = Object.values(tierTokens).reduce((sum, value) => {
+      return sum + (typeof value === "number" ? value : 0);
+    }, 0);
+    const askLevel = typeof context.budget?.ask_level === "string" ? context.budget.ask_level : "";
+    const warningChips = fallbackWarningChips(context);
+    return {
+      primaryLabel: `${context.primary_source.symbol} in ${context.primary_source.file_path}`,
+      graphCount: context.graph_context.length,
+      docsCount: context.documentation.length,
+      tokenText: `${totalTokens} tokens`,
+      chips: [
+        ...askLevel ? [`level:${askLevel}`] : [],
+        ...warningChips,
+        ...context.metadata.tiers_used || []
+      ]
     };
-    return text.replace(/[&<>"']/g, (m) => map[m]);
   }
+  function fallbackWarningChips(context) {
+    const budget = context.budget || {};
+    if (budget.fallback_reason !== "symbol_not_found" || typeof budget.ask_level !== "string") {
+      return [];
+    }
+    return ["warning:symbol not found", `fallback:${budget.ask_level}`];
+  }
+
+  // src/webview/shared/impactTransforms.ts
+  function impactResponseFromPromptContext(context) {
+    const affectedSymbols = context.graph_context.map((symbol) => ({
+      symbol: symbol.symbol,
+      file_path: symbol.file_path,
+      relation: symbol.relation,
+      direction: symbol.direction,
+      role: symbol.role,
+      kind: symbol.kind,
+      edge_type: symbol.edge_type,
+      depth: symbol.depth,
+      utility_score: symbol.utility_score,
+      relevance_score: symbol.relevance_score,
+      is_dirty: symbol.is_dirty
+    }));
+    const affectedFiles = Array.from(new Set(
+      [
+        context.primary_source.file_path,
+        ...context.graph_context.map((symbol) => symbol.file_path),
+        ...context.documentation.map((doc) => doc.source_file)
+      ].filter(Boolean)
+    ));
+    return {
+      symbol: context.primary_source.symbol,
+      symbol_uid: context.primary_source.symbol,
+      file_path: context.primary_source.file_path,
+      affected_symbols: affectedSymbols,
+      affected_files: affectedFiles,
+      affected_count: affectedSymbols.length,
+      affected_file_count: affectedFiles.length,
+      max_depth: affectedSymbols.reduce((max, symbol) => typeof symbol.depth === "number" ? Math.max(max, symbol.depth) : max, 0)
+    };
+  }
+  function hydrateFromPromptContext(context) {
+    const impact = impactResponseFromPromptContext(context);
+    return {
+      summary: buildContextSummary(context),
+      impact,
+      symbol: context.primary_source.symbol,
+      filePath: context.primary_source.file_path,
+      depth: clampImpactDepth(impact.max_depth || 3)
+    };
+  }
+
+  // src/webview/shared/surfaceChrome.ts
+  function renderImpactSurfaceShell(chrome, subtitle, body) {
+    return `
+    <section class="surface surface-impact" aria-label="Impact analysis">
+      ${chrome}
+      <div class="surface-title">Impact Analysis</div>
+      <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
+      ${body}
+    </section>
+  `;
+  }
+
+  // src/webview/shared/inspectorLayout.ts
   function renderIntentTab(matches) {
     if (matches === null) {
       return `<div class="inspector-tab-content"><p style="color:var(--vscode-descriptionForeground);">Classifying intent\u2026</p></div>`;
@@ -872,13 +921,13 @@
       return `
         <div style="margin:0 0 12px;">
           <div style="display:flex;justify-content:space-between;align-items:baseline;">
-            <span style="font-weight:600;">${escapeHtml3(m.role)}</span>
+            <span style="font-weight:600;">${escapeHtml(m.role)}</span>
             <span style="font-variant-numeric:tabular-nums;color:var(--vscode-descriptionForeground);">${m.similarity.toFixed(2)}</span>
           </div>
           <div style="height:6px;background:var(--vscode-editorWidget-border,#444);border-radius:3px;overflow:hidden;margin:3px 0 4px;">
             <div style="height:100%;width:${pct}%;background:var(--vscode-progressBar-background,#0a84ff);"></div>
           </div>
-          <div style="font-size:12px;color:var(--vscode-descriptionForeground);">${escapeHtml3(m.description)}</div>
+          <div style="font-size:12px;color:var(--vscode-descriptionForeground);">${escapeHtml(m.description)}</div>
         </div>
       `;
     }).join("");
@@ -903,15 +952,15 @@
     return `
     <div class="primary-source-card">
       <div class="symbol-header">
-        <h3>${escapeHtml3(symbolName)}</h3>
+        <h3>${escapeHtml(symbolName)}</h3>
         <span class="dirty-badge">${isDirty}</span>
       </div>
       <div class="file-path">
-        <strong>File:</strong> ${escapeHtml3(filePath)}
+        <strong>File:</strong> ${escapeHtml(filePath)}
       </div>
       ${code ? `
         <div class="code-snippet">
-          <pre><code>${escapeHtml3(code)}</code></pre>
+          <pre><code>${escapeHtml(code)}</code></pre>
         </div>
       ` : ""}
     </div>
@@ -923,13 +972,13 @@
       return '<div class="tab-content-empty">No graph context available</div>';
     }
     const rows = graphItems.map((item) => `
-      <tr class="context-row" data-file-path="${escapeHtml3(item.file_path)}">
-        <td class="symbol-col">${escapeHtml3(item.symbol)}</td>
-        <td class="relation-col">${escapeHtml3(item.relation || "")}</td>
+      <tr class="context-row" data-file-path="${escapeHtml(item.file_path)}">
+        <td class="symbol-col">${escapeHtml(item.symbol)}</td>
+        <td class="relation-col">${escapeHtml(item.relation || "")}</td>
         <td class="depth-col">${item.depth || 0}</td>
         <td class="score-col">${(item.relevance_score || 0).toFixed(2)}</td>
         <td class="dirty-col">${item.is_dirty ? "\u{1F534}" : "\u2713"}</td>
-        <td class="file-col">${escapeHtml3(item.file_path)}</td>
+        <td class="file-col">${escapeHtml(item.file_path)}</td>
       </tr>
     `).join("");
     return `
@@ -960,11 +1009,11 @@
     const rows = docs.map((doc) => `
       <div class="doc-item">
         <div class="doc-header">
-          <strong>Source:</strong> ${escapeHtml3(doc.source_file)}
+          <strong>Source:</strong> ${escapeHtml(doc.source_file)}
           <span class="score">${(doc.score || 0).toFixed(2)}</span>
         </div>
         <div class="doc-content">
-          ${escapeHtml3((doc.content || "").substring(0, 500))}${(doc.content || "").length > 500 ? "..." : ""}
+          ${escapeHtml((doc.content || "").substring(0, 500))}${(doc.content || "").length > 500 ? "..." : ""}
         </div>
       </div>
     `).join("");
@@ -979,7 +1028,7 @@
     return `
     <div class="json-viewer">
       <button class="copy-button" data-action="copy-json">Copy JSON</button>
-      <pre><code>${escapeHtml3(jsonStr)}</code></pre>
+      <pre><code>${escapeHtml(jsonStr)}</code></pre>
     </div>
   `;
   }
@@ -997,7 +1046,7 @@
       { tier: "Documentation", tokens: tokensDocs }
     ].filter((r) => r.tokens > 0).map((r) => `
       <tr>
-        <td>${escapeHtml3(r.tier)}</td>
+        <td>${escapeHtml(r.tier)}</td>
         <td>${r.tokens}</td>
         <td>${(r.tokens / tokensTotal * 100).toFixed(1)}%</td>
       </tr>
@@ -1077,7 +1126,7 @@
         <p>The <code>system</code> field contains the assembled surgical context.</p>
       </div>
       <button class="copy-button" data-action="copy-api-json">Copy JSON</button>
-      <pre><code>${escapeHtml3(jsonStr)}</code></pre>
+      <pre><code>${escapeHtml(jsonStr)}</code></pre>
     </div>
   `;
   }
@@ -1112,11 +1161,6 @@ ${doc.content}`);
   }
 
   // src/webview/shared/settingsLayout.ts
-  function escapeHtml4(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
-  }
   function settingsFormDataFromSettings(data) {
     return {
       backendUrl: data.backendUrl,
@@ -1153,7 +1197,7 @@ ${doc.content}`);
               type="text"
               id="backendUrl"
               class="setting-input"
-              value="${escapeHtml4(data.backendUrl)}"
+              value="${escapeHtml(data.backendUrl)}"
               placeholder="http://localhost:8000"
               aria-label="Sidecar backend URL"
               aria-describedby="backendUrl-hint"
@@ -1172,7 +1216,7 @@ ${doc.content}`);
             type="password"
             id="authToken"
             class="setting-input"
-            value="${escapeHtml4(data.authToken)}"
+            value="${escapeHtml(data.authToken)}"
             placeholder="Leave blank if no authentication required"
             aria-label="Authentication token for context_engine"
             aria-describedby="authToken-hint"
@@ -1190,7 +1234,7 @@ ${doc.content}`);
             type="text"
             id="workspaceId"
             class="setting-input"
-            value="${escapeHtml4(data.workspaceId)}"
+            value="${escapeHtml(data.workspaceId)}"
             placeholder="derived from workspace and Git branch"
             aria-label="Workspace scope identifier"
             aria-describedby="workspaceId-hint"
@@ -1219,7 +1263,7 @@ ${doc.content}`);
             type="number"
             id="tokenBudget"
             class="setting-input"
-            value="${escapeHtml4(String(data.tokenBudget))}"
+            value="${escapeHtml(String(data.tokenBudget))}"
             min="1000"
             max="32000"
             step="500"
@@ -1240,7 +1284,7 @@ ${doc.content}`);
             type="text"
             id="neo4jUri"
             class="setting-input"
-            value="${escapeHtml4(data.neo4jUri)}"
+            value="${escapeHtml(data.neo4jUri)}"
             placeholder="bolt://localhost:7687"
             aria-label="Neo4j Bolt URI"
             aria-describedby="neo4jUri-hint"
@@ -1265,9 +1309,9 @@ ${doc.content}`);
         <div class="setting-field">
           <label>Graph provider status</label>
           <div class="field-status ${data.graphStatusHealthy ? "success" : "warning"}" style="display:block">
-            ${escapeHtml4(data.graphStatusLabel || "Unknown")}
+            ${escapeHtml(data.graphStatusLabel || "Unknown")}
           </div>
-          <p class="field-hint">${escapeHtml4(data.graphStatusDetail || "Open Settings to refresh status from /status/cloud.")}</p>
+          <p class="field-hint">${escapeHtml(data.graphStatusDetail || "Open Settings to refresh status from /status/cloud.")}</p>
         </div>
       </div>
 
@@ -1281,7 +1325,7 @@ ${doc.content}`);
               type="text"
               id="lancedbPath"
               class="setting-input"
-              value="${escapeHtml4(data.lancedbPath)}"
+              value="${escapeHtml(data.lancedbPath)}"
               placeholder="./data/lancedb"
               aria-label="LanceDB path"
               aria-describedby="lancedbPath-hint"
@@ -1295,7 +1339,7 @@ ${doc.content}`);
               type="text"
               id="historyPath"
               class="setting-input"
-              value="${escapeHtml4(data.historyPath)}"
+              value="${escapeHtml(data.historyPath)}"
               placeholder="./data/history/surgical_context.sqlite3"
               aria-label="SQLite history path"
               aria-describedby="historyPath-hint"
@@ -1398,7 +1442,6 @@ ${doc.content}`);
   }
 
   // src/webview/main.ts
-  var vscode = acquireVsCodeApi();
   var MainSurface = class {
     constructor() {
       this.surface = "chat";
@@ -1437,11 +1480,7 @@ ${doc.content}`);
             this.state = message.state;
             if (message.state.lastContext && !this.currentPromptContext) {
               this.currentPromptContext = message.state.lastContext;
-              this.currentContextSummary = this.summaryFromContext(message.state.lastContext);
-              this.currentImpact = this.impactFromContext(message.state.lastContext);
-              this.currentImpactSymbol = message.state.lastContext.primary_source.symbol;
-              this.currentImpactFilePath = message.state.lastContext.primary_source.file_path;
-              this.currentImpactSource = "prompt";
+              this.applyHydratedContext(message.state.lastContext);
               this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
             }
             this.render();
@@ -1514,7 +1553,7 @@ ${doc.content}`);
             this.currentImpactSymbol = message.symbol;
             this.currentImpactFilePath = message.impact.file_path || null;
             this.currentImpact = message.impact;
-            this.currentImpactDepth = this.clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
+            this.currentImpactDepth = clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
             this.currentImpactSource = "graph";
             this.impactError = null;
             this.render();
@@ -1531,11 +1570,7 @@ ${doc.content}`);
             this.currentPromptContext = message.context;
             this.intentMatches = null;
             if (message.context) {
-              this.currentContextSummary = this.summaryFromContext(message.context);
-              this.currentImpact = this.impactFromContext(message.context);
-              this.currentImpactSymbol = message.context.primary_source.symbol;
-              this.currentImpactFilePath = message.context.primary_source.file_path;
-              this.currentImpactSource = "prompt";
+              this.applyHydratedContext(message.context);
             }
             this.render();
             break;
@@ -1716,55 +1751,40 @@ ${doc.content}`);
       const symbol = this.currentImpactSymbol || this.currentPromptContext?.primary_source.symbol || this.state?.workspace.selectedSymbol || "No symbol selected";
       const selectedPromptText = this.selectedPromptText();
       const subtitle = selectedPromptText || "Related code and files for the selected prompt.";
+      const chrome = this.renderChrome();
       if (this.impactLoading) {
-        return `
-        <section class="surface surface-impact" aria-label="Impact analysis">
-          ${this.renderChrome()}
-          <div class="surface-title">Impact Analysis</div>
-          <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-          <div class="loading-state">Loading impact analysis...</div>
-        </section>
-      `;
+        return renderImpactSurfaceShell(chrome, subtitle, '<div class="loading-state">Loading impact analysis...</div>');
       }
       if (this.impactError) {
-        return `
-        <section class="surface surface-impact" aria-label="Impact analysis">
-          ${this.renderChrome()}
-          <div class="surface-title">Impact Analysis</div>
-          <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-          <div class="error-state">${escapeHtml(this.impactError)}</div>
-          <button class="secondary-action" data-action="openChat">Back to Ask</button>
-        </section>
-      `;
+        return renderImpactSurfaceShell(
+          chrome,
+          subtitle,
+          `<div class="error-state">${escapeHtml(this.impactError)}</div>
+          <button class="secondary-action" data-action="openChat">Back to Ask</button>`
+        );
       }
       if (!this.currentImpact) {
-        return `
-        <section class="surface surface-impact" aria-label="Impact analysis">
-          ${this.renderChrome()}
-          <div class="surface-title">Impact Analysis</div>
-          <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-          <div class="empty-state">Select a symbol to see its impact.</div>
-          <button class="primary-action" data-action="showImpact">Analyze Current Symbol</button>
-        </section>
-      `;
+        return renderImpactSurfaceShell(
+          chrome,
+          subtitle,
+          `<div class="empty-state">Select a symbol to see its impact.</div>
+          <button class="primary-action" data-action="showImpact">Analyze Current Symbol</button>`
+        );
       }
-      return `
-      <section class="surface surface-impact" aria-label="Impact analysis">
-        ${this.renderChrome()}
-        <div class="surface-title">Impact Analysis</div>
-        <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
-        ${renderImpactWorkspace(
-        this.currentImpact,
-        symbol,
-        this.currentImpactSource === "prompt" ? "prompt context" : "live graph",
-        { depth: this.currentImpactDepth }
-      )}
+      return renderImpactSurfaceShell(
+        chrome,
+        subtitle,
+        `${renderImpactWorkspace(
+          this.currentImpact,
+          symbol,
+          this.currentImpactSource === "prompt" ? "prompt context" : "live graph",
+          { depth: this.currentImpactDepth }
+        )}
         <div class="surface-footer">
           <span>${this.currentImpactSource === "prompt" ? "From selected ask" : "Graph built just now"}</span>
           <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
-        </div>
-      </section>
-    `;
+        </div>`
+      );
     }
     renderInspectorSurface() {
       const context = this.currentPromptContext;
@@ -2072,7 +2092,7 @@ ${doc.content}`);
       const slider = event.currentTarget;
       if (!slider) return;
       const output = slider.closest(".impact-depth-control")?.querySelector("output");
-      const depth = this.clampImpactDepth(Number(slider.value));
+      const depth = clampImpactDepth(Number(slider.value));
       if (output) {
         output.textContent = `d${depth}`;
       }
@@ -2080,14 +2100,10 @@ ${doc.content}`);
     changeImpactDepth(event) {
       const slider = event.currentTarget;
       if (!slider) return;
-      const depth = this.clampImpactDepth(Number(slider.value));
+      const depth = clampImpactDepth(Number(slider.value));
       if (depth === this.currentImpactDepth && this.currentImpactSource === "graph") return;
       this.currentImpactDepth = depth;
       this.requestImpactForActiveSymbol();
-    }
-    clampImpactDepth(depth) {
-      if (!Number.isFinite(depth)) return 3;
-      return Math.max(1, Math.min(4, Math.round(depth)));
     }
     openRelatedImpactFiles() {
       const filePaths = Array.from(new Set(this.currentImpact?.affected_files || [])).filter(Boolean).slice(0, 12);
@@ -2467,14 +2483,18 @@ ${doc.content}`);
     activatePromptContext(requestId, context) {
       this.selectedPromptRequestId = requestId;
       this.currentPromptContext = context;
-      this.currentContextSummary = this.summaryFromContext(context);
-      this.currentImpact = this.impactFromContext(context);
-      this.currentImpactSymbol = context.primary_source.symbol;
-      this.currentImpactFilePath = context.primary_source.file_path;
-      this.currentImpactSource = "prompt";
-      this.currentImpactDepth = this.clampImpactDepth(this.currentImpact.max_depth || this.currentImpactDepth);
+      this.applyHydratedContext(context);
       this.impactError = null;
       this.syncSelectedRequestToHost(requestId, context);
+    }
+    applyHydratedContext(context) {
+      const hydrated = hydrateFromPromptContext(context);
+      this.currentContextSummary = hydrated.summary;
+      this.currentImpact = hydrated.impact;
+      this.currentImpactSymbol = hydrated.symbol;
+      this.currentImpactFilePath = hydrated.filePath;
+      this.currentImpactDepth = hydrated.depth;
+      this.currentImpactSource = "prompt";
     }
     syncSelectedRequestToHost(requestId, context) {
       const assistantMessage = this.messages.get(requestId);
@@ -2496,41 +2516,6 @@ ${doc.content}`);
       }
       const bySymbol = entries.filter((message) => message.context?.primary_source.symbol === context.primary_source.symbol).sort((left, right) => right.timestamp - left.timestamp);
       return bySymbol[0]?.requestId || null;
-    }
-    summaryFromContext(context) {
-      return buildContextSummary(context);
-    }
-    impactFromContext(context) {
-      const affectedSymbols = context.graph_context.map((symbol) => ({
-        symbol: symbol.symbol,
-        file_path: symbol.file_path,
-        relation: symbol.relation,
-        direction: symbol.direction,
-        role: symbol.role,
-        kind: symbol.kind,
-        edge_type: symbol.edge_type,
-        depth: symbol.depth,
-        utility_score: symbol.utility_score,
-        relevance_score: symbol.relevance_score,
-        is_dirty: symbol.is_dirty
-      }));
-      const affectedFiles = Array.from(new Set(
-        [
-          context.primary_source.file_path,
-          ...context.graph_context.map((symbol) => symbol.file_path),
-          ...context.documentation.map((doc) => doc.source_file)
-        ].filter(Boolean)
-      ));
-      return {
-        symbol: context.primary_source.symbol,
-        symbol_uid: context.primary_source.symbol,
-        file_path: context.primary_source.file_path,
-        affected_symbols: affectedSymbols,
-        affected_files: affectedFiles,
-        affected_count: affectedSymbols.length,
-        affected_file_count: affectedFiles.length,
-        max_depth: affectedSymbols.reduce((max, symbol) => typeof symbol.depth === "number" ? Math.max(max, symbol.depth) : max, 0)
-      };
     }
     selectedPromptText() {
       if (!this.selectedPromptRequestId) return null;
@@ -2725,10 +2710,6 @@ ${doc.content}`);
       vscode.postMessage(message);
     }
   };
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => new MainSurface());
-  } else {
-    new MainSurface();
-  }
+  bootWebview(() => new MainSurface());
 })();
 //# sourceMappingURL=main.js.map

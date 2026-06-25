@@ -1,15 +1,7 @@
 import { IntentMatch, PromptContextPayload } from '../../context_engineClient';
+import { escapeHtml } from './html';
 
-export function escapeHtml(text: string): string {
-  const map: { [key: string]: string } = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;',
-  };
-  return text.replace(/[&<>"']/g, m => map[m]);
-}
+export { escapeHtml };
 
 export function renderIntentTab(matches: IntentMatch[] | null): string {
   if (matches === null) {
