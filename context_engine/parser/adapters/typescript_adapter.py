@@ -2647,8 +2647,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
         )
         seen.add(key)
 
+    @staticmethod
     def _fallback_symbol_span(
-        self,
         source_code: str,
         start_offset: int,
     ) -> tuple[int, int, str]:

@@ -14,8 +14,7 @@ sys.path.insert(0, str(ROOT))
 from context_engine.parser.adapters.python_adapter import PythonAdapter  # noqa: E402
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter  # noqa: E402
 from QA.output_paths import (  # noqa: E402
-    default_report_basename,
-    lookup_allowed_repo_checkout,
+    require_allowed_choice,
     write_json_report,
 )
 
@@ -29,6 +28,12 @@ _REPO_CHECKOUTS: dict[str, Path] = {
     "express": (QA / "repos" / "express").resolve(),
 }
 
+_DEFAULT_REPORT_NAMES: dict[str, str] = {
+    "django": "proxy_audit_static_django.json",
+    "pydantic": "proxy_audit_static_pydantic.json",
+    "express": "proxy_audit_static_express.json",
+}
+
 _SKIP_PARTS = frozenset({".git", "__pycache__", ".tox", "node_modules"})
 
 
@@ -36,9 +41,18 @@ def _skip_path(path: Path) -> bool:
     return any(part in _SKIP_PARTS for part in path.parts)
 
 
-def _read_source(path: Path) -> str | None:
+def _read_source_under_root(path: Path, root: Path) -> str | None:
+    """Read a file only when it resolves under the trusted scan root."""
+    resolved_root = root.resolve()
+    resolved_path = path.resolve()
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        resolved_path.relative_to(resolved_root)
+    except ValueError:
+        return None
+    if not resolved_path.is_file():
+        return None
+    try:
+        return resolved_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
 
@@ -78,10 +92,10 @@ def _scan_python_tree(root: Path) -> dict:
     for path in sorted(root.rglob("*.py")):
         if _skip_path(path):
             continue
-        source = _read_source(path)
+        source = _read_source_under_root(path, root)
         if source is None:
             continue
-        rel = str(path.relative_to(root))
+        rel = str(path.resolve().relative_to(root.resolve()))
         files += 1
         bindings.extend(adapter.extract_proxy_bindings(source, rel))
         for call in adapter.extract_calls_from_source(source, rel):
@@ -111,11 +125,10 @@ def _scan_typescript_tree(root: Path) -> dict:
             continue
         if any(part in {".git", "node_modules", "dist", "build"} for part in path.parts):
             continue
-        try:
-            source = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        source = _read_source_under_root(path, root)
+        if source is None:
             continue
-        rel = str(path.relative_to(root))
+        rel = str(path.resolve().relative_to(root.resolve()))
         files += 1
         for call in adapter.extract_calls_from_source(source, rel):
             tier = call.get("tier", "unknown")
@@ -138,25 +151,26 @@ def _scan_typescript_tree(root: Path) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True, choices=["django", "pydantic", "express"])
+    parser.add_argument("--repo", required=True, choices=sorted(_ALLOWED_REPOS))
     parser.add_argument("--report", default="")
     args = parser.parse_args()
 
-    root = lookup_allowed_repo_checkout(args.repo, allowed=_ALLOWED_REPOS, checkouts=_REPO_CHECKOUTS)
+    repo = require_allowed_choice(args.repo, _ALLOWED_REPOS, label="repo")
+    root = _REPO_CHECKOUTS[repo]
     if not root.is_dir():
         print(f"missing checkout: {root}", file=sys.stderr)
         return 1
 
-    if args.repo == "express":
-        payload = {"repo": args.repo, "scan": _scan_typescript_tree(root)}
+    if repo == "express":
+        payload = {"repo": repo, "scan": _scan_typescript_tree(root)}
     else:
-        payload = {"repo": args.repo, "scan": _scan_python_tree(root)}
+        payload = {"repo": repo, "scan": _scan_python_tree(root)}
 
     report_arg = args.report.strip() or None
     out = write_json_report(
         payload,
         report_arg,
-        default_name=default_report_basename("proxy_audit_static", args.repo, _ALLOWED_REPOS),
+        default_name=_DEFAULT_REPORT_NAMES[repo],
     )
     print(json.dumps(payload, indent=2))
     print(f"\nReport: {out}")
