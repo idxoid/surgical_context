@@ -98,38 +98,58 @@ def _originating_class(method: MethodRecord, class_by_uid: dict[str, ClassRecord
     return method.owner_class_name or _owner_class_from_qualified_name(method.qualified_name) or ""
 
 
+def _api_surface_for_class(
+    class_uid: str,
+    direct_methods_by_class: dict[str, list[MethodRecord]],
+    inheritance: dict[str, list[str]],
+    class_by_uid: dict[str, ClassRecord],
+    cache: dict[str, dict[str, MethodRecord]],
+    visiting: set[str] | None = None,
+) -> dict[str, MethodRecord]:
+    cached = cache.get(class_uid)
+    if cached is not None:
+        return cached
+    if visiting is None:
+        visiting = set()
+    if class_uid in visiting:
+        return {}
+    visiting.add(class_uid)
+
+    surface: dict[str, MethodRecord] = {}
+    for method in direct_methods_by_class.get(class_uid, []):
+        surface.setdefault(method.name, method)
+    for superclass_uid in inheritance.get(class_uid, []):
+        if superclass_uid not in class_by_uid:
+            continue
+        for name, method in _api_surface_for_class(
+            superclass_uid,
+            direct_methods_by_class,
+            inheritance,
+            class_by_uid,
+            cache,
+            visiting,
+        ).items():
+            surface.setdefault(name, method)
+
+    visiting.remove(class_uid)
+    cache[class_uid] = surface
+    return surface
+
+
 def _build_api_surface_cache(
     direct_methods_by_class: dict[str, list[MethodRecord]],
     inheritance: dict[str, list[str]],
     class_by_uid: dict[str, ClassRecord],
 ) -> dict[str, dict[str, MethodRecord]]:
     cache: dict[str, dict[str, MethodRecord]] = {}
-
-    def api_surface(class_uid: str, visiting: set[str] | None = None) -> dict[str, MethodRecord]:
-        cached = cache.get(class_uid)
-        if cached is not None:
-            return cached
-        if visiting is None:
-            visiting = set()
-        if class_uid in visiting:
-            return {}
-        visiting.add(class_uid)
-
-        surface: dict[str, MethodRecord] = {}
-        for method in direct_methods_by_class.get(class_uid, []):
-            surface.setdefault(method.name, method)
-        for superclass_uid in inheritance.get(class_uid, []):
-            if superclass_uid not in class_by_uid:
-                continue
-            for name, method in api_surface(superclass_uid, visiting).items():
-                surface.setdefault(name, method)
-
-        visiting.remove(class_uid)
-        cache[class_uid] = surface
-        return surface
-
     for cls in class_by_uid:
-        api_surface(cls)
+        _api_surface_for_class(
+            cls,
+            direct_methods_by_class,
+            inheritance,
+            class_by_uid,
+            cache,
+        )
     return cache
 
 

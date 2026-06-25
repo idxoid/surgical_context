@@ -186,6 +186,45 @@ class PythonAdapter(TreeSitterAdapter):
         return classes
 
     @classmethod
+    def _resolve_identifier_construction_callee(
+        cls,
+        name: str,
+        *,
+        import_bindings: dict[str, str],
+        local_classes: set[str],
+        module: str,
+    ) -> tuple[str, str, bool] | None:
+        if not name:
+            return None
+        if name in local_classes:
+            return (name, f"{module}.{name}", False)
+        if name in import_bindings:
+            return (name, import_bindings[name], True)
+        if name in cls._BUILTIN_CALLABLE_NAMES:
+            return None
+        return None
+
+    @classmethod
+    def _resolve_attribute_construction_callee(
+        cls,
+        fn_node,
+        *,
+        import_bindings: dict[str, str],
+    ) -> tuple[str, str, bool] | None:
+        head = fn_node.child_by_field_name("object")
+        attr = fn_node.child_by_field_name("attribute")
+        if head is None or attr is None or head.type != "identifier":
+            return None
+        head_name = _node_text(head)
+        attr_name = _node_text(attr)
+        if not head_name or not attr_name:
+            return None
+        if head_name in import_bindings:
+            qn = f"{import_bindings[head_name]}.{attr_name}"
+            return (attr_name, qn, True)
+        return None
+
+    @classmethod
     def _resolve_construction_callee(
         cls,
         fn_node,
@@ -207,32 +246,18 @@ class PythonAdapter(TreeSitterAdapter):
         """
         if fn_node is None:
             return None
-
         if fn_node.type == "identifier":
-            name = _node_text(fn_node)
-            if not name:
-                return None
-            if name in local_classes:
-                return (name, f"{module}.{name}", False)
-            if name in import_bindings:
-                return (name, import_bindings[name], True)
-            if name in cls._BUILTIN_CALLABLE_NAMES:
-                return None  # built-in: don't model as a graph anchor
-            return None  # unresolved → drop
-
+            return cls._resolve_identifier_construction_callee(
+                _node_text(fn_node),
+                import_bindings=import_bindings,
+                local_classes=local_classes,
+                module=module,
+            )
         if fn_node.type == "attribute":
-            head = fn_node.child_by_field_name("object")
-            attr = fn_node.child_by_field_name("attribute")
-            if head is None or attr is None or head.type != "identifier":
-                return None
-            head_name = _node_text(head)
-            attr_name = _node_text(attr)
-            if not head_name or not attr_name:
-                return None
-            if head_name in import_bindings:
-                qn = f"{import_bindings[head_name]}.{attr_name}"
-                return (attr_name, qn, True)
-            return None
+            return cls._resolve_attribute_construction_callee(
+                fn_node,
+                import_bindings=import_bindings,
+            )
         return None
 
     def _module_constructor_variables(
@@ -324,6 +349,30 @@ class PythonAdapter(TreeSitterAdapter):
             language="python",
         )
 
+    @staticmethod
+    def _apply_python_symbol_shape_markers(
+        symbols: list,
+        shapes: dict[str, dict[str, bool]] | None,
+        iteration: dict[str, dict[str, bool]] | None,
+    ) -> None:
+        if not shapes and not iteration:
+            return
+        for symbol in symbols:
+            shape = shapes.get(symbol.name) if shapes else None
+            if shape is not None:
+                if shape.get("mapping"):
+                    symbol.returns_mapping = True
+                if shape.get("sequence"):
+                    symbol.returns_sequence = True
+                if shape.get("constructed"):
+                    symbol.returns_constructed_type = True
+            it = iteration.get(symbol.name) if iteration else None
+            if it is not None:
+                if it.get("iterates_attr_call"):
+                    symbol.iterates_attr_call = True
+                if it.get("assembles_mapping_in_loop"):
+                    symbol.assembles_mapping_in_loop = True
+
     def extract_symbols(self, source_code: str, file_path: str, *, tree=None):
         """Patch SymbolMetadata with return-shape AST markers after the base
         extraction. Each function symbol gains booleans describing the shape
@@ -359,22 +408,7 @@ class PythonAdapter(TreeSitterAdapter):
         symbols.extend(module_var_symbols)
         shapes = self._function_return_shapes(tree)
         iteration = self._function_iteration_shapes(tree)
-        if shapes or iteration:
-            for symbol in symbols:
-                shape = shapes.get(symbol.name) if shapes else None
-                if shape is not None:
-                    if shape.get("mapping"):
-                        symbol.returns_mapping = True
-                    if shape.get("sequence"):
-                        symbol.returns_sequence = True
-                    if shape.get("constructed"):
-                        symbol.returns_constructed_type = True
-                it = iteration.get(symbol.name) if iteration else None
-                if it is not None:
-                    if it.get("iterates_attr_call"):
-                        symbol.iterates_attr_call = True
-                    if it.get("assembles_mapping_in_loop"):
-                        symbol.assembles_mapping_in_loop = True
+        self._apply_python_symbol_shape_markers(symbols, shapes, iteration)
         from context_engine.parser.docstring_extract import attach_docstrings
 
         attach_docstrings(
@@ -414,6 +448,20 @@ class PythonAdapter(TreeSitterAdapter):
         return out
 
     @classmethod
+    def _apply_for_statement_iteration_flags(cls, n, flags: dict[str, bool]) -> None:
+        left = n.child_by_field_name("left")
+        right = n.child_by_field_name("right")
+        fbody = n.child_by_field_name("body")
+        if fbody is None:
+            return
+        if right is not None and right.type == "attribute":
+            loop_var = _node_text(left) if (left is not None and left.type == "identifier") else ""
+            if cls._for_body_calls_on(fbody, loop_var):
+                flags["iterates_attr_call"] = True
+        if cls._for_body_writes_subscript(fbody):
+            flags["assembles_mapping_in_loop"] = True
+
+    @classmethod
     def _collect_iteration_shape(cls, body) -> dict[str, bool]:
         """Per-function iteration-shape booleans.
 
@@ -437,28 +485,32 @@ class PythonAdapter(TreeSitterAdapter):
         while stack:
             n = stack.pop()
             if n.type in ("function_definition", "lambda"):
-                continue  # don't descend into a nested callable
+                continue
             if n.type == "for_statement":
-                left = n.child_by_field_name("left")
-                right = n.child_by_field_name("right")
                 fbody = n.child_by_field_name("body")
                 if fbody is None:
                     for child in n.children:
                         stack.append(child)
                     continue
-                # Strict attribute-iteration + method-call-on-loop-var.
-                if right is not None and right.type == "attribute":
-                    loop_var = (
-                        _node_text(left) if (left is not None and left.type == "identifier") else ""
-                    )
-                    if cls._for_body_calls_on(fbody, loop_var):
-                        flags["iterates_attr_call"] = True
-                # Permissive: any for-loop body that writes a subscript.
-                if cls._for_body_writes_subscript(fbody):
-                    flags["assembles_mapping_in_loop"] = True
+                cls._apply_for_statement_iteration_flags(n, flags)
             for child in n.children:
                 stack.append(child)
         return flags
+
+    @classmethod
+    def _is_nested_callable_boundary(cls, node) -> bool:
+        return node.type in ("function_definition", "lambda")
+
+    @classmethod
+    def _call_uses_loop_var(cls, fn, loop_var: str) -> bool:
+        if fn is None or fn.type != "attribute":
+            return False
+        obj = fn.child_by_field_name("object")
+        return (
+            obj is not None
+            and obj.type == "identifier"
+            and _node_text(obj) == loop_var
+        )
 
     @classmethod
     def _for_body_calls_on(cls, body, loop_var: str) -> bool:
@@ -468,17 +520,21 @@ class PythonAdapter(TreeSitterAdapter):
         stack = [body]
         while stack:
             n = stack.pop()
-            if n.type in ("function_definition", "lambda"):
+            if cls._is_nested_callable_boundary(n):
                 continue
             if n.type == "call":
                 fn = n.child_by_field_name("function")
-                if fn is not None and fn.type == "attribute":
-                    obj = fn.child_by_field_name("object")
-                    if obj is not None and obj.type == "identifier" and _node_text(obj) == loop_var:
-                        return True
-            for child in n.children:
-                stack.append(child)
+                if cls._call_uses_loop_var(fn, loop_var):
+                    return True
+            stack.extend(n.children)
         return False
+
+    @classmethod
+    def _is_subscript_assignment_target(cls, left) -> bool:
+        if left is None or left.type != "subscript":
+            return False
+        base = left.child_by_field_name("value")
+        return base is not None and base.type in ("identifier", "attribute")
 
     @classmethod
     def _for_body_writes_subscript(cls, body) -> bool:
@@ -486,16 +542,13 @@ class PythonAdapter(TreeSitterAdapter):
         stack = [body]
         while stack:
             n = stack.pop()
-            if n.type in ("function_definition", "lambda"):
+            if cls._is_nested_callable_boundary(n):
                 continue
             if n.type == "assignment":
                 left = n.child_by_field_name("left")
-                if left is not None and left.type == "subscript":
-                    base = left.child_by_field_name("value")
-                    if base is not None and base.type in ("identifier", "attribute"):
-                        return True
-            for child in n.children:
-                stack.append(child)
+                if cls._is_subscript_assignment_target(left):
+                    return True
+            stack.extend(n.children)
         return False
 
     _MAPPING_CTOR_NAMES = frozenset({"dict", "OrderedDict", "defaultdict", "Counter", "ChainMap"})
@@ -530,6 +583,33 @@ class PythonAdapter(TreeSitterAdapter):
         return out
 
     @classmethod
+    def _collect_local_return_assigns(cls, body) -> dict[str, str]:
+        local_assigns: dict[str, str] = {}
+        stack = [body]
+        while stack:
+            n = stack.pop()
+            if cls._is_nested_callable_boundary(n):
+                continue
+            if n.type == "assignment":
+                left = n.child_by_field_name("left")
+                right = n.child_by_field_name("right")
+                if left is not None and right is not None and left.type == "identifier":
+                    kind = cls._classify_return_expr(right)
+                    if kind:
+                        local_assigns[_node_text(left)] = kind
+            stack.extend(n.children)
+        return local_assigns
+
+    @classmethod
+    def _return_shape_from_statement(cls, expr, local_assigns: dict[str, str]) -> str:
+        if expr is None:
+            return ""
+        kind = cls._classify_return_expr(expr)
+        if not kind and expr.type == "identifier":
+            kind = local_assigns.get(_node_text(expr), "")
+        return kind
+
+    @classmethod
     def _collect_return_shape(cls, body) -> dict[str, bool]:
         """Walk a function body for top-level ``return X`` shape classification.
 
@@ -547,43 +627,42 @@ class PythonAdapter(TreeSitterAdapter):
         returns a dict doesn't paint the outer function as a mapping
         returner.
         """
-        # Pass 1: identifier assignments whose RHS is a recognised shape.
-        local_assigns: dict[str, str] = {}
-        stack = [body]
-        while stack:
-            n = stack.pop()
-            if n.type in ("function_definition", "lambda"):
-                continue
-            if n.type == "assignment":
-                left = n.child_by_field_name("left")
-                right = n.child_by_field_name("right")
-                if left is not None and right is not None and left.type == "identifier":
-                    kind = cls._classify_return_expr(right)
-                    if kind:
-                        local_assigns[_node_text(left)] = kind
-            for child in n.children:
-                stack.append(child)
-
-        # Pass 2: return statements.
+        local_assigns = cls._collect_local_return_assigns(body)
         shape = {"mapping": False, "sequence": False, "constructed": False}
         stack = [body]
         while stack:
             n = stack.pop()
             if n.type == "return_statement":
                 expr = n.named_children[0] if n.named_children else None
-                if expr is None:
-                    continue
-                kind = cls._classify_return_expr(expr)
-                if not kind and expr.type == "identifier":
-                    kind = local_assigns.get(_node_text(expr), "")
+                kind = cls._return_shape_from_statement(expr, local_assigns)
                 if kind:
                     shape[kind] = True
                 continue
-            if n.type in ("function_definition", "lambda"):
+            if cls._is_nested_callable_boundary(n):
                 continue
-            for child in n.children:
-                stack.append(child)
+            stack.extend(n.children)
         return shape
+
+    @classmethod
+    def _classify_identifier_call_return(cls, fn) -> str:
+        name = _node_text(fn)
+        if name in cls._MAPPING_CTOR_NAMES:
+            return "mapping"
+        if name in cls._SEQUENCE_CTOR_NAMES:
+            return "sequence"
+        if name and name[:1].isupper():
+            return "constructed"
+        return ""
+
+    @classmethod
+    def _classify_attribute_call_return(cls, fn) -> str:
+        attr = fn.child_by_field_name("attribute")
+        if attr is None or attr.type != "identifier":
+            return ""
+        name = _node_text(attr)
+        if name and name[:1].isupper():
+            return "constructed"
+        return ""
 
     @classmethod
     def _classify_return_expr(cls, expr) -> str:
@@ -593,30 +672,43 @@ class PythonAdapter(TreeSitterAdapter):
             return "mapping"
         if t in ("list", "list_comprehension", "tuple", "set", "set_comprehension"):
             return "sequence"
-        if t == "call":
-            fn = expr.child_by_field_name("function")
-            if fn is None:
-                return ""
-            if fn.type == "identifier":
-                name = _node_text(fn)
-                if name in cls._MAPPING_CTOR_NAMES:
-                    return "mapping"
-                if name in cls._SEQUENCE_CTOR_NAMES:
-                    return "sequence"
-                # ``return SomeType(...)`` — a Capitalised identifier
-                # is heuristically a constructor call. Lower-case
-                # identifiers are functions, not constructed types.
-                if name and name[:1].isupper():
-                    return "constructed"
-            elif fn.type == "attribute":
-                # ``return mod.SomeType(...)`` — same heuristic on the
-                # last segment.
-                attr = fn.child_by_field_name("attribute")
-                if attr is not None and attr.type == "identifier":
-                    name = _node_text(attr)
-                    if name and name[:1].isupper():
-                        return "constructed"
+        if t != "call":
+            return ""
+        fn = expr.child_by_field_name("function")
+        if fn is None:
+            return ""
+        if fn.type == "identifier":
+            return cls._classify_identifier_call_return(fn)
+        if fn.type == "attribute":
+            return cls._classify_attribute_call_return(fn)
         return ""
+
+    def _direct_import_edges(self, body: str, file_path: str) -> list[ImportEdge]:
+        imports: list[ImportEdge] = []
+        for part in body.split(","):
+            module = part.strip().split(" as ")[0].strip()
+            if module and not self._is_external(module, file_path=file_path):
+                imports.append(ImportEdge(file_path, module, "direct"))
+        return imports
+
+    def _from_import_edge(self, line: str, file_path: str) -> ImportEdge | None:
+        match = line.split(" import ")
+        if len(match) != 2:
+            return None
+        module = match[0][5:].strip()
+        if not module or module == ".":
+            return None
+        if self._is_external(module.lstrip("."), file_path=file_path):
+            return None
+        return ImportEdge(file_path, module, "from_package")
+
+    def _import_edges_from_line(self, stripped: str, file_path: str) -> list[ImportEdge]:
+        if stripped.startswith("import "):
+            return self._direct_import_edges(stripped[7:], file_path)
+        if stripped.startswith("from "):
+            edge = self._from_import_edge(stripped, file_path)
+            return [edge] if edge is not None else []
+        return []
 
     def extract_imports(self, source_code: str, file_path: str, *, tree=None) -> list[ImportEdge]:
         """Extract only intra-project import statements (skips stdlib and third-party).
@@ -624,25 +716,9 @@ class PythonAdapter(TreeSitterAdapter):
         Imports are line-based regex; ``tree`` is unused but accepted for
         ``extract_all`` parity.
         """
-        imports = []
+        imports: list[ImportEdge] = []
         for line in source_code.split("\n"):
-            line = line.strip()
-            if line.startswith("import "):
-                parts = line[7:].split(",")
-                for part in parts:
-                    module = part.strip().split(" as ")[0].strip()
-                    if module and not self._is_external(module, file_path=file_path):
-                        imports.append(ImportEdge(file_path, module, "direct"))
-            elif line.startswith("from "):
-                match = line.split(" import ")
-                if len(match) == 2:
-                    module = match[0][5:].strip()
-                    if (
-                        module
-                        and module != "."
-                        and not self._is_external(module.lstrip("."), file_path=file_path)
-                    ):
-                        imports.append(ImportEdge(file_path, module, "from_package"))
+            imports.extend(self._import_edges_from_line(line.strip(), file_path))
         return imports
 
     def _is_external(self, module: str, *, file_path: str | None = None) -> bool:
@@ -687,6 +763,37 @@ class PythonAdapter(TreeSitterAdapter):
         except Exception:
             return frozenset()
 
+    def _inheritance_edges_for_class(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+    ) -> list[InheritanceEdge]:
+        args = node.child_by_field_name("superclasses")
+        if args is None:
+            args = next((c for c in node.children if c.type == "argument_list"), None)
+        if args is None:
+            return []
+        subclass_uid = self._uid_for_node(node, source_code, file_path)
+        edges: list[InheritanceEdge] = []
+        for base_node in args.named_children:
+            if base_node.type == "comment":
+                continue
+            base_name = self._inheritance_base_name(base_node)
+            if not base_name:
+                continue
+            base_path = self._inheritance_base_path(base_node) or base_name
+            edges.append(
+                InheritanceEdge(
+                    subclass_uid=subclass_uid,
+                    superclass_name=base_name,
+                    is_interface=False,
+                    superclass_path=base_path,
+                )
+            )
+        return edges
+
     def extract_inheritance(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[InheritanceEdge]:
@@ -702,26 +809,9 @@ class PythonAdapter(TreeSitterAdapter):
         for node in self._iter_nodes(tree.root_node):
             if node.type != "class_definition":
                 continue
-            args = node.child_by_field_name("superclasses")
-            if args is None:
-                args = next((c for c in node.children if c.type == "argument_list"), None)
-            if args is None:
-                continue
-            subclass_uid = self._uid_for_node(node, source_code, file_path)
-            for base_node in args.named_children:
-                if base_node.type == "comment":
-                    continue
-                base_name = self._inheritance_base_name(base_node)
-                if base_name:
-                    base_path = self._inheritance_base_path(base_node) or base_name
-                    edges.append(
-                        InheritanceEdge(
-                            subclass_uid=subclass_uid,
-                            superclass_name=base_name,
-                            is_interface=False,
-                            superclass_path=base_path,
-                        )
-                    )
+            edges.extend(
+                self._inheritance_edges_for_class(node, source_code=source_code, file_path=file_path)
+            )
         return edges
 
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
@@ -763,6 +853,103 @@ class PythonAdapter(TreeSitterAdapter):
             )
         return out
 
+    @staticmethod
+    def _class_method_map(body) -> dict[str, object]:
+        methods: dict[str, object] = {}
+        for child in body.children:
+            fn = child
+            if child.type == "decorated_definition":
+                fn = child.child_by_field_name("definition")
+            if fn is None or fn.type != "function_definition":
+                continue
+            fn_name = fn.child_by_field_name("name")
+            if fn_name is not None:
+                methods[_node_text(fn_name)] = fn
+        return methods
+
+    def _proxy_return_methods(
+        self,
+        methods: dict[str, object],
+        import_bindings: dict[str, str],
+    ) -> dict[str, str]:
+        returns_global: dict[str, str] = {}
+        for mname, fn in methods.items():
+            global_qn = self._method_returns_imported_global(fn, import_bindings)
+            if global_qn:
+                returns_global[mname] = global_qn
+        return returns_global
+
+    def _local_proxy_sources(
+        self,
+        fn_body,
+        returns_global: dict[str, str],
+    ) -> dict[str, str]:
+        local_src: dict[str, str] = {}
+        reassigned: set[str] = set()
+        for assign in self._iter_body_nodes(fn_body):
+            if assign.type != "assignment":
+                continue
+            left = assign.child_by_field_name("left")
+            right = assign.child_by_field_name("right")
+            if left is None or left.type != "identifier":
+                continue
+            lname = _node_text(left)
+            method_name = self._self_method_call_name(right)
+            if method_name is not None and method_name in returns_global:
+                if lname in local_src or lname in reassigned:
+                    local_src.pop(lname, None)
+                    reassigned.add(lname)
+                else:
+                    local_src[lname] = method_name
+                continue
+            if lname in local_src:
+                local_src.pop(lname, None)
+            reassigned.add(lname)
+        return local_src
+
+    def _proxy_member_calls_from_method(
+        self,
+        fn,
+        *,
+        local_src: dict[str, str],
+        returns_global: dict[str, str],
+        caller_uid: str,
+        file_path: str,
+        seen_sites: set[tuple[str, int]],
+        out: list[dict],
+    ) -> None:
+        fn_body = fn.child_by_field_name("body")
+        if fn_body is None:
+            return
+        for call in self._iter_body_nodes(fn_body):
+            if call.type != "call":
+                continue
+            func = call.child_by_field_name("function")
+            if func is None or func.type != "attribute":
+                continue
+            obj = func.child_by_field_name("object")
+            attr = func.child_by_field_name("attribute")
+            if obj is None or obj.type != "identifier" or attr is None:
+                continue
+            recv = _node_text(obj)
+            if recv not in local_src:
+                continue
+            callee_name = _node_text(attr)
+            line = call.start_point[0] + 1
+            key = (callee_name, line)
+            if key in seen_sites:
+                continue
+            seen_sites.add(key)
+            out.append(
+                {
+                    "caller_uid": caller_uid,
+                    "callee_name": callee_name,
+                    "returns_global_qn": returns_global[local_src[recv]],
+                    "call_site_line": line,
+                    "file_path": file_path,
+                }
+            )
+
     def extract_self_method_proxy_calls(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -798,89 +985,28 @@ class PythonAdapter(TreeSitterAdapter):
             body = cls.child_by_field_name("body")
             if body is None:
                 continue
-            methods: dict[str, object] = {}
-            for child in body.children:
-                fn = child
-                if child.type == "decorated_definition":
-                    fn = child.child_by_field_name("definition")
-                if fn is None or fn.type != "function_definition":
-                    continue
-                fn_name = fn.child_by_field_name("name")
-                if fn_name is not None:
-                    methods[_node_text(fn_name)] = fn
-
-            # Phase 1: which methods return an imported global (directly or via a
-            # self/cls attribute alias assigned in the method body)?
-            returns_global: dict[str, str] = {}
-            for mname, fn in methods.items():
-                g = self._method_returns_imported_global(fn, import_bindings)
-                if g:
-                    returns_global[mname] = g
+            methods = self._class_method_map(body)
+            returns_global = self._proxy_return_methods(methods, import_bindings)
             if not returns_global:
                 continue
-
-            # Phase 2: in every method, find ``L = self.M()`` (M a proxy-return
-            # method) then member calls ``L.attr(...)``.
+            seen_sites: set[tuple[str, int]] = set()
             for fn in methods.values():
-                caller_uid = self._uid_for_node(fn, source_code, file_path)
                 fn_body = cast(Any, fn).child_by_field_name("body")
                 if fn_body is None:
                     continue
-                # local -> proxy-return method M (only single, direct binding)
-                local_src: dict[str, str] = {}
-                reassigned: set[str] = set()
-                for assign in self._iter_body_nodes(fn_body):
-                    if assign.type != "assignment":
-                        continue
-                    left = assign.child_by_field_name("left")
-                    right = assign.child_by_field_name("right")
-                    if left is None or left.type != "identifier":
-                        continue
-                    lname = _node_text(left)
-                    m = self._self_method_call_name(right)
-                    if m is not None and m in returns_global:
-                        if lname in local_src or lname in reassigned:
-                            # ambiguous: assigned more than once — drop it
-                            local_src.pop(lname, None)
-                            reassigned.add(lname)
-                        else:
-                            local_src[lname] = m
-                    else:
-                        # any other binding to the same name poisons it
-                        if lname in local_src:
-                            local_src.pop(lname, None)
-                        reassigned.add(lname)
+                caller_uid = self._uid_for_node(fn, source_code, file_path)
+                local_src = self._local_proxy_sources(fn_body, returns_global)
                 if not local_src:
                     continue
-                seen_sites: set[tuple[str, int]] = set()
-                for call in self._iter_body_nodes(fn_body):
-                    if call.type != "call":
-                        continue
-                    func = call.child_by_field_name("function")
-                    if func is None or func.type != "attribute":
-                        continue
-                    obj = func.child_by_field_name("object")
-                    attr = func.child_by_field_name("attribute")
-                    if obj is None or obj.type != "identifier" or attr is None:
-                        continue
-                    recv = _node_text(obj)
-                    if recv not in local_src:
-                        continue
-                    callee_name = _node_text(attr)
-                    line = call.start_point[0] + 1
-                    key = (callee_name, line)
-                    if key in seen_sites:
-                        continue
-                    seen_sites.add(key)
-                    out.append(
-                        {
-                            "caller_uid": caller_uid,
-                            "callee_name": callee_name,
-                            "returns_global_qn": returns_global[local_src[recv]],
-                            "call_site_line": line,
-                            "file_path": file_path,
-                        }
-                    )
+                self._proxy_member_calls_from_method(
+                    fn,
+                    local_src=local_src,
+                    returns_global=returns_global,
+                    caller_uid=caller_uid,
+                    file_path=file_path,
+                    seen_sites=seen_sites,
+                    out=out,
+                )
         return out
 
     def _iter_body_nodes(self, body):
@@ -910,6 +1036,66 @@ class PythonAdapter(TreeSitterAdapter):
             return None
         return _node_text(attr)
 
+    @staticmethod
+    def _is_self_or_cls(obj) -> bool:
+        return obj is not None and _node_text(obj) in ("self", "cls")
+
+    def _import_global_aliases_in_method(
+        self,
+        body,
+        import_bindings: dict[str, str],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        attr_alias: dict[str, str] = {}
+        name_alias: dict[str, str] = {}
+        for assign in self._iter_body_nodes(body):
+            if assign.type != "assignment":
+                continue
+            left = assign.child_by_field_name("left")
+            right = assign.child_by_field_name("right")
+            if left is None or right is None or right.type != "identifier":
+                continue
+            global_qn = import_bindings.get(_node_text(right))
+            if not global_qn:
+                continue
+            if left.type == "attribute":
+                lo = left.child_by_field_name("object")
+                la = left.child_by_field_name("attribute")
+                if self._is_self_or_cls(lo) and la is not None:
+                    attr_alias[_node_text(la)] = global_qn
+            elif left.type == "identifier":
+                name_alias[_node_text(left)] = global_qn
+        return attr_alias, name_alias
+
+    def _returned_import_globals_from_body(
+        self,
+        body,
+        import_bindings: dict[str, str],
+        attr_alias: dict[str, str],
+        name_alias: dict[str, str],
+    ) -> set[str]:
+        found: set[str] = set()
+        for ret in self._iter_body_nodes(body):
+            if ret.type != "return_statement":
+                continue
+            expr = ret.named_children[0] if ret.named_children else None
+            if expr is None:
+                continue
+            if expr.type == "identifier":
+                name = _node_text(expr)
+                global_qn = import_bindings.get(name) or name_alias.get(name)
+                if global_qn:
+                    found.add(global_qn)
+                continue
+            if expr.type != "attribute":
+                continue
+            lo = expr.child_by_field_name("object")
+            la = expr.child_by_field_name("attribute")
+            if self._is_self_or_cls(lo) and la is not None:
+                global_qn = attr_alias.get(_node_text(la))
+                if global_qn:
+                    found.add(global_qn)
+        return found
+
     def _method_returns_imported_global(self, fn, import_bindings: dict[str, str]) -> str:
         """Qualified name of the imported global a method returns, else ''.
 
@@ -921,48 +1107,44 @@ class PythonAdapter(TreeSitterAdapter):
         body = fn.child_by_field_name("body")
         if body is None:
             return ""
-
-        # Attribute aliases assigned an imported global: ``self.X = G`` / ``cls.X = G``.
-        attr_alias: dict[str, str] = {}
-        name_alias: dict[str, str] = {}
-        for assign in self._iter_body_nodes(body):
-            if assign.type != "assignment":
-                continue
-            left = assign.child_by_field_name("left")
-            right = assign.child_by_field_name("right")
-            if left is None or right is None or right.type != "identifier":
-                continue
-            g = import_bindings.get(_node_text(right))
-            if not g:
-                continue
-            if left.type == "attribute":
-                lo = left.child_by_field_name("object")
-                la = left.child_by_field_name("attribute")
-                if lo is not None and la is not None and _node_text(lo) in ("self", "cls"):
-                    attr_alias[_node_text(la)] = g
-            elif left.type == "identifier":
-                name_alias[_node_text(left)] = g
-
-        found: set[str] = set()
-        for ret in self._iter_body_nodes(body):
-            if ret.type != "return_statement":
-                continue
-            expr = ret.named_children[0] if ret.named_children else None
-            if expr is None:
-                continue
-            if expr.type == "identifier":
-                name = _node_text(expr)
-                g = import_bindings.get(name) or name_alias.get(name)
-                if g:
-                    found.add(g)
-            elif expr.type == "attribute":
-                lo = expr.child_by_field_name("object")
-                la = expr.child_by_field_name("attribute")
-                if lo is not None and la is not None and _node_text(lo) in ("self", "cls"):
-                    g = attr_alias.get(_node_text(la))
-                    if g:
-                        found.add(g)
+        attr_alias, name_alias = self._import_global_aliases_in_method(body, import_bindings)
+        found = self._returned_import_globals_from_body(
+            body,
+            import_bindings,
+            attr_alias,
+            name_alias,
+        )
         return next(iter(found)) if len(found) == 1 else ""
+
+    def _decorator_record(
+        self,
+        deco,
+        *,
+        decorated_uid: str,
+        decorated_name: str,
+        import_bindings: dict[str, str],
+        module: str,
+        file_path: str,
+    ) -> dict | None:
+        callable_name = self._decorator_callable_name(deco)
+        base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
+        if not base or base in _BUILTIN_DECORATORS:
+            return None
+        owner_name = callable_name.rsplit(".", 1)[0] if "." in callable_name else ""
+        resolved = self._resolve_dotted_name(callable_name or base, import_bindings, module)
+        owner_resolved = (
+            self._resolve_dotted_name(owner_name, import_bindings, module) if owner_name else ""
+        )
+        return {
+            "decorated_uid": decorated_uid,
+            "decorated_name": decorated_name,
+            "decorator_name": base,
+            "decorator_callable_name": callable_name,
+            "decorator_qualified_name": resolved,
+            "decorator_owner_name": owner_name,
+            "decorator_owner_qualified_name": owner_resolved,
+            "file_path": file_path,
+        }
 
     def extract_decorators(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Decoration relations: ``@deco\\ndef f`` → ``f`` is DECORATED_BY ``deco``.
@@ -992,35 +1174,59 @@ class PythonAdapter(TreeSitterAdapter):
             for deco in node.children:
                 if deco.type != "decorator":
                     continue
-                callable_name = self._decorator_callable_name(deco)
-                base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
-                if not base or base in _BUILTIN_DECORATORS:
-                    continue
-                owner_name = callable_name.rsplit(".", 1)[0] if "." in callable_name else ""
-                resolved = self._resolve_dotted_name(callable_name or base, import_bindings, module)
-                owner_resolved = (
-                    self._resolve_dotted_name(owner_name, import_bindings, module)
-                    if owner_name
-                    else ""
+                record = self._decorator_record(
+                    deco,
+                    decorated_uid=decorated_uid,
+                    decorated_name=decorated_name,
+                    import_bindings=import_bindings,
+                    module=module,
+                    file_path=file_path,
                 )
-                out.append(
-                    {
-                        "decorated_uid": decorated_uid,
-                        "decorated_name": decorated_name,
-                        "decorator_name": base,
-                        "decorator_callable_name": callable_name,
-                        "decorator_qualified_name": resolved,
-                        "decorator_owner_name": owner_name,
-                        "decorator_owner_qualified_name": owner_resolved,
-                        "file_path": file_path,
-                    }
-                )
+                if record is not None:
+                    out.append(record)
         return out
+
+    def _http_endpoint_records_for_definition(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        non_http_decorators: frozenset[str],
+        emit,
+    ) -> None:
+        defn = node.child_by_field_name("definition")
+        if defn is None or defn.type != "function_definition":
+            return
+        site_uid = self._uid_for_node(defn, source_code, file_path)
+        if not site_uid:
+            return
+        from context_engine.indexer.http_endpoint import HTTP_ROUTE_REGISTER_CALLEES, normalize_http_method
+
+        for deco in node.children:
+            if deco.type != "decorator":
+                continue
+            callable_name = self._decorator_callable_name(deco)
+            base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
+            if base in non_http_decorators:
+                continue
+            if base not in HTTP_ROUTE_REGISTER_CALLEES and base != "api_route":
+                continue
+            route_path, methods = self._http_route_from_decorator(deco)
+            if not route_path:
+                continue
+            via = f"@{callable_name or base}"
+            if not methods:
+                method = normalize_http_method(base if base != "route" else "get")
+                if method:
+                    emit(site_uid, method, route_path, via)
+                continue
+            for method in methods:
+                emit(site_uid, method, route_path, via)
 
     def extract_http_endpoints(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """FastAPI/Flask-style route decorator facts for HTTP endpoint bridges."""
         from context_engine.indexer.http_endpoint import (
-            HTTP_ROUTE_REGISTER_CALLEES,
             normalize_http_method,
             normalize_http_path,
         )
@@ -1055,36 +1261,33 @@ class PythonAdapter(TreeSitterAdapter):
         for node in self._iter_nodes(tree.root_node):
             if node.type != "decorated_definition":
                 continue
-            defn = node.child_by_field_name("definition")
-            if defn is None or defn.type != "function_definition":
-                continue
-            site_uid = self._uid_for_node(defn, source_code, file_path)
-            if not site_uid:
-                continue
-            for deco in node.children:
-                if deco.type != "decorator":
-                    continue
-                callable_name = self._decorator_callable_name(deco)
-                base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
-                if base in _NON_HTTP_DECORATORS:
-                    continue
-                if base not in HTTP_ROUTE_REGISTER_CALLEES and base != "api_route":
-                    continue
-                route_path, methods = self._http_route_from_decorator(deco)
-                if not route_path:
-                    continue
-                if not methods:
-                    method = normalize_http_method(base if base != "route" else "get")
-                    if method:
-                        emit(site_uid, method, route_path, f"@{callable_name or base}")
-                    continue
-                for method in methods:
-                    emit(site_uid, method, route_path, f"@{callable_name or base}")
+            self._http_endpoint_records_for_definition(
+                node,
+                source_code=source_code,
+                file_path=file_path,
+                non_http_decorators=_NON_HTTP_DECORATORS,
+                emit=emit,
+            )
         return out
 
-    def _http_route_from_decorator(self, deco_node) -> tuple[str, list[str]]:
+    def _http_route_keyword_methods(self, key: str, value_node) -> list[str]:
         from context_engine.indexer.http_endpoint import normalize_http_method
 
+        if key == "methods" and value_node.type == "list":
+            methods: list[str] = []
+            for item in value_node.named_children:
+                if item.type != "string":
+                    continue
+                method = normalize_http_method(self._string_literal_text(item))
+                if method:
+                    methods.append(method)
+            return methods
+        if key == "method" and value_node.type == "string":
+            method = normalize_http_method(self._string_literal_text(value_node))
+            return [method] if method else []
+        return []
+
+    def _http_route_from_decorator(self, deco_node) -> tuple[str, list[str]]:
         call_node = None
         for child in deco_node.children:
             if child.type == "call":
@@ -1095,33 +1298,26 @@ class PythonAdapter(TreeSitterAdapter):
         route_path = ""
         methods: list[str] = []
         arg_list = call_node.child_by_field_name("arguments")
-        if arg_list is not None:
-            positional = 0
-            for child in arg_list.named_children:
-                if child.type == "string" and positional == 0:
-                    raw = self._string_literal_text(child)
-                    if not raw.startswith("/"):
-                        return "", []
-                    route_path = raw
-                    positional += 1
-                elif child.type == "keyword_argument":
-                    key_node = child.child_by_field_name("name")
-                    value_node = child.child_by_field_name("value")
-                    if key_node is None or value_node is None:
-                        continue
-                    key = _node_text(key_node)
-                    if key == "methods" and value_node.type == "list":
-                        for item in value_node.named_children:
-                            if item.type == "string":
-                                method = normalize_http_method(self._string_literal_text(item))
-                                if method:
-                                    methods.append(method)
-                    elif key == "method" and value_node.type == "string":
-                        method = normalize_http_method(self._string_literal_text(value_node))
-                        if method:
-                            methods.append(method)
-                elif child.type == "string":
-                    positional += 1
+        if arg_list is None:
+            return route_path, methods
+        positional = 0
+        for child in arg_list.named_children:
+            if child.type == "string" and positional == 0:
+                raw = self._string_literal_text(child)
+                if not raw.startswith("/"):
+                    return "", []
+                route_path = raw
+                positional += 1
+                continue
+            if child.type == "keyword_argument":
+                key_node = child.child_by_field_name("name")
+                value_node = child.child_by_field_name("value")
+                if key_node is None or value_node is None:
+                    continue
+                methods.extend(self._http_route_keyword_methods(_node_text(key_node), value_node))
+                continue
+            if child.type == "string":
+                positional += 1
         return route_path, methods
 
     def _hook_call_base_name(self, fn_node) -> str:
@@ -2151,6 +2347,137 @@ class PythonAdapter(TreeSitterAdapter):
             break
         return out
 
+    def _py_call_from_identifier(
+        self,
+        func_node,
+        *,
+        call_name: str,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+    ) -> tuple[str, str, float, str | None, str | None]:
+        rel_type = self._classify_direct_call(call_name)
+        tier = "direct" if rel_type == "CALLS_DIRECT" else "guess"
+        confidence = 1.0 if rel_type == "CALLS_DIRECT" else 0.4
+        callee_uid = None
+        callee_qualified_name = None
+
+        if call_name in import_bindings:
+            callee_qualified_name = import_bindings[call_name]
+            rel_type = "CALLS_IMPORTED"
+            tier = "imported"
+            confidence = 0.85
+        elif len(by_name.get(call_name, [])) == 1:
+            callee_uid = by_name[call_name][0].uid
+            rel_type = "CALLS_SCOPED"
+            tier = "scoped"
+            confidence = 0.9
+        elif rel_type != "CALLS_INFERRED":
+            rel_type = "CALLS_GUESS"
+            tier = "guess"
+            confidence = 0.4
+        return rel_type, tier, confidence, callee_uid, callee_qualified_name
+
+    def _py_call_from_attribute(
+        self,
+        func_node,
+        parent,
+        *,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        attr_type_table,
+        alias_cache: dict[int, dict[str, str]],
+        method_returns,
+        function_returns,
+        module: str,
+    ) -> tuple[str, str, float, str, str | None, str | None] | None:
+        obj_node = func_node.child_by_field_name("object")
+        method_node = func_node.child_by_field_name("attribute")
+        if obj_node is None or method_node is None or method_node.type != "identifier":
+            return None
+        call_name = _node_text(method_node)
+        rel_type = "CALLS_DYNAMIC"
+        tier = "dynamic"
+        confidence = 0.7
+        callee_uid = None
+        callee_qualified_name = None
+
+        if obj_node.type == "identifier":
+            receiver_text = _node_text(obj_node)
+            if receiver_text == "self":
+                callee_uid = self._resolve_method_uid(parent, call_name, by_name)
+            elif receiver_text in import_bindings:
+                callee_qualified_name = f"{import_bindings[receiver_text]}.{call_name}"
+            else:
+                typed = self._typed_qualified_target(
+                    parent,
+                    obj_node,
+                    call_name,
+                    attr_type_table,
+                    alias_cache,
+                    method_returns,
+                    function_returns,
+                    import_bindings,
+                    module,
+                )
+                if typed is not None:
+                    tier = "typed"
+                    confidence = 0.8
+                    callee_qualified_name = typed
+        elif obj_node.type == "attribute":
+            typed = self._typed_qualified_target(
+                parent,
+                obj_node,
+                call_name,
+                attr_type_table,
+                alias_cache,
+                method_returns,
+                function_returns,
+                import_bindings,
+                module,
+            )
+            if typed is None:
+                return None
+            tier = "typed"
+            confidence = 0.8
+            callee_qualified_name = typed
+        else:
+            return None
+        return rel_type, tier, confidence, call_name, callee_uid, callee_qualified_name
+
+    def _append_py_call_record(
+        self,
+        calls: list[dict],
+        *,
+        node,
+        caller_uid: str,
+        call_name: str,
+        rel_type: str,
+        tier: str,
+        confidence: float,
+        callee_uid: str | None,
+        callee_qualified_name: str | None,
+        source_code: str,
+    ) -> None:
+        if callee_uid == caller_uid:
+            return
+        call = {
+            "caller_uid": caller_uid,
+            "callee_name": call_name,
+            "rel_type": rel_type,
+            "tier": tier,
+            "confidence": confidence,
+            "resolver": "py-scope-v1",
+            "call_site_line": node.start_point[0] + 1,
+        }
+        if callee_uid:
+            call["callee_uid"] = callee_uid
+        if callee_qualified_name:
+            call["callee_qualified_name"] = callee_qualified_name
+        pos_args = self._positional_identifier_arguments(node, source_code)
+        if pos_args:
+            call["arguments"] = pos_args
+        calls.append(call)
+
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -2201,109 +2528,46 @@ class PythonAdapter(TreeSitterAdapter):
                 continue
 
             caller_uid = self._uid_for_node(parent, source_code, file_path)
-            call_name = ""
-            callee_uid = None
-            callee_qualified_name = None
-            rel_type = "CALLS_GUESS"
-            tier = "guess"
-            confidence = 0.4
-
             if func_node.type == "identifier":
                 call_name = _node_text(func_node)
-                rel_type = self._classify_direct_call(call_name)
-                tier = "direct" if rel_type == "CALLS_DIRECT" else "guess"
-                confidence = 1.0 if rel_type == "CALLS_DIRECT" else 0.4
-
-                if call_name in import_bindings:
-                    callee_qualified_name = import_bindings[call_name]
-                    rel_type = "CALLS_IMPORTED"
-                    tier = "imported"
-                    confidence = 0.85
-                elif len(by_name.get(call_name, [])) == 1:
-                    callee_uid = by_name[call_name][0].uid
-                    rel_type = "CALLS_SCOPED"
-                    tier = "scoped"
-                    confidence = 0.9
-                elif rel_type != "CALLS_INFERRED":
-                    rel_type = "CALLS_GUESS"
-                    tier = "guess"
-                    confidence = 0.4
-
-            elif func_node.type == "attribute":
-                obj_node = func_node.child_by_field_name("object")
-                method_node = func_node.child_by_field_name("attribute")
-                if obj_node is None or method_node is None or method_node.type != "identifier":
-                    continue
-                call_name = _node_text(method_node)
-                rel_type = "CALLS_DYNAMIC"
-                tier = "dynamic"
-                confidence = 0.7
-
-                if obj_node.type == "identifier":
-                    receiver_text = _node_text(obj_node)
-                    if receiver_text == "self":
-                        callee_uid = self._resolve_method_uid(parent, call_name, by_name)
-                    elif receiver_text in import_bindings:
-                        base = import_bindings[receiver_text]
-                        callee_qualified_name = f"{base}.{call_name}"
-                    else:
-                        typed = self._typed_qualified_target(
-                            parent,
-                            obj_node,
-                            call_name,
-                            attr_type_table,
-                            alias_cache,
-                            method_returns,
-                            function_returns,
-                            import_bindings,
-                            module,
-                        )
-                        if typed is not None:
-                            tier = "typed"
-                            confidence = 0.8
-                            callee_qualified_name = typed
-                elif obj_node.type == "attribute":
-                    typed = self._typed_qualified_target(
-                        parent,
-                        obj_node,
-                        call_name,
-                        attr_type_table,
-                        alias_cache,
-                        method_returns,
-                        function_returns,
-                        import_bindings,
-                        module,
+                rel_type, tier, confidence, callee_uid, callee_qualified_name = (
+                    self._py_call_from_identifier(
+                        func_node,
+                        call_name=call_name,
+                        import_bindings=import_bindings,
+                        by_name=by_name,
                     )
-                    if typed is None:
-                        continue
-                    tier = "typed"
-                    confidence = 0.8
-                    callee_qualified_name = typed
-                else:
+                )
+            elif func_node.type == "attribute":
+                resolved = self._py_call_from_attribute(
+                    func_node,
+                    parent,
+                    import_bindings=import_bindings,
+                    by_name=by_name,
+                    attr_type_table=attr_type_table,
+                    alias_cache=alias_cache,
+                    method_returns=method_returns,
+                    function_returns=function_returns,
+                    module=module,
+                )
+                if resolved is None:
                     continue
+                rel_type, tier, confidence, call_name, callee_uid, callee_qualified_name = resolved
             else:
                 continue
 
-            if callee_uid == caller_uid:
-                continue
-
-            call = {
-                "caller_uid": caller_uid,
-                "callee_name": call_name,
-                "rel_type": rel_type,
-                "tier": tier,
-                "confidence": confidence,
-                "resolver": "py-scope-v1",
-                "call_site_line": node.start_point[0] + 1,
-            }
-            if callee_uid:
-                call["callee_uid"] = callee_uid
-            if callee_qualified_name:
-                call["callee_qualified_name"] = callee_qualified_name
-            pos_args = self._positional_identifier_arguments(node, source_code)
-            if pos_args:
-                call["arguments"] = pos_args
-            calls.append(call)
+            self._append_py_call_record(
+                calls,
+                node=node,
+                caller_uid=caller_uid,
+                call_name=call_name,
+                rel_type=rel_type,
+                tier=tier,
+                confidence=confidence,
+                callee_uid=callee_uid,
+                callee_qualified_name=callee_qualified_name,
+                source_code=source_code,
+            )
 
         return calls
 
@@ -3004,6 +3268,21 @@ class PythonAdapter(TreeSitterAdapter):
             return f"{target_type}.{call_name}"
         return None
 
+    @staticmethod
+    def _method_uid_for_class_name(
+        candidates: list,
+        class_name: str,
+        method_name: str,
+    ) -> str | None:
+        for candidate in candidates:
+            if f".{class_name}.{method_name}" in candidate.qualified_name:
+                return str(candidate.uid)
+        return None
+
+    @staticmethod
+    def _single_method_candidate_uid(candidates: list) -> str | None:
+        return str(candidates[0].uid) if len(candidates) == 1 else None
+
     def _resolve_method_uid(
         self, caller_node, method_name: str, by_name: dict[str, list]
     ) -> str | None:
@@ -3015,16 +3294,16 @@ class PythonAdapter(TreeSitterAdapter):
         while class_node and class_node.type != "class_definition":
             class_node = class_node.parent
         if not class_node:
-            return candidates[0].uid if len(candidates) == 1 else None
+            return self._single_method_candidate_uid(candidates)
 
         class_name_node = class_node.child_by_field_name("name")
         if not class_name_node:
             return None
         class_name = class_name_node.text.decode("utf-8")
-        for candidate in candidates:
-            if f".{class_name}.{method_name}" in candidate.qualified_name:
-                return str(candidate.uid)
-        return str(candidates[0].uid) if len(candidates) == 1 else None
+        resolved = self._method_uid_for_class_name(candidates, class_name, method_name)
+        if resolved:
+            return resolved
+        return self._single_method_candidate_uid(candidates)
 
     def extract_reexports(self, source_code: str, file_path: str) -> list[dict]:
         """Re-export edges: a package ``__init__`` surfacing a symbol from a submodule.
@@ -3052,6 +3331,36 @@ class PythonAdapter(TreeSitterAdapter):
             for local_name, qualified_name in bindings.items()
         ]
 
+    def _bindings_from_from_import_line(
+        self,
+        import_module: str,
+        names: str,
+        *,
+        package: str,
+    ) -> dict[str, str]:
+        bindings: dict[str, str] = {}
+        target_module = self._resolve_import_module(import_module, package)
+        for item in names.split(","):
+            item = item.strip()
+            if not item or item == "*":
+                continue
+            original, _, alias = item.partition(" as ")
+            local_name = alias.strip() or original.strip()
+            bindings[local_name] = f"{target_module}.{original.strip()}"
+        return bindings
+
+    def _bindings_from_import_clause(self, import_body: str) -> dict[str, str]:
+        bindings: dict[str, str] = {}
+        for item in import_body.split(","):
+            item = item.strip()
+            original, _, alias = item.partition(" as ")
+            target_module = original.strip()
+            if not target_module:
+                continue
+            local_name = alias.strip() or target_module.split(".")[0]
+            bindings[local_name] = target_module
+        return bindings
+
     def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
         """Return local import alias -> best-effort target qualified name."""
         module = module_name_from_path(file_path)
@@ -3065,26 +3374,13 @@ class PythonAdapter(TreeSitterAdapter):
             from_parts = split_python_from_import(stripped)
             if from_parts:
                 import_module, names = from_parts
-                target_module = self._resolve_import_module(import_module, package)
-                for item in names.split(","):
-                    item = item.strip()
-                    if not item or item == "*":
-                        continue
-                    original, _, alias = item.partition(" as ")
-                    local_name = alias.strip() or original.strip()
-                    bindings[local_name] = f"{target_module}.{original.strip()}"
+                bindings.update(
+                    self._bindings_from_from_import_line(import_module, names, package=package)
+                )
                 continue
-
             import_body = split_python_import_clause(stripped)
             if import_body:
-                for item in import_body.split(","):
-                    item = item.strip()
-                    original, _, alias = item.partition(" as ")
-                    target_module = original.strip()
-                    if not target_module:
-                        continue
-                    local_name = alias.strip() or target_module.split(".")[0]
-                    bindings[local_name] = target_module
+                bindings.update(self._bindings_from_import_clause(import_body))
         return bindings
 
     def _resolve_import_module(self, import_module: str, package: str) -> str:

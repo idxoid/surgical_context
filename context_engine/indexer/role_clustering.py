@@ -319,6 +319,24 @@ def _iter_structural_edges(
     return normalized
 
 
+_SYMBOL_FLAG_FIELDS = (
+    "inherits_builtin_exception",
+    "returns_function_expression",
+    "returns_mapping",
+    "returns_sequence",
+    "returns_constructed_type",
+    "iterates_attr_call",
+    "assembles_mapping_in_loop",
+)
+
+
+def _symbol_flags_from_tuple(sym: tuple[str, ...]) -> dict[str, bool]:
+    return {
+        field: bool(sym[index]) if len(sym) > index else False
+        for index, field in enumerate(_SYMBOL_FLAG_FIELDS, start=3)
+    }
+
+
 def _symbol_info_from_raw(symbols: Sequence[tuple[str, ...]]) -> dict[str, dict]:
     info: dict[str, dict] = {}
     for sym in symbols:
@@ -328,13 +346,7 @@ def _symbol_info_from_raw(symbols: Sequence[tuple[str, ...]]) -> dict[str, dict]
             "kind": kind or "",
             "file_path": file_path or "",
             "package": os.path.dirname(file_path or ""),
-            "inherits_builtin_exception": bool(sym[3]) if len(sym) > 3 else False,
-            "returns_function_expression": bool(sym[4]) if len(sym) > 4 else False,
-            "returns_mapping": bool(sym[5]) if len(sym) > 5 else False,
-            "returns_sequence": bool(sym[6]) if len(sym) > 6 else False,
-            "returns_constructed_type": bool(sym[7]) if len(sym) > 7 else False,
-            "iterates_attr_call": bool(sym[8]) if len(sym) > 8 else False,
-            "assembles_mapping_in_loop": bool(sym[9]) if len(sym) > 9 else False,
+            **_symbol_flags_from_tuple(sym),
         }
     return info
 
@@ -397,6 +409,52 @@ class _EdgeFanAccumulators:
             attr_writes_subscript_fan_out=defaultdict(float),
         )
 
+    def _accumulate_decorated_by(
+        self,
+        caller_in: bool,
+        callee_in: bool,
+        caller: str,
+        callee: str,
+        conf: float,
+    ) -> None:
+        if caller_in:
+            self.decorated_out[caller] += conf
+        if callee_in:
+            self.decorated_in[callee] += conf
+
+    def _accumulate_injects(self, callee_in: bool, callee: str, conf: float) -> None:
+        if callee_in:
+            self.inject_fan_in[callee] += conf
+
+    def _accumulate_instantiates(self, caller_in: bool, caller: str, conf: float) -> None:
+        if caller_in:
+            self.construct_fan_out[caller] += conf
+
+    def _accumulate_resolves_attr(self, caller_in: bool, caller: str, conf: float) -> None:
+        if caller_in:
+            self.proxy_context_bind_fan_out[caller] += conf
+
+    def _accumulate_composes(self, caller_in: bool, caller: str) -> None:
+        if caller_in:
+            self.decorator_arg_ref_count[caller] += 1
+
+    def _accumulate_reads_attr(self, caller_in: bool, caller: str, conf: float) -> None:
+        if caller_in:
+            self.attr_reads_fan_out[caller] += conf
+
+    def _accumulate_writes_attr(
+        self,
+        caller_in: bool,
+        caller: str,
+        conf: float,
+        kind: str,
+    ) -> None:
+        if not caller_in:
+            return
+        self.attr_writes_fan_out[caller] += conf
+        if kind in ("write_subscript", "write_subscript_local"):
+            self.attr_writes_subscript_fan_out[caller] += conf
+
     def accumulate(
         self,
         caller: str,
@@ -414,30 +472,29 @@ class _EdgeFanAccumulators:
             return
         if rel_type in CALL_REL_TYPES:
             self._accumulate_call(caller_in, callee_in, caller, callee, conf)
-        elif rel_type == "USES_TYPE":
+            return
+        if rel_type == "USES_TYPE":
             self._accumulate_uses_type(caller_in, callee_in, caller, callee, conf, kind)
         elif rel_type in {"HAS_API", "INHERITED_API"}:
             self._accumulate_api(caller_in, callee_in, caller, callee, conf)
-        elif rel_type == "INJECTS" and callee_in:
-            self.inject_fan_in[callee] += conf
+        elif rel_type == "INJECTS":
+            self._accumulate_injects(callee_in, callee, conf)
         elif rel_type == "DEPENDS_ON":
             self._accumulate_depends_on(caller_in, callee_in, caller, callee, conf)
         elif rel_type == "HANDLES":
             self._accumulate_handles(caller_in, callee_in, caller, callee, conf)
         elif rel_type == "DECORATED_BY":
             self._accumulate_decorated_by(caller_in, callee_in, caller, callee, conf)
-        elif rel_type == "INSTANTIATES" and caller_in:
-            self.construct_fan_out[caller] += conf
-        elif rel_type == "RESOLVES_ATTR" and caller_in:
-            self.proxy_context_bind_fan_out[caller] += conf
-        elif rel_type == "COMPOSES" and caller_in:
-            self.decorator_arg_ref_count[caller] += 1
-        elif rel_type == "READS_ATTR" and caller_in:
-            self.attr_reads_fan_out[caller] += conf
-        elif rel_type == "WRITES_ATTR" and caller_in:
-            self.attr_writes_fan_out[caller] += conf
-            if kind in ("write_subscript", "write_subscript_local"):
-                self.attr_writes_subscript_fan_out[caller] += conf
+        elif rel_type == "INSTANTIATES":
+            self._accumulate_instantiates(caller_in, caller, conf)
+        elif rel_type == "RESOLVES_ATTR":
+            self._accumulate_resolves_attr(caller_in, caller, conf)
+        elif rel_type == "COMPOSES":
+            self._accumulate_composes(caller_in, caller)
+        elif rel_type == "READS_ATTR":
+            self._accumulate_reads_attr(caller_in, caller, conf)
+        elif rel_type == "WRITES_ATTR":
+            self._accumulate_writes_attr(caller_in, caller, conf, kind)
 
     def _accumulate_call(
         self,
@@ -514,19 +571,6 @@ class _EdgeFanAccumulators:
             self.handle_fan_out[caller] += conf
         if callee_in:
             self.handle_fan_in[callee] += conf
-
-    def _accumulate_decorated_by(
-        self,
-        caller_in: bool,
-        callee_in: bool,
-        caller: str,
-        callee: str,
-        conf: float,
-    ) -> None:
-        if caller_in:
-            self.decorated_out[caller] += conf
-        if callee_in:
-            self.decorated_in[callee] += conf
 
 
 def _compute_handler_call_fan_out(

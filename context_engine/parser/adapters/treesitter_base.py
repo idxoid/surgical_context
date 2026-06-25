@@ -92,6 +92,81 @@ class TreeSitterAdapter(LanguageAdapter):
         """Parse source code into a tree-sitter tree."""
         return self.parser.parse(bytes(source_code, "utf8"))
 
+    @staticmethod
+    def _var_names_by_parent_id(captures: list[tuple]) -> dict[int, str]:
+        var_names: dict[int, str] = {}
+        for node, tag in captures:
+            if tag == "var.name" and node.parent is not None:
+                var_names[node.parent.id] = _node_text(node)
+        return var_names
+
+    def _declaration_symbol_from_capture(
+        self,
+        node,
+        tag: str,
+        source_code: str,
+        file_path: str,
+    ) -> SymbolMetadata | None:
+        name_node = node.child_by_field_name("name")
+        if not name_node:
+            return None
+        name = _node_text(name_node)
+        content = _node_text(node)
+        qualified_name = qualified_name_for(node, source_code, file_path)
+        raw_signature, signature_status = signature_from_node(
+            node, source_code, self.language_name
+        )
+        signature = normalize_signature(raw_signature or "", self.language_name)
+        return SymbolMetadata(
+            uid=compute_uid(qualified_name, raw_signature, self.language_name),
+            name=name,
+            kind="function" if tag == "func.def" else "class",
+            start_line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
+            content_hash=self._hash(content),
+            file_path=file_path,
+            qualified_name=qualified_name,
+            signature=signature,
+            signature_hash=signature_hash(signature, self.language_name),
+            signature_status=signature_status,
+            language=self.language_name,
+        )
+
+    def _variable_symbol_from_capture(
+        self,
+        node,
+        tag: str,
+        var_names: dict[int, str],
+        source_code: str,
+        file_path: str,
+    ) -> SymbolMetadata | None:
+        var_name = var_names.get(node.id)
+        if not var_name or not self.should_include_variable_symbol(
+            node,
+            tag,
+            var_name,
+            source_code=source_code,
+            file_path=file_path,
+        ):
+            return None
+        content = _node_text(node)
+        qualified_name = ".".join([self._module_name(file_path), var_name])
+        signature = f"{var_name}()->_"
+        return SymbolMetadata(
+            uid=compute_uid(qualified_name, signature, self.language_name),
+            name=var_name,
+            kind="variable",
+            start_line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
+            content_hash=self._hash(content),
+            file_path=file_path,
+            qualified_name=qualified_name,
+            signature=normalize_signature(signature, self.language_name),
+            signature_hash=signature_hash(signature, self.language_name),
+            signature_status="resolved",
+            language=self.language_name,
+        )
+
     def extract_symbols(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[SymbolMetadata]:
@@ -103,7 +178,6 @@ class TreeSitterAdapter(LanguageAdapter):
         if tree is None:
             tree = self._parse(source_code)
 
-        # Flatten captures from matches into (node, tag) tuples
         captures = []
         for _match_id, captures_dict in iter_ts_query_matches(
             self.language, self.symbol_query, tree.root_node
@@ -112,70 +186,19 @@ class TreeSitterAdapter(LanguageAdapter):
                 for node in nodes:
                     captures.append((node, tag))
 
-        # Collect var.name nodes keyed by their parent var.def node id
-        var_names: dict[int, str] = {}
-        for node, tag in captures:
-            if tag == "var.name" and node.parent is not None:
-                var_names[node.parent.id] = _node_text(node)
-
-        symbols = []
+        var_names = self._var_names_by_parent_id(captures)
+        symbols: list[SymbolMetadata] = []
         for node, tag in captures:
             if tag in ("func.def", "class.def"):
-                name_node = node.child_by_field_name("name")
-                if not name_node:
-                    continue
-                name = _node_text(name_node)
-                content = _node_text(node)
-                qualified_name = qualified_name_for(node, source_code, file_path)
-                raw_signature, signature_status = signature_from_node(
-                    node, source_code, self.language_name
-                )
-                signature = normalize_signature(raw_signature or "", self.language_name)
-                symbols.append(
-                    SymbolMetadata(
-                        uid=compute_uid(qualified_name, raw_signature, self.language_name),
-                        name=name,
-                        kind="function" if tag == "func.def" else "class",
-                        start_line=node.start_point[0] + 1,
-                        end_line=node.end_point[0] + 1,
-                        content_hash=self._hash(content),
-                        file_path=file_path,
-                        qualified_name=qualified_name,
-                        signature=signature,
-                        signature_hash=signature_hash(signature, self.language_name),
-                        signature_status=signature_status,
-                        language=self.language_name,
-                    )
-                )
+                symbol = self._declaration_symbol_from_capture(node, tag, source_code, file_path)
+                if symbol is not None:
+                    symbols.append(symbol)
             elif tag.startswith("var."):
-                var_name = var_names.get(node.id)
-                if not var_name or not self.should_include_variable_symbol(
-                    node,
-                    tag,
-                    var_name,
-                    source_code=source_code,
-                    file_path=file_path,
-                ):
-                    continue
-                content = _node_text(node)
-                qualified_name = ".".join([self._module_name(file_path), var_name])
-                signature = f"{var_name}()->_"
-                symbols.append(
-                    SymbolMetadata(
-                        uid=compute_uid(qualified_name, signature, self.language_name),
-                        name=var_name,
-                        kind="variable",
-                        start_line=node.start_point[0] + 1,
-                        end_line=node.end_point[0] + 1,
-                        content_hash=self._hash(content),
-                        file_path=file_path,
-                        qualified_name=qualified_name,
-                        signature=normalize_signature(signature, self.language_name),
-                        signature_hash=signature_hash(signature, self.language_name),
-                        signature_status="resolved",
-                        language=self.language_name,
-                    )
+                symbol = self._variable_symbol_from_capture(
+                    node, tag, var_names, source_code, file_path
                 )
+                if symbol is not None:
+                    symbols.append(symbol)
         return symbols
 
     def should_include_variable_symbol(

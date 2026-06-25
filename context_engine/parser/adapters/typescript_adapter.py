@@ -294,6 +294,66 @@ class TypeScriptAdapter(TreeSitterAdapter):
             (import_specifier (identifier) @import.name) @import.spec
         """
 
+    def _append_typescript_export_fallback_symbols(
+        self,
+        symbols: list[SymbolMetadata],
+        existing_names: set[str],
+        file_path: str,
+        source_code: str,
+    ) -> None:
+        for match in self._EXPORTED_FUNC_FALLBACK_RE.finditer(source_code):
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                file_path,
+                source_code,
+                start_offset=match.start(),
+                name=match.group(1),
+                kind="function",
+            )
+        for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
+            name = match.group(1)
+            if name in existing_names:
+                continue
+            tail = source_code[match.end() : match.end() + 24]
+            if re.match(r"\s*=\s*\{", tail):
+                continue
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                file_path,
+                source_code,
+                start_offset=match.start(),
+                name=name,
+                kind="variable",
+            )
+        for match in self._EXPORTED_TYPE_FALLBACK_RE.finditer(source_code):
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                file_path,
+                source_code,
+                start_offset=match.start(),
+                name=match.group(1),
+                kind="class",
+            )
+
+    def _apply_typescript_symbol_annotations(
+        self,
+        symbols: list[SymbolMetadata],
+        tree,
+        source_code: str,
+        file_path: str,
+    ) -> None:
+        higher_order_factory_names = self._higher_order_factory_names(tree)
+        if higher_order_factory_names:
+            for symbol in symbols:
+                if symbol.name in higher_order_factory_names:
+                    symbol.returns_function_expression = True
+        self._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
+        self._mark_react_hook_symbols(symbols)
+        self._mark_behavioral_shape_symbols(symbols, tree)
+
     def extract_symbols(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[SymbolMetadata]:
@@ -323,53 +383,10 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 object_api_ranges,
             )
         existing_names = {symbol.name for symbol in symbols}
-
-        for match in self._EXPORTED_FUNC_FALLBACK_RE.finditer(source_code):
-            self._append_module_fallback_symbol(
-                symbols,
-                existing_names,
-                file_path,
-                source_code,
-                start_offset=match.start(),
-                name=match.group(1),
-                kind="function",
-            )
-
-        for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
-            name = match.group(1)
-            if name in existing_names:
-                continue
-            tail = source_code[match.end() : match.end() + 24]
-            if re.match(r"\s*=\s*\{", tail):
-                continue
-            self._append_module_fallback_symbol(
-                symbols,
-                existing_names,
-                file_path,
-                source_code,
-                start_offset=match.start(),
-                name=name,
-                kind="variable",
-            )
-
-        for match in self._EXPORTED_TYPE_FALLBACK_RE.finditer(source_code):
-            self._append_module_fallback_symbol(
-                symbols,
-                existing_names,
-                file_path,
-                source_code,
-                start_offset=match.start(),
-                name=match.group(1),
-                kind="class",
-            )
-        higher_order_factory_names = self._higher_order_factory_names(tree)
-        if higher_order_factory_names:
-            for symbol in symbols:
-                if symbol.name in higher_order_factory_names:
-                    symbol.returns_function_expression = True
-        self._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
-        self._mark_react_hook_symbols(symbols)
-        self._mark_behavioral_shape_symbols(symbols, tree)
+        self._append_typescript_export_fallback_symbols(
+            symbols, existing_names, file_path, source_code
+        )
+        self._apply_typescript_symbol_annotations(symbols, tree, source_code, file_path)
         from context_engine.parser.docstring_extract import attach_docstrings
 
         attach_docstrings(

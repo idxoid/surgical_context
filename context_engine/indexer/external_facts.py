@@ -258,6 +258,40 @@ def _parse_bare_import_line(line: str, add_link) -> None:
         add_link(module, name, alias)
 
 
+def _append_external_symbol_import_link(
+    links: list[ExternalSymbolImportLink],
+    seen: set[tuple[str, str, str]],
+    *,
+    file_path: str,
+    boundary: frozenset[str],
+    project_external_roots: frozenset[str],
+    module: str,
+    name: str,
+    alias: str | None,
+) -> None:
+    module = (module or "").strip()
+    name = (name or "").strip()
+    if not module or not name:
+        return
+    root = _module_root(module)
+    if classify_external_root(root, boundary, project_external_roots) != "external":
+        return
+    qualified_name = f"{module}.{name}" if name != module else module
+    key = (file_path, qualified_name, alias or name)
+    if key in seen:
+        return
+    seen.add(key)
+    links.append(
+        ExternalSymbolImportLink(
+            file_path=file_path,
+            qualified_name=qualified_name,
+            module=module,
+            name=name,
+            local_alias=alias or name,
+        )
+    )
+
+
 def _named_imports_from_source(
     source_code: str,
     file_path: str,
@@ -274,26 +308,15 @@ def _named_imports_from_source(
     seen: set[tuple[str, str, str]] = set()
 
     def add_link(module: str, name: str, alias: str | None) -> None:
-        module = (module or "").strip()
-        name = (name or "").strip()
-        if not module or not name:
-            return
-        root = _module_root(module)
-        if classify_external_root(root, boundary, project_external_roots) != "external":
-            return
-        qualified_name = f"{module}.{name}" if name != module else module
-        key = (file_path, qualified_name, alias or name)
-        if key in seen:
-            return
-        seen.add(key)
-        links.append(
-            ExternalSymbolImportLink(
-                file_path=file_path,
-                qualified_name=qualified_name,
-                module=module,
-                name=name,
-                local_alias=alias or name,
-            )
+        _append_external_symbol_import_link(
+            links,
+            seen,
+            file_path=file_path,
+            boundary=boundary,
+            project_external_roots=project_external_roots,
+            module=module,
+            name=name,
+            alias=alias,
         )
 
     for line in _glue_logical_import_lines(source_code):

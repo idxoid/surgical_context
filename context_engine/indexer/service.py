@@ -21,6 +21,87 @@ from context_engine.overlay import InMemoryOverlay
 logger = logging.getLogger(__name__)
 
 
+def _partition_index_batch_paths(
+    group: list[IndexWorkItem],
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    from context_engine.indexer.code import is_indexable_file
+    from context_engine.indexer.git_committed import should_index_file
+
+    existing_paths = [item.file_path for item in group if os.path.isfile(item.file_path)]
+    missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
+    unsupported_paths = [path for path in existing_paths if not is_indexable_file(path)]
+    indexable_paths = [path for path in existing_paths if is_indexable_file(path)]
+    indexable_paths = [path for path in indexable_paths if should_index_file(path)]
+    return missing_paths, unsupported_paths, indexable_paths, existing_paths
+
+
+def _log_skipped_index_paths(
+    *,
+    missing_paths: list[str],
+    unsupported_paths: list[str],
+    base_workspace_id: str,
+    metrics: MetricsRegistry,
+) -> None:
+    for path in missing_paths:
+        logger.warning("Skipping queued index for missing file: %s", path)
+        metrics.increment(
+            "context_engine_index_queue_skipped_total",
+            labels={"reason": "missing_file", "workspace": base_workspace_id},
+        )
+    for path in unsupported_paths:
+        logger.info("Skipping queued index for unsupported file type: %s", path)
+        metrics.increment(
+            "context_engine_index_queue_skipped_total",
+            labels={"reason": "unsupported_extension", "workspace": base_workspace_id},
+        )
+
+
+def _finalize_index_batch(
+    *,
+    completed: int,
+    all_changed_uids: list[str],
+    indexed_paths: list[str],
+    adjacency_seeds: set[str],
+    batch_project_path: str,
+    base_workspace_id: str,
+    index_workspace_id: str,
+    db,
+    vector_db: LanceDBClient,
+    metrics: MetricsRegistry,
+) -> None:
+    if not completed:
+        return
+    if all_changed_uids:
+        from context_engine.indexer.affects import AFFECTSIndexer
+
+        AFFECTSIndexer(db).rebuild_affects(
+            list(dict.fromkeys(all_changed_uids)),
+            workspace_id=index_workspace_id,
+        )
+    from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
+    from context_engine.indexer.anchor import resolve_pending_anchors
+
+    adjacency_seeds.update(all_changed_uids)
+    run_axis_incremental_finalize(
+        db,
+        vector_db,
+        index_workspace_id,
+        seed_uids=adjacency_seeds,
+        project_path=batch_project_path,
+    )
+    resolve_pending_anchors(
+        db,
+        vector_db,
+        workspace_id=index_workspace_id,
+    )
+    default_cache.invalidate_files(indexed_paths, base_workspace_id)
+    metrics.increment(
+        "context_engine_index_queue_completed_files_total",
+        value=completed,
+        labels={"workspace": base_workspace_id},
+    )
+
+
 class IndexingService:
     """Index files synchronously, via the batch queue, or through git HEAD deltas."""
 
@@ -125,9 +206,7 @@ class IndexingService:
 
         from collections import defaultdict
 
-        from context_engine.indexer.anchor import resolve_pending_anchors
-        from context_engine.indexer.code import hash_file, index_file, is_indexable_file
-        from context_engine.indexer.git_committed import should_index_file
+        from context_engine.indexer.code import hash_file, index_file
         from context_engine.parser.extractor import SymbolExtractor
 
         grouped: dict[tuple[str, str], list[IndexWorkItem]] = defaultdict(list)
@@ -138,23 +217,15 @@ class IndexingService:
         extractor = SymbolExtractor()
         for (user_id, base_workspace_id), group in grouped.items():
             index_workspace_id = effective_index_workspace_id(base_workspace_id)
-            existing_paths = [item.file_path for item in group if os.path.isfile(item.file_path)]
-            missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
-            unsupported_paths = [path for path in existing_paths if not is_indexable_file(path)]
-            indexable_paths = [path for path in existing_paths if is_indexable_file(path)]
-            indexable_paths = [path for path in indexable_paths if should_index_file(path)]
-            for path in missing_paths:
-                logger.warning("Skipping queued index for missing file: %s", path)
-                self.metrics.increment(
-                    "context_engine_index_queue_skipped_total",
-                    labels={"reason": "missing_file", "workspace": base_workspace_id},
-                )
-            for path in unsupported_paths:
-                logger.info("Skipping queued index for unsupported file type: %s", path)
-                self.metrics.increment(
-                    "context_engine_index_queue_skipped_total",
-                    labels={"reason": "unsupported_extension", "workspace": base_workspace_id},
-                )
+            missing_paths, unsupported_paths, indexable_paths, _existing_paths = (
+                _partition_index_batch_paths(group)
+            )
+            _log_skipped_index_paths(
+                missing_paths=missing_paths,
+                unsupported_paths=unsupported_paths,
+                base_workspace_id=base_workspace_id,
+                metrics=self.metrics,
+            )
             if not indexable_paths:
                 continue
             extractor.project_root = (
@@ -166,10 +237,11 @@ class IndexingService:
             all_changed_uids: list[str] = []
             indexed_paths: list[str] = []
             adjacency_seeds: set[str] = set()
-            if len(indexable_paths) == 1:
-                batch_project_path = str(Path(indexable_paths[0]).parent)
-            else:
-                batch_project_path = os.path.commonpath(indexable_paths)
+            batch_project_path = (
+                str(Path(indexable_paths[0]).parent)
+                if len(indexable_paths) == 1
+                else os.path.commonpath(indexable_paths)
+            )
             with db_session(user_id=user_id) as db:
                 get_file_hashes = getattr(db, "get_file_hashes", None)
                 stored_hashes = (
@@ -210,35 +282,18 @@ class IndexingService:
                             "context_engine_index_queue_failures_total",
                             labels={"workspace": base_workspace_id},
                         )
-                if completed:
-                    if all_changed_uids:
-                        from context_engine.indexer.affects import AFFECTSIndexer
-
-                        AFFECTSIndexer(db).rebuild_affects(
-                            list(dict.fromkeys(all_changed_uids)),
-                            workspace_id=index_workspace_id,
-                        )
-                    from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
-
-                    adjacency_seeds.update(all_changed_uids)
-                    run_axis_incremental_finalize(
-                        db,
-                        self.vector_db,
-                        index_workspace_id,
-                        seed_uids=adjacency_seeds,
-                        project_path=batch_project_path,
-                    )
-                    resolve_pending_anchors(
-                        db,
-                        self.vector_db,
-                        workspace_id=index_workspace_id,
-                    )
-                    default_cache.invalidate_files(indexed_paths, base_workspace_id)
-                    self.metrics.increment(
-                        "context_engine_index_queue_completed_files_total",
-                        value=completed,
-                        labels={"workspace": base_workspace_id},
-                    )
+                _finalize_index_batch(
+                    completed=completed,
+                    all_changed_uids=all_changed_uids,
+                    indexed_paths=indexed_paths,
+                    adjacency_seeds=adjacency_seeds,
+                    batch_project_path=batch_project_path,
+                    base_workspace_id=base_workspace_id,
+                    index_workspace_id=index_workspace_id,
+                    db=db,
+                    vector_db=self.vector_db,
+                    metrics=self.metrics,
+                )
 
     def track_git_delta_target(
         self,
