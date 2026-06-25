@@ -99,8 +99,10 @@ def impact(
 ) -> str:
     """Downstream blast radius of a change to ``symbol``: which symbols and files
     depend on it (reverse callers, structural API/inheritance, then AFFECTS
-    closure). Committed index surface only. Use before changing or removing a
-    symbol, or to scope a refactor.
+    closure). The committed index is the authoritative surface; any uncommitted
+    edits pushed via ``set_overlay`` add degraded ``overlay_caller`` rows (and a
+    brand-new symbol typed into an overlay still resolves). Use before changing
+    or removing a symbol, or to scope a refactor.
 
     Args:
         symbol: Symbol name (function/class/method), e.g. "run_axis_retrieval".
@@ -114,14 +116,18 @@ def impact(
     if not r.found:
         hint = f" in {file_path}" if file_path else ""
         return (
-            f"Symbol '{symbol}'{hint} not found in the committed index "
-            f"(workspace: {workspace_id}). It may be unindexed, or the name/path is off."
+            f"Symbol '{symbol}'{hint} not found in the committed index or any "
+            f"overlay buffer (workspace: {workspace_id}). It may be unindexed, "
+            "or the name/path is off."
         )
 
+    flags = " · degraded (overlay-augmented)" if r.degraded else ""
+    overlay_note = f" · {r.overlay_count} from uncommitted edits" if r.overlay_count else ""
     lines = [
         f"# Impact of `{symbol}` ({r.file_path})",
         f"workspace: {workspace_id} · uid: {r.symbol_uid} · depth={r.max_depth} · "
-        f"{len(r.affected_symbols)} affected symbols across {len(r.affected_files)} files",
+        f"{len(r.affected_symbols)} affected symbols across {len(r.affected_files)} files"
+        f"{overlay_note}{flags}",
         "",
     ]
     if not r.affected_symbols:
@@ -138,7 +144,8 @@ def impact(
         depth = row.get("depth")
         kind = row.get("kind") or ""
         sev = row.get("severity") or ""
-        lines.append(f"- {name} — {fp} (depth={depth}, {kind}, sev={sev})")
+        tag = " [overlay]" if row.get("degraded") else ""
+        lines.append(f"- {name} — {fp} (depth={depth}, {kind}, sev={sev}){tag}")
     return "\n".join(lines) + "\n"
 
 
@@ -469,6 +476,52 @@ def docs_for(
         files = ", ".join(row.files) if row.files else "(source file unknown)"
         lines.append(f"- [{row.anchor_type or 'doc'}] conf={row.confidence:.2f} — {files}")
     return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def set_overlay(file_path: str, content: str, workspace: str | None = None) -> str:
+    """Stash an UNCOMMITTED edit of ``file_path`` (the new full file content) so
+    subsequent ``impact`` and ``ask_code`` calls reflect it. This is how you
+    check the blast radius of a change you just made BEFORE committing: push the
+    edited file here, then call ``impact(symbol)`` — callers you just typed show
+    up as degraded ``overlay`` rows, and ``ask_code`` reads your buffer over the
+    indexed code. Clear it with ``clear_overlay`` when done.
+
+    Args:
+        file_path: Path of the edited file (use the same path you'll reference
+            in ``impact``/``read_symbol`` — absolute paths match the index).
+        content: The full, edited file content (the unsaved buffer).
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    symbols = _engine.set_overlay(file_path, content, workspace_id)
+    head = (
+        f"# Overlay set: {file_path}\n"
+        f"workspace: {workspace_id} · {len(symbols)} symbols parsed\n"
+    )
+    if symbols:
+        head += "\n" + "\n".join(f"- {s}" for s in symbols[:50])
+        if len(symbols) > 50:
+            head += f"\n… (+{len(symbols) - 50} more)"
+    else:
+        head += "\n(No symbols parsed — config/data file, or no language adapter.)"
+    return head + "\n\nimpact / ask_code now reflect this buffer until clear_overlay.\n"
+
+
+@mcp.tool()
+def clear_overlay(file_path: str, workspace: str | None = None) -> str:
+    """Drop a buffer previously pushed with ``set_overlay`` so ``impact`` /
+    ``ask_code`` return to the committed index for that file.
+
+    Args:
+        file_path: Path of the overlay buffer to clear.
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    cleared = _engine.clear_overlay(file_path, workspace_id)
+    if cleared:
+        return f"Cleared overlay for {file_path} (workspace: {workspace_id})."
+    return f"No overlay buffer was set for {file_path} (workspace: {workspace_id})."
 
 
 def main() -> None:

@@ -19,6 +19,12 @@ from context_engine.env_loader import load_repo_dotenv
 
 load_repo_dotenv()
 
+# Single-user MCP session: every overlay buffer is stored and read under one
+# stable user id, so ``set_overlay`` writes and ``ask``/``impact`` reads hit the
+# same key. The overlay collapses the workspace id to its base internally, so
+# passing the profile-suffixed index id everywhere is consistent.
+OVERLAY_USER_ID = "mcp"
+
 
 @dataclass
 class AskResult:
@@ -40,6 +46,8 @@ class ImpactResult:
     affected_symbols: list[dict] = field(default_factory=list)
     affected_files: list[str] = field(default_factory=list)
     max_depth: int = 0
+    degraded: bool = False
+    overlay_count: int = 0
 
 
 @dataclass
@@ -199,7 +207,18 @@ class AxisEngine:
     def __init__(self) -> None:
         self._db = None
         self._lance = None
+        self._overlay = None
         self._lock = threading.Lock()
+
+    def _ensure_overlay(self):
+        """Lazily create the in-memory editor overlay (cheap — no model, no DB).
+        Holds the host LLM's uncommitted edits so ``ask``/``impact`` can reflect
+        them, mirroring the HTTP server's live-buffer augmentation."""
+        if self._overlay is None:
+            from context_engine.overlay import InMemoryOverlay
+
+            self._overlay = InMemoryOverlay()
+        return self._overlay
 
     def _ensure_db(self) -> None:
         """Open just the Neo4j handle — cheap (no embedding model)."""
@@ -312,6 +331,10 @@ class AxisEngine:
                 base_token_budget=token_budget,
                 hook_transparency=True,
                 intent_override=intent_override,
+                # Uncommitted edits pushed via ``set_overlay`` win over indexed
+                # code (dirty buffers patched in, brand-new symbols anchored).
+                overlay=self._overlay,
+                user_id=OVERLAY_USER_ID,
             )
 
         intent = [(m.role, m.similarity) for m in result.intent]
@@ -333,13 +356,18 @@ class AxisEngine:
         file_path: str | None = None,
         max_depth: int = 3,
     ) -> ImpactResult:
-        """Downstream dependents of ``symbol`` — the committed surface only.
+        """Downstream dependents of ``symbol``: the committed Neo4j surface,
+        augmented with degraded ``overlay_caller`` rows parsed from any
+        uncommitted buffers pushed via ``set_overlay``.
 
-        Same in-process path as the ``/impact`` route (``resolve_impact_symbol_uid``
-        → ``build_impact_surface``), minus the live-overlay augmentation (no
-        editor buffer in an MCP session). Pure Neo4j graph walk — no embeddings.
+        Mirrors the ``/impact`` route (``resolve_impact_symbol_uid`` →
+        ``build_impact_surface`` + ``build_overlay_impact_callers``): callers a
+        host LLM just typed but hasn't committed surface as ``degraded=True``
+        rows, and a brand-new symbol that exists only in the overlay still
+        resolves. Pure Neo4j + in-process parse — no embeddings.
         """
         from context_engine.axis.impact_surface import build_impact_surface
+        from context_engine.axis.overlay_impact import build_overlay_impact_callers
 
         requested_path = (
             file_path.strip() if isinstance(file_path, str) and file_path.strip() else None
@@ -347,27 +375,70 @@ class AxisEngine:
         with self._lock:
             self._ensure_db()
             uid = self._db.resolve_impact_symbol_uid(symbol, workspace_id, file_path=requested_path)
-            if not uid:
-                return ImpactResult(symbol=symbol, workspace_id=workspace_id, found=False)
-            symbol_file = self._db.get_file_path_for_symbol(uid, workspace_id=workspace_id)
-            surface = build_impact_surface(
-                db=self._db,
-                symbol_uid=uid,
+
+            committed_rows: list[dict] = []
+            committed_files: list[str] = []
+            symbol_file = ""
+            walk_depth = max_depth
+            if uid:
+                symbol_file = self._db.get_file_path_for_symbol(uid, workspace_id=workspace_id)
+                surface = build_impact_surface(
+                    db=self._db,
+                    symbol_uid=uid,
+                    symbol_name=symbol,
+                    file_path=symbol_file,
+                    workspace_id=workspace_id,
+                    max_depth=max_depth,
+                )
+                committed_rows = surface["affected_symbols"]
+                committed_files = surface["affected_files"]
+                walk_depth = surface["max_depth"]
+
+            overlay_rows = build_overlay_impact_callers(
+                self._overlay,
                 symbol_name=symbol,
-                file_path=symbol_file,
                 workspace_id=workspace_id,
-                max_depth=max_depth,
+                user_id=OVERLAY_USER_ID,
             )
+
+        # A symbol unknown to the index but typed into a dirty buffer is still a
+        # legitimate target — the overlay callers (or its own buffer definition)
+        # anchor it. Only a true miss (no uid, no overlay evidence) is not-found.
+        overlay_defines = False
+        if not uid and self._overlay is not None and requested_path:
+            try:
+                overlay_defines = symbol in self._overlay.get_symbols(
+                    requested_path, workspace_id=workspace_id, user_id=OVERLAY_USER_ID
+                )
+            except Exception:
+                overlay_defines = False
+
+        if not uid and not overlay_rows and not overlay_defines:
+            return ImpactResult(symbol=symbol, workspace_id=workspace_id, found=False)
+
+        committed_keys = {(r.get("file_path"), r.get("name")) for r in committed_rows}
+        extra_rows = [
+            r for r in overlay_rows if (r.get("file_path"), r.get("name")) not in committed_keys
+        ]
+        affected_symbols = committed_rows + extra_rows
+        affected_files = sorted(
+            set(committed_files)
+            | {r["file_path"] for r in extra_rows if r.get("file_path")}
+        )
+        if not symbol_file and requested_path:
+            symbol_file = requested_path
 
         return ImpactResult(
             symbol=symbol,
             workspace_id=workspace_id,
             found=True,
-            symbol_uid=uid,
+            symbol_uid=uid or (f"overlay::{workspace_id}::{symbol_file}::{symbol}"),
             file_path=symbol_file,
-            affected_symbols=surface["affected_symbols"],
-            affected_files=surface["affected_files"],
-            max_depth=surface["max_depth"],
+            affected_symbols=affected_symbols,
+            affected_files=affected_files,
+            max_depth=walk_depth,
+            degraded=not uid or bool(extra_rows),
+            overlay_count=len(extra_rows),
         )
 
     def list_workspaces(self) -> list[WorkspaceInfo]:
@@ -417,6 +488,35 @@ class AxisEngine:
         if path:
             return self._db.get_symbol_uid_by_name_in_file(name, path, workspace_id)
         return self._db.get_symbol_uid_by_name(name, workspace_id)
+
+    def set_overlay(
+        self, file_path: str, content: str, workspace_id: str, *, dirty: bool = True
+    ) -> list[str]:
+        """Stash an uncommitted edit so ``ask``/``impact`` reflect it. Returns
+        the symbol names parsed from the buffer. No DB, no embedding."""
+        with self._lock:
+            overlay = self._ensure_overlay()
+            overlay.update(
+                file_path, content, workspace_id=workspace_id, user_id=OVERLAY_USER_ID, dirty=dirty
+            )
+            try:
+                symbols = overlay.get_symbols(
+                    file_path, workspace_id=workspace_id, user_id=OVERLAY_USER_ID
+                )
+            except Exception:
+                symbols = {}
+        return list(symbols.keys())
+
+    def clear_overlay(self, file_path: str, workspace_id: str) -> bool:
+        """Drop a single overlay buffer. True if one was present."""
+        if self._overlay is None:
+            return False
+        with self._lock:
+            present = self._overlay.has(
+                file_path, workspace_id=workspace_id, user_id=OVERLAY_USER_ID
+            )
+            self._overlay.clear(file_path, workspace_id=workspace_id, user_id=OVERLAY_USER_ID)
+        return present
 
     def read_symbol(
         self, name: str, workspace_id: str, *, file_path: str | None = None
@@ -728,3 +828,4 @@ class AxisEngine:
                 pass
             self._db = None
         self._lance = None
+        self._overlay = None

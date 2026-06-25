@@ -53,6 +53,22 @@ navigate primitives the budget-trimmed `ask_code` can't guarantee. Only
   anchored to `symbol` via DocAnchor `COVERS` edges (anchor type, confidence,
   source files).
 
+### Uncommitted-edit tools (P2 — overlay)
+
+Let the host LLM check the blast radius / read code of a change it has NOT yet
+committed, mirroring the HTTP server's live-buffer augmentation. Backed by an
+in-process `InMemoryOverlay` (no DB, no model).
+
+- **`set_overlay(file_path, content, workspace=None)`** — stash the edited full
+  file content. Afterwards `impact` adds degraded `overlay_caller` rows (and
+  resolves brand-new symbols), and `ask_code` reads the buffer over indexed code.
+- **`clear_overlay(file_path, workspace=None)`** — drop the buffer; `impact`/
+  `ask_code` return to the committed index.
+
+`impact` flags overlay-augmented results as `degraded` and tags overlay rows
+`[overlay]`. Typical loop: edit → `set_overlay` → `impact(symbol)` to see what
+your change breaks → `clear_overlay`.
+
 `workspace` is an optional base id (e.g. `qa_repo/django@main`); the
 `+axis_python_v1` index suffix is added automatically. Omit it to use
 `SURGICAL_CONTEXT_WORKSPACE`.
@@ -125,6 +141,9 @@ PYTHONPATH=..:. ../.venv/bin/python -c \
   edges over in-code docstrings / out-of-function doc comments). A workspace
   indexed without that stage (e.g. the current dogfood axis index, 0 anchors)
   yields empty — the queries are correct, there's just no data until reindex.
-- **Write/verify loop** (P2, not yet wired): overlay-aware `impact`/`ask` over
-  an uncommitted buffer, single-file `reindex_file`, and an `explain` concept
-  walk remain follow-ons.
+- **Write/verify loop**: overlay-aware `impact`/`ask` over an uncommitted buffer
+  is wired (`set_overlay`/`clear_overlay`). The overlay is per-server-process and
+  single-user (`user_id="mcp"`) — it does not share buffers with the HTTP server.
+  Persisting an edit still goes through the normal save (HTTP `/overlay`) → git
+  commit (post-commit `graphify`/index) path; there is no `reindex_file` tool
+  (redundant with that flow). An `explain`-style concept walk remains a follow-on.
