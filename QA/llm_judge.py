@@ -185,7 +185,10 @@ def _json_fence_candidates(text: str) -> list[str]:
             break
 
         content_start = start + marker_len
-        if content_start + 4 <= text_len and text[content_start : content_start + 4].casefold() == "json":
+        if (
+            content_start + 4 <= text_len
+            and text[content_start : content_start + 4].casefold() == "json"
+        ):
             content_start += 4
 
         while content_start < text_len and text[content_start] in " \t\r\n":

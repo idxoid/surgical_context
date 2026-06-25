@@ -170,7 +170,9 @@ def iter_simple_commonjs_requires(source_code: str) -> Iterator[tuple[str, str]]
         while cursor < source_len and source_code[cursor] in " \t\n\r":
             cursor += 1
         name_start = cursor
-        if name_start >= source_len or not _is_js_identifier_char(source_code[name_start], first=True):
+        if name_start >= source_len or not _is_js_identifier_char(
+            source_code[name_start], first=True
+        ):
             i = idx + len(keyword)
             continue
         cursor = name_start + 1
@@ -256,7 +258,9 @@ def iter_typescript_body_call_fallback_names(body: str) -> Iterator[tuple[str, i
     body_len = len(body)
     while i < body_len:
         ch = body[i]
-        if not (ch.isalpha() or ch in "_$") or (i > 0 and (body[i - 1].isalnum() or body[i - 1] in "_$")):
+        if not (ch.isalpha() or ch in "_$") or (
+            i > 0 and (body[i - 1].isalnum() or body[i - 1] in "_$")
+        ):
             i += 1
             continue
         name_start = i

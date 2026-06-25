@@ -6,7 +6,6 @@ from context_engine.indexer.external_boundary import (
     external_symbol_uid,
     package_manifest_external_roots,
 )
-from context_engine.parser.import_scan import split_python_from_import
 from context_engine.indexer.external_facts import (
     collect_external_call_links,
     collect_external_import_links,
@@ -15,6 +14,7 @@ from context_engine.indexer.external_facts import (
     external_symbol_import_rows,
 )
 from context_engine.indexer.role_clustering import assemble_symbol_rows
+from context_engine.parser.import_scan import split_python_from_import
 
 
 def test_external_root_from_qualified_name_truncates_to_root():
