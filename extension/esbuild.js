@@ -18,15 +18,12 @@ const hostOptions = {
   minify: production,
 };
 
-// Find all webview entry points
-const webviewDir = 'src/webview';
-let webviewEntryPoints = [];
-if (fs.existsSync(webviewDir)) {
-  webviewEntryPoints = fs
-    .readdirSync(webviewDir)
-    .filter(f => f.endsWith('.ts') && !f.startsWith('shared'))
-    .map(f => path.join(webviewDir, f));
-}
+// Standalone webview bundles still referenced by legacy panels. Settings/chat/
+// inspector/impact surfaces live in main.ts to avoid duplicating shared layout code.
+const webviewEntryPoints = [
+  path.join('src/webview', 'main.ts'),
+  path.join('src/webview', 'dashboard.ts'),
+].filter(f => fs.existsSync(f));
 
 /** Webview bundles (Browser) */
 const webviewOptions = webviewEntryPoints.length > 0 ? {
