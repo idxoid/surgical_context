@@ -7,6 +7,8 @@ reason over, the way ``/graphify query`` feeds a budgeted context block.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import sys
 
 from mcp.server.fastmcp import FastMCP
@@ -39,6 +41,11 @@ def ask_code(
       - classify_intent(question)     — preview roles only (no retrieval)
     Reach for ask_code only when you need semantic retrieval ACROSS files and
     cannot name the targets (e.g. "how does X work", "where is Y handled").
+
+    ROUND-TRIPS: each tool call re-bills the whole conversation context (cache),
+    so at large context FEWER rich calls beat MANY granular ones. If answering
+    would otherwise take many targeted lookups, one ask_code is cheaper overall —
+    batch, don't drip.
 
     Args:
         question: Plain-language question, e.g. "how does workspace scoping work".
@@ -577,6 +584,110 @@ def explain(concept: str, file_path: str | None = None, workspace: str | None = 
             lines.append(f"- [{d.anchor_type or 'doc'}] conf={d.confidence:.2f} — {files}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+_FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+
+# Read/nav tools safe to batch. Excludes ask_code (already one rich call),
+# overlay mutations, and trivial list_* tools.
+_BATCHABLE = {
+    "read_symbol": read_symbol,
+    "callers": callers,
+    "callees": callees,
+    "impact": impact,
+    "file_outline": file_outline,
+    "search_code": search_code,
+    "find_definition": find_definition,
+    "docs_for": docs_for,
+    "path": path,
+    "classify_intent": classify_intent,
+}
+
+
+def _dedup_code_blocks(text: str, seen: dict[str, bool]) -> tuple[str, int]:
+    """Collapse fenced code blocks already emitted earlier in the batch.
+
+    Keys substantial blocks by content hash; a repeat becomes a one-line ref so
+    a symbol's body is paid for once even when several ops surface it. Small
+    blocks (signatures/stubs) are left alone — the ref wouldn't be shorter.
+    """
+    n = 0
+
+    def repl(m: re.Match) -> str:
+        nonlocal n
+        body = m.group(1)
+        if len(body) < 120:
+            return m.group(0)
+        key = hashlib.md5(body.encode("utf-8")).hexdigest()  # noqa: S324 — dedup key, not security
+        if key in seen:
+            n += 1
+            return "```\n(identical code collapsed — shown above in this batch)\n```"
+        seen[key] = True
+        return m.group(0)
+
+    return _FENCE.sub(repl, text), n
+
+
+@mcp.tool()
+def batch(ops: list[dict]) -> str:
+    """Run several read/nav ops in ONE call (one round-trip), de-duplicating
+    repeated code across results.
+
+    Use this for multi-step questions. Each tool round-trip re-bills the whole
+    conversation context (cache), so N granular calls = N replays; ``batch``
+    collapses them into one. A symbol's code body is emitted once even if several
+    ops surface it.
+
+    ``ops``: list of ``{"tool": <name>, ...args}``. Supported tools:
+    read_symbol, callers, callees, impact, file_outline, find_definition,
+    search_code, docs_for, path, classify_intent. (ask_code is already one rich
+    call; overlay mutations and list_* are excluded.)
+
+    Example:
+        [{"tool": "read_symbol", "name": "create_app"},
+         {"tool": "callers", "symbol": "require_main"},
+         {"tool": "impact", "symbol": "build_context_engine_state"}]
+    """
+    if not isinstance(ops, list) or not ops:
+        return (
+            'batch: pass a non-empty list of ops, e.g. '
+            '[{"tool": "read_symbol", "name": "create_app"}].'
+        )
+
+    seen: dict[str, bool] = {}
+    collapsed = 0
+    parts: list[str] = []
+    for i, op in enumerate(ops, 1):
+        if not isinstance(op, dict) or "tool" not in op:
+            parts.append(f"## op{i} — invalid (need a dict with a 'tool' key)")
+            continue
+        tool = op["tool"]
+        fn = _BATCHABLE.get(tool)
+        if fn is None:
+            parts.append(
+                f"## op{i} {tool} — not batchable. "
+                f"Allowed: {', '.join(sorted(_BATCHABLE))}."
+            )
+            continue
+        args = {k: v for k, v in op.items() if k != "tool"}
+        argstr = ", ".join(f"{k}={v!r}" for k, v in args.items())
+        try:
+            out = fn(**args)
+        except TypeError as e:
+            parts.append(f"## op{i} — {tool}({argstr}) — bad args: {e}")
+            continue
+        except Exception as e:  # one bad op shouldn't sink the batch
+            parts.append(f"## op{i} — {tool}({argstr}) — error: {type(e).__name__}: {e}")
+            continue
+        out, n = _dedup_code_blocks(out, seen)
+        collapsed += n
+        parts.append(f"## op{i} — {tool}({argstr})\n{out}")
+
+    footer = f"\n---\n_batch: {len(ops)} ops in 1 round-trip"
+    if collapsed:
+        footer += f"; {collapsed} duplicate code block(s) collapsed"
+    footer += "._"
+    return "\n\n".join(parts) + footer
 
 
 def main() -> None:
