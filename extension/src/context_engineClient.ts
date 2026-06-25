@@ -212,6 +212,18 @@ export interface ImpactResponse {
   max_depth: number;
 }
 
+export interface IntentMatch {
+  role: string;
+  similarity: number;
+  description: string;
+}
+
+export interface IntentResponse {
+  question: string;
+  workspace_id: string;
+  intent_matches: IntentMatch[];
+}
+
 export interface CloudStatusResponse {
   cloud_enabled: boolean;
   using_aura: boolean;
@@ -412,6 +424,10 @@ export const SidecarClient = {
       params.set('file_path', filePath);
     }
     return get(`/impact?${params.toString()}`);
+  },
+
+  intent(question: string, topRoles = 5): Promise<IntentResponse> {
+    return post('/intent', { question, top_roles: topRoles });
   },
 
   cloudStatus(): Promise<CloudStatusResponse> {

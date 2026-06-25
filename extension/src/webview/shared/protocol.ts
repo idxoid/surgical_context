@@ -62,6 +62,7 @@ export type HostToWebviewMessage =
   | { type: 'backend.updated'; context_engineHealth: 'up' | 'down' | 'degraded'; cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline' }
   | { type: 'toast.show'; level: 'info' | 'warning' | 'error'; message: string }
   | { type: 'inspector.loaded'; context: PromptContextPayload | null; symbol?: string; question?: string }
+  | { type: 'inspector.intentLoaded'; intentMatches: IntentMatch[] }
   | { type: 'inspector.notAvailable'; message: string }
   | { type: 'impact.loading' }
   | { type: 'impact.loaded'; symbol: string; impact: ImpactResponse }
@@ -101,6 +102,12 @@ export interface ChatSurfaceState {
   };
 }
 
+
+export interface IntentMatch {
+  role: string;
+  similarity: number;
+  description: string;
+}
 
 export interface ContextSummaryDto {
   primaryLabel: string;

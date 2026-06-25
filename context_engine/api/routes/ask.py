@@ -9,7 +9,14 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from context_engine.api.routes.deps import require_main
-from context_engine.api.schemas import AskAxisRequest, AskAxisResponse, AskRequest, AskResponse
+from context_engine.api.schemas import (
+    AskAxisRequest,
+    AskAxisResponse,
+    AskRequest,
+    AskResponse,
+    IntentRequest,
+    IntentResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +95,41 @@ def ask_axis(
             "trace_id=%s endpoint=/ask/axis status=error",
             trace.trace_id,
         )
+        raise
+    finally:
+        main.default_metrics.record_trace(trace, status)
+
+
+@router.post("/intent", response_model=IntentResponse)
+def intent(
+    req: IntentRequest,
+    x_user_id: str = Header(None),
+    authorization: str = Header(None),
+    x_workspace: str = Header(None),
+    x_trace_id: str = Header(None),
+    request: Request = None,
+):
+    """Classify-only intent preview: question → ranked role matches.
+
+    Embedding cosine of the question against role descriptions — no graph, no
+    retrieval. The cheap path for an editor "intent" panel.
+    """
+    main = require_main(request)
+    main._resolve_request_user(x_user_id, authorization)
+    base_workspace_id = main._resolve_workspace(x_workspace, authorization)
+    trace = main._start_trace("/intent", x_trace_id, base_workspace_id)
+    status = "ok"
+    try:
+        return main.ask_service.classify_intent(
+            req,
+            base_workspace_id=base_workspace_id,
+            trace=trace,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        status = "error"
+        logger.exception("trace_id=%s endpoint=/intent status=error", trace.trace_id)
         raise
     finally:
         main.default_metrics.record_trace(trace, status)

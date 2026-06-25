@@ -12,9 +12,14 @@ pipeline directly.
 
 ## Tools
 
-- **`ask_code(question, token_budget=6000, workspace=None)`** — natural-language
-  question → ranked, graph-expanded code bundles for the host model to reason
-  over. Returns *context, not an answer* (LLM-free retrieval).
+- **`ask_code(question, token_budget=6000, workspace=None, roles=None, render="full")`**
+  — natural-language question → ranked, graph-expanded code bundles for the host
+  model to reason over. Returns *context, not an answer* (LLM-free retrieval).
+  `roles=[...]` overrides the embedding intent-classifier (see `list_roles`).
+  `render="names"` = census view: one line per symbol (file :: name + role/depth,
+  no code) with eviction disabled, so far more coupling symbols/files surface per
+  token (~−40% tokens, ~30% more symbols on coupling questions) — use it to map
+  structure/blast surface, `"full"` to read code.
 - **`impact(symbol, file_path=None, max_depth=3, workspace=None)`** — downstream
   blast radius of a change to `symbol` (reverse callers, structural
   API/inheritance, AFFECTS closure). Committed index surface only (no overlay).

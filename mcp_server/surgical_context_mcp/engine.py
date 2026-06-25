@@ -48,12 +48,17 @@ class WorkspaceInfo:
     files: int
 
 
-def _render_bundles(result) -> tuple[list[str], str]:
+def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str]:
     """Flatten ``result.bundles`` into a deduped, prompt-ready markdown block.
 
     Dedupes by uid (highest-rank / shallowest occurrence wins), preserving the
     candidate-rank, seed-before-related order — the same content the benchmark
     counts as the prompt the LLM actually receives.
+
+    ``names_only`` emits one compact line per symbol (file :: name + role/depth,
+    NO code) — a census view: many coupling symbols fit per token. Pair it with
+    ``intent_budget=False`` upstream so the token-credit packer doesn't evict
+    expanded neighbours before they reach here.
     """
     if not result.bundles:
         return [], ""
@@ -75,6 +80,13 @@ def _render_bundles(result) -> tuple[list[str], str]:
                 files.append(fp)
 
             step = sym.expansion_step or "seed"
+            if names_only:
+                parts.append(
+                    f"- {fp} :: {sym.name} "
+                    f"({sym.role}, d{sym.distance_from_seed}, {step})"
+                )
+                continue
+
             parts.append(
                 f"### {fp} :: {sym.name}  "
                 f"({sym.role}, depth={sym.distance_from_seed}, {step})"
@@ -115,6 +127,17 @@ class AxisEngine:
 
         self._db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
 
+    def _ensure_lance(self) -> None:
+        """Open just the LanceDB handle (pulls SentenceTransformer; one-time
+        cold-start). Needed for any embedding — intent classification and the
+        vector seeds. No Neo4j, so intent preview stays off the graph path."""
+        if self._lance is not None:
+            return
+        from context_engine.database.lancedb_client import LanceDBClient
+        from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+
+        self._lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+
     def _ensure(self) -> None:
         """Open Neo4j + LanceDB. The Lance handle pulls SentenceTransformer
         (one-time cold-start), needed only for the embedding-driven ask path —
@@ -124,12 +147,26 @@ class AxisEngine:
         MCP stdio JSON-RPC channel stays uncorrupted without redirection.
         """
         self._ensure_db()
-        if self._lance is not None:
-            return
-        from context_engine.database.lancedb_client import LanceDBClient
-        from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+        self._ensure_lance()
 
-        self._lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+    def classify_intent(
+        self, question: str, *, top_roles: int = 5, threshold: float = 0.20
+    ) -> list[tuple[str, float, str]]:
+        """Preview the embedding intent-classifier: roles whose description
+        embeds closest to ``question`` (cosine ≥ threshold). Embedding only —
+        no Neo4j, no retrieval. Returns (role, similarity, description)."""
+        from context_engine.axis.intent_classifier import classify_intent
+
+        with self._lock:
+            self._ensure_lance()
+
+            def embed(text: str):
+                return self._lance._embed([text])[0]  # noqa: SLF001
+
+            matches = classify_intent(
+                question, embed, top_k=top_roles, threshold=threshold
+            )
+        return [(m.role, m.similarity, m.description) for m in matches]
 
     def available_roles(self) -> dict[str, str]:
         """Canonical role → description map (the intent vocabulary). No DB —
@@ -148,8 +185,14 @@ class AxisEngine:
         per_role_limit: int = 7,
         with_context: bool = True,
         roles: list[str] | None = None,
+        render: str = "full",
     ) -> AskResult:
         from context_engine.axis.pipeline import run_axis_retrieval
+
+        # render="names": census view — strip bodies AND disable the token-credit
+        # eviction so the full graph expansion survives (signature_only can't do
+        # this: it only acts inside intent_budget, where it ≈ full and still evicts).
+        names_only = render == "names"
 
         # Variant A: when the caller supplies roles, skip the embedding
         # intent-classifier and drive retrieval with those roles directly. The
@@ -180,14 +223,14 @@ class AxisEngine:
                 top_roles=top_roles,
                 per_role_limit=per_role_limit,
                 with_context=with_context,
-                intent_budget=True,
+                intent_budget=not names_only,
                 base_token_budget=token_budget,
                 hook_transparency=True,
                 intent_override=intent_override,
             )
 
         intent = [(m.role, m.similarity) for m in result.intent]
-        files, text = _render_bundles(result)
+        files, text = _render_bundles(result, names_only=names_only)
         return AskResult(
             question=question,
             workspace_id=workspace_id,

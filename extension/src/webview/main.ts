@@ -7,6 +7,7 @@ import {
   ContextSummaryDto,
   HostToWebviewMessage,
   ImpactResponse,
+  IntentMatch,
   PromptContextPayload,
   SettingsData,
   WebviewToHostMessage,
@@ -32,6 +33,7 @@ import {
   renderPromptJsonTab,
   renderApiPayloadTab,
   renderTokenBreakdownTab,
+  renderIntentTab,
 } from './shared/inspectorLayout';
 import {
   renderSettingsForm,
@@ -41,7 +43,7 @@ import {
 } from './shared/settingsLayout';
 
 type Surface = 'chat' | 'inspector' | 'impact' | 'settings';
-type InspectorTab = 'primary' | 'graph' | 'docs' | 'tokens' | 'json' | 'api';
+type InspectorTab = 'primary' | 'intent' | 'graph' | 'docs' | 'tokens' | 'json' | 'api';
 
 interface StoredDialog {
   id: string;
@@ -62,6 +64,7 @@ class MainSurface {
   private currentPromptContext: PromptContextPayload | null = null;
   private selectedPromptRequestId: string | null = null;
   private inspectorTab: InspectorTab = 'primary';
+  private intentMatches: IntentMatch[] | null = null;
   private pendingPrompt: string | null = null;
   private pendingAskAnchor: { symbol: string; filePath?: string } | null = null;
   private currentImpact: ImpactResponse | null = null;
@@ -199,6 +202,7 @@ class MainSurface {
         case 'inspector.loaded':
           this.surface = 'inspector';
           this.currentPromptContext = message.context;
+          this.intentMatches = null;
           if (message.context) {
             this.currentContextSummary = this.summaryFromContext(message.context);
             this.currentImpact = this.impactFromContext(message.context);
@@ -207,6 +211,13 @@ class MainSurface {
             this.currentImpactSource = 'prompt';
           }
           this.render();
+          break;
+
+        case 'inspector.intentLoaded':
+          this.intentMatches = message.intentMatches;
+          if (this.surface === 'inspector' && this.inspectorTab === 'intent') {
+            this.render();
+          }
           break;
 
         case 'settings.loaded':
@@ -488,6 +499,7 @@ class MainSurface {
           <div class="surface-subtitle">${escapeHtml(this.selectedPromptText() || 'Selected prompt')}</div>
           <div class="inspector-tab-bar" role="tablist" aria-label="Context detail tabs">
             ${this.renderInspectorTabButton('primary', 'Primary')}
+            ${this.renderInspectorTabButton('intent', 'Intent')}
             ${this.renderInspectorTabButton('graph', 'Graph')}
             ${this.renderInspectorTabButton('docs', 'Docs')}
             ${this.renderInspectorTabButton('tokens', 'Tokens')}
@@ -518,6 +530,8 @@ class MainSurface {
 
   private renderInspectorTabContent(context: PromptContextPayload): string {
     switch (this.inspectorTab) {
+      case 'intent':
+        return renderIntentTab(this.intentMatches);
       case 'graph':
         return renderGraphContextTab(context);
       case 'docs':

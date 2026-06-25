@@ -24,6 +24,7 @@ def ask_code(
     token_budget: int = 6000,
     workspace: str | None = None,
     roles: list[str] | None = None,
+    render: str = "full",
 ) -> str:
     """Retrieve surgical code context for a natural-language question about the
     indexed codebase.
@@ -45,8 +46,16 @@ def ask_code(
             mechanism better than cosine similarity of role descriptions (the
             vector seeds still rerank, only role *selection* changes). Call
             ``list_roles`` for the vocabulary. Omit to auto-classify.
+        render: "full" (default) = ranked code bundles to reason over. "names" =
+            census view — one line per symbol (file :: name + role/depth, NO
+            code) with no budget eviction, so far more coupling symbols/files
+            surface per token. Use "names" to map structure/blast surface ("which
+            symbols/files touch X"); "full" to read the actual code.
     """
     workspace_id = resolve_workspace_id(workspace)
+
+    if render not in ("full", "names"):
+        return f"Unknown render '{render}'. Use 'full' (code) or 'names' (census)."
 
     if roles:
         known = _engine.available_roles()
@@ -58,7 +67,9 @@ def ask_code(
                 "Call list_roles for descriptions."
             )
 
-    result = _engine.ask(question, workspace_id, token_budget=token_budget, roles=roles)
+    result = _engine.ask(
+        question, workspace_id, token_budget=token_budget, roles=roles, render=render
+    )
 
     roles = ", ".join(f"{r}({s:.2f})" for r, s in result.intent)
     if not result.text:
@@ -141,6 +152,25 @@ def list_workspaces() -> str:
         return "No indexed workspaces found. Is the index built and Neo4j up?"
     lines = ["# Indexed workspaces — pass `base` as workspace=", ""]
     lines.extend(f"- {w.base}  ({w.files} files)" for w in rows)
+    return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def classify_intent(question: str, top_roles: int = 5) -> str:
+    """Preview which structural roles the embedding intent-classifier maps a
+    question to (cosine of question vs role descriptions), WITHOUT running
+    retrieval. Cheap (embedding only — no graph). Use it to decide whether to
+    override ``ask_code(roles=[...])``: see the auto-picked roles + similarity,
+    then refine. Closes the loop list_roles → classify_intent → ask_code.
+    """
+    matches = _engine.classify_intent(question, top_roles=top_roles)
+    if not matches:
+        return (
+            f"No role above threshold for: {question!r}.\n"
+            "Try a more specific question, or call list_roles for the vocabulary."
+        )
+    lines = [f"# Intent for: {question}", ""]
+    lines.extend(f"- {role} ({sim:.2f}) — {desc}" for role, sim, desc in matches)
     return "\n".join(lines) + "\n"
 
 
