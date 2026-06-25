@@ -61,7 +61,7 @@ def test_compile_immediate_control_flow_query_plan():
     assert plan.expansion_steps[0].direction == "out"
     assert plan.expansion_steps[0].max_depth == 2
     assert plan.expansion_steps[1].enabled is False
-    assert plan.stop_conditions == ("token_budget", "call_depth_exhausted")
+    assert plan.stop_conditions == ("token_budget", "call_depth_exhausted", "")
     assert plan.limit == 12
 
 

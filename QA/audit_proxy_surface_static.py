@@ -15,13 +15,19 @@ from context_engine.parser.adapters.python_adapter import PythonAdapter  # noqa:
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter  # noqa: E402
 from QA.output_paths import (  # noqa: E402
     default_report_basename,
-    resolve_output_path,
-    resolve_repo_checkout,
+    lookup_allowed_repo_checkout,
+    write_json_report,
 )
 
 QA = Path(__file__).resolve().parent
 
 _ALLOWED_REPOS = frozenset({"django", "pydantic", "express"})
+
+_REPO_CHECKOUTS: dict[str, Path] = {
+    "django": (QA / "repos" / "django").resolve(),
+    "pydantic": (QA / "repos" / "pydantic").resolve(),
+    "express": (QA / "repos" / "express").resolve(),
+}
 
 _SKIP_PARTS = frozenset({".git", "__pycache__", ".tox", "node_modules"})
 
@@ -136,7 +142,7 @@ def main() -> int:
     parser.add_argument("--report", default="")
     args = parser.parse_args()
 
-    root = resolve_repo_checkout(QA, args.repo, _ALLOWED_REPOS)
+    root = lookup_allowed_repo_checkout(args.repo, allowed=_ALLOWED_REPOS, checkouts=_REPO_CHECKOUTS)
     if not root.is_dir():
         print(f"missing checkout: {root}", file=sys.stderr)
         return 1
@@ -146,12 +152,12 @@ def main() -> int:
     else:
         payload = {"repo": args.repo, "scan": _scan_python_tree(root)}
 
-    out = resolve_output_path(
-        args.report or None,
+    report_arg = args.report.strip() or None
+    out = write_json_report(
+        payload,
+        report_arg,
         default_name=default_report_basename("proxy_audit_static", args.repo, _ALLOWED_REPOS),
     )
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(json.dumps(payload, indent=2))
     print(f"\nReport: {out}")
     return 0

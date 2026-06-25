@@ -127,6 +127,18 @@ def _resolve_smoke_workspace_id(project_path: Path, explicit: str) -> str:
     )
 
 
+_LOCAL_SIDECAR_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _default_sidecar_scheme(host: str) -> str:
+    return "http" if host in _LOCAL_SIDECAR_HOSTS else "https"
+
+
+def _sidecar_base_url(host: str, port: int, scheme: str | None = None) -> str:
+    resolved = scheme or _default_sidecar_scheme(host)
+    return f"{resolved}://{host}:{port}"
+
+
 def _api_url(base_url: str, path: str, query: dict[str, str] | None = None) -> str:
     url = base_url.rstrip("/") + path
     if query:
@@ -482,7 +494,7 @@ def smoke(args: argparse.Namespace) -> int:
     if args.base_url:
         base_url = args.base_url.rstrip("/")
     else:
-        base_url = f"http://{args.host}:{args.port}"
+        base_url = _sidecar_base_url(args.host, args.port, args.scheme or None)
     default_project_path = ROOT if args.full_repo else SMOKE_PROJECT_DIR
     default_docs_path = ROOT / "docs" if args.full_repo else SMOKE_DOCS_PATH
     project_path = Path(args.project_path or default_project_path).resolve()
@@ -752,7 +764,16 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_parser.add_argument(
         "--base-url",
         default="",
-        help="Existing context_engine URL. Defaults to http://<host>:<port>.",
+        help="Existing context_engine URL. Defaults to <scheme>://<host>:<port>.",
+    )
+    smoke_parser.add_argument(
+        "--scheme",
+        choices=("http", "https"),
+        default="",
+        help=(
+            "URL scheme when --base-url is omitted. Defaults to http for localhost "
+            "and https otherwise."
+        ),
     )
     smoke_parser.add_argument(
         "--workspace-id",

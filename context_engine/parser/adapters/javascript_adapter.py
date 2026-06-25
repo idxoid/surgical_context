@@ -8,7 +8,10 @@ from context_engine.parser.adapters.js_ts_fallback_patterns import (
     PROPERTY_ARROW_API_RE,
     PROPERTY_FUNC_API_RE,
 )
-from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
+from context_engine.parser.adapters.treesitter_base import (
+    TreeSitterAdapter,
+    flatten_ts_query_captures,
+)
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 from context_engine.parser.import_scan import (
     collect_js_ts_import_bindings,
@@ -186,199 +189,84 @@ class JavaScriptAdapter(TreeSitterAdapter):
         existing_uids = {symbol.uid for symbol in symbols}
 
         for match in self._EXPORTED_FUNC_FALLBACK_RE.finditer(source_code):
-            name = match.group(1) or match.group(2)
-            if not name or name in existing_names:
-                continue
-
-            start_line, end_line, content = self._fallback_symbol_span(
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                existing_uids,
+                file_path,
                 source_code,
-                match.start(),
+                start_offset=match.start(),
+                name=match.group(1) or match.group(2),
+                kind="function",
             )
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
-            symbols.append(
-                SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
-                    name=name,
-                    kind="function",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
-            )
-            existing_names.add(name)
-            existing_uids.add(symbols[-1].uid)
 
         for match in self._MODULE_EXPORT_FUNC_FALLBACK_RE.finditer(source_code):
-            name = match.group(1)
-            if not name or name in existing_names:
-                continue
-
-            start_line, end_line, content = self._fallback_symbol_span(
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                existing_uids,
+                file_path,
                 source_code,
-                match.start(),
+                start_offset=match.start(),
+                name=match.group(1),
+                kind="function",
             )
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
-            symbols.append(
-                SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
-                    name=name,
-                    kind="function",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
-            )
-            existing_names.add(name)
-            existing_uids.add(symbols[-1].uid)
         for match in self._CHAINED_PROPERTY_FUNC_API_RE.finditer(source_code):
-            owner = (match.group(1) or "").strip()
-            name = (match.group(2) or "").strip()
-            qualified_name = self._property_method_qualified_name(file_path, owner, name)
-            uid = compute_uid(qualified_name, f"{name}()->_", self.language_name)
-            if not name or not owner or uid in existing_uids:
-                continue
-            start_line, end_line, content = self._fallback_symbol_span(source_code, match.start())
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            symbols.append(
-                SymbolMetadata(
-                    uid=uid,
-                    name=name,
-                    kind="function",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
+            self._append_property_fallback_symbol(
+                symbols,
+                existing_names,
+                existing_uids,
+                file_path,
+                source_code,
+                start_offset=match.start(),
+                owner=match.group(1) or "",
+                name=match.group(2) or "",
             )
-            existing_names.add(name)
-            existing_uids.add(uid)
         for match in self._PROPERTY_FUNC_API_RE.finditer(source_code):
-            owner = (match.group(1) or "").strip()
-            name = (match.group(3) or match.group(2) or "").strip()
-            qualified_name = self._property_method_qualified_name(file_path, owner, name)
-            uid = compute_uid(qualified_name, f"{name}()->_", self.language_name)
-            if not name or not owner or uid in existing_uids:
-                continue
-            start_line, end_line, content = self._fallback_symbol_span(source_code, match.start())
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            symbols.append(
-                SymbolMetadata(
-                    uid=uid,
-                    name=name,
-                    kind="function",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
+            self._append_property_fallback_symbol(
+                symbols,
+                existing_names,
+                existing_uids,
+                file_path,
+                source_code,
+                start_offset=match.start(),
+                owner=match.group(1) or "",
+                name=match.group(3) or match.group(2) or "",
             )
-            existing_names.add(name)
-            existing_uids.add(uid)
         for match in self._PROPERTY_ARROW_API_RE.finditer(source_code):
-            owner = (match.group(1) or "").strip()
-            name = (match.group(2) or "").strip()
-            qualified_name = self._property_method_qualified_name(file_path, owner, name)
-            uid = compute_uid(qualified_name, f"{name}()->_", self.language_name)
-            if not name or not owner or uid in existing_uids:
-                continue
-            start_line, end_line, content = self._fallback_symbol_span(source_code, match.start())
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            symbols.append(
-                SymbolMetadata(
-                    uid=uid,
-                    name=name,
-                    kind="function",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
+            self._append_property_fallback_symbol(
+                symbols,
+                existing_names,
+                existing_uids,
+                file_path,
+                source_code,
+                start_offset=match.start(),
+                owner=match.group(1) or "",
+                name=match.group(2) or "",
             )
-            existing_names.add(name)
-            existing_uids.add(uid)
 
         for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
-            name = match.group(1) or match.group(2)
-            if not name or name in existing_names:
-                continue
-
-            start_line, end_line, content = self._fallback_symbol_span(
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                existing_uids,
+                file_path,
                 source_code,
-                match.start(),
+                start_offset=match.start(),
+                name=match.group(1) or match.group(2),
+                kind="variable",
             )
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
-            symbols.append(
-                SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
-                    name=name,
-                    kind="variable",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
-            )
-            existing_names.add(name)
-            existing_uids.add(symbols[-1].uid)
         for name, start_offset in self._module_export_object_keys(source_code):
-            if not name or name in existing_names:
-                continue
-            start_line, end_line, content = self._fallback_symbol_span(source_code, start_offset)
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
-            symbols.append(
-                SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
-                    name=name,
-                    kind="variable",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                existing_uids,
+                file_path,
+                source_code,
+                start_offset=start_offset,
+                name=name,
+                kind="variable",
             )
-            existing_names.add(name)
-            existing_uids.add(symbols[-1].uid)
         if tree is None:
             tree = self._parse(source_code)
         from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
@@ -472,14 +360,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
         if tree is None:
             tree = self._parse(source_code)
 
-        # Flatten captures from matches into (node, tag) tuples
-        captures = []
-        for _match_id, captures_dict in iter_ts_query_matches(
-            self.language, self.import_query, tree.root_node
-        ):
-            for tag, nodes in captures_dict.items():
-                for node in nodes:
-                    captures.append((node, tag))
+        captures = flatten_ts_query_captures(self.language, self.import_query, tree.root_node)
 
         imports = []
         seen: set[tuple[str, str, str]] = set()
@@ -532,14 +413,31 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 )
             )
 
-        for match in self._CHAINED_PROPERTY_FUNC_API_RE.finditer(source_code):
-            add(match.group(1), match.group(2), match.group(2))
-            add(match.group(3), match.group(4), match.group(5) or match.group(4))
-        for match in self._PROPERTY_FUNC_API_RE.finditer(source_code):
-            add(match.group(1), match.group(2), match.group(3) or match.group(2))
-        for match in self._PROPERTY_ARROW_API_RE.finditer(source_code):
-            add(match.group(1), match.group(2), match.group(2))
+        for pattern, owner_specs in self._property_api_edge_patterns():
+            for match in pattern.finditer(source_code):
+                for owner, prop, method_name in owner_specs(match):
+                    add(owner, prop, method_name)
         return edges
+
+    @classmethod
+    def _property_api_edge_patterns(cls):
+        return (
+            (
+                cls._CHAINED_PROPERTY_FUNC_API_RE,
+                lambda match: (
+                    (match.group(1), match.group(2), match.group(2)),
+                    (match.group(3), match.group(4), match.group(5) or match.group(4)),
+                ),
+            ),
+            (
+                cls._PROPERTY_FUNC_API_RE,
+                lambda match: ((match.group(1), match.group(2), match.group(3) or match.group(2)),),
+            ),
+            (
+                cls._PROPERTY_ARROW_API_RE,
+                lambda match: ((match.group(1), match.group(2), match.group(2)),),
+            ),
+        )
 
     def extract_symbol_aliases(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Extract static symbol-level aliases from CommonJS export surfaces."""
@@ -660,18 +558,14 @@ class JavaScriptAdapter(TreeSitterAdapter):
         if tree is None:
             tree = self._parse(source_code)
 
-        captures = []
-        for _match_id, captures_dict in iter_ts_query_matches(
+        captures = flatten_ts_query_captures(
             self.language,
             """
             (call_expression) @call
             (new_expression) @call
             """,
             tree.root_node,
-        ):
-            for tag, nodes in captures_dict.items():
-                for node in nodes:
-                    captures.append((node, tag))
+        )
 
         symbols = self.extract_symbols(source_code, file_path, tree=tree)
         by_name: dict[str, list] = {}
@@ -788,17 +682,14 @@ class JavaScriptAdapter(TreeSitterAdapter):
             }
             if callee_uid:
                 call["callee_uid"] = callee_uid
-            if rel_type == "CALLS_IMPORTED":
-                if callee_qn:
-                    call["callee_qualified_name"] = callee_qn
-                elif func_node.type == "identifier":
-                    call["callee_qualified_name"] = import_bindings[call_name]
-                else:
-                    receiver_node = [child for child in func_node.children if child.is_named][0]
-                    receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
-                    base = import_bindings.get(receiver_text, "")
-                    if base:
-                        call["callee_qualified_name"] = f"{base}.{call_name}"
+            self._apply_imported_callee_qualified_name(
+                call,
+                func_node=func_node,
+                call_name=call_name,
+                import_bindings=import_bindings,
+                source_code=source_code,
+                callee_qn=callee_qn,
+            )
             calls.append(call)
 
         return calls
@@ -895,42 +786,113 @@ class JavaScriptAdapter(TreeSitterAdapter):
             out.append((name, start + prop.start()))
         return out
 
+    def _append_module_fallback_symbol(
+        self,
+        symbols: list[SymbolMetadata],
+        existing_names: set[str],
+        existing_uids: set[str],
+        file_path: str,
+        source_code: str,
+        *,
+        start_offset: int,
+        name: str | None,
+        kind: str,
+    ) -> None:
+        if not name or name in existing_names:
+            return
+        start_line, end_line, content = self._fallback_symbol_span(source_code, start_offset)
+        signature = normalize_signature(f"{name}()->_", self.language_name)
+        qualified_name = f"{module_name_from_path(file_path)}.{name}"
+        uid = compute_uid(qualified_name, signature, self.language_name)
+        symbols.append(
+            SymbolMetadata(
+                uid=uid,
+                name=name,
+                kind=kind,
+                start_line=start_line,
+                end_line=end_line,
+                content_hash=self._hash(content),
+                file_path=file_path,
+                qualified_name=qualified_name,
+                signature=signature,
+                signature_hash=signature_hash(signature, self.language_name),
+                signature_status="fallback_export",
+                language=self.language_name,
+            )
+        )
+        existing_names.add(name)
+        existing_uids.add(uid)
+
+    def _append_property_fallback_symbol(
+        self,
+        symbols: list[SymbolMetadata],
+        existing_names: set[str],
+        existing_uids: set[str],
+        file_path: str,
+        source_code: str,
+        *,
+        start_offset: int,
+        owner: str,
+        name: str,
+    ) -> None:
+        owner = owner.strip()
+        name = name.strip()
+        qualified_name = self._property_method_qualified_name(file_path, owner, name)
+        uid = compute_uid(qualified_name, f"{name}()->_", self.language_name)
+        if not name or not owner or uid in existing_uids:
+            return
+        start_line, end_line, content = self._fallback_symbol_span(source_code, start_offset)
+        signature = normalize_signature(f"{name}()->_", self.language_name)
+        symbols.append(
+            SymbolMetadata(
+                uid=uid,
+                name=name,
+                kind="function",
+                start_line=start_line,
+                end_line=end_line,
+                content_hash=self._hash(content),
+                file_path=file_path,
+                qualified_name=qualified_name,
+                signature=signature,
+                signature_hash=signature_hash(signature, self.language_name),
+                signature_status="fallback_export",
+                language=self.language_name,
+            )
+        )
+        existing_names.add(name)
+        existing_uids.add(uid)
+
+    @staticmethod
+    def _apply_imported_callee_qualified_name(
+        call: dict,
+        *,
+        func_node,
+        call_name: str,
+        import_bindings: dict[str, str],
+        source_code: str,
+        callee_qn: str,
+    ) -> None:
+        if call.get("rel_type") != "CALLS_IMPORTED":
+            return
+        if callee_qn:
+            call["callee_qualified_name"] = callee_qn
+            return
+        if func_node.type == "identifier":
+            call["callee_qualified_name"] = import_bindings[call_name]
+            return
+        receiver_node = [child for child in func_node.children if child.is_named][0]
+        receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
+        base = import_bindings.get(receiver_text, "")
+        if base:
+            call["callee_qualified_name"] = f"{base}.{call_name}"
+
     def _fallback_symbol_span(
         self,
         source_code: str,
         start_offset: int,
     ) -> tuple[int, int, str]:
         """Best-effort line span for exported symbol text fallbacks."""
-        line_start = source_code.rfind("\n", 0, start_offset) + 1
-        start_line = source_code.count("\n", 0, line_start) + 1
-        line_end = source_code.find("\n", start_offset)
-        search_from = start_offset
-        close_paren = source_code.find(")", start_offset)
-        if close_paren != -1 and (line_end == -1 or close_paren <= line_end + 200):
-            search_from = close_paren
-        brace_start = source_code.find("{", search_from)
-
-        if brace_start == -1 or (line_end != -1 and brace_start > line_end):
-            if line_end == -1:
-                line_end = len(source_code)
-            content = source_code[line_start:line_end]
-            return start_line, start_line, content
-
-        depth = 0
-        end_offset = len(source_code)
-        for idx in range(brace_start, len(source_code)):
-            char = source_code[idx]
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    end_offset = idx + 1
-                    break
-
-        end_line = source_code.count("\n", 0, end_offset) + 1
-        content = source_code[line_start:end_offset]
-        return start_line, end_line, content
+        return TypeScriptAdapter._fallback_symbol_span(source_code, start_offset)
 
     def _uid(self, file_path: str, name: str) -> str:
         qualified_name = f"{module_name_from_path(file_path)}.{name}"

@@ -485,6 +485,16 @@
 
   // src/webview/shared/webviewRuntime.ts
   var vscode = acquireVsCodeApi();
+  function isTrustedHostWebviewMessage(event) {
+    const origin = event.origin;
+    if (origin === window.location.origin) {
+      return true;
+    }
+    if (origin === "") {
+      return true;
+    }
+    return origin.startsWith("vscode-webview://");
+  }
   function bootWebview(init) {
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", init);
@@ -514,6 +524,9 @@
     }
     initializeMessageListener() {
       window.addEventListener("message", (event) => {
+        if (!isTrustedHostWebviewMessage(event)) {
+          return;
+        }
         const message = event.data;
         switch (message.type) {
           case "dashboard.loading":

@@ -376,6 +376,7 @@ res.status = function status(code) {
 
         assert count == 1
         assert touched
+        assert len(linked) == 1
         assert linked[0].edge_type == "HAS_API"
 
     def test_fast_embed_phase_adds_axis_payload_for_axis_python_profile(self, tmp_path):

@@ -8,7 +8,7 @@ from context_engine.parser.adapters.js_ts_fallback_patterns import (
     PROPERTY_ARROW_API_RE,
     PROPERTY_FUNC_API_RE,
 )
-from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
+from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, flatten_ts_query_captures
 from context_engine.parser.adapters.ts_reexport_resolver import TsReexportResolver
 from context_engine.parser.adapters.ts_scope_graph import TsBinding, TsScopeGraph
 from context_engine.parser.import_scan import (
@@ -322,33 +322,15 @@ class TypeScriptAdapter(TreeSitterAdapter):
         existing_names = {symbol.name for symbol in symbols}
 
         for match in self._EXPORTED_FUNC_FALLBACK_RE.finditer(source_code):
-            name = match.group(1)
-            if name in existing_names:
-                continue
-
-            start_line, end_line, content = self._fallback_symbol_span(
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                file_path,
                 source_code,
-                match.start(),
+                start_offset=match.start(),
+                name=match.group(1),
+                kind="function",
             )
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
-            symbols.append(
-                SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
-                    name=name,
-                    kind="function",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
-            )
-            existing_names.add(name)
 
         for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
             name = match.group(1)
@@ -357,58 +339,26 @@ class TypeScriptAdapter(TreeSitterAdapter):
             tail = source_code[match.end() : match.end() + 24]
             if re.match(r"\s*=\s*\{", tail):
                 continue
-
-            start_line, end_line, content = self._fallback_symbol_span(
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                file_path,
                 source_code,
-                match.start(),
+                start_offset=match.start(),
+                name=name,
+                kind="variable",
             )
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
-            symbols.append(
-                SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
-                    name=name,
-                    kind="variable",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
-            )
-            existing_names.add(name)
 
         for match in self._EXPORTED_TYPE_FALLBACK_RE.finditer(source_code):
-            name = match.group(1)
-            if name in existing_names:
-                continue
-            start_line, end_line, content = self._fallback_symbol_span(
+            self._append_module_fallback_symbol(
+                symbols,
+                existing_names,
+                file_path,
                 source_code,
-                match.start(),
+                start_offset=match.start(),
+                name=match.group(1),
+                kind="class",
             )
-            signature = normalize_signature(f"{name}()->_", self.language_name)
-            qualified_name = f"{module_name_from_path(file_path)}.{name}"
-            symbols.append(
-                SymbolMetadata(
-                    uid=compute_uid(qualified_name, signature, self.language_name),
-                    name=name,
-                    kind="class",
-                    start_line=start_line,
-                    end_line=end_line,
-                    content_hash=self._hash(content),
-                    file_path=file_path,
-                    qualified_name=qualified_name,
-                    signature=signature,
-                    signature_hash=signature_hash(signature, self.language_name),
-                    signature_status="fallback_export",
-                    language=self.language_name,
-                )
-            )
-            existing_names.add(name)
         higher_order_factory_names = self._higher_order_factory_names(tree)
         if higher_order_factory_names:
             for symbol in symbols:
@@ -948,13 +898,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             tree = self._parse(source_code)
 
         # Flatten captures from matches into (node, tag) tuples
-        captures = []
-        for _match_id, captures_dict in iter_ts_query_matches(
-            self.language, self.import_query, tree.root_node
-        ):
-            for tag, nodes in captures_dict.items():
-                for node in nodes:
-                    captures.append((node, tag))
+        captures = flatten_ts_query_captures(self.language, self.import_query, tree.root_node)
 
         imports = []
         for node, tag in captures:
@@ -1042,21 +986,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for deco in self._iter_nodes(tree.root_node):
             if deco.type != "decorator":
                 continue
-            parent = deco.parent
-            if parent is None:
-                continue
-            # Two tree-sitter placements for a ``@deco`` prefix:
-            #   1. Sibling-before form (export class, class body methods): the
-            #      decorator and the declaration share a parent
-            #      (``export_statement`` or ``class_body``).
-            #   2. Inner-prefix form (bare ``@deco\nclass A {}`` / function /
-            #      method without an enclosing ``export_statement``): tree-sitter
-            #      tucks the decorator *inside* the declaration node itself.
-            # The same scan handles both.
-            if parent.type in self._DECORATABLE_NODE_TYPES:
-                decorated = parent
-            else:
-                decorated = self._decoratable_sibling_after(parent, deco)
+            decorated = self._decorated_node_from_decorator(deco)
             if decorated is None:
                 continue
             decorated_name = self._decoratable_name(decorated)
@@ -1104,6 +1034,20 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if sib.is_named:
                 return None
         return None
+
+    def _decorated_node_from_decorator(self, deco, *, class_only: bool = False):
+        parent = deco.parent
+        if parent is None:
+            return None
+        if parent.type in self._DECORATABLE_NODE_TYPES:
+            decorated = parent
+        else:
+            decorated = self._decoratable_sibling_after(parent, deco)
+        if decorated is None:
+            return None
+        if class_only and decorated.type not in self._CLASS_DECL_TYPES:
+            return None
+        return decorated
 
     def _decoratable_name(self, node) -> str:
         if node.type in self._CLASS_DECL_TYPES:
@@ -1172,14 +1116,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for deco in self._iter_nodes(tree.root_node):
             if deco.type != "decorator":
                 continue
-            parent = deco.parent
-            if parent is None:
-                continue
-            if parent.type in self._DECORATABLE_NODE_TYPES:
-                decorated = parent
-            else:
-                decorated = self._decoratable_sibling_after(parent, deco)
-            if decorated is None or decorated.type not in self._CLASS_DECL_TYPES:
+            decorated = self._decorated_node_from_decorator(deco, class_only=True)
+            if decorated is None:
                 continue
             decorated_name = self._decoratable_name(decorated)
             if not decorated_name:
@@ -1749,14 +1687,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
             base = self._decorator_base_name(deco)
             if base not in self._CONTROLLER_DECORATORS:
                 continue
-            parent = deco.parent
-            if parent is None:
-                continue
-            if parent.type in self._DECORATABLE_NODE_TYPES:
-                decorated = parent
-            else:
-                decorated = self._decoratable_sibling_after(parent, deco)
-            if decorated is None or decorated.type not in self._CLASS_DECL_TYPES:
+            decorated = self._decorated_node_from_decorator(deco, class_only=True)
+            if decorated is None:
                 continue
             class_uid = self._uid_for_node(decorated, source_code, file_path)
             prefix = self._http_path_from_decorator(deco)
@@ -1770,13 +1702,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             method = normalize_http_method(base)
             if not method:
                 continue
-            parent = deco.parent
-            if parent is None:
-                continue
-            if parent.type in self._DECORATABLE_NODE_TYPES:
-                decorated = parent
-            else:
-                decorated = self._decoratable_sibling_after(parent, deco)
+            decorated = self._decorated_node_from_decorator(deco)
             if decorated is None:
                 continue
             site_uid = self._uid_for_node(decorated, source_code, file_path)
@@ -2320,18 +2246,14 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if tree is None:
             tree = self._parse(source_code)
 
-        captures = []
-        for _match_id, captures_dict in iter_ts_query_matches(
+        captures = flatten_ts_query_captures(
             self.language,
             """
             (call_expression) @call
             (new_expression) @call
             """,
             tree.root_node,
-        ):
-            for tag, nodes in captures_dict.items():
-                for node in nodes:
-                    captures.append((node, tag))
+        )
 
         symbols = self.extract_symbols(source_code, file_path, tree=tree)
         by_name: dict[str, list] = {}
@@ -2470,61 +2392,29 @@ class TypeScriptAdapter(TreeSitterAdapter):
         symbols: list[SymbolMetadata],
     ) -> None:
         """Recover ``export const x = call(...)`` edges when TS AST owner recovery fails."""
-        seen = {
-            (
-                call.get("caller_uid"),
-                call.get("callee_name"),
-                call.get("rel_type"),
-                call.get("call_site_line"),
-                call.get("callee_qualified_name", ""),
-            )
-            for call in calls
-        }
+        seen = self._call_dedupe_keys(calls)
         for match in self._EXPORTED_CALL_INITIALIZER_RE.finditer(source_code):
             caller_name = match.group(1)
             callee_name = match.group(2)
             if not caller_name or not callee_name:
                 continue
-            caller_uid = self._uid(file_path, caller_name)
-            rel_type = (
-                "CALLS_IMPORTED"
-                if callee_name in import_bindings
-                else (
-                    "CALLS_SCOPED"
-                    if len({s.name for s in symbols if s.name == callee_name}) == 1
-                    else "CALLS_GUESS"
-                )
+            rel_type, callee_qn = self._classify_text_fallback_call(
+                callee_name,
+                import_bindings,
+                symbols,
             )
-            line = source_code.count("\n", 0, match.start(2)) + 1
-            callee_qn = import_bindings.get(callee_name, "") if rel_type == "CALLS_IMPORTED" else ""
-            key = (caller_uid, callee_name, rel_type, line, callee_qn)
-            if key in seen:
-                continue
-            call = {
-                "caller_uid": caller_uid,
-                "callee_name": callee_name,
-                "rel_type": rel_type,
-                "tier": (
-                    "imported"
-                    if rel_type == "CALLS_IMPORTED"
-                    else ("scoped" if rel_type == "CALLS_SCOPED" else "guess")
-                ),
-                "confidence": (
-                    0.9
-                    if rel_type == "CALLS_IMPORTED"
-                    else (0.9 if rel_type == "CALLS_SCOPED" else 0.4)
-                ),
-                "resolver": (
-                    "ts-export-initializer-fallback-v1"
-                    if rel_type != "CALLS_GUESS"
-                    else "ts-ambiguity-gate-v1"
-                ),
-                "call_site_line": line,
-            }
-            if callee_qn:
-                call["callee_qualified_name"] = callee_qn
-            calls.append(call)
-            seen.add(key)
+            self._append_text_fallback_call(
+                calls,
+                seen,
+                caller_uid=self._uid(file_path, caller_name),
+                callee_name=callee_name,
+                rel_type=rel_type,
+                line=source_code.count("\n", 0, match.start(2)) + 1,
+                callee_qn=callee_qn,
+                resolver="ts-export-initializer-fallback-v1",
+                imported_confidence=0.9,
+                scoped_confidence=0.9,
+            )
 
     def _append_symbol_body_call_fallbacks(
         self,
@@ -2539,16 +2429,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if not known_names:
             return
         existing_callers = {str(call.get("caller_uid", "")) for call in calls}
-        seen = {
-            (
-                call.get("caller_uid"),
-                call.get("callee_name"),
-                call.get("rel_type"),
-                call.get("call_site_line"),
-                call.get("callee_qualified_name", ""),
-            )
-            for call in calls
-        }
+        seen = self._call_dedupe_keys(calls)
         lines = source_code.splitlines(keepends=True)
         line_offsets: list[int] = []
         offset = 0
@@ -2585,47 +2466,23 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 if re.search(r"\bfunction\s+$", prefix[-32:]):
                     continue
 
-                rel_type = (
-                    "CALLS_IMPORTED"
-                    if callee_name in import_bindings
-                    else (
-                        "CALLS_SCOPED"
-                        if len([s for s in symbols if s.name == callee_name]) == 1
-                        else "CALLS_GUESS"
-                    )
+                rel_type, callee_qn = self._classify_text_fallback_call(
+                    callee_name,
+                    import_bindings,
+                    symbols,
                 )
-                line = source_code.count("\n", 0, body_start + name_pos) + 1
-                callee_qn = (
-                    import_bindings.get(callee_name, "") if rel_type == "CALLS_IMPORTED" else ""
+                self._append_text_fallback_call(
+                    calls,
+                    seen,
+                    caller_uid=caller_uid,
+                    callee_name=callee_name,
+                    rel_type=rel_type,
+                    line=source_code.count("\n", 0, body_start + name_pos) + 1,
+                    callee_qn=callee_qn,
+                    resolver="ts-symbol-body-fallback-v1",
+                    imported_confidence=0.75,
+                    scoped_confidence=0.75,
                 )
-                key = (caller_uid, callee_name, rel_type, line, callee_qn)
-                if key in seen:
-                    continue
-                call = {
-                    "caller_uid": caller_uid,
-                    "callee_name": callee_name,
-                    "rel_type": rel_type,
-                    "tier": (
-                        "imported"
-                        if rel_type == "CALLS_IMPORTED"
-                        else ("scoped" if rel_type == "CALLS_SCOPED" else "guess")
-                    ),
-                    "confidence": (
-                        0.75
-                        if rel_type == "CALLS_IMPORTED"
-                        else (0.75 if rel_type == "CALLS_SCOPED" else 0.4)
-                    ),
-                    "resolver": (
-                        "ts-symbol-body-fallback-v1"
-                        if rel_type != "CALLS_GUESS"
-                        else "ts-ambiguity-gate-v1"
-                    ),
-                    "call_site_line": line,
-                }
-                if callee_qn:
-                    call["callee_qualified_name"] = callee_qn
-                calls.append(call)
-                seen.add(key)
 
     def _extract_import_bindings(
         self, source_code: str, file_path: str
@@ -2665,6 +2522,130 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if candidate.exists():
                 return module_name_from_path(str(candidate))
         return None
+
+    def _append_module_fallback_symbol(
+        self,
+        symbols: list[SymbolMetadata],
+        existing_names: set[str],
+        file_path: str,
+        source_code: str,
+        *,
+        start_offset: int,
+        name: str | None,
+        kind: str,
+    ) -> None:
+        if not name or name in existing_names:
+            return
+        start_line, end_line, content = self._fallback_symbol_span(source_code, start_offset)
+        signature = normalize_signature(f"{name}()->_", self.language_name)
+        qualified_name = f"{module_name_from_path(file_path)}.{name}"
+        symbols.append(
+            SymbolMetadata(
+                uid=compute_uid(qualified_name, signature, self.language_name),
+                name=name,
+                kind=kind,
+                start_line=start_line,
+                end_line=end_line,
+                content_hash=self._hash(content),
+                file_path=file_path,
+                qualified_name=qualified_name,
+                signature=signature,
+                signature_hash=signature_hash(signature, self.language_name),
+                signature_status="fallback_export",
+                language=self.language_name,
+            )
+        )
+        existing_names.add(name)
+
+    @staticmethod
+    def _call_dedupe_keys(calls: list[dict]) -> set[tuple]:
+        return {
+            (
+                call.get("caller_uid"),
+                call.get("callee_name"),
+                call.get("rel_type"),
+                call.get("call_site_line"),
+                call.get("callee_qualified_name", ""),
+            )
+            for call in calls
+        }
+
+    @staticmethod
+    def _classify_text_fallback_call(
+        callee_name: str,
+        import_bindings: dict[str, str],
+        symbols: list[SymbolMetadata],
+    ) -> tuple[str, str]:
+        if callee_name in import_bindings:
+            return "CALLS_IMPORTED", import_bindings.get(callee_name, "")
+        if len([symbol for symbol in symbols if symbol.name == callee_name]) == 1:
+            return "CALLS_SCOPED", ""
+        return "CALLS_GUESS", ""
+
+    @staticmethod
+    def _build_text_fallback_call(
+        *,
+        caller_uid: str,
+        callee_name: str,
+        rel_type: str,
+        line: int,
+        callee_qn: str,
+        resolver: str,
+        imported_confidence: float,
+        scoped_confidence: float,
+        guess_confidence: float = 0.4,
+    ) -> dict:
+        call = {
+            "caller_uid": caller_uid,
+            "callee_name": callee_name,
+            "rel_type": rel_type,
+            "tier": (
+                "imported"
+                if rel_type == "CALLS_IMPORTED"
+                else ("scoped" if rel_type == "CALLS_SCOPED" else "guess")
+            ),
+            "confidence": (
+                imported_confidence
+                if rel_type == "CALLS_IMPORTED"
+                else (scoped_confidence if rel_type == "CALLS_SCOPED" else guess_confidence)
+            ),
+            "resolver": resolver if rel_type != "CALLS_GUESS" else "ts-ambiguity-gate-v1",
+            "call_site_line": line,
+        }
+        if callee_qn:
+            call["callee_qualified_name"] = callee_qn
+        return call
+
+    def _append_text_fallback_call(
+        self,
+        calls: list[dict],
+        seen: set[tuple],
+        *,
+        caller_uid: str,
+        callee_name: str,
+        rel_type: str,
+        line: int,
+        callee_qn: str,
+        resolver: str,
+        imported_confidence: float,
+        scoped_confidence: float,
+    ) -> None:
+        key = (caller_uid, callee_name, rel_type, line, callee_qn)
+        if key in seen:
+            return
+        calls.append(
+            self._build_text_fallback_call(
+                caller_uid=caller_uid,
+                callee_name=callee_name,
+                rel_type=rel_type,
+                line=line,
+                callee_qn=callee_qn,
+                resolver=resolver,
+                imported_confidence=imported_confidence,
+                scoped_confidence=scoped_confidence,
+            )
+        )
+        seen.add(key)
 
     def _fallback_symbol_span(
         self,
@@ -2818,6 +2799,12 @@ class TypeScriptAdapter(TreeSitterAdapter):
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
 
+    @staticmethod
+    def _imported_scope_graph_call(
+        confidence: float = 0.85,
+    ) -> tuple[str, str, float, str, None, bool, str]:
+        return "CALLS_IMPORTED", "imported", confidence, "ts-scope-graph-v1", None, False, ""
+
     def _classify_identifier_call(
         self,
         call_name: str,
@@ -2955,25 +2942,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
         recv_binding = scope_graph.resolve_name(receiver_text, at_byte)
         if recv_binding is not None:
             if recv_binding.init_import_qn:
-                return (
-                    "CALLS_IMPORTED",
-                    "imported",
-                    0.85,
-                    "ts-scope-graph-v1",
-                    None,
-                    False,
-                    "",
-                )
+                return self._imported_scope_graph_call()
             if recv_binding.init_callee and recv_binding.init_callee in import_bindings:
-                return (
-                    "CALLS_IMPORTED",
-                    "imported",
-                    0.85,
-                    "ts-scope-graph-v1",
-                    None,
-                    False,
-                    "",
-                )
+                return self._imported_scope_graph_call()
             if recv_binding.kind == "param" and recv_binding.ambiguous:
                 return "CALLS_GUESS", "guess", 0.4, "ts-ambiguity-gate-v1", None, False, ""
             if recv_binding.kind in {"param", "local", "function", "destructure"}:

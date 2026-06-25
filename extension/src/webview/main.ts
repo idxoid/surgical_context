@@ -1,5 +1,6 @@
+import { bindDataActions } from './shared/domActions';
 import { mountLayoutHtml, replaceElementHtml } from './shared/domRender';
-import { bootWebview, vscode } from './shared/webviewRuntime';
+import { bootWebview, isTrustedHostWebviewMessage, vscode } from './shared/webviewRuntime';
 
 import {
   ChatMessage,
@@ -92,6 +93,9 @@ class MainSurface {
 
   private initializeMessageListener(): void {
     window.addEventListener('message', (event: MessageEvent<HostToWebviewMessage>) => {
+      if (!isTrustedHostWebviewMessage(event)) {
+        return;
+      }
       const message = event.data;
 
       switch (message.type) {
@@ -564,9 +568,7 @@ class MainSurface {
   }
 
   private attachEventListeners(): void {
-    document.querySelectorAll('[data-action]').forEach(element => {
-      element.addEventListener('click', event => this.handleAction(event));
-    });
+    bindDataActions(document, event => this.handleAction(event));
 
     document.querySelectorAll('.accordion-header').forEach(header => {
       header.addEventListener('click', () => this.toggleAccordion(header as HTMLElement));
@@ -772,6 +774,19 @@ class MainSurface {
     });
   }
 
+  private resetPromptDerivedState(
+    impactSymbol: string | null = null,
+    impactFilePath: string | null = null,
+  ): void {
+    this.currentPromptContext = null;
+    this.currentContextSummary = null;
+    this.currentImpact = null;
+    this.currentImpactSource = null;
+    this.currentImpactDepth = 3;
+    this.currentImpactSymbol = impactSymbol;
+    this.currentImpactFilePath = impactFilePath;
+  }
+
   private impactTarget(): { symbol?: string; filePath?: string } {
     // Once a live graph result is loaded, depth changes and refreshes must
     // stay anchored to that exact symbol. A selected prompt can still be
@@ -907,12 +922,7 @@ class MainSurface {
       this.state.workspace.selectedSymbol = symbol;
     }
     this.selectedPromptRequestId = requestId;
-    this.currentPromptContext = null;
-    this.currentContextSummary = null;
-    this.currentImpact = null;
-    this.currentImpactSymbol = symbol || null;
-    this.currentImpactSource = null;
-    this.currentImpactDepth = 3;
+    this.resetPromptDerivedState(symbol || null, null);
     this.impactError = null;
 
     const prompt = this.pendingPrompt || 'Ask about current symbol';
@@ -1039,9 +1049,7 @@ class MainSurface {
         .join(''),
     );
 
-    viewport.querySelectorAll('[data-action]').forEach(element => {
-      element.addEventListener('click', event => this.handleAction(event));
-    });
+    bindDataActions(viewport, event => this.handleAction(event));
 
     viewport.querySelectorAll('.message-card.selectable').forEach(element => {
       element.addEventListener('keydown', event => {
@@ -1062,16 +1070,10 @@ class MainSurface {
     if (context) {
       this.activatePromptContext(requestId, context);
     } else {
-      this.currentPromptContext = null;
-      this.currentContextSummary = null;
-      this.currentImpact = null;
-      this.currentImpactSource = null;
-      this.currentImpactDepth = 3;
       const promptMessage = Array.from(this.messages.values()).find(message => (
         message.type === 'user' && message.requestId === requestId
       ));
-      this.currentImpactSymbol = promptMessage?.symbol || null;
-      this.currentImpactFilePath = null;
+      this.resetPromptDerivedState(promptMessage?.symbol || null, null);
       this.showToast('Prompt is still waiting for context.', 'info');
     }
 
@@ -1097,16 +1099,10 @@ class MainSurface {
     this.currentDialogId = `dialog-${Date.now()}`;
     this.messages.clear();
     this.currentStreamingRequestId = null;
-    this.currentContextSummary = null;
-    this.currentPromptContext = null;
+    this.resetPromptDerivedState();
     this.selectedPromptRequestId = null;
     this.pendingPrompt = null;
     this.pendingAskAnchor = null;
-    this.currentImpact = null;
-    this.currentImpactSymbol = null;
-    this.currentImpactFilePath = null;
-    this.currentImpactSource = null;
-    this.currentImpactDepth = 3;
     this.impactError = null;
     this.impactLoading = false;
     this.historyCollapsed = true;
@@ -1131,13 +1127,7 @@ class MainSurface {
     if (context && this.selectedPromptRequestId) {
       this.activatePromptContext(this.selectedPromptRequestId, context);
     } else {
-      this.currentPromptContext = null;
-      this.currentContextSummary = null;
-      this.currentImpact = null;
-      this.currentImpactSymbol = null;
-      this.currentImpactFilePath = null;
-      this.currentImpactSource = null;
-      this.currentImpactDepth = 3;
+      this.resetPromptDerivedState();
       this.impactError = null;
     }
 

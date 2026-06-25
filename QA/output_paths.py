@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
+from typing import Any
 
 QA_DIR = Path(__file__).resolve().parent
 
@@ -88,11 +90,26 @@ def require_allowed_choice(value: str, allowed: frozenset[str], *, label: str = 
     return value
 
 
+def lookup_allowed_repo_checkout(
+    repo: str,
+    *,
+    allowed: frozenset[str],
+    checkouts: dict[str, Path],
+) -> Path:
+    """Return a pre-mapped repo checkout path selected from an allowlist."""
+    safe_repo = require_allowed_choice(repo, allowed, label="repo")
+    try:
+        checkout = checkouts[safe_repo].resolve()
+    except KeyError as exc:
+        raise SystemExit(f"missing checkout mapping for repo: {safe_repo}") from exc
+    return checkout
+
+
 def resolve_repo_checkout(qa_dir: Path, repo: str, allowed: frozenset[str]) -> Path:
     """Map a repo slug to an on-disk checkout without path traversal."""
-    safe_repo = require_allowed_choice(repo, allowed, label="repo")
     repos_base = (qa_dir / "repos").resolve()
-    checkout = (repos_base / safe_repo).resolve()
+    checkouts = {name: (repos_base / name).resolve() for name in sorted(allowed)}
+    checkout = lookup_allowed_repo_checkout(repo, allowed=allowed, checkouts=checkouts)
     try:
         checkout.relative_to(repos_base)
     except ValueError as exc:
@@ -103,6 +120,20 @@ def resolve_repo_checkout(qa_dir: Path, repo: str, allowed: frozenset[str]) -> P
 def default_report_basename(prefix: str, repo: str, allowed: frozenset[str]) -> str:
     safe_repo = require_allowed_choice(repo, allowed, label="repo")
     return sanitize_filename_part(f"{prefix}_{safe_repo}.json")
+
+
+def write_json_report(
+    payload: Any,
+    raw_path: str | None,
+    *,
+    default_name: str,
+    allowed_bases: tuple[Path, ...] = DEFAULT_OUTPUT_BASES,
+) -> Path:
+    """Resolve a safe report path and write JSON without path injection."""
+    out = resolve_output_path(raw_path, default_name=default_name, allowed_bases=allowed_bases)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return out
 
 
 def resolve_benchmark_workspace(repo: str, allowed: frozenset[str]) -> Path:

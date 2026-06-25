@@ -1,5 +1,12 @@
 "use strict";
 (() => {
+  // src/webview/shared/domActions.ts
+  function bindDataActions(root, handler) {
+    root.querySelectorAll("[data-action]").forEach((element) => {
+      element.addEventListener("click", handler);
+    });
+  }
+
   // src/webview/shared/domRender.ts
   function sanitizeParsedDocument(doc) {
     doc.querySelectorAll("script, iframe, object, embed").forEach((node) => node.remove());
@@ -38,6 +45,16 @@
 
   // src/webview/shared/webviewRuntime.ts
   var vscode = acquireVsCodeApi();
+  function isTrustedHostWebviewMessage(event) {
+    const origin = event.origin;
+    if (origin === window.location.origin) {
+      return true;
+    }
+    if (origin === "") {
+      return true;
+    }
+    return origin.startsWith("vscode-webview://");
+  }
   function bootWebview(init) {
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", init);
@@ -724,50 +741,23 @@
     </div>
   `;
   }
-  function renderAffectsGroup(affectedSymbols, title = "Affects", expanded = true) {
-    if (affectedSymbols.length === 0) {
+  function renderCollapsibleImpactGroup(title, count, rows, expanded, emptyMessage) {
+    if (count === 0) {
       return `
       <div class="impact-group">
         <div class="group-header">${escapeHtml(title)}</div>
         <div class="group-content empty">
-          No related symbols found.
+          ${escapeHtml(emptyMessage)}
         </div>
       </div>
     `;
     }
-    const rows = affectedSymbols.map((sym) => {
-      const filePath = sym.file_path || "unknown";
-      const symbolName = sym.symbol || sym.name || "unknown";
-      const score = sym.relevance_score;
-      const isDirty = sym.is_dirty;
-      const relation = sym.relation || sym.direction || "related";
-      const depth = typeof sym.depth === "number" ? `d${sym.depth}` : "";
-      const line = lineFromSymbol(sym);
-      const depthClass = typeof sym.depth === "number" && sym.depth <= 1 ? "direct" : "indirect";
-      return `
-        <button
-          type="button"
-          class="impact-row"
-          data-action="openFile"
-          data-file-path="${escapeHtml(filePath)}"
-          data-line="${line}"
-          title="Open ${escapeHtml(symbolName)}"
-        >
-          <span class="impact-chevron" aria-hidden="true">\u203A</span>
-          <span class="impact-symbol">${escapeHtml(symbolName)}</span>
-          <span class="impact-file">${escapeHtml(filePath)}</span>
-          <span class="impact-tag ${depthClass}">${escapeHtml(depth || relation)}</span>
-          ${score ? `<span class="impact-tag indirect">${(score * 100).toFixed(0)}%</span>` : ""}
-          ${isDirty ? '<span class="impact-tag conditional">dirty</span>' : ""}
-        </button>
-      `;
-    }).join("");
     return `
     <div class="impact-group ${expanded ? "expanded" : ""}">
       <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
         <span aria-hidden="true">\u203A</span>
         <strong>${escapeHtml(title)}</strong>
-        <span>(${affectedSymbols.length})</span>
+        <span>(${count})</span>
       </button>
       <div class="group-content" ${expanded ? "" : "hidden"}>
         ${rows}
@@ -814,7 +804,7 @@
   function renderFilesGroup(filePaths, expanded = false, title = "Files") {
     const uniquePaths = Array.from(new Set(filePaths.filter(Boolean)));
     if (uniquePaths.length === 0) {
-      return renderAffectsGroup([], title, expanded);
+      return renderCollapsibleImpactGroup(title, 0, "", expanded, "No related symbols found.");
     }
     const rows = uniquePaths.map((filePath) => `
       <button
@@ -831,18 +821,7 @@
         <span class="impact-tag indirect">related</span>
       </button>
     `).join("");
-    return `
-    <div class="impact-group ${expanded ? "expanded" : ""}">
-      <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
-        <span aria-hidden="true">\u203A</span>
-        <strong>${escapeHtml(title)}</strong>
-        <span>(${uniquePaths.length})</span>
-      </button>
-      <div class="group-content" ${expanded ? "" : "hidden"}>
-        ${rows}
-      </div>
-    </div>
-  `;
+    return renderCollapsibleImpactGroup(title, uniquePaths.length, rows, expanded, "");
   }
   function renderActionButtonRow() {
     return `
@@ -945,6 +924,29 @@
   }
 
   // src/webview/shared/inspectorLayout.ts
+  function renderTable(headers, bodyRows, tableClass = "") {
+    const classAttr = tableClass ? ` class="${tableClass}"` : "";
+    const head = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+    return `
+    <table${classAttr}>
+      <thead>
+        <tr>${head}</tr>
+      </thead>
+      <tbody>
+        ${bodyRows}
+      </tbody>
+    </table>
+  `;
+  }
+  function renderJsonViewer(jsonStr, copyAction, infoHtml = "") {
+    return `
+    <div class="json-viewer">
+      ${infoHtml}
+      <button class="copy-button" data-action="${copyAction}">Copy JSON</button>
+      <pre><code>${escapeHtml(jsonStr)}</code></pre>
+    </div>
+  `;
+  }
   function renderIntentTab(matches) {
     if (matches === null) {
       return `<div class="inspector-tab-content"><p style="color:var(--vscode-descriptionForeground);">Classifying intent\u2026</p></div>`;
@@ -1019,21 +1021,7 @@
     `).join("");
     return `
     <div class="graph-context-table">
-      <table>
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Relation</th>
-            <th>Depth</th>
-            <th>Score</th>
-            <th>Dirty</th>
-            <th>File</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows}
-        </tbody>
-      </table>
+      ${renderTable(["Symbol", "Relation", "Depth", "Score", "Dirty", "File"], rows)}
     </div>
   `;
   }
@@ -1060,13 +1048,7 @@
   `;
   }
   function renderPromptJsonTab(context) {
-    const jsonStr = JSON.stringify(context, null, 2);
-    return `
-    <div class="json-viewer">
-      <button class="copy-button" data-action="copy-json">Copy JSON</button>
-      <pre><code>${escapeHtml(jsonStr)}</code></pre>
-    </div>
-  `;
+    return renderJsonViewer(JSON.stringify(context, null, 2), "copy-json");
   }
   function renderTokenBreakdownTab(context) {
     const metadata = context.metadata || {};
@@ -1103,18 +1085,7 @@
           <div class="value">${((1 - tokensTotal / estimatedFull) * 100).toFixed(0)}%</div>
         </div>
       </div>
-      <table class="tier-table">
-        <thead>
-          <tr>
-            <th>Tier</th>
-            <th>Tokens</th>
-            <th>% of Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows}
-        </tbody>
-      </table>
+      ${renderTable(["Tier", "Tokens", "% of Total"], rows, "tier-table")}
     </div>
   `;
   }
@@ -1155,16 +1126,14 @@
       null,
       2
     );
-    return `
-    <div class="json-viewer">
-      <div class="json-info">
+    return renderJsonViewer(
+      jsonStr,
+      "copy-api-json",
+      `<div class="json-info">
         <p>This is the final JSON sent to the Claude API (system prompt + context).</p>
         <p>The <code>system</code> field contains the assembled surgical context.</p>
-      </div>
-      <button class="copy-button" data-action="copy-api-json">Copy JSON</button>
-      <pre><code>${escapeHtml(jsonStr)}</code></pre>
-    </div>
-  `;
+      </div>`
+    );
   }
   function buildSystemPrompt(context) {
     const primary = context.primary_source;
@@ -1576,6 +1545,9 @@ ${doc.content}`);
     }
     initializeMessageListener() {
       window.addEventListener("message", (event) => {
+        if (!isTrustedHostWebviewMessage(event)) {
+          return;
+        }
         const message = event.data;
         switch (message.type) {
           case "surface.init":
@@ -1984,9 +1956,7 @@ ${doc.content}`);
     `;
     }
     attachEventListeners() {
-      document.querySelectorAll("[data-action]").forEach((element) => {
-        element.addEventListener("click", (event) => this.handleAction(event));
-      });
+      bindDataActions(document, (event) => this.handleAction(event));
       document.querySelectorAll(".accordion-header").forEach((header) => {
         header.addEventListener("click", () => this.toggleAccordion(header));
       });
@@ -2166,6 +2136,15 @@ ${doc.content}`);
         maxDepth: this.currentImpactDepth
       });
     }
+    resetPromptDerivedState(impactSymbol = null, impactFilePath = null) {
+      this.currentPromptContext = null;
+      this.currentContextSummary = null;
+      this.currentImpact = null;
+      this.currentImpactSource = null;
+      this.currentImpactDepth = 3;
+      this.currentImpactSymbol = impactSymbol;
+      this.currentImpactFilePath = impactFilePath;
+    }
     impactTarget() {
       if (this.currentImpactSource === "graph" && this.currentImpactSymbol) {
         return {
@@ -2279,12 +2258,7 @@ ${doc.content}`);
         this.state.workspace.selectedSymbol = symbol;
       }
       this.selectedPromptRequestId = requestId;
-      this.currentPromptContext = null;
-      this.currentContextSummary = null;
-      this.currentImpact = null;
-      this.currentImpactSymbol = symbol || null;
-      this.currentImpactSource = null;
-      this.currentImpactDepth = 3;
+      this.resetPromptDerivedState(symbol || null, null);
       this.impactError = null;
       const prompt = this.pendingPrompt || "Ask about current symbol";
       this.pendingPrompt = null;
@@ -2394,9 +2368,7 @@ ${doc.content}`);
         viewport,
         Array.from(this.messages.values()).map((message) => renderMessageCard(message, this.selectedPromptRequestId)).join("")
       );
-      viewport.querySelectorAll("[data-action]").forEach((element) => {
-        element.addEventListener("click", (event) => this.handleAction(event));
-      });
+      bindDataActions(viewport, (event) => this.handleAction(event));
       viewport.querySelectorAll(".message-card.selectable").forEach((element) => {
         element.addEventListener("keydown", (event) => {
           const keyboardEvent = event;
@@ -2414,14 +2386,8 @@ ${doc.content}`);
       if (context) {
         this.activatePromptContext(requestId, context);
       } else {
-        this.currentPromptContext = null;
-        this.currentContextSummary = null;
-        this.currentImpact = null;
-        this.currentImpactSource = null;
-        this.currentImpactDepth = 3;
         const promptMessage = Array.from(this.messages.values()).find((message) => message.type === "user" && message.requestId === requestId);
-        this.currentImpactSymbol = promptMessage?.symbol || null;
-        this.currentImpactFilePath = null;
+        this.resetPromptDerivedState(promptMessage?.symbol || null, null);
         this.showToast("Prompt is still waiting for context.", "info");
       }
       this.historyCollapsed = true;
@@ -2444,16 +2410,10 @@ ${doc.content}`);
       this.currentDialogId = `dialog-${Date.now()}`;
       this.messages.clear();
       this.currentStreamingRequestId = null;
-      this.currentContextSummary = null;
-      this.currentPromptContext = null;
+      this.resetPromptDerivedState();
       this.selectedPromptRequestId = null;
       this.pendingPrompt = null;
       this.pendingAskAnchor = null;
-      this.currentImpact = null;
-      this.currentImpactSymbol = null;
-      this.currentImpactFilePath = null;
-      this.currentImpactSource = null;
-      this.currentImpactDepth = 3;
       this.impactError = null;
       this.impactLoading = false;
       this.historyCollapsed = true;
@@ -2473,13 +2433,7 @@ ${doc.content}`);
       if (context && this.selectedPromptRequestId) {
         this.activatePromptContext(this.selectedPromptRequestId, context);
       } else {
-        this.currentPromptContext = null;
-        this.currentContextSummary = null;
-        this.currentImpact = null;
-        this.currentImpactSymbol = null;
-        this.currentImpactFilePath = null;
-        this.currentImpactSource = null;
-        this.currentImpactDepth = 3;
+        this.resetPromptDerivedState();
         this.impactError = null;
       }
       this.historyCollapsed = true;

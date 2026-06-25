@@ -544,20 +544,45 @@ function renderImpactExplanation(explanation: ImpactExplanation): string {
   `;
 }
 
+function renderCollapsibleImpactGroup(
+  title: string,
+  count: number,
+  rows: string,
+  expanded: boolean,
+  emptyMessage: string,
+): string {
+  if (count === 0) {
+    return `
+      <div class="impact-group">
+        <div class="group-header">${escapeHtml(title)}</div>
+        <div class="group-content empty">
+          ${escapeHtml(emptyMessage)}
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="impact-group ${expanded ? 'expanded' : ''}">
+      <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
+        <span aria-hidden="true">›</span>
+        <strong>${escapeHtml(title)}</strong>
+        <span>(${count})</span>
+      </button>
+      <div class="group-content" ${expanded ? '' : 'hidden'}>
+        ${rows}
+      </div>
+    </div>
+  `;
+}
+
 export function renderAffectsGroup(
   affectedSymbols: Array<Record<string, unknown>>,
   title = 'Affects',
   expanded = true
 ): string {
   if (affectedSymbols.length === 0) {
-    return `
-      <div class="impact-group">
-        <div class="group-header">${escapeHtml(title)}</div>
-        <div class="group-content empty">
-          No related symbols found.
-        </div>
-      </div>
-    `;
+    return renderCollapsibleImpactGroup(title, 0, '', expanded, 'No related symbols found.');
   }
 
   const rows = affectedSymbols
@@ -591,18 +616,7 @@ export function renderAffectsGroup(
     })
     .join('');
 
-  return `
-    <div class="impact-group ${expanded ? 'expanded' : ''}">
-      <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
-        <span aria-hidden="true">›</span>
-        <strong>${escapeHtml(title)}</strong>
-        <span>(${affectedSymbols.length})</span>
-      </button>
-      <div class="group-content" ${expanded ? '' : 'hidden'}>
-        ${rows}
-      </div>
-    </div>
-  `;
+  return renderCollapsibleImpactGroup(title, affectedSymbols.length, rows, expanded, '');
 }
 
 function lineFromSymbol(sym: Record<string, unknown>): number {
@@ -650,7 +664,7 @@ function isDocFile(filePath: string): boolean {
 export function renderFilesGroup(filePaths: string[], expanded = false, title = 'Files'): string {
   const uniquePaths = Array.from(new Set(filePaths.filter(Boolean)));
   if (uniquePaths.length === 0) {
-    return renderAffectsGroup([], title, expanded);
+    return renderCollapsibleImpactGroup(title, 0, '', expanded, 'No related symbols found.');
   }
 
   const rows = uniquePaths
@@ -671,18 +685,7 @@ export function renderFilesGroup(filePaths: string[], expanded = false, title = 
     `)
     .join('');
 
-  return `
-    <div class="impact-group ${expanded ? 'expanded' : ''}">
-      <button class="impact-group-header" data-action="noop" aria-expanded="${expanded}">
-        <span aria-hidden="true">›</span>
-        <strong>${escapeHtml(title)}</strong>
-        <span>(${uniquePaths.length})</span>
-      </button>
-      <div class="group-content" ${expanded ? '' : 'hidden'}>
-        ${rows}
-      </div>
-    </div>
-  `;
+  return renderCollapsibleImpactGroup(title, uniquePaths.length, rows, expanded, '');
 }
 
 export function renderActionButtonRow(): string {

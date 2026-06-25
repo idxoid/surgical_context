@@ -1,7 +1,36 @@
-import { IntentMatch, PromptContextPayload } from '../../context_engineClient';
+import { IntentMatch, PromptContextPayload } from './protocol';
 import { escapeHtml } from './html';
 
 export { escapeHtml };
+
+function renderTable(headers: string[], bodyRows: string, tableClass = ''): string {
+  const classAttr = tableClass ? ` class="${tableClass}"` : '';
+  const head = headers.map(header => `<th>${escapeHtml(header)}</th>`).join('');
+  return `
+    <table${classAttr}>
+      <thead>
+        <tr>${head}</tr>
+      </thead>
+      <tbody>
+        ${bodyRows}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderJsonViewer(
+  jsonStr: string,
+  copyAction: string,
+  infoHtml = '',
+): string {
+  return `
+    <div class="json-viewer">
+      ${infoHtml}
+      <button class="copy-button" data-action="${copyAction}">Copy JSON</button>
+      <pre><code>${escapeHtml(jsonStr)}</code></pre>
+    </div>
+  `;
+}
 
 export function renderIntentTab(matches: IntentMatch[] | null): string {
   if (matches === null) {
@@ -88,21 +117,7 @@ export function renderGraphContextTab(context: PromptContextPayload): string {
 
   return `
     <div class="graph-context-table">
-      <table>
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Relation</th>
-            <th>Depth</th>
-            <th>Score</th>
-            <th>Dirty</th>
-            <th>File</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows}
-        </tbody>
-      </table>
+      ${renderTable(['Symbol', 'Relation', 'Depth', 'Score', 'Dirty', 'File'], rows)}
     </div>
   `;
 }
@@ -136,14 +151,7 @@ export function renderDocumentationTab(context: PromptContextPayload): string {
 }
 
 export function renderPromptJsonTab(context: PromptContextPayload): string {
-  const jsonStr = JSON.stringify(context, null, 2);
-
-  return `
-    <div class="json-viewer">
-      <button class="copy-button" data-action="copy-json">Copy JSON</button>
-      <pre><code>${escapeHtml(jsonStr)}</code></pre>
-    </div>
-  `;
+  return renderJsonViewer(JSON.stringify(context, null, 2), 'copy-json');
 }
 
 export function renderTokenBreakdownTab(context: PromptContextPayload): string {
@@ -188,18 +196,7 @@ export function renderTokenBreakdownTab(context: PromptContextPayload): string {
           <div class="value">${((1 - tokensTotal / estimatedFull) * 100).toFixed(0)}%</div>
         </div>
       </div>
-      <table class="tier-table">
-        <thead>
-          <tr>
-            <th>Tier</th>
-            <th>Tokens</th>
-            <th>% of Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows}
-        </tbody>
-      </table>
+      ${renderTable(['Tier', 'Tokens', '% of Total'], rows, 'tier-table')}
     </div>
   `;
 }
@@ -252,16 +249,14 @@ export function renderApiPayloadTab(context: PromptContextPayload): string {
     2
   );
 
-  return `
-    <div class="json-viewer">
-      <div class="json-info">
+  return renderJsonViewer(
+    jsonStr,
+    'copy-api-json',
+    `<div class="json-info">
         <p>This is the final JSON sent to the Claude API (system prompt + context).</p>
         <p>The <code>system</code> field contains the assembled surgical context.</p>
-      </div>
-      <button class="copy-button" data-action="copy-api-json">Copy JSON</button>
-      <pre><code>${escapeHtml(jsonStr)}</code></pre>
-    </div>
-  `;
+      </div>`,
+  );
 }
 
 function buildSystemPrompt(context: PromptContextPayload): string {

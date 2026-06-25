@@ -59,14 +59,16 @@ export class DashboardPanel {
 
     this.panel.onDidChangeViewState((e) => {
       if (e.webviewPanel.visible) {
-        this.loadMetrics();
+        void this.loadMetrics();
         this.startPolling();
       } else {
         this.stopPolling();
       }
     });
+  }
 
-    this.loadMetrics();
+  private async initialize(): Promise<void> {
+    await this.loadMetrics();
     this.startPolling();
   }
 
@@ -89,6 +91,7 @@ export class DashboardPanel {
     );
 
     DashboardPanel.instance = new DashboardPanel(panel, extensionUri);
+    void DashboardPanel.instance.initialize();
   }
 
   private async loadMetrics(): Promise<void> {

@@ -31,6 +31,20 @@ def iter_ts_query_matches(
     yield from cursor.matches(root_node)
 
 
+def flatten_ts_query_captures(
+    language: Language,
+    query_source: str,
+    root_node,
+) -> list[tuple]:
+    """Flatten tree-sitter query matches into ``(node, tag)`` tuples."""
+    captures: list[tuple] = []
+    for _match_id, captures_dict in iter_ts_query_matches(language, query_source, root_node):
+        for tag, nodes in captures_dict.items():
+            for node in nodes:
+                captures.append((node, tag))
+    return captures
+
+
 class TreeSitterAdapter(LanguageAdapter):
     """Base class for language adapters using tree-sitter."""
 

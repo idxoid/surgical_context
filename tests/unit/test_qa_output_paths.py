@@ -5,11 +5,13 @@ import pytest
 from QA.output_paths import (
     DEFAULT_OUTPUT_BASES,
     default_report_basename,
+    lookup_allowed_repo_checkout,
     resolve_benchmark_workspace,
     resolve_output_directory,
     resolve_output_path,
     resolve_repo_checkout,
     sanitize_filename_part,
+    write_json_report,
 )
 
 
@@ -76,3 +78,24 @@ def test_resolve_output_directory_creates_under_base(tmp_path):
     path = resolve_output_directory("axis_benchmark_test", allowed_bases=(base,))
     assert path.is_dir()
     assert path.parent == base
+
+
+def test_lookup_allowed_repo_checkout_uses_predefined_mapping(tmp_path):
+    qa_dir = tmp_path / "QA"
+    checkouts = {
+        "django": (qa_dir / "repos" / "django").resolve(),
+    }
+    checkout = lookup_allowed_repo_checkout("django", allowed=frozenset({"django"}), checkouts=checkouts)
+    assert checkout == checkouts["django"]
+
+
+def test_write_json_report_uses_allowed_base(tmp_path, monkeypatch):
+    allowed = (tmp_path / "reports").resolve()
+    allowed.mkdir()
+    monkeypatch.setattr(
+        "QA.output_paths.DEFAULT_OUTPUT_BASES",
+        (allowed,),
+    )
+    out = write_json_report({"ok": True}, None, default_name="proxy_audit_static_django.json")
+    assert out.read_text(encoding="utf-8").startswith("{")
+    assert out.parent == allowed

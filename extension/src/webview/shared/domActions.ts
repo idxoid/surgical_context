@@ -8,3 +8,9 @@ export function bindClickAction(
     button.addEventListener('click', handler);
   }
 }
+
+export function bindDataActions(root: ParentNode, handler: (event: Event) => void): void {
+  root.querySelectorAll('[data-action]').forEach(element => {
+    element.addEventListener('click', handler);
+  });
+}

@@ -8,7 +8,7 @@ import {
   DashboardViewState,
 } from './shared/dashboardLayout';
 import { mountLayoutHtml } from './shared/domRender';
-import { bootWebview, vscode } from './shared/webviewRuntime';
+import { bootWebview, isTrustedHostWebviewMessage, vscode } from './shared/webviewRuntime';
 
 class DashboardPanel {
   private state: DashboardViewState & { error: string | null } = {
@@ -32,6 +32,9 @@ class DashboardPanel {
 
   private initializeMessageListener(): void {
     window.addEventListener('message', (event: MessageEvent<HostToWebviewMessage>) => {
+      if (!isTrustedHostWebviewMessage(event)) {
+        return;
+      }
       const message = event.data;
 
       switch (message.type) {

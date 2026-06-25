@@ -120,7 +120,7 @@ class AxisQueryPlan:
     container_kinds: tuple[str, ...]
     target_node_kinds: tuple[str, ...]
     expansion_steps: tuple[GraphExpansionStep, GraphExpansionStep]
-    stop_conditions: tuple[str, ...]
+    stop_conditions: tuple[str, str, str]
     limit: int
     workspace_id: str
     lance_predicate: str = field(repr=False)
@@ -133,7 +133,7 @@ class AxisQueryPlan:
             "container_kinds": list(self.container_kinds),
             "target_node_kinds": list(self.target_node_kinds),
             "expansion_steps": [step.to_dict() for step in self.expansion_steps if step.enabled],
-            "stop_conditions": list(self.stop_conditions),
+            "stop_conditions": [condition for condition in self.stop_conditions if condition],
             "limit": self.limit,
             "workspace_id": self.workspace_id,
             "lance_predicate": self.lance_predicate,
@@ -225,12 +225,21 @@ def _expansion_steps_for_mode(mode: TraversalMode) -> tuple[GraphExpansionStep, 
         raise ValueError(f"Unknown traversal mode: {mode}") from exc
 
 
-def _stop_conditions_for_mode(mode: TraversalMode) -> tuple[str, ...]:
-    if mode == "immediate_control_flow":
-        return ("token_budget", "call_depth_exhausted")
-    if mode == "deferred_binding_flow":
-        return ("registry_or_metadata_read_reached", "dispatch_target_reached", "token_budget")
-    raise ValueError(f"Unknown traversal mode: {mode}")
+_MODE_STOP_CONDITIONS: dict[TraversalMode, tuple[str, str, str]] = {
+    "immediate_control_flow": ("token_budget", "call_depth_exhausted", ""),
+    "deferred_binding_flow": (
+        "registry_or_metadata_read_reached",
+        "dispatch_target_reached",
+        "token_budget",
+    ),
+}
+
+
+def _stop_conditions_for_mode(mode: TraversalMode) -> tuple[str, str, str]:
+    try:
+        return _MODE_STOP_CONDITIONS[mode]
+    except KeyError as exc:
+        raise ValueError(f"Unknown traversal mode: {mode}") from exc
 
 
 def compile_axis_query(request: AxisQueryRequest, *, workspace_id: str) -> AxisQueryPlan:
