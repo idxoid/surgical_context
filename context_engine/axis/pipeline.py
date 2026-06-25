@@ -157,9 +157,7 @@ def _anchor_path_matches(stored_path: str, requested_path: str) -> bool:
         return False
     if stored == requested_path or stored.endswith(requested_path):
         return True
-    if requested_path.endswith(stored) or requested_path.endswith(
-        f"/{stored.rsplit('/', 1)[-1]}"
-    ):
+    if requested_path.endswith(stored) or requested_path.endswith(f"/{stored.rsplit('/', 1)[-1]}"):
         return True
     return stored.endswith(f"/{requested_path.rsplit('/', 1)[-1]}")
 

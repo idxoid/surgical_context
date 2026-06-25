@@ -56,9 +56,12 @@ class AskContextBuilder:
             with open(file_path, encoding="utf-8") as file:
                 for lineno, line in enumerate(file, 1):
                     stripped = line.lstrip()
-                    if stripped.startswith(
-                        ("def ", "class ", "async def ", "function ", "const ", "let ", "var ")
-                    ) and symbol in line:
+                    if (
+                        stripped.startswith(
+                            ("def ", "class ", "async def ", "function ", "const ", "let ", "var ")
+                        )
+                        and symbol in line
+                    ):
                         return lineno
         except (OSError, FileNotFoundError):
             pass

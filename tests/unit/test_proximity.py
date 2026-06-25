@@ -20,29 +20,29 @@ def test_same_directory_gets_full_boost():
 
 def test_sibling_directory_gets_partial_boost():
     # sub-folder of the anchor's dir
-    assert proximity_boost("/repo/src/orders/services/tax.py", "/repo/src/orders/views.py") == pytest.approx(0.05)
+    assert proximity_boost(
+        "/repo/src/orders/services/tax.py", "/repo/src/orders/views.py"
+    ) == pytest.approx(0.05)
     # one folder over, same parent
-    assert proximity_boost("/repo/src/billing/views.py", "/repo/src/orders/views.py") == pytest.approx(0.05)
+    assert proximity_boost(
+        "/repo/src/billing/views.py", "/repo/src/orders/views.py"
+    ) == pytest.approx(0.05)
 
 
 def test_far_directory_is_zero():
-    assert proximity_boost("/repo/lib/utils/io.py", "/repo/src/orders/views.py") == pytest.approx(0.0)
+    assert proximity_boost("/repo/lib/utils/io.py", "/repo/src/orders/views.py") == pytest.approx(
+        0.0
+    )
 
 
 def test_suffix_aware_absolute_vs_relative():
     # anchor is a short repo-relative path; seed is absolute — same folder.
-    assert (
-        proximity_boost(
-            "/abs/QA/repos/celery/celery/worker/strategy.py",
-            "celery/worker/state.py",
-        )
-        == pytest.approx(0.15)
-    )
+    assert proximity_boost(
+        "/abs/QA/repos/celery/celery/worker/strategy.py",
+        "celery/worker/state.py",
+    ) == pytest.approx(0.15)
     # sibling under the same parent, mixed path forms.
-    assert (
-        proximity_boost(
-            "/abs/QA/repos/celery/celery/concurrency/base.py",
-            "celery/worker/state.py",
-        )
-        == pytest.approx(0.05)
-    )
+    assert proximity_boost(
+        "/abs/QA/repos/celery/celery/concurrency/base.py",
+        "celery/worker/state.py",
+    ) == pytest.approx(0.05)

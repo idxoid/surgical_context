@@ -137,9 +137,7 @@ def _dedupe_overlay_callers(
     overlay_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     committed_keys = {(row.get("file_path"), row.get("name")) for row in committed_rows}
-    return [
-        row for row in overlay_rows if (row["file_path"], row["name"]) not in committed_keys
-    ]
+    return [row for row in overlay_rows if (row["file_path"], row["name"]) not in committed_keys]
 
 
 def _collect_affected_files(

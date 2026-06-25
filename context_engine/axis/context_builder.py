@@ -184,7 +184,9 @@ def _filter_symbol_payload_arrow(arrow, workspace_id: str, uids: set[str]):
         return arrow
 
 
-def _load_symbol_payload_arrow(lance_table, columns: list[str], filter_sql: str, workspace_id: str, uids: set[str]):
+def _load_symbol_payload_arrow(
+    lance_table, columns: list[str], filter_sql: str, workspace_id: str, uids: set[str]
+):
     try:
         return lance_table.to_table(columns=columns, filter=filter_sql)
     except TypeError:
@@ -273,9 +275,7 @@ def _fetch_symbol_payloads(
     table, sym_table_fn = _resolve_symbols_table(lance, workspace_id)
     columns = _symbol_payload_columns(table)
     filter_sql = _symbol_payload_filter_sql(workspace_id, uids, sym_table_fn=sym_table_fn)
-    arrow = _load_symbol_payload_arrow(
-        table.to_lance(), columns, filter_sql, workspace_id, uids
-    )
+    arrow = _load_symbol_payload_arrow(table.to_lance(), columns, filter_sql, workspace_id, uids)
     return _payloads_from_arrow_table(arrow, workspace_id, uids)
 
 
@@ -522,9 +522,7 @@ def _code_compact(code: str | None, *, max_body_lines: int = 24) -> str:
         return signature
 
     out = list(signature_lines)
-    out.extend(
-        _compact_body_lines(lines, signature_lines, max_body_lines=max_body_lines)
-    )
+    out.extend(_compact_body_lines(lines, signature_lines, max_body_lines=max_body_lines))
     return "\n".join(out)
 
 
@@ -1351,7 +1349,9 @@ def _select_bundles_under_credit_budget(
         if idx in selected_indices or idx in skipped_indices:
             continue
         source = bundles[idx]
-        current_value = _credit_coverage_gain(idx, source, static=static, state=state) / max(1, cost)
+        current_value = _credit_coverage_gain(idx, source, static=static, state=state) / max(
+            1, cost
+        )
         best_competing = -initial[0][0] if initial else -1.0
         if current_value + 1e-12 < best_competing:
             heapq.heappush(initial, (-current_value, idx, cost, rendered))

@@ -30,7 +30,8 @@ def resolve_output_path(
 ) -> Path:
     """Resolve a CLI report path and ensure it stays under allowed directories."""
     bases = tuple(
-        base.resolve() for base in (allowed_bases if allowed_bases is not None else DEFAULT_OUTPUT_BASES)
+        base.resolve()
+        for base in (allowed_bases if allowed_bases is not None else DEFAULT_OUTPUT_BASES)
     )
     default_name = sanitize_filename_part(default_name)
 
@@ -67,7 +68,8 @@ def resolve_output_directory(
 ) -> Path:
     """Resolve a directory path under allowed bases (creates it if missing)."""
     bases = tuple(
-        base.resolve() for base in (allowed_bases if allowed_bases is not None else DEFAULT_OUTPUT_BASES)
+        base.resolve()
+        for base in (allowed_bases if allowed_bases is not None else DEFAULT_OUTPUT_BASES)
     )
     safe_name = sanitize_filename_part(dir_name)
     candidate = (bases[0] / safe_name).resolve()
