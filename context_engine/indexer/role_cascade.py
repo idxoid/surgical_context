@@ -590,25 +590,19 @@ RARE_ROLES = frozenset(
 )
 
 
-def assign_l1(row: FanProfile) -> str:
-    # 1. noise — dead code / orphans, but never a documented/API-exposing owner
-    #    (a public surface has zero *internal* in-degree by design), and never a
-    #    proxy_binding (its only edge is PROXY_OF, which is not counted as in-degree
-    #    but is the very signal that routes it to dispatch_and_wrap below), and
-    #    never a polymorphic factory (instantiates >=2 distinct classes with a
-    #    typed return — pure-instantiation function with no other call edges
-    #    would otherwise mis-route to noise; its INSTANTIATES edges are the work).
-    #    Re-export is the same structural class of evidence as `api_fan_out > 0`
-    #    or a documented class: a public package intentionally surfaces this
-    #    symbol. SQLAlchemy `decl_api.declarative_base` is re-exported by
-    #    `orm/__init__.py` and is the canonical API entrypoint — without this
-    #    branch the noise gate fires (zero internal callers, chained
-    #    `Class(...).method()` not yet extracted as CALLS — so call_fan_out=0)
-    #    and the symbol misclassifies as orphan.
-    surface_owner = (
-        row.api_fan_out > _EPS or (row.is_class and row.has_documentation) or row.reexport_in > _EPS
+def _l1_surface_owner(row: FanProfile) -> bool:
+    return (
+        row.api_fan_out > _EPS
+        or (row.is_class and row.has_documentation)
+        or row.reexport_in > _EPS
     )
-    is_polymorphic_factory = row.construct_fan_out >= 2 and row.type_fan_out_return > _EPS
+
+
+def _l1_is_polymorphic_factory(row: FanProfile) -> bool:
+    return row.construct_fan_out >= 2 and row.type_fan_out_return > _EPS
+
+
+def _l1_noise(row: FanProfile, *, surface_owner: bool, is_polymorphic_factory: bool) -> str | None:
     if (
         row.zero_in_degree
         and row.call_fan_out <= _EPS
@@ -617,11 +611,10 @@ def assign_l1(row: FanProfile) -> str:
         and not is_polymorphic_factory
     ):
         return "noise"
-    # 2. dispatch_and_wrap — any dispatch/decoration marker (HANDLES in/out, proxy,
-    #    decorated). The most specific topology in the graph; a symbol wired into the
-    #    dispatch system is caught here whole (proxy_mechanism, interceptor,
-    #    registration_step, executor, request_router all live in this bucket — Trap-3:
-    #    a single logical role must not be split across L1 buckets).
+    return None
+
+
+def _l1_routing_wrap(row: FanProfile) -> str | None:
     if (
         row.is_proxy_binding
         or row.handle_fan_in > _EPS
@@ -629,25 +622,20 @@ def assign_l1(row: FanProfile) -> str:
         or row.decorated_in > _EPS
     ):
         return "routing_wrap"
-    # 3. state_and_types — BEFORE control_flow. A fundamental data type/contract is
-    #    classified by what it *is* (strong type/depend fan-in relative to what it
-    #    calls), not by how many utilities it calls internally. Guards the "fat model"
-    #    trap (a model with call_out > call_in must not leak to control_flow→
-    #    orchestrator). No is_class gate: typing topology is primary, syntax (class vs
-    #    module var / TypedDict / descriptor) secondary — non-class DTOs qualify too.
-    #    An exception type is a data contract too (error_surface), even when its only
-    #    in-graph signal is the builtin-exception inheritance marker.
+    return None
+
+
+def _l1_state_types_core(row: FanProfile) -> str | None:
     if (
         row.inherits_builtin_exception
         or row.type_fan_in > max(_EPS, row.call_fan_out)
         or row.depend_fan_in > max(_EPS, row.call_fan_out)
     ):
         return "state_types"
-    # (kept) symbols with any type/api-owner evidence but weaker than their
-    # call_out still read as surfaces rather than control flow. JS/CommonJS
-    # prototype objects (`var app = exports = module.exports = {}; app.use = ...`)
-    # are not classes syntactically, but their outgoing HAS_API fan is the same
-    # owner/member topology.
+    return None
+
+
+def _l1_state_types_surface(row: FanProfile) -> str | None:
     if (
         row.is_class
         and (
@@ -658,22 +646,33 @@ def assign_l1(row: FanProfile) -> str:
         )
     ) or row.api_fan_out > _EPS:
         return "state_types"
-    # 4. boundary_integration — external call/import topology (C2). Uses filtered
-    #    integration fan (stdlib/test/doc plumbing excluded). Must not steal type hubs.
-    if _integration_boundary_signal(row):
-        return "boundary_integration"
-    # 5. control_flow — orchestration/factories: calls many, is not a data type.
-    #    Polymorphic factories also belong here: a function that instantiates
-    #    >=2 distinct classes and returns the abstract base type IS control
-    #    flow (it picks a concrete subtype at runtime), even if it makes no
-    #    other call edges.
+    return None
+
+
+def _l1_control_flow_or_leaf(row: FanProfile, *, is_polymorphic_factory: bool) -> str | None:
     if (row.call_fan_out > row.call_fan_in and row.call_fan_out > _EPS) or is_polymorphic_factory:
         return "control_flow"
-    # 6. compute_leaf — heavily reused terminal utilities.
     if row.call_fan_in > _EPS and row.call_leaf:
         return "compute_leaf"
     if row.call_fan_in > _EPS or row.call_fan_out > _EPS:
         return "control_flow" if row.call_fan_out >= row.call_fan_in else "compute_leaf"
+    return None
+
+
+def assign_l1(row: FanProfile) -> str:
+    surface_owner = _l1_surface_owner(row)
+    is_polymorphic_factory = _l1_is_polymorphic_factory(row)
+    for bucket in (
+        lambda: _l1_noise(row, surface_owner=surface_owner, is_polymorphic_factory=is_polymorphic_factory),
+        lambda: _l1_routing_wrap(row),
+        lambda: _l1_state_types_core(row),
+        lambda: _l1_state_types_surface(row),
+        lambda: "boundary_integration" if _integration_boundary_signal(row) else None,
+        lambda: _l1_control_flow_or_leaf(row, is_polymorphic_factory=is_polymorphic_factory),
+    ):
+        l1 = bucket()
+        if l1:
+            return l1
     return "unclassified"
 
 

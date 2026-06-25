@@ -1367,43 +1367,35 @@ def _load_axis_extraction_for_file(
     return AxisExtraction(file_path=ex.path, facts=facts)
 
 
-def _merge_extraction_profiles(
-    extraction,
+def _merge_profile_fact(target, fact, target_uid):
+    from context_engine.axis.schema import AxisFact
+
+    if fact.symbol_uid == target_uid:
+        target.add_fact(fact)
+        return
+    target.add_fact(
+        AxisFact(
+            symbol_uid=target_uid,
+            qualified_name=fact.qualified_name,
+            symbol_kind=fact.symbol_kind,
+            axis=fact.axis,
+            bit=fact.bit,
+            line=fact.line,
+            evidence=fact.evidence,
+            ast_kind=fact.ast_kind,
+            payload=dict(fact.payload),
+        )
+    )
+
+
+def _variable_stub_profiles(
     ex: ExtractedFile,
+    profiles_by_uid: dict[str, AxisProfile],
     *,
     graph_probe: GraphContextProbe | None,
-) -> dict[str, AxisProfile]:
+) -> None:
     from context_engine.axis.schema import AxisFact, AxisProfile
 
-    parser_uid_by_qn = {s.qualified_name: s.uid for s in ex.symbols if s.qualified_name}
-    profiles_by_uid: dict[str, AxisProfile] = {}
-    for profile in extraction.profiles.values():
-        target_uid = parser_uid_by_qn.get(profile.qualified_name, profile.symbol_uid)
-        target = profiles_by_uid.get(target_uid)
-        if target is None:
-            target = AxisProfile(
-                symbol_uid=target_uid,
-                qualified_name=profile.qualified_name,
-                symbol_kind=profile.symbol_kind,
-            )
-            profiles_by_uid[target_uid] = target
-        for fact in profile.facts:
-            if fact.symbol_uid == target_uid:
-                target.add_fact(fact)
-                continue
-            target.add_fact(
-                AxisFact(
-                    symbol_uid=target_uid,
-                    qualified_name=fact.qualified_name,
-                    symbol_kind=fact.symbol_kind,
-                    axis=fact.axis,
-                    bit=fact.bit,
-                    line=fact.line,
-                    evidence=fact.evidence,
-                    ast_kind=fact.ast_kind,
-                    payload=dict(fact.payload),
-                )
-            )
     for sym in ex.symbols:
         if sym.kind != "variable" or sym.uid in profiles_by_uid:
             continue
@@ -1430,6 +1422,31 @@ def _merge_extraction_profiles(
                 )
             )
         profiles_by_uid[sym.uid] = stub
+
+
+def _merge_extraction_profiles(
+    extraction,
+    ex: ExtractedFile,
+    *,
+    graph_probe: GraphContextProbe | None,
+) -> dict[str, AxisProfile]:
+    from context_engine.axis.schema import AxisFact, AxisProfile
+
+    parser_uid_by_qn = {s.qualified_name: s.uid for s in ex.symbols if s.qualified_name}
+    profiles_by_uid: dict[str, AxisProfile] = {}
+    for profile in extraction.profiles.values():
+        target_uid = parser_uid_by_qn.get(profile.qualified_name, profile.symbol_uid)
+        target = profiles_by_uid.get(target_uid)
+        if target is None:
+            target = AxisProfile(
+                symbol_uid=target_uid,
+                qualified_name=profile.qualified_name,
+                symbol_kind=profile.symbol_kind,
+            )
+            profiles_by_uid[target_uid] = target
+        for fact in profile.facts:
+            _merge_profile_fact(target, fact, target_uid)
+    _variable_stub_profiles(ex, profiles_by_uid, graph_probe=graph_probe)
     return profiles_by_uid
 
 
@@ -1906,6 +1923,290 @@ def _run_axis_python_propagation_stage(
     stats["proxy_object_propagated"] = propagate_proxy_object(db, lance, workspace_id)
 
 
+def _run_fast_changed_files_pipeline(
+    *,
+    stats: dict,
+    changed_files: list[str],
+    files: list[str],
+    project_path: str,
+    current_hashes: dict[str, str],
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    workspace_id: str,
+    parse_workers: int,
+    job_log: IndexJobLog,
+    reporter: ProgressReporter,
+    profile,
+    skip_affects: bool,
+) -> None:
+    print(f"🔄 {len(changed_files)}/{len(files)} files changed")
+
+    t_stage = time.perf_counter()
+    diffs = _parse_phase(
+        changed_files,
+        project_path,
+        current_hashes,
+        db,
+        workspace_id,
+        parse_workers,
+        job_log,
+        reporter,
+        include_axis_facts=profile.name == AXIS_PYTHON_V1_PROFILE,
+    )
+    stats["parsed"] = len(diffs)
+    stats["timings_sec"]["parse"] = round(time.perf_counter() - t_stage, 3)
+
+    degree_seeds, degree_removed = _degree_seeds_snapshot(diffs, db, workspace_id)
+    t_stage = time.perf_counter()
+    _apply_graph(diffs, db, workspace_id, reporter)
+    stats["timings_sec"]["graph"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    ext_calls, ext_imports = _external_boundary_phase(
+        diffs,
+        db,
+        workspace_id,
+        project_path,
+        files,
+        reporter,
+    )
+    stats["external_calls_linked"] = ext_calls
+    stats["external_imports_linked"] = ext_imports
+    stats["timings_sec"]["external_boundary"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["extends_external_edges"] = _extends_external_phase(db, workspace_id, reporter)
+    stats["timings_sec"]["extends_external"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["integrates_with_edges"] = _integrates_with_phase(db, workspace_id, reporter)
+    stats["timings_sec"]["integrates_with"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["mro_api_edges"] = _mro_api_bridge_phase(db, workspace_id, reporter)
+    stats["timings_sec"]["mro_api_bridge"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    property_api_count, property_api_uids = _property_api_phase(
+        diffs,
+        db,
+        workspace_id,
+        reporter,
+        project_path,
+    )
+    stats["property_api_edges"] = property_api_count
+    stats["timings_sec"]["property_api"] = round(time.perf_counter() - t_stage, 3)
+    degree_seeds |= property_api_uids
+
+    t_stage = time.perf_counter()
+    proxy_uids = _proxy_binding_phase(diffs, db, workspace_id, reporter, project_path)
+    stats["proxy_bindings"] = len(proxy_uids)
+    stats["proxy_calls_resolved"] = _proxy_call_resolution_phase(diffs, db, workspace_id, reporter)
+    stats["proxy_return_calls_resolved"] = _proxy_return_call_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["proxy"] = round(time.perf_counter() - t_stage, 3)
+    degree_seeds |= proxy_uids
+
+    t_stage = time.perf_counter()
+    _clear_derived_edges_for_diffs(diffs, db, workspace_id, reporter)
+    stats["timings_sec"]["clear_derived_edges"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["attr_accesses_linked"] = _attr_access_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["attr_accesses"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["type_refs_linked"] = _type_reference_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["type_refs"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    alias_count, alias_uids = _symbol_alias_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["symbol_aliases_linked"] = alias_count
+    stats["timings_sec"]["symbol_aliases"] = round(time.perf_counter() - t_stage, 3)
+    degree_seeds |= alias_uids
+
+    t_stage = time.perf_counter()
+    stats["reexports_linked"] = _reexport_phase(diffs, db, workspace_id, reporter, project_path)
+    stats["timings_sec"]["reexports"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["instantiations_linked"] = _instantiation_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["instantiations"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["decorators_linked"] = _decorator_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["hooks_linked"] = _hook_phase(diffs, db, workspace_id, reporter, project_path)
+    stats["timings_sec"]["hooks"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["metadata_bridges_linked"] = _metadata_bridge_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["metadata_bridges"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["http_endpoints_linked"] = _http_endpoint_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["http_endpoints"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["injections_linked"] = _injection_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["injections"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["degree_recomputed"] = _degree_phase(
+        degree_seeds, degree_removed, db, workspace_id, reporter
+    )
+    stats["timings_sec"]["degree"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    graph_probe = None
+    if profile.name == AXIS_PYTHON_V1_PROFILE:
+        from context_engine.axis.graph_probe import Neo4jGraphContextProbe
+
+        graph_probe = Neo4jGraphContextProbe(db, workspace_id)
+    encoded, removed = _embed_phase(
+        diffs,
+        lance,
+        workspace_id,
+        reporter,
+        project_path,
+        graph_probe=graph_probe,
+    )
+    stats["symbols_encoded"] = encoded
+    stats["symbols_removed"] = removed
+    stats["timings_sec"]["embed"] = round(time.perf_counter() - t_stage, 3)
+
+    if profile.name == AXIS_PYTHON_V1_PROFILE:
+        t_stage = time.perf_counter()
+        _run_axis_python_propagation_stage(
+            db,
+            lance,
+            workspace_id,
+            project_path,
+            stats,
+        )
+        stats["timings_sec"]["registry_class_inheritance"] = round(
+            time.perf_counter() - t_stage, 3
+        )
+
+    if skip_affects:
+        reporter.stage_start("affects", total=0)
+        reporter.stage_end("affects")
+        stats["affects_rebuilt"] = 0
+        stats["timings_sec"]["affects"] = 0.0
+        print("⏭️  Skipping AFFECTS rebuild")
+    else:
+        t_stage = time.perf_counter()
+        stats["affects_rebuilt"] = _affects_phase(diffs, db, workspace_id, reporter)
+        stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["axis_adjacency_materialized"] = _adjacency_materialization_phase(
+        db,
+        lance,
+        workspace_id,
+        reporter,
+        seed_uids=degree_seeds - degree_removed,
+    )
+    stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    from context_engine.indexer.anchor import ingest_symbol_docstrings, resolve_pending_anchors
+    from context_engine.indexer.file_tier import classify_file_tier, is_pure_reexport_source
+
+    reporter.stage_start("docs", total=1)
+    all_symbols = []
+    removed_uids: list[str] = []
+    file_tier_by_path: dict[str, str] = {}
+    for diff in diffs:
+        ex = diff.extracted
+        tier_path = os.path.relpath(ex.path, project_path) if project_path else ex.path
+        tier_value = classify_file_tier(
+            tier_path,
+            pure_reexport=is_pure_reexport_source(ex.source),
+        )
+        file_tier_by_path[tier_path] = tier_value
+        file_tier_by_path[ex.path] = tier_value
+        all_symbols.extend(ex.symbols)
+        removed_uids.extend(diff.removed_uids)
+    doc_stats = ingest_symbol_docstrings(
+        db,
+        lance,
+        all_symbols,
+        workspace_id=workspace_id,
+        allowed_prefixes=[project_path],
+        removed_owner_uids=removed_uids,
+        file_tier_by_path=file_tier_by_path,
+    )
+    stats["docstring_anchors"] = doc_stats
+    resolve_pending_anchors(
+        db,
+        lance,
+        workspace_id=workspace_id,
+        allowed_prefixes=[project_path],
+    )
+    reporter.step("docs")
+    reporter.stage_end("docs")
+    stats["timings_sec"]["docs"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    from context_engine.indexer.role_clustering import derive_and_persist_role_taxonomy
+
+    reporter.stage_start("role_clustering", total=1)
+    summary = derive_and_persist_role_taxonomy(db, workspace_id)
+    reporter.step("role_clustering")
+    reporter.stage_end("role_clustering")
+    stats["timings_sec"]["role_clustering"] = round(time.perf_counter() - t_stage, 3)
+    stats["role_taxonomy"] = {
+        "method": summary.method,
+        "sample_size": summary.sample_size,
+        "filtered_sample_size": summary.filtered_sample_size,
+        "present_role_count": len(summary.present_roles),
+    }
+    stats["role_catalog"] = {
+        "present_roles": len(summary.present_roles),
+    }
+
+    _use_repository_profile(
+        stats,
+        _build_profile_from_diffs(
+            project_path,
+            workspace_id,
+            files,
+            diffs,
+            stats,
+            db,
+        ),
+        db,
+        workspace_id,
+    )
+    persist_index_manifest(
+        stats=stats,
+        db=db,
+        workspace_id=workspace_id,
+        project_path=project_path,
+        outcome="full_index",
+    )
+
+
 def run_fast_indexing(
     project_path: str,
     workspace_id: str | None = None,
@@ -2022,341 +2323,20 @@ def run_fast_indexing(
                 skip_affects=skip_affects,
                 reporter=reporter,
             )
-        print(f"🔄 {len(changed_files)}/{len(files)} files changed")
-
-        # Stage 3: parallel parse
-        t_stage = time.perf_counter()
-        diffs = _parse_phase(
-            changed_files,
-            project_path,
-            current_hashes,
-            db,
-            workspace_id,
-            parse_workers,
-            job_log,
-            reporter,
-            include_axis_facts=profile.name == AXIS_PYTHON_V1_PROFILE,
-        )
-        stats["parsed"] = len(diffs)
-        stats["timings_sec"]["parse"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4: graph writes. Snapshot the degree-affected closure first, while
-        # pre-mutation edges are still present (deleted symbols' neighbors included).
-        degree_seeds, degree_removed = _degree_seeds_snapshot(diffs, db, workspace_id)
-        t_stage = time.perf_counter()
-        _apply_graph(diffs, db, workspace_id, reporter)
-        stats["timings_sec"]["graph"] = round(time.perf_counter() - t_stage, 3)
-
-        t_stage = time.perf_counter()
-        ext_calls, ext_imports = _external_boundary_phase(
-            diffs,
-            db,
-            workspace_id,
-            project_path,
-            files,
-            reporter,
-        )
-        stats["external_calls_linked"] = ext_calls
-        stats["external_imports_linked"] = ext_imports
-        stats["timings_sec"]["external_boundary"] = round(time.perf_counter() - t_stage, 3)
-
-        # Right after the external boundary is materialized, resolve external
-        # inheritance: any class whose parsed base name matches an imported
-        # ExternalSymbol's local_alias gets an EXTENDS_EXTERNAL edge. The
-        # library marker probe reads exactly this edge.
-        t_stage = time.perf_counter()
-        stats["extends_external_edges"] = _extends_external_phase(db, workspace_id, reporter)
-        stats["timings_sec"]["extends_external"] = round(time.perf_counter() - t_stage, 3)
-
-        # File-level integration coref: pairs of files sharing >=2 non-plumbing
-        # external imports get an INTEGRATES_WITH edge so BFS can cross from a
-        # symbol in one to symbols in the sibling without a structural call path.
-        t_stage = time.perf_counter()
-        stats["integrates_with_edges"] = _integrates_with_phase(db, workspace_id, reporter)
-        stats["timings_sec"]["integrates_with"] = round(time.perf_counter() - t_stage, 3)
-
-        t_stage = time.perf_counter()
-        stats["mro_api_edges"] = _mro_api_bridge_phase(db, workspace_id, reporter)
-        stats["timings_sec"]["mro_api_bridge"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.42: JS/TS property-owner API surfaces. Runs after MRO because
-        # the MRO bridge refreshes its own class HAS_API edges, and before degree
-        # because HAS_API participates in materialized degree.
-        t_stage = time.perf_counter()
-        property_api_count, property_api_uids = _property_api_phase(
-            diffs,
-            db,
-            workspace_id,
-            reporter,
-            project_path,
-        )
-        stats["property_api_edges"] = property_api_count
-        stats["timings_sec"]["property_api"] = round(time.perf_counter() - t_stage, 3)
-        degree_seeds |= property_api_uids
-
-        # Stage 4.6: lazy-proxy resolution. Create ProxyBinding nodes + PROXY_OF
-        # edges, then forward proxy-var calls (current_app.x) through to the real
-        # type. Must precede degree so the forwarded edges are counted.
-        t_stage = time.perf_counter()
-        proxy_uids = _proxy_binding_phase(diffs, db, workspace_id, reporter, project_path)
-        stats["proxy_bindings"] = len(proxy_uids)
-        stats["proxy_calls_resolved"] = _proxy_call_resolution_phase(
-            diffs, db, workspace_id, reporter
-        )
-        stats["proxy_return_calls_resolved"] = _proxy_return_call_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["proxy"] = round(time.perf_counter() - t_stage, 3)
-        # Proxy nodes/edges are created after the degree snapshot, so fold the new
-        # proxy nodes into the seed set; the closure recompute then covers them and
-        # their PROXY_OF / via_proxy neighbors.
-        degree_seeds |= proxy_uids
-
-        t_stage = time.perf_counter()
-        _clear_derived_edges_for_diffs(diffs, db, workspace_id, reporter)
-        stats["timings_sec"]["clear_derived_edges"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.655: READS_ATTR + WRITES_ATTR edges. Same syntactic-fact
-        # pattern as decorators / type references — runs after _apply_graph
-        # so attribute symbols exist. Kept out of degree materialisation.
-        t_stage = time.perf_counter()
-        stats["attr_accesses_linked"] = _attr_access_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["attr_accesses"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.66: USES_TYPE edges. Like DECORATED_BY, kept out of materialized
-        # degree (separate, low-weight, filterable relation), so ordering vs the
-        # degree phase is irrelevant.
-        t_stage = time.perf_counter()
-        stats["type_refs_linked"] = _type_reference_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["type_refs"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.664: Symbol-level aliases (CommonJS export/require surfaces).
-        # REFERENCES is counted into materialized degree, so new endpoints join
-        # the degree seed set before recompute.
-        t_stage = time.perf_counter()
-        alias_count, alias_uids = _symbol_alias_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["symbol_aliases_linked"] = alias_count
-        stats["timings_sec"]["symbol_aliases"] = round(time.perf_counter() - t_stage, 3)
-        degree_seeds |= alias_uids
-
-        # Stage 4.665: RE_EXPORTS edges (package __init__ -> surfaced symbol). Like
-        # USES_TYPE, a low-weight derived relation, not in materialized degree.
-        t_stage = time.perf_counter()
-        stats["reexports_linked"] = _reexport_phase(diffs, db, workspace_id, reporter, project_path)
-        stats["timings_sec"]["reexports"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.668: INSTANTIATES edges (caller -> constructed class). Like
-        # USES_TYPE, a low-weight derived relation, not in materialized degree.
-        # Runs BEFORE decorators because the decorator linker's variable-owner
-        # branch reads INSTANTIATES_EXTERNAL to decide whether a module-level
-        # variable qualifies as a registry hook (e.g. ``app = FastAPI()`` →
-        # ``@app.get(...)``).
-        t_stage = time.perf_counter()
-        stats["instantiations_linked"] = _instantiation_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["instantiations"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.669: DECORATED_BY + HANDLES edges. Not counted into materialized
-        # degree (kept out of _DEGREE_REL_PATTERN to avoid a global degree shift),
-        # so it need not precede the degree phase for counting. Must run AFTER
-        # the instantiation phase so the variable-owner branch can see
-        # INSTANTIATES_EXTERNAL edges on registry-like module-level variables.
-        t_stage = time.perf_counter()
-        stats["decorators_linked"] = _decorator_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.669b: EVENT channel (site→topic) + HOOK wrapper (site→api)
-        # edges. Like DECORATED_BY, a syntactic fact (string-literal hook name /
-        # signal object / ``.dispatch.``/``.send`` attribute) → declaration; kept
-        # out of materialized degree. Runs after decorators (same
-        # project_root_scope stage).
-        t_stage = time.perf_counter()
-        stats["hooks_linked"] = _hook_phase(diffs, db, workspace_id, reporter, project_path)
-        stats["timings_sec"]["hooks"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.669c: METADATA_BRIDGE edges (reflect-metadata producer→consumer).
-        # The TS/JS reflect-metadata archetype; edge-only like hooks, not in degree.
-        t_stage = time.perf_counter()
-        stats["metadata_bridges_linked"] = _metadata_bridge_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["metadata_bridges"] = round(time.perf_counter() - t_stage, 3)
-
-        t_stage = time.perf_counter()
-        stats["http_endpoints_linked"] = _http_endpoint_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["http_endpoints"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.67: INJECTS edges (DI bindings). Like USES_TYPE, not in degree.
-        t_stage = time.perf_counter()
-        stats["injections_linked"] = _injection_phase(
-            diffs, db, workspace_id, reporter, project_path
-        )
-        stats["timings_sec"]["injections"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 4.7: recompute materialized degree now that all edge-creating
-        # phases (calls, imports, inheritance, MRO API, hints, proxy) have run.
-        t_stage = time.perf_counter()
-        stats["degree_recomputed"] = _degree_phase(
-            degree_seeds, degree_removed, db, workspace_id, reporter
-        )
-        stats["timings_sec"]["degree"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 5: global embedding batch
-        t_stage = time.perf_counter()
-        graph_probe = None
-        if profile.name == AXIS_PYTHON_V1_PROFILE:
-            from context_engine.axis.graph_probe import Neo4jGraphContextProbe
-
-            graph_probe = Neo4jGraphContextProbe(db, workspace_id)
-        encoded, removed = _embed_phase(
-            diffs,
-            lance,
-            workspace_id,
-            reporter,
-            project_path,
-            graph_probe=graph_probe,
-        )
-        stats["symbols_encoded"] = encoded
-        stats["symbols_removed"] = removed
-        stats["timings_sec"]["embed"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 5.5: propagate ``registry_class`` via cross-file inheritance.
-        # ``_axis_payloads_for_extracted_file`` only sees same-file peer
-        # methods; this workspace-level pass walks DEPENDS_ON edges and
-        # resolves local-alias inheritance through per-file import bindings,
-        # so a class whose registry ancestor lives in a different file
-        # (``flask.blueprints.Blueprint`` over
-        # ``flask.sansio.blueprints.Blueprint``) gets ``registry_class``
-        # added to its Lance container_kinds the same as if it had been
-        # detected per-file.
-        if profile.name == AXIS_PYTHON_V1_PROFILE:
-            t_stage = time.perf_counter()
-            _run_axis_python_propagation_stage(
-                db,
-                lance,
-                workspace_id,
-                project_path,
-                stats,
-            )
-            stats["timings_sec"]["registry_class_inheritance"] = round(
-                time.perf_counter() - t_stage, 3
-            )
-
-        # Stage 6: single AFFECTS rebuild
-        if skip_affects:
-            reporter.stage_start("affects", total=0)
-            reporter.stage_end("affects")
-            stats["affects_rebuilt"] = 0
-            stats["timings_sec"]["affects"] = 0.0
-            print("⏭️  Skipping AFFECTS rebuild")
-        else:
-            t_stage = time.perf_counter()
-            stats["affects_rebuilt"] = _affects_phase(diffs, db, workspace_id, reporter)
-            stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
-
-        t_stage = time.perf_counter()
-        stats["axis_adjacency_materialized"] = _adjacency_materialization_phase(
-            db,
-            lance,
-            workspace_id,
-            reporter,
-            seed_uids=degree_seeds - degree_removed,
-        )
-        stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
-
-        # Stage 7: docstring anchors + resolve pending DocAnchors
-        t_stage = time.perf_counter()
-        from context_engine.indexer.anchor import ingest_symbol_docstrings, resolve_pending_anchors
-
-        reporter.stage_start("docs", total=1)
-        all_symbols = []
-        removed_uids: list[str] = []
-        file_tier_by_path: dict[str, str] = {}
-        from context_engine.indexer.file_tier import classify_file_tier, is_pure_reexport_source
-
-        for diff in diffs:
-            ex = diff.extracted
-            tier_path = os.path.relpath(ex.path, project_path) if project_path else ex.path
-            tier_value = classify_file_tier(
-                tier_path,
-                pure_reexport=is_pure_reexport_source(ex.source),
-            )
-            file_tier_by_path[tier_path] = tier_value
-            file_tier_by_path[ex.path] = tier_value
-            all_symbols.extend(ex.symbols)
-            removed_uids.extend(diff.removed_uids)
-        doc_stats = ingest_symbol_docstrings(
-            db,
-            lance,
-            all_symbols,
-            workspace_id=workspace_id,
-            allowed_prefixes=[project_path],
-            removed_owner_uids=removed_uids,
-            file_tier_by_path=file_tier_by_path,
-        )
-        stats["docstring_anchors"] = doc_stats
-        resolve_pending_anchors(
-            db,
-            lance,
-            workspace_id=workspace_id,
-            allowed_prefixes=[project_path],
-        )
-        reporter.step("docs")
-        reporter.stage_end("docs")
-        stats["timings_sec"]["docs"] = round(time.perf_counter() - t_stage, 3)
-
-        # Pass 1 — derive a per-repo role taxonomy from call-graph topology
-        # and persist it on Workspace + Symbol nodes (structural Pass-1 roles).
-        t_stage = time.perf_counter()
-        from context_engine.indexer.role_clustering import (
-            derive_and_persist_role_taxonomy,
-        )
-
-        reporter.stage_start("role_clustering", total=1)
-        summary = derive_and_persist_role_taxonomy(db, workspace_id)
-        reporter.step("role_clustering")
-        reporter.stage_end("role_clustering")
-        stats["timings_sec"]["role_clustering"] = round(time.perf_counter() - t_stage, 3)
-        stats["role_taxonomy"] = {
-            "method": summary.method,
-            "sample_size": summary.sample_size,
-            "filtered_sample_size": summary.filtered_sample_size,
-            "present_role_count": len(summary.present_roles),
-        }
-        stats["role_catalog"] = {
-            "present_roles": len(summary.present_roles),
-        }
-
-        _use_repository_profile(
-            stats,
-            _build_profile_from_diffs(
-                project_path,
-                workspace_id,
-                files,
-                diffs,
-                stats,
-                db,
-            ),
-            db,
-            workspace_id,
-        )
-        persist_index_manifest(
+        _run_fast_changed_files_pipeline(
             stats=stats,
-            db=db,
-            workspace_id=workspace_id,
+            changed_files=changed_files,
+            files=files,
             project_path=project_path,
-            outcome="full_index",
+            current_hashes=current_hashes,
+            db=db,
+            lance=lance,
+            workspace_id=workspace_id,
+            parse_workers=parse_workers,
+            job_log=job_log,
+            reporter=reporter,
+            profile=profile,
+            skip_affects=skip_affects,
         )
 
     finally:

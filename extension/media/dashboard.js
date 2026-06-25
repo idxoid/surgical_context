@@ -7,29 +7,6 @@ import {
   vscode
 } from "./chunk-G3IIAS2Y.js";
 
-// src/webview/shared/dashboardDefaults.ts
-function emptyDashboardMetrics() {
-  return {
-    indexedFiles: null,
-    indexedSymbols: null,
-    docChunks: null,
-    avgLatencyMs: null,
-    tokenSavingsPercent: null,
-    fallbackRatePercent: null,
-    contextQualityPercent: null,
-    symbolsWithDocs: null,
-    storageGb: null,
-    requestsTotal: null,
-    tokensTotal: null,
-    costUsdTotal: null,
-    queuePending: null,
-    queueProcessing: null,
-    queueProcessed: null,
-    queueFailedBatches: null,
-    lastIndexJobStatus: null
-  };
-}
-
 // src/webview/shared/dashboardLayout.ts
 function renderDashboardHeader(workspaceId, lastUpdate) {
   const lastUpdateText = lastUpdate ? `${secondsAgo(lastUpdate)} ago` : "never";
@@ -442,70 +419,118 @@ function renderDashboardView(state) {
   `;
 }
 
+// src/webview/shared/dashboardDefaults.ts
+function emptyDashboardMetrics() {
+  return {
+    indexedFiles: null,
+    indexedSymbols: null,
+    docChunks: null,
+    avgLatencyMs: null,
+    tokenSavingsPercent: null,
+    fallbackRatePercent: null,
+    contextQualityPercent: null,
+    symbolsWithDocs: null,
+    storageGb: null,
+    requestsTotal: null,
+    tokensTotal: null,
+    costUsdTotal: null,
+    queuePending: null,
+    queueProcessing: null,
+    queueProcessed: null,
+    queueFailedBatches: null,
+    lastIndexJobStatus: null
+  };
+}
+
+// src/webview/shared/dashboardState.ts
+function createInitialDashboardState() {
+  return {
+    health: null,
+    cloudStatus: null,
+    auditActions: [],
+    metrics: emptyDashboardMetrics(),
+    healthChecks: [],
+    notices: [],
+    workspaceId: "",
+    warnings: [],
+    isLoading: false,
+    error: null,
+    lastUpdate: null
+  };
+}
+function dashboardLoadFailedNotice(error) {
+  return {
+    id: "dashboard-load-failed",
+    level: "error",
+    title: "Dashboard data failed to load",
+    message: error,
+    action: "refresh",
+    actionLabel: "Retry"
+  };
+}
+function reduceDashboardState(state, message) {
+  switch (message.type) {
+    case "dashboard.loading":
+      return { ...state, isLoading: true };
+    case "dashboard.metricsLoaded":
+      return {
+        ...state,
+        health: message.health,
+        cloudStatus: message.cloudStatus,
+        auditActions: message.auditActions,
+        metrics: message.metrics,
+        healthChecks: message.healthChecks,
+        notices: message.notices,
+        workspaceId: message.workspaceId,
+        warnings: message.warnings,
+        isLoading: false,
+        error: null,
+        lastUpdate: Date.now()
+      };
+    case "dashboard.metricsFailed":
+      return {
+        ...state,
+        isLoading: false,
+        error: message.error,
+        warnings: [],
+        notices: [dashboardLoadFailedNotice(message.error)]
+      };
+  }
+}
+function applyDashboardHostMessage(state, message) {
+  if (!message.type.startsWith("dashboard.")) {
+    return null;
+  }
+  return reduceDashboardState(state, message);
+}
+function bindDashboardActions(root, postMessage) {
+  bindClickAction(root, "refresh", () => {
+    postMessage({ type: "dashboard.refresh" });
+  });
+  bindClickAction(root, "indexWorkspace", () => {
+    postMessage({ type: "dashboard.indexWorkspace" });
+  });
+}
+
 // src/webview/dashboard.ts
 var DashboardPanel = class {
   constructor() {
-    this.state = {
-      health: null,
-      cloudStatus: null,
-      auditActions: [],
-      metrics: emptyDashboardMetrics(),
-      healthChecks: [],
-      notices: [],
-      workspaceId: "",
-      warnings: [],
-      isLoading: false,
-      error: null,
-      lastUpdate: null
-    };
+    this.state = createInitialDashboardState();
     this.initializeMessageListener();
     this.bindActions(document);
   }
   initializeMessageListener() {
     listenForHostMessages((message) => {
-      switch (message.type) {
-        case "dashboard.loading":
-          this.state.isLoading = true;
-          this.render();
-          break;
-        case "dashboard.metricsLoaded":
-          this.state.health = message.health;
-          this.state.cloudStatus = message.cloudStatus;
-          this.state.auditActions = message.auditActions;
-          this.state.metrics = message.metrics;
-          this.state.healthChecks = message.healthChecks;
-          this.state.notices = message.notices;
-          this.state.workspaceId = message.workspaceId;
-          this.state.warnings = message.warnings;
-          this.state.isLoading = false;
-          this.state.error = null;
-          this.state.lastUpdate = Date.now();
-          this.render();
-          break;
-        case "dashboard.metricsFailed":
-          this.state.isLoading = false;
-          this.state.error = message.error;
-          this.state.warnings = [];
-          this.state.notices = [{
-            id: "dashboard-load-failed",
-            level: "error",
-            title: "Dashboard data failed to load",
-            message: message.error,
-            action: "refresh",
-            actionLabel: "Retry"
-          }];
-          this.render();
-          break;
+      const nextState = applyDashboardHostMessage(this.state, message);
+      if (nextState === null) {
+        return;
       }
+      this.state = nextState;
+      this.render();
     });
   }
   bindActions(root) {
-    bindClickAction(root, "refresh", () => {
-      vscode.postMessage({ type: "dashboard.refresh" });
-    });
-    bindClickAction(root, "indexWorkspace", () => {
-      vscode.postMessage({ type: "dashboard.indexWorkspace" });
-    });
+    bindDashboardActions(root, (message) => vscode.postMessage(message));
   }
   render() {
     const root = document.getElementById("root");

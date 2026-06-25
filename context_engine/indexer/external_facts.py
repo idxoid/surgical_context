@@ -59,6 +59,22 @@ def _module_root(module: str) -> str:
     return re.split(r"[/.]", module, maxsplit=1)[0]
 
 
+def _module_from_import_line(stripped: str) -> str:
+    if stripped.startswith("import "):
+        match = re.search(r"\bfrom\s+['\"]([^'\"]+)['\"]", stripped)
+        if match:
+            return match.group(1).strip()
+        side_effect = re.match(r"import\s+['\"]([^'\"]+)['\"]", stripped)
+        if side_effect:
+            return side_effect.group(1).strip()
+        return stripped[7:].split(",")[0].strip().split(" as ")[0].strip()
+    if stripped.startswith("from "):
+        parts = stripped[5:].split(" import ", 1)
+        if len(parts) == 2:
+            return parts[0].strip()
+    return ""
+
+
 def _import_roots_from_source(
     source_code: str,
     file_path: str,
@@ -84,27 +100,41 @@ def _import_roots_from_source(
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        module = ""
-        if stripped.startswith("import "):
-            match = re.search(r"\bfrom\s+['\"]([^'\"]+)['\"]", stripped)
-            if match:
-                module = match.group(1).strip()
-            else:
-                side_effect = re.match(r"import\s+['\"]([^'\"]+)['\"]", stripped)
-                if side_effect:
-                    module = side_effect.group(1).strip()
-                else:
-                    module = stripped[7:].split(",")[0].strip().split(" as ")[0].strip()
-        elif stripped.startswith("from "):
-            parts = stripped[5:].split(" import ", 1)
-            if len(parts) != 2:
-                continue
-            module = parts[0].strip()
-        add_module(module)
+        add_module(_module_from_import_line(stripped))
 
     for match in re.finditer(r"\brequire\(\s*['\"]([^'\"]+)['\"]\s*\)", source_code):
         add_module(match.group(1))
     return roots
+
+
+def _external_call_link_from_row(
+    call: dict,
+    *,
+    boundary: frozenset[str],
+    project_external_roots: frozenset[str],
+    seen: set[tuple[str, str, int]],
+) -> ExternalCallLink | None:
+    caller_uid = str(call.get("caller_uid") or "")
+    qn = str(call.get("callee_qualified_name") or "")
+    if not caller_uid or not qn or call.get("callee_uid"):
+        return None
+    root = external_root_from_qualified_name(qn)
+    if classify_external_root(root, boundary, project_external_roots) != "external":
+        return None
+    line = int(call.get("call_site_line") or 0)
+    key = (caller_uid, root, line)
+    if key in seen:
+        return None
+    seen.add(key)
+    member = qn[len(root) + 1 :] if qn.startswith(f"{root}.") and len(qn) > len(root) + 1 else ""
+    return ExternalCallLink(
+        caller_uid=caller_uid,
+        external_root=root,
+        callee_member=member,
+        call_site_line=line,
+        confidence=float(call.get("confidence") or 0.85),
+        kind=str(call.get("call_kind") or "call"),
+    )
 
 
 def collect_external_call_links(
@@ -117,31 +147,14 @@ def collect_external_call_links(
     out: list[ExternalCallLink] = []
     seen: set[tuple[str, str, int]] = set()
     for call in calls:
-        caller_uid = str(call.get("caller_uid") or "")
-        qn = str(call.get("callee_qualified_name") or "")
-        if not caller_uid or not qn or call.get("callee_uid"):
-            continue
-        root = external_root_from_qualified_name(qn)
-        if classify_external_root(root, boundary, project_external_roots) != "external":
-            continue
-        member = (
-            qn[len(root) + 1 :] if qn.startswith(f"{root}.") and len(qn) > len(root) + 1 else ""
+        link = _external_call_link_from_row(
+            call,
+            boundary=boundary,
+            project_external_roots=project_external_roots,
+            seen=seen,
         )
-        line = int(call.get("call_site_line") or 0)
-        key = (caller_uid, root, line)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(
-            ExternalCallLink(
-                caller_uid=caller_uid,
-                external_root=root,
-                callee_member=member,
-                call_site_line=line,
-                confidence=float(call.get("confidence") or 0.85),
-                kind=str(call.get("call_kind") or "call"),
-            )
-        )
+        if link is not None:
+            out.append(link)
     return out
 
 
@@ -183,6 +196,68 @@ def _strip_trailing_comment(body: str) -> str:
     return "".join(out).strip()
 
 
+def _glue_logical_import_lines(source_code: str) -> list[str]:
+    logical_lines: list[str] = []
+    buf: list[str] = []
+    paren_depth = 0
+    pending_continuation = False
+    for raw in source_code.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            if not buf:
+                continue
+        buf.append(_strip_trailing_comment(stripped))
+        paren_depth += stripped.count("(") - stripped.count(")")
+        pending_continuation = stripped.endswith("\\")
+        if pending_continuation:
+            buf[-1] = buf[-1].rstrip("\\").rstrip()
+        if paren_depth <= 0 and not pending_continuation:
+            line = " ".join(part for part in buf if part).strip()
+            if line:
+                logical_lines.append(line.strip("()").strip())
+            buf = []
+            paren_depth = 0
+    return logical_lines
+
+
+def _parse_from_import_line(line: str, add_link) -> bool:
+    from_parts = split_python_from_import(line)
+    if not from_parts:
+        return False
+    module, body = from_parts
+    if module.startswith("."):
+        return True
+    body = body.strip("()").strip()
+    for chunk in body.split(","):
+        item = chunk.strip()
+        if not item or item.startswith("*"):
+            continue
+        item_match = _FROM_IMPORT_ITEM.match(item)
+        if not item_match:
+            continue
+        name, alias = item_match.group(1), item_match.group(2)
+        add_link(module, name, alias)
+    return True
+
+
+def _parse_bare_import_line(line: str, add_link) -> None:
+    if not line.startswith("import "):
+        return
+    body = line[len("import ") :].strip().strip("()").strip()
+    for chunk in body.split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        item_match = _BARE_IMPORT_ITEM.match(item)
+        if not item_match:
+            continue
+        dotted, alias = item_match.group(1), item_match.group(2)
+        if "." not in dotted:
+            continue
+        module, _, name = dotted.rpartition(".")
+        add_link(module, name, alias)
+
+
 def _named_imports_from_source(
     source_code: str,
     file_path: str,
@@ -221,65 +296,10 @@ def _named_imports_from_source(
             )
         )
 
-    # Phase 1: glue together logical import lines so multi-line ``from X import (
-    #     a, b, c,
-    # )`` is recognised as one statement.
-    logical_lines: list[str] = []
-    buf: list[str] = []
-    paren_depth = 0
-    pending_continuation = False
-    for raw in source_code.splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            if not buf:
-                continue
-        buf.append(_strip_trailing_comment(stripped))
-        paren_depth += stripped.count("(") - stripped.count(")")
-        pending_continuation = stripped.endswith("\\")
-        if pending_continuation:
-            buf[-1] = buf[-1].rstrip("\\").rstrip()
-        if paren_depth <= 0 and not pending_continuation:
-            line = " ".join(part for part in buf if part).strip()
-            if line:
-                logical_lines.append(line.strip("()").strip())
-            buf = []
-            paren_depth = 0
-
-    # Phase 2: classify each logical line as ``from M import …`` or ``import X``.
-    for line in logical_lines:
-        from_parts = split_python_from_import(line)
-        if from_parts:
-            module, body = from_parts
-            if module.startswith("."):
-                continue
-            body = body.strip("()").strip()
-            for chunk in body.split(","):
-                item = chunk.strip()
-                if not item or item.startswith("*"):
-                    continue
-                item_match = _FROM_IMPORT_ITEM.match(item)
-                if not item_match:
-                    continue
-                name, alias = item_match.group(1), item_match.group(2)
-                add_link(module, name, alias)
+    for line in _glue_logical_import_lines(source_code):
+        if _parse_from_import_line(line, add_link):
             continue
-        if line.startswith("import "):
-            body = line[len("import ") :].strip().strip("()").strip()
-            for chunk in body.split(","):
-                item = chunk.strip()
-                if not item:
-                    continue
-                item_match = _BARE_IMPORT_ITEM.match(item)
-                if not item_match:
-                    continue
-                dotted, alias = item_match.group(1), item_match.group(2)
-                if "." not in dotted:
-                    # Plain ``import pkg`` only nominates a package — the
-                    # ``IMPORTS_EXTERNAL`` edge already covers it; nothing
-                    # named to model.
-                    continue
-                module, _, name = dotted.rpartition(".")
-                add_link(module, name, alias)
+        _parse_bare_import_line(line, add_link)
     return links
 
 

@@ -604,6 +604,20 @@ class Neo4jClient:
         return by_qn, by_name, object_api
 
     @staticmethod
+    def _qn_callee_uid(
+        qn: str,
+        by_qn: dict[str, str],
+        object_api: list[tuple[str, str]],
+    ) -> str | None:
+        hit = by_qn.get(qn)
+        if hit is not None:
+            return hit
+        for surf_qn, surf_uid in object_api:
+            if qn.startswith(surf_qn + "."):
+                return surf_uid
+        return None
+
+    @staticmethod
     def _resolve_call_callee_uid(
         call: dict,
         by_qn: dict[str, str],
@@ -613,12 +627,7 @@ class Neo4jClient:
         caller_uid = call.get("caller_uid")
         qn = call.get("callee_qualified_name")
         if qn:
-            hit = by_qn.get(qn)
-            if hit is None:
-                for surf_qn, surf_uid in object_api:
-                    if qn.startswith(surf_qn + "."):
-                        hit = surf_uid
-                        break
+            hit = Neo4jClient._qn_callee_uid(qn, by_qn, object_api)
             if hit and hit != caller_uid:
                 return hit
         name = call.get("callee_name")
@@ -2062,9 +2071,9 @@ class Neo4jClient:
             )
 
     @staticmethod
-    def _create_metadata_bridges(tx, facts, workspace_id):
-        if not facts:
-            return
+    def _metadata_bridge_indexes(
+        facts: list[dict],
+    ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
         defines: dict[str, set[str]] = defaultdict(set)
         reads: dict[str, set[str]] = defaultdict(set)
         for fact in facts:
@@ -2077,7 +2086,13 @@ class Neo4jClient:
                 defines[key].add(site)
             elif role == "read":
                 reads[key].add(site)
+        return defines, reads
 
+    @staticmethod
+    def _metadata_bridge_pairs(
+        defines: dict[str, set[str]],
+        reads: dict[str, set[str]],
+    ) -> list[dict]:
         pairs: list[dict] = []
         for key, producers in defines.items():
             consumers = reads.get(key)
@@ -2093,6 +2108,14 @@ class Neo4jClient:
                     if producer == consumer:
                         continue
                     pairs.append({"producer": producer, "consumer": consumer, "key": key})
+        return pairs
+
+    @staticmethod
+    def _create_metadata_bridges(tx, facts, workspace_id):
+        if not facts:
+            return
+        defines, reads = Neo4jClient._metadata_bridge_indexes(facts)
+        pairs = Neo4jClient._metadata_bridge_pairs(defines, reads)
         if not pairs:
             return
         tx.run(

@@ -32,6 +32,52 @@ _AFFECTS_REL_TYPES = [
 ]
 
 
+def _next_dependent_frontier(
+    source_uid: str,
+    frontier: list[str],
+    reverse_adjacency: dict[str, list[str]],
+    visited: set[str],
+) -> list[str]:
+    next_frontier: list[str] = []
+    seen_level: set[str] = set()
+    for current_uid in frontier:
+        for dependent_uid in reverse_adjacency.get(current_uid, []):
+            if (
+                dependent_uid == source_uid
+                or dependent_uid in visited
+                or dependent_uid in seen_level
+            ):
+                continue
+            seen_level.add(dependent_uid)
+            next_frontier.append(dependent_uid)
+    return next_frontier
+
+
+def _dependents_within_depth(
+    source_uid: str,
+    reverse_adjacency: dict[str, list[str]],
+    *,
+    max_depth: int,
+    max_fanout: int,
+) -> set[str]:
+    frontier = [source_uid]
+    visited: set[str] = set()
+    for _depth in range(max_depth):
+        next_frontier = _next_dependent_frontier(
+            source_uid,
+            frontier,
+            reverse_adjacency,
+            visited,
+        )
+        if not next_frontier:
+            break
+        if len(next_frontier) > max_fanout:
+            next_frontier = next_frontier[:max_fanout]
+        visited.update(next_frontier)
+        frontier = next_frontier
+    return visited
+
+
 class AFFECTSIndexer:
     """Materialized reverse dependency index."""
 
@@ -136,29 +182,12 @@ class AFFECTSIndexer:
         """
         pairs: list[dict[str, str]] = []
         for source_uid in symbol_uids:
-            frontier = [source_uid]
-            visited: set[str] = set()
-
-            for _depth in range(self.MAX_AFFECTS_DEPTH):
-                next_frontier: list[str] = []
-                seen_level: set[str] = set()
-                for current_uid in frontier:
-                    for dependent_uid in reverse_adjacency.get(current_uid, []):
-                        if (
-                            dependent_uid == source_uid
-                            or dependent_uid in visited
-                            or dependent_uid in seen_level
-                        ):
-                            continue
-                        seen_level.add(dependent_uid)
-                        next_frontier.append(dependent_uid)
-                if not next_frontier:
-                    break
-                if len(next_frontier) > self.MAX_FANOUT_PER_LEVEL:
-                    next_frontier = next_frontier[: self.MAX_FANOUT_PER_LEVEL]
-                visited.update(next_frontier)
-                frontier = next_frontier
-
+            visited = _dependents_within_depth(
+                source_uid,
+                reverse_adjacency,
+                max_depth=self.MAX_AFFECTS_DEPTH,
+                max_fanout=self.MAX_FANOUT_PER_LEVEL,
+            )
             for target_uid in sorted(visited):
                 pairs.append({"source_uid": source_uid, "target_uid": target_uid})
         return pairs

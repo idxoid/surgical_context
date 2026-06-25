@@ -319,6 +319,337 @@ def _iter_structural_edges(
     return normalized
 
 
+def _symbol_info_from_raw(symbols: Sequence[tuple[str, ...]]) -> dict[str, dict]:
+    info: dict[str, dict] = {}
+    for sym in symbols:
+        uid, kind, file_path = sym[0], sym[1], sym[2]
+        info[uid] = {
+            "uid": uid,
+            "kind": kind or "",
+            "file_path": file_path or "",
+            "package": os.path.dirname(file_path or ""),
+            "inherits_builtin_exception": bool(sym[3]) if len(sym) > 3 else False,
+            "returns_function_expression": bool(sym[4]) if len(sym) > 4 else False,
+            "returns_mapping": bool(sym[5]) if len(sym) > 5 else False,
+            "returns_sequence": bool(sym[6]) if len(sym) > 6 else False,
+            "returns_constructed_type": bool(sym[7]) if len(sym) > 7 else False,
+            "iterates_attr_call": bool(sym[8]) if len(sym) > 8 else False,
+            "assembles_mapping_in_loop": bool(sym[9]) if len(sym) > 9 else False,
+        }
+    return info
+
+
+@dataclass
+class _EdgeFanAccumulators:
+    call_out: dict[str, set[str]]
+    call_in: dict[str, set[str]]
+    call_fan_in: dict[str, float]
+    call_fan_out: dict[str, float]
+    type_fan_in: dict[str, float]
+    type_fan_out: dict[str, float]
+    type_fan_in_param: dict[str, float]
+    type_fan_in_isinstance: dict[str, float]
+    type_fan_in_return: dict[str, float]
+    type_fan_out_return: dict[str, float]
+    api_fan_in: dict[str, float]
+    api_fan_out: dict[str, float]
+    inject_fan_in: dict[str, float]
+    depend_fan_in: dict[str, float]
+    depend_fan_out: dict[str, float]
+    handle_fan_in: dict[str, float]
+    handle_fan_out: dict[str, float]
+    decorated_in: dict[str, float]
+    decorated_out: dict[str, float]
+    construct_fan_out: dict[str, float]
+    proxy_context_bind_fan_out: dict[str, float]
+    decorator_arg_ref_count: dict[str, int]
+    attr_reads_fan_out: dict[str, float]
+    attr_writes_fan_out: dict[str, float]
+    attr_writes_subscript_fan_out: dict[str, float]
+
+    @classmethod
+    def for_uids(cls, uids: set[str]) -> _EdgeFanAccumulators:
+        return cls(
+            call_out={uid: set() for uid in uids},
+            call_in={uid: set() for uid in uids},
+            call_fan_in=defaultdict(float),
+            call_fan_out=defaultdict(float),
+            type_fan_in=defaultdict(float),
+            type_fan_out=defaultdict(float),
+            type_fan_in_param=defaultdict(float),
+            type_fan_in_isinstance=defaultdict(float),
+            type_fan_in_return=defaultdict(float),
+            type_fan_out_return=defaultdict(float),
+            api_fan_in=defaultdict(float),
+            api_fan_out=defaultdict(float),
+            inject_fan_in=defaultdict(float),
+            depend_fan_in=defaultdict(float),
+            depend_fan_out=defaultdict(float),
+            handle_fan_in=defaultdict(float),
+            handle_fan_out=defaultdict(float),
+            decorated_in=defaultdict(float),
+            decorated_out=defaultdict(float),
+            construct_fan_out=defaultdict(float),
+            proxy_context_bind_fan_out=defaultdict(float),
+            decorator_arg_ref_count=defaultdict(int),
+            attr_reads_fan_out=defaultdict(float),
+            attr_writes_fan_out=defaultdict(float),
+            attr_writes_subscript_fan_out=defaultdict(float),
+        )
+
+    def accumulate(
+        self,
+        caller: str,
+        callee: str,
+        rel_type: str,
+        conf: float,
+        kind: str,
+        info: dict[str, dict],
+    ) -> None:
+        caller_in = caller in info
+        callee_in = callee in info
+        if not caller_in and not callee_in:
+            return
+        if caller == callee:
+            return
+        if rel_type in CALL_REL_TYPES:
+            self._accumulate_call(caller_in, callee_in, caller, callee, conf)
+        elif rel_type == "USES_TYPE":
+            self._accumulate_uses_type(caller_in, callee_in, caller, callee, conf, kind)
+        elif rel_type in {"HAS_API", "INHERITED_API"}:
+            self._accumulate_api(caller_in, callee_in, caller, callee, conf)
+        elif rel_type == "INJECTS" and callee_in:
+            self.inject_fan_in[callee] += conf
+        elif rel_type == "DEPENDS_ON":
+            self._accumulate_depends_on(caller_in, callee_in, caller, callee, conf)
+        elif rel_type == "HANDLES":
+            self._accumulate_handles(caller_in, callee_in, caller, callee, conf)
+        elif rel_type == "DECORATED_BY":
+            self._accumulate_decorated_by(caller_in, callee_in, caller, callee, conf)
+        elif rel_type == "INSTANTIATES" and caller_in:
+            self.construct_fan_out[caller] += conf
+        elif rel_type == "RESOLVES_ATTR" and caller_in:
+            self.proxy_context_bind_fan_out[caller] += conf
+        elif rel_type == "COMPOSES" and caller_in:
+            self.decorator_arg_ref_count[caller] += 1
+        elif rel_type == "READS_ATTR" and caller_in:
+            self.attr_reads_fan_out[caller] += conf
+        elif rel_type == "WRITES_ATTR" and caller_in:
+            self.attr_writes_fan_out[caller] += conf
+            if kind in ("write_subscript", "write_subscript_local"):
+                self.attr_writes_subscript_fan_out[caller] += conf
+
+    def _accumulate_call(
+        self,
+        caller_in: bool,
+        callee_in: bool,
+        caller: str,
+        callee: str,
+        conf: float,
+    ) -> None:
+        if caller_in:
+            self.call_out[caller].add(callee)
+            self.call_fan_out[caller] += conf
+        if callee_in:
+            self.call_in[callee].add(caller)
+            self.call_fan_in[callee] += conf
+
+    def _accumulate_uses_type(
+        self,
+        caller_in: bool,
+        callee_in: bool,
+        caller: str,
+        callee: str,
+        conf: float,
+        kind: str,
+    ) -> None:
+        if caller_in:
+            self.type_fan_out[caller] += conf
+            if kind == "return":
+                self.type_fan_out_return[caller] += conf
+        if callee_in:
+            self.type_fan_in[callee] += conf
+            if kind in {"param", "annotation"}:
+                self.type_fan_in_param[callee] += conf
+            elif kind == "isinstance":
+                self.type_fan_in_isinstance[callee] += conf
+            elif kind == "return":
+                self.type_fan_in_return[callee] += conf
+
+    def _accumulate_api(
+        self,
+        caller_in: bool,
+        callee_in: bool,
+        caller: str,
+        callee: str,
+        conf: float,
+    ) -> None:
+        if caller_in:
+            self.api_fan_out[caller] += conf
+        if callee_in:
+            self.api_fan_in[callee] += conf
+
+    def _accumulate_depends_on(
+        self,
+        caller_in: bool,
+        callee_in: bool,
+        caller: str,
+        callee: str,
+        conf: float,
+    ) -> None:
+        if caller_in:
+            self.depend_fan_out[caller] += conf
+        if callee_in:
+            self.depend_fan_in[callee] += conf
+
+    def _accumulate_handles(
+        self,
+        caller_in: bool,
+        callee_in: bool,
+        caller: str,
+        callee: str,
+        conf: float,
+    ) -> None:
+        if caller_in:
+            self.handle_fan_out[caller] += conf
+        if callee_in:
+            self.handle_fan_in[callee] += conf
+
+    def _accumulate_decorated_by(
+        self,
+        caller_in: bool,
+        callee_in: bool,
+        caller: str,
+        callee: str,
+        conf: float,
+    ) -> None:
+        if caller_in:
+            self.decorated_out[caller] += conf
+        if callee_in:
+            self.decorated_in[callee] += conf
+
+
+def _compute_handler_call_fan_out(
+    call_edges: Sequence[tuple[str, ...]],
+    info: dict[str, dict],
+    handle_fan_in: dict[str, float],
+) -> dict[str, float]:
+    handler_call_fan_out: dict[str, float] = defaultdict(float)
+    for caller, callee, rel_type, conf, _kind in _iter_structural_edges(call_edges):
+        if rel_type not in CALL_REL_TYPES or caller not in info or callee not in info:
+            continue
+        if handle_fan_in[callee] > _EPS:
+            handler_call_fan_out[caller] += conf
+    return handler_call_fan_out
+
+
+def _compute_fluent_self_return_counts(
+    call_edges: Sequence[tuple[str, ...]],
+    info: dict[str, dict],
+) -> dict[str, int]:
+    api_owner_of: dict[str, set[str]] = defaultdict(set)
+    method_return_type: dict[str, set[str]] = defaultdict(set)
+    for caller, callee, rel_type, _conf, kind in _iter_structural_edges(call_edges):
+        if rel_type in {"HAS_API", "INHERITED_API"} and caller in info and callee in info:
+            api_owner_of[callee].add(caller)
+        elif rel_type == "USES_TYPE" and kind == "return" and caller in info and callee in info:
+            method_return_type[caller].add(callee)
+    fluent_self_return_count: dict[str, int] = defaultdict(int)
+    for method_uid, return_types in method_return_type.items():
+        for owner_uid in api_owner_of.get(method_uid, set()) & return_types:
+            fluent_self_return_count[owner_uid] += 1
+    return fluent_self_return_count
+
+
+def _symbol_row_from_meta(
+    uid: str,
+    meta: dict,
+    *,
+    fans: _EdgeFanAccumulators,
+    depth_by_uid: dict[str, int],
+    info: dict[str, dict],
+    doc_counts: dict[str, int],
+    doc_signal_by_uid: dict[str, dict[str, float]],
+    import_in_per_uid: dict[str, int],
+    reexport_in_per_uid: dict[str, int],
+    proxy_uids: set[str],
+    external_call_fan_out_per_uid: dict[str, float],
+    external_root_count_per_uid: dict[str, int],
+    external_import_fan_out_by_file: dict[str, float],
+    external_integration_call_fan_out_per_uid: dict[str, float],
+    external_integration_root_count_per_uid: dict[str, int],
+    external_integration_import_fan_out_by_file: dict[str, float],
+    handler_call_fan_out: dict[str, float],
+    fluent_self_return_count: dict[str, int],
+) -> SymbolRow:
+    callers = fans.call_in[uid]
+    callees = fans.call_out[uid]
+    my_pkg = meta["package"]
+    cross_in = sum(1 for c in callers if c in info and info[c]["package"] != my_pkg)
+    cross_out = sum(1 for c in callees if c in info and info[c]["package"] != my_pkg)
+    doc_signal = doc_signal_by_uid.get(uid, {})
+    return SymbolRow(
+        uid=uid,
+        kind=meta["kind"],
+        fan_in=len(callers),
+        fan_out=len(callees),
+        cross_package_in=cross_in,
+        cross_package_out=cross_out,
+        depth_from_public=depth_by_uid[uid],
+        doc_anchor_count=int(doc_counts.get(uid, 0)),
+        import_in=int(import_in_per_uid.get(uid, 0)),
+        doc_definition_weight=float(doc_signal.get("definition", 0.0)),
+        doc_reference_weight=float(doc_signal.get("reference", 0.0)),
+        doc_example_weight=float(doc_signal.get("example", 0.0)),
+        call_fan_in=fans.call_fan_in[uid],
+        call_fan_out=fans.call_fan_out[uid],
+        type_fan_in=fans.type_fan_in[uid],
+        type_fan_out=fans.type_fan_out[uid],
+        type_fan_in_param=fans.type_fan_in_param[uid],
+        type_fan_in_isinstance=fans.type_fan_in_isinstance[uid],
+        type_fan_in_return=fans.type_fan_in_return[uid],
+        type_fan_out_return=fans.type_fan_out_return[uid],
+        api_fan_in=fans.api_fan_in[uid],
+        api_fan_out=fans.api_fan_out[uid],
+        inject_fan_in=fans.inject_fan_in[uid],
+        depend_fan_in=fans.depend_fan_in[uid],
+        depend_fan_out=fans.depend_fan_out[uid],
+        handle_fan_in=fans.handle_fan_in[uid],
+        handle_fan_out=fans.handle_fan_out[uid],
+        handler_call_fan_out=handler_call_fan_out[uid],
+        decorated_in=fans.decorated_in[uid],
+        decorated_out=fans.decorated_out[uid],
+        construct_fan_out=fans.construct_fan_out[uid],
+        proxy_context_bind_fan_out=fans.proxy_context_bind_fan_out[uid],
+        fluent_self_return_count=fluent_self_return_count.get(uid, 0),
+        decorator_arg_ref_count=fans.decorator_arg_ref_count.get(uid, 0),
+        attr_reads_fan_out=fans.attr_reads_fan_out[uid],
+        attr_writes_fan_out=fans.attr_writes_fan_out[uid],
+        attr_writes_subscript_fan_out=fans.attr_writes_subscript_fan_out[uid],
+        reexport_in=int(reexport_in_per_uid.get(uid, 0)),
+        is_proxy_binding=uid in proxy_uids,
+        external_call_fan_out=float(external_call_fan_out_per_uid.get(uid, 0.0)),
+        external_import_fan_out=float(external_import_fan_out_by_file.get(meta["file_path"], 0.0)),
+        external_root_count=int(external_root_count_per_uid.get(uid, 0)),
+        external_integration_call_fan_out=float(
+            external_integration_call_fan_out_per_uid.get(uid, 0.0)
+        ),
+        external_integration_import_fan_out=float(
+            external_integration_import_fan_out_by_file.get(meta["file_path"], 0.0)
+        ),
+        external_integration_root_count=int(
+            external_integration_root_count_per_uid.get(uid, 0)
+        ),
+        inherits_builtin_exception=bool(meta.get("inherits_builtin_exception")),
+        returns_function_expression=bool(meta.get("returns_function_expression")),
+        returns_mapping=bool(meta.get("returns_mapping")),
+        returns_sequence=bool(meta.get("returns_sequence")),
+        returns_constructed_type=bool(meta.get("returns_constructed_type")),
+        iterates_attr_call=bool(meta.get("iterates_attr_call")),
+        assembles_mapping_in_loop=bool(meta.get("assembles_mapping_in_loop")),
+    )
+
+
 def assemble_symbol_rows(
     symbols: Sequence[tuple[str, ...]],
     call_edges: Sequence[tuple[str, ...]],
@@ -349,238 +680,38 @@ def assemble_symbol_rows(
     external_integration_root_count_per_uid = external_integration_root_count_per_uid or {}
     external_integration_import_fan_out_by_file = external_integration_import_fan_out_by_file or {}
 
-    info: dict[str, dict] = {}
-    for sym in symbols:
-        uid, kind, file_path = sym[0], sym[1], sym[2]
-        inherits_exc = bool(sym[3]) if len(sym) > 3 else False
-        returns_fn_expr = bool(sym[4]) if len(sym) > 4 else False
-        returns_map = bool(sym[5]) if len(sym) > 5 else False
-        returns_seq = bool(sym[6]) if len(sym) > 6 else False
-        returns_ct = bool(sym[7]) if len(sym) > 7 else False
-        iter_call = bool(sym[8]) if len(sym) > 8 else False
-        assembles = bool(sym[9]) if len(sym) > 9 else False
-        info[uid] = {
-            "uid": uid,
-            "kind": kind or "",
-            "file_path": file_path or "",
-            "package": os.path.dirname(file_path or ""),
-            "inherits_builtin_exception": inherits_exc,
-            "returns_function_expression": returns_fn_expr,
-            "returns_mapping": returns_map,
-            "returns_sequence": returns_seq,
-            "returns_constructed_type": returns_ct,
-            "iterates_attr_call": iter_call,
-            "assembles_mapping_in_loop": assembles,
-        }
-
-    call_out: dict[str, set[str]] = {uid: set() for uid in info}
-    call_in: dict[str, set[str]] = {uid: set() for uid in info}
-    call_fan_in: dict[str, float] = defaultdict(float)
-    call_fan_out: dict[str, float] = defaultdict(float)
-    type_fan_in: dict[str, float] = defaultdict(float)
-    type_fan_out: dict[str, float] = defaultdict(float)
-    type_fan_in_param: dict[str, float] = defaultdict(float)
-    type_fan_in_isinstance: dict[str, float] = defaultdict(float)
-    type_fan_in_return: dict[str, float] = defaultdict(float)
-    type_fan_out_return: dict[str, float] = defaultdict(float)
-    api_fan_in: dict[str, float] = defaultdict(float)
-    api_fan_out: dict[str, float] = defaultdict(float)
-    inject_fan_in: dict[str, float] = defaultdict(float)
-    depend_fan_in: dict[str, float] = defaultdict(float)
-    depend_fan_out: dict[str, float] = defaultdict(float)
-    handle_fan_in: dict[str, float] = defaultdict(float)
-    handle_fan_out: dict[str, float] = defaultdict(float)
-    decorated_in: dict[str, float] = defaultdict(float)
-    decorated_out: dict[str, float] = defaultdict(float)
-    construct_fan_out: dict[str, float] = defaultdict(float)
-    proxy_context_bind_fan_out: dict[str, float] = defaultdict(float)
-    decorator_arg_ref_count: dict[str, int] = defaultdict(int)
-    attr_reads_fan_out: dict[str, float] = defaultdict(float)
-    attr_writes_fan_out: dict[str, float] = defaultdict(float)
-    attr_writes_subscript_fan_out: dict[str, float] = defaultdict(float)
-
+    info = _symbol_info_from_raw(symbols)
+    fans = _EdgeFanAccumulators.for_uids(set(info))
     for caller, callee, rel_type, conf, kind in _iter_structural_edges(call_edges):
-        caller_in = caller in info
-        callee_in = callee in info
-        # F13: credit Pass-1 endpoints from full-graph edges outside the
-        # clustered symbol set (tests/docs user code calling framework APIs).
-        if not caller_in and not callee_in:
-            continue
-        if caller == callee:
-            continue
-        if rel_type in CALL_REL_TYPES:
-            if caller_in:
-                call_out[caller].add(callee)
-                call_fan_out[caller] += conf
-            if callee_in:
-                call_in[callee].add(caller)
-                call_fan_in[callee] += conf
-        elif rel_type == "USES_TYPE":
-            if caller_in:
-                type_fan_out[caller] += conf
-                if kind == "return":
-                    type_fan_out_return[caller] += conf
-            if callee_in:
-                type_fan_in[callee] += conf
-                if kind in {"param", "annotation"}:
-                    type_fan_in_param[callee] += conf
-                elif kind == "isinstance":
-                    type_fan_in_isinstance[callee] += conf
-                elif kind == "return":
-                    type_fan_in_return[callee] += conf
-        elif rel_type in {"HAS_API", "INHERITED_API"}:
-            if caller_in:
-                api_fan_out[caller] += conf
-            if callee_in:
-                api_fan_in[callee] += conf
-        elif rel_type == "INJECTS":
-            if callee_in:
-                inject_fan_in[callee] += conf
-        elif rel_type == "DEPENDS_ON":
-            if caller_in:
-                depend_fan_out[caller] += conf
-            if callee_in:
-                depend_fan_in[callee] += conf
-        elif rel_type == "HANDLES":
-            if caller_in:
-                handle_fan_out[caller] += conf
-            if callee_in:
-                handle_fan_in[callee] += conf
-        elif rel_type == "DECORATED_BY":
-            if caller_in:
-                decorated_out[caller] += conf
-            if callee_in:
-                decorated_in[callee] += conf
-        elif rel_type == "INSTANTIATES":
-            if caller_in:
-                construct_fan_out[caller] += conf
-        elif rel_type == "RESOLVES_ATTR":
-            if caller_in:
-                proxy_context_bind_fan_out[caller] += conf
-        elif rel_type == "COMPOSES":
-            # Subtype 2: decorator-arg references from a decorated class to the
-            # symbols it composes (NestJS `@Module({imports:[X],...})`). Counted
-            # per-class only; the receiving side is not credited (a composed
-            # service does not gain a role from being composed).
-            if caller_in:
-                decorator_arg_ref_count[caller] += 1
-        elif rel_type == "READS_ATTR":
-            # Function reads an attribute — counted per-accessor only. The
-            # attribute side is not credited (a frequently-read attribute is
-            # not itself a binder).
-            if caller_in:
-                attr_reads_fan_out[caller] += conf
-        elif rel_type == "WRITES_ATTR":
-            # Functions writes an attribute. ``kind`` distinguishes a direct
-            # write (``self.x = ...``) from a subscript write (``self.x[k]
-            # = v``). The subscript form is the binding-surface signal —
-            # function builds a mapping/sequence inside an attribute.
-            if caller_in:
-                attr_writes_fan_out[caller] += conf
-                if kind in ("write_subscript", "write_subscript_local"):
-                    attr_writes_subscript_fan_out[caller] += conf
+        fans.accumulate(caller, callee, rel_type, conf, kind, info)
 
-    handler_call_fan_out: dict[str, float] = defaultdict(float)
-    for caller, callee, rel_type, conf, _kind in _iter_structural_edges(call_edges):
-        if rel_type not in CALL_REL_TYPES or caller not in info or callee not in info:
-            continue
-        if handle_fan_in[callee] > _EPS:
-            handler_call_fan_out[caller] += conf
-
-    # Fluent self-return: count methods M of class C whose return type is C
-    # itself (a builder/fluent-chain shape — QuerySet.filter()→QuerySet,
-    # Context.invoke()→Context). Cross-references HAS_API (C→M) with the
-    # USES_TYPE(kind=return) edge (M→C) without any name-pattern; both are
-    # AST-visible static facts already stored as edges.
-    api_owner_of: dict[str, set[str]] = defaultdict(set)
-    method_return_type: dict[str, set[str]] = defaultdict(set)
-    for caller, callee, rel_type, _conf, kind in _iter_structural_edges(call_edges):
-        if rel_type in {"HAS_API", "INHERITED_API"} and caller in info and callee in info:
-            api_owner_of[callee].add(caller)
-        elif rel_type == "USES_TYPE" and kind == "return" and caller in info and callee in info:
-            method_return_type[caller].add(callee)
-    fluent_self_return_count: dict[str, int] = defaultdict(int)
-    for method_uid, return_types in method_return_type.items():
-        owners = api_owner_of.get(method_uid, set())
-        # Method belongs to (HAS_API'd by) class C AND returns C → fluent on C.
-        for owner_uid in owners & return_types:
-            fluent_self_return_count[owner_uid] += 1
-
+    handler_call_fan_out = _compute_handler_call_fan_out(call_edges, info, fans.handle_fan_in)
+    fluent_self_return_count = _compute_fluent_self_return_counts(call_edges, info)
     depth_by_uid = _depth_from_public_full_graph(call_edges, set(info))
 
-    rows: list[SymbolRow] = []
-    for uid, meta in info.items():
-        callers = call_in[uid]
-        callees = call_out[uid]
-        my_pkg = meta["package"]
-        cross_in = sum(1 for c in callers if c in info and info[c]["package"] != my_pkg)
-        cross_out = sum(1 for c in callees if c in info and info[c]["package"] != my_pkg)
-        doc_signal = doc_signal_by_uid.get(uid, {})
-        rows.append(
-            SymbolRow(
-                uid=uid,
-                kind=meta["kind"],
-                fan_in=len(callers),
-                fan_out=len(callees),
-                cross_package_in=cross_in,
-                cross_package_out=cross_out,
-                depth_from_public=depth_by_uid[uid],
-                doc_anchor_count=int(doc_counts.get(uid, 0)),
-                import_in=int(import_in_per_uid.get(uid, 0)),
-                doc_definition_weight=float(doc_signal.get("definition", 0.0)),
-                doc_reference_weight=float(doc_signal.get("reference", 0.0)),
-                doc_example_weight=float(doc_signal.get("example", 0.0)),
-                call_fan_in=call_fan_in[uid],
-                call_fan_out=call_fan_out[uid],
-                type_fan_in=type_fan_in[uid],
-                type_fan_out=type_fan_out[uid],
-                type_fan_in_param=type_fan_in_param[uid],
-                type_fan_in_isinstance=type_fan_in_isinstance[uid],
-                type_fan_in_return=type_fan_in_return[uid],
-                type_fan_out_return=type_fan_out_return[uid],
-                api_fan_in=api_fan_in[uid],
-                api_fan_out=api_fan_out[uid],
-                inject_fan_in=inject_fan_in[uid],
-                depend_fan_in=depend_fan_in[uid],
-                depend_fan_out=depend_fan_out[uid],
-                handle_fan_in=handle_fan_in[uid],
-                handle_fan_out=handle_fan_out[uid],
-                handler_call_fan_out=handler_call_fan_out[uid],
-                decorated_in=decorated_in[uid],
-                decorated_out=decorated_out[uid],
-                construct_fan_out=construct_fan_out[uid],
-                proxy_context_bind_fan_out=proxy_context_bind_fan_out[uid],
-                fluent_self_return_count=fluent_self_return_count.get(uid, 0),
-                decorator_arg_ref_count=decorator_arg_ref_count.get(uid, 0),
-                attr_reads_fan_out=attr_reads_fan_out[uid],
-                attr_writes_fan_out=attr_writes_fan_out[uid],
-                attr_writes_subscript_fan_out=attr_writes_subscript_fan_out[uid],
-                reexport_in=int(reexport_in_per_uid.get(uid, 0)),
-                is_proxy_binding=uid in proxy_uids,
-                external_call_fan_out=float(external_call_fan_out_per_uid.get(uid, 0.0)),
-                external_import_fan_out=float(
-                    external_import_fan_out_by_file.get(meta["file_path"], 0.0)
-                ),
-                external_root_count=int(external_root_count_per_uid.get(uid, 0)),
-                external_integration_call_fan_out=float(
-                    external_integration_call_fan_out_per_uid.get(uid, 0.0)
-                ),
-                external_integration_import_fan_out=float(
-                    external_integration_import_fan_out_by_file.get(meta["file_path"], 0.0)
-                ),
-                external_integration_root_count=int(
-                    external_integration_root_count_per_uid.get(uid, 0)
-                ),
-                inherits_builtin_exception=bool(meta.get("inherits_builtin_exception")),
-                returns_function_expression=bool(meta.get("returns_function_expression")),
-                returns_mapping=bool(meta.get("returns_mapping")),
-                returns_sequence=bool(meta.get("returns_sequence")),
-                returns_constructed_type=bool(meta.get("returns_constructed_type")),
-                iterates_attr_call=bool(meta.get("iterates_attr_call")),
-                assembles_mapping_in_loop=bool(meta.get("assembles_mapping_in_loop")),
-            )
+    return [
+        _symbol_row_from_meta(
+            uid,
+            meta,
+            fans=fans,
+            depth_by_uid=depth_by_uid,
+            info=info,
+            doc_counts=doc_counts,
+            doc_signal_by_uid=doc_signal_by_uid,
+            import_in_per_uid=import_in_per_uid,
+            reexport_in_per_uid=reexport_in_per_uid,
+            proxy_uids=proxy_uids,
+            external_call_fan_out_per_uid=external_call_fan_out_per_uid,
+            external_root_count_per_uid=external_root_count_per_uid,
+            external_import_fan_out_by_file=external_import_fan_out_by_file,
+            external_integration_call_fan_out_per_uid=external_integration_call_fan_out_per_uid,
+            external_integration_root_count_per_uid=external_integration_root_count_per_uid,
+            external_integration_import_fan_out_by_file=external_integration_import_fan_out_by_file,
+            handler_call_fan_out=handler_call_fan_out,
+            fluent_self_return_count=fluent_self_return_count,
         )
-    return rows
+        for uid, meta in info.items()
+    ]
 
 
 def _bfs_depths(

@@ -90,26 +90,27 @@ def package_manifest_external_roots(project_root: str | Path) -> frozenset[str]:
     return frozenset(roots)
 
 
-def _layout_roots(project_root: Path) -> set[str]:
+def _python_module_roots_from_dir(directory: Path) -> set[str]:
     roots: set[str] = set()
-    if not project_root.is_dir():
+    if not directory.is_dir():
         return roots
-    for child in project_root.iterdir():
+    for child in directory.iterdir():
         if child.name.startswith("."):
             continue
         if child.is_dir() and ((child / "__init__.py").exists() or any(child.glob("*.py"))):
             roots.add(child.name)
         elif child.suffix == ".py" and child.stem != "__init__":
             roots.add(child.stem)
+    return roots
+
+
+def _layout_roots(project_root: Path) -> set[str]:
+    if not project_root.is_dir():
+        return set()
+    roots = _python_module_roots_from_dir(project_root)
     src = project_root / "src"
     if src.is_dir():
-        for child in src.iterdir():
-            if child.name.startswith("."):
-                continue
-            if child.is_dir() and ((child / "__init__.py").exists() or any(child.glob("*.py"))):
-                roots.add(child.name)
-            elif child.suffix == ".py" and child.stem != "__init__":
-                roots.add(child.stem)
+        roots |= _python_module_roots_from_dir(src)
     return roots
 
 

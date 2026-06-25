@@ -43,22 +43,29 @@ def _load_gitignore(root: str):
         return pathspec.PathSpec.from_lines("gitwildmatch", f)
 
 
+def _filter_walk_dirs(dirs: list[str], spec, rel_root: str) -> None:
+    if spec:
+        dirs[:] = [d for d in dirs if not spec.match_file(os.path.join(rel_root, d))]
+
+
+def _should_collect_file(name: str, full: str, spec) -> bool:
+    if name.startswith(".") or not is_indexable_file(name):
+        return False
+    if spec and spec.match_file(os.path.relpath(full, ROOT)):
+        return False
+    return True
+
+
 def _collect_files(project_path: str) -> list[str]:
     spec = _load_gitignore(project_path)
     files = []
     for root, dirs, filenames in os.walk(project_path):
-        if spec:
-            rel_root = os.path.relpath(root, ROOT)
-            dirs[:] = [d for d in dirs if not spec.match_file(os.path.join(rel_root, d))]
+        rel_root = os.path.relpath(root, ROOT)
+        _filter_walk_dirs(dirs, spec, rel_root)
         for name in filenames:
-            if name.startswith(".") or not is_indexable_file(name):
-                continue
             full = os.path.join(root, name)
-            if spec:
-                rel = os.path.relpath(full, ROOT)
-                if spec.match_file(rel):
-                    continue
-            files.append(full)
+            if _should_collect_file(name, full, spec):
+                files.append(full)
     from context_engine.indexer.git_committed import filter_indexable_paths
 
     return filter_indexable_paths(files, project_path)
@@ -77,6 +84,282 @@ def _symbol_needs_upsert(sym, existing: dict | None) -> bool:
         or int(existing.get("start_line") or 0) != sym.start_line
         or int(existing.get("end_line") or 0) != sym.end_line
     )
+
+
+def _index_file_symbol_delta(
+    file_path: str,
+    extractor: SymbolExtractor,
+    db: Neo4jClient,
+    workspace_id: str,
+) -> tuple[str, list, list, list[str], list[str], list[str], dict, str]:
+    file_hash = hash_file(file_path)
+    symbols = extractor.extract(file_path)
+    for sym in symbols:
+        line_count = sym.end_line - sym.start_line + 1
+        sym.token_estimate = max(1, line_count * 8)
+
+    get_symbol_index = getattr(db, "get_symbol_index_for_file", None)
+    existing_symbols = (
+        get_symbol_index(file_path, workspace_id=workspace_id) if callable(get_symbol_index) else {}
+    )
+    current_uids = [s.uid for s in symbols]
+    changed_symbols = [s for s in symbols if _symbol_needs_upsert(s, existing_symbols.get(s.uid))]
+    changed_uids = [s.uid for s in changed_symbols]
+    edge_refresh_uids = changed_uids or current_uids
+    removed_uids = sorted(set(existing_symbols) - set(current_uids))
+    with open(file_path, encoding="utf-8") as f:
+        source = f.read()
+    return (
+        file_hash,
+        symbols,
+        changed_symbols,
+        changed_uids,
+        edge_refresh_uids,
+        removed_uids,
+        existing_symbols,
+        source,
+    )
+
+
+def _index_file_refresh_graph_edges(
+    file_path: str,
+    *,
+    db: Neo4jClient,
+    extractor: SymbolExtractor,
+    workspace_id: str,
+    file_hash: str,
+    changed_symbols: list,
+    current_uids: list[str],
+    edge_refresh_uids: list[str],
+    calls: list,
+    imports: list,
+    inheritance: list,
+    source: str,
+) -> list[str]:
+    db.upsert_file_structure(file_path, file_hash, changed_symbols, workspace_id=workspace_id)
+
+    prune_symbols = getattr(db, "prune_symbols_for_file", None)
+    if callable(prune_symbols):
+        prune_symbols(file_path, keep_uids=current_uids, workspace_id=workspace_id)
+
+    clear_edges = getattr(db, "clear_outgoing_symbol_edges", None)
+    if callable(clear_edges):
+        clear_edges(edge_refresh_uids, workspace_id=workspace_id)
+
+    if calls and edge_refresh_uids:
+        db.link_calls(calls, workspace_id=workspace_id)
+
+    delete_http_endpoints = getattr(db, "delete_http_endpoints_for_file", None)
+    link_http_endpoints = getattr(db, "link_http_endpoints", None)
+    extract_http_endpoints = getattr(extractor, "extract_http_endpoints", None)
+    if callable(delete_http_endpoints):
+        delete_http_endpoints(file_path, workspace_id=workspace_id)
+    if callable(link_http_endpoints) and callable(extract_http_endpoints):
+        http_endpoints = extract_http_endpoints(file_path)
+        if http_endpoints:
+            link_http_endpoints(http_endpoints, workspace_id=workspace_id)
+
+    delete_imports = getattr(db, "delete_imports_for_file", None)
+    if callable(delete_imports):
+        delete_imports(file_path, workspace_id=workspace_id)
+    if imports:
+        db.link_imports(imports, workspace_id=workspace_id)
+
+    from context_engine.indexer.external_boundary import build_project_boundary
+    from context_engine.indexer.external_facts import apply_external_boundary_for_file
+
+    project_root = getattr(extractor, "project_root", None) or str(Path(file_path).resolve().parent)
+    boundary = build_project_boundary(project_root, file_paths=(file_path,))
+    apply_external_boundary_for_file(
+        db,
+        file_path=file_path,
+        source_code=source,
+        calls=calls,
+        boundary=boundary,
+        workspace_id=workspace_id,
+    )
+
+    if inheritance and edge_refresh_uids:
+        db.link_inheritance(inheritance, workspace_id=workspace_id)
+
+    proxy_uids: list[str] = []
+    delete_proxies = getattr(db, "delete_proxy_bindings_for_file", None)
+    link_proxies = getattr(db, "link_proxy_bindings", None)
+    resolve_proxies = getattr(db, "resolve_proxy_calls", None)
+    if callable(delete_proxies):
+        delete_proxies(file_path, workspace_id=workspace_id)
+    if callable(link_proxies):
+        proxy_bindings = extractor.extract_proxy_bindings(file_path)
+        if proxy_bindings:
+            link_proxies(proxy_bindings, workspace_id=workspace_id)
+            proxy_uids = [str(b["proxy_uid"]) for b in proxy_bindings if b.get("proxy_uid")]
+    if callable(resolve_proxies):
+        proxy_calls = [
+            {
+                "caller_uid": c.get("caller_uid"),
+                "callee_qualified_name": c.get("callee_qualified_name"),
+                "call_site_line": c.get("call_site_line"),
+            }
+            for c in calls
+            if c.get("callee_qualified_name")
+        ]
+        if proxy_calls:
+            resolve_proxies(proxy_calls, workspace_id=workspace_id)
+
+    delete_decos = getattr(db, "delete_decorators_for_file", None)
+    link_decos = getattr(db, "link_decorators", None)
+    if callable(delete_decos):
+        delete_decos(file_path, workspace_id=workspace_id)
+    if callable(link_decos):
+        decorators = extractor.extract_decorators(file_path)
+        if decorators:
+            link_decos(decorators, workspace_id=workspace_id)
+
+    delete_type_refs = getattr(db, "delete_type_references_for_file", None)
+    link_type_refs = getattr(db, "link_type_references", None)
+    if callable(delete_type_refs):
+        delete_type_refs(file_path, workspace_id=workspace_id)
+    if callable(link_type_refs):
+        type_refs = extractor.extract_type_references(file_path)
+        if type_refs:
+            link_type_refs(type_refs, workspace_id=workspace_id)
+
+    delete_injects = getattr(db, "delete_injections_for_file", None)
+    link_injects = getattr(db, "link_injections", None)
+    if callable(delete_injects):
+        delete_injects(file_path, workspace_id=workspace_id)
+    if callable(link_injects):
+        injections = extractor.extract_injections(file_path)
+        if injections:
+            link_injects(injections, workspace_id=workspace_id)
+
+    return proxy_uids
+
+
+def _index_file_refresh_embeddings(
+    file_path: str,
+    *,
+    lance: LanceDBClient,
+    db: Neo4jClient,
+    extractor: SymbolExtractor,
+    workspace_id: str,
+    symbols: list,
+    changed_uids: list[str],
+    removed_uids: list[str],
+    calls: list,
+    imports: list,
+    inheritance: list,
+    source: str,
+    file_hash: str,
+) -> None:
+    include_axis_facts = getattr(lance, "index_profile_name", "") == AXIS_PYTHON_V1_PROFILE
+    changed_uid_set = set(changed_uids)
+    if not changed_uid_set:
+        delete_symbol_embeddings = getattr(lance, "delete_symbol_embeddings", None)
+        if callable(delete_symbol_embeddings) and removed_uids:
+            try:
+                delete_symbol_embeddings(removed_uids, workspace_id=workspace_id)
+            except TypeError:
+                delete_symbol_embeddings(removed_uids)
+        return
+
+    from context_engine.indexer.fast.extractor import ExtractedFile
+    from context_engine.indexer.fast.pipeline import build_symbol_docs_for_extracted
+
+    project_root = getattr(extractor, "project_root", None) or str(Path(file_path).resolve().parent)
+    axis_facts = None
+    if include_axis_facts:
+        try:
+            adapter = REGISTRY.get_adapter(REGISTRY.detect_language(file_path))
+            axis_facts = adapter.extract_axis_facts(
+                source,
+                file_path,
+                symbols=symbols,
+                project_root=project_root or None,
+            )
+        except ValueError:
+            axis_facts = []
+    extracted = ExtractedFile(
+        file_path,
+        source,
+        file_hash,
+        symbols,
+        calls,
+        imports,
+        inheritance,
+        axis_facts=axis_facts,
+    )
+    graph_probe = None
+    if include_axis_facts:
+        from context_engine.axis.graph_probe import Neo4jGraphContextProbe
+
+        graph_probe = Neo4jGraphContextProbe(db, workspace_id)
+    symbol_docs = build_symbol_docs_for_extracted(
+        extracted,
+        changed_uids=changed_uid_set,
+        workspace_id=workspace_id,
+        project_path=project_root,
+        graph_probe=graph_probe,
+        include_axis_facts=include_axis_facts,
+    )
+    try:
+        lance.upsert_symbol_embeddings(symbol_docs, workspace_id=workspace_id)
+    except TypeError:
+        lance.upsert_symbol_embeddings(symbol_docs)
+
+    delete_symbol_embeddings = getattr(lance, "delete_symbol_embeddings", None)
+    if callable(delete_symbol_embeddings) and removed_uids:
+        try:
+            delete_symbol_embeddings(removed_uids, workspace_id=workspace_id)
+        except TypeError:
+            delete_symbol_embeddings(removed_uids)
+
+
+def _index_file_finalize(
+    *,
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    workspace_id: str,
+    extractor: SymbolExtractor,
+    file_path: str,
+    changed_uids: list[str],
+    edge_refresh_uids: list[str],
+    removed_uids: list[str],
+    pre_neighbor_uids: list[str],
+    proxy_uids: list[str],
+    skip_affects: bool,
+    collected_adjacency_seeds: set[str] | None,
+) -> list[str]:
+    recompute_degree = getattr(db, "recompute_degree_for_closure", None)
+    degree_seeds: list[str] = []
+    if callable(recompute_degree):
+        removed_set = set(removed_uids)
+        degree_seeds = sorted(
+            (set(edge_refresh_uids) | set(pre_neighbor_uids) | set(proxy_uids)) - removed_set
+        )
+        if degree_seeds:
+            recompute_degree(degree_seeds, workspace_id=workspace_id)
+    if collected_adjacency_seeds is not None and degree_seeds:
+        collected_adjacency_seeds.update(degree_seeds)
+
+    if changed_uids and not skip_affects:
+        from context_engine.indexer.affects import AFFECTSIndexer
+
+        AFFECTSIndexer(db).rebuild_affects(changed_uids, workspace_id=workspace_id)
+
+    include_axis_facts = getattr(lance, "index_profile_name", "") == AXIS_PYTHON_V1_PROFILE
+    if not skip_affects and include_axis_facts:
+        from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
+
+        project_root = getattr(extractor, "project_root", None) or str(Path(file_path).resolve().parent)
+        run_axis_incremental_finalize(
+            db,
+            lance,
+            workspace_id,
+            seed_uids=set(degree_seeds) | set(changed_uids),
+            project_path=project_root,
+        )
+    return degree_seeds
 
 
 def index_file(
@@ -102,230 +385,71 @@ def index_file(
     if not should_index_file(file_path):
         logger.info("Skipping index for uncommitted or untracked file: %s", file_path)
         return []
-    file_hash = hash_file(file_path)
-    symbols = extractor.extract(file_path)
-    for sym in symbols:
-        line_count = sym.end_line - sym.start_line + 1
-        sym.token_estimate = max(1, line_count * 8)
 
-    get_symbol_index = getattr(db, "get_symbol_index_for_file", None)
-    existing_symbols = (
-        get_symbol_index(file_path, workspace_id=workspace_id) if callable(get_symbol_index) else {}
-    )
+    (
+        file_hash,
+        symbols,
+        changed_symbols,
+        changed_uids,
+        edge_refresh_uids,
+        removed_uids,
+        _existing,
+        source,
+    ) = _index_file_symbol_delta(file_path, extractor, db, workspace_id)
     current_uids = [s.uid for s in symbols]
-    changed_symbols = [s for s in symbols if _symbol_needs_upsert(s, existing_symbols.get(s.uid))]
-    changed_uids = [s.uid for s in changed_symbols]
-    edge_refresh_uids = changed_uids or current_uids
-    removed_uids = sorted(set(existing_symbols) - set(current_uids))
+    calls = extractor.extract_calls(file_path)
+    imports = extractor.extract_imports(file_path)
+    inheritance = extractor.extract_inheritance(file_path)
 
-    # Snapshot degree-edge neighbors of symbols whose edges are about to change or
-    # be deleted, BEFORE mutation: a removed symbol's neighbor still needs its
-    # degree corrected, but becomes unreachable once the symbol is detached.
     degree_neighbors = getattr(db, "degree_neighbor_uids", None)
     pre_neighbor_uids: list[str] = []
     if callable(degree_neighbors):
         seed_for_neighbors = sorted(set(edge_refresh_uids) | set(removed_uids))
         pre_neighbor_uids = degree_neighbors(seed_for_neighbors, workspace_id=workspace_id)
 
-    # Always update File.hash, but preserve unchanged Symbol nodes and embeddings.
-    db.upsert_file_structure(file_path, file_hash, changed_symbols, workspace_id=workspace_id)
-
-    prune_symbols = getattr(db, "prune_symbols_for_file", None)
-    if callable(prune_symbols):
-        prune_symbols(file_path, keep_uids=current_uids, workspace_id=workspace_id)
-
-    clear_edges = getattr(db, "clear_outgoing_symbol_edges", None)
-    if callable(clear_edges):
-        clear_edges(edge_refresh_uids, workspace_id=workspace_id)
-
-    calls = extractor.extract_calls(file_path)
-    if calls and edge_refresh_uids:
-        db.link_calls(calls, workspace_id=workspace_id)
-
-    with open(file_path, encoding="utf-8") as f:
-        source = f.read()
-
-    # Workspace-local client↔handler bridge. The extension's queued
-    # incremental path must refresh these facts too; historically this phase
-    # only ran in the standalone fast indexer, so Reindex Workspace could
-    # never materialize CALLS_ENDPOINT / IMPLEMENTS_ENDPOINT.
-    delete_http_endpoints = getattr(db, "delete_http_endpoints_for_file", None)
-    link_http_endpoints = getattr(db, "link_http_endpoints", None)
-    extract_http_endpoints = getattr(extractor, "extract_http_endpoints", None)
-    if callable(delete_http_endpoints):
-        delete_http_endpoints(file_path, workspace_id=workspace_id)
-    if callable(link_http_endpoints) and callable(extract_http_endpoints):
-        http_endpoints = extract_http_endpoints(file_path)
-        if http_endpoints:
-            link_http_endpoints(http_endpoints, workspace_id=workspace_id)
-
-    imports = extractor.extract_imports(file_path)
-    delete_imports = getattr(db, "delete_imports_for_file", None)
-    if callable(delete_imports):
-        delete_imports(file_path, workspace_id=workspace_id)
-    if imports:
-        db.link_imports(imports, workspace_id=workspace_id)
-
-    from context_engine.indexer.external_boundary import build_project_boundary
-    from context_engine.indexer.external_facts import apply_external_boundary_for_file
-
-    project_root = getattr(extractor, "project_root", None) or str(Path(file_path).resolve().parent)
-    boundary = build_project_boundary(project_root, file_paths=(file_path,))
-    apply_external_boundary_for_file(
-        db,
-        file_path=file_path,
-        source_code=source,
-        calls=calls,
-        boundary=boundary,
+    proxy_uids = _index_file_refresh_graph_edges(
+        file_path,
+        db=db,
+        extractor=extractor,
         workspace_id=workspace_id,
+        file_hash=file_hash,
+        changed_symbols=changed_symbols,
+        current_uids=current_uids,
+        edge_refresh_uids=edge_refresh_uids,
+        calls=calls,
+        imports=imports,
+        inheritance=inheritance,
+        source=source,
     )
-
-    inheritance = extractor.extract_inheritance(file_path)
-    if inheritance and edge_refresh_uids:
-        db.link_inheritance(inheritance, workspace_id=workspace_id)
-
-    # Lazy-proxy bindings: drop stale ProxyBinding nodes for this file, recreate,
-    # then forward this file's proxy-var calls through PROXY_OF to the real type.
-    delete_proxies = getattr(db, "delete_proxy_bindings_for_file", None)
-    link_proxies = getattr(db, "link_proxy_bindings", None)
-    resolve_proxies = getattr(db, "resolve_proxy_calls", None)
-    proxy_uids: list[str] = []
-    if callable(delete_proxies):
-        delete_proxies(file_path, workspace_id=workspace_id)
-    if callable(link_proxies):
-        proxy_bindings = extractor.extract_proxy_bindings(file_path)
-        if proxy_bindings:
-            link_proxies(proxy_bindings, workspace_id=workspace_id)
-            proxy_uids = [str(b["proxy_uid"]) for b in proxy_bindings if b.get("proxy_uid")]
-    if callable(resolve_proxies):
-        proxy_calls = [
-            {
-                "caller_uid": c.get("caller_uid"),
-                "callee_qualified_name": c.get("callee_qualified_name"),
-                "call_site_line": c.get("call_site_line"),
-            }
-            for c in calls
-            if c.get("callee_qualified_name")
-        ]
-        if proxy_calls:
-            resolve_proxies(proxy_calls, workspace_id=workspace_id)
-
-    # DECORATED_BY / HANDLES edges: drop this file's stale decoration edges, recreate from the
-    # current decorators. Not counted into degree (separate from _DEGREE_REL_PATTERN).
-    delete_decos = getattr(db, "delete_decorators_for_file", None)
-    link_decos = getattr(db, "link_decorators", None)
-    if callable(delete_decos):
-        delete_decos(file_path, workspace_id=workspace_id)
-    if callable(link_decos):
-        decorators = extractor.extract_decorators(file_path)
-        if decorators:
-            link_decos(decorators, workspace_id=workspace_id)
-
-    # USES_TYPE edges: drop this file's stale type-reference edges, recreate from the
-    # current annotations/isinstance checks. Like DECORATED_BY, not counted into degree.
-    delete_type_refs = getattr(db, "delete_type_references_for_file", None)
-    link_type_refs = getattr(db, "link_type_references", None)
-    if callable(delete_type_refs):
-        delete_type_refs(file_path, workspace_id=workspace_id)
-    if callable(link_type_refs):
-        type_refs = extractor.extract_type_references(file_path)
-        if type_refs:
-            link_type_refs(type_refs, workspace_id=workspace_id)
-
-    # INJECTS edges: drop this file's stale DI bindings, recreate from current
-    # parameter-default markers. Like USES_TYPE, not counted into degree.
-    delete_injects = getattr(db, "delete_injections_for_file", None)
-    link_injects = getattr(db, "link_injections", None)
-    if callable(delete_injects):
-        delete_injects(file_path, workspace_id=workspace_id)
-    if callable(link_injects):
-        injections = extractor.extract_injections(file_path)
-        if injections:
-            link_injects(injections, workspace_id=workspace_id)
-
-    include_axis_facts = getattr(lance, "index_profile_name", "") == AXIS_PYTHON_V1_PROFILE
-    changed_uid_set = set(changed_uids)
-    if changed_uid_set:
-        from context_engine.indexer.fast.extractor import ExtractedFile
-        from context_engine.indexer.fast.pipeline import build_symbol_docs_for_extracted
-
-        axis_facts = None
-        if include_axis_facts:
-            try:
-                adapter = REGISTRY.get_adapter(REGISTRY.detect_language(file_path))
-                axis_facts = adapter.extract_axis_facts(
-                    source,
-                    file_path,
-                    symbols=symbols,
-                    project_root=project_root or None,
-                )
-            except ValueError:
-                axis_facts = []
-        extracted = ExtractedFile(
-            file_path,
-            source,
-            file_hash,
-            symbols,
-            calls,
-            imports,
-            inheritance,
-            axis_facts=axis_facts,
-        )
-        graph_probe = None
-        if include_axis_facts:
-            from context_engine.axis.graph_probe import Neo4jGraphContextProbe
-
-            graph_probe = Neo4jGraphContextProbe(db, workspace_id)
-        symbol_docs = build_symbol_docs_for_extracted(
-            extracted,
-            changed_uids=changed_uid_set,
-            workspace_id=workspace_id,
-            project_path=project_root,
-            graph_probe=graph_probe,
-            include_axis_facts=include_axis_facts,
-        )
-        try:
-            lance.upsert_symbol_embeddings(symbol_docs, workspace_id=workspace_id)
-        except TypeError:
-            lance.upsert_symbol_embeddings(symbol_docs)
-    delete_symbol_embeddings = getattr(lance, "delete_symbol_embeddings", None)
-    if callable(delete_symbol_embeddings) and removed_uids:
-        try:
-            delete_symbol_embeddings(removed_uids, workspace_id=workspace_id)
-        except TypeError:
-            delete_symbol_embeddings(removed_uids)
-
-    # Refresh materialized degree over the affected closure now that edges are
-    # relinked. Removed symbols are excluded (they no longer exist); their former
-    # neighbors come from the pre-mutation snapshot.
-    recompute_degree = getattr(db, "recompute_degree_for_closure", None)
-    degree_seeds: list[str] = []
-    if callable(recompute_degree):
-        removed_set = set(removed_uids)
-        degree_seeds = sorted(
-            (set(edge_refresh_uids) | set(pre_neighbor_uids) | set(proxy_uids)) - removed_set
-        )
-        if degree_seeds:
-            recompute_degree(degree_seeds, workspace_id=workspace_id)
-    if collected_adjacency_seeds is not None and degree_seeds:
-        collected_adjacency_seeds.update(degree_seeds)
-
-    if changed_uids and not skip_affects:
-        from context_engine.indexer.affects import AFFECTSIndexer
-
-        AFFECTSIndexer(db).rebuild_affects(changed_uids, workspace_id=workspace_id)
-
-    if not skip_affects and include_axis_facts:
-        from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
-
-        run_axis_incremental_finalize(
-            db,
-            lance,
-            workspace_id,
-            seed_uids=set(degree_seeds) | changed_uid_set,
-            project_path=project_root,
-        )
-
+    _index_file_refresh_embeddings(
+        file_path,
+        lance=lance,
+        db=db,
+        extractor=extractor,
+        workspace_id=workspace_id,
+        symbols=symbols,
+        changed_uids=changed_uids,
+        removed_uids=removed_uids,
+        calls=calls,
+        imports=imports,
+        inheritance=inheritance,
+        source=source,
+        file_hash=file_hash,
+    )
+    _index_file_finalize(
+        db=db,
+        lance=lance,
+        workspace_id=workspace_id,
+        extractor=extractor,
+        file_path=file_path,
+        changed_uids=changed_uids,
+        edge_refresh_uids=edge_refresh_uids,
+        removed_uids=removed_uids,
+        pre_neighbor_uids=pre_neighbor_uids,
+        proxy_uids=proxy_uids,
+        skip_affects=skip_affects,
+        collected_adjacency_seeds=collected_adjacency_seeds,
+    )
     return changed_uids
 
 

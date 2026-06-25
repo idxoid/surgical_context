@@ -602,6 +602,273 @@ def _load_name_to_uid(
         return {r["name"]: r["uid"] for r in result}
 
 
+def _empty_doc_prepare_stats(**overrides) -> dict:
+    stats = {
+        "chunks": 0,
+        "batches": [],
+        "anchors": 0,
+        "covers": 0,
+        "related": 0,
+        "pending_updates": 0,
+        "prepare_sec": 0.0,
+    }
+    stats.update(overrides)
+    return stats
+
+
+def _resolve_identifier_links(
+    chunk_text: str,
+    file_path: str,
+    name_to_uid: dict[str, str],
+) -> tuple[set[str], set[str], dict[str, dict], list[str]]:
+    identifier_matches: dict[str, str] = {}
+    pending: list[str] = []
+    for name in _extract_identifiers(chunk_text):
+        if name in name_to_uid:
+            identifier_matches[name] = name_to_uid[name]
+        else:
+            pending.append(name)
+
+    resolved_uids = set(identifier_matches.values())
+    matched_names = set(identifier_matches)
+    link_count = max(1, len(resolved_uids))
+    links_by_uid: dict[str, dict] = {}
+    for name, uid in identifier_matches.items():
+        _merge_cover_link(
+            links_by_uid,
+            _cover_link(
+                uid,
+                name,
+                chunk_text,
+                file_path,
+                resolver="identifier",
+                link_count=link_count,
+            ),
+        )
+    return resolved_uids, matched_names, links_by_uid, pending
+
+
+def _append_chunk_link_outputs(
+    row: dict,
+    chunk_text: str,
+    file_path: str,
+    *,
+    resolved_uids: set[str],
+    links_by_uid: dict[str, dict],
+    pending: list[str],
+    anchor_rows: list[dict],
+    cover_rows: list[dict],
+    related_rows: list[dict],
+    pending_updates: list[tuple[dict, list[str]]],
+) -> None:
+    chunk_id = row["id"]
+    current_pending = _normalize_pending(row.get("pending"))
+    if pending != current_pending:
+        pending_updates.append((row, pending))
+    anchor_rows.append(
+        {
+            "chunk_id": chunk_id,
+            "file_path": file_path,
+            "doc_type": _classify_doc_type(file_path),
+        }
+    )
+    if resolved_uids:
+        cover_rows.append(
+            {
+                "chunk_id": chunk_id,
+                "links": sorted(links_by_uid.values(), key=lambda item: item["uid"]),
+            }
+        )
+    refs = _extract_doc_references(chunk_text)
+    if refs:
+        related_rows.append(
+            {
+                "chunk_id": chunk_id,
+                "refs": [{"ref": ref, "ref_type": _classify_doc_type(ref)} for ref in refs],
+            }
+        )
+
+
+def _search_symbols_by_vector(lance, vector, *, workspace_id: str) -> list[dict]:
+    try:
+        return lance.search_symbols_by_vector(
+            vector,
+            limit=5,
+            threshold=SIMILARITY_THRESHOLD,
+            workspace_id=workspace_id,
+        )
+    except TypeError:
+        return lance.search_symbols_by_vector(
+            vector,
+            limit=5,
+            threshold=SIMILARITY_THRESHOLD,
+        )
+
+
+def _search_symbols_by_text(lance, chunk_text: str, *, workspace_id: str) -> list[dict]:
+    try:
+        return lance.search_symbols(
+            chunk_text,
+            limit=5,
+            threshold=SIMILARITY_THRESHOLD,
+            workspace_id=workspace_id,
+        )
+    except TypeError:
+        return lance.search_symbols(
+            chunk_text,
+            limit=5,
+            threshold=SIMILARITY_THRESHOLD,
+        )
+
+
+def _semantic_hits_for_row(state: dict, lance, *, workspace_id: str) -> list[dict]:
+    vector = state["row"].get("vector")
+    if vector is not None:
+        return _search_symbols_by_vector(lance, vector, workspace_id=workspace_id)
+    return _search_symbols_by_text(lance, state["chunk_text"], workspace_id=workspace_id)
+
+
+def _semantic_hits_for_states(
+    semantic_states: list[dict],
+    symbol_vector_index,
+    lance,
+    *,
+    workspace_id: str,
+) -> list[list[dict]]:
+    if symbol_vector_index is not None and all(
+        state["row"].get("vector") is not None for state in semantic_states
+    ):
+        vectors = [state["row"].get("vector") for state in semantic_states]
+        return _search_symbol_vectors_locally(
+            symbol_vector_index,
+            vectors,
+            limit=5,
+            threshold=SIMILARITY_THRESHOLD,
+        )
+    return [_semantic_hits_for_row(state, lance, workspace_id=workspace_id) for state in semantic_states]
+
+
+def _apply_semantic_hits(state: dict, hits: list[dict]) -> list[str]:
+    row = state["row"]
+    chunk_text = state["chunk_text"]
+    file_path = row["file_path"]
+    pending = list(state["pending"])
+    resolved_uids = set(state["resolved_uids"])
+    matched_names = set(state["matched_names"])
+    links_by_uid = dict(state["links_by_uid"])
+
+    matched_names.update(h["name"] for h in hits)
+    resolved_uids.update(h["uid"] for h in hits)
+    link_count = max(1, len(resolved_uids))
+    for hit in hits:
+        _merge_cover_link(
+            links_by_uid,
+            _cover_link(
+                hit["uid"],
+                hit.get("name", ""),
+                chunk_text,
+                file_path,
+                resolver="semantic",
+                semantic_score=float(hit.get("score") or 0.0),
+                link_count=link_count,
+            ),
+        )
+    state["resolved_uids"] = resolved_uids
+    state["matched_names"] = matched_names
+    state["links_by_uid"] = links_by_uid
+    return [name for name in pending if name not in matched_names]
+
+
+def _process_doc_link_batch(
+    batch: list[dict],
+    *,
+    name_to_uid: dict[str, str],
+    symbol_vector_index,
+    lance,
+    workspace_id: str,
+) -> dict:
+    anchor_rows: list[dict] = []
+    cover_rows: list[dict] = []
+    related_rows: list[dict] = []
+    pending_updates: list[tuple[dict, list[str]]] = []
+    semantic_states: list[dict] = []
+
+    for row in batch:
+        chunk_text = row["chunk"]
+        file_path = row["file_path"]
+        resolved_uids, matched_names, links_by_uid, pending = _resolve_identifier_links(
+            chunk_text,
+            file_path,
+            name_to_uid,
+        )
+        if len(resolved_uids) < IDENTIFIER_LINK_SKIP_THRESHOLD:
+            semantic_states.append(
+                {
+                    "row": row,
+                    "chunk_text": chunk_text,
+                    "pending": pending,
+                    "resolved_uids": resolved_uids,
+                    "matched_names": matched_names,
+                    "links_by_uid": links_by_uid,
+                }
+            )
+            continue
+        _append_chunk_link_outputs(
+            row,
+            chunk_text,
+            file_path,
+            resolved_uids=resolved_uids,
+            links_by_uid=links_by_uid,
+            pending=pending,
+            anchor_rows=anchor_rows,
+            cover_rows=cover_rows,
+            related_rows=related_rows,
+            pending_updates=pending_updates,
+        )
+
+    if semantic_states:
+        semantic_hits = _semantic_hits_for_states(
+            semantic_states,
+            symbol_vector_index,
+            lance,
+            workspace_id=workspace_id,
+        )
+        for state, hits in zip(semantic_states, semantic_hits, strict=False):
+            pending = _apply_semantic_hits(state, hits)
+            row = state["row"]
+            _append_chunk_link_outputs(
+                row,
+                state["chunk_text"],
+                row["file_path"],
+                resolved_uids=set(state["resolved_uids"]),
+                links_by_uid=state["links_by_uid"],
+                pending=pending,
+                anchor_rows=anchor_rows,
+                cover_rows=cover_rows,
+                related_rows=related_rows,
+                pending_updates=pending_updates,
+            )
+
+    return {
+        "count": len(batch),
+        "anchor_rows": anchor_rows,
+        "cover_rows": cover_rows,
+        "related_rows": related_rows,
+        "pending_updates": pending_updates,
+    }
+
+
+def _apply_lance_pending_updates(lance, pending_updates: list[tuple[dict, list[str]]]) -> None:
+    if not pending_updates:
+        return
+    bulk_set_pending = getattr(lance, "set_pending_rows_batch", None)
+    if callable(bulk_set_pending):
+        bulk_set_pending(pending_updates)
+        return
+    for row, pending in pending_updates:
+        lance.set_pending_row(row, pending)
+
+
 def _prepare_doc_link_batches(
     neo4j: Neo4jClient,
     lance: LanceDBClient,
@@ -610,15 +877,7 @@ def _prepare_doc_link_batches(
 ):
     scan_docs = getattr(lance, "scan_docs_workspace", None)
     if not callable(scan_docs):
-        return {
-            "chunks": 0,
-            "batches": [],
-            "anchors": 0,
-            "covers": 0,
-            "related": 0,
-            "pending_updates": 0,
-            "prepare_sec": 0.0,
-        }
+        return _empty_doc_prepare_stats()
     try:
         all_rows = scan_docs(workspace_id)
     except Exception:
@@ -630,15 +889,8 @@ def _prepare_doc_link_batches(
         row for row in all_rows if _matches_allowed_prefix(row.get("file_path"), prefixes)
     ]
     if not row_records:
-        return {
-            "chunks": 0,
-            "batches": [],
-            "anchors": 0,
-            "covers": 0,
-            "related": 0,
-            "pending_updates": 0,
-            "prepare_sec": 0.0,
-        }
+        return _empty_doc_prepare_stats()
+
     symbol_vector_index = _build_symbol_vector_index(lance, workspace_id)
     name_to_uid = _load_name_to_uid(neo4j, symbol_vector_index, workspace_id)
 
@@ -652,204 +904,18 @@ def _prepare_doc_link_batches(
     batch_size = max(1, DOC_LINK_BATCH_SIZE)
     for start in range(0, len(row_records), batch_size):
         batch = row_records[start : start + batch_size]
-        anchor_rows = []
-        cover_rows = []
-        related_rows = []
-        pending_updates = []
-        semantic_states = []
-
-        for row in batch:
-            chunk_id = row["id"]
-            chunk_text = row["chunk"]
-            file_path = row["file_path"]
-            identifier_matches: dict[str, str] = {}
-            pending = []
-            for name in _extract_identifiers(chunk_text):
-                if name in name_to_uid:
-                    identifier_matches[name] = name_to_uid[name]
-                else:
-                    pending.append(name)
-
-            resolved_uids = set(identifier_matches.values())
-            matched_names = set(identifier_matches)
-            link_count = max(1, len(resolved_uids))
-            links_by_uid: dict[str, dict] = {}
-            for name, uid in identifier_matches.items():
-                _merge_cover_link(
-                    links_by_uid,
-                    _cover_link(
-                        uid,
-                        name,
-                        chunk_text,
-                        file_path,
-                        resolver="identifier",
-                        link_count=link_count,
-                    ),
-                )
-
-            if len(resolved_uids) < IDENTIFIER_LINK_SKIP_THRESHOLD:
-                semantic_states.append(
-                    {
-                        "row": row,
-                        "chunk_text": chunk_text,
-                        "pending": pending,
-                        "resolved_uids": resolved_uids,
-                        "matched_names": matched_names,
-                        "links_by_uid": links_by_uid,
-                    }
-                )
-            else:
-                current_pending = _normalize_pending(row.get("pending"))
-                if pending != current_pending:
-                    pending_updates.append((row, pending))
-                anchor_rows.append(
-                    {
-                        "chunk_id": chunk_id,
-                        "file_path": file_path,
-                        "doc_type": _classify_doc_type(file_path),
-                    }
-                )
-                if resolved_uids:
-                    cover_rows.append(
-                        {
-                            "chunk_id": chunk_id,
-                            "links": sorted(
-                                links_by_uid.values(),
-                                key=lambda item: item["uid"],
-                            ),
-                        }
-                    )
-
-                refs = _extract_doc_references(chunk_text)
-                if refs:
-                    related_rows.append(
-                        {
-                            "chunk_id": chunk_id,
-                            "refs": [
-                                {"ref": ref, "ref_type": _classify_doc_type(ref)} for ref in refs
-                            ],
-                        }
-                    )
-
-        if semantic_states:
-            if symbol_vector_index is not None and all(
-                state["row"].get("vector") is not None for state in semantic_states
-            ):
-                semantic_vectors = [state["row"].get("vector") for state in semantic_states]
-                semantic_hits = _search_symbol_vectors_locally(
-                    symbol_vector_index,
-                    semantic_vectors,
-                    limit=5,
-                    threshold=SIMILARITY_THRESHOLD,
-                )
-            else:
-                semantic_hits = []
-                for state in semantic_states:
-                    vector = state["row"].get("vector")
-                    if vector is not None:
-                        try:
-                            hits = lance.search_symbols_by_vector(
-                                vector,
-                                limit=5,
-                                threshold=SIMILARITY_THRESHOLD,
-                                workspace_id=workspace_id,
-                            )
-                        except TypeError:
-                            hits = lance.search_symbols_by_vector(
-                                vector,
-                                limit=5,
-                                threshold=SIMILARITY_THRESHOLD,
-                            )
-                    else:
-                        try:
-                            hits = lance.search_symbols(
-                                state["chunk_text"],
-                                limit=5,
-                                threshold=SIMILARITY_THRESHOLD,
-                                workspace_id=workspace_id,
-                            )
-                        except TypeError:
-                            hits = lance.search_symbols(
-                                state["chunk_text"],
-                                limit=5,
-                                threshold=SIMILARITY_THRESHOLD,
-                            )
-                    semantic_hits.append(hits)
-
-            for state, hits in zip(semantic_states, semantic_hits, strict=False):
-                row = state["row"]
-                chunk_id = row["id"]
-                chunk_text = state["chunk_text"]
-                file_path = row["file_path"]
-                pending = list(state["pending"])
-                resolved_uids = set(state["resolved_uids"])
-                matched_names = set(state["matched_names"])
-                links_by_uid = dict(state["links_by_uid"])
-
-                matched_names.update(h["name"] for h in hits)
-                resolved_uids.update(h["uid"] for h in hits)
-                link_count = max(1, len(resolved_uids))
-                for hit in hits:
-                    _merge_cover_link(
-                        links_by_uid,
-                        _cover_link(
-                            hit["uid"],
-                            hit.get("name", ""),
-                            chunk_text,
-                            file_path,
-                            resolver="semantic",
-                            semantic_score=float(hit.get("score") or 0.0),
-                            link_count=link_count,
-                        ),
-                    )
-                pending = [name for name in pending if name not in matched_names]
-
-                current_pending = _normalize_pending(row.get("pending"))
-                if pending != current_pending:
-                    pending_updates.append((row, pending))
-
-                anchor_rows.append(
-                    {
-                        "chunk_id": chunk_id,
-                        "file_path": file_path,
-                        "doc_type": _classify_doc_type(file_path),
-                    }
-                )
-                if resolved_uids:
-                    cover_rows.append(
-                        {
-                            "chunk_id": chunk_id,
-                            "links": sorted(
-                                links_by_uid.values(),
-                                key=lambda item: item["uid"],
-                            ),
-                        }
-                    )
-
-                refs = _extract_doc_references(chunk_text)
-                if refs:
-                    related_rows.append(
-                        {
-                            "chunk_id": chunk_id,
-                            "refs": [
-                                {"ref": ref, "ref_type": _classify_doc_type(ref)} for ref in refs
-                            ],
-                        }
-                    )
-
-        batches.append(
-            {
-                "count": len(batch),
-                "anchor_rows": anchor_rows,
-                "cover_rows": cover_rows,
-                "related_rows": related_rows,
-                "pending_updates": pending_updates,
-            }
+        prepared = _process_doc_link_batch(
+            batch,
+            name_to_uid=name_to_uid,
+            symbol_vector_index=symbol_vector_index,
+            lance=lance,
+            workspace_id=workspace_id,
         )
-        total_anchors += len(anchor_rows)
-        total_covers += len(cover_rows)
-        total_related += len(related_rows)
-        total_pending_updates += len(pending_updates)
+        batches.append(prepared)
+        total_anchors += len(prepared["anchor_rows"])
+        total_covers += len(prepared["cover_rows"])
+        total_related += len(prepared["related_rows"])
+        total_pending_updates += len(prepared["pending_updates"])
         progress.update(len(batch))
     progress.close()
 
@@ -862,6 +928,36 @@ def _prepare_doc_link_batches(
         "pending_updates": total_pending_updates,
         "prepare_sec": round(time.perf_counter() - t0, 3),
     }
+
+
+def _empty_doc_link_result(**overrides) -> dict:
+    stats = {
+        "chunks": 0,
+        "anchors": 0,
+        "covers": 0,
+        "related": 0,
+        "pending_updates": 0,
+        "prepare_sec": 0.0,
+        "neo_write_sec": 0.0,
+        "total_sec": 0.0,
+    }
+    stats.update(overrides)
+    return stats
+
+
+def _write_doc_link_batch(
+    session,
+    batch: dict,
+    *,
+    lance,
+    workspace_id: str,
+) -> None:
+    session.execute_write(_write_anchors, batch["anchor_rows"], workspace_id)
+    if batch["cover_rows"]:
+        session.execute_write(_add_covers_edges_batch, batch["cover_rows"], workspace_id)
+    if batch["related_rows"]:
+        session.execute_write(_link_related_docs_batch, batch["related_rows"], workspace_id)
+    _apply_lance_pending_updates(lance, batch["pending_updates"])
 
 
 def link_docs_to_symbols(
@@ -877,36 +973,13 @@ def link_docs_to_symbols(
         allowed_prefixes=allowed_prefixes,
     )
     if prepared["chunks"] == 0:
-        return {
-            "chunks": 0,
-            "anchors": 0,
-            "covers": 0,
-            "related": 0,
-            "pending_updates": 0,
-            "prepare_sec": 0.0,
-            "neo_write_sec": 0.0,
-            "total_sec": 0.0,
-        }
+        return _empty_doc_link_result()
 
     progress = _make_progress(prepared["chunks"], "docs link", unit="chunk")
-    # Per-row lance.set_pending_row is O(table) due to delete+add per call.
-    # Prefer the bulk helper when the client supports it; fall back to the
-    # per-row loop for test fakes that only implement set_pending_row.
-    bulk_set_pending = getattr(lance, "set_pending_rows_batch", None)
     t0 = time.perf_counter()
     with neo4j.driver.session() as session:
         for batch in prepared["batches"]:
-            session.execute_write(_write_anchors, batch["anchor_rows"], workspace_id)
-            if batch["cover_rows"]:
-                session.execute_write(_add_covers_edges_batch, batch["cover_rows"], workspace_id)
-            if batch["related_rows"]:
-                session.execute_write(_link_related_docs_batch, batch["related_rows"], workspace_id)
-            if batch["pending_updates"]:
-                if callable(bulk_set_pending):
-                    bulk_set_pending(batch["pending_updates"])
-                else:
-                    for row, pending in batch["pending_updates"]:
-                        lance.set_pending_row(row, pending)
+            _write_doc_link_batch(session, batch, lance=lance, workspace_id=workspace_id)
             progress.update(batch["count"])
     progress.close()
 
@@ -930,6 +1003,45 @@ def link_docs_to_symbols(
         "neo_write_sec": neo_write_sec,
         "total_sec": total_sec,
     }
+
+
+def _resolve_pending_chunk(
+    row: dict,
+    name_to_uid: dict[str, str],
+) -> tuple[dict | None, tuple[dict, list[str]] | None, int]:
+    chunk_id = row["id"]
+    chunk_text = row.get("chunk", "")
+    file_path = row.get("file_path", "")
+    names = _normalize_pending(row.get("pending"))
+    links_by_uid: dict[str, dict] = {}
+    still_pending: list[str] = []
+    resolved_count = 0
+    for name in names:
+        if name in name_to_uid:
+            uid = name_to_uid[name]
+            _merge_cover_link(
+                links_by_uid,
+                _cover_link(
+                    uid,
+                    name,
+                    chunk_text,
+                    file_path,
+                    resolver="pending_identifier",
+                    link_count=max(1, len(names)),
+                ),
+            )
+            resolved_count += 1
+        else:
+            still_pending.append(name)
+    cover_row = None
+    if links_by_uid:
+        cover_row = {
+            "chunk_id": chunk_id,
+            "links": sorted(links_by_uid.values(), key=lambda item: item["uid"]),
+            "resolver": "pending_identifier",
+        }
+    pending_update = (row, still_pending) if still_pending != names else None
+    return cover_row, pending_update, resolved_count
 
 
 def resolve_pending_anchors(
@@ -967,39 +1079,12 @@ def resolve_pending_anchors(
     pending_updates: list[tuple[dict, list[str]]] = []
     progress = _make_progress(len(pending_rows), "docs pending", unit="chunk")
     for row in pending_rows:
-        chunk_id = row["id"]
-        chunk_text = row.get("chunk", "")
-        file_path = row.get("file_path", "")
-        names = _normalize_pending(row.get("pending"))
-        links_by_uid: dict[str, dict] = {}
-        still_pending = []
-        for name in names:
-            if name in name_to_uid:
-                uid = name_to_uid[name]
-                _merge_cover_link(
-                    links_by_uid,
-                    _cover_link(
-                        uid,
-                        name,
-                        chunk_text,
-                        file_path,
-                        resolver="pending_identifier",
-                        link_count=max(1, len(names)),
-                    ),
-                )
-                resolved_total += 1
-            else:
-                still_pending.append(name)
-        if links_by_uid:
-            cover_rows.append(
-                {
-                    "chunk_id": chunk_id,
-                    "links": sorted(links_by_uid.values(), key=lambda item: item["uid"]),
-                    "resolver": "pending_identifier",
-                }
-            )
-        if still_pending != names:
-            pending_updates.append((row, still_pending))
+        cover_row, pending_update, resolved_count = _resolve_pending_chunk(row, name_to_uid)
+        resolved_total += resolved_count
+        if cover_row is not None:
+            cover_rows.append(cover_row)
+        if pending_update is not None:
+            pending_updates.append(pending_update)
         progress.update(1)
     progress.close()
 
@@ -1007,13 +1092,7 @@ def resolve_pending_anchors(
         with neo4j.driver.session() as session:
             session.execute_write(_add_covers_edges_batch, cover_rows, workspace_id)
 
-    if pending_updates:
-        bulk_set_pending = getattr(lance, "set_pending_rows_batch", None)
-        if callable(bulk_set_pending):
-            bulk_set_pending(pending_updates)
-        else:
-            for row, still_pending in pending_updates:
-                lance.set_pending_row(row, still_pending)
+    _apply_lance_pending_updates(lance, pending_updates)
 
     print(f"DocAnchor: resolved {resolved_total} pending links.")
     if resolved_total:
@@ -1069,6 +1148,59 @@ def _resolve_indexed_symbol_uid(neo4j: Neo4jClient, workspace_id: str, sym) -> s
     return None
 
 
+def _docstring_rows_for_symbol(sym, owner_uid: str) -> tuple[dict, dict, dict]:
+    file_path = str(getattr(sym, "file_path", "") or "")
+    docstring = str(getattr(sym, "docstring", "") or "").strip()
+    chunk_id = _symbol_docstring_chunk_id(file_path, owner_uid)
+    lance_row = {
+        "id": chunk_id,
+        "file_path": file_path,
+        "chunk": docstring,
+        "owner_uid": owner_uid,
+    }
+    anchor_row = {
+        "chunk_id": chunk_id,
+        "file_path": file_path,
+        "doc_type": "code",
+    }
+    cover_row = {
+        "chunk_id": chunk_id,
+        "links": [
+            {
+                "uid": owner_uid,
+                "anchor_type": "definition",
+                "confidence": 1.0,
+                "primary_bias": 1.0,
+                "resolver": "definition",
+            }
+        ],
+        "resolver": "definition",
+    }
+    return lance_row, anchor_row, cover_row
+
+
+def _docstring_symbol_filter(
+    sym,
+    *,
+    neo4j: Neo4jClient,
+    workspace_id: str,
+    prefixes: list[str],
+    tiers: dict[str, str],
+) -> tuple[str | None, bool]:
+    from context_engine.indexer.file_tier import classify_file_tier, is_doc_anchor_indexable_tier
+
+    docstring = str(getattr(sym, "docstring", "") or "").strip()
+    file_path = str(getattr(sym, "file_path", "") or "")
+    if not docstring or not file_path:
+        return None, False
+    if not _matches_allowed_prefix(file_path, prefixes):
+        return None, False
+    tier = tiers.get(file_path) or classify_file_tier(file_path)
+    if not is_doc_anchor_indexable_tier(tier):
+        return None, True
+    return _resolve_indexed_symbol_uid(neo4j, workspace_id, sym), False
+
+
 def ingest_symbol_docstrings(
     neo4j: Neo4jClient,
     lance: LanceDBClient,
@@ -1088,8 +1220,6 @@ def ingest_symbol_docstrings(
     Symbols in non-core file tiers (``test``, ``example``, ``stub``, …) are
     skipped — doc-anchor seed targets library code, not structural noise.
     """
-    from context_engine.indexer.file_tier import classify_file_tier, is_doc_anchor_indexable_tier
-
     prefixes = _normalize_allowed_prefixes(allowed_prefixes)
     delete_by_owner = getattr(lance, "delete_doc_anchors_by_owner_uids", None)
     if callable(delete_by_owner) and removed_owner_uids:
@@ -1102,50 +1232,22 @@ def ingest_symbol_docstrings(
     tiers = file_tier_by_path or {}
 
     for sym in symbols:
-        docstring = str(getattr(sym, "docstring", "") or "").strip()
-        file_path = str(getattr(sym, "file_path", "") or "")
-        if not docstring or not file_path:
-            continue
-        if not _matches_allowed_prefix(file_path, prefixes):
-            continue
-        tier = tiers.get(file_path) or classify_file_tier(file_path)
-        if not is_doc_anchor_indexable_tier(tier):
+        owner_uid, skipped = _docstring_symbol_filter(
+            sym,
+            neo4j=neo4j,
+            workspace_id=workspace_id,
+            prefixes=prefixes,
+            tiers=tiers,
+        )
+        if skipped:
             skipped_noise += 1
             continue
-        owner_uid = _resolve_indexed_symbol_uid(neo4j, workspace_id, sym)
         if not owner_uid:
             continue
-        chunk_id = _symbol_docstring_chunk_id(file_path, owner_uid)
-        lance_rows.append(
-            {
-                "id": chunk_id,
-                "file_path": file_path,
-                "chunk": docstring,
-                "owner_uid": owner_uid,
-            }
-        )
-        anchor_rows.append(
-            {
-                "chunk_id": chunk_id,
-                "file_path": file_path,
-                "doc_type": "code",
-            }
-        )
-        cover_rows.append(
-            {
-                "chunk_id": chunk_id,
-                "links": [
-                    {
-                        "uid": owner_uid,
-                        "anchor_type": "definition",
-                        "confidence": 1.0,
-                        "primary_bias": 1.0,
-                        "resolver": "definition",
-                    }
-                ],
-                "resolver": "definition",
-            }
-        )
+        lance_row, anchor_row, cover_row = _docstring_rows_for_symbol(sym, owner_uid)
+        lance_rows.append(lance_row)
+        anchor_rows.append(anchor_row)
+        cover_rows.append(cover_row)
 
     if not lance_rows:
         return {"anchors": 0, "covers": 0, "rows": 0, "skipped_noise": skipped_noise}

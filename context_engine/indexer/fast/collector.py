@@ -70,6 +70,43 @@ def _load_gitignore(root: str):
         return pathspec.PathSpec.from_lines("gitwildmatch", f)
 
 
+def _filter_walk_dirs(
+    dirs: list[str],
+    spec,
+    root: str,
+    project_root: str,
+) -> None:
+    dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+    if not spec:
+        return
+    rel_root = os.path.relpath(root, project_root)
+    rel_prefix = "" if rel_root in (".", "") else rel_root.replace(os.sep, "/")
+    kept_dirs: list[str] = []
+    for directory in dirs:
+        rel_dir = f"{rel_prefix}/{directory}/" if rel_prefix else f"{directory}/"
+        if not spec.match_file(rel_dir):
+            kept_dirs.append(directory)
+    dirs[:] = kept_dirs
+
+
+def _maybe_collect_file(
+    root: str,
+    name: str,
+    *,
+    project_root: str,
+    spec,
+    files: list[str],
+) -> None:
+    if name.startswith(".") or not is_indexable_file(name):
+        return
+    full = os.path.join(root, name)
+    if spec:
+        rel = os.path.relpath(full, project_root)
+        if spec.match_file(rel):
+            return
+    files.append(full)
+
+
 def collect_files(project_path: str) -> list[str]:
     """Walk project tree with directory prefilter and gitignore fallback."""
     project_root = os.path.abspath(project_path)
@@ -77,29 +114,9 @@ def collect_files(project_path: str) -> list[str]:
     files: list[str] = []
 
     for root, dirs, filenames in os.walk(project_root):
-        # Hard prefilter before gitignore: drop common build/cache dirs by basename.
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
-
-        # Apply gitignore to surviving dirs so project-specific rules still win.
-        if spec:
-            rel_root = os.path.relpath(root, project_root)
-            rel_prefix = "" if rel_root in (".", "") else rel_root.replace(os.sep, "/")
-            kept_dirs: list[str] = []
-            for directory in dirs:
-                rel_dir = f"{rel_prefix}/{directory}/" if rel_prefix else f"{directory}/"
-                if not spec.match_file(rel_dir):
-                    kept_dirs.append(directory)
-            dirs[:] = kept_dirs
-
+        _filter_walk_dirs(dirs, spec, root, project_root)
         for name in filenames:
-            if name.startswith(".") or not is_indexable_file(name):
-                continue
-            full = os.path.join(root, name)
-            if spec:
-                rel = os.path.relpath(full, project_root)
-                if spec.match_file(rel):
-                    continue
-            files.append(full)
+            _maybe_collect_file(root, name, project_root=project_root, spec=spec, files=files)
 
     from context_engine.indexer.git_committed import filter_indexable_paths
 

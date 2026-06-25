@@ -98,23 +98,15 @@ def _originating_class(method: MethodRecord, class_by_uid: dict[str, ClassRecord
     return method.owner_class_name or _owner_class_from_qualified_name(method.qualified_name) or ""
 
 
-def build_mro_api_edges(
-    classes: list[ClassRecord],
+def _build_api_surface_cache(
+    direct_methods_by_class: dict[str, list[MethodRecord]],
     inheritance: dict[str, list[str]],
-    methods_by_owner_name: dict[str, list[MethodRecord]],
-    *,
     class_by_uid: dict[str, ClassRecord],
-) -> list[ClassApiEdge]:
-    """Build direct ``HAS_API`` and inherited ``INHERITED_API`` edges."""
-    edges: list[ClassApiEdge] = []
-    seen: set[tuple[str, str, str]] = set()
-    direct_methods_by_class = {
-        cls.uid: _methods_for_class(cls, methods_by_owner_name) for cls in classes
-    }
-    api_surface_cache: dict[str, dict[str, MethodRecord]] = {}
+) -> dict[str, dict[str, MethodRecord]]:
+    cache: dict[str, dict[str, MethodRecord]] = {}
 
     def api_surface(class_uid: str, visiting: set[str] | None = None) -> dict[str, MethodRecord]:
-        cached = api_surface_cache.get(class_uid)
+        cached = cache.get(class_uid)
         if cached is not None:
             return cached
         if visiting is None:
@@ -133,48 +125,99 @@ def build_mro_api_edges(
                 surface.setdefault(name, method)
 
         visiting.remove(class_uid)
-        api_surface_cache[class_uid] = surface
+        cache[class_uid] = surface
         return surface
 
-    for cls in classes:
-        direct_methods = direct_methods_by_class.get(cls.uid, [])
-        direct_names = {method.name for method in direct_methods}
+    for cls in class_by_uid:
+        api_surface(cls)
+    return cache
 
-        for method in direct_methods:
-            key = ("HAS_API", cls.uid, method.uid)
+
+def _append_has_api_edges(
+    cls: ClassRecord,
+    direct_methods: list[MethodRecord],
+    edges: list[ClassApiEdge],
+    seen: set[tuple[str, str, str]],
+) -> None:
+    for method in direct_methods:
+        key = ("HAS_API", cls.uid, method.uid)
+        if key in seen:
+            continue
+        seen.add(key)
+        edges.append(
+            ClassApiEdge(
+                class_uid=cls.uid,
+                method_uid=method.uid,
+                edge_type="HAS_API",
+            )
+        )
+
+
+def _append_inherited_api_edges(
+    cls: ClassRecord,
+    direct_names: set[str],
+    inheritance: dict[str, list[str]],
+    class_by_uid: dict[str, ClassRecord],
+    api_surface_cache: dict[str, dict[str, MethodRecord]],
+    edges: list[ClassApiEdge],
+    seen: set[tuple[str, str, str]],
+) -> None:
+    inherited_names: set[str] = set()
+    for superclass_uid in inheritance.get(cls.uid, []):
+        if superclass_uid not in class_by_uid:
+            continue
+        for name, method in api_surface_cache.get(superclass_uid, {}).items():
+            if name in direct_names or name in inherited_names:
+                continue
+            if method.owner_class_uid == cls.uid:
+                continue
+            key = ("INHERITED_API", cls.uid, method.uid)
             if key in seen:
                 continue
             seen.add(key)
+            inherited_names.add(name)
             edges.append(
                 ClassApiEdge(
                     class_uid=cls.uid,
                     method_uid=method.uid,
-                    edge_type="HAS_API",
+                    edge_type="INHERITED_API",
+                    originating_class=_originating_class(method, class_by_uid),
                 )
             )
 
-        inherited_names: set[str] = set()
-        for superclass_uid in inheritance.get(cls.uid, []):
-            if superclass_uid not in class_by_uid:
-                continue
-            for name, method in api_surface(superclass_uid).items():
-                if name in direct_names or name in inherited_names:
-                    continue
-                if method.owner_class_uid == cls.uid:
-                    continue
-                key = ("INHERITED_API", cls.uid, method.uid)
-                if key in seen:
-                    continue
-                seen.add(key)
-                inherited_names.add(name)
-                edges.append(
-                    ClassApiEdge(
-                        class_uid=cls.uid,
-                        method_uid=method.uid,
-                        edge_type="INHERITED_API",
-                        originating_class=_originating_class(method, class_by_uid),
-                    )
-                )
+
+def build_mro_api_edges(
+    classes: list[ClassRecord],
+    inheritance: dict[str, list[str]],
+    methods_by_owner_name: dict[str, list[MethodRecord]],
+    *,
+    class_by_uid: dict[str, ClassRecord],
+) -> list[ClassApiEdge]:
+    """Build direct ``HAS_API`` and inherited ``INHERITED_API`` edges."""
+    edges: list[ClassApiEdge] = []
+    seen: set[tuple[str, str, str]] = set()
+    direct_methods_by_class = {
+        cls.uid: _methods_for_class(cls, methods_by_owner_name) for cls in classes
+    }
+    api_surface_cache = _build_api_surface_cache(
+        direct_methods_by_class,
+        inheritance,
+        class_by_uid,
+    )
+
+    for cls in classes:
+        direct_methods = direct_methods_by_class.get(cls.uid, [])
+        direct_names = {method.name for method in direct_methods}
+        _append_has_api_edges(cls, direct_methods, edges, seen)
+        _append_inherited_api_edges(
+            cls,
+            direct_names,
+            inheritance,
+            class_by_uid,
+            api_surface_cache,
+            edges,
+            seen,
+        )
     return edges
 
 
