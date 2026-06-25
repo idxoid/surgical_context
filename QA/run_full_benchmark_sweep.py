@@ -29,7 +29,13 @@ REPOS = [
 
 ROOT = Path(__file__).resolve().parent.parent
 PACK = ROOT / "QA" / "fixtures" / "questions_python.yaml"
-OUT = Path("/tmp/benchmark_sweep_full.json")
+_ALLOWED_REPOS = frozenset(REPOS)
+
+
+def _combined_report_path() -> Path:
+    from QA.output_paths import resolve_output_path
+
+    return resolve_output_path(None, default_name="benchmark_sweep_full.json")
 
 
 def _axis_row(repo: str, summary: dict, report_path: Path, results: list[dict]) -> dict:
@@ -54,7 +60,12 @@ def _axis_row(repo: str, summary: dict, report_path: Path, results: list[dict]) 
 
 
 def run_repo(repo: str) -> dict:
-    out_dir = Path(f"/tmp/axis_benchmark_{repo}")
+    from QA.output_paths import resolve_benchmark_workspace
+
+    if repo not in _ALLOWED_REPOS:
+        return {"repo": repo, "error": f"unknown repo: {repo}"}
+
+    out_dir = resolve_benchmark_workspace(repo, _ALLOWED_REPOS)
     cmd = [
         sys.executable,
         "-m",
@@ -77,10 +88,6 @@ def run_repo(repo: str) -> dict:
         return {"repo": repo, "error": proc.stderr or proc.stdout, "returncode": proc.returncode}
 
     summary_path = out_dir / "summary.json"
-    if not summary_path.exists():
-        report_line = [ln for ln in proc.stdout.splitlines() if ln.startswith("Report JSON:")]
-        if report_line:
-            summary_path = Path(report_line[-1].split(":", 1)[1].strip())
     if not summary_path.exists():
         return {"repo": repo, "error": "summary.json missing"}
 
@@ -105,8 +112,9 @@ def main() -> int:
         "elapsed_sec": round(time.time() - started, 1),
         "repos": rows,
     }
-    OUT.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"\nCombined report: {OUT}")
+    out_path = _combined_report_path()
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"\nCombined report: {out_path}")
     return 0 if all("error" not in r for r in rows) else 1
 
 

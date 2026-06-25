@@ -1,5 +1,13 @@
 "use strict";
 (() => {
+  // src/webview/shared/domActions.ts
+  function bindClickAction(root, action, handler) {
+    const button = root.querySelector(`[data-action="${action}"]`);
+    if (button) {
+      button.addEventListener("click", handler);
+    }
+  }
+
   // src/webview/shared/dashboardDefaults.ts
   function emptyDashboardMetrics() {
     return {
@@ -447,6 +455,34 @@
   `;
   }
 
+  // src/webview/shared/domRender.ts
+  function sanitizeParsedDocument(doc) {
+    doc.querySelectorAll("script, iframe, object, embed").forEach((node) => node.remove());
+    doc.querySelectorAll("*").forEach((node) => {
+      for (const attr of Array.from(node.attributes)) {
+        const name = attr.name.toLowerCase();
+        const value = attr.value.trim().toLowerCase();
+        if (name.startsWith("on")) {
+          node.removeAttribute(attr.name);
+          continue;
+        }
+        if ((name === "href" || name === "src") && value.startsWith("javascript:")) {
+          node.removeAttribute(attr.name);
+        }
+      }
+    });
+  }
+  function fragmentFromHtml(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    sanitizeParsedDocument(doc);
+    const fragment = document.createDocumentFragment();
+    fragment.append(...Array.from(doc.body.childNodes));
+    return fragment;
+  }
+  function mountLayoutHtml(element, html) {
+    element.replaceChildren(...Array.from(fragmentFromHtml(html).childNodes));
+  }
+
   // src/webview/shared/webviewRuntime.ts
   var vscode = acquireVsCodeApi();
   function bootWebview(init) {
@@ -474,7 +510,7 @@
         lastUpdate: null
       };
       this.initializeMessageListener();
-      this.initializeUI();
+      this.bindActions(document);
     }
     initializeMessageListener() {
       window.addEventListener("message", (event) => {
@@ -515,25 +551,19 @@
         }
       });
     }
-    initializeUI() {
-      const refreshBtn = document.querySelector('[data-action="refresh"]');
-      if (refreshBtn) {
-        refreshBtn.addEventListener("click", () => {
-          vscode.postMessage({ type: "dashboard.refresh" });
-        });
-      }
-      const indexBtn = document.querySelector('[data-action="indexWorkspace"]');
-      if (indexBtn) {
-        indexBtn.addEventListener("click", () => {
-          vscode.postMessage({ type: "dashboard.indexWorkspace" });
-        });
-      }
+    bindActions(root) {
+      bindClickAction(root, "refresh", () => {
+        vscode.postMessage({ type: "dashboard.refresh" });
+      });
+      bindClickAction(root, "indexWorkspace", () => {
+        vscode.postMessage({ type: "dashboard.indexWorkspace" });
+      });
     }
     render() {
       const root = document.getElementById("root");
       if (!root) return;
-      root.innerHTML = renderDashboardView(this.state);
-      this.initializeUI();
+      mountLayoutHtml(root, renderDashboardView(this.state));
+      this.bindActions(root);
     }
   };
   bootWebview(() => new DashboardPanel());

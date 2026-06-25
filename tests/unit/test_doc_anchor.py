@@ -1,6 +1,10 @@
 from unittest.mock import MagicMock
 
-from context_engine.indexer import anchor
+from tests.unit.doc_anchor_test_helpers import (
+    FakeAnchorLance,
+    make_doc_row,
+    run_link_docs_to_symbols,
+)
 from context_engine.indexer.anchor import (
     _add_covers_edges,
     _add_covers_edges_batch,
@@ -142,111 +146,32 @@ def test_write_anchors_uses_unwind_for_bulk_chunks():
 
 
 def test_link_docs_to_symbols_skips_semantic_search_when_identifier_matches_are_enough(monkeypatch):
-    class FakeRows:
-        empty = False
-
-        @staticmethod
-        def to_dict(mode):
-            assert mode == "records"
-            return [
-                {
-                    "id": "chunk-1",
-                    "chunk": "# Title\n\nFastAPI APIRoute something",
-                    "file_path": "/docs/a.md",
-                    "pending": [],
-                    "vector": [0.0],
-                    "embedding_metadata": "{}",
-                }
-            ]
-
-    class FakeLance:
-        def __init__(self):
-            self.search_called = False
-            self.pending_updates = []
-
-        def scan_docs_workspace(self, workspace_id):
-            return FakeRows.to_dict("records")
-
-        def search_symbols(self, query, limit=5, threshold=1.5):
-            self.search_called = True
-            return []
-
-        def set_pending_row(self, row, pending):
-            self.pending_updates.append((row["id"], pending))
-
-    neo4j = MagicMock()
-    neo4j.driver.session.return_value.__enter__.return_value.run.return_value = [
-        {"uid": "uid-fastapi", "name": "FastAPI"},
-        {"uid": "uid-route", "name": "APIRoute"},
-    ]
-    lance = FakeLance()
-
-    monkeypatch.setattr(anchor, "_extract_identifiers", lambda text: ["FastAPI", "APIRoute"])
-    monkeypatch.setattr(
-        anchor,
-        "_make_progress",
-        lambda total, desc, unit="item": MagicMock(update=lambda n=1: None, close=lambda: None),
+    _neo4j, lance = run_link_docs_to_symbols(
+        monkeypatch,
+        rows=[make_doc_row(chunk="# Title\n\nFastAPI APIRoute something", vector=[0.0])],
+        identifiers=["FastAPI", "APIRoute"],
+        neo4j_run_return=[
+            {"uid": "uid-fastapi", "name": "FastAPI"},
+            {"uid": "uid-route", "name": "APIRoute"},
+        ],
     )
-
-    anchor.link_docs_to_symbols(neo4j, lance, workspace_id="acme/repo@main")
 
     assert lance.search_called is False
     assert lance.pending_updates == []
 
 
 def test_link_docs_to_symbols_uses_precomputed_vector_for_semantic_fallback(monkeypatch):
-    class FakeRows:
-        empty = False
-
-        @staticmethod
-        def to_dict(mode):
-            assert mode == "records"
-            return [
-                {
-                    "id": "chunk-1",
-                    "chunk": "# Title\n\nSome descriptive prose",
-                    "file_path": "/docs/a.md",
-                    "pending": [],
-                    "vector": [0.25, 0.75],
-                    "embedding_metadata": "{}",
-                }
-            ]
-
-    class FakeLance:
-        def __init__(self):
-            self.vector_queries: list[list[float]] = []
-            self.text_search_called = False
-            self.pending_updates = []
-
-        def scan_docs_workspace(self, workspace_id):
-            return FakeRows.to_dict("records")
-
+    class VectorLance(FakeAnchorLance):
         def search_symbols_by_vector(self, vector, limit=5, threshold=1.5):
             self.vector_queries.append(vector)
             return [{"uid": "uid-hit", "name": "Hit", "file_path": "/repo/hit.py"}]
 
-        def search_symbols(self, query, limit=5, threshold=1.5):
-            self.text_search_called = True
-            return []
-
-        def set_pending_row(self, row, pending):
-            self.pending_updates.append((row["id"], pending))
-
-    neo4j = MagicMock()
-    neo4j.driver.session.return_value.__enter__.return_value.run.return_value = []
-    lance = FakeLance()
-
-    monkeypatch.setattr(anchor, "_extract_identifiers", lambda text: [])
-    monkeypatch.setattr(
-        anchor,
-        "_make_progress",
-        lambda total, desc, unit="item": MagicMock(
-            update=lambda n=1: None,
-            close=lambda: None,
-        ),
+    _neo4j, lance = run_link_docs_to_symbols(
+        monkeypatch,
+        rows=[make_doc_row(chunk="# Title\n\nSome descriptive prose", vector=[0.25, 0.75])],
+        identifiers=[],
+        lance_factory=VectorLance,
     )
-
-    anchor.link_docs_to_symbols(neo4j, lance, workspace_id="acme/repo@main")
 
     assert lance.vector_queries == [[0.25, 0.75]]
     assert lance.text_search_called is False
@@ -262,83 +187,30 @@ def test_link_docs_to_symbols_normalizes_array_like_pending(monkeypatch):
         def tolist():
             return []
 
-    class FakeRows:
-        empty = False
-
-        @staticmethod
-        def to_dict(mode):
-            assert mode == "records"
-            return [
-                {
-                    "id": "chunk-1",
-                    "chunk": "No identifiers here",
-                    "file_path": "/docs/a.md",
-                    "pending": PendingArray(),
-                    "vector": [0.1, 0.2],
-                    "embedding_metadata": "{}",
-                }
-            ]
-
-    class FakeLance:
-        def __init__(self):
-            self.pending_updates = []
-
-        def scan_docs_workspace(self, workspace_id):
-            return FakeRows.to_dict("records")
-
+    class PendingLance(FakeAnchorLance):
         @staticmethod
         def search_symbols_by_vector(vector, limit=5, threshold=1.5):
             return []
 
-        def set_pending_row(self, row, pending):
-            self.pending_updates.append((row["id"], pending))
-
-    neo4j = MagicMock()
-    neo4j.driver.session.return_value.__enter__.return_value.run.return_value = []
-    lance = FakeLance()
-
-    monkeypatch.setattr(anchor, "_extract_identifiers", lambda text: [])
-    monkeypatch.setattr(
-        anchor,
-        "_make_progress",
-        lambda total, desc, unit="item": MagicMock(
-            update=lambda n=1: None,
-            close=lambda: None,
-        ),
+    _neo4j, lance = run_link_docs_to_symbols(
+        monkeypatch,
+        rows=[make_doc_row(
+            chunk="No identifiers here",
+            vector=[0.1, 0.2],
+            pending=PendingArray(),
+        )],
+        identifiers=[],
+        lance_factory=PendingLance,
     )
-
-    anchor.link_docs_to_symbols(neo4j, lance, workspace_id="acme/repo@main")
 
     assert lance.pending_updates == []
 
 
 def test_link_docs_to_symbols_uses_local_symbol_index_when_available(monkeypatch):
-    class FakeRows:
-        empty = False
-
-        @staticmethod
-        def to_dict(mode):
-            assert mode == "records"
-            return [
-                {
-                    "id": "chunk-1",
-                    "chunk": "Descriptive prose with no identifiers",
-                    "file_path": "/docs/a.md",
-                    "pending": [],
-                    "vector": [0.0, 0.0],
-                    "embedding_metadata": "{}",
-                }
-            ]
-
-    class FakeLance:
-        def __init__(self):
+    class LocalIndexLance(FakeAnchorLance):
+        def __init__(self, rows):
+            super().__init__(rows)
             self._sym_table = object()
-            self.vector_queries: list[list[float]] = []
-            self.text_search_called = False
-            self.pending_updates = []
-
-        def scan_docs_workspace(self, workspace_id):
-            return FakeRows.to_dict("records")
 
         def scan_symbols_workspace(self, workspace_id, columns=None):
             return [
@@ -350,32 +222,15 @@ def test_link_docs_to_symbols_uses_local_symbol_index_when_available(monkeypatch
                 }
             ]
 
-        def search_symbols_by_vector(self, vector, limit=5, threshold=1.5):
-            self.vector_queries.append(vector)
-            return []
-
-        def search_symbols(self, query, limit=5, threshold=1.5):
-            self.text_search_called = True
-            return []
-
-        def set_pending_row(self, row, pending):
-            self.pending_updates.append((row["id"], pending))
-
-    neo4j = MagicMock()
-    neo4j.driver.session.return_value.__enter__.return_value.run.return_value = []
-    lance = FakeLance()
-
-    monkeypatch.setattr(anchor, "_extract_identifiers", lambda text: [])
-    monkeypatch.setattr(
-        anchor,
-        "_make_progress",
-        lambda total, desc, unit="item": MagicMock(
-            update=lambda n=1: None,
-            close=lambda: None,
-        ),
+    _neo4j, lance = run_link_docs_to_symbols(
+        monkeypatch,
+        rows=[make_doc_row(
+            chunk="Descriptive prose with no identifiers",
+            vector=[0.0, 0.0],
+        )],
+        identifiers=[],
+        lance_factory=LocalIndexLance,
     )
-
-    anchor.link_docs_to_symbols(neo4j, lance, workspace_id="acme/repo@main")
 
     assert lance.vector_queries == []
     assert lance.text_search_called is False

@@ -3,6 +3,11 @@
 import re
 from pathlib import Path
 
+from context_engine.parser.adapters.js_ts_fallback_patterns import (
+    CHAINED_PROPERTY_FUNC_API_RE,
+    PROPERTY_ARROW_API_RE,
+    PROPERTY_FUNC_API_RE,
+)
 from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
 from context_engine.parser.adapters.ts_reexport_resolver import TsReexportResolver
 from context_engine.parser.adapters.ts_scope_graph import TsBinding, TsScopeGraph
@@ -67,15 +72,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
         "type_alias_declaration",
         "variable_declarator",
     }
-    _PROPERTY_FUNC_API_RE = re.compile(
-        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
-    )
-    _PROPERTY_ARROW_API_RE = re.compile(
-        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
-    )
-    _CHAINED_PROPERTY_FUNC_API_RE = re.compile(
-        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
-    )
+    _PROPERTY_FUNC_API_RE = PROPERTY_FUNC_API_RE
+    _PROPERTY_ARROW_API_RE = PROPERTY_ARROW_API_RE
+    _CHAINED_PROPERTY_FUNC_API_RE = CHAINED_PROPERTY_FUNC_API_RE
     _TYPE_REF_SKIP_NAMES = {
         "any",
         "bigint",

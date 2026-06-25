@@ -13,9 +13,15 @@ sys.path.insert(0, str(ROOT))
 
 from context_engine.parser.adapters.python_adapter import PythonAdapter  # noqa: E402
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter  # noqa: E402
-from QA.output_paths import resolve_output_path  # noqa: E402
+from QA.output_paths import (  # noqa: E402
+    default_report_basename,
+    resolve_output_path,
+    resolve_repo_checkout,
+)
 
 QA = Path(__file__).resolve().parent
+
+_ALLOWED_REPOS = frozenset({"django", "pydantic", "express"})
 
 _SKIP_PARTS = frozenset({".git", "__pycache__", ".tox", "node_modules"})
 
@@ -130,7 +136,7 @@ def main() -> int:
     parser.add_argument("--report", default="")
     args = parser.parse_args()
 
-    root = QA / "repos" / args.repo
+    root = resolve_repo_checkout(QA, args.repo, _ALLOWED_REPOS)
     if not root.is_dir():
         print(f"missing checkout: {root}", file=sys.stderr)
         return 1
@@ -142,7 +148,7 @@ def main() -> int:
 
     out = resolve_output_path(
         args.report or None,
-        default_name=f"proxy_audit_static_{args.repo}.json",
+        default_name=default_report_basename("proxy_audit_static", args.repo, _ALLOWED_REPOS),
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")

@@ -3,6 +3,11 @@
 import re
 from typing import cast
 
+from context_engine.parser.adapters.js_ts_fallback_patterns import (
+    CHAINED_PROPERTY_FUNC_API_RE,
+    PROPERTY_ARROW_API_RE,
+    PROPERTY_FUNC_API_RE,
+)
 from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 from context_engine.parser.import_scan import (
@@ -59,15 +64,9 @@ class JavaScriptAdapter(TreeSitterAdapter):
     _PROPERTY_ARROW_FALLBACK_RE = re.compile(
         r"(?m)^[ \t]*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
     )
-    _PROPERTY_FUNC_API_RE = re.compile(
-        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
-    )
-    _PROPERTY_ARROW_API_RE = re.compile(
-        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
-    )
-    _CHAINED_PROPERTY_FUNC_API_RE = re.compile(
-        r"(?m)^[ \t]*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
-    )
+    _PROPERTY_FUNC_API_RE = PROPERTY_FUNC_API_RE
+    _PROPERTY_ARROW_API_RE = PROPERTY_ARROW_API_RE
+    _CHAINED_PROPERTY_FUNC_API_RE = CHAINED_PROPERTY_FUNC_API_RE
     _COMMONJS_REQUIRE_DEFAULT_RE = re.compile(
         r"(?m)^[ \t]*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)"
     )

@@ -1,11 +1,13 @@
 import {
   HostToWebviewMessage,
 } from './shared/protocol';
+import { bindClickAction } from './shared/domActions';
 import { emptyDashboardMetrics } from './shared/dashboardDefaults';
 import {
   renderDashboardView,
   DashboardViewState,
 } from './shared/dashboardLayout';
+import { mountLayoutHtml } from './shared/domRender';
 import { bootWebview, vscode } from './shared/webviewRuntime';
 
 class DashboardPanel {
@@ -25,7 +27,7 @@ class DashboardPanel {
 
   constructor() {
     this.initializeMessageListener();
-    this.initializeUI();
+    this.bindActions(document);
   }
 
   private initializeMessageListener(): void {
@@ -71,28 +73,21 @@ class DashboardPanel {
     });
   }
 
-  private initializeUI(): void {
-    const refreshBtn = document.querySelector('[data-action="refresh"]') as HTMLButtonElement | null;
-    if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => {
-        vscode.postMessage({ type: 'dashboard.refresh' });
-      });
-    }
-
-    const indexBtn = document.querySelector('[data-action="indexWorkspace"]') as HTMLButtonElement | null;
-    if (indexBtn) {
-      indexBtn.addEventListener('click', () => {
-        vscode.postMessage({ type: 'dashboard.indexWorkspace' });
-      });
-    }
+  private bindActions(root: ParentNode): void {
+    bindClickAction(root, 'refresh', () => {
+      vscode.postMessage({ type: 'dashboard.refresh' });
+    });
+    bindClickAction(root, 'indexWorkspace', () => {
+      vscode.postMessage({ type: 'dashboard.indexWorkspace' });
+    });
   }
 
   private render(): void {
     const root = document.getElementById('root');
     if (!root) return;
 
-    root.innerHTML = renderDashboardView(this.state);
-    this.initializeUI();
+    mountLayoutHtml(root, renderDashboardView(this.state));
+    this.bindActions(root);
   }
 }
 

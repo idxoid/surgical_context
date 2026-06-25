@@ -1,20 +1,9 @@
 import * as vscode from 'vscode';
 import { CloudStatusResponse, GraphStatusInfo, SettingsData } from './webview/shared/protocol';
+import { DEFAULT_SETTINGS } from './webview/shared/settingsDefaults';
 import { workspaceIdDisplayValue } from './workspaceIdentity';
 
-export const DEFAULT_SETTINGS: SettingsData = {
-  backendUrl: 'http://localhost:8000',
-  workspaceId: '',
-  modelPreference: 'auto',
-  authToken: '',
-  tokenBudget: 6000,
-  lancedbPath: './data/lancedb',
-  historyPath: './data/history/surgical_context.sqlite3',
-  neo4jUri: 'bolt://localhost:7687',
-  indexProfile: 'axis_python_v1',
-  overlaySync: true,
-  autoOpenInspector: false,
-};
+export { DEFAULT_SETTINGS };
 
 export function graphStatusFromCloud(cloud: CloudStatusResponse | null): GraphStatusInfo {
   if (!cloud) {

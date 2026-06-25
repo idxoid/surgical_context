@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from QA.output_paths import DEFAULT_OUTPUT_BASES, resolve_output_path, sanitize_filename_part
+from QA.output_paths import (
+    DEFAULT_OUTPUT_BASES,
+    default_report_basename,
+    resolve_benchmark_workspace,
+    resolve_output_directory,
+    resolve_output_path,
+    resolve_repo_checkout,
+    sanitize_filename_part,
+)
 
 
 def test_default_report_lives_under_tmp():
@@ -35,3 +43,36 @@ def test_relative_escape_rejected(tmp_path):
 def test_sanitize_filename_part():
     assert sanitize_filename_part("django") == "django"
     assert sanitize_filename_part("../evil") == ".._evil"
+
+
+def test_resolve_repo_checkout_stays_under_repos_base(tmp_path):
+    qa_dir = tmp_path / "QA"
+    repos = qa_dir / "repos" / "django"
+    repos.mkdir(parents=True)
+    checkout = resolve_repo_checkout(qa_dir, "django", frozenset({"django"}))
+    assert checkout == repos.resolve()
+
+
+def test_resolve_repo_checkout_rejects_unknown_repo(tmp_path):
+    qa_dir = tmp_path / "QA"
+    (qa_dir / "repos").mkdir(parents=True)
+    with pytest.raises(SystemExit, match="unknown repo"):
+        resolve_repo_checkout(qa_dir, "../etc/passwd", frozenset({"django"}))
+
+
+def test_default_report_basename_uses_allowlist():
+    name = default_report_basename("proxy_audit_static", "django", frozenset({"django"}))
+    assert name == "proxy_audit_static_django.json"
+
+
+def test_resolve_benchmark_workspace_is_under_tmp():
+    path = resolve_benchmark_workspace("fastapi", frozenset({"fastapi"}))
+    assert path.parent == DEFAULT_OUTPUT_BASES[0]
+    assert path.name == "axis_benchmark_fastapi"
+
+
+def test_resolve_output_directory_creates_under_base(tmp_path):
+    base = (tmp_path / "reports").resolve()
+    path = resolve_output_directory("axis_benchmark_test", allowed_bases=(base,))
+    assert path.is_dir()
+    assert path.parent == base

@@ -54,3 +54,57 @@ def resolve_output_path(
         )
 
     return candidate
+
+
+def resolve_output_directory(
+    dir_name: str,
+    *,
+    allowed_bases: tuple[Path, ...] = DEFAULT_OUTPUT_BASES,
+) -> Path:
+    """Resolve a directory path under allowed bases (creates it if missing)."""
+    bases = tuple(base.resolve() for base in allowed_bases)
+    safe_name = sanitize_filename_part(dir_name)
+    candidate = (bases[0] / safe_name).resolve()
+
+    for base in bases:
+        try:
+            candidate.relative_to(base)
+            break
+        except ValueError:
+            continue
+    else:
+        allowed = ", ".join(str(base) for base in bases)
+        raise SystemExit(
+            f"output directory must live under an allowed directory ({allowed}), got: {candidate}"
+        )
+
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+def require_allowed_choice(value: str, allowed: frozenset[str], *, label: str = "value") -> str:
+    if value not in allowed:
+        raise SystemExit(f"unknown {label}: {value}")
+    return value
+
+
+def resolve_repo_checkout(qa_dir: Path, repo: str, allowed: frozenset[str]) -> Path:
+    """Map a repo slug to an on-disk checkout without path traversal."""
+    safe_repo = require_allowed_choice(repo, allowed, label="repo")
+    repos_base = (qa_dir / "repos").resolve()
+    checkout = (repos_base / safe_repo).resolve()
+    try:
+        checkout.relative_to(repos_base)
+    except ValueError as exc:
+        raise SystemExit(f"repo checkout escapes repos base: {checkout}") from exc
+    return checkout
+
+
+def default_report_basename(prefix: str, repo: str, allowed: frozenset[str]) -> str:
+    safe_repo = require_allowed_choice(repo, allowed, label="repo")
+    return sanitize_filename_part(f"{prefix}_{safe_repo}.json")
+
+
+def resolve_benchmark_workspace(repo: str, allowed: frozenset[str]) -> Path:
+    safe_repo = require_allowed_choice(repo, allowed, label="repo")
+    return resolve_output_directory(f"axis_benchmark_{safe_repo}")

@@ -316,7 +316,8 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "vscode:prepublish": "node esbuild.js --production",
-    "perf-test": "node run-perf-tests.js"
+    "perf-test": "node run-perf-tests.js",
+    "test": "node --experimental-strip-types --test src/__tests__/performance.test.ts"
   },
   "devDependencies": {
     "@types/vscode": "^1.82.0",

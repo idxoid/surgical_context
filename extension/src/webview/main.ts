@@ -1,3 +1,4 @@
+import { mountLayoutHtml, replaceElementHtml } from './shared/domRender';
 import { bootWebview, vscode } from './shared/webviewRuntime';
 
 import {
@@ -37,10 +38,13 @@ import {
   renderIntentTab,
 } from './shared/inspectorLayout';
 import {
+  applySettingsDefaultsToDom,
+  readSettingsFormFromDom,
   renderSettingsForm,
   settingsFormDataFromSettings,
   showFeedback,
   showFieldStatus,
+  validateSettingsForm,
 } from './shared/settingsLayout';
 
 type Surface = 'chat' | 'inspector' | 'impact' | 'settings';
@@ -248,7 +252,7 @@ class MainSurface {
       return;
     }
 
-    root.innerHTML = this.renderCurrentSurface();
+    mountLayoutHtml(root, this.renderCurrentSurface());
 
     this.attachEventListeners();
     this.restoreComposerDraft();
@@ -259,12 +263,12 @@ class MainSurface {
     const root = document.getElementById('root');
     if (!root) return;
 
-    root.innerHTML = `
+    mountLayoutHtml(root, `
       <section class="surface surface-chat" aria-label="Surgical Context loading">
         ${this.renderSurfaceTabs()}
         <div class="loading-state">Loading Surgical Context...</div>
       </section>
-    `;
+    `);
 
     this.attachEventListeners();
   }
@@ -869,97 +873,32 @@ class MainSurface {
   private saveSettings(): void {
     if (!this.settings) return;
 
-    const backendUrl = (document.getElementById('backendUrl') as HTMLInputElement | null)?.value || '';
-    const workspaceId = (document.getElementById('workspaceId') as HTMLInputElement | null)?.value || '';
-    const modelPreference = (document.getElementById('modelPreference') as HTMLSelectElement | null)?.value || 'auto';
-    const authToken = (document.getElementById('authToken') as HTMLInputElement | null)?.value || '';
-    const tokenBudget = Number((document.getElementById('tokenBudget') as HTMLInputElement | null)?.value || '6000');
-    const lancedbPath = (document.getElementById('lancedbPath') as HTMLInputElement | null)?.value || '';
-    const historyPath = (document.getElementById('historyPath') as HTMLInputElement | null)?.value || '';
-    const neo4jUri = (document.getElementById('neo4jUri') as HTMLInputElement | null)?.value || '';
-    const indexProfile = (document.getElementById('indexProfile') as HTMLSelectElement | null)?.value || 'axis_python_v1';
-    const overlaySync = (document.getElementById('overlaySync') as HTMLInputElement | null)?.checked || false;
-    const autoOpenInspector = (document.getElementById('autoOpenInspector') as HTMLInputElement | null)?.checked || false;
-
-    if (backendUrl && !backendUrl.startsWith('http://') && !backendUrl.startsWith('https://')) {
-      showFieldStatus('backendUrl', false, 'URL must start with http:// or https://');
-      return;
-    }
-
-    if (!Number.isFinite(tokenBudget) || tokenBudget < 1000 || tokenBudget > 32000) {
-      showFieldStatus('tokenBudget', false, 'Use a value from 1000 to 32000');
+    const values = readSettingsFormFromDom();
+    const validationError = validateSettingsForm(values);
+    if (validationError) {
+      showFieldStatus(validationError.fieldId, false, validationError.message);
       return;
     }
 
     this.postMessage({
       type: 'settings.save',
-      settings: {
-        backendUrl,
-        workspaceId,
-        modelPreference,
-        authToken,
-        tokenBudget,
-        lancedbPath,
-        historyPath,
-        neo4jUri,
-        indexProfile,
-        overlaySync,
-        autoOpenInspector,
-      },
+      settings: values,
     });
   }
 
   private resetSettings(): void {
-    const defaults: SettingsData = {
-      backendUrl: 'http://localhost:8000',
-      workspaceId: '',
-      modelPreference: 'auto',
-      authToken: '',
-      tokenBudget: 6000,
-      lancedbPath: './data/lancedb',
-      historyPath: './data/history/surgical_context.sqlite3',
-      neo4jUri: 'bolt://localhost:7687',
-      indexProfile: 'axis_python_v1',
-      overlaySync: true,
-      autoOpenInspector: false,
-    };
-
-    const backendUrl = document.getElementById('backendUrl') as HTMLInputElement | null;
-    const workspaceId = document.getElementById('workspaceId') as HTMLInputElement | null;
-    const modelPreference = document.getElementById('modelPreference') as HTMLSelectElement | null;
-    const authToken = document.getElementById('authToken') as HTMLInputElement | null;
-    const tokenBudget = document.getElementById('tokenBudget') as HTMLInputElement | null;
-    const lancedbPath = document.getElementById('lancedbPath') as HTMLInputElement | null;
-    const historyPath = document.getElementById('historyPath') as HTMLInputElement | null;
-    const neo4jUri = document.getElementById('neo4jUri') as HTMLInputElement | null;
-    const indexProfile = document.getElementById('indexProfile') as HTMLSelectElement | null;
-    const overlaySync = document.getElementById('overlaySync') as HTMLInputElement | null;
-    const autoOpenInspector = document.getElementById('autoOpenInspector') as HTMLInputElement | null;
-
-    if (backendUrl) backendUrl.value = defaults.backendUrl;
-    if (workspaceId) workspaceId.value = defaults.workspaceId;
-    if (modelPreference) modelPreference.value = defaults.modelPreference;
-    if (authToken) authToken.value = defaults.authToken;
-    if (tokenBudget) tokenBudget.value = String(defaults.tokenBudget);
-    if (lancedbPath) lancedbPath.value = defaults.lancedbPath;
-    if (historyPath) historyPath.value = defaults.historyPath;
-    if (neo4jUri) neo4jUri.value = defaults.neo4jUri;
-    if (indexProfile) indexProfile.value = defaults.indexProfile;
-    if (overlaySync) overlaySync.checked = defaults.overlaySync;
-    if (autoOpenInspector) autoOpenInspector.checked = defaults.autoOpenInspector;
-
+    applySettingsDefaultsToDom();
     showFeedback('Reset to default settings', 'info');
   }
 
   private testSettingsUrl(): void {
-    const url = (document.getElementById('backendUrl') as HTMLInputElement | null)?.value || '';
-    if (!url) {
+    const { backendUrl, authToken } = readSettingsFormFromDom();
+    if (!backendUrl) {
       showFieldStatus('backendUrl', false, 'Please enter a URL');
       return;
     }
 
-    const authToken = (document.getElementById('authToken') as HTMLInputElement | null)?.value || '';
-    this.postMessage({ type: 'settings.testUrl', url, authToken });
+    this.postMessage({ type: 'settings.testUrl', url: backendUrl, authToken });
   }
 
   private onRequestStarted(requestId: string, symbol?: string): void {
@@ -1093,9 +1032,12 @@ class MainSurface {
     const viewport = document.getElementById('conversation');
     if (!viewport) return;
 
-    viewport.innerHTML = Array.from(this.messages.values())
-      .map(message => renderMessageCard(message, this.selectedPromptRequestId))
-      .join('');
+    mountLayoutHtml(
+      viewport,
+      Array.from(this.messages.values())
+        .map(message => renderMessageCard(message, this.selectedPromptRequestId))
+        .join(''),
+    );
 
     viewport.querySelectorAll('[data-action]').forEach(element => {
       element.addEventListener('click', event => this.handleAction(event));
@@ -1317,11 +1259,11 @@ class MainSurface {
 
     const statusRow = document.querySelector('.status-chip-row');
     if (statusRow) {
-      statusRow.outerHTML = renderStatusChips({
+      replaceElementHtml(statusRow, renderStatusChips({
         isDirty: this.state.workspace.isDirty,
         graphFirst: true,
         docLinked: true,
-      });
+      }));
     }
     this.refreshAccordions();
   }
@@ -1329,7 +1271,7 @@ class MainSurface {
   private refreshAccordions(): void {
     const stack = document.querySelector('.accordion-stack');
     if (stack) {
-      stack.innerHTML = this.renderAccordions();
+      mountLayoutHtml(stack as HTMLElement, this.renderAccordions());
       document.querySelectorAll('.accordion-header').forEach(header => {
         header.addEventListener('click', () => this.toggleAccordion(header as HTMLElement));
       });
