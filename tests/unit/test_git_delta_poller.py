@@ -22,12 +22,15 @@ def _init_repo(tmp_path: Path) -> Path:
     return repo
 
 
+TEST_REPO_PATH = "qa_repo/sample_repo"
+
+
 def test_registry_register_and_snapshot():
     registry = GitDeltaRegistry()
-    registry.register("ws", "/tmp/repo", user_id="alice")
+    registry.register("ws", TEST_REPO_PATH, user_id="alice")
     [target] = registry.snapshot()
     assert target.workspace_id == "ws"
-    assert target.project_path == "/tmp/repo"
+    assert target.project_path == TEST_REPO_PATH
     assert target.user_id == "alice"
 
 

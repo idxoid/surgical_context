@@ -49,22 +49,16 @@ function replaceElementHtml(element, html) {
 
 // src/webview/shared/webviewRuntime.ts
 var vscode = acquireVsCodeApi();
+var VSCODE_WEBVIEW_ORIGIN_PREFIX = "vscode-webview://";
 function listenForHostMessages(handler) {
   const webviewOrigin = window.location.origin;
-  window.addEventListener("message", (event) => {
-    const origin = event.origin;
-    if (origin === webviewOrigin) {
-      handler(event.data);
+  function receiveHostMessage(event) {
+    if (event.origin !== webviewOrigin && event.origin !== "" && !event.origin.startsWith(VSCODE_WEBVIEW_ORIGIN_PREFIX)) {
       return;
     }
-    if (origin === "") {
-      handler(event.data);
-      return;
-    }
-    if (origin.startsWith("vscode-webview://")) {
-      handler(event.data);
-    }
-  });
+    handler(event.data);
+  }
+  window.addEventListener("message", receiveHostMessage);
 }
 function bootWebview(init) {
   if (document.readyState === "loading") {
@@ -96,4 +90,4 @@ export {
   bootWebview,
   escapeHtml
 };
-//# sourceMappingURL=chunk-LEBZI4EJ.js.map
+//# sourceMappingURL=chunk-G3IIAS2Y.js.map

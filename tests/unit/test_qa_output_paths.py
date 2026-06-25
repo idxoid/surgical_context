@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from QA.output_paths import (
-    DEFAULT_OUTPUT_BASES,
     default_report_basename,
     lookup_allowed_repo_checkout,
     resolve_benchmark_workspace,
@@ -15,18 +14,25 @@ from QA.output_paths import (
 )
 
 
-def test_default_report_lives_under_tmp():
+def test_default_report_lives_under_first_allowed_base(tmp_path, monkeypatch):
+    allowed = (tmp_path / "reports").resolve()
+    allowed.mkdir()
+    monkeypatch.setattr("QA.output_paths.DEFAULT_OUTPUT_BASES", (allowed,))
     path = resolve_output_path(None, default_name="proxy_audit_static_django.json")
-    assert path.parent == DEFAULT_OUTPUT_BASES[0]
+    assert path.parent == allowed
     assert path.name == "proxy_audit_static_django.json"
 
 
-def test_explicit_tmp_path_allowed():
+def test_explicit_allowed_base_path(tmp_path):
+    allowed = (tmp_path / "reports").resolve()
+    allowed.mkdir()
+    report = allowed / "proxy_audit_static_pydantic.json"
     path = resolve_output_path(
-        "/tmp/proxy_audit_static_pydantic.json",
+        str(report),
         default_name="ignored.json",
+        allowed_bases=(allowed,),
     )
-    assert path == DEFAULT_OUTPUT_BASES[0] / "proxy_audit_static_pydantic.json"
+    assert path == report
 
 
 def test_path_traversal_rejected():
@@ -67,9 +73,12 @@ def test_default_report_basename_uses_allowlist():
     assert name == "proxy_audit_static_django.json"
 
 
-def test_resolve_benchmark_workspace_is_under_tmp():
+def test_resolve_benchmark_workspace_is_under_allowed_base(tmp_path, monkeypatch):
+    allowed = (tmp_path / "reports").resolve()
+    allowed.mkdir()
+    monkeypatch.setattr("QA.output_paths.DEFAULT_OUTPUT_BASES", (allowed,))
     path = resolve_benchmark_workspace("fastapi", frozenset({"fastapi"}))
-    assert path.parent == DEFAULT_OUTPUT_BASES[0]
+    assert path.parent == allowed
     assert path.name == "axis_benchmark_fastapi"
 
 

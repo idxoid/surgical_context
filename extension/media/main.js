@@ -6,7 +6,7 @@ import {
   mountLayoutHtml,
   replaceElementHtml,
   vscode
-} from "./chunk-LEBZI4EJ.js";
+} from "./chunk-G3IIAS2Y.js";
 
 // src/webview/shared/layout.ts
 function renderMessageCard(message, selectedRequestId) {

@@ -5,7 +5,7 @@ import {
   listenForHostMessages,
   mountLayoutHtml,
   vscode
-} from "./chunk-LEBZI4EJ.js";
+} from "./chunk-G3IIAS2Y.js";
 
 // src/webview/shared/dashboardDefaults.ts
 function emptyDashboardMetrics() {

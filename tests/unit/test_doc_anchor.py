@@ -41,7 +41,7 @@ def test_matches_allowed_prefix_accepts_relative_path_under_project_root(tmp_pat
     allowed = [str(project.resolve())]
 
     assert _matches_allowed_prefix("packages/common/module.ts", allowed) is True
-    assert _matches_allowed_prefix("/tmp/outside/module.ts", allowed) is False
+    assert _matches_allowed_prefix(str(tmp_path / "outside" / "module.ts"), allowed) is False
 
 
 def test_add_covers_edges_uses_unwind_for_bulk_uids():

@@ -2595,6 +2595,13 @@ class TypeScriptAdapter(TreeSitterAdapter):
         scoped_confidence: float,
         guess_confidence: float = 0.4,
     ) -> dict:
+        if rel_type == "CALLS_IMPORTED":
+            confidence = imported_confidence
+        elif rel_type == "CALLS_SCOPED":
+            confidence = scoped_confidence
+        else:
+            confidence = guess_confidence
+
         call = {
             "caller_uid": caller_uid,
             "callee_name": callee_name,
@@ -2604,11 +2611,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 if rel_type == "CALLS_IMPORTED"
                 else ("scoped" if rel_type == "CALLS_SCOPED" else "guess")
             ),
-            "confidence": (
-                imported_confidence
-                if rel_type == "CALLS_IMPORTED"
-                else (scoped_confidence if rel_type == "CALLS_SCOPED" else guess_confidence)
-            ),
+            "confidence": confidence,
             "resolver": resolver if rel_type != "CALLS_GUESS" else "ts-ambiguity-gate-v1",
             "call_site_line": line,
         }

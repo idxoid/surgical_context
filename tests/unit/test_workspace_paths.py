@@ -28,10 +28,13 @@ class FakeDb:
         return self._manifest
 
 
+TEST_PROJECT_ROOT = "qa_repo/test_proj"
+
+
 def test_registered_workspace_root_from_manifest():
-    db = FakeDb({"project_path": "/tmp/proj"})
+    db = FakeDb({"project_path": TEST_PROJECT_ROOT})
     root = registered_workspace_root(db, "ws-1")
-    assert root == Path("/tmp/proj").resolve()
+    assert root == Path(TEST_PROJECT_ROOT).resolve()
 
 
 def test_resolve_relative_path_under_root(tmp_path):

@@ -16,8 +16,11 @@ from context_engine.retrieval.manifest import (
 )
 
 
+TEST_PROJECT = "qa_repo/test_manifest_project"
+
+
 def test_build_index_manifest_shape():
-    profile = build_empty_repository_profile("/tmp/foo", "ws-1", reason="test")
+    profile = build_empty_repository_profile(TEST_PROJECT, "ws-1", reason="test")
     stats = {
         "collected": 1,
         "changed": 0,
@@ -33,7 +36,7 @@ def test_build_index_manifest_shape():
     }
     m = build_index_manifest(
         workspace_id="ws-1",
-        project_path="/tmp/foo",
+        project_path=TEST_PROJECT,
         stats=stats,
         graph_version=7,
         outcome="noop_unchanged",
@@ -48,7 +51,7 @@ def test_build_index_manifest_shape():
 
 
 def test_build_index_manifest_records_index_profile():
-    profile = build_empty_repository_profile("/tmp/foo", "ws-1", reason="test")
+    profile = build_empty_repository_profile(TEST_PROJECT, "ws-1", reason="test")
     stats = {
         "collected": 1,
         "changed": 0,
@@ -58,7 +61,7 @@ def test_build_index_manifest_records_index_profile():
     }
     m = build_index_manifest(
         workspace_id="ws-1+axis_python_v1",
-        project_path="/tmp/foo",
+        project_path=TEST_PROJECT,
         stats=stats,
         graph_version=7,
         outcome="noop_unchanged",
@@ -73,7 +76,7 @@ def test_build_index_manifest_records_index_profile():
 
 def test_noop_manifest_id_is_deterministic(monkeypatch):
     """Same workspace, graph, git, embed, outcome -> same id (not a random uuid)."""
-    profile = build_empty_repository_profile("/tmp/foo", "ws-1", reason="test")
+    profile = build_empty_repository_profile(TEST_PROJECT, "ws-1", reason="test")
     stats = {
         "collected": 1,
         "changed": 0,
@@ -83,7 +86,7 @@ def test_noop_manifest_id_is_deterministic(monkeypatch):
     git = {"commit": "abc123", "branch": "main"}
     a = compute_manifest_id(
         workspace_id="ws-1",
-        project_path="/tmp/foo",
+        project_path=TEST_PROJECT,
         stats=stats,
         graph_version=3,
         outcome="noop_unchanged",
@@ -91,7 +94,7 @@ def test_noop_manifest_id_is_deterministic(monkeypatch):
     )
     b = compute_manifest_id(
         workspace_id="ws-1",
-        project_path="/tmp/foo",
+        project_path=TEST_PROJECT,
         stats=stats,
         graph_version=3,
         outcome="noop_unchanged",
@@ -100,7 +103,7 @@ def test_noop_manifest_id_is_deterministic(monkeypatch):
     assert a == b
     c = compute_manifest_id(
         workspace_id="ws-1",
-        project_path="/tmp/foo",
+        project_path=TEST_PROJECT,
         stats={**stats, "parsed": 5},
         graph_version=3,
         outcome="noop_unchanged",
