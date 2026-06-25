@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import pytest
+
 from context_engine.axis.context_builder import build_context_for_candidates
 from context_engine.axis.role_retrieval import RoleCandidate
 from tests.unit.axis_helpers import axis_test_file_path
@@ -173,7 +175,7 @@ def test_flat_impact_candidate_preserves_directional_metadata_and_utility():
     )
 
     assert db._session.runs == []
-    assert bundle.utility_score == 0.87
+    assert bundle.utility_score == pytest.approx(0.87)
     assert bundle.seed.kind == "reverse_calls"
     assert bundle.seed.direction == "caller"
     assert bundle.seed.edge_type == "CALLS_*"

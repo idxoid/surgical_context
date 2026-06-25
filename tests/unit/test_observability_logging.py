@@ -3,6 +3,8 @@
 import json
 import logging
 
+import pytest
+
 from context_engine.observability.metrics import MetricsRegistry, RequestTrace
 
 
@@ -46,7 +48,7 @@ def test_metrics_registry_record_trace_emits_request_summary(caplog):
     assert request_event["status"] == "ok"
     assert request_event["total_latency_ms"] == 3.75
     assert request_event["latency_slo"]["status"] == "met"
-    assert request_event["latency_slo"]["target_ms"] == 200.0
+    assert request_event["latency_slo"]["target_ms"] == pytest.approx(200.0)
     assert request_event["stage_timings_ms"] == {"context": 1.25, "llm": 2.5}
     assert request_event["token_counts"] == {"context": 42}
     assert request_event["model_route"]["provider"] == "ollama"

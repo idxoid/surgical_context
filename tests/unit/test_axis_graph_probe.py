@@ -1,3 +1,5 @@
+import pytest
+
 from context_engine.axis.graph_probe import Neo4jGraphContextProbe
 
 
@@ -138,7 +140,7 @@ def test_neo4j_probe_computes_caller_package_dispersion_from_qualified_names():
     probe = Neo4jGraphContextProbe(db, "ws")
 
     # 3 callers across {pkg, other} → (2 - 1) / (3 - 1) = 0.5
-    assert probe.caller_package_dispersion("u:target") == 0.5
+    assert probe.caller_package_dispersion("u:target") == pytest.approx(0.5)
 
 
 def test_neo4j_probe_dispersion_falls_back_to_zero_without_qualified_names():
@@ -146,7 +148,7 @@ def test_neo4j_probe_dispersion_falls_back_to_zero_without_qualified_names():
     probe = Neo4jGraphContextProbe(db, "ws")
 
     # Empty qualified names → no structural package boundary visible.
-    assert probe.caller_package_dispersion("u:target") == 0.0
+    assert probe.caller_package_dispersion("u:target") == pytest.approx(0.0)
 
 
 def test_neo4j_probe_resolves_in_workspace_exception_class_key():

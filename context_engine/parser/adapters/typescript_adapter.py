@@ -2357,14 +2357,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
                     base = import_bindings.get(receiver_text, "")
                     if base:
-                        if receiver_text in module_aliases:
-                            call["callee_qualified_name"] = f"{base}.{call_name}"
-                        else:
-                            base_leaf = base.rsplit(".", 1)[-1]
-                            if base_leaf == receiver_text:
-                                call["callee_qualified_name"] = f"{base}.{call_name}"
-                            else:
-                                call["callee_qualified_name"] = f"{base}.{call_name}"
+                        call["callee_qualified_name"] = f"{base}.{call_name}"
             calls.append(call)
 
         self._append_exported_initializer_call_fallbacks(

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from context_engine.axis.role_lookahead import expand_candidates_via_neighbourhood
 from context_engine.axis.role_retrieval import RoleCandidate
 from tests.unit.axis_helpers import (
@@ -100,7 +102,7 @@ def test_neighbour_already_in_target_role_is_not_duplicated():
     )
 
     assert [c.uid for c in out["dispatch_surface"]] == ["u:dispatcher"]
-    assert out["dispatch_surface"][0].score == 0.9
+    assert out["dispatch_surface"][0].score == pytest.approx(0.9)
 
 
 def test_neighbour_that_is_another_roles_seed_is_not_injected():

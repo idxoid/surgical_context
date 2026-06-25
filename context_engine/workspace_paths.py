@@ -42,11 +42,7 @@ def registered_workspace_root(db: Any, workspace_id: str) -> Path | None:
 
 def resolve_project_root(raw_path: str) -> Path:
     """Resolve and validate a directory used as workspace project root."""
-    candidate = Path(raw_path).expanduser()
-    if not candidate.is_absolute():
-        candidate = candidate.resolve()
-    else:
-        candidate = candidate.resolve()
+    candidate = Path(raw_path).expanduser().resolve()
     if not candidate.is_dir():
         raise FileNotFoundError(f"Path not found: {raw_path}")
     return candidate

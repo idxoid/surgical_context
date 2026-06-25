@@ -420,7 +420,7 @@ def test_intent_budget_threads_proximity_utility_to_context_builder(stub_stages,
     utility_score_fn = captured["utility_score_fn"]
     assert utility_score_fn is not None
     assert utility_score_fn(_cand("near", "/x/near.py", score=0.5)) == pytest.approx(0.65)
-    assert utility_score_fn(_cand("far", "/elsewhere/far.py", score=0.5)) == 0.5
+    assert utility_score_fn(_cand("far", "/elsewhere/far.py", score=0.5)) == pytest.approx(0.5)
 
 
 def test_seed_files_use_doc_anchor_bridge_not_doc_anchor_owners(stub_stages, monkeypatch):

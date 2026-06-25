@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from context_engine.axis.axis_profiles import Axis
 from context_engine.axis.axis_ranking import apply_intent_axis_boost, intent_axes
 from context_engine.axis.role_retrieval import RoleCandidate
@@ -51,21 +53,21 @@ def test_boost_lifts_on_axis_candidate():
     out = apply_intent_axis_boost(pools, ["routing_surface"], boost=0.2)
     # route 0.5+0.2=0.7 overtakes model 0.6 (unboosted, off-axis).
     assert [c.uid for c in out["routing_surface"]] == ["u:route", "u:model"]
-    assert out["routing_surface"][0].score == 0.7
-    assert out["routing_surface"][1].score == 0.6
+    assert out["routing_surface"][0].score == pytest.approx(0.7)
+    assert out["routing_surface"][1].score == pytest.approx(0.6)
 
 
 def test_no_kinds_candidate_passes_through():
     # vector_seed / structural candidates have no kinds → no axis → no boost.
     pools = {"vector_seed": [_cand("u:v", kinds=(), score=0.5)]}
     out = apply_intent_axis_boost(pools, ["routing_surface"], boost=0.2)
-    assert out["vector_seed"][0].score == 0.5
+    assert out["vector_seed"][0].score == pytest.approx(0.5)
 
 
 def test_boost_capped_at_ceiling():
     pools = {"r": [_cand("u:r", kinds=["web_route_register"], score=0.95)]}
     out = apply_intent_axis_boost(pools, ["routing_surface"], boost=0.2)
-    assert out["r"][0].score == 1.0
+    assert out["r"][0].score == pytest.approx(1.0)
 
 
 def test_boost_once_not_per_axis():
@@ -73,10 +75,10 @@ def test_boost_once_not_per_axis():
     # the boost still applies once, not twice.
     pools = {"r": [_cand("u:d", kinds=["keyed_dispatch_callable"], score=0.5)]}
     out = apply_intent_axis_boost(pools, ["routing_surface"], boost=0.2)
-    assert out["r"][0].score == 0.7  # 0.5 + one boost, not 0.9
+    assert out["r"][0].score == pytest.approx(0.7)  # 0.5 + one boost, not 0.9
 
 
 def test_empty_intent_axes_is_noop():
     pools = {"m": [_cand("u:a", kinds=["data_model"], score=0.5)]}
     out = apply_intent_axis_boost(pools, ["impact_analysis"], boost=0.2)
-    assert out["m"][0].score == 0.5
+    assert out["m"][0].score == pytest.approx(0.5)

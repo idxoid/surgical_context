@@ -9,7 +9,11 @@ function getBaseUrl(): string {
 }
 
 function normalizeBaseUrl(url: string): string {
-  return url.replace(/\/+$/, '');
+  let end = url.length;
+  while (end > 0 && url[end - 1] === '/') {
+    end -= 1;
+  }
+  return end === url.length ? url : url.slice(0, end);
 }
 
 function getAuthToken(): string {

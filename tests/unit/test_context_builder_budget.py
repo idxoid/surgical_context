@@ -7,6 +7,8 @@ the benchmark and the live gate.
 
 from __future__ import annotations
 
+import pytest
+
 from context_engine.axis.context_builder import (
     ContextBundle,
     ContextSymbol,
@@ -71,7 +73,7 @@ def test_dedupe_bundles_by_seed_uid_keeps_highest_utility():
     )
     out = _dedupe_bundles_by_seed_uid([low, high, other])
     assert [b.seed.uid for b in out] == ["same", "other"]
-    assert out[0].utility_score == 0.9
+    assert out[0].utility_score == pytest.approx(0.9)
 
 
 def test_token_credit_dedupes_axis_duplicate_symbols_before_packing():
@@ -106,8 +108,8 @@ def test_token_credit_dedupes_axis_duplicate_symbols_before_packing():
 
 
 def test_median_and_mad():
-    assert _median([1.0, 2.0, 3.0]) == 2.0
-    assert _mad([1.0, 2.0, 3.0]) == 1.0
+    assert _median([1.0, 2.0, 3.0]) == pytest.approx(2.0)
+    assert _mad([1.0, 2.0, 3.0]) == pytest.approx(1.0)
 
 
 def test_leader_pool_metrics_one_strong_above_noise():

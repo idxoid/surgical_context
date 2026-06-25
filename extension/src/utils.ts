@@ -47,20 +47,18 @@ export interface SSEEvent {
 }
 
 export function parseSSELine(line: string): SSEEvent | null {
-  const eventMatch = line.match(/^event:\s*(.+)$/);
-  const dataMatch = line.match(/^data:\s*(.*)$/);
-
-  if (!eventMatch || !dataMatch) {
+  if (!line.startsWith('event:') || !line.startsWith('data:')) {
     return null;
   }
 
-  const event = eventMatch[1].trim();
+  const event = line.slice('event:'.length).trim();
+  const dataRaw = line.slice('data:'.length).trimStart();
   let data: unknown;
 
   try {
-    data = JSON.parse(dataMatch[1]);
+    data = JSON.parse(dataRaw);
   } catch {
-    data = dataMatch[1];
+    data = dataRaw;
   }
 
   return { event, data };

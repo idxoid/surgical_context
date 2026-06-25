@@ -26,7 +26,18 @@ export function getExplicitWorkspaceId(): string | undefined {
 }
 
 function safeWorkspaceSegment(value: string, fallback: string): string {
-  const normalized = value.trim().replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '');
+  let normalized = value.trim().replace(/[^A-Za-z0-9_.-]+/g, '-');
+  let start = 0;
+  let end = normalized.length;
+  while (start < end && normalized[start] === '-') {
+    start += 1;
+  }
+  while (end > start && normalized[end - 1] === '-') {
+    end -= 1;
+  }
+  if (start > 0 || end < normalized.length) {
+    normalized = normalized.slice(start, end);
+  }
   return normalized || fallback;
 }
 

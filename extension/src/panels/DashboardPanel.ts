@@ -24,6 +24,37 @@ import {
   resolveCloudStatus,
 } from '../graphProviderStatus';
 
+function parsePrometheusLabels(labelText: string): Record<string, string> {
+  const labels: Record<string, string> = {};
+  let i = 0;
+  while (i < labelText.length) {
+    while (i < labelText.length && (labelText[i] === ' ' || labelText[i] === ',')) {
+      i += 1;
+    }
+    if (i >= labelText.length) {
+      break;
+    }
+    let eq = i;
+    while (eq < labelText.length && labelText[eq] !== '=') {
+      eq += 1;
+    }
+    if (eq + 1 >= labelText.length || labelText[eq + 1] !== '"') {
+      break;
+    }
+    const key = labelText.slice(i, eq);
+    let close = eq + 2;
+    while (close < labelText.length && labelText[close] !== '"') {
+      close += 1;
+    }
+    if (close >= labelText.length) {
+      break;
+    }
+    labels[key] = labelText.slice(eq + 2, close);
+    i = close + 1;
+  }
+  return labels;
+}
+
 type DashboardCallResult<T> = {
   value: T | null;
   warning?: string;
@@ -522,11 +553,7 @@ export class DashboardPanel {
 
     const labels: Record<string, string> = {};
     const labelText = match[3] || '';
-    const labelRegex = /(\w+)="([^"]*)"/g;
-    let labelMatch: RegExpExecArray | null;
-    while ((labelMatch = labelRegex.exec(labelText)) !== null) {
-      labels[labelMatch[1]] = labelMatch[2];
-    }
+    Object.assign(labels, parsePrometheusLabels(labelText));
 
     const value = Number(match[4]);
     if (!Number.isFinite(value)) return null;

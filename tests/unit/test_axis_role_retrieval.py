@@ -203,7 +203,7 @@ def test_query_text_brings_in_vector_distance_and_reweights(fake_lance):
     )
 
     assert [r.name for r in results] == ["near_match", "far_match"]
-    assert results[0].vector_distance == 0.0
+    assert results[0].vector_distance == pytest.approx(0.0)
     assert results[1].vector_distance > 0
 
 

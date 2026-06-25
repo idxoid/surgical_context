@@ -53,7 +53,7 @@ def test_empty_secondary_returns_primary_unchanged():
         workspace_id=AXIS_TEST_WORKSPACE,
     )
     assert out == primary
-    assert out[0].score == 0.5
+    assert out[0].score == pytest.approx(0.5)
 
 
 def test_candidate_within_max_hops_gets_boosted():
@@ -95,7 +95,7 @@ def test_candidate_not_in_proximity_keeps_score():
     assert out[0].uid == "u:near"
     assert out[0].score == pytest.approx(0.7)
     assert out[1].uid == "u:far"
-    assert out[1].score == 0.4
+    assert out[1].score == pytest.approx(0.4)
 
 
 def test_multiple_secondary_roles_stack_boost():
@@ -138,7 +138,7 @@ def test_score_capped_at_ceiling():
         score_ceiling=1.0,
     )
 
-    assert out[0].score == 1.0
+    assert out[0].score == pytest.approx(1.0)
 
 
 def test_results_resorted_after_boost():
