@@ -62,7 +62,7 @@ def test_drop_workspace_partition_table_removes_off_catalog_dataset(tmp_path, mo
             {
                 "uid": "abc",
                 "workspace_id": ws,
-                "file_path": "/tmp/phantom.py",
+                "file_path": str(tmp_path / "phantom.py"),
             }
         ],
     )

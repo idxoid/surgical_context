@@ -54,9 +54,11 @@ def test_compile_immediate_control_flow_query_plan():
 
     assert plan.traversal_mode == "immediate_control_flow"
     assert plan.lance_predicate == "workspace_id = 'ws' AND array_has(cfg_bits, 'call_site')"
-    assert [step.name for step in plan.expansion_steps] == ["control_call_expansion"]
+    assert len(plan.expansion_steps) == 2
+    assert [step.name for step in plan.expansion_steps if step.enabled] == ["control_call_expansion"]
     assert plan.expansion_steps[0].direction == "out"
     assert plan.expansion_steps[0].max_depth == 2
+    assert plan.expansion_steps[1].enabled is False
     assert plan.stop_conditions == ("token_budget", "call_depth_exhausted")
     assert plan.limit == 12
 
@@ -74,7 +76,8 @@ def test_compile_deferred_binding_query_plan_keeps_binding_then_dispatch_order()
         workspace_id="ws",
     )
 
-    assert [step.name for step in plan.expansion_steps] == [
+    assert len(plan.expansion_steps) == 2
+    assert [step.name for step in plan.expansion_steps if step.enabled] == [
         "binding_structure_expansion",
         "deferred_runtime_dispatch",
     ]

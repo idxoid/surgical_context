@@ -7,16 +7,22 @@ from context_engine.parser.uid import (
 )
 
 
-def test_module_name_from_path_with_project_root_preserves_external_repo_structure():
-    file_path = "/tmp/repos/express/lib/application.js"
-    module = module_name_from_path(file_path, project_root="/tmp/repos/express")
+def test_module_name_from_path_with_project_root_preserves_external_repo_structure(tmp_path):
+    express_root = tmp_path / "repos" / "express"
+    file_path = express_root / "lib" / "application.js"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_text("// stub", encoding="utf-8")
+    module = module_name_from_path(str(file_path), project_root=str(express_root))
     assert module == "lib.application"
 
 
-def test_module_name_from_path_uses_scoped_project_root():
-    file_path = "/tmp/repos/vue/packages/runtime-core/src/apiWatch.ts"
-    with project_root_scope("/tmp/repos/vue"):
-        module = module_name_from_path(file_path)
+def test_module_name_from_path_uses_scoped_project_root(tmp_path):
+    vue_root = tmp_path / "repos" / "vue"
+    file_path = vue_root / "packages" / "runtime-core" / "src" / "apiWatch.ts"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_text("// stub", encoding="utf-8")
+    with project_root_scope(str(vue_root)):
+        module = module_name_from_path(str(file_path))
     assert module == "packages.runtime-core.src.apiWatch"
 
 

@@ -185,14 +185,6 @@ def _pin_anchor_symbol(
             f"/{stored.rsplit('/', 1)[-1]}"
         ):
             return True
-        if "/context_engine/" in requested_path:
-            alt = requested_path.replace("/context_engine/", "/context_engine/", 1)
-            if stored == alt or stored.endswith(alt):
-                return True
-        elif "/context_engine/" in requested_path:
-            alt = requested_path.replace("/context_engine/", "/context_engine/", 1)
-            if stored == alt or stored.endswith(alt):
-                return True
         return stored.endswith(f"/{requested_path.rsplit('/', 1)[-1]}")
 
     path_matches = [c for c in candidates if c.name == name and _path_matches(c.file_path)]

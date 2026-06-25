@@ -437,7 +437,7 @@ def walk_neighbours(
             starts = [su]
         if not starts:
             continue
-        dist: dict[str, int] = {st: 0 for st in starts}
+        dist: dict[str, int] = dict.fromkeys(starts, 0)
         frontier = list(starts)
         for hop in range(1, max_hops + 1):
             nxt: list[str] = []

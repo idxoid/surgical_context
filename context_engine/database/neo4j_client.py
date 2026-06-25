@@ -2841,11 +2841,6 @@ class Neo4jClient:
         if not path:
             return None
         suffix = f"/{path.rsplit('/', 1)[-1]}"
-        alt_path = ""
-        if "/context_engine/" in path:
-            alt_path = path.replace("/context_engine/", "/context_engine/", 1)
-        elif "/context_engine/" in path:
-            alt_path = path.replace("/context_engine/", "/context_engine/", 1)
         with self.driver.session() as session:
             rows = session.run(
                 """
@@ -2853,14 +2848,12 @@ class Neo4jClient:
                 WHERE f.path = $path
                    OR f.path ENDS WITH $path
                    OR f.path ENDS WITH $suffix
-                   OR ($alt_path <> "" AND (f.path = $alt_path OR f.path ENDS WITH $alt_path))
                 RETURN s.uid AS uid, f.path AS path
                 """,
                 name=name,
                 workspace_id=workspace_id,
                 path=path,
                 suffix=suffix,
-                alt_path=alt_path,
             )
             candidates = [
                 {"uid": str(row["uid"]), "path": str(row["path"] or "")}

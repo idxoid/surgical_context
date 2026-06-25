@@ -68,6 +68,7 @@ class GraphExpansionStep:
     edge_types: tuple[str, ...]
     direction: GraphDirection
     max_depth: int = 1
+    enabled: bool = True
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -83,6 +84,7 @@ class GraphExpansionStep:
             "edge_types": list(self.edge_types),
             "direction": self.direction,
             "max_depth": self.max_depth,
+            "enabled": self.enabled,
         }
 
 
@@ -117,7 +119,7 @@ class AxisQueryPlan:
     optional_bits: tuple[AxisRequirement, ...]
     container_kinds: tuple[str, ...]
     target_node_kinds: tuple[str, ...]
-    expansion_steps: tuple[GraphExpansionStep, ...]
+    expansion_steps: tuple[GraphExpansionStep, GraphExpansionStep]
     stop_conditions: tuple[str, ...]
     limit: int
     workspace_id: str
@@ -130,7 +132,7 @@ class AxisQueryPlan:
             "optional_bits": [{"axis": req.axis, "bit": req.bit} for req in self.optional_bits],
             "container_kinds": list(self.container_kinds),
             "target_node_kinds": list(self.target_node_kinds),
-            "expansion_steps": [step.to_dict() for step in self.expansion_steps],
+            "expansion_steps": [step.to_dict() for step in self.expansion_steps if step.enabled],
             "stop_conditions": list(self.stop_conditions),
             "limit": self.limit,
             "workspace_id": self.workspace_id,
@@ -184,32 +186,43 @@ def render_lance_predicate(
     return " AND ".join(clauses)
 
 
-def _expansion_steps_for_mode(mode: TraversalMode) -> tuple[GraphExpansionStep, ...]:
-    if mode == "immediate_control_flow":
-        return (
-            GraphExpansionStep(
-                name="control_call_expansion",
-                edge_types=_CONTROL_EDGE_TYPES,
-                direction="out",
-                max_depth=2,
-            ),
-        )
-    if mode == "deferred_binding_flow":
-        return (
-            GraphExpansionStep(
-                name="binding_structure_expansion",
-                edge_types=_STRUCTURAL_BINDING_EDGE_TYPES,
-                direction="both",
-                max_depth=1,
-            ),
-            GraphExpansionStep(
-                name="deferred_runtime_dispatch",
-                edge_types=_CONTROL_EDGE_TYPES,
-                direction="both",
-                max_depth=2,
-            ),
-        )
-    raise ValueError(f"Unknown traversal mode: {mode}")
+_CONTROL_CALL_EXPANSION = GraphExpansionStep(
+    name="control_call_expansion",
+    edge_types=_CONTROL_EDGE_TYPES,
+    direction="out",
+    max_depth=2,
+)
+_BINDING_STRUCTURE_EXPANSION = GraphExpansionStep(
+    name="binding_structure_expansion",
+    edge_types=_STRUCTURAL_BINDING_EDGE_TYPES,
+    direction="both",
+    max_depth=1,
+)
+_DEFERRED_RUNTIME_DISPATCH = GraphExpansionStep(
+    name="deferred_runtime_dispatch",
+    edge_types=_CONTROL_EDGE_TYPES,
+    direction="both",
+    max_depth=2,
+)
+_SKIPPED_DEFERRED_RUNTIME_DISPATCH = GraphExpansionStep(
+    name="deferred_runtime_dispatch",
+    edge_types=_CONTROL_EDGE_TYPES,
+    direction="both",
+    max_depth=2,
+    enabled=False,
+)
+
+_EXPANSION_STEPS: dict[TraversalMode, tuple[GraphExpansionStep, GraphExpansionStep]] = {
+    "immediate_control_flow": (_CONTROL_CALL_EXPANSION, _SKIPPED_DEFERRED_RUNTIME_DISPATCH),
+    "deferred_binding_flow": (_BINDING_STRUCTURE_EXPANSION, _DEFERRED_RUNTIME_DISPATCH),
+}
+
+
+def _expansion_steps_for_mode(mode: TraversalMode) -> tuple[GraphExpansionStep, GraphExpansionStep]:
+    try:
+        return _EXPANSION_STEPS[mode]
+    except KeyError as exc:
+        raise ValueError(f"Unknown traversal mode: {mode}") from exc
 
 
 def _stop_conditions_for_mode(mode: TraversalMode) -> tuple[str, ...]:

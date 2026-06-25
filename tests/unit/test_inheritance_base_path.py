@@ -10,13 +10,17 @@ those two fields without going through the database.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from context_engine.parser.adapters.python_adapter import PythonAdapter
+
+_SYNTHETIC_PY = str(Path(__file__).resolve().parent / "synthetic.py")
 
 
 def _bases(source: str) -> list[tuple[str, str, str]]:
     """Return ``(class_uid, superclass_name, superclass_path)`` per parsed base."""
     adapter = PythonAdapter()
-    edges = adapter.extract_inheritance(source, "/tmp/synthetic.py")
+    edges = adapter.extract_inheritance(source, _SYNTHETIC_PY)
     return [(e.subclass_uid, e.superclass_name, e.superclass_path) for e in edges]
 
 

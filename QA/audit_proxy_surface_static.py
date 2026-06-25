@@ -16,6 +16,47 @@ from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter 
 
 QA = Path(__file__).resolve().parent
 
+_SKIP_PARTS = frozenset({".git", "__pycache__", ".tox", "node_modules"})
+
+
+def _skip_path(path: Path) -> bool:
+    return any(part in _SKIP_PARTS for part in path.parts)
+
+
+def _read_source(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _is_phantom_typed_callee(qn: str) -> bool:
+    return (
+        qn.startswith("builtins.")
+        or qn.count(".") < 2
+        or qn.split(".")[-2] in {"self", "cls"}
+    )
+
+
+def _record_typed_call(
+    call: dict,
+    rel: str,
+    typed_samples: list[dict],
+    phantom_risk: list[dict],
+) -> None:
+    qn = call.get("callee_qualified_name")
+    if qn and len(typed_samples) < 12:
+        typed_samples.append(
+            {
+                "file": rel,
+                "line": call.get("call_site_line"),
+                "callee": qn,
+                "callee_name": call.get("callee_name"),
+            }
+        )
+    if qn and _is_phantom_typed_callee(qn):
+        phantom_risk.append({"file": rel, "callee": qn, "line": call.get("call_site_line")})
+
 
 def _scan_python_tree(root: Path) -> dict:
     adapter = PythonAdapter()
@@ -26,38 +67,19 @@ def _scan_python_tree(root: Path) -> dict:
     files = 0
 
     for path in sorted(root.rglob("*.py")):
-        if any(part in {".git", "__pycache__", ".tox", "node_modules"} for part in path.parts):
+        if _skip_path(path):
             continue
-        try:
-            source = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        source = _read_source(path)
+        if source is None:
             continue
         rel = str(path.relative_to(root))
         files += 1
-        file_bindings = adapter.extract_proxy_bindings(source, rel)
-        bindings.extend(file_bindings)
-        calls = adapter.extract_calls_from_source(source, rel)
-        for call in calls:
+        bindings.extend(adapter.extract_proxy_bindings(source, rel))
+        for call in adapter.extract_calls_from_source(source, rel):
             if call.get("tier") != "typed":
                 continue
             typed_calls += 1
-            qn = call.get("callee_qualified_name")
-            if qn and len(typed_samples) < 12:
-                typed_samples.append(
-                    {
-                        "file": rel,
-                        "line": call.get("call_site_line"),
-                        "callee": qn,
-                        "callee_name": call.get("callee_name"),
-                    }
-                )
-            # Heuristic: typed edge to stdlib-ish or overly short type names
-            if qn and (
-                qn.startswith("builtins.")
-                or qn.count(".") < 2
-                or qn.split(".")[-2] in {"self", "cls"}
-            ):
-                phantom_risk.append({"file": rel, "callee": qn, "line": call.get("call_site_line")})
+            _record_typed_call(call, rel, typed_samples, phantom_risk)
 
     return {
         "files_scanned": files,

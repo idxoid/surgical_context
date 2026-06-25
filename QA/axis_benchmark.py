@@ -230,55 +230,105 @@ def _compute_recall(expected: list[str], retrieved: list[str]) -> tuple[float, l
     return len(matched) / len(expected), matched
 
 
-def run_question(
-    question_entry: dict[str, Any],
-    *,
-    db: Neo4jClient,
-    lance: LanceDBClient,
-    top_roles: int,
-    per_role_limit: int,
-    max_impacted: int,
-    intent_threshold: float,
-    context_per_seed: int,
-    context_seeds_per_role: int | None = None,
-    intent_budget: bool = True,
-    base_token_budget: int = 6000,
-    render_mode_override: str | None = None,
-    ignore_anchor: bool = False,
-    hook_transparency: bool = False,
-    workspace_overrides: dict[str, str] | None = None,
-) -> QuestionResult:
-    repo = str(question_entry.get("repo") or "")
-    qid = str(question_entry.get("id") or "")
-    result = QuestionResult(
-        question_id=qid,
-        repo=repo,
+def _question_result_from_entry(question_entry: dict[str, Any]) -> QuestionResult:
+    return QuestionResult(
+        question_id=str(question_entry.get("id") or ""),
+        repo=str(question_entry.get("repo") or ""),
         workspace_id=None,
         question=str(question_entry.get("question") or ""),
         mechanism=str(question_entry.get("mechanism") or ""),
         expected_files=[str(p) for p in (question_entry.get("expected_files") or [])],
     )
 
+
+def _resolve_question_workspace(
+    repo: str,
+    result: QuestionResult,
+    workspace_overrides: dict[str, str] | None,
+) -> str | None:
     overrides = workspace_overrides or {}
     workspace_id = overrides.get(repo) or REPO_TO_WORKSPACE.get(repo)
     if workspace_id is None:
         result.skipped_reason = f"repo {repo!r} not indexed under axis_python_v1"
-        return result
+        return None
     result.workspace_id = workspace_id
+    return workspace_id
 
-    # The whole read-side pipeline is the canonical ``run_axis_retrieval``
-    # — the same function the ``/ask/axis`` endpoint runs, so this
-    # benchmark validates that exact code. ``context_seeds_per_role=None``
-    # feeds the entire pool into context expansion (the historical
-    # benchmark behaviour); the seed / pool / bundle recall layers below
-    # read straight off the layered result.
-    #
-    # The default benchmark path measures production /ask budgeting: full
-    # ranked scope, then the echelon-2 marginal token-credit packer. The seed /
-    # pool layers are unaffected (budgeting lives in context expansion); only
-    # the bundle layer reflects the cost.
-    timer = _StageTimer()
-    retrieval = run_axis_retrieval(
+
+def _count_rendered_tokens(bundles: Any) -> int:
+    seen: set[str] = set()
+    total = 0
+    for bundle in bundles:
+        for sym in bundle.all_symbols():
+            if sym.uid in seen:
+                continue
+            seen.add(sym.uid)
+            total += estimate_text_tokens(sym.code or "")
+    return total
+
+
+def _apply_intent(result: QuestionResult, intent: Any) -> None:
+    if not intent:
+        return
+    result.intent_top_role = intent[0].role
+    result.intent_top_similarity = intent[0].similarity
+    result.intent_matches = [(m.role, m.similarity) for m in intent]
+
+
+def _ordered_unique_paths(paths: Any) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if path and path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def _populate_recall_layers(result: QuestionResult, retrieval: Any) -> None:
+    result.seed_files = retrieval.seed_files
+    result.seed_recall, result.seed_matched = _compute_recall(
+        result.expected_files, result.seed_files
+    )
+
+    result.pool_files = _ordered_unique_paths(
+        getattr(cand, "file_path", "") or "" for cand in retrieval.candidates_for_context
+    )
+    result.pool_recall, result.pool_matched = _compute_recall(
+        result.expected_files, result.pool_files
+    )
+
+    result.retrieved_files = _ordered_unique_paths(
+        sym.file_path or ""
+        for bundle in retrieval.bundles
+        for sym in bundle.all_symbols()
+    )
+    result.file_recall, result.matched_files = _compute_recall(
+        result.expected_files, result.retrieved_files
+    )
+
+
+def _run_axis_retrieval_for_question(
+    *,
+    result: QuestionResult,
+    question_entry: dict[str, Any],
+    workspace_id: str,
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    timer: _StageTimer,
+    top_roles: int,
+    per_role_limit: int,
+    max_impacted: int,
+    intent_threshold: float,
+    context_per_seed: int,
+    context_seeds_per_role: int | None,
+    intent_budget: bool,
+    base_token_budget: int,
+    render_mode_override: str | None,
+    ignore_anchor: bool,
+    hook_transparency: bool,
+) -> Any:
+    return run_axis_retrieval(
         result.question,
         workspace_id=workspace_id,
         db=db,
@@ -298,6 +348,62 @@ def run_question(
         hook_transparency=hook_transparency,
         trace=timer,
     )
+
+
+def run_question(
+    question_entry: dict[str, Any],
+    *,
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    top_roles: int,
+    per_role_limit: int,
+    max_impacted: int,
+    intent_threshold: float,
+    context_per_seed: int,
+    context_seeds_per_role: int | None = None,
+    intent_budget: bool = True,
+    base_token_budget: int = 6000,
+    render_mode_override: str | None = None,
+    ignore_anchor: bool = False,
+    hook_transparency: bool = False,
+    workspace_overrides: dict[str, str] | None = None,
+) -> QuestionResult:
+    result = _question_result_from_entry(question_entry)
+    workspace_id = _resolve_question_workspace(result.repo, result, workspace_overrides)
+    if workspace_id is None:
+        return result
+
+    # The whole read-side pipeline is the canonical ``run_axis_retrieval``
+    # — the same function the ``/ask/axis`` endpoint runs, so this
+    # benchmark validates that exact code. ``context_seeds_per_role=None``
+    # feeds the entire pool into context expansion (the historical
+    # benchmark behaviour); the seed / pool / bundle recall layers below
+    # read straight off the layered result.
+    #
+    # The default benchmark path measures production /ask budgeting: full
+    # ranked scope, then the echelon-2 marginal token-credit packer. The seed /
+    # pool layers are unaffected (budgeting lives in context expansion); only
+    # the bundle layer reflects the cost.
+    timer = _StageTimer()
+    retrieval = _run_axis_retrieval_for_question(
+        result=result,
+        question_entry=question_entry,
+        workspace_id=workspace_id,
+        db=db,
+        lance=lance,
+        timer=timer,
+        top_roles=top_roles,
+        per_role_limit=per_role_limit,
+        max_impacted=max_impacted,
+        intent_threshold=intent_threshold,
+        context_per_seed=context_per_seed,
+        context_seeds_per_role=context_seeds_per_role,
+        intent_budget=intent_budget,
+        base_token_budget=base_token_budget,
+        render_mode_override=render_mode_override,
+        ignore_anchor=ignore_anchor,
+        hook_transparency=hook_transparency,
+    )
     # Post-processing cost: the ``context`` stage is the build_context graph
     # expansion + per-uid code fetch; rendered_tokens is the token volume of
     # the DEDUPED bundle code (after any signature trim / budget cut) — i.e.
@@ -305,62 +411,10 @@ def run_question(
     # ``axis_bundles_to_prompt_context`` does (no double-counting shared
     # neighbours across bundles).
     result.context_seconds = round(timer.durations.get("context", 0.0), 4)
-    _seen_render: set[str] = set()
-    _render_tokens = 0
-    for _b in retrieval.bundles:
-        for _s in _b.all_symbols():
-            if _s.uid in _seen_render:
-                continue
-            _seen_render.add(_s.uid)
-            _render_tokens += estimate_text_tokens(_s.code or "")
-    result.rendered_tokens = _render_tokens
-
-    intent = retrieval.intent
-    if intent:
-        result.intent_top_role = intent[0].role
-        result.intent_top_similarity = intent[0].similarity
-        result.intent_matches = [(m.role, m.similarity) for m in intent]
-
-    candidates_for_context = retrieval.candidates_for_context
-    result.candidate_count = len(candidates_for_context)
-
-    # Layer 1 — seed (pure retrieval) recall, captured before any pool pass.
-    result.seed_files = retrieval.seed_files
-    seed_recall, seed_matched = _compute_recall(result.expected_files, result.seed_files)
-    result.seed_recall = seed_recall
-    result.seed_matched = seed_matched
-
-    # Layer 2 — pool (engine) recall: the candidate POOL's files BEFORE
-    # per-candidate context expansion. This is what the retrieval + the
-    # reactive pool passes actually selected; the gap to the bundle metric
-    # below is what the per-seed traversal in build_context_for_candidates
-    # adds (and may be masking).
-    pool_files_ordered: list[str] = []
-    seen_pool: set[str] = set()
-    for cand in candidates_for_context:
-        path = getattr(cand, "file_path", "") or ""
-        if path and path not in seen_pool:
-            seen_pool.add(path)
-            pool_files_ordered.append(path)
-    result.pool_files = pool_files_ordered
-    pool_recall, pool_matched = _compute_recall(result.expected_files, result.pool_files)
-    result.pool_recall = pool_recall
-    result.pool_matched = pool_matched
-
-    # Layer 3 — bundle recall: after per-candidate context expansion.
-    retrieved_paths_ordered: list[str] = []
-    seen: set[str] = set()
-    for bundle in retrieval.bundles:
-        for sym in bundle.all_symbols():
-            path = sym.file_path or ""
-            if path and path not in seen:
-                seen.add(path)
-                retrieved_paths_ordered.append(path)
-    result.retrieved_files = retrieved_paths_ordered
-
-    recall, matched = _compute_recall(result.expected_files, result.retrieved_files)
-    result.file_recall = recall
-    result.matched_files = matched
+    result.rendered_tokens = _count_rendered_tokens(retrieval.bundles)
+    _apply_intent(result, retrieval.intent)
+    result.candidate_count = len(retrieval.candidates_for_context)
+    _populate_recall_layers(result, retrieval)
     return result
 
 
@@ -466,7 +520,7 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
     skipped = [r for r in results if r.skipped_reason is not None]
     overall_recall = sum(r.file_recall for r in scored) / len(scored) if scored else 0.0
     full_recall_count = sum(1 for r in scored if r.file_recall >= 1.0 - 1e-9)
-    zero_recall_count = sum(1 for r in scored if r.file_recall == 0.0)
+    zero_recall_count = sum(1 for r in scored if r.file_recall <= 1e-9)
 
     # Three-layer aggregates: seed (pure retrieval) ≤ pool (after the
     # pool expander) ≤ bundle (after per-candidate context expansion).
@@ -480,10 +534,10 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
 
     overall_seed_recall = _mean("seed_recall")
     seed_full_count = sum(1 for r in scored if r.seed_recall >= 1.0 - 1e-9)
-    seed_zero_count = sum(1 for r in scored if r.seed_recall == 0.0)
+    seed_zero_count = sum(1 for r in scored if r.seed_recall <= 1e-9)
     overall_pool_recall = _mean("pool_recall")
     pool_full_count = sum(1 for r in scored if r.pool_recall >= 1.0 - 1e-9)
-    pool_zero_count = sum(1 for r in scored if r.pool_recall == 0.0)
+    pool_zero_count = sum(1 for r in scored if r.pool_recall <= 1e-9)
 
     masked_by_pool_expander = [
         {
@@ -516,7 +570,7 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             "questions": len(items),
             "mean_recall": sum(r.file_recall for r in items) / len(items),
             "full_recall": sum(1 for r in items if r.file_recall >= 1.0 - 1e-9),
-            "zero_recall": sum(1 for r in items if r.file_recall == 0.0),
+            "zero_recall": sum(1 for r in items if r.file_recall <= 1e-9),
             "seed_mean_recall": sum(r.seed_recall for r in items) / len(items),
             "seed_full_recall": sum(1 for r in items if r.seed_recall >= 1.0 - 1e-9),
             "pool_mean_recall": sum(r.pool_recall for r in items) / len(items),
@@ -962,7 +1016,7 @@ def main() -> None:
             recall_sum += res.file_recall
             if res.file_recall >= 1.0 - 1e-9:
                 full_count += 1
-            if res.file_recall == 0.0:
+            if res.file_recall <= 1e-9:
                 zero_count += 1
 
         if progress_enabled:

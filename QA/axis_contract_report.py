@@ -33,7 +33,10 @@ def _list_strings(value: Any) -> list[str]:
     return [str(value)] if str(value) else []
 
 
-def _axis_facts_from_json(raw: Any) -> list[AxisFact]:
+_VALID_AXIS_NAMES = frozenset({"cfg", "dfg", "struct"})
+
+
+def _parse_json_array(raw: Any) -> list[Any]:
     if isinstance(raw, str):
         try:
             data = json.loads(raw or "[]")
@@ -43,44 +46,43 @@ def _axis_facts_from_json(raw: Any) -> list[AxisFact]:
         data = raw
     else:
         return []
+    return data if isinstance(data, list) else []
+
+
+def _axis_fact_from_dict(item: dict[str, Any]) -> AxisFact | None:
+    axis = str(item.get("axis") or "")
+    bit = str(item.get("bit") or "")
+    if axis not in _VALID_AXIS_NAMES or not bit:
+        return None
+    payload = item.get("payload")
+    return AxisFact(
+        symbol_uid=str(item.get("symbol_uid") or ""),
+        qualified_name=str(item.get("qualified_name") or ""),
+        symbol_kind=str(item.get("symbol_kind") or "symbol"),
+        axis=axis,  # type: ignore[arg-type]
+        bit=bit,
+        line=int(item.get("line") or 0),
+        evidence=str(item.get("evidence") or ""),
+        ast_kind=str(item.get("ast_kind") or ""),
+        payload=payload if isinstance(payload, dict) else {},
+    )
+
+
+def _axis_facts_from_json(raw: Any) -> list[AxisFact]:
     facts: list[AxisFact] = []
-    for item in data:
+    for item in _parse_json_array(raw):
         if not isinstance(item, dict):
             continue
-        axis = str(item.get("axis") or "")
-        bit = str(item.get("bit") or "")
-        if axis not in {"cfg", "dfg", "struct"} or not bit:
-            continue
-        payload = item.get("payload")
-        facts.append(
-            AxisFact(
-                symbol_uid=str(item.get("symbol_uid") or ""),
-                qualified_name=str(item.get("qualified_name") or ""),
-                symbol_kind=str(item.get("symbol_kind") or "symbol"),
-                axis=axis,  # type: ignore[arg-type]
-                bit=bit,
-                line=int(item.get("line") or 0),
-                evidence=str(item.get("evidence") or ""),
-                ast_kind=str(item.get("ast_kind") or ""),
-                payload=payload if isinstance(payload, dict) else {},
-            )
-        )
+        fact = _axis_fact_from_dict(item)
+        if fact is not None:
+            facts.append(fact)
     return facts
 
 
 def _contract_names_from_json(raw: Any) -> tuple[str, ...]:
-    if isinstance(raw, str):
-        try:
-            data = json.loads(raw or "[]")
-        except json.JSONDecodeError:
-            return ()
-    elif isinstance(raw, list):
-        data = raw
-    else:
-        return ()
     names = {
         str(item.get("contract") or "")
-        for item in data
+        for item in _parse_json_array(raw)
         if isinstance(item, dict) and item.get("contract")
     }
     return tuple(sorted(names))
