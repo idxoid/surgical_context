@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "surgical-context": {
+      "command": "/home/idxoid/surgical_context/.venv/bin/python",
+      "args": ["-m", "surgical_context_mcp"],
+      "env": {
+        "PYTHONPATH": "/home/idxoid/surgical_context:/home/idxoid/surgical_context/mcp_server",
+        "SURGICAL_CONTEXT_WORKSPACE": "qa_repo/surgical_context@main"
+      }
+    }
+  }
+}

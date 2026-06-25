@@ -1,4 +1,4 @@
-import { PromptContextPayload } from '../../context_engineClient';
+import { IntentMatch, PromptContextPayload } from '../../context_engineClient';
 
 export function escapeHtml(text: string): string {
   const map: { [key: string]: string } = {
@@ -9,6 +9,40 @@ export function escapeHtml(text: string): string {
     "'": '&#039;',
   };
   return text.replace(/[&<>"']/g, m => map[m]);
+}
+
+export function renderIntentTab(matches: IntentMatch[] | null): string {
+  if (matches === null) {
+    return `<div class="inspector-tab-content"><p style="color:var(--vscode-descriptionForeground);">Classifying intent…</p></div>`;
+  }
+  if (matches.length === 0) {
+    return `<div class="inspector-tab-content"><p style="color:var(--vscode-descriptionForeground);">No role matched above threshold for this question.</p></div>`;
+  }
+  const rows = matches
+    .map(m => {
+      const pct = Math.max(0, Math.min(100, Math.round(m.similarity * 100)));
+      return `
+        <div style="margin:0 0 12px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <span style="font-weight:600;">${escapeHtml(m.role)}</span>
+            <span style="font-variant-numeric:tabular-nums;color:var(--vscode-descriptionForeground);">${m.similarity.toFixed(2)}</span>
+          </div>
+          <div style="height:6px;background:var(--vscode-editorWidget-border,#444);border-radius:3px;overflow:hidden;margin:3px 0 4px;">
+            <div style="height:100%;width:${pct}%;background:var(--vscode-progressBar-background,#0a84ff);"></div>
+          </div>
+          <div style="font-size:12px;color:var(--vscode-descriptionForeground);">${escapeHtml(m.description)}</div>
+        </div>
+      `;
+    })
+    .join('');
+  return `
+    <div class="inspector-tab-content">
+      <p style="color:var(--vscode-descriptionForeground);font-size:12px;margin:0 0 12px;">
+        Role intent the retrieval classifier inferred from the question (embedding cosine vs role descriptions) — this drives which axes are searched.
+      </p>
+      ${rows}
+    </div>
+  `;
 }
 
 export function renderPrimarySourceTab(context: PromptContextPayload): string {

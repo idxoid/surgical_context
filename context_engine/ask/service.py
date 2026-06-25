@@ -21,6 +21,8 @@ from context_engine.api.schemas import (
     AxisContextBundleResponse,
     AxisContextSymbolResponse,
     AxisIntentMatchResponse,
+    IntentRequest,
+    IntentResponse,
 )
 from context_engine.api.sse import format_sse
 from context_engine.ask.context_builder import AskContextBuilder
@@ -533,6 +535,42 @@ class AskService:
             )
         finally:
             self.metrics.record_trace(trace, status)
+
+    def classify_intent(
+        self,
+        req: IntentRequest,
+        *,
+        base_workspace_id: str,
+        trace: RequestTrace,
+    ) -> IntentResponse:
+        """Classify-only intent preview — embedding cosine of the question vs
+        role descriptions. No Neo4j, no retrieval; the cheap path for an editor
+        intent panel. Mirrors the intent stage of ``ask_axis``."""
+        from context_engine.axis.intent_classifier import classify_intent
+
+        index_workspace_id = effective_index_workspace_id(base_workspace_id)
+        lance = self.context_builder.lance_for_index_workspace(index_workspace_id)
+
+        def embed(text: str):
+            return lance._embed([text])[0]  # noqa: SLF001
+
+        with trace.stage("intent"):
+            matches = classify_intent(
+                req.question,
+                embed,
+                top_k=req.top_roles,
+                threshold=req.intent_threshold,
+            )
+        return IntentResponse(
+            question=req.question,
+            workspace_id=index_workspace_id,
+            intent_matches=[
+                AxisIntentMatchResponse(
+                    role=m.role, similarity=m.similarity, description=m.description
+                )
+                for m in matches
+            ],
+        )
 
     def ask_axis(
         self,

@@ -22,6 +22,13 @@ from context_engine.parser.uid import (
 class JavaScriptAdapter(TreeSitterAdapter):
     """JavaScript parser adapter."""
 
+    # HTTP endpoint extraction is shared with the TypeScript adapter below.
+    # Keep its AST helpers on this adapter as well so the shared implementation
+    # can preserve JavaScript-specific UID generation through ``self``.
+    _CLASS_DECL_TYPES = TypeScriptAdapter._CLASS_DECL_TYPES
+    _CONTROLLER_DECORATORS = TypeScriptAdapter._CONTROLLER_DECORATORS
+    _DECORATABLE_NODE_TYPES = TypeScriptAdapter._DECORATABLE_NODE_TYPES
+
     _PUBLIC_VARIABLE_VALUE_TYPES = frozenset(
         {
             "call_expression",
@@ -115,6 +122,21 @@ class JavaScriptAdapter(TreeSitterAdapter):
         yield from TypeScriptAdapter._iter_nodes(node)
 
     _node_text = staticmethod(TypeScriptAdapter._node_text)
+
+    _member_expression_dotted = TypeScriptAdapter._member_expression_dotted
+    _decorator_base_name = TypeScriptAdapter._decorator_base_name
+    _member_expression_path = TypeScriptAdapter._member_expression_path
+    _nth_positional_argument = TypeScriptAdapter._nth_positional_argument
+    _http_call_site_uid = TypeScriptAdapter._http_call_site_uid
+    _enclosing_class_uid = TypeScriptAdapter._enclosing_class_uid
+    _http_path_from_decorator = TypeScriptAdapter._http_path_from_decorator
+    _http_path_from_call_argument = TypeScriptAdapter._http_path_from_call_argument
+    _http_handler_uid_from_call = TypeScriptAdapter._http_handler_uid_from_call
+    _uid_for_symbol_name = TypeScriptAdapter._uid_for_symbol_name
+
+    @classmethod
+    def _decoratable_sibling_after(cls, parent, deco):
+        return TypeScriptAdapter._decoratable_sibling_after(parent, deco)
 
     def _string_literal_text(self, node) -> str:
         return TypeScriptAdapter._string_literal_text(cast(TypeScriptAdapter, self), node)

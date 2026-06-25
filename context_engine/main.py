@@ -394,6 +394,7 @@ from context_engine.api.routes import search as _search_routes
 ask = _ask_routes.ask  # noqa: F401 — re-exported for endpoint tests
 ask_axis = _ask_routes.ask_axis  # noqa: F401
 ask_stream = _ask_routes.ask_stream  # noqa: F401
+intent = _ask_routes.intent  # noqa: F401
 audit_actions = _auth_routes.audit_actions  # noqa: F401
 auth_token = _auth_routes.auth_token  # noqa: F401
 clear_overlay = _overlay_routes.clear_overlay  # noqa: F401

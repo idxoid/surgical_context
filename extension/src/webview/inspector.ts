@@ -3,6 +3,7 @@ const vscode = acquireVsCodeApi();
 
 import {
   HostToWebviewMessage,
+  IntentMatch,
   PromptContextPayload,
 } from './shared/protocol';
 import {
@@ -12,17 +13,19 @@ import {
   renderPromptJsonTab,
   renderApiPayloadTab,
   renderTokenBreakdownTab,
+  renderIntentTab,
   escapeHtml,
 } from './shared/inspectorLayout';
 
 interface TabState {
-  activeTab: 'primary' | 'graph' | 'docs' | 'json' | 'api' | 'tokens';
+  activeTab: 'primary' | 'intent' | 'graph' | 'docs' | 'json' | 'api' | 'tokens';
 }
 
 class InspectorPanel {
   private context: PromptContextPayload | null = null;
   private symbol: string | undefined;
   private question: string | undefined;
+  private intentMatches: IntentMatch[] | null = null;
   private tabState: TabState = { activeTab: 'primary' };
 
   constructor() {
@@ -42,7 +45,15 @@ class InspectorPanel {
           this.context = message.context || null;
           this.symbol = message.symbol;
           this.question = message.question;
+          this.intentMatches = null;
           this.render();
+          break;
+
+        case 'inspector.intentLoaded':
+          this.intentMatches = message.intentMatches;
+          if (this.tabState.activeTab === 'intent') {
+            this.render();
+          }
           break;
 
         case 'inspector.notAvailable':
@@ -76,6 +87,9 @@ class InspectorPanel {
         <button class="tab-button ${this.tabState.activeTab === 'primary' ? 'active' : ''}" data-tab="primary">
           Primary Source
         </button>
+        <button class="tab-button ${this.tabState.activeTab === 'intent' ? 'active' : ''}" data-tab="intent">
+          Intent
+        </button>
         <button class="tab-button ${this.tabState.activeTab === 'graph' ? 'active' : ''}" data-tab="graph">
           Graph Context
         </button>
@@ -100,6 +114,9 @@ class InspectorPanel {
     switch (this.tabState.activeTab) {
       case 'primary':
         tabContent = renderPrimarySourceTab(this.context);
+        break;
+      case 'intent':
+        tabContent = renderIntentTab(this.intentMatches);
         break;
       case 'graph':
         tabContent = renderGraphContextTab(this.context);
@@ -208,7 +225,7 @@ class InspectorPanel {
 
   private restoreTabState(): void {
     const saved = vscode.getState();
-    const validTabs = ['primary', 'graph', 'docs', 'json', 'api', 'tokens'];
+    const validTabs = ['primary', 'intent', 'graph', 'docs', 'json', 'api', 'tokens'];
     if (saved?.activeTab && validTabs.includes(saved.activeTab)) {
       this.tabState.activeTab = saved.activeTab;
     }

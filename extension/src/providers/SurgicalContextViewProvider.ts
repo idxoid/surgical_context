@@ -82,12 +82,30 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         symbol: state.lastRequest.symbol,
         question: state.lastRequest.question,
       });
+      this.fetchAndPostIntent(state.lastRequest.question);
     } else {
       this.postMessage({
         type: 'inspector.notAvailable',
         message: 'No context available. Ask about a symbol first.',
       });
     }
+  }
+
+  /**
+   * Enrich the inspector with a cheap, classify-only intent preview. Posted as a
+   * separate message so the inspector renders instantly; the Intent tab fills in
+   * when this resolves. Failures are silent — intent is optional enrichment.
+   */
+  private fetchAndPostIntent(question?: string): void {
+    if (!question) return;
+    void (async () => {
+      try {
+        const res = await SidecarClient.intent(question);
+        this.postMessage({ type: 'inspector.intentLoaded', intentMatches: res.intent_matches });
+      } catch {
+        // intent is optional enrichment; ignore
+      }
+    })();
   }
 
   public async showImpact(symbol?: string, maxDepth = 3, filePath?: string): Promise<void> {
@@ -512,6 +530,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         symbol: state.lastRequest?.symbol,
         question: state.lastRequest?.question,
       });
+      this.fetchAndPostIntent(state.lastRequest?.question);
     } else {
       this.postMessage({
         type: 'inspector.notAvailable',

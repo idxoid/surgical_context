@@ -11,6 +11,37 @@
     };
     return text.replace(/[&<>"']/g, (m) => map[m]);
   }
+  function renderIntentTab(matches) {
+    if (matches === null) {
+      return `<div class="inspector-tab-content"><p style="color:var(--vscode-descriptionForeground);">Classifying intent\u2026</p></div>`;
+    }
+    if (matches.length === 0) {
+      return `<div class="inspector-tab-content"><p style="color:var(--vscode-descriptionForeground);">No role matched above threshold for this question.</p></div>`;
+    }
+    const rows = matches.map((m) => {
+      const pct = Math.max(0, Math.min(100, Math.round(m.similarity * 100)));
+      return `
+        <div style="margin:0 0 12px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <span style="font-weight:600;">${escapeHtml(m.role)}</span>
+            <span style="font-variant-numeric:tabular-nums;color:var(--vscode-descriptionForeground);">${m.similarity.toFixed(2)}</span>
+          </div>
+          <div style="height:6px;background:var(--vscode-editorWidget-border,#444);border-radius:3px;overflow:hidden;margin:3px 0 4px;">
+            <div style="height:100%;width:${pct}%;background:var(--vscode-progressBar-background,#0a84ff);"></div>
+          </div>
+          <div style="font-size:12px;color:var(--vscode-descriptionForeground);">${escapeHtml(m.description)}</div>
+        </div>
+      `;
+    }).join("");
+    return `
+    <div class="inspector-tab-content">
+      <p style="color:var(--vscode-descriptionForeground);font-size:12px;margin:0 0 12px;">
+        Role intent the retrieval classifier inferred from the question (embedding cosine vs role descriptions) \u2014 this drives which axes are searched.
+      </p>
+      ${rows}
+    </div>
+  `;
+  }
   function renderPrimarySourceTab(context) {
     const primary = context.primary_source;
     if (!primary) {
@@ -236,6 +267,7 @@ ${doc.content}`);
   var InspectorPanel = class {
     constructor() {
       this.context = null;
+      this.intentMatches = null;
       this.tabState = { activeTab: "primary" };
       console.log("InspectorPanel constructor called");
       this.initializeMessageListener();
@@ -251,7 +283,14 @@ ${doc.content}`);
             this.context = message.context || null;
             this.symbol = message.symbol;
             this.question = message.question;
+            this.intentMatches = null;
             this.render();
+            break;
+          case "inspector.intentLoaded":
+            this.intentMatches = message.intentMatches;
+            if (this.tabState.activeTab === "intent") {
+              this.render();
+            }
             break;
           case "inspector.notAvailable":
             console.log("inspector.notAvailable message received:", message.message);
@@ -280,6 +319,9 @@ ${doc.content}`);
         <button class="tab-button ${this.tabState.activeTab === "primary" ? "active" : ""}" data-tab="primary">
           Primary Source
         </button>
+        <button class="tab-button ${this.tabState.activeTab === "intent" ? "active" : ""}" data-tab="intent">
+          Intent
+        </button>
         <button class="tab-button ${this.tabState.activeTab === "graph" ? "active" : ""}" data-tab="graph">
           Graph Context
         </button>
@@ -302,6 +344,9 @@ ${doc.content}`);
       switch (this.tabState.activeTab) {
         case "primary":
           tabContent = renderPrimarySourceTab(this.context);
+          break;
+        case "intent":
+          tabContent = renderIntentTab(this.intentMatches);
           break;
         case "graph":
           tabContent = renderGraphContextTab(this.context);
@@ -394,7 +439,7 @@ ${doc.content}`);
     }
     restoreTabState() {
       const saved = vscode.getState();
-      const validTabs = ["primary", "graph", "docs", "json", "api", "tokens"];
+      const validTabs = ["primary", "intent", "graph", "docs", "json", "api", "tokens"];
       if (saved?.activeTab && validTabs.includes(saved.activeTab)) {
         this.tabState.activeTab = saved.activeTab;
       }

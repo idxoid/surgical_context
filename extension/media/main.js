@@ -860,6 +860,37 @@
     };
     return text.replace(/[&<>"']/g, (m) => map[m]);
   }
+  function renderIntentTab(matches) {
+    if (matches === null) {
+      return `<div class="inspector-tab-content"><p style="color:var(--vscode-descriptionForeground);">Classifying intent\u2026</p></div>`;
+    }
+    if (matches.length === 0) {
+      return `<div class="inspector-tab-content"><p style="color:var(--vscode-descriptionForeground);">No role matched above threshold for this question.</p></div>`;
+    }
+    const rows = matches.map((m) => {
+      const pct = Math.max(0, Math.min(100, Math.round(m.similarity * 100)));
+      return `
+        <div style="margin:0 0 12px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <span style="font-weight:600;">${escapeHtml3(m.role)}</span>
+            <span style="font-variant-numeric:tabular-nums;color:var(--vscode-descriptionForeground);">${m.similarity.toFixed(2)}</span>
+          </div>
+          <div style="height:6px;background:var(--vscode-editorWidget-border,#444);border-radius:3px;overflow:hidden;margin:3px 0 4px;">
+            <div style="height:100%;width:${pct}%;background:var(--vscode-progressBar-background,#0a84ff);"></div>
+          </div>
+          <div style="font-size:12px;color:var(--vscode-descriptionForeground);">${escapeHtml3(m.description)}</div>
+        </div>
+      `;
+    }).join("");
+    return `
+    <div class="inspector-tab-content">
+      <p style="color:var(--vscode-descriptionForeground);font-size:12px;margin:0 0 12px;">
+        Role intent the retrieval classifier inferred from the question (embedding cosine vs role descriptions) \u2014 this drives which axes are searched.
+      </p>
+      ${rows}
+    </div>
+  `;
+  }
   function renderPrimarySourceTab(context) {
     const primary = context.primary_source;
     if (!primary) {
@@ -1380,6 +1411,7 @@ ${doc.content}`);
       this.currentPromptContext = null;
       this.selectedPromptRequestId = null;
       this.inspectorTab = "primary";
+      this.intentMatches = null;
       this.pendingPrompt = null;
       this.pendingAskAnchor = null;
       this.currentImpact = null;
@@ -1497,6 +1529,7 @@ ${doc.content}`);
           case "inspector.loaded":
             this.surface = "inspector";
             this.currentPromptContext = message.context;
+            this.intentMatches = null;
             if (message.context) {
               this.currentContextSummary = this.summaryFromContext(message.context);
               this.currentImpact = this.impactFromContext(message.context);
@@ -1505,6 +1538,12 @@ ${doc.content}`);
               this.currentImpactSource = "prompt";
             }
             this.render();
+            break;
+          case "inspector.intentLoaded":
+            this.intentMatches = message.intentMatches;
+            if (this.surface === "inspector" && this.inspectorTab === "intent") {
+              this.render();
+            }
             break;
           case "settings.loaded":
             this.settings = message.settings;
@@ -1750,6 +1789,7 @@ ${doc.content}`);
           <div class="surface-subtitle">${escapeHtml(this.selectedPromptText() || "Selected prompt")}</div>
           <div class="inspector-tab-bar" role="tablist" aria-label="Context detail tabs">
             ${this.renderInspectorTabButton("primary", "Primary")}
+            ${this.renderInspectorTabButton("intent", "Intent")}
             ${this.renderInspectorTabButton("graph", "Graph")}
             ${this.renderInspectorTabButton("docs", "Docs")}
             ${this.renderInspectorTabButton("tokens", "Tokens")}
@@ -1778,6 +1818,8 @@ ${doc.content}`);
     }
     renderInspectorTabContent(context) {
       switch (this.inspectorTab) {
+        case "intent":
+          return renderIntentTab(this.intentMatches);
         case "graph":
           return renderGraphContextTab(context);
         case "docs":

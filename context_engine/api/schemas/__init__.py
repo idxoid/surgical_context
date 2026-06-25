@@ -12,6 +12,8 @@ from context_engine.api.schemas.ask import (
     FeedbackRequest,
     FeedbackResponse,
     ImpactResponse,
+    IntentRequest,
+    IntentResponse,
 )
 from context_engine.api.schemas.auth import (
     AuditActionsResponse,
@@ -90,6 +92,8 @@ __all__ = [
     "IndexQueueStatusResponse",
     "IndexRequest",
     "IndexStatsResponse",
+    "IntentRequest",
+    "IntentResponse",
     "OverlayRequest",
     "OverlayResponse",
     "SEARCH_LIMIT_MAX",

@@ -100,6 +100,24 @@ class AskAxisResponse(BaseModel):
     context_bundles: list[AxisContextBundleResponse]
 
 
+class IntentRequest(BaseModel):
+    """``/intent`` payload — classify-only preview of the role intent.
+
+    Runs just the embedding intent-classifier (question vs role descriptions);
+    no graph, no retrieval. Cheap enough for an editor "intent" panel.
+    """
+
+    question: str
+    top_roles: int = Field(default=5, ge=1, le=10)
+    intent_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
+
+
+class IntentResponse(BaseModel):
+    question: str
+    workspace_id: str
+    intent_matches: list[AxisIntentMatchResponse]
+
+
 class FeedbackRequest(BaseModel):
     feedback_token: str
     kind: str
