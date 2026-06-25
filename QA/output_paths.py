@@ -26,10 +26,12 @@ def resolve_output_path(
     raw: str | None,
     *,
     default_name: str,
-    allowed_bases: tuple[Path, ...] = DEFAULT_OUTPUT_BASES,
+    allowed_bases: tuple[Path, ...] | None = None,
 ) -> Path:
     """Resolve a CLI report path and ensure it stays under allowed directories."""
-    bases = tuple(base.resolve() for base in allowed_bases)
+    bases = tuple(
+        base.resolve() for base in (allowed_bases if allowed_bases is not None else DEFAULT_OUTPUT_BASES)
+    )
     default_name = sanitize_filename_part(default_name)
 
     if raw:
@@ -61,10 +63,12 @@ def resolve_output_path(
 def resolve_output_directory(
     dir_name: str,
     *,
-    allowed_bases: tuple[Path, ...] = DEFAULT_OUTPUT_BASES,
+    allowed_bases: tuple[Path, ...] | None = None,
 ) -> Path:
     """Resolve a directory path under allowed bases (creates it if missing)."""
-    bases = tuple(base.resolve() for base in allowed_bases)
+    bases = tuple(
+        base.resolve() for base in (allowed_bases if allowed_bases is not None else DEFAULT_OUTPUT_BASES)
+    )
     safe_name = sanitize_filename_part(dir_name)
     candidate = (bases[0] / safe_name).resolve()
 
@@ -127,7 +131,7 @@ def write_json_report(
     raw_path: str | None,
     *,
     default_name: str,
-    allowed_bases: tuple[Path, ...] = DEFAULT_OUTPUT_BASES,
+    allowed_bases: tuple[Path, ...] | None = None,
 ) -> Path:
     """Resolve a safe report path and write JSON without path injection."""
     out = resolve_output_path(raw_path, default_name=default_name, allowed_bases=allowed_bases)

@@ -30,7 +30,7 @@ def test_registry_register_and_snapshot():
     registry.register("ws", TEST_REPO_PATH, user_id="alice")
     [target] = registry.snapshot()
     assert target.workspace_id == "ws"
-    assert target.project_path == TEST_REPO_PATH
+    assert target.project_path == str(Path(TEST_REPO_PATH).resolve())
     assert target.user_id == "alice"
 
 
