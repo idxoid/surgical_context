@@ -82,14 +82,12 @@ def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str
             step = sym.expansion_step or "seed"
             if names_only:
                 parts.append(
-                    f"- {fp} :: {sym.name} "
-                    f"({sym.role}, d{sym.distance_from_seed}, {step})"
+                    f"- {fp} :: {sym.name} ({sym.role}, d{sym.distance_from_seed}, {step})"
                 )
                 continue
 
             parts.append(
-                f"### {fp} :: {sym.name}  "
-                f"({sym.role}, depth={sym.distance_from_seed}, {step})"
+                f"### {fp} :: {sym.name}  ({sym.role}, depth={sym.distance_from_seed}, {step})"
             )
             if sym.code:
                 parts.append("```python")
@@ -163,9 +161,7 @@ class AxisEngine:
             def embed(text: str):
                 return self._lance._embed([text])[0]  # noqa: SLF001
 
-            matches = classify_intent(
-                question, embed, top_k=top_roles, threshold=threshold
-            )
+            matches = classify_intent(question, embed, top_k=top_roles, threshold=threshold)
         return [(m.role, m.similarity, m.description) for m in matches]
 
     def available_roles(self) -> dict[str, str]:
@@ -256,12 +252,12 @@ class AxisEngine:
         """
         from context_engine.axis.impact_surface import build_impact_surface
 
-        requested_path = file_path.strip() if isinstance(file_path, str) and file_path.strip() else None
+        requested_path = (
+            file_path.strip() if isinstance(file_path, str) and file_path.strip() else None
+        )
         with self._lock:
             self._ensure_db()
-            uid = self._db.resolve_impact_symbol_uid(
-                symbol, workspace_id, file_path=requested_path
-            )
+            uid = self._db.resolve_impact_symbol_uid(symbol, workspace_id, file_path=requested_path)
             if not uid:
                 return ImpactResult(symbol=symbol, workspace_id=workspace_id, found=False)
             symbol_file = self._db.get_file_path_for_symbol(uid, workspace_id=workspace_id)
