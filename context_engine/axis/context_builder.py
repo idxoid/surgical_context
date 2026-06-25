@@ -129,94 +129,112 @@ class ContextBundle:
         }
 
 
-def _fetch_symbol_payloads(
-    lance,
-    workspace_id: str,
-    uids: set[str],
-) -> dict[str, dict[str, str | None]]:
-    """Pull ``code`` + lightweight render metadata for a set of uids.
+def _quote_sql_value(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
-    Lance does not give us a clean WHERE-by-list across heterogeneous
-    columns; one full scan filtered in-process is acceptable for the
-    workspaces we currently target (thousands of symbols, not millions).
-    """
-    if not uids:
-        return {}
-    sym_table_fn = getattr(lance, "symbols_table", None)
-    table = sym_table_fn(workspace_id) if callable(sym_table_fn) else lance._sym_table  # noqa: SLF001
+
+def _symbol_payload_columns(table) -> list[str]:
     columns = ["uid", "code", "workspace_id"]
     try:
         schema_names = set(table.schema.names)
-        if "qualified_name" in schema_names:
-            columns.append("qualified_name")
-        if "name" in schema_names:
-            columns.append("name")
-        if "file_path" in schema_names:
-            columns.append("file_path")
+        for optional in ("qualified_name", "name", "file_path"):
+            if optional in schema_names:
+                columns.append(optional)
     except Exception:
         pass
+    return columns
 
-    def _quote(value: str) -> str:
-        return "'" + value.replace("'", "''") + "'"
 
-    uid_filter = ", ".join(_quote(uid) for uid in sorted(uids))
+def _symbol_payload_filter_sql(
+    workspace_id: str,
+    uids: set[str],
+    *,
+    sym_table_fn,
+) -> str:
     from context_engine.database.lance_workspace_tables import workspace_partitioned_enabled
 
+    uid_filter = ", ".join(_quote_sql_value(uid) for uid in sorted(uids))
     if workspace_partitioned_enabled() and callable(sym_table_fn):
-        filter_sql = f"uid IN ({uid_filter})"
-    else:
-        filter_sql = f"workspace_id = {_quote(workspace_id)} AND uid IN ({uid_filter})"
-    lance_table = table.to_lance()
+        return f"uid IN ({uid_filter})"
+    return f"workspace_id = {_quote_sql_value(workspace_id)} AND uid IN ({uid_filter})"
+
+
+def _resolve_symbols_table(lance, workspace_id: str):
+    sym_table_fn = getattr(lance, "symbols_table", None)
+    if callable(sym_table_fn):
+        return sym_table_fn(workspace_id), sym_table_fn
+    return lance._sym_table, sym_table_fn  # noqa: SLF001
+
+
+def _filter_symbol_payload_arrow(arrow, workspace_id: str, uids: set[str]):
     try:
-        arrow = lance_table.to_table(columns=columns, filter=filter_sql)
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        uid_set = pa.array(list(uids), type=arrow["uid"].type)
+        mask = pc.and_(
+            pc.equal(
+                arrow["workspace_id"],
+                pa.scalar(workspace_id, type=arrow["workspace_id"].type),
+            ),
+            pc.is_in(arrow["uid"], value_set=uid_set),
+        )
+        return arrow.filter(mask)
+    except Exception:
+        return arrow
+
+
+def _load_symbol_payload_arrow(lance_table, columns: list[str], filter_sql: str, workspace_id: str, uids: set[str]):
+    try:
+        return lance_table.to_table(columns=columns, filter=filter_sql)
     except TypeError:
         arrow = lance_table.to_table(columns=columns)
-        try:
-            import pyarrow as pa
-            import pyarrow.compute as pc
+        return _filter_symbol_payload_arrow(arrow, workspace_id, uids)
 
-            uid_set = pa.array(list(uids), type=arrow["uid"].type)
-            mask = pc.and_(
-                pc.equal(
-                    arrow["workspace_id"],
-                    pa.scalar(workspace_id, type=arrow["workspace_id"].type),
-                ),
-                pc.is_in(arrow["uid"], value_set=uid_set),
-            )
-            arrow = arrow.filter(mask)
-        except Exception:
-            pass
 
+def _payloads_from_pylist_fallback(
+    arrow,
+    workspace_id: str,
+    uids: set[str],
+) -> dict[str, dict[str, str | None]]:
     out: dict[str, dict[str, str | None]] = {}
+    for row in arrow.to_pylist():
+        uid = str(row.get("uid") or "")
+        if row.get("workspace_id") == workspace_id and uid in uids:
+            out[uid] = {
+                "code": row.get("code"),
+                "qualified_name": row.get("qualified_name") or "",
+                "name": row.get("name") or "",
+                "file_path": row.get("file_path") or "",
+            }
+    return out
+
+
+def _arrow_column_pylist(arrow, column: str, length: int) -> list:
+    try:
+        return arrow[column].to_pylist()
+    except Exception:
+        return [""] * length
+
+
+def _payloads_from_arrow_table(
+    arrow,
+    workspace_id: str,
+    uids: set[str],
+) -> dict[str, dict[str, str | None]]:
     try:
         row_uids = arrow["uid"].to_pylist()
         codes = arrow["code"].to_pylist()
         workspace_ids = arrow["workspace_id"].to_pylist()
     except Exception:
-        for r in arrow.to_pylist():
-            uid = str(r.get("uid") or "")
-            if r.get("workspace_id") == workspace_id and uid in uids:
-                out[uid] = {
-                    "code": r.get("code"),
-                    "qualified_name": r.get("qualified_name") or "",
-                    "name": r.get("name") or "",
-                    "file_path": r.get("file_path") or "",
-                }
-        return out
+        return _payloads_from_pylist_fallback(arrow, workspace_id, uids)
 
-    try:
-        qualified_names = arrow["qualified_name"].to_pylist()
-    except Exception:
-        qualified_names = [""] * len(row_uids)
-    try:
-        names = arrow["name"].to_pylist()
-    except Exception:
-        names = [""] * len(row_uids)
-    try:
-        file_paths = arrow["file_path"].to_pylist()
-    except Exception:
-        file_paths = [""] * len(row_uids)
+    row_count = len(row_uids)
+    qualified_names = _arrow_column_pylist(arrow, "qualified_name", row_count)
+    names = _arrow_column_pylist(arrow, "name", row_count)
+    file_paths = _arrow_column_pylist(arrow, "file_path", row_count)
 
+    out: dict[str, dict[str, str | None]] = {}
     for uid_raw, code, row_workspace_id, qualified_name, name, file_path in zip(
         row_uids,
         codes,
@@ -237,6 +255,28 @@ def _fetch_symbol_payloads(
                 "file_path": str(file_path or ""),
             }
     return out
+
+
+def _fetch_symbol_payloads(
+    lance,
+    workspace_id: str,
+    uids: set[str],
+) -> dict[str, dict[str, str | None]]:
+    """Pull ``code`` + lightweight render metadata for a set of uids.
+
+    Lance does not give us a clean WHERE-by-list across heterogeneous
+    columns; one full scan filtered in-process is acceptable for the
+    workspaces we currently target (thousands of symbols, not millions).
+    """
+    if not uids:
+        return {}
+    table, sym_table_fn = _resolve_symbols_table(lance, workspace_id)
+    columns = _symbol_payload_columns(table)
+    filter_sql = _symbol_payload_filter_sql(workspace_id, uids, sym_table_fn=sym_table_fn)
+    arrow = _load_symbol_payload_arrow(
+        table.to_lance(), columns, filter_sql, workspace_id, uids
+    )
+    return _payloads_from_arrow_table(arrow, workspace_id, uids)
 
 
 def _fetch_codes(
@@ -272,6 +312,31 @@ def _read_symbol_code_from_file(
     return "\n".join(lines[start_line - 1 : end_line])
 
 
+def _missing_symbol_uids(uids: set[str], payloads: dict[str, dict[str, str | None]]) -> list[str]:
+    return [uid for uid in uids if not str((payloads.get(uid) or {}).get("code") or "").strip()]
+
+
+def _hydrate_payload_from_span(
+    span: dict,
+    *,
+    workspace_root,
+    existing: dict[str, str | None] | None,
+) -> dict[str, str | None] | None:
+    code = _read_symbol_code_from_file(
+        str(span.get("file_path") or ""),
+        int(span.get("start_line") or 0),
+        int(span.get("end_line") or 0),
+        workspace_root=workspace_root,
+    )
+    if not code.strip():
+        return None
+    row = dict(existing or {})
+    row.setdefault("name", str(span.get("name") or ""))
+    row.setdefault("file_path", str(span.get("file_path") or ""))
+    row["code"] = code
+    return row
+
+
 def _hydrate_missing_symbol_code(
     db,
     workspace_id: str,
@@ -282,7 +347,7 @@ def _hydrate_missing_symbol_code(
     if not uids or db is None:
         return payloads
 
-    missing = [uid for uid in uids if not str((payloads.get(uid) or {}).get("code") or "").strip()]
+    missing = _missing_symbol_uids(uids, payloads)
     if not missing:
         return payloads
 
@@ -302,20 +367,18 @@ def _hydrate_missing_symbol_code(
         span = spans.get(uid)
         if not span:
             continue
-        code = _read_symbol_code_from_file(
-            str(span.get("file_path") or ""),
-            int(span.get("start_line") or 0),
-            int(span.get("end_line") or 0),
+        hydrated = _hydrate_payload_from_span(
+            span,
             workspace_root=workspace_root,
+            existing=out.get(uid),
         )
-        if not code.strip():
-            continue
-        row = dict(out.get(uid) or {})
-        row.setdefault("name", str(span.get("name") or ""))
-        row.setdefault("file_path", str(span.get("file_path") or ""))
-        row["code"] = code
-        out[uid] = row
+        if hydrated is not None:
+            out[uid] = hydrated
     return out
+
+
+def _is_callable_header(stripped: str) -> bool:
+    return stripped.startswith(("def ", "async def ", "class "))
 
 
 def _code_signature(code: str | None) -> str:
@@ -337,12 +400,7 @@ def _code_signature(code: str | None) -> str:
         line = lines[i]
         stripped = line.strip()
         if not started:
-            is_header = (
-                stripped.startswith("def ")
-                or stripped.startswith("async def ")
-                or stripped.startswith("class ")
-            )
-            if not is_header:
+            if not _is_callable_header(stripped):
                 # Not a callable/class — first non-empty line is the "signature".
                 if stripped:
                     out.append(line)
@@ -416,6 +474,43 @@ def _keep_compact_body_line(stripped: str) -> bool:
     return "(" in stripped and ")" in stripped
 
 
+def _advance_docstring_state(stripped: str, in_docstring: bool) -> tuple[bool, bool]:
+    """Return ``(new_in_docstring, should_skip_line)`` for compact body scans."""
+    if not stripped.startswith(('"""', "'''")):
+        return in_docstring, False
+    if stripped.count('"""') == 1 or stripped.count("'''") == 1:
+        in_docstring = not in_docstring
+    return in_docstring, True
+
+
+def _compact_body_lines(
+    lines: list[str],
+    signature_lines: list[str],
+    *,
+    max_body_lines: int,
+) -> list[str]:
+    out: list[str] = []
+    kept = 0
+    in_docstring = False
+    for line in lines[len(signature_lines) :]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        in_docstring, skip = _advance_docstring_state(stripped, in_docstring)
+        if skip or in_docstring:
+            continue
+        if not _keep_compact_body_line(stripped):
+            continue
+        out.append(_collapse_long_line(line))
+        kept += 1
+        if kept >= max_body_lines:
+            out.append("    ...")
+            break
+    if kept == 0:
+        out.append("    ...")
+    return out
+
+
 def _code_compact(code: str | None, *, max_body_lines: int = 24) -> str:
     """Parser-light body compaction: signature + structural/call-bearing lines."""
     signature = _code_signature(code)
@@ -427,27 +522,9 @@ def _code_compact(code: str | None, *, max_body_lines: int = 24) -> str:
         return signature
 
     out = list(signature_lines)
-    kept = 0
-    in_docstring = False
-    for line in lines[len(signature_lines) :]:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith(('"""', "'''")):
-            if stripped.count('"""') == 1 or stripped.count("'''") == 1:
-                in_docstring = not in_docstring
-            continue
-        if in_docstring:
-            continue
-        if not _keep_compact_body_line(stripped):
-            continue
-        out.append(_collapse_long_line(line))
-        kept += 1
-        if kept >= max_body_lines:
-            out.append("    ...")
-            break
-    if kept == 0:
-        out.append("    ...")
+    out.extend(
+        _compact_body_lines(lines, signature_lines, max_body_lines=max_body_lines)
+    )
     return "\n".join(out)
 
 
@@ -504,6 +581,98 @@ def _indent_block(code: str) -> str:
     return "\n".join(out)
 
 
+def _is_class_definition_symbol(sym: ContextSymbol, parent: str) -> bool:
+    sig = _code_signature(sym.code).lstrip()
+    return sig.startswith("class ") and sym.qualified_name == parent
+
+
+def _index_class_member_groups(
+    symbols: list[ContextSymbol],
+) -> tuple[dict[str, list[ContextSymbol]], dict[str, str]]:
+    by_parent: dict[str, list[ContextSymbol]] = {}
+    parent_by_uid: dict[str, str] = {}
+    for sym in symbols:
+        parent = _class_parent_from_qualified_name(sym)
+        if parent is None:
+            continue
+        by_parent.setdefault(parent, []).append(sym)
+        parent_by_uid[sym.uid] = parent
+    return by_parent, parent_by_uid
+
+
+def _should_fold_class_group(
+    parent: str,
+    members: list[ContextSymbol],
+    *,
+    core_tier_only: bool,
+) -> bool:
+    has_class_symbol = any(_is_class_definition_symbol(member, parent) for member in members)
+    if not (has_class_symbol or len(members) >= 2):
+        return False
+    if core_tier_only and not any(_file_tier_from_path(m.file_path) == "core" for m in members):
+        return False
+    return True
+
+
+def _foldable_class_parents(
+    by_parent: dict[str, list[ContextSymbol]],
+    *,
+    core_tier_only: bool,
+) -> set[str]:
+    return {
+        parent
+        for parent, members in by_parent.items()
+        if _should_fold_class_group(parent, members, core_tier_only=core_tier_only)
+    }
+
+
+def _class_header_from_members(parent: str, members: list[ContextSymbol]) -> str:
+    class_header = f"class {_class_name_from_qualified_name(parent)}:"
+    for member in members:
+        if _is_class_definition_symbol(member, parent):
+            sig = _code_signature(member.code).lstrip()
+            class_header = sig.splitlines()[0]
+            break
+    return class_header
+
+
+def _folded_member_body(member: ContextSymbol, *, parent: str, compact: bool) -> str | None:
+    if _is_class_definition_symbol(member, parent):
+        return None
+    sig = _code_signature(member.code).lstrip()
+    if compact:
+        return _indent_block(sig)
+    keep_full = member.distance_from_seed == 0 or member.name == "__init__"
+    return _indent_block((member.code or "") if keep_full else sig or "")
+
+
+def _folded_class_code(parent: str, members: list[ContextSymbol], *, compact: bool) -> str:
+    class_header = _class_header_from_members(parent, members)
+    body_blocks = [
+        block
+        for member in members
+        if (block := _folded_member_body(member, parent=parent, compact=compact)) is not None
+    ]
+    return "\n".join([class_header, *(body_blocks or ["    ..."])])
+
+
+def _build_folded_class_symbol(
+    parent: str,
+    members: list[ContextSymbol],
+    *,
+    compact: bool,
+) -> ContextSymbol:
+    first = min(members, key=lambda m: (m.distance_from_seed, m.uid))
+    return replace(
+        first,
+        name=_class_name_from_qualified_name(parent),
+        qualified_name=parent,
+        distance_from_seed=min(m.distance_from_seed for m in members),
+        expansion_step="fold",
+        code=_folded_class_code(parent, members, compact=compact),
+    )
+
+
 def _fold_class_symbols(
     symbols: list[ContextSymbol],
     *,
@@ -517,28 +686,8 @@ def _fold_class_symbols(
     group with a class symbol or multiple members is safe to render as a class
     skeleton.
     """
-    by_parent: dict[str, list[ContextSymbol]] = {}
-    parent_by_uid: dict[str, str] = {}
-    for sym in symbols:
-        parent = _class_parent_from_qualified_name(sym)
-        if parent is None:
-            continue
-        by_parent.setdefault(parent, []).append(sym)
-        parent_by_uid[sym.uid] = parent
-
-    foldable: set[str] = set()
-    for parent, members in by_parent.items():
-        has_class_symbol = any(
-            _code_signature(member.code).lstrip().startswith("class ")
-            and member.qualified_name == parent
-            for member in members
-        )
-        if has_class_symbol or len(members) >= 2:
-            if core_tier_only and not any(
-                _file_tier_from_path(m.file_path) == "core" for m in members
-            ):
-                continue
-            foldable.add(parent)
+    by_parent, parent_by_uid = _index_class_member_groups(symbols)
+    foldable = _foldable_class_parents(by_parent, core_tier_only=core_tier_only)
 
     out: list[ContextSymbol] = []
     emitted: set[str] = set()
@@ -550,35 +699,7 @@ def _fold_class_symbols(
         if parent in emitted:
             continue
         emitted.add(parent)
-        members = by_parent[parent]
-        class_header = f"class {_class_name_from_qualified_name(parent)}:"
-        for member in members:
-            sig = _code_signature(member.code).lstrip()
-            if sig.startswith("class ") and member.qualified_name == parent:
-                class_header = sig.splitlines()[0]
-                break
-        body_blocks: list[str] = []
-        for member in members:
-            sig = _code_signature(member.code).lstrip()
-            if sig.startswith("class ") and member.qualified_name == parent:
-                continue
-            if compact:
-                body_blocks.append(_indent_block(sig))
-            else:
-                keep_full = member.distance_from_seed == 0 or member.name == "__init__"
-                body_blocks.append(_indent_block((member.code or "") if keep_full else sig or ""))
-        code = "\n".join([class_header, *(body_blocks or ["    ..."])])
-        first = min(members, key=lambda m: (m.distance_from_seed, m.uid))
-        out.append(
-            replace(
-                first,
-                name=_class_name_from_qualified_name(parent),
-                qualified_name=parent,
-                distance_from_seed=min(m.distance_from_seed for m in members),
-                expansion_step="fold",
-                code=code,
-            )
-        )
+        out.append(_build_folded_class_symbol(parent, by_parent[parent], compact=compact))
     return out
 
 
@@ -1101,6 +1222,296 @@ def _leader_transaction_limit(
     return max(1, int(token_budget * leader_share))
 
 
+_UPGRADE_MODE_BONUS: dict[str, float] = {
+    "impact_tiered": 0.12,
+    "impact_surface": 0.08,
+    "fold_compact": 0.18,
+    "fold": 0.22,
+    "hybrid_compact": 0.25,
+    "hybrid": 0.28,
+    "full": 0.38,
+}
+
+
+@dataclass
+class _TokenCreditCoverageState:
+    file_soft_cap: int
+    covered_files: set[str] = field(default_factory=set)
+    covered_roles: set[str] = field(default_factory=set)
+    covered_steps: set[str] = field(default_factory=set)
+    file_counts: dict[str, int] = field(default_factory=dict)
+    file_tokens: dict[str, int] = field(default_factory=dict)
+
+    def file_saturation_penalty(self, bundle: ContextBundle) -> float:
+        primary = _primary_file(bundle)
+        if not primary:
+            return 0.0
+        return min(0.5, self.file_tokens.get(primary, 0) / self.file_soft_cap)
+
+    def record_selection(self, bundle: ContextBundle, cost: int) -> None:
+        files = _bundle_files(bundle)
+        self.covered_files.update(files)
+        self.covered_roles.add(bundle.role)
+        self.covered_steps.update(_bundle_steps(bundle))
+        for path in files:
+            self.file_counts[path] = self.file_counts.get(path, 0) + 1
+        primary = _primary_file(bundle)
+        if primary:
+            self.file_tokens[primary] = self.file_tokens.get(primary, 0) + cost
+
+
+def _bundle_static_rows(bundles: list[ContextBundle]) -> list[_BundleStatic]:
+    return [
+        _BundleStatic(
+            files=_bundle_files(b),
+            steps=_bundle_steps(b),
+            tier_weight=_bundle_tier_weight(b),
+            impact_mode=_bundle_impact_mode(b),
+            base_utility=_base_credit_utility(b),
+            structural_bridge=_structural_bridge_bonus(b),
+        )
+        for b in bundles
+    ]
+
+
+def _credit_coverage_gain(
+    idx: int,
+    bundle: ContextBundle,
+    *,
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+) -> float:
+    st = static[idx]
+    files = st.files
+    new_files = files - state.covered_files
+    new_steps = st.steps - state.covered_steps
+    gain: float = st.base_utility * st.tier_weight
+    if new_files:
+        new_file_weight = max(
+            _tier_weight_for_path(path, impact_mode=st.impact_mode) for path in new_files
+        )
+        gain += (0.35 + 0.08 * max(0, len(new_files) - 1)) * new_file_weight
+    if bundle.role not in state.covered_roles:
+        gain += 0.20
+    gain += 0.10 * len(new_steps)
+    gain += st.structural_bridge * st.tier_weight
+    gain += 0.05 if not bundle.passive else -0.03
+    gain -= 0.15 * sum(state.file_counts.get(path, 0) for path in files)
+    gain -= state.file_saturation_penalty(bundle)
+    return max(0.001, gain)
+
+
+def _credit_optimistic_value(st: _BundleStatic, bundle: ContextBundle, cost: int) -> float:
+    optimistic_gain = st.base_utility + 0.35 + 0.20
+    optimistic_gain *= st.tier_weight
+    optimistic_gain += 0.10 * len(st.steps)
+    optimistic_gain += st.structural_bridge * st.tier_weight
+    if not bundle.passive:
+        optimistic_gain += 0.05
+    return optimistic_gain / max(1, cost)
+
+
+def _build_initial_credit_heap(
+    bundles: list[ContextBundle],
+    static: list[_BundleStatic],
+    *,
+    transaction_limit: int,
+    full_render_max_depth: int,
+    initial_mode: str,
+    signature_only_initial: bool,
+) -> list[tuple[float, int, int, ContextBundle]]:
+    initial: list[tuple[float, int, int, ContextBundle]] = []
+    for idx, bundle in enumerate(bundles):
+        rendered, cost = _initial_credit_render(
+            bundle,
+            transaction_limit=transaction_limit,
+            full_render_max_depth=full_render_max_depth,
+            initial_mode=initial_mode,
+            signature_only_initial=signature_only_initial,
+        )
+        value = _credit_optimistic_value(static[idx], bundle, cost)
+        heapq.heappush(initial, (-value, idx, cost, rendered))
+    return initial
+
+
+def _select_bundles_under_credit_budget(
+    initial: list[tuple[float, int, int, ContextBundle]],
+    bundles: list[ContextBundle],
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+    token_budget: int,
+) -> tuple[list[dict[str, object]], int]:
+    selected: list[dict[str, object]] = []
+    selected_indices: set[int] = set()
+    skipped_indices: set[int] = set()
+    used = 0
+
+    while initial:
+        _neg_value, idx, cost, rendered = heapq.heappop(initial)
+        if idx in selected_indices or idx in skipped_indices:
+            continue
+        source = bundles[idx]
+        current_value = _credit_coverage_gain(idx, source, static=static, state=state) / max(1, cost)
+        best_competing = -initial[0][0] if initial else -1.0
+        if current_value + 1e-12 < best_competing:
+            heapq.heappush(initial, (-current_value, idx, cost, rendered))
+            continue
+        if selected and used + cost > token_budget:
+            skipped_indices.add(idx)
+            continue
+        selected.append(
+            {
+                "index": idx,
+                "source": source,
+                "rendered": rendered,
+                "cost": cost,
+            }
+        )
+        selected_indices.add(idx)
+        used += cost
+        state.record_selection(source, cost)
+        if used >= token_budget:
+            break
+    return selected, used
+
+
+def _credit_upgrade_entry_parts(
+    entry: dict[str, object],
+) -> tuple[ContextBundle, ContextBundle, int, int] | None:
+    entry_source = entry.get("source")
+    current = entry.get("rendered")
+    current_cost = entry.get("cost")
+    bundle_index = entry.get("index")
+    if not isinstance(current, ContextBundle) or not isinstance(current_cost, int):
+        return None
+    if not isinstance(entry_source, ContextBundle):
+        return None
+    if not isinstance(bundle_index, int):
+        return None
+    return entry_source, current, current_cost, bundle_index
+
+
+def _credit_upgrade_gain(
+    st: _BundleStatic,
+    bundle: ContextBundle,
+    rendered: ContextBundle,
+    state: _TokenCreditCoverageState,
+) -> float:
+    mode_bonus = _UPGRADE_MODE_BONUS.get(rendered.render_mode, 0.10)
+    gain: float = 0.35 * st.base_utility * st.tier_weight
+    gain += mode_bonus
+    gain += 0.05 if not bundle.passive else 0.03
+    gain -= state.file_saturation_penalty(bundle)
+    return max(0.001, gain)
+
+
+def _enqueue_credit_upgrade(
+    entry_index: int,
+    selected: list[dict[str, object]],
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+    upgrade_heap: list[tuple[float, int, int, ContextBundle, int]],
+    *,
+    render_mode: str,
+    transaction_limit: int,
+    full_render_max_depth: int,
+    render_cache: dict[tuple[int, str], tuple[ContextBundle, int]],
+) -> None:
+    parts = _credit_upgrade_entry_parts(selected[entry_index])
+    if parts is None:
+        return
+    entry_source, current, current_cost, bundle_index = parts
+    candidate = _next_upgrade_render(
+        entry_source,
+        current_mode=current.render_mode,
+        current_cost=current_cost,
+        render_mode=render_mode,
+        transaction_limit=transaction_limit,
+        full_render_max_depth=full_render_max_depth,
+        render_cache=render_cache,
+    )
+    if candidate is None:
+        return
+    upgraded, upgraded_cost = candidate
+    delta = upgraded_cost - current_cost
+    if delta < 0:
+        return
+    priority = _credit_upgrade_gain(static[bundle_index], entry_source, upgraded, state) / max(
+        1, delta
+    )
+    heapq.heappush(
+        upgrade_heap,
+        (-priority, entry_index, current_cost, upgraded, upgraded_cost),
+    )
+
+
+def _apply_credit_upgrades(
+    selected: list[dict[str, object]],
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+    *,
+    render_mode: str,
+    transaction_limit: int,
+    full_render_max_depth: int,
+    render_cache: dict[tuple[int, str], tuple[ContextBundle, int]],
+    token_budget: int,
+    used: int,
+) -> int:
+    upgrade_heap: list[tuple[float, int, int, ContextBundle, int]] = []
+    for entry_index in range(len(selected)):
+        _enqueue_credit_upgrade(
+            entry_index,
+            selected,
+            static,
+            state,
+            upgrade_heap,
+            render_mode=render_mode,
+            transaction_limit=transaction_limit,
+            full_render_max_depth=full_render_max_depth,
+            render_cache=render_cache,
+        )
+
+    while upgrade_heap and used < token_budget:
+        _neg_priority, entry_index, expected_cost, upgraded, upgraded_cost = heapq.heappop(
+            upgrade_heap
+        )
+        entry = selected[entry_index]
+        current_cost = entry["cost"]
+        if current_cost != expected_cost or not isinstance(current_cost, int):
+            continue
+        delta = upgraded_cost - current_cost
+        if delta < 0 or used + delta > token_budget:
+            continue
+        entry["rendered"] = upgraded
+        entry["cost"] = upgraded_cost
+        used += delta
+        entry_source = entry["source"]
+        if isinstance(entry_source, ContextBundle):
+            primary = _primary_file(entry_source)
+            if primary:
+                state.file_tokens[primary] = state.file_tokens.get(primary, 0) + delta
+        _enqueue_credit_upgrade(
+            entry_index,
+            selected,
+            static,
+            state,
+            upgrade_heap,
+            render_mode=render_mode,
+            transaction_limit=transaction_limit,
+            full_render_max_depth=full_render_max_depth,
+            render_cache=render_cache,
+        )
+    return used
+
+
+def _selected_credit_rendered_bundles(selected: list[dict[str, object]]) -> list[ContextBundle]:
+    return [
+        rendered_bundle
+        for entry in selected
+        if isinstance((rendered_bundle := entry.get("rendered")), ContextBundle)
+    ]
+
+
 def _apply_token_credit_budget(
     bundles: list[ContextBundle],
     *,
@@ -1129,203 +1540,45 @@ def _apply_token_credit_budget(
     del per_transaction_share  # profile knob; leader % comes from tail noise
 
     bundles = _dedupe_bundles_by_seed_uid(bundles)
-    file_soft_cap = max(1, int(token_budget * file_soft_cap_share))
+    state = _TokenCreditCoverageState(
+        file_soft_cap=max(1, int(token_budget * file_soft_cap_share)),
+    )
     initial_mode = render_mode if render_mode in _RENDER_LADDER else "signature_only"
-    covered_files: set[str] = set()
-    covered_roles: set[str] = set()
-    covered_steps: set[str] = set()
-    file_counts: dict[str, int] = {}
-    file_tokens: dict[str, int] = {}
     render_cache: dict[tuple[int, str], tuple[ContextBundle, int]] = {}
-    static = [
-        _BundleStatic(
-            files=_bundle_files(b),
-            steps=_bundle_steps(b),
-            tier_weight=_bundle_tier_weight(b),
-            impact_mode=_bundle_impact_mode(b),
-            base_utility=_base_credit_utility(b),
-            structural_bridge=_structural_bridge_bonus(b),
-        )
-        for b in bundles
-    ]
-    _noise_level, leader_count = _leader_pool_metrics(static)
+    static = _bundle_static_rows(bundles)
+    _, leader_count = _leader_pool_metrics(static)
     transaction_limit = _leader_transaction_limit(
         token_budget,
         leader_count=leader_count,
     )
 
-    def _file_saturation_penalty(bundle: ContextBundle) -> float:
-        primary = _primary_file(bundle)
-        if not primary:
-            return 0.0
-        return min(0.5, file_tokens.get(primary, 0) / file_soft_cap)
-
-    def _coverage_gain(idx: int, bundle: ContextBundle) -> float:
-        st = static[idx]
-        files = st.files
-        new_files = files - covered_files
-        new_steps = st.steps - covered_steps
-        tier_weight = st.tier_weight
-        impact_mode = st.impact_mode
-        gain: float = st.base_utility * tier_weight
-        if new_files:
-            new_file_weight = max(
-                _tier_weight_for_path(path, impact_mode=impact_mode) for path in new_files
-            )
-            gain += (0.35 + 0.08 * max(0, len(new_files) - 1)) * new_file_weight
-        if bundle.role not in covered_roles:
-            gain += 0.20
-        gain += 0.10 * len(new_steps)
-        gain += st.structural_bridge * tier_weight
-        gain += 0.05 if not bundle.passive else -0.03
-        gain -= 0.15 * sum(file_counts.get(path, 0) for path in files)
-        gain -= _file_saturation_penalty(bundle)
-        return max(0.001, gain)
-
-    def _record_selection(bundle: ContextBundle, cost: int) -> None:
-        files = _bundle_files(bundle)
-        covered_files.update(files)
-        covered_roles.add(bundle.role)
-        covered_steps.update(_bundle_steps(bundle))
-        for path in files:
-            file_counts[path] = file_counts.get(path, 0) + 1
-        primary = _primary_file(bundle)
-        if primary:
-            file_tokens[primary] = file_tokens.get(primary, 0) + cost
-
-    initial: list[tuple[float, int, int, ContextBundle]] = []
-    for idx, bundle in enumerate(bundles):
-        rendered, cost = _initial_credit_render(
-            bundle,
-            transaction_limit=transaction_limit,
-            full_render_max_depth=full_render_max_depth,
-            initial_mode=initial_mode,
-            signature_only_initial=signature_only_initial,
-        )
-        st = static[idx]
-        optimistic_gain = st.base_utility + 0.35 + 0.20
-        optimistic_gain *= st.tier_weight
-        optimistic_gain += 0.10 * len(st.steps)
-        optimistic_gain += st.structural_bridge * st.tier_weight
-        if not bundle.passive:
-            optimistic_gain += 0.05
-        value = optimistic_gain / max(1, cost)
-        heapq.heappush(initial, (-value, idx, cost, rendered))
-
-    selected: list[dict[str, object]] = []
-    selected_indices: set[int] = set()
-    skipped_indices: set[int] = set()
-    used = 0
-
-    while initial:
-        _neg_value, idx, cost, rendered = heapq.heappop(initial)
-        if idx in selected_indices or idx in skipped_indices:
-            continue
-        source = bundles[idx]
-        current_value = _coverage_gain(idx, source) / max(1, cost)
-        best_competing = -initial[0][0] if initial else -1.0
-        if current_value + 1e-12 < best_competing:
-            heapq.heappush(initial, (-current_value, idx, cost, rendered))
-            continue
-        if selected and used + cost > token_budget:
-            skipped_indices.add(idx)
-            continue
-        selected.append(
-            {
-                "index": idx,
-                "source": source,
-                "rendered": rendered,
-                "cost": cost,
-            }
-        )
-        selected_indices.add(idx)
-        used += cost
-        _record_selection(source, cost)
-        if used >= token_budget:
-            break
-
-    def _upgrade_gain(st: _BundleStatic, bundle: ContextBundle, rendered: ContextBundle) -> float:
-        mode_bonus = {
-            "impact_tiered": 0.12,
-            "impact_surface": 0.08,
-            "fold_compact": 0.18,
-            "fold": 0.22,
-            "hybrid_compact": 0.25,
-            "hybrid": 0.28,
-            "full": 0.38,
-        }.get(rendered.render_mode, 0.10)
-        gain: float = 0.35 * st.base_utility * st.tier_weight
-        gain += mode_bonus
-        gain += 0.05 if not bundle.passive else 0.03
-        gain -= _file_saturation_penalty(bundle)
-        return max(0.001, gain)
-
-    upgrade_heap: list[tuple[float, int, int, ContextBundle, int]] = []
-
-    def _push_upgrade(entry_index: int) -> None:
-        entry = selected[entry_index]
-        entry_source = entry["source"]
-        current = entry["rendered"]
-        current_cost = entry["cost"]
-        if not isinstance(current, ContextBundle) or not isinstance(current_cost, int):
-            return
-        if not isinstance(entry_source, ContextBundle):
-            return
-        bundle_index = entry["index"]
-        if not isinstance(bundle_index, int):
-            return
-        candidate = _next_upgrade_render(
-            entry_source,
-            current_mode=current.render_mode,
-            current_cost=current_cost,
-            render_mode=render_mode,
-            transaction_limit=transaction_limit,
-            full_render_max_depth=full_render_max_depth,
-            render_cache=render_cache,
-        )
-        if candidate is None:
-            return
-        upgraded, upgraded_cost = candidate
-        delta = upgraded_cost - current_cost
-        if delta < 0:
-            return
-        priority = _upgrade_gain(static[bundle_index], entry_source, upgraded) / max(1, delta)
-        heapq.heappush(
-            upgrade_heap,
-            (-priority, entry_index, current_cost, upgraded, upgraded_cost),
-        )
-
-    for entry_index in range(len(selected)):
-        _push_upgrade(entry_index)
-
-    while upgrade_heap and used < token_budget:
-        _neg_priority, entry_index, expected_cost, upgraded, upgraded_cost = heapq.heappop(
-            upgrade_heap
-        )
-        entry = selected[entry_index]
-        current_cost = entry["cost"]
-        if current_cost != expected_cost:
-            continue
-        if not isinstance(current_cost, int):
-            continue
-        delta = upgraded_cost - current_cost
-        if delta < 0 or used + delta > token_budget:
-            continue
-        entry["rendered"] = upgraded
-        entry["cost"] = upgraded_cost
-        used += delta
-        entry_source = entry["source"]
-        if isinstance(entry_source, ContextBundle):
-            primary = _primary_file(entry_source)
-            if primary:
-                file_tokens[primary] = file_tokens.get(primary, 0) + delta
-        _push_upgrade(entry_index)
-
-    return [
-        rendered_bundle
-        for entry in selected
-        if isinstance((rendered_bundle := entry.get("rendered")), ContextBundle)
-    ]
+    initial = _build_initial_credit_heap(
+        bundles,
+        static,
+        transaction_limit=transaction_limit,
+        full_render_max_depth=full_render_max_depth,
+        initial_mode=initial_mode,
+        signature_only_initial=signature_only_initial,
+    )
+    selected, used = _select_bundles_under_credit_budget(
+        initial,
+        bundles,
+        static,
+        state,
+        token_budget,
+    )
+    used = _apply_credit_upgrades(
+        selected,
+        static,
+        state,
+        render_mode=render_mode,
+        transaction_limit=transaction_limit,
+        full_render_max_depth=full_render_max_depth,
+        render_cache=render_cache,
+        token_budget=token_budget,
+        used=used,
+    )
+    return _selected_credit_rendered_bundles(selected)
 
 
 def _apply_render_and_budget(

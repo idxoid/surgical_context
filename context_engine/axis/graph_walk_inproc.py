@@ -401,6 +401,115 @@ def _neighbours_fn(adj: _Adjacency, rels: frozenset[str], direction: Direction):
     return neigh
 
 
+def _inproc_walk_starts(
+    adj: _Adjacency,
+    seed_uid: str,
+    anchor: str,
+) -> tuple[list[str], str | None] | None:
+    seed_meta = adj.meta.get(seed_uid)
+    if seed_meta is None:
+        return None
+    if anchor == "file_classes":
+        seed_file = seed_meta[1]
+        starts = adj.file_classes.get(seed_file, [])
+    else:
+        seed_file = None
+        starts = [seed_uid]
+    if not starts:
+        return None
+    return starts, seed_file
+
+
+def _bfs_distances_from_starts(
+    neigh,
+    starts: list[str],
+    max_hops: int,
+) -> dict[str, int]:
+    dist: dict[str, int] = dict.fromkeys(starts, 0)
+    frontier = list(starts)
+    for hop in range(1, max_hops + 1):
+        nxt: list[str] = []
+        for u in frontier:
+            for v in neigh(u):
+                if v in dist:
+                    continue
+                dist[v] = hop
+                nxt.append(v)
+        if not nxt:
+            break
+        frontier = nxt
+    return dist
+
+
+def _merge_seed_distances(
+    agg_depth: dict[str, int],
+    agg_seeds: dict[str, set[str]],
+    dist: dict[str, int],
+    seed_uid: str,
+    *,
+    adj: _Adjacency,
+    anchor: str,
+    seed_file: str | None,
+) -> None:
+    for node_uid, depth in dist.items():
+        if depth == 0:
+            continue
+        if node_uid not in adj.meta:
+            continue
+        if anchor == "file_classes" and adj.meta[node_uid][1] == seed_file:
+            continue
+        if node_uid not in agg_depth or depth < agg_depth[node_uid]:
+            agg_depth[node_uid] = depth
+        agg_seeds[node_uid].add(seed_uid)
+
+
+def _neighbour_passes_filters(
+    node_uid: str,
+    meta: dict[str, tuple[str, str, str]],
+    *,
+    class_targets_only: bool,
+    exclude_tests: bool,
+) -> bool:
+    _name, path, kind = meta[node_uid]
+    if class_targets_only and kind != "class":
+        return False
+    return not (exclude_tests and is_test_path(path or ""))
+
+
+def _neighbours_from_aggregation(
+    agg_depth: dict[str, int],
+    agg_seeds: dict[str, set[str]],
+    meta: dict[str, tuple[str, str, str]],
+    *,
+    class_targets_only: bool,
+    exclude_tests: bool,
+    limit: int | None,
+) -> list[Neighbour]:
+    out: list[Neighbour] = []
+    for node_uid, depth in agg_depth.items():
+        if not _neighbour_passes_filters(
+            node_uid,
+            meta,
+            class_targets_only=class_targets_only,
+            exclude_tests=exclude_tests,
+        ):
+            continue
+        name, path, _kind = meta[node_uid]
+        out.append(
+            Neighbour(
+                uid=node_uid,
+                name=name,
+                file_path=path,
+                depth=depth,
+                reach=len(agg_seeds[node_uid]),
+            )
+        )
+    out.sort(key=lambda n: (n.depth, -n.reach, n.uid))
+    if limit is not None:
+        return out[:limit]
+    return out
+
+
 def walk_neighbours(
     db,
     workspace_id: str,
@@ -415,7 +524,6 @@ def walk_neighbours(
     limit: int | None = None,
 ) -> list[Neighbour]:
     adj = load_adjacency(db, workspace_id)
-    meta = adj.meta
     rels = frozenset(edges)
     neigh = _neighbours_fn(adj, rels, direction)
     seeds = [u for u in seed_uids if u]
@@ -423,56 +531,30 @@ def walk_neighbours(
     agg_depth: dict[str, int] = {}
     agg_seeds: dict[str, set[str]] = defaultdict(set)
 
-    for su in seeds:
-        seed_meta = meta.get(su)
-        if anchor == "file_classes":
-            if seed_meta is None:
-                continue
-            seed_file = seed_meta[1]
-            starts = adj.file_classes.get(seed_file, [])
-        else:
-            if seed_meta is None:
-                continue
-            seed_file = None
-            starts = [su]
-        if not starts:
+    for seed_uid in seeds:
+        start_info = _inproc_walk_starts(adj, seed_uid, anchor)
+        if start_info is None:
             continue
-        dist: dict[str, int] = dict.fromkeys(starts, 0)
-        frontier = list(starts)
-        for hop in range(1, max_hops + 1):
-            nxt: list[str] = []
-            for u in frontier:
-                for v in neigh(u):
-                    if v in dist:
-                        continue
-                    dist[v] = hop
-                    nxt.append(v)
-            if not nxt:
-                break
-            frontier = nxt
-        for v, d in dist.items():
-            if d == 0:
-                continue  # start node itself
-            if v not in meta:
-                continue
-            if anchor == "file_classes" and meta[v][1] == seed_file:
-                continue  # drop same-file (per this seed)
-            if v not in agg_depth or d < agg_depth[v]:
-                agg_depth[v] = d
-            agg_seeds[v].add(su)
+        starts, seed_file = start_info
+        dist = _bfs_distances_from_starts(neigh, starts, max_hops)
+        _merge_seed_distances(
+            agg_depth,
+            agg_seeds,
+            dist,
+            seed_uid,
+            adj=adj,
+            anchor=anchor,
+            seed_file=seed_file,
+        )
 
-    out: list[Neighbour] = []
-    for v, d in agg_depth.items():
-        name, path, kind = meta[v]
-        if class_targets_only and kind != "class":
-            continue
-        if exclude_tests and is_test_path(path or ""):
-            continue
-        out.append(Neighbour(uid=v, name=name, file_path=path, depth=d, reach=len(agg_seeds[v])))
-    out.sort(key=lambda n: (n.depth, -n.reach, n.uid))
-    if limit is not None:
-        out = out[:limit]
-    return out
+    return _neighbours_from_aggregation(
+        agg_depth,
+        agg_seeds,
+        adj.meta,
+        class_targets_only=class_targets_only,
+        exclude_tests=exclude_tests,
+        limit=limit,
+    )
 
 
 def walk_neighbours_grouped(
@@ -524,6 +606,58 @@ def walk_neighbours_grouped(
     return grouped
 
 
+def _index_roles_by_secondary_uid(
+    secondary_role_uids: Mapping[str, set[str]],
+) -> tuple[set[str], dict[str, set[str]]] | None:
+    flat_secondary_uids: set[str] = set()
+    role_by_uid: dict[str, set[str]] = {}
+    for role, uids in secondary_role_uids.items():
+        for uid in uids:
+            flat_secondary_uids.add(uid)
+            role_by_uid.setdefault(uid, set()).add(role)
+    if not flat_secondary_uids:
+        return None
+    return flat_secondary_uids, role_by_uid
+
+
+def _bfs_reached_secondary_uids(
+    neigh,
+    meta: dict[str, tuple[str, str, str]],
+    primary_uid: str,
+    flat_secondary_uids: set[str],
+    max_hops: int,
+) -> set[str]:
+    if primary_uid not in meta:
+        return set()
+    dist: dict[str, int] = {primary_uid: 0}
+    frontier = [primary_uid]
+    reached_secondary: set[str] = set()
+    for hop in range(1, max_hops + 1):
+        nxt: list[str] = []
+        for u in frontier:
+            for v in neigh(u):
+                if v in dist or v not in meta:
+                    continue
+                dist[v] = hop
+                nxt.append(v)
+                if v in flat_secondary_uids:
+                    reached_secondary.add(v)
+        if not nxt:
+            break
+        frontier = nxt
+    return reached_secondary
+
+
+def _roles_for_reached_uids(
+    reached_secondary: set[str],
+    role_by_uid: dict[str, set[str]],
+) -> set[str]:
+    roles: set[str] = set()
+    for uid in reached_secondary:
+        roles |= role_by_uid.get(uid, set())
+    return roles
+
+
 def query_proximity_roles(
     db,
     workspace_id: str,
@@ -540,47 +674,25 @@ def query_proximity_roles(
     """
     if not primary_uids or not secondary_role_uids:
         return {}
-    flat_secondary_uids: set[str] = set()
-    role_by_uid: dict[str, set[str]] = {}
-    for role, uids in secondary_role_uids.items():
-        for uid in uids:
-            flat_secondary_uids.add(uid)
-            role_by_uid.setdefault(uid, set()).add(role)
-    if not flat_secondary_uids:
+    indexed = _index_roles_by_secondary_uid(secondary_role_uids)
+    if indexed is None:
         return {}
+    flat_secondary_uids, role_by_uid = indexed
 
     adj = load_adjacency(db, workspace_id)
-    meta = adj.meta
     neigh = _neighbours_fn(adj, edges, "undirected")
     hops = max(1, int(max_hops))
 
     out: dict[str, set[str]] = {}
-    for pu in primary_uids:
-        if pu not in meta:
-            continue
-        dist: dict[str, int] = {pu: 0}
-        frontier = [pu]
-        reached_secondary: set[str] = set()
-        for hop in range(1, hops + 1):
-            nxt: list[str] = []
-            for u in frontier:
-                for v in neigh(u):
-                    if v in dist:
-                        continue
-                    if v not in meta:
-                        continue
-                    dist[v] = hop
-                    nxt.append(v)
-                    if v in flat_secondary_uids:
-                        reached_secondary.add(v)
-            if not nxt:
-                break
-            frontier = nxt
-        if not reached_secondary:
-            continue
-        roles: set[str] = set()
-        for uid in reached_secondary:
-            roles |= role_by_uid.get(uid, set())
+    for primary_uid in primary_uids:
+        reached = _bfs_reached_secondary_uids(
+            neigh,
+            adj.meta,
+            primary_uid,
+            flat_secondary_uids,
+            hops,
+        )
+        roles = _roles_for_reached_uids(reached, role_by_uid)
         if roles:
-            out[pu] = roles
+            out[primary_uid] = roles
     return out

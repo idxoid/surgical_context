@@ -149,6 +149,147 @@ def _is_overlay_anchor(candidate: RoleCandidate | None) -> bool:
     return candidate is not None and candidate.role == _OVERLAY_ANCHOR_ROLE
 
 
+def _anchor_path_matches(stored_path: str, requested_path: str) -> bool:
+    if not requested_path:
+        return True
+    stored = stored_path.strip()
+    if not stored:
+        return False
+    if stored == requested_path or stored.endswith(requested_path):
+        return True
+    if requested_path.endswith(stored) or requested_path.endswith(
+        f"/{stored.rsplit('/', 1)[-1]}"
+    ):
+        return True
+    return stored.endswith(f"/{requested_path.rsplit('/', 1)[-1]}")
+
+
+def _reorder_candidates_front(
+    candidates: list[RoleCandidate],
+    *,
+    pinned: RoleCandidate,
+    skip_uid: str | None = None,
+) -> list[RoleCandidate]:
+    if candidates and candidates[0].uid == pinned.uid:
+        return candidates
+    exclude = skip_uid or pinned.uid
+    return [pinned, *[candidate for candidate in candidates if candidate.uid != exclude]]
+
+
+def _best_path_matched_candidate(
+    candidates: list[RoleCandidate],
+    name: str,
+    requested_path: str,
+) -> RoleCandidate | None:
+    path_matches = [
+        candidate
+        for candidate in candidates
+        if candidate.name == name and _anchor_path_matches(candidate.file_path, requested_path)
+    ]
+    if not path_matches:
+        return None
+    return min(
+        path_matches,
+        key=lambda candidate: (
+            10 if "/context_engine/" in (candidate.file_path or "").lower() else 0,
+            len(candidate.file_path or ""),
+        ),
+    )
+
+
+def _try_pin_from_candidate_pool(
+    candidates: list[RoleCandidate],
+    name: str,
+    requested_path: str,
+) -> list[RoleCandidate] | None:
+    if requested_path:
+        pinned = _best_path_matched_candidate(candidates, name, requested_path)
+        if pinned is None:
+            return None
+        return _reorder_candidates_front(candidates, pinned=pinned)
+
+    for index, candidate in enumerate(candidates):
+        if candidate.name != name:
+            continue
+        if index == 0:
+            return candidates
+        return [candidate, *[c for i, c in enumerate(candidates) if i != index]]
+    return None
+
+
+def _resolve_anchor_from_scanned(
+    scanned: Any | None,
+    name: str,
+    requested_path: str,
+) -> tuple[str, str]:
+    if scanned is None:
+        return "", ""
+    for row in getattr(scanned, "rows", ()) or ():
+        if str(row.get("name") or "") != name:
+            continue
+        row_path = str(row.get("file_path") or "")
+        if requested_path and row_path and not _anchor_path_matches(row_path, requested_path):
+            continue
+        return str(row.get("uid") or ""), row_path
+    return "", ""
+
+
+def _resolve_anchor_from_db(
+    db: Any | None,
+    name: str,
+    requested_path: str,
+    workspace_id: str,
+) -> tuple[str, str]:
+    if db is None:
+        return "", ""
+    uid = ""
+    if requested_path and hasattr(db, "get_symbol_uid_by_name_in_file"):
+        uid = (
+            db.get_symbol_uid_by_name_in_file(
+                name,
+                requested_path,
+                workspace_id=workspace_id,
+            )
+            or ""
+        )
+    elif hasattr(db, "get_symbol_uid_by_name"):
+        uid = db.get_symbol_uid_by_name(name, workspace_id=workspace_id) or ""
+    file_path = ""
+    if uid and hasattr(db, "get_file_path_for_symbol"):
+        file_path = db.get_file_path_for_symbol(uid, workspace_id=workspace_id)
+    return uid, file_path
+
+
+def _resolve_anchor_uid_and_path(
+    *,
+    name: str,
+    requested_path: str,
+    workspace_id: str,
+    scanned: Any | None,
+    db: Any | None,
+) -> tuple[str, str]:
+    uid, file_path = _resolve_anchor_from_scanned(scanned, name, requested_path)
+    if uid:
+        return uid, file_path
+    return _resolve_anchor_from_db(db, name, requested_path, workspace_id)
+
+
+def _injected_anchor_candidate(uid: str, name: str, file_path: str) -> RoleCandidate:
+    return RoleCandidate(
+        uid=uid,
+        name=name,
+        qualified_name="",
+        file_path=file_path,
+        role="anchor_symbol",
+        satisfying_contracts=(),
+        satisfying_kinds=(),
+        contract_count=0,
+        kind_count=0,
+        vector_distance=None,
+        score=1.0,
+    )
+
+
 def _pin_anchor_symbol(
     candidates: list[RoleCandidate],
     *,
@@ -172,72 +313,18 @@ def _pin_anchor_symbol(
         return candidates
 
     requested_path = (anchor_path or "").strip()
+    from_pool = _try_pin_from_candidate_pool(candidates, name, requested_path)
+    if from_pool is not None:
+        return from_pool
 
-    def _path_matches(stored_path: str) -> bool:
-        if not requested_path:
-            return True
-        stored = stored_path.strip()
-        if not stored:
-            return False
-        if stored == requested_path or stored.endswith(requested_path):
-            return True
-        if requested_path.endswith(stored) or requested_path.endswith(
-            f"/{stored.rsplit('/', 1)[-1]}"
-        ):
-            return True
-        return stored.endswith(f"/{requested_path.rsplit('/', 1)[-1]}")
-
-    path_matches = [c for c in candidates if c.name == name and _path_matches(c.file_path)]
-    if path_matches:
-        pinned = min(
-            path_matches,
-            key=lambda c: (
-                10 if "/context_engine/" in (c.file_path or "").lower() else 0,
-                len(c.file_path or ""),
-            ),
-        )
-        if candidates and candidates[0].uid == pinned.uid:
-            return candidates
-        return [pinned, *[c for c in candidates if c.uid != pinned.uid]]
-
-    if not requested_path and candidates:
-        for index, candidate in enumerate(candidates):
-            if candidate.name == name:
-                if index == 0:
-                    return candidates
-                pinned = candidates[index]
-                return [pinned, *[c for i, c in enumerate(candidates) if i != index]]
-
-    uid = ""
-    file_path = ""
-    if scanned is not None:
-        for row in getattr(scanned, "rows", ()) or ():
-            if str(row.get("name") or "") != name:
-                continue
-            row_path = str(row.get("file_path") or "")
-            if requested_path and row_path and not _path_matches(row_path):
-                continue
-            uid = str(row.get("uid") or "")
-            file_path = row_path
-            break
-    if not uid and db is not None:
-        if requested_path and hasattr(db, "get_symbol_uid_by_name_in_file"):
-            uid = (
-                db.get_symbol_uid_by_name_in_file(
-                    name,
-                    requested_path,
-                    workspace_id=workspace_id,
-                )
-                or ""
-            )
-        elif hasattr(db, "get_symbol_uid_by_name"):
-            uid = db.get_symbol_uid_by_name(name, workspace_id=workspace_id) or ""
-        if uid and hasattr(db, "get_file_path_for_symbol"):
-            file_path = db.get_file_path_for_symbol(uid, workspace_id=workspace_id)
-
+    uid, file_path = _resolve_anchor_uid_and_path(
+        name=name,
+        requested_path=requested_path,
+        workspace_id=workspace_id,
+        scanned=scanned,
+        db=db,
+    )
     if not uid:
-        # Index missed — fall through to the live editor buffer. Commit is not
-        # the only way to anchor an ask; an overlay-parsed symbol is enough.
         synthetic = _overlay_anchor_candidate(
             overlay,
             name=name,
@@ -246,23 +333,11 @@ def _pin_anchor_symbol(
             user_id=user_id,
         )
         if synthetic is not None:
-            return [synthetic, *[c for c in candidates if c.uid != synthetic.uid]]
+            return _reorder_candidates_front(candidates, pinned=synthetic)
         return candidates
 
-    injected = RoleCandidate(
-        uid=uid,
-        name=name,
-        qualified_name="",
-        file_path=file_path,
-        role="anchor_symbol",
-        satisfying_contracts=(),
-        satisfying_kinds=(),
-        contract_count=0,
-        kind_count=0,
-        vector_distance=None,
-        score=1.0,
-    )
-    return [injected, *[c for c in candidates if c.uid != uid]]
+    injected = _injected_anchor_candidate(uid, name, file_path)
+    return _reorder_candidates_front(candidates, pinned=injected, skip_uid=uid)
 
 
 def _symbol_targeted_budget(

@@ -61,42 +61,57 @@ def _flat_kinds(raw) -> set[str]:
     return out
 
 
+def _kinds_from_prescanned_rows(prescanned, uids: set[str]) -> dict[str, set[str]]:
+    return {
+        str(r.get("uid") or ""): set(r.get("_kinds") or set())
+        for r in prescanned.rows
+        if str(r.get("uid") or "") in uids
+    }
+
+
+def _kinds_from_lance_rows(
+    rows: list[dict],
+    uids: set[str],
+    *,
+    workspace_id: str | None = None,
+) -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for row in rows:
+        if workspace_id is not None and row.get("workspace_id") != workspace_id:
+            continue
+        uid = str(row.get("uid") or "")
+        if uid in uids:
+            out[uid] = _flat_kinds(row.get("axis_container_kinds_json"))
+    return out
+
+
 def _fetch_kinds(lance, workspace_id: str, uids: set[str], prescanned=None) -> dict[str, set[str]]:
     """Container kinds per uid. Prefers the shared workspace scan
     (``_kinds`` already parsed) over a fresh full-table scan."""
     if not uids:
         return {}
     if prescanned is not None:
-        return {
-            str(r.get("uid") or ""): set(r.get("_kinds") or set())
-            for r in prescanned.rows
-            if str(r.get("uid") or "") in uids
-        }
-    out: dict[str, set[str]] = {}
+        return _kinds_from_prescanned_rows(prescanned, uids)
+
     sym = getattr(lance, "symbols_table", None)
-    if sym is None:
-        sym_table = getattr(lance, "_sym_table", None)
-        if sym_table is None:
-            return out
+    if sym is not None:
         rows = (
-            sym_table.to_lance()
-            .to_table(columns=["uid", "axis_container_kinds_json", "workspace_id"])
+            sym(workspace_id)
+            .to_lance()
+            .to_table(columns=["uid", "axis_container_kinds_json"])
             .to_pylist()
         )
-        for r in rows:
-            if r.get("workspace_id") != workspace_id:
-                continue
-            uid = str(r.get("uid") or "")
-            if uid in uids:
-                out[uid] = _flat_kinds(r.get("axis_container_kinds_json"))
-        return out
-    table = sym(workspace_id)
-    rows = table.to_lance().to_table(columns=["uid", "axis_container_kinds_json"]).to_pylist()
-    for r in rows:
-        uid = str(r.get("uid") or "")
-        if uid in uids:
-            out[uid] = _flat_kinds(r.get("axis_container_kinds_json"))
-    return out
+        return _kinds_from_lance_rows(rows, uids)
+
+    sym_table = getattr(lance, "_sym_table", None)
+    if sym_table is None:
+        return {}
+    rows = (
+        sym_table.to_lance()
+        .to_table(columns=["uid", "axis_container_kinds_json", "workspace_id"])
+        .to_pylist()
+    )
+    return _kinds_from_lance_rows(rows, uids, workspace_id=workspace_id)
 
 
 def expand_phased(
