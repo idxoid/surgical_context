@@ -10,6 +10,7 @@ from tests.unit.axis_helpers import (
     AXIS_TEST_WORKSPACE,
     FakeLanceDB,
     FakeNeo4jDB,
+    axis_test_file_path,
     lance_kind_row,
     make_role_candidate,
     walk_rows,
@@ -177,7 +178,7 @@ def test_workspace_isolation_blocks_neighbour_kind_lookup():
     row = {
         "uid": "u:other_ws",
         "name": "x",
-        "file_path": "/tmp/x.py",
+        "file_path": axis_test_file_path("x"),
         "axis_container_kinds_json": json.dumps([{"kind": "keyed_dispatch_callable"}]),
         "workspace_id": "some_other_workspace",
     }

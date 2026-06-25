@@ -8,7 +8,13 @@ from typing import Any
 from context_engine.axis.role_retrieval import RoleCandidate
 
 AXIS_TEST_WORKSPACE = "qa_repo/test@axis"
+AXIS_TEST_FILE_ROOT = "qa_repo/test_project"
 BAD_MAX_HOPS = [0, -1, 1.5, "2", True]
+
+
+def axis_test_file_path(name: str) -> str:
+    """Synthetic repo-relative path for axis unit tests (never written to disk)."""
+    return f"{AXIS_TEST_FILE_ROOT}/{name}.py"
 
 
 class Neo4jResult:
@@ -68,7 +74,7 @@ def make_role_candidate(
     return RoleCandidate(
         uid=uid,
         name=name or uid.split(":")[-1],
-        file_path=file_path or f"/tmp/{uid}.py",
+        file_path=file_path or axis_test_file_path(uid.split(":")[-1]),
         role=role,
         satisfying_contracts=(),
         satisfying_kinds=satisfying_kinds,
@@ -103,7 +109,7 @@ def walk_rows(uids: list[str], *, reach: int = 1, depth: int = 1) -> list[dict]:
         {
             "uid": u,
             "name": u.split(":")[-1],
-            "file_path": f"/tmp/{u}.py",
+            "file_path": axis_test_file_path(u.split(":")[-1]),
             "depth": depth,
             "reach": reach,
         }
@@ -133,7 +139,7 @@ def lance_kind_row(uid: str, *, kinds: list[str], name: str = "n") -> dict[str, 
     return {
         "uid": uid,
         "name": name,
-        "file_path": f"/tmp/{name}.py",
+        "file_path": axis_test_file_path(name),
         "axis_container_kinds_json": json.dumps([{"kind": k} for k in kinds]),
         "container_kinds": kinds,
         "workspace_id": AXIS_TEST_WORKSPACE,

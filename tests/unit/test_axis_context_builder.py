@@ -7,6 +7,7 @@ from typing import Any
 
 from context_engine.axis.context_builder import build_context_for_candidates
 from context_engine.axis.role_retrieval import RoleCandidate
+from tests.unit.axis_helpers import axis_test_file_path
 
 WORKSPACE = "qa_repo/test@axis"
 
@@ -84,7 +85,7 @@ def _make_candidate(
         uid=uid,
         name=name,
         qualified_name=qualified_name,
-        file_path=f"/tmp/{name}.py",
+        file_path=axis_test_file_path(name),
         role=role,
         satisfying_contracts=("registry_binding_inferred",),
         satisfying_kinds=(),
@@ -189,7 +190,7 @@ def test_expanded_related_symbols_carry_step_and_depth():
                     seed_uid="u:app",
                     uid="u:handler",
                     name="handler",
-                    file_path="/tmp/app.py",
+                    file_path=axis_test_file_path("app"),
                     step="binding_structure_expansion",
                     depth=1,
                 )
@@ -230,7 +231,7 @@ def test_duplicate_hits_across_expansion_steps_collapse_to_shallowest():
                     seed_uid="u:seed",
                     uid="u:n",
                     name="neighbour",
-                    file_path="/tmp/x.py",
+                    file_path=axis_test_file_path("x"),
                     step="binding_structure_expansion",
                     depth=1,
                 ),
@@ -241,7 +242,7 @@ def test_duplicate_hits_across_expansion_steps_collapse_to_shallowest():
                     seed_uid="u:seed",
                     uid="u:n",
                     name="neighbour",
-                    file_path="/tmp/x.py",
+                    file_path=axis_test_file_path("x"),
                     step="deferred_runtime_dispatch",
                     depth=2,
                 ),
@@ -269,7 +270,7 @@ def test_max_per_seed_caps_related_count():
             seed_uid="u:seed",
             uid=f"u:n{i}",
             name=f"neighbour{i}",
-            file_path="/tmp/x.py",
+            file_path=axis_test_file_path("x"),
             step="binding_structure_expansion",
             depth=1,
         )
@@ -299,8 +300,8 @@ def test_each_candidate_expands_independently():
             # binding step — ONE batched grouped walk over all seeds; each
             # seed's neighbour is grouped back by seed_uid.
             [
-                _hit_record("u:A", "u:Anbr", "Anbr", "/tmp/a.py", "binding_structure_expansion", 1),
-                _hit_record("u:B", "u:Bnbr", "Bnbr", "/tmp/b.py", "binding_structure_expansion", 1),
+                _hit_record("u:A", "u:Anbr", "Anbr", axis_test_file_path("a"), "binding_structure_expansion", 1),
+                _hit_record("u:B", "u:Bnbr", "Bnbr", axis_test_file_path("b"), "binding_structure_expansion", 1),
             ],
             # runtime step — batched, empty
             [],
@@ -354,7 +355,7 @@ def test_build_context_threads_qualified_name_for_fold_render():
                     "u:target",
                     "u:helper",
                     "helper",
-                    "/tmp/service.py",
+                    axis_test_file_path("service"),
                     "binding_structure_expansion",
                     1,
                 )

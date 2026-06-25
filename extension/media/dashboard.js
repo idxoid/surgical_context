@@ -1,52 +1,39 @@
-"use strict";
-(() => {
-  // src/webview/shared/domActions.ts
-  function bindClickAction(root, action, handler) {
-    const button = root.querySelector(`[data-action="${action}"]`);
-    if (button) {
-      button.addEventListener("click", handler);
-    }
-  }
+import {
+  bindClickAction,
+  bootWebview,
+  escapeHtml,
+  listenForHostMessages,
+  mountLayoutHtml,
+  vscode
+} from "./chunk-LEBZI4EJ.js";
 
-  // src/webview/shared/dashboardDefaults.ts
-  function emptyDashboardMetrics() {
-    return {
-      indexedFiles: null,
-      indexedSymbols: null,
-      docChunks: null,
-      avgLatencyMs: null,
-      tokenSavingsPercent: null,
-      fallbackRatePercent: null,
-      contextQualityPercent: null,
-      symbolsWithDocs: null,
-      storageGb: null,
-      requestsTotal: null,
-      tokensTotal: null,
-      costUsdTotal: null,
-      queuePending: null,
-      queueProcessing: null,
-      queueProcessed: null,
-      queueFailedBatches: null,
-      lastIndexJobStatus: null
-    };
-  }
+// src/webview/shared/dashboardDefaults.ts
+function emptyDashboardMetrics() {
+  return {
+    indexedFiles: null,
+    indexedSymbols: null,
+    docChunks: null,
+    avgLatencyMs: null,
+    tokenSavingsPercent: null,
+    fallbackRatePercent: null,
+    contextQualityPercent: null,
+    symbolsWithDocs: null,
+    storageGb: null,
+    requestsTotal: null,
+    tokensTotal: null,
+    costUsdTotal: null,
+    queuePending: null,
+    queueProcessing: null,
+    queueProcessed: null,
+    queueFailedBatches: null,
+    lastIndexJobStatus: null
+  };
+}
 
-  // src/webview/shared/html.ts
-  function escapeHtml(text) {
-    const map = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#039;"
-    };
-    return text.replace(/[&<>"']/g, (char) => map[char]);
-  }
-
-  // src/webview/shared/dashboardLayout.ts
-  function renderDashboardHeader(workspaceId, lastUpdate) {
-    const lastUpdateText = lastUpdate ? `${secondsAgo(lastUpdate)} ago` : "never";
-    return `
+// src/webview/shared/dashboardLayout.ts
+function renderDashboardHeader(workspaceId, lastUpdate) {
+  const lastUpdateText = lastUpdate ? `${secondsAgo(lastUpdate)} ago` : "never";
+  return `
     <div class="dashboard-header">
       <div>
         <h1>Surgical Context Dashboard</h1>
@@ -58,16 +45,16 @@
       </div>
     </div>
   `;
-  }
-  function renderRefreshButton(isLoading) {
-    return `
+}
+function renderRefreshButton(isLoading) {
+  return `
     <button class="refresh-button ${isLoading ? "loading" : ""}" data-action="refresh" ${isLoading ? "disabled" : ""}>
       ${isLoading ? "Refreshing..." : "Refresh"}
     </button>
   `;
-  }
-  function renderIndexWorkspaceButton(isLoading) {
-    return `
+}
+function renderIndexWorkspaceButton(isLoading) {
+  return `
     <button
       class="primary-action"
       data-action="indexWorkspace"
@@ -77,18 +64,18 @@
       Reindex workspace
     </button>
   `;
-  }
-  function renderDashboardWarnings(warnings) {
-    if (warnings.length === 0) return "";
-    return `
+}
+function renderDashboardWarnings(warnings) {
+  if (warnings.length === 0) return "";
+  return `
     <div class="dashboard-warning" role="status">
       ${warnings.map((warning) => `<div>${escapeHtml(warning)}</div>`).join("")}
     </div>
   `;
-  }
-  function renderDashboardNotices(notices) {
-    if (notices.length === 0) return "";
-    return `
+}
+function renderDashboardNotices(notices) {
+  if (notices.length === 0) return "";
+  return `
     <div class="dashboard-notices" role="status">
       ${notices.map((notice) => `
         <div class="dashboard-notice ${escapeHtml(notice.level)}">
@@ -105,13 +92,13 @@
       `).join("")}
     </div>
   `;
-  }
-  function renderMetricCardGrid(props) {
-    const metrics = props.metrics;
-    const healthStatus = props.health === "up" ? "success" : "danger";
-    const cloudStatus = props.cloudStatus === "connected" || props.cloudStatus === "local" || props.cloudStatus === "fallback-local" ? "success" : "danger";
-    const queueStatus = metrics.queueFailedBatches && metrics.queueFailedBatches > 0 ? "danger" : metrics.queuePending && metrics.queuePending > 0 ? "warning" : "success";
-    return `
+}
+function renderMetricCardGrid(props) {
+  const metrics = props.metrics;
+  const healthStatus = props.health === "up" ? "success" : "danger";
+  const cloudStatus = props.cloudStatus === "connected" || props.cloudStatus === "local" || props.cloudStatus === "fallback-local" ? "success" : "danger";
+  const queueStatus = metrics.queueFailedBatches && metrics.queueFailedBatches > 0 ? "danger" : metrics.queuePending && metrics.queuePending > 0 ? "warning" : "success";
+  return `
     <div class="metric-card-grid">
       ${renderMetricCard("Sidecar health", healthLabel(props.health), props.health === "up" ? "Ready for requests" : "Check backend URL", "pulse", healthStatus)}
       ${renderMetricCard("Graph provider", cloudLabel(props.cloudStatus), cloudNote(props.cloudStatus), "cloud", cloudStatus)}
@@ -127,12 +114,12 @@
       ${renderMetricCard("Storage (context_engine)", formatStorage(metrics.storageGb), metrics.storageGb === null ? "Storage metric unavailable" : "Local LanceDB store", "db")}
     </div>
   `;
-  }
-  function renderTokenSavingsCard(metrics) {
-    const savings = metrics.tokenSavingsPercent;
-    const value = formatPercent(savings);
-    const bars = savings === null ? [38, 42, 44, 40, 46, 43, 45, 41, 39, 44, 47, 45] : [56, 62, 67, 64, 70, 73, Math.max(8, savings), 68, 71, 66, 74, 76];
-    return `
+}
+function renderTokenSavingsCard(metrics) {
+  const savings = metrics.tokenSavingsPercent;
+  const value = formatPercent(savings);
+  const bars = savings === null ? [38, 42, 44, 40, 46, 43, 45, 41, 39, 44, 47, 45] : [56, 62, 67, 64, 70, 73, Math.max(8, savings), 68, 71, 66, 74, 76];
+  return `
     <div class="dashboard-card token-savings-card">
       <div class="card-header">
         <span>Token savings vs naive context</span>
@@ -157,47 +144,47 @@
       </div>
     </div>
   `;
+}
+function renderIndexingJobsCard(metrics) {
+  const queueUnavailable = metrics.queuePending === null && metrics.queueProcessing === null && metrics.queueProcessed === null && metrics.queueFailedBatches === null;
+  if (queueUnavailable) {
+    return renderIndexingStateCard(
+      "Index queue unavailable",
+      "The dashboard cannot read indexing state right now.",
+      "unknown"
+    );
   }
-  function renderIndexingJobsCard(metrics) {
-    const queueUnavailable = metrics.queuePending === null && metrics.queueProcessing === null && metrics.queueProcessed === null && metrics.queueFailedBatches === null;
-    if (queueUnavailable) {
-      return renderIndexingStateCard(
-        "Index queue unavailable",
-        "The dashboard cannot read indexing state right now.",
-        "unknown"
-      );
+  if (metrics.lastIndexJobStatus === "not indexed") {
+    return renderIndexingStateCard(
+      "No indexing jobs yet",
+      "Run Index Workspace to populate graph and vector context for this workspace.",
+      "empty"
+    );
+  }
+  const rows = [
+    {
+      time: "now",
+      type: "Queue",
+      scope: "workspace",
+      status: metrics.lastIndexJobStatus || "idle",
+      duration: metrics.queueProcessing && metrics.queueProcessing > 0 ? "active" : "0s"
+    },
+    {
+      time: "total",
+      type: "Processed",
+      scope: "files",
+      status: metrics.queueFailedBatches && metrics.queueFailedBatches > 0 ? "attention" : "success",
+      duration: formatNumber(metrics.queueProcessed)
+    },
+    {
+      time: "pending",
+      type: "Backlog",
+      scope: "queue",
+      status: metrics.queuePending && metrics.queuePending > 0 ? "queued" : "clear",
+      duration: formatNumber(metrics.queuePending)
     }
-    if (metrics.lastIndexJobStatus === "not indexed") {
-      return renderIndexingStateCard(
-        "No indexing jobs yet",
-        "Run Index Workspace to populate graph and vector context for this workspace.",
-        "empty"
-      );
-    }
-    const rows = [
-      {
-        time: "now",
-        type: "Queue",
-        scope: "workspace",
-        status: metrics.lastIndexJobStatus || "idle",
-        duration: metrics.queueProcessing && metrics.queueProcessing > 0 ? "active" : "0s"
-      },
-      {
-        time: "total",
-        type: "Processed",
-        scope: "files",
-        status: metrics.queueFailedBatches && metrics.queueFailedBatches > 0 ? "attention" : "success",
-        duration: formatNumber(metrics.queueProcessed)
-      },
-      {
-        time: "pending",
-        type: "Backlog",
-        scope: "queue",
-        status: metrics.queuePending && metrics.queuePending > 0 ? "queued" : "clear",
-        duration: formatNumber(metrics.queuePending)
-      }
-    ];
-    return `
+  ];
+  return `
     <div class="dashboard-card indexing-card">
       <div class="card-header">
         <span>Recent indexing jobs</span>
@@ -223,9 +210,9 @@
       </div>
     </div>
   `;
-  }
-  function renderIndexingStateCard(title, message, status) {
-    return `
+}
+function renderIndexingStateCard(title, message, status) {
+  return `
     <div class="dashboard-card indexing-card">
       <div class="card-header">
         <span>Recent indexing jobs</span>
@@ -237,9 +224,9 @@
       </div>
     </div>
   `;
-  }
-  function renderHealthChecklistCard(items) {
-    const rows = items.length === 0 ? `
+}
+function renderHealthChecklistCard(items) {
+  const rows = items.length === 0 ? `
       <div class="health-check-row empty">
         <span>No health checks available</span>
       </div>
@@ -253,7 +240,7 @@
         <div class="health-check-value">${escapeHtml(item.value)}</div>
       </div>
     `).join("");
-    return `
+  return `
     <div class="dashboard-card health-check-card">
       <div class="card-header">
         <span>Health checklist</span>
@@ -264,19 +251,19 @@
       </div>
     </div>
   `;
-  }
-  function renderAuditEventsCard(auditActions) {
-    const rows = auditActions.length === 0 ? `
+}
+function renderAuditEventsCard(auditActions) {
+  const rows = auditActions.length === 0 ? `
       <div class="dashboard-table-row empty" role="row">
         <span>No recent audit events</span>
       </div>
     ` : auditActions.map((action) => {
-      const timestamp = formatTimestamp(action.timestamp);
-      const actionType = action.action_type || "unknown";
-      const symbol = action.symbol || "N/A";
-      const status = action.status || "success";
-      const detail = action.details ? summarizeDetails(action.details) : symbol;
-      return `
+    const timestamp = formatTimestamp(action.timestamp);
+    const actionType = action.action_type || "unknown";
+    const symbol = action.symbol || "N/A";
+    const status = action.status || "success";
+    const detail = action.details ? summarizeDetails(action.details) : symbol;
+    return `
           <div class="dashboard-table-row audit" role="row">
             <span>${escapeHtml(timestamp)}</span>
             <span>${escapeHtml(actionType)}</span>
@@ -284,8 +271,8 @@
             <span class="status ${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span>
           </div>
         `;
-    }).join("");
-    return `
+  }).join("");
+  return `
     <div class="dashboard-card audit-card">
       <div class="card-header">
         <span>Recent audit events</span>
@@ -302,9 +289,9 @@
       </div>
     </div>
   `;
-  }
-  function renderMetricCard(label, value, note, icon, status = "neutral") {
-    return `
+}
+function renderMetricCard(label, value, note, icon, status = "neutral") {
+  return `
     <div class="metric-card ${status}">
       <div class="metric-icon" aria-hidden="true">${escapeHtml(iconSymbol(icon))}</div>
       <div class="metric-info">
@@ -314,124 +301,124 @@
       </div>
     </div>
   `;
+}
+function iconSymbol(name) {
+  const icons = {
+    pulse: "\u25C7",
+    cloud: "\u2601",
+    file: "\u25A1",
+    code: "</>",
+    doc: "\u25A4",
+    play: "\u25B7",
+    clock: "\u25CB",
+    trend: "\u2301",
+    sync: "\u21BB",
+    target: "\u25CE",
+    book: "\u25B1",
+    db: "\u25A5"
+  };
+  return icons[name] || "\u25A1";
+}
+function statusSymbol(status) {
+  if (status === "ok") return "\u2713";
+  if (status === "warning") return "!";
+  if (status === "error") return "\xD7";
+  return "\u25CB";
+}
+function healthLabel(health) {
+  if (health === "up") return "healthy";
+  if (health === "degraded") return "degraded";
+  return "down";
+}
+function cloudLabel(status) {
+  if (status === "connected") return "aura";
+  if (status === "local" || status === "fallback-local") return "local";
+  return "offline";
+}
+function cloudNote(status) {
+  if (status === "connected") return "Neo4j Aura connected";
+  if (status === "local" || status === "fallback-local") return "Local Neo4j active";
+  return "Graph provider offline";
+}
+function queueSummary(metrics) {
+  const pending = metrics.queuePending ?? 0;
+  const processing = metrics.queueProcessing ?? 0;
+  const failed = metrics.queueFailedBatches ?? 0;
+  if (failed > 0) return `${failed} failed batch${failed === 1 ? "" : "es"}`;
+  if (processing > 0) return `${processing} processing`;
+  if (pending > 0) return `${pending} pending`;
+  return "Queue clear";
+}
+function formatNumber(value) {
+  return value === null ? "-" : new Intl.NumberFormat().format(Math.round(value));
+}
+function formatPercent(value) {
+  return value === null ? "-" : `${Math.round(value)}%`;
+}
+function formatMs(value) {
+  return value === null ? "-" : `${Math.round(value)} ms`;
+}
+function formatStorage(valueGb) {
+  if (valueGb === null) return "-";
+  if (valueGb < 0.1) return `${Math.round(valueGb * 1e3)} MB`;
+  return `${valueGb.toFixed(1)} GB`;
+}
+function metricSourceNote(value, source) {
+  return value === null ? `${source} metric unavailable` : source;
+}
+function secondsAgo(timestamp) {
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1e3));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes}m`;
+}
+function formatTimestamp(timestamp) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  return `${secondsAgo(date.getTime())} ago`;
+}
+function summarizeDetails(details) {
+  if (typeof details.symbol === "string") return details.symbol;
+  if (typeof details.file_path === "string") return details.file_path;
+  if (typeof details.project_path === "string") return details.project_path;
+  if (typeof details.error === "string") return summarizeError(details.error);
+  const entries = Object.entries(details).slice(0, 2);
+  if (entries.length === 0) return "N/A";
+  return entries.map(([key, value]) => `${key}: ${String(value)}`).join(" \u2022 ");
+}
+function summarizeError(error) {
+  const missingSymbol = error.match(/Symbol '([^']+)' not found in graph/i);
+  if (missingSymbol) {
+    return `Symbol not indexed: ${missingSymbol[1]}`;
   }
-  function iconSymbol(name) {
-    const icons = {
-      pulse: "\u25C7",
-      cloud: "\u2601",
-      file: "\u25A1",
-      code: "</>",
-      doc: "\u25A4",
-      play: "\u25B7",
-      clock: "\u25CB",
-      trend: "\u2301",
-      sync: "\u21BB",
-      target: "\u25CE",
-      book: "\u25B1",
-      db: "\u25A5"
-    };
-    return icons[name] || "\u25A1";
-  }
-  function statusSymbol(status) {
-    if (status === "ok") return "\u2713";
-    if (status === "warning") return "!";
-    if (status === "error") return "\xD7";
-    return "\u25CB";
-  }
-  function healthLabel(health) {
-    if (health === "up") return "healthy";
-    if (health === "degraded") return "degraded";
-    return "down";
-  }
-  function cloudLabel(status) {
-    if (status === "connected") return "aura";
-    if (status === "local" || status === "fallback-local") return "local";
-    return "offline";
-  }
-  function cloudNote(status) {
-    if (status === "connected") return "Neo4j Aura connected";
-    if (status === "local" || status === "fallback-local") return "Local Neo4j active";
-    return "Graph provider offline";
-  }
-  function queueSummary(metrics) {
-    const pending = metrics.queuePending ?? 0;
-    const processing = metrics.queueProcessing ?? 0;
-    const failed = metrics.queueFailedBatches ?? 0;
-    if (failed > 0) return `${failed} failed batch${failed === 1 ? "" : "es"}`;
-    if (processing > 0) return `${processing} processing`;
-    if (pending > 0) return `${pending} pending`;
-    return "Queue clear";
-  }
-  function formatNumber(value) {
-    return value === null ? "-" : new Intl.NumberFormat().format(Math.round(value));
-  }
-  function formatPercent(value) {
-    return value === null ? "-" : `${Math.round(value)}%`;
-  }
-  function formatMs(value) {
-    return value === null ? "-" : `${Math.round(value)} ms`;
-  }
-  function formatStorage(valueGb) {
-    if (valueGb === null) return "-";
-    if (valueGb < 0.1) return `${Math.round(valueGb * 1e3)} MB`;
-    return `${valueGb.toFixed(1)} GB`;
-  }
-  function metricSourceNote(value, source) {
-    return value === null ? `${source} metric unavailable` : source;
-  }
-  function secondsAgo(timestamp) {
-    const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1e3));
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.round(seconds / 60);
-    return `${minutes}m`;
-  }
-  function formatTimestamp(timestamp) {
-    const date = new Date(timestamp);
-    if (Number.isNaN(date.getTime())) return timestamp;
-    return `${secondsAgo(date.getTime())} ago`;
-  }
-  function summarizeDetails(details) {
-    if (typeof details.symbol === "string") return details.symbol;
-    if (typeof details.file_path === "string") return details.file_path;
-    if (typeof details.project_path === "string") return details.project_path;
-    if (typeof details.error === "string") return summarizeError(details.error);
-    const entries = Object.entries(details).slice(0, 2);
-    if (entries.length === 0) return "N/A";
-    return entries.map(([key, value]) => `${key}: ${String(value)}`).join(" \u2022 ");
-  }
-  function summarizeError(error) {
-    const missingSymbol = error.match(/Symbol '([^']+)' not found in graph/i);
-    if (missingSymbol) {
-      return `Symbol not indexed: ${missingSymbol[1]}`;
-    }
-    return error.replace(/^Error:\s*/i, "");
-  }
-  function renderDashboardLoading() {
-    return `
+  return error.replace(/^Error:\s*/i, "");
+}
+function renderDashboardLoading() {
+  return `
     <div class="dashboard-loading">
       <p>Loading dashboard metrics...</p>
     </div>
   `;
+}
+function renderDashboardView(state) {
+  if (state.isLoading && !state.lastUpdate) {
+    return renderDashboardLoading();
   }
-  function renderDashboardView(state) {
-    if (state.isLoading && !state.lastUpdate) {
-      return renderDashboardLoading();
-    }
-    const header = renderDashboardHeader(state.workspaceId, state.lastUpdate);
-    const indexWorkspaceBtn = renderIndexWorkspaceButton(state.isLoading);
-    const refreshBtn = renderRefreshButton(state.isLoading);
-    const warnings = renderDashboardWarnings(state.warnings);
-    const notices = renderDashboardNotices(state.notices);
-    const metricCards = renderMetricCardGrid({
-      health: state.health || "degraded",
-      cloudStatus: state.cloudStatus || "offline",
-      metrics: state.metrics
-    });
-    const tokenSavingsCard = renderTokenSavingsCard(state.metrics);
-    const indexingJobsCard = renderIndexingJobsCard(state.metrics);
-    const healthChecklistCard = renderHealthChecklistCard(state.healthChecks);
-    const auditCard = renderAuditEventsCard(state.auditActions);
-    return `
+  const header = renderDashboardHeader(state.workspaceId, state.lastUpdate);
+  const indexWorkspaceBtn = renderIndexWorkspaceButton(state.isLoading);
+  const refreshBtn = renderRefreshButton(state.isLoading);
+  const warnings = renderDashboardWarnings(state.warnings);
+  const notices = renderDashboardNotices(state.notices);
+  const metricCards = renderMetricCardGrid({
+    health: state.health || "degraded",
+    cloudStatus: state.cloudStatus || "offline",
+    metrics: state.metrics
+  });
+  const tokenSavingsCard = renderTokenSavingsCard(state.metrics);
+  const indexingJobsCard = renderIndexingJobsCard(state.metrics);
+  const healthChecklistCard = renderHealthChecklistCard(state.healthChecks);
+  const auditCard = renderAuditEventsCard(state.auditActions);
+  return `
     ${header}
     <div class="dashboard-content">
       <div class="dashboard-toolbar">
@@ -453,132 +440,79 @@
       </div>
     </div>
   `;
-  }
+}
 
-  // src/webview/shared/domRender.ts
-  function sanitizeParsedDocument(doc) {
-    doc.querySelectorAll("script, iframe, object, embed").forEach((node) => node.remove());
-    doc.querySelectorAll("*").forEach((node) => {
-      for (const attr of Array.from(node.attributes)) {
-        const name = attr.name.toLowerCase();
-        const value = attr.value.trim().toLowerCase();
-        if (name.startsWith("on")) {
-          node.removeAttribute(attr.name);
-          continue;
-        }
-        if ((name === "href" || name === "src") && value.startsWith("javascript:")) {
-          node.removeAttribute(attr.name);
-        }
+// src/webview/dashboard.ts
+var DashboardPanel = class {
+  constructor() {
+    this.state = {
+      health: null,
+      cloudStatus: null,
+      auditActions: [],
+      metrics: emptyDashboardMetrics(),
+      healthChecks: [],
+      notices: [],
+      workspaceId: "",
+      warnings: [],
+      isLoading: false,
+      error: null,
+      lastUpdate: null
+    };
+    this.initializeMessageListener();
+    this.bindActions(document);
+  }
+  initializeMessageListener() {
+    listenForHostMessages((message) => {
+      switch (message.type) {
+        case "dashboard.loading":
+          this.state.isLoading = true;
+          this.render();
+          break;
+        case "dashboard.metricsLoaded":
+          this.state.health = message.health;
+          this.state.cloudStatus = message.cloudStatus;
+          this.state.auditActions = message.auditActions;
+          this.state.metrics = message.metrics;
+          this.state.healthChecks = message.healthChecks;
+          this.state.notices = message.notices;
+          this.state.workspaceId = message.workspaceId;
+          this.state.warnings = message.warnings;
+          this.state.isLoading = false;
+          this.state.error = null;
+          this.state.lastUpdate = Date.now();
+          this.render();
+          break;
+        case "dashboard.metricsFailed":
+          this.state.isLoading = false;
+          this.state.error = message.error;
+          this.state.warnings = [];
+          this.state.notices = [{
+            id: "dashboard-load-failed",
+            level: "error",
+            title: "Dashboard data failed to load",
+            message: message.error,
+            action: "refresh",
+            actionLabel: "Retry"
+          }];
+          this.render();
+          break;
       }
     });
   }
-  function fragmentFromHtml(html) {
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    sanitizeParsedDocument(doc);
-    const fragment = document.createDocumentFragment();
-    fragment.append(...Array.from(doc.body.childNodes));
-    return fragment;
+  bindActions(root) {
+    bindClickAction(root, "refresh", () => {
+      vscode.postMessage({ type: "dashboard.refresh" });
+    });
+    bindClickAction(root, "indexWorkspace", () => {
+      vscode.postMessage({ type: "dashboard.indexWorkspace" });
+    });
   }
-  function mountLayoutHtml(element, html) {
-    element.replaceChildren(...Array.from(fragmentFromHtml(html).childNodes));
+  render() {
+    const root = document.getElementById("root");
+    if (!root) return;
+    mountLayoutHtml(root, renderDashboardView(this.state));
+    this.bindActions(root);
   }
-
-  // src/webview/shared/webviewRuntime.ts
-  var vscode = acquireVsCodeApi();
-  function isTrustedHostWebviewMessage(event) {
-    const origin = event.origin;
-    if (origin === window.location.origin) {
-      return true;
-    }
-    if (origin === "") {
-      return true;
-    }
-    return origin.startsWith("vscode-webview://");
-  }
-  function bootWebview(init) {
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", init);
-    } else {
-      init();
-    }
-  }
-
-  // src/webview/dashboard.ts
-  var DashboardPanel = class {
-    constructor() {
-      this.state = {
-        health: null,
-        cloudStatus: null,
-        auditActions: [],
-        metrics: emptyDashboardMetrics(),
-        healthChecks: [],
-        notices: [],
-        workspaceId: "",
-        warnings: [],
-        isLoading: false,
-        error: null,
-        lastUpdate: null
-      };
-      this.initializeMessageListener();
-      this.bindActions(document);
-    }
-    initializeMessageListener() {
-      window.addEventListener("message", (event) => {
-        if (!isTrustedHostWebviewMessage(event)) {
-          return;
-        }
-        const message = event.data;
-        switch (message.type) {
-          case "dashboard.loading":
-            this.state.isLoading = true;
-            this.render();
-            break;
-          case "dashboard.metricsLoaded":
-            this.state.health = message.health;
-            this.state.cloudStatus = message.cloudStatus;
-            this.state.auditActions = message.auditActions;
-            this.state.metrics = message.metrics;
-            this.state.healthChecks = message.healthChecks;
-            this.state.notices = message.notices;
-            this.state.workspaceId = message.workspaceId;
-            this.state.warnings = message.warnings;
-            this.state.isLoading = false;
-            this.state.error = null;
-            this.state.lastUpdate = Date.now();
-            this.render();
-            break;
-          case "dashboard.metricsFailed":
-            this.state.isLoading = false;
-            this.state.error = message.error;
-            this.state.warnings = [];
-            this.state.notices = [{
-              id: "dashboard-load-failed",
-              level: "error",
-              title: "Dashboard data failed to load",
-              message: message.error,
-              action: "refresh",
-              actionLabel: "Retry"
-            }];
-            this.render();
-            break;
-        }
-      });
-    }
-    bindActions(root) {
-      bindClickAction(root, "refresh", () => {
-        vscode.postMessage({ type: "dashboard.refresh" });
-      });
-      bindClickAction(root, "indexWorkspace", () => {
-        vscode.postMessage({ type: "dashboard.indexWorkspace" });
-      });
-    }
-    render() {
-      const root = document.getElementById("root");
-      if (!root) return;
-      mountLayoutHtml(root, renderDashboardView(this.state));
-      this.bindActions(root);
-    }
-  };
-  bootWebview(() => new DashboardPanel());
-})();
+};
+bootWebview(() => new DashboardPanel());
 //# sourceMappingURL=dashboard.js.map

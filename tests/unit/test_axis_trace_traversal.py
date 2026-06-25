@@ -6,13 +6,14 @@ from context_engine.axis.trace_traversal import expand_trace_neighbourhood
 from tests.unit.axis_helpers import (
     AXIS_TEST_WORKSPACE,
     FakeNeo4jDB,
+    axis_test_file_path,
     graph_row,
     make_role_candidate,
 )
 
 
-def _record(uid: str, *, name: str = "x", path: str = "/tmp/x.py") -> dict:
-    return graph_row(uid, name, path)
+def _record(uid: str, *, name: str = "x", path: str | None = None) -> dict:
+    return graph_row(uid, name, path or axis_test_file_path("x"))
 
 
 def test_no_seeds_returns_empty():

@@ -14,6 +14,8 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
+from tests.unit.axis_helpers import axis_test_file_path
+
 WORKSPACE = "qa_repo/test@axis"
 
 _SCAN_COLS = [
@@ -118,14 +120,14 @@ def _row(
     uid: str,
     name: str,
     contracts: list[str],
-    path: str = "/tmp/x.py",
+    path: str | None = None,
     vector: list[float] | None = None,
 ) -> dict[str, Any]:
     contract_objs = [{"contract": c} for c in contracts]
     return {
         "uid": uid,
         "name": name,
-        "file_path": path,
+        "file_path": path or axis_test_file_path("x"),
         "axis_contracts_json": json.dumps(contract_objs),
         "axis_container_kinds_json": "[]",
         "workspace_id": WORKSPACE,

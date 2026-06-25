@@ -15,6 +15,8 @@ from context_engine.axis import impact_traversal
 from context_engine.axis.graph_walk import EdgeProfile, Neighbour
 from context_engine.axis.role_retrieval import RoleCandidate
 
+from tests.unit.axis_helpers import axis_test_file_path
+
 WORKSPACE = "qa_repo/test@axis"
 
 _CALLS = frozenset(EdgeProfile.CALLS)
@@ -27,7 +29,7 @@ def _seed(uid: str, *, role: str = "dispatch_surface") -> RoleCandidate:
     return RoleCandidate(
         uid=uid,
         name=uid.split(":")[-1],
-        file_path=f"/tmp/{uid}.py",
+        file_path=axis_test_file_path(uid.split(":")[-1]),
         role=role,
         satisfying_contracts=(),
         satisfying_kinds=(),
@@ -38,8 +40,8 @@ def _seed(uid: str, *, role: str = "dispatch_surface") -> RoleCandidate:
     )
 
 
-def _n(uid: str, *, name: str = "x", path: str = "/tmp/x.py", depth: int = 1) -> Neighbour:
-    return Neighbour(uid=uid, name=name, file_path=path, depth=depth, reach=1)
+def _n(uid: str, *, name: str = "x", path: str | None = None, depth: int = 1) -> Neighbour:
+    return Neighbour(uid=uid, name=name, file_path=path or axis_test_file_path("x"), depth=depth, reach=1)
 
 
 def _install(monkeypatch, *, seed_uids, by_label: dict[str, list[Neighbour]], fanin=None):
@@ -112,7 +114,7 @@ def test_forward_calls_pass_emits_publisher_spine(monkeypatch):
     _install(
         monkeypatch,
         seed_uids=["u:apply_async"],
-        by_label={"forward_calls": [_n("u:send_task", name="send_task", path="/tmp/base.py")]},
+        by_label={"forward_calls": [_n("u:send_task", name="send_task", path=axis_test_file_path("base"))]},
         fanin={"u:send_task": 1},
     )
     out = expand([_seed("u:apply_async")])

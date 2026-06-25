@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
 
 
-@router.post("/auth/token", response_model=AuthTokenResponse)
+@router.post(
+    "/auth/token",
+    response_model=AuthTokenResponse,
+    responses={
+        400: {"description": "Invalid workspace identifier in X-Workspace header"},
+        403: {"description": "Cannot issue token for another user"},
+    },
+)
 def auth_token(
     user_id: str = None,  # type: ignore
     x_user_id: str = Header(None),
@@ -107,7 +114,13 @@ def cloud_status(
         }
 
 
-@router.get("/audit/actions", response_model=AuditActionsResponse)
+@router.get(
+    "/audit/actions",
+    response_model=AuditActionsResponse,
+    responses={
+        403: {"description": "Cannot read audit actions for another user"},
+    },
+)
 def audit_actions(
     user_id: str = None,  # type: ignore
     limit: int = 100,

@@ -15,6 +15,25 @@ export function isTrustedHostWebviewMessage(event: MessageEvent): boolean {
   return origin.startsWith('vscode-webview://');
 }
 
+export function listenForHostMessages<T>(handler: (message: T) => void): void {
+  const webviewOrigin = window.location.origin;
+
+  window.addEventListener('message', (event: MessageEvent<T>) => {
+    const origin = event.origin;
+    if (origin === webviewOrigin) {
+      handler(event.data);
+      return;
+    }
+    if (origin === '') {
+      handler(event.data);
+      return;
+    }
+    if (origin.startsWith('vscode-webview://')) {
+      handler(event.data);
+    }
+  });
+}
+
 export function bootWebview(init: () => void): void {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);

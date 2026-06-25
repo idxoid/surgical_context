@@ -72,9 +72,7 @@ if TYPE_CHECKING:
 _silence()
 
 
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
+from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
 # Parallelism knobs. Default hash pool is high because hashing is I/O-bound;
 # parse pool tracks CPU count because tree-sitter parsing is CPU-bound but

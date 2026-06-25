@@ -1,6 +1,6 @@
 """Unit tests for the embedding model benchmark harness."""
 
-from context_engine.eval.embedding_benchmark import (
+from QA.embedding_benchmark import (
     QuestionRecord,
     SymbolRecord,
     collect_symbols,

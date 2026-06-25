@@ -1,12 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 
+const NONCE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
 export function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+  const bytes = randomBytes(32);
+  return Array.from(bytes, (byte) => NONCE_ALPHABET[byte % NONCE_ALPHABET.length]).join('');
 }
 
 export function getWebviewContent(
@@ -37,7 +36,7 @@ export function getWebviewContent(
 </head>
 <body>
   <div id="root"></div>
-  <script nonce="${nonce}" src="${scriptUri}"><\/script>
+  <script nonce="${nonce}" type="module" src="${scriptUri}"><\/script>
 </body>
 </html>`;
 }

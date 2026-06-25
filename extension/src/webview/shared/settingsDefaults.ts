@@ -28,3 +28,17 @@ export type SettingsFormValues = Pick<
   | 'overlaySync'
   | 'autoOpenInspector'
 >;
+
+export const SETTINGS_FORM_FIELD_KEYS = [
+  'backendUrl',
+  'workspaceId',
+  'modelPreference',
+  'authToken',
+  'tokenBudget',
+  'lancedbPath',
+  'historyPath',
+  'neo4jUri',
+  'indexProfile',
+  'overlaySync',
+  'autoOpenInspector',
+] as const satisfies readonly (keyof SettingsFormValues)[];

@@ -20,23 +20,26 @@ const hostOptions = {
 
 // Standalone webview bundles still referenced by legacy panels. Settings/chat/
 // inspector/impact surfaces live in main.ts to avoid duplicating shared layout code.
-const webviewEntryPoints = [
-  path.join('src/webview', 'main.ts'),
-  path.join('src/webview', 'dashboard.ts'),
-].filter(f => fs.existsSync(f));
+const webviewEntryPoints = {
+  main: path.join('src/webview', 'main.ts'),
+  dashboard: path.join('src/webview', 'dashboard.ts'),
+};
 
-/** Webview bundles (Browser) */
-const webviewOptions = webviewEntryPoints.length > 0 ? {
-  entryPoints: webviewEntryPoints,
-  bundle: true,
-  outdir: 'media',
-  platform: 'browser',
-  target: 'es2020',
-  format: 'iife',
-  sourcemap: !production,
-  minify: production,
-  external: [],
-} : null;
+/** Webview bundles (Browser) — ESM + splitting shares runtime helpers across entries. */
+const webviewOptions = Object.values(webviewEntryPoints).every(f => fs.existsSync(f))
+  ? {
+      entryPoints: webviewEntryPoints,
+      bundle: true,
+      splitting: true,
+      outdir: 'media',
+      platform: 'browser',
+      target: 'es2020',
+      format: 'esm',
+      sourcemap: !production,
+      minify: production,
+      external: [],
+    }
+  : null;
 
 async function build() {
   try {

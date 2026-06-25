@@ -1,5 +1,5 @@
 import type { SettingsData } from './protocol';
-import { DEFAULT_SETTINGS, SettingsFormValues } from './settingsDefaults';
+import { DEFAULT_SETTINGS, SETTINGS_FORM_FIELD_KEYS, SettingsFormValues } from './settingsDefaults';
 import { escapeHtml } from './html';
 
 export { escapeHtml };
@@ -12,18 +12,11 @@ export interface SettingsFormData extends SettingsFormValues {
 }
 
 export function settingsFormDataFromSettings(data: SettingsData): SettingsFormData {
+  const values = Object.fromEntries(
+    SETTINGS_FORM_FIELD_KEYS.map((key) => [key, data[key]]),
+  ) as SettingsFormValues;
   return {
-    backendUrl: data.backendUrl,
-    workspaceId: data.workspaceId,
-    modelPreference: data.modelPreference,
-    authToken: data.authToken,
-    tokenBudget: data.tokenBudget,
-    lancedbPath: data.lancedbPath,
-    historyPath: data.historyPath,
-    neo4jUri: data.neo4jUri,
-    indexProfile: data.indexProfile,
-    overlaySync: data.overlaySync,
-    autoOpenInspector: data.autoOpenInspector,
+    ...values,
     graphStatusLabel: data.graphStatus?.label,
     graphStatusDetail: data.graphStatus?.detail,
     graphStatusHealthy: data.graphStatus?.healthy,
@@ -59,6 +52,23 @@ interface CheckboxSpec {
   hint: string;
 }
 
+function renderSettingField(
+  id: string,
+  label: string,
+  hint: string,
+  controlHtml: string,
+  statusHtml = '',
+): string {
+  return `
+    <div class="setting-field">
+      <label for="${id}">${escapeHtml(label)}</label>
+      ${controlHtml}
+      <p class="field-hint" id="${id}-hint">${hint}</p>
+      ${statusHtml}
+    </div>
+  `;
+}
+
 function renderTextInput(spec: TextInputSpec): string {
   const type = spec.type || 'text';
   const inputAttrs = [
@@ -82,14 +92,7 @@ function renderTextInput(spec: TextInputSpec): string {
     ? `<div class="field-status" id="${spec.id}-status"></div>`
     : '';
 
-  return `
-    <div class="setting-field">
-      <label for="${spec.id}">${escapeHtml(spec.label)}</label>
-      ${inputHtml}
-      <p class="field-hint" id="${spec.id}-hint">${spec.hint}</p>
-      ${statusHtml}
-    </div>
-  `;
+  return renderSettingField(spec.id, spec.label, spec.hint, inputHtml, statusHtml);
 }
 
 function renderSelect(spec: SelectSpec): string {
@@ -97,15 +100,11 @@ function renderSelect(spec: SelectSpec): string {
     `<option value="${escapeHtml(option.value)}" ${spec.value === option.value ? 'selected' : ''}>${escapeHtml(option.label)}</option>`
   )).join('');
 
-  return `
-    <div class="setting-field">
-      <label for="${spec.id}">${escapeHtml(spec.label)}</label>
-      <select id="${spec.id}" class="setting-input" aria-label="${escapeHtml(spec.label)}" aria-describedby="${spec.id}-hint">
+  const selectHtml = `<select id="${spec.id}" class="setting-input" aria-label="${escapeHtml(spec.label)}" aria-describedby="${spec.id}-hint">
         ${options}
-      </select>
-      <p class="field-hint" id="${spec.id}-hint">${spec.hint}</p>
-    </div>
-  `;
+      </select>`;
+
+  return renderSettingField(spec.id, spec.label, spec.hint, selectHtml);
 }
 
 function renderCheckbox(spec: CheckboxSpec): string {
@@ -376,32 +375,40 @@ export function validateSettingsForm(values: SettingsFormValues): SettingsValida
   return null;
 }
 
-export function showFieldStatus(fieldId: string, success: boolean, message: string): void {
-  const status = document.getElementById(`${fieldId}-status`);
-  if (!status) return;
+function showTransientDomMessage(
+  elementId: string,
+  className: string,
+  message: string,
+  autoHide: boolean,
+): void {
+  const element = document.getElementById(elementId);
+  if (!element) return;
 
-  status.className = `field-status ${success ? 'success' : 'error'}`;
-  status.textContent = message;
-  status.style.display = 'block';
+  element.className = className;
+  element.textContent = message;
+  element.style.display = 'block';
 
-  if (success) {
+  if (autoHide) {
     setTimeout(() => {
-      status.style.display = 'none';
+      element.style.display = 'none';
     }, 3000);
   }
 }
 
+export function showFieldStatus(fieldId: string, success: boolean, message: string): void {
+  showTransientDomMessage(
+    `${fieldId}-status`,
+    `field-status ${success ? 'success' : 'error'}`,
+    message,
+    success,
+  );
+}
+
 export function showFeedback(message: string, level: 'info' | 'success' | 'warning' | 'error'): void {
-  const feedback = document.getElementById('settings-feedback');
-  if (!feedback) return;
-
-  feedback.className = `settings-feedback settings-feedback-${level}`;
-  feedback.textContent = message;
-  feedback.style.display = 'block';
-
-  if (level === 'success') {
-    setTimeout(() => {
-      feedback.style.display = 'none';
-    }, 3000);
-  }
+  showTransientDomMessage(
+    'settings-feedback',
+    `settings-feedback settings-feedback-${level}`,
+    message,
+    level === 'success',
+  );
 }

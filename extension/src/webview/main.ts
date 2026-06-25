@@ -1,6 +1,6 @@
 import { bindDataActions } from './shared/domActions';
 import { mountLayoutHtml, replaceElementHtml } from './shared/domRender';
-import { bootWebview, isTrustedHostWebviewMessage, vscode } from './shared/webviewRuntime';
+import { bootWebview, listenForHostMessages, vscode } from './shared/webviewRuntime';
 
 import {
   ChatMessage,
@@ -92,12 +92,7 @@ class MainSurface {
   }
 
   private initializeMessageListener(): void {
-    window.addEventListener('message', (event: MessageEvent<HostToWebviewMessage>) => {
-      if (!isTrustedHostWebviewMessage(event)) {
-        return;
-      }
-      const message = event.data;
-
+    listenForHostMessages<HostToWebviewMessage>((message) => {
       switch (message.type) {
         case 'surface.init':
           this.state = message.state;

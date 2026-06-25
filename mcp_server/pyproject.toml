@@ -9,7 +9,7 @@ description = "MCP server exposing surgical_context's axis retrieval to LLM chat
 requires-python = ">=3.12"
 # Runtime also requires the sibling ``context_engine`` package (this repo) to be
 # importable — install it / run from the repo root venv. See README.md.
-dependencies = ["mcp>=1.2"]
+dependencies = ["mcp==1.28.0"]
 
 [project.scripts]
 surgical-context-mcp = "surgical_context_mcp.server:main"

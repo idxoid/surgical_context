@@ -13,9 +13,7 @@ from context_engine.workspace import DEFAULT_WORKSPACE_ID
 CHUNK_SIZE = 400
 CHUNK_OVERLAP = 80
 
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
+from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
 _HEADING_RE = re.compile(r"^#{1,3} .+", re.MULTILINE)
 

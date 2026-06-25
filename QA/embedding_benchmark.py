@@ -1,14 +1,24 @@
-#!/usr/bin/env python3
 """Compare embedding models on the golden question set.
 
 This benchmark intentionally runs in memory: it extracts symbols from the
 fixture project, embeds each symbol's production indexing text, embeds the
 questions, and ranks symbols by cosine similarity.
+
+Usage::
+
+    PYTHONPATH=. python -m QA.embedding_benchmark \\
+        --questions QA/fixtures/questions_python.yaml
+
+    PYTHONPATH=. python -m QA.embedding_benchmark \\
+        --questions QA/fixtures/questions_python.yaml \\
+        --models all-MiniLM-L6-v2,microsoft/unixcoder-base \\
+        --report /tmp/embedding_benchmark.json
 """
+
+from __future__ import annotations
 
 import argparse
 import json
-import sys
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -17,10 +27,7 @@ from typing import Protocol, cast
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROJECT = ROOT / "context_engine" / "axis"
 DEFAULT_MODELS = ("all-MiniLM-L6-v2", "microsoft/unixcoder-base")
 

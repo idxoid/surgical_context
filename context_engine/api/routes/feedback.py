@@ -11,7 +11,19 @@ from context_engine.feedback import FeedbackEvent
 router = APIRouter(tags=["feedback"])
 
 
-@router.post("/feedback", response_model=FeedbackResponse)
+@router.post(
+    "/feedback",
+    response_model=FeedbackResponse,
+    responses={
+        400: {"description": "Invalid feedback event (e.g. duplicate or malformed payload)"},
+        403: {
+            "description": (
+                "Feedback token belongs to another workspace or user"
+            ),
+        },
+        404: {"description": "Unknown feedback token"},
+    },
+)
 def record_feedback(
     req: FeedbackRequest,
     x_user_id: str = Header(None),
