@@ -85,6 +85,12 @@ def test_anchor_type_classifier_distinguishes_doc_modes():
     assert _classify_anchor_type("A short prose note.") == "reference"
 
 
+def test_anchor_type_classifier_handles_pathological_heading_without_redos():
+    long_heading = "## " + ("a" * 50_000)
+    assert _classify_anchor_type(long_heading) == "reference"
+    assert _classify_anchor_type("## API\n" + ("x" * 50_000)) == "definition"
+
+
 def test_cover_link_carries_confidence_type_and_primary_bias():
     text = "# `BaseModel`\n\n## Parameters\nCall `model_validate(obj)`."
     link = _cover_link("uid-model", "BaseModel", text, "/docs/reference/models.md")

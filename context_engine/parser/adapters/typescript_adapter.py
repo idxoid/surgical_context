@@ -7,6 +7,12 @@ from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, it
 from context_engine.parser.adapters.ts_package_aliases import resolve_package_subpath
 from context_engine.parser.adapters.ts_reexport_resolver import TsReexportResolver
 from context_engine.parser.adapters.ts_scope_graph import TsBinding, TsScopeGraph
+from context_engine.parser.import_scan import (
+    iter_const_destructure_requires,
+    iter_es_module_imports,
+    iter_simple_commonjs_requires,
+    iter_typescript_body_call_fallback_names,
+)
 from context_engine.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from context_engine.parser.uid import (
     compute_uid,
@@ -36,7 +42,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         r"(?m)^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b[^=\n;]*=\s*"
         r"(?:(?:/\*.*?\*/)\s*)*(?:await\s+)?([A-Za-z_$][\w$]*)\s*\("
     )
-    _BODY_CALL_FALLBACK_RE = re.compile(r"\b([A-Za-z_$][\w$]*)\s*(?:<[^>\n;{}()]*>)?\s*\(")
     _BODY_CALL_FALLBACK_SKIP = {
         "catch",
         "for",
@@ -2569,8 +2574,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             body_start = line_offsets[start_idx]
             body = "".join(lines[start_idx:end_idx])
             caller_uid = str(symbol.uid)
-            for match in self._BODY_CALL_FALLBACK_RE.finditer(body):
-                callee_name = match.group(1)
+            for callee_name, name_pos in iter_typescript_body_call_fallback_names(body):
                 if (
                     not callee_name
                     or callee_name == symbol.name
@@ -2578,7 +2582,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     or callee_name not in known_names
                 ):
                     continue
-                prefix = body[: match.start()]
+                prefix = body[:name_pos]
                 previous = prefix.rstrip()[-1:] if prefix.rstrip() else ""
                 if previous in {".", ":"}:
                     continue
@@ -2594,7 +2598,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                         else "CALLS_GUESS"
                     )
                 )
-                line = source_code.count("\n", 0, body_start + match.start(1)) + 1
+                line = source_code.count("\n", 0, body_start + name_pos) + 1
                 callee_qn = (
                     import_bindings.get(callee_name, "") if rel_type == "CALLS_IMPORTED" else ""
                 )
@@ -2632,12 +2636,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
     ) -> tuple[dict[str, str], set[str]]:
         bindings: dict[str, str] = {}
         module_aliases: set[str] = set()
-        for match in re.finditer(
-            r"import\s+([^;]+?)\s+from\s+['\"]([^'\"]+)['\"]",
-            source_code,
-        ):
-            spec = match.group(1).strip()
-            source = self._normalize_import_source(file_path, match.group(2).strip())
+        for spec, import_source in iter_es_module_imports(source_code):
+            spec = spec.strip()
+            source = self._normalize_import_source(file_path, import_source.strip())
             if not spec or not source:
                 continue
             if spec.startswith("{") and spec.endswith("}"):
@@ -2657,18 +2658,11 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     self._parse_named_import_bindings(rest[1:-1], source, bindings)
             else:
                 bindings[spec] = source
-        for match in re.finditer(
-            r"const\s+\{\s*([^}]+)\s*\}\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
-            source_code,
-        ):
-            source = self._normalize_import_source(file_path, match.group(2).strip())
-            self._parse_named_import_bindings(match.group(1), source, bindings)
-        for match in re.finditer(
-            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
-            source_code,
-        ):
-            alias = match.group(1).strip()
-            source = self._normalize_import_source(file_path, match.group(2).strip())
+        for body, import_source in iter_const_destructure_requires(source_code):
+            source = self._normalize_import_source(file_path, import_source.strip())
+            self._parse_named_import_bindings(body, source, bindings)
+        for alias, import_source in iter_simple_commonjs_requires(source_code):
+            source = self._normalize_import_source(file_path, import_source.strip())
             if alias and source:
                 bindings[alias] = source
         TsReexportResolver.enrich_bindings(

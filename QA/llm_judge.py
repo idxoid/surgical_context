@@ -172,10 +172,33 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 
 
 def _json_fence_candidates(text: str) -> list[str]:
-    return [
-        match.group(1).strip()
-        for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    ]
+    """Extract markdown fenced-block bodies in O(n) time (no backtracking regex)."""
+    candidates: list[str] = []
+    marker = "```"
+    marker_len = len(marker)
+    pos = 0
+    text_len = len(text)
+
+    while pos < text_len:
+        start = text.find(marker, pos)
+        if start == -1:
+            break
+
+        content_start = start + marker_len
+        if content_start + 4 <= text_len and text[content_start : content_start + 4].casefold() == "json":
+            content_start += 4
+
+        while content_start < text_len and text[content_start] in " \t\r\n":
+            content_start += 1
+
+        close = text.find(marker, content_start)
+        if close == -1:
+            break
+
+        candidates.append(text[content_start:close].strip())
+        pos = close + marker_len
+
+    return candidates
 
 
 def _normalise(value: Any, allowed: tuple[str, ...], default: str) -> str:

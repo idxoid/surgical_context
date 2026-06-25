@@ -7,6 +7,11 @@ from typing import cast
 from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
 from context_engine.parser.adapters.ts_package_aliases import resolve_package_subpath
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+from context_engine.parser.import_scan import (
+    iter_const_destructure_requires,
+    iter_es_module_imports,
+    iter_simple_commonjs_requires,
+)
 from context_engine.parser.protocol import ClassApiEdge, ImportEdge, InheritanceEdge, SymbolMetadata
 from context_engine.parser.uid import (
     compute_uid,
@@ -828,12 +833,8 @@ class JavaScriptAdapter(TreeSitterAdapter):
     ) -> tuple[dict[str, str], set[str]]:
         bindings: dict[str, str] = {}
         module_aliases: set[str] = set()
-        for match in re.finditer(
-            r"import\s+([^;]+?)\s+from\s+['\"]([^'\"]+)['\"]",
-            source_code,
-        ):
-            spec = match.group(1).strip()
-            source = self._normalize_import_source(file_path, match.group(2).strip())
+        for spec, import_source in iter_es_module_imports(source_code):
+            source = self._normalize_import_source(file_path, import_source.strip())
             if not spec or not source:
                 continue
             if spec.startswith("{") and spec.endswith("}"):
@@ -853,18 +854,11 @@ class JavaScriptAdapter(TreeSitterAdapter):
                     self._parse_named_import_bindings(rest[1:-1], source, bindings)
             else:
                 bindings[spec] = source
-        for match in re.finditer(
-            r"const\s+\{\s*([^}]+)\s*\}\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
-            source_code,
-        ):
-            source = self._normalize_import_source(file_path, match.group(2).strip())
-            self._parse_named_import_bindings(match.group(1), source, bindings)
-        for match in re.finditer(
-            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)",
-            source_code,
-        ):
-            alias = match.group(1).strip()
-            source = self._normalize_import_source(file_path, match.group(2).strip())
+        for body, import_source in iter_const_destructure_requires(source_code):
+            source = self._normalize_import_source(file_path, import_source.strip())
+            self._parse_named_import_bindings(body, source, bindings)
+        for alias, import_source in iter_simple_commonjs_requires(source_code):
+            source = self._normalize_import_source(file_path, import_source.strip())
             if alias and source:
                 bindings[alias] = source
         return bindings, module_aliases

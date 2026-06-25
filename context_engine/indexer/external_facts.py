@@ -12,6 +12,7 @@ from context_engine.indexer.external_boundary import (
     external_root_from_qualified_name,
     external_symbol_uid,
 )
+from context_engine.parser.import_scan import split_python_from_import
 
 
 @dataclass(frozen=True)
@@ -160,9 +161,6 @@ def collect_external_import_links(
     return [ExternalImportLink(file_path=file_path, external_root=root) for root in roots]
 
 
-# Match ``from M import …`` line headers; the body after ``import`` is split
-# downstream. ``M`` is what we resolve against the external boundary.
-_FROM_IMPORT_HEADER = re.compile(r"^from\s+([\w\.]+)\s+import\s+(.+)$")
 # Single ``import M`` / ``import M as A`` clause. ``M.N`` is allowed (e.g.
 # ``import urllib.parse``); the alias is what the source actually binds.
 _BARE_IMPORT_ITEM = re.compile(r"^([\w\.]+)(?:\s+as\s+(\w+))?$")
@@ -249,12 +247,12 @@ def _named_imports_from_source(
 
     # Phase 2: classify each logical line as ``from M import …`` or ``import X``.
     for line in logical_lines:
-        from_match = _FROM_IMPORT_HEADER.match(line)
-        if from_match:
-            module = from_match.group(1).strip()
+        from_parts = split_python_from_import(line)
+        if from_parts:
+            module, body = from_parts
             if module.startswith("."):
                 continue
-            body = from_match.group(2).strip().strip("()").strip()
+            body = body.strip("()").strip()
             for chunk in body.split(","):
                 item = chunk.strip()
                 if not item or item.startswith("*"):

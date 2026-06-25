@@ -30,6 +30,36 @@ _DOC_TYPE_MAP = {
     "review_": "review",
 }
 
+_DEPRECATED_WORDS = frozenset(
+    {"deprecated", "deprecation", "migration", "migrate", "removed", "renamed"}
+)
+_WARNING_WORDS = frozenset({"warning", "caution", "danger", "security", "important", "avoid"})
+_DEFINITION_HEADING_WORDS = frozenset(
+    {
+        "api",
+        "reference",
+        "parameter",
+        "parameters",
+        "return",
+        "returns",
+        "class",
+        "function",
+        "method",
+    }
+)
+_DEFINITION_BODY_WORDS = frozenset(
+    {
+        "argument",
+        "arguments",
+        "parameter",
+        "parameters",
+        "return",
+        "returns",
+        "raises",
+        "signature",
+    }
+)
+
 
 @dataclass
 class _LineProgress:
@@ -76,24 +106,57 @@ def _classify_doc_type(file_path: str) -> str:
     return "documentation"
 
 
+def _contains_any_alpha_word(text: str, words: frozenset[str]) -> bool:
+    """Return True when *text* contains a whole alphabetic token from *words*."""
+    i = 0
+    text_len = len(text)
+    while i < text_len:
+        while i < text_len and not text[i].isalpha():
+            i += 1
+        if i >= text_len:
+            return False
+        j = i
+        while j < text_len and text[j].isalpha():
+            j += 1
+        if text[i:j] in words:
+            return True
+        i = j
+    return False
+
+
+def _markdown_heading_has_keyword(line: str, keywords: frozenset[str]) -> bool:
+    """Match markdown headings `#`..`####` whose title contains a keyword."""
+    stripped = line.lstrip()
+    if not stripped.startswith("#"):
+        return False
+    level = 0
+    while level < len(stripped) and stripped[level] == "#":
+        level += 1
+    if level < 1 or level > 4:
+        return False
+    body = stripped[level:]
+    if not body or body[0] not in " \t":
+        return False
+    return _contains_any_alpha_word(body.lstrip().lower(), keywords)
+
+
 def _classify_anchor_type(chunk_text: str, file_path: str = "") -> str:
     """Classify how strongly a doc chunk is meant to describe a symbol."""
     text = chunk_text.lower()
     path = file_path.lower()
-    if re.search(r"\b(deprecated|deprecation|migration|migrate|removed|renamed)\b", text):
+    if _contains_any_alpha_word(text, _DEPRECATED_WORDS):
         return "deprecated"
-    if re.search(r"\b(warning|caution|danger|security|important|avoid)\b", text):
+    if _contains_any_alpha_word(text, _WARNING_WORDS):
         return "warning"
     if "```" in chunk_text or "/examples/" in path or "/tutorial/" in path:
         return "example"
     if (
         "/reference/" in path
-        or re.search(
-            r"^#{1,4}\s+.*\b(api|reference|parameters?|returns?|class|function|method)\b",
-            text,
-            re.M,
+        or any(
+            _markdown_heading_has_keyword(line, _DEFINITION_HEADING_WORDS)
+            for line in chunk_text.splitlines()
         )
-        or re.search(r"\b(arguments?|parameters?|returns?|raises|signature)\b", text)
+        or _contains_any_alpha_word(text, _DEFINITION_BODY_WORDS)
     ):
         return "definition"
     return "reference"

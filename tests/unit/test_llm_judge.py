@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from QA.llm_judge import (
+    _json_fence_candidates,
     _parse_verdict,
     judge_question_matrix,
     judge_question_via_bridge,
@@ -87,6 +88,14 @@ def test_parse_verdict_derives_legacy_context_sufficiency_from_json_flag():
     assert parsed["answer_quality"] == "correct"
     assert parsed["context_sufficiency"] == "sufficient"
     assert parsed["context_sufficient"] == "yes"
+
+
+def test_json_fence_candidates_linear_scan():
+    assert _json_fence_candidates('```json\n{"a": 1}\n```') == ['{"a": 1}']
+    assert _json_fence_candidates('```\n{"b": 2}\n```') == ['{"b": 2}']
+    assert _json_fence_candidates('```json{"c": 3}```') == ['{"c": 3}']
+
+    assert _json_fence_candidates("```json\n" + ("x" * 50_000)) == []
 
 
 def test_tier_model_env_override(monkeypatch):

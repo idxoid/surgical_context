@@ -171,6 +171,71 @@ def signature_from_node(node, source_code: str, language: str = "python") -> tup
     return raw, "resolved"
 
 
+def _find_matching_paren(text: str, open_index: int) -> int | None:
+    if open_index >= len(text) or text[open_index] != "(":
+        return None
+    depth = 0
+    quote: str | None = None
+    i = open_index
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def _python_return_annotation_from_header(header: str) -> str:
+    paren = header.find(")")
+    if paren < 0:
+        return ""
+    i = paren + 1
+    while i < len(header) and header[i].isspace():
+        i += 1
+    if not header.startswith("->", i):
+        return ""
+    i += 2
+    while i < len(header) and header[i].isspace():
+        i += 1
+    colon = header.find(":", i)
+    if colon < 0:
+        return ""
+    return header[i:colon].strip()
+
+
+def _typescript_return_annotation_from_header(header: str) -> str:
+    paren = header.find(")")
+    if paren < 0:
+        return ""
+    i = paren + 1
+    while i < len(header) and header[i].isspace():
+        i += 1
+    if i >= len(header) or header[i] != ":":
+        return ""
+    i += 1
+    while i < len(header) and header[i].isspace():
+        i += 1
+    end = len(header)
+    for j in range(i, len(header)):
+        if header[j] in "{;":
+            end = j
+            break
+    return header[i:end].strip()
+
+
 def _return_annotation_from_node(node, source_code: str, language: str) -> str:
     return_node = node.child_by_field_name("return_type") or node.child_by_field_name("type")
     if return_node is not None:
@@ -179,20 +244,43 @@ def _return_annotation_from_node(node, source_code: str, language: str) -> str:
 
     header = _node_text(node)[:500]
     if language == "python":
-        match = re.search(r"\)\s*->\s*([^:]+):", header)
-        return match.group(1).strip() if match else ""
-    match = re.search(r"\)\s*:\s*([^\{;]+)", header)
-    return match.group(1).strip() if match else ""
+        return _python_return_annotation_from_header(header)
+    return _typescript_return_annotation_from_header(header)
 
 
 def _split_signature(raw: str) -> tuple[str, str, str]:
-    match = re.match(r"\s*([\w$]+)\s*\((.*)\)\s*(?:->\s*(.+)|:\s*(.+))?\s*$", raw, re.S)
-    if not match:
+    text = raw.strip()
+    if not text:
+        return "<anonymous>", "", "_"
+
+    i = 0
+    text_len = len(text)
+    if not (text[i].isalnum() or text[i] in "_$"):
         return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
-    name = match.group(1)
-    params = match.group(2) or ""
-    returns = (match.group(3) or match.group(4) or "_").strip()
-    return name, params, returns
+    name_start = i
+    i += 1
+    while i < text_len and (text[i].isalnum() or text[i] in "_$"):
+        i += 1
+    name = text[name_start:i]
+
+    while i < text_len and text[i].isspace():
+        i += 1
+    if i >= text_len or text[i] != "(":
+        return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
+
+    close_paren = _find_matching_paren(text, i)
+    if close_paren is None:
+        return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
+
+    params = text[i + 1 : close_paren]
+    suffix = text[close_paren + 1 :].strip()
+    if not suffix:
+        return name, params, "_"
+    if suffix.startswith("->"):
+        return name, params, suffix[2:].strip()
+    if suffix.startswith(":"):
+        return name, params, suffix[1:].strip()
+    return raw.split("(", 1)[0].strip() or "<anonymous>", "", "_"
 
 
 def _normalize_params(params: str, language: str) -> list[str]:

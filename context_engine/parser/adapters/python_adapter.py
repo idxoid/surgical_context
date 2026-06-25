@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
+from context_engine.parser.import_scan import split_python_from_import, split_python_import_clause
 from context_engine.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
 from context_engine.parser.uid import (
     UNRESOLVED_SIGNATURE,
@@ -2872,14 +2873,13 @@ class PythonAdapter(TreeSitterAdapter):
         for node in self._iter_nodes(func_node):
             if node.type in ("import_from_statement",):
                 text = _node_text(node).strip()
-                import re as _re
-
-                m = _re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", text)
-                if m:
+                from_parts = split_python_from_import(text)
+                if from_parts:
+                    import_module, names = from_parts
                     target_module = self._resolve_import_module(
-                        m.group(1), module.rsplit(".", 1)[0] if "." in module else ""
+                        import_module, module.rsplit(".", 1)[0] if "." in module else ""
                     )
-                    for item in m.group(2).split(","):
+                    for item in names.split(","):
                         item = item.strip()
                         original, _, alias = item.partition(" as ")
                         local = alias.strip() or original.strip()
@@ -3017,9 +3017,9 @@ class PythonAdapter(TreeSitterAdapter):
         bindings: dict[str, str] = {}
         for line in source_code.splitlines():
             stripped = line.strip()
-            from_match = re.match(r"from\s+([.\w]+)\s+import\s+(.+)$", stripped)
-            if from_match:
-                import_module, names = from_match.groups()
+            from_parts = split_python_from_import(stripped)
+            if from_parts:
+                import_module, names = from_parts
                 target_module = self._resolve_import_module(import_module, package)
                 for item in names.split(","):
                     item = item.strip()
@@ -3030,9 +3030,9 @@ class PythonAdapter(TreeSitterAdapter):
                     bindings[local_name] = f"{target_module}.{original.strip()}"
                 continue
 
-            import_match = re.match(r"import\s+(.+)$", stripped)
-            if import_match:
-                for item in import_match.group(1).split(","):
+            import_body = split_python_import_clause(stripped)
+            if import_body:
+                for item in import_body.split(","):
                     item = item.strip()
                     original, _, alias = item.partition(" as ")
                     target_module = original.strip()

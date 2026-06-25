@@ -6,6 +6,7 @@ from context_engine.indexer.external_boundary import (
     external_symbol_uid,
     package_manifest_external_roots,
 )
+from context_engine.parser.import_scan import split_python_from_import
 from context_engine.indexer.external_facts import (
     collect_external_call_links,
     collect_external_import_links,
@@ -39,6 +40,14 @@ def test_package_manifest_external_roots_include_js_dependencies(tmp_path):
     roots = package_manifest_external_roots(tmp_path)
 
     assert {"router", "mocha"} <= roots
+
+
+def test_split_from_import_header_parses_without_regex_backtracking():
+    assert split_python_from_import("from starlette.routing import Router, Mount") == (
+        "starlette.routing",
+        "Router, Mount",
+    )
+    assert split_python_from_import("from " + ("a" * 50_000)) is None
 
 
 def test_collect_external_call_links_skips_in_project_targets():
