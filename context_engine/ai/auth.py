@@ -4,6 +4,14 @@ import time
 import httpx
 
 
+class DeviceCodeError(Exception):
+    """GitHub device-code endpoint returned an unexpected payload."""
+
+
+class OAuthAuthorizationError(Exception):
+    """GitHub OAuth polling failed with a terminal error."""
+
+
 class GitHubAuth:
     def __init__(self):
         # Берем Client ID из .env (или вставь его сюда напрямую, если не используешь .env)
@@ -22,7 +30,7 @@ class GitHubAuth:
 
         data = resp.json()
         if "verification_uri" not in data:
-            raise Exception(f"Ошибка получения device code: {data}")
+            raise DeviceCodeError(f"Ошибка получения device code: {data}")
 
         print(f"\n🔗 Перейди по адресу: {data['verification_uri']}")
         print(f"🔢 Введи код: {data['user_code']}\n")
@@ -49,4 +57,4 @@ class GitHubAuth:
             if "access_token" in res_data:
                 return res_data["access_token"]
             elif res_data.get("error") != "authorization_pending":
-                raise Exception(f"Ошибка авторизации: {res_data}")
+                raise OAuthAuthorizationError(f"Ошибка авторизации: {res_data}")

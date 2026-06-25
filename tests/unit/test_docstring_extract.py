@@ -55,8 +55,10 @@ def test_typescript_adapter_attaches_jsdoc():
         """
     )
     symbols = TypeScriptAdapter().extract_symbols(source, "src/app.module.ts")
-    assert len(symbols) >= 1
-    docstring = symbols[0].docstring
+    assert symbols
+    symbol = symbols[0]
+    assert symbol is not None
+    docstring = symbol.docstring
     assert docstring is not None
     assert docstring == "Nest module metadata."
 
@@ -83,4 +85,9 @@ def test_javascript_adapter_attaches_jsdoc():
         """
     )
     symbols = JavaScriptAdapter().extract_symbols(source, "lib/create.js")
-    assert symbols[0].docstring == "Factory helper."
+    assert symbols
+    symbol = symbols[0]
+    assert symbol is not None
+    docstring = symbol.docstring
+    assert docstring is not None
+    assert docstring == "Factory helper."

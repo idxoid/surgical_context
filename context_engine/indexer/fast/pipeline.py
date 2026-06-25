@@ -93,13 +93,13 @@ class _NullReporter:
     """Default no-op reporter. Keeps the pipeline quiet when no one is watching."""
 
     def stage_start(self, stage: str, total: int) -> None:
-        pass
+        pass  # No-op default: pipeline runs without a progress UI attached.
 
     def step(self, stage: str, n: int = 1) -> None:
-        pass
+        pass  # No-op default: callers may pass a real reporter for tqdm/logging.
 
     def stage_end(self, stage: str) -> None:
-        pass
+        pass  # No-op default: stage boundaries are ignored unless overridden.
 
 
 def _symbol_needs_upsert(sym, existing: dict | None) -> bool:

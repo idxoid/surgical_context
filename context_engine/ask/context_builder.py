@@ -58,9 +58,8 @@ class AskContextBuilder:
                     stripped = line.lstrip()
                     if stripped.startswith(
                         ("def ", "class ", "async def ", "function ", "const ", "let ", "var ")
-                    ):
-                        if symbol in line:
-                            return lineno
+                    ) and symbol in line:
+                        return lineno
         except (OSError, FileNotFoundError):
             pass
         return None

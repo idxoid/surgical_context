@@ -59,8 +59,8 @@ def connect_neo4j_driver(
                     session.run("RETURN 1").consume()
                 logger.info("Connected to local Neo4j (%s) as fallback", resolved_local_uri)
                 return driver, False, True
-            except Exception as exc2:
-                logger.error("Both Aura and local Neo4j failed: %s", exc2)
+            except Exception:
+                logger.exception("Both Aura and local Neo4j failed")
                 raise
 
     driver = GraphDatabase.driver(

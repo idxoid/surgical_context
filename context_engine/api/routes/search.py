@@ -21,6 +21,60 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["search"])
 
 
+def _vector_doc_score(doc: dict[str, Any], rank: int) -> float:
+    score = doc.get("score")
+    return float(score if score is not None else 1 / (rank + 1))
+
+
+def _symbol_semantic_score(symbol: dict[str, Any]) -> float | None:
+    score = symbol.get("score")
+    if score is None and symbol.get("distance") is not None:
+        return max(0.0, 1.0 - float(symbol["distance"]))
+    return score
+
+
+def _ranked_vector_score(semantic: float | None, rank: int) -> float:
+    return float(semantic if semantic is not None else 1 / (rank + 1))
+
+
+def _unified_doc_results(docs: list[dict[str, Any]]) -> list[UnifiedSearchResult]:
+    results: list[UnifiedSearchResult] = []
+    for rank, doc in enumerate(docs):
+        score = doc.get("score")
+        results.append(
+            {
+                "type": "doc",
+                "title": doc.get("id") or doc["file_path"],
+                "file_path": doc["file_path"],
+                "content": doc["chunk"],
+                "score": _vector_doc_score(doc, rank),
+                "scores": {"semantic": score},
+                "provenance": ["vector:docs"],
+                "metadata": {"rank": rank + 1, "distance": doc.get("distance")},
+            }
+        )
+    return results
+
+
+def _unified_symbol_results(symbols: list[dict[str, Any]]) -> list[UnifiedSearchResult]:
+    results: list[UnifiedSearchResult] = []
+    for rank, symbol in enumerate(symbols):
+        semantic = _symbol_semantic_score(symbol)
+        results.append(
+            {
+                "type": "symbol",
+                "title": symbol["name"],
+                "file_path": symbol["file_path"],
+                "content": "",
+                "score": _ranked_vector_score(semantic, rank),
+                "scores": {"semantic": semantic},
+                "provenance": ["vector:symbols"],
+                "metadata": {"uid": symbol.get("uid"), "rank": rank + 1},
+            }
+        )
+    return results
+
+
 def _axis_graph_neighbors(
     *, request: Request | None = None, symbol: str, workspace_id: str, user_id: str, limit: int
 ) -> list[dict[str, Any]]:
@@ -110,42 +164,13 @@ def unified_search(
     try:
         with trace.stage("vector_docs"):
             docs = main._vector_search_docs(req.query, req.limit, workspace_id=index_workspace_id)
-        for rank, doc in enumerate(docs):
-            score = doc.get("score")
-            results.append(
-                {
-                    "type": "doc",
-                    "title": doc.get("id") or doc["file_path"],
-                    "file_path": doc["file_path"],
-                    "content": doc["chunk"],
-                    "score": float(score if score is not None else 1 / (rank + 1)),
-                    "scores": {"semantic": score},
-                    "provenance": ["vector:docs"],
-                    "metadata": {"rank": rank + 1, "distance": doc.get("distance")},
-                }
-            )
+        results = _unified_doc_results(docs)
 
         with trace.stage("vector_symbols"):
             symbols = main._vector_search_symbols(
                 req.query, req.limit, workspace_id=index_workspace_id
             )
-        if symbols:
-            for rank, symbol in enumerate(symbols):
-                score = symbol.get("score")
-                if score is None and symbol.get("distance") is not None:
-                    score = max(0.0, 1.0 - float(symbol["distance"]))
-                results.append(
-                    {
-                        "type": "symbol",
-                        "title": symbol["name"],
-                        "file_path": symbol["file_path"],
-                        "content": "",
-                        "score": float(score if score is not None else 1 / (rank + 1)),
-                        "scores": {"semantic": score},
-                        "provenance": ["vector:symbols"],
-                        "metadata": {"uid": symbol.get("uid"), "rank": rank + 1},
-                    }
-                )
+        results.extend(_unified_symbol_results(symbols))
 
         if req.include_graph and req.symbol:
             with trace.stage("graph_neighbors"):

@@ -55,8 +55,8 @@ class AuditLog:
             with open(self.log_file, "a") as f:
                 f.write(json.dumps(entry) + "\n")
             logger.debug(f"Audit: {user_id} {action} {resource} {status}")
-        except Exception as e:
-            logger.error(f"Failed to write audit log: {e}")
+        except Exception:
+            logger.exception("Failed to write audit log")
 
     def log_index(self, user_id: str, project_path: str, file_count: int, symbol_count: int):
         """Log indexing action."""
@@ -114,7 +114,7 @@ class AuditLog:
                         entry = json.loads(line)
                         if user_id is None or entry.get("user_id") == user_id:
                             entries.append(entry)
-        except Exception as e:
-            logger.error(f"Failed to read audit log: {e}")
+        except Exception:
+            logger.exception("Failed to read audit log")
 
         return entries
