@@ -54,6 +54,89 @@ def _rank_api_neighbours(
     return ranked
 
 
+def _hook_bridge_topic_uids(
+    db,
+    workspace_id: str,
+    seed_uids: list[str],
+    *,
+    include_tests: bool,
+) -> list[str]:
+    members = walk_neighbours(
+        db,
+        workspace_id,
+        seed_uids,
+        edges=_TOPIC_SURFACE,
+        direction="forward",
+        max_hops=1,
+        exclude_tests=not include_tests,
+        limit=_WALK_LIMIT,
+    )
+    return list(dict.fromkeys(seed_uids + [n.uid for n in members if n.uid]))
+
+
+def _hook_bridge_site_uids(
+    db,
+    workspace_id: str,
+    topic_uids: list[str],
+    *,
+    include_tests: bool,
+) -> list[str]:
+    sites = walk_neighbours(
+        db,
+        workspace_id,
+        topic_uids,
+        edges=_EVENT_CHANNEL,
+        direction="undirected",
+        max_hops=1,
+        exclude_tests=not include_tests,
+        limit=_WALK_LIMIT,
+    )
+    return list(dict.fromkeys(n.uid for n in sites if n.uid))
+
+
+def _hook_bridge_api_neighbours(
+    db,
+    workspace_id: str,
+    site_uids: list[str],
+    *,
+    include_tests: bool,
+) -> list[Neighbour]:
+    return walk_neighbours(
+        db,
+        workspace_id,
+        site_uids,
+        edges=_HOOK_API,
+        direction="undirected",
+        max_hops=1,
+        exclude_tests=not include_tests,
+        limit=_WALK_LIMIT,
+    )
+
+
+def _hook_api_bridge_candidate(
+    neighbour: Neighbour,
+    *,
+    rows_by_uid: dict[str, dict],
+    base_score: float,
+) -> RoleCandidate:
+    owner_row = rows_by_uid.get(neighbour.uid) or {}
+    return RoleCandidate(
+        uid=neighbour.uid,
+        name=neighbour.name or str(owner_row.get("name") or ""),
+        qualified_name=str(owner_row.get("qualified_name") or ""),
+        file_path=neighbour.file_path or str(owner_row.get("file_path") or ""),
+        role="hook_api_bridge",
+        satisfying_contracts=(),
+        satisfying_kinds=("hook_register_api",),
+        contract_count=0,
+        kind_count=1,
+        vector_distance=None,
+        score=base_score,
+        depth=neighbour.depth,
+        edge_type="HOOK_CONFIG",
+    )
+
+
 def expand_hook_api_bridge(
     seeds: Iterable[RoleCandidate],
     *,
@@ -74,47 +157,12 @@ def expand_hook_api_bridge(
         return []
     seed_uids = list(dict.fromkeys(c.uid for c in seed_list))
 
-    # Phase A: topics + their API surface (EVENT edges hang off handler members,
-    # not always the topic class node itself).
-    members = walk_neighbours(
-        db,
-        workspace_id,
-        seed_uids,
-        edges=_TOPIC_SURFACE,
-        direction="forward",
-        max_hops=1,
-        exclude_tests=not include_tests,
-        limit=_WALK_LIMIT,
-    )
-    topic_uids = list(dict.fromkeys(seed_uids + [n.uid for n in members if n.uid]))
-
-    # Phase B: EVENT channel sites — structural gate, only event-participating
-    # topics yield.
-    sites = walk_neighbours(
-        db,
-        workspace_id,
-        topic_uids,
-        edges=_EVENT_CHANNEL,
-        direction="undirected",
-        max_hops=1,
-        exclude_tests=not include_tests,
-        limit=_WALK_LIMIT,
-    )
-    site_uids = list(dict.fromkeys(n.uid for n in sites if n.uid))
+    topic_uids = _hook_bridge_topic_uids(db, workspace_id, seed_uids, include_tests=include_tests)
+    site_uids = _hook_bridge_site_uids(db, workspace_id, topic_uids, include_tests=include_tests)
     if not site_uids:
         return []
 
-    # Phase C: HOOK_CONFIG/HOOK_EXEC registration API.
-    apis = walk_neighbours(
-        db,
-        workspace_id,
-        site_uids,
-        edges=_HOOK_API,
-        direction="undirected",
-        max_hops=1,
-        exclude_tests=not include_tests,
-        limit=_WALK_LIMIT,
-    )
+    apis = _hook_bridge_api_neighbours(db, workspace_id, site_uids, include_tests=include_tests)
     if not apis:
         return []
 
@@ -125,23 +173,12 @@ def expand_hook_api_bridge(
         uid = neighbour.uid
         if not uid or uid in seen:
             continue
-        owner_row = rows_by_uid.get(uid) or {}
         seen.add(uid)
         out.append(
-            RoleCandidate(
-                uid=uid,
-                name=neighbour.name or str(owner_row.get("name") or ""),
-                qualified_name=str(owner_row.get("qualified_name") or ""),
-                file_path=neighbour.file_path or str(owner_row.get("file_path") or ""),
-                role="hook_api_bridge",
-                satisfying_contracts=(),
-                satisfying_kinds=("hook_register_api",),
-                contract_count=0,
-                kind_count=1,
-                vector_distance=None,
-                score=base_score,
-                depth=neighbour.depth,
-                edge_type="HOOK_CONFIG",
+            _hook_api_bridge_candidate(
+                neighbour,
+                rows_by_uid=rows_by_uid,
+                base_score=base_score,
             )
         )
         if len(out) >= max_total:

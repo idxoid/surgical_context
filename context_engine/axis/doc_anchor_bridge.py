@@ -65,6 +65,75 @@ def _rank_bridge_neighbours(
     return ranked
 
 
+def _bridge_role_candidate(
+    neighbour: Neighbour,
+    *,
+    seed_score: float,
+    rows_by_uid: dict[str, dict],
+) -> RoleCandidate:
+    owner_row = rows_by_uid.get(neighbour.uid) or {}
+    return RoleCandidate(
+        uid=neighbour.uid,
+        name=neighbour.name or str(owner_row.get("name") or ""),
+        qualified_name=str(owner_row.get("qualified_name") or ""),
+        file_path=neighbour.file_path or str(owner_row.get("file_path") or ""),
+        role="doc_anchor_bridge",
+        satisfying_contracts=(),
+        satisfying_kinds=("reverse_uses_type",),
+        contract_count=0,
+        kind_count=1,
+        vector_distance=None,
+        score=seed_score,
+        depth=neighbour.depth,
+        edge_type="USES_TYPE",
+    )
+
+
+def _expand_bridge_for_seed(
+    seed: RoleCandidate,
+    *,
+    db,
+    workspace_id: str,
+    rows_by_uid: dict[str, dict],
+    idf_by_seed: dict[str, float],
+    include_tests: bool,
+    max_per_seed: int,
+    max_total: int,
+    seen: set[str],
+    out: list[RoleCandidate],
+) -> bool:
+    """Expand one doc-anchor seed; return True when ``max_total`` is reached."""
+    neighbours = walk_neighbours(
+        db,
+        workspace_id,
+        [seed.uid],
+        edges=_USES_TYPE,
+        direction="reverse",
+        max_hops=1,
+        exclude_tests=not include_tests,
+    )
+    if not neighbours:
+        return False
+    seed_score = 0.35 * idf_by_seed.get(seed.uid, 1.0)
+    taken = 0
+    for neighbour in _rank_bridge_neighbours(neighbours, rows_by_uid=rows_by_uid):
+        uid = neighbour.uid
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        out.append(
+            _bridge_role_candidate(
+                neighbour,
+                seed_score=seed_score,
+                rows_by_uid=rows_by_uid,
+            )
+        )
+        taken += 1
+        if taken >= max_per_seed or len(out) >= max_total:
+            return len(out) >= max_total
+    return len(out) >= max_total
+
+
 def expand_doc_anchor_bridge(
     doc_anchor_candidates: Iterable[RoleCandidate],
     *,
@@ -86,46 +155,18 @@ def expand_doc_anchor_bridge(
     out: list[RoleCandidate] = []
     seen: set[str] = set()
     for seed in seeds:
-        neighbours = walk_neighbours(
-            db,
-            workspace_id,
-            [seed.uid],
-            edges=_USES_TYPE,
-            direction="reverse",
-            max_hops=1,
-            exclude_tests=not include_tests,
-        )
-        if not neighbours:
-            continue
-        seed_score = 0.35 * idf_by_seed.get(seed.uid, 1.0)
-        taken = 0
-        for neighbour in _rank_bridge_neighbours(neighbours, rows_by_uid=rows_by_uid):
-            uid = neighbour.uid
-            if not uid or uid in seen:
-                continue
-            owner_row = rows_by_uid.get(uid) or {}
-            seen.add(uid)
-            out.append(
-                RoleCandidate(
-                    uid=uid,
-                    name=neighbour.name or str(owner_row.get("name") or ""),
-                    qualified_name=str(owner_row.get("qualified_name") or ""),
-                    file_path=neighbour.file_path or str(owner_row.get("file_path") or ""),
-                    role="doc_anchor_bridge",
-                    satisfying_contracts=(),
-                    satisfying_kinds=("reverse_uses_type",),
-                    contract_count=0,
-                    kind_count=1,
-                    vector_distance=None,
-                    score=seed_score,
-                    depth=neighbour.depth,
-                    edge_type="USES_TYPE",
-                )
-            )
-            taken += 1
-            if taken >= max_per_seed or len(out) >= max_total:
-                break
-        if len(out) >= max_total:
+        if _expand_bridge_for_seed(
+            seed,
+            db=db,
+            workspace_id=workspace_id,
+            rows_by_uid=rows_by_uid,
+            idf_by_seed=idf_by_seed,
+            include_tests=include_tests,
+            max_per_seed=max_per_seed,
+            max_total=max_total,
+            seen=seen,
+            out=out,
+        ):
             break
     return out
 

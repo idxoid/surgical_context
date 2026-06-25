@@ -203,6 +203,227 @@ Direction = Literal["forward", "reverse", "undirected"]
 Anchor = Literal["seed", "file_classes"]
 
 
+def _walk_neighbours_edge_frag(
+    direction: Direction,
+    rel: str,
+    hops: int,
+    *,
+    start_var: str,
+) -> str:
+    if direction == "forward":
+        return f"({start_var})-[r:{rel}*1..{hops}]->(n:Symbol)"
+    if direction == "reverse":
+        return f"(n:Symbol)-[r:{rel}*1..{hops}]->({start_var})"
+    return f"({start_var})-[r:{rel}*1..{hops}]-(n:Symbol)"
+
+
+def _walk_neighbours_where_clauses(
+    *,
+    exclude_tests: bool,
+    class_targets_only: bool,
+    anchor: Anchor,
+) -> list[str]:
+    where_clauses: list[str] = [
+        "all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)"
+    ]
+    if class_targets_only:
+        where_clauses.append("n.kind = 'class'")
+    if exclude_tests:
+        from context_engine.axis.test_file_filter import cypher_test_exclusion_clause
+
+        where_clauses.append(cypher_test_exclusion_clause("fn"))
+    if anchor == "file_classes":
+        where_clauses.append("fn.path <> seed_file.path")
+    return where_clauses
+
+
+def _walk_neighbours_anchor_match(anchor: Anchor) -> str:
+    if anchor == "file_classes":
+        return (
+            "MATCH (seed_file:File {workspace_id: $workspace_id})"
+            "-[:CONTAINS]->(s:Symbol {uid: su})\n"
+            "    MATCH (seed_file)-[:CONTAINS]->(cls:Symbol)\n"
+            "    WHERE cls.kind = 'class'"
+        )
+    return "MATCH (sf:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: su})"
+
+
+def _build_walk_neighbours_cypher(
+    *,
+    edge_types: tuple[str, ...],
+    direction: Direction,
+    max_hops: int,
+    anchor: Anchor,
+    exclude_tests: bool,
+    class_targets_only: bool,
+    limit: int | None,
+) -> str:
+    rel = _safe_rel_pattern(edge_types)
+    hops = _safe_max_hops(max_hops)
+    start_var = "cls" if anchor == "file_classes" else "s"
+    edge_frag = _walk_neighbours_edge_frag(direction, rel, hops, start_var=start_var)
+    where_sql = "WHERE " + " AND ".join(
+        _walk_neighbours_where_clauses(
+            exclude_tests=exclude_tests,
+            class_targets_only=class_targets_only,
+            anchor=anchor,
+        )
+    )
+    limit_sql = "\n    LIMIT $limit" if limit is not None else ""
+    return f"""
+    UNWIND $seed_uids AS su
+    {_walk_neighbours_anchor_match(anchor)}
+    MATCH {edge_frag}
+    MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
+    {where_sql}
+    WITH n, fn, min(size(r)) AS depth, count(DISTINCT su) AS reach
+    RETURN
+        n.uid AS uid,
+        coalesce(n.name, '') AS name,
+        fn.path AS file_path,
+        depth AS depth,
+        reach AS reach
+    ORDER BY depth ASC, reach DESC, uid ASC
+    {limit_sql}
+    """
+
+
+def _neighbours_from_cypher_records(records) -> list[Neighbour]:
+    out: list[Neighbour] = []
+    for rec in records:
+        uid = str(rec.get("uid") or "")
+        if not uid:
+            continue
+        out.append(
+            Neighbour(
+                uid=uid,
+                name=str(rec.get("name") or ""),
+                file_path=str(rec.get("file_path") or ""),
+                depth=int(rec.get("depth") or 0),
+                reach=int(rec.get("reach") or 0),
+            )
+        )
+    return out
+
+
+def _run_walk_neighbours_cypher(
+    db,
+    cypher: str,
+    seeds: list[str],
+    workspace_id: str,
+    limit: int | None,
+) -> list[Neighbour]:
+    try:
+        with db.driver.session() as session:
+            records = session.run(
+                cypher,
+                seed_uids=list(seeds),
+                workspace_id=workspace_id,
+                limit=limit,
+            )
+            return _neighbours_from_cypher_records(records)
+    except Exception:
+        return []
+
+
+def _grouped_walk_edge_frag(direction: Direction, rel: str, hops: int) -> str:
+    if direction == "forward":
+        return f"(s)-[r:{rel}*1..{hops}]->(n:Symbol)"
+    if direction == "reverse":
+        return f"(s)<-[r:{rel}*1..{hops}]-(n:Symbol)"
+    return f"(s)-[r:{rel}*1..{hops}]-(n:Symbol)"
+
+
+def _grouped_walk_limit_sql(limit_per_seed: int | None) -> str:
+    if limit_per_seed is None:
+        return """
+    RETURN
+        su AS seed_uid,
+        n.uid AS uid,
+        coalesce(n.name, '') AS name,
+        fn.path AS file_path,
+        depth AS depth
+    ORDER BY seed_uid ASC, depth ASC, uid ASC
+    """
+    return """
+    ORDER BY su ASC, depth ASC, n.uid ASC
+    WITH su, collect({
+        uid: n.uid,
+        name: coalesce(n.name, ''),
+        file_path: fn.path,
+        depth: depth
+    })[..$limit_per_seed] AS rows
+    UNWIND rows AS row
+    RETURN
+        su AS seed_uid,
+        row.uid AS uid,
+        row.name AS name,
+        row.file_path AS file_path,
+        row.depth AS depth
+    ORDER BY seed_uid ASC, depth ASC, uid ASC
+    """
+
+
+def _build_walk_neighbours_grouped_cypher(
+    *,
+    edge_types: Iterable[str],
+    direction: Direction,
+    max_hops: int,
+    limit_per_seed: int | None,
+) -> str:
+    rel = _safe_rel_pattern(edge_types)
+    hops = _safe_max_hops(max_hops)
+    edge_frag = _grouped_walk_edge_frag(direction, rel, hops)
+    return f"""
+    UNWIND $seed_uids AS su
+    MATCH (s:Symbol {{uid: su}})
+    MATCH {edge_frag}
+    MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
+    WHERE all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)
+    WITH su, n, fn, min(size(r)) AS depth
+    {_grouped_walk_limit_sql(limit_per_seed)}
+    """
+
+
+def _grouped_neighbours_from_cypher_records(records) -> dict[str, list[Neighbour]]:
+    grouped: dict[str, list[Neighbour]] = {}
+    for rec in records:
+        su = str(rec.get("seed_uid") or "")
+        uid = str(rec.get("uid") or "")
+        if not su or not uid:
+            continue
+        grouped.setdefault(su, []).append(
+            Neighbour(
+                uid=uid,
+                name=str(rec.get("name") or ""),
+                file_path=str(rec.get("file_path") or ""),
+                depth=int(rec.get("depth") or 0),
+                reach=1,
+            )
+        )
+    return grouped
+
+
+def _run_walk_neighbours_grouped_cypher(
+    db,
+    cypher: str,
+    seeds: list[str],
+    workspace_id: str,
+    limit_per_seed: int | None,
+) -> dict[str, list[Neighbour]]:
+    try:
+        with db.driver.session() as session:
+            records = session.run(
+                cypher,
+                seed_uids=list(seeds),
+                workspace_id=workspace_id,
+                limit_per_seed=limit_per_seed,
+            )
+            return _grouped_neighbours_from_cypher_records(records)
+    except Exception:
+        return {}
+
+
 def walk_neighbours(
     db,
     workspace_id: str,
@@ -266,91 +487,19 @@ def walk_neighbours(
     seeds = [u for u in seed_uids if u]
     if not seeds:
         return []
-    rel = _safe_rel_pattern(edge_types)
-    hops = _safe_max_hops(max_hops)
     if limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("limit must be an integer >= 1")
 
-    # Build the directional relationship fragment between the anchor
-    # symbol ``s`` (or ``cls``) and the neighbour ``n``.
-    start_var = "cls" if anchor == "file_classes" else "s"
-    if direction == "forward":
-        edge_frag = f"({start_var})-[r:{rel}*1..{hops}]->(n:Symbol)"
-    elif direction == "reverse":
-        edge_frag = f"(n:Symbol)-[r:{rel}*1..{hops}]->({start_var})"
-    else:  # undirected
-        edge_frag = f"({start_var})-[r:{rel}*1..{hops}]-(n:Symbol)"
-
-    where_clauses: list[str] = [
-        "all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)"
-    ]
-    if class_targets_only:
-        where_clauses.append("n.kind = 'class'")
-    if exclude_tests:
-        from context_engine.axis.test_file_filter import cypher_test_exclusion_clause
-
-        where_clauses.append(cypher_test_exclusion_clause("fn"))
-
-    if anchor == "file_classes":
-        # Start at classes inside the seed's file; drop same-file
-        # neighbours (already represented by the seed's file).
-        where_clauses.append("fn.path <> seed_file.path")
-        anchor_match = (
-            "MATCH (seed_file:File {workspace_id: $workspace_id})"
-            "-[:CONTAINS]->(s:Symbol {uid: su})\n"
-            "    MATCH (seed_file)-[:CONTAINS]->(cls:Symbol)\n"
-            "    WHERE cls.kind = 'class'"
-        )
-    else:
-        anchor_match = (
-            "MATCH (sf:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: su})"
-        )
-
-    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-
-    limit_sql = "\n    LIMIT $limit" if limit is not None else ""
-
-    cypher = f"""
-    UNWIND $seed_uids AS su
-    {anchor_match}
-    MATCH {edge_frag}
-    MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
-    {where_sql}
-    WITH n, fn, min(size(r)) AS depth, count(DISTINCT su) AS reach
-    RETURN
-        n.uid AS uid,
-        coalesce(n.name, '') AS name,
-        fn.path AS file_path,
-        depth AS depth,
-        reach AS reach
-    ORDER BY depth ASC, reach DESC, uid ASC
-    {limit_sql}
-    """
-
-    out: list[Neighbour] = []
-    try:
-        with db.driver.session() as session:
-            for rec in session.run(
-                cypher,
-                seed_uids=list(seeds),
-                workspace_id=workspace_id,
-                limit=limit,
-            ):
-                uid = str(rec.get("uid") or "")
-                if not uid:
-                    continue
-                out.append(
-                    Neighbour(
-                        uid=uid,
-                        name=str(rec.get("name") or ""),
-                        file_path=str(rec.get("file_path") or ""),
-                        depth=int(rec.get("depth") or 0),
-                        reach=int(rec.get("reach") or 0),
-                    )
-                )
-    except Exception:
-        return []
-    return out
+    cypher = _build_walk_neighbours_cypher(
+        edge_types=edge_types,
+        direction=direction,
+        max_hops=max_hops,
+        anchor=anchor,
+        exclude_tests=exclude_tests,
+        class_targets_only=class_targets_only,
+        limit=limit,
+    )
+    return _run_walk_neighbours_cypher(db, cypher, seeds, workspace_id, limit)
 
 
 def call_fan_in(
@@ -454,82 +603,22 @@ def walk_neighbours_grouped(
     seeds = [u for u in seed_uids if u]
     if not seeds:
         return {}
-    rel = _safe_rel_pattern(edges)
-    hops = _safe_max_hops(max_hops)
     if limit_per_seed is not None and (type(limit_per_seed) is not int or limit_per_seed < 1):
         raise ValueError("limit_per_seed must be an integer >= 1")
 
-    if direction == "forward":
-        edge_frag = f"(s)-[r:{rel}*1..{hops}]->(n:Symbol)"
-    elif direction == "reverse":
-        edge_frag = f"(s)<-[r:{rel}*1..{hops}]-(n:Symbol)"
-    else:  # undirected
-        edge_frag = f"(s)-[r:{rel}*1..{hops}]-(n:Symbol)"
-
-    if limit_per_seed is None:
-        limit_sql = """
-    RETURN
-        su AS seed_uid,
-        n.uid AS uid,
-        coalesce(n.name, '') AS name,
-        fn.path AS file_path,
-        depth AS depth
-    ORDER BY seed_uid ASC, depth ASC, uid ASC
-    """
-    else:
-        limit_sql = """
-    ORDER BY su ASC, depth ASC, n.uid ASC
-    WITH su, collect({
-        uid: n.uid,
-        name: coalesce(n.name, ''),
-        file_path: fn.path,
-        depth: depth
-    })[..$limit_per_seed] AS rows
-    UNWIND rows AS row
-    RETURN
-        su AS seed_uid,
-        row.uid AS uid,
-        row.name AS name,
-        row.file_path AS file_path,
-        row.depth AS depth
-    ORDER BY seed_uid ASC, depth ASC, uid ASC
-    """
-
-    cypher = f"""
-    UNWIND $seed_uids AS su
-    MATCH (s:Symbol {{uid: su}})
-    MATCH {edge_frag}
-    MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
-    WHERE all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)
-    WITH su, n, fn, min(size(r)) AS depth
-    {limit_sql}
-    """
-
-    grouped: dict[str, list[Neighbour]] = {}
-    try:
-        with db.driver.session() as session:
-            for rec in session.run(
-                cypher,
-                seed_uids=list(seeds),
-                workspace_id=workspace_id,
-                limit_per_seed=limit_per_seed,
-            ):
-                su = str(rec.get("seed_uid") or "")
-                uid = str(rec.get("uid") or "")
-                if not su or not uid:
-                    continue
-                grouped.setdefault(su, []).append(
-                    Neighbour(
-                        uid=uid,
-                        name=str(rec.get("name") or ""),
-                        file_path=str(rec.get("file_path") or ""),
-                        depth=int(rec.get("depth") or 0),
-                        reach=1,
-                    )
-                )
-    except Exception:
-        return {}
-    return grouped
+    cypher = _build_walk_neighbours_grouped_cypher(
+        edge_types=edges,
+        direction=direction,
+        max_hops=max_hops,
+        limit_per_seed=limit_per_seed,
+    )
+    return _run_walk_neighbours_grouped_cypher(
+        db,
+        cypher,
+        seeds,
+        workspace_id,
+        limit_per_seed,
+    )
 
 
 # ---------------------------------------------------------------------------

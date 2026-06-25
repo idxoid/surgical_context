@@ -672,50 +672,64 @@ class AxisContractCompiler:
         return diagnostics
 
 
-def container_kind_matches_from_json(
-    raw: str | list[dict[str, object]],
-) -> list[ContainerKindMatch]:
-    """Parse persisted ``axis_container_kinds_json`` rows back into L2 matches."""
-
+def _parse_container_kind_json_raw(raw: str | list[dict[str, object]]) -> list[object] | None:
     if isinstance(raw, str):
         try:
             data = json.loads(raw or "[]")
         except json.JSONDecodeError:
-            return []
+            return None
     else:
         data = raw
     if not isinstance(data, list):
+        return None
+    return data
+
+
+def _parse_container_kind_evidence_bits(item: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    evidence_bits: list[tuple[str, str]] = []
+    for pair in item.get("evidence_bits") or []:
+        if (
+            isinstance(pair, (list, tuple))
+            and len(pair) == 2
+            and str(pair[0]) in {"cfg", "dfg", "struct"}
+            and str(pair[1])
+        ):
+            evidence_bits.append((str(pair[0]), str(pair[1])))
+    return tuple(evidence_bits)
+
+
+def _container_kind_match_from_item(item: object) -> ContainerKindMatch | None:
+    if not isinstance(item, dict):
+        return None
+    kind = str(item.get("kind") or "")
+    symbol_uid = str(item.get("symbol_uid") or "")
+    qualified_name = str(item.get("qualified_name") or "")
+    if not kind or not symbol_uid:
+        return None
+    probes = tuple(str(p) for p in item.get("evidence_probes") or [] if str(p))
+    payload = item.get("payload")
+    return ContainerKindMatch(
+        kind=kind,
+        symbol_uid=symbol_uid,
+        qualified_name=qualified_name,
+        evidence_bits=_parse_container_kind_evidence_bits(item),
+        evidence_probes=probes,
+        payload=payload if isinstance(payload, dict) else {},
+    )
+
+
+def container_kind_matches_from_json(
+    raw: str | list[dict[str, object]],
+) -> list[ContainerKindMatch]:
+    """Parse persisted ``axis_container_kinds_json`` rows back into L2 matches."""
+    data = _parse_container_kind_json_raw(raw)
+    if data is None:
         return []
     out: list[ContainerKindMatch] = []
     for item in data:
-        if not isinstance(item, dict):
-            continue
-        kind = str(item.get("kind") or "")
-        symbol_uid = str(item.get("symbol_uid") or "")
-        qualified_name = str(item.get("qualified_name") or "")
-        if not kind or not symbol_uid:
-            continue
-        evidence_bits = []
-        for pair in item.get("evidence_bits") or []:
-            if (
-                isinstance(pair, (list, tuple))
-                and len(pair) == 2
-                and str(pair[0]) in {"cfg", "dfg", "struct"}
-                and str(pair[1])
-            ):
-                evidence_bits.append((str(pair[0]), str(pair[1])))
-        probes = tuple(str(p) for p in item.get("evidence_probes") or [] if str(p))
-        payload = item.get("payload")
-        out.append(
-            ContainerKindMatch(
-                kind=kind,
-                symbol_uid=symbol_uid,
-                qualified_name=qualified_name,
-                evidence_bits=tuple(evidence_bits),
-                evidence_probes=probes,
-                payload=payload if isinstance(payload, dict) else {},
-            )
-        )
+        match = _container_kind_match_from_item(item)
+        if match is not None:
+            out.append(match)
     return out
 
 

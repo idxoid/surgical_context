@@ -1705,6 +1705,210 @@ def _hook_transparency_hits(
     return out
 
 
+def _candidate_utility_score(
+    candidate: RoleCandidate,
+    utility_score_fn: Callable[[RoleCandidate], float] | None,
+) -> float:
+    if utility_score_fn is None:
+        return candidate.utility_score if candidate.utility_score is not None else candidate.score
+    return utility_score_fn(candidate)
+
+
+def _collect_hits_per_seed(
+    db,
+    workspace_id: str,
+    seed_uids: list[str],
+    *,
+    traversal_mode: str | None,
+    max_per_seed: int,
+    hook_transparency: bool,
+) -> dict[str, list[_Hit]]:
+    """Batch graph walks for every seed; optionally attach hook-transparency hits.
+
+    One grouped walk per expansion step over all seed uids (not one round-trip
+    per candidate). ``walk_neighbours_grouped`` still returns per-seed buckets.
+    """
+    hits_per_seed: dict[str, list[_Hit]] = {u: [] for u in seed_uids}
+    steps = steps_for_mode(traversal_mode) if traversal_mode is not None else ()
+    for step_name, edges, direction, max_hops in steps:
+        grouped = walk_neighbours_grouped(
+            db,
+            workspace_id,
+            seed_uids,
+            edges=edges,
+            direction=direction,
+            max_hops=max_hops,
+            limit_per_seed=max_per_seed * 4,
+        )
+        for su, neighbours in grouped.items():
+            bucket = hits_per_seed.get(su)
+            if bucket is None:
+                continue
+            for nb in neighbours:
+                bucket.append(_Hit(nb.uid, nb.name, nb.file_path, nb.depth, step_name))
+
+    if hook_transparency:
+        for su, extra in _hook_transparency_hits(
+            db, workspace_id, seed_uids, limit=max_per_seed
+        ).items():
+            bucket = hits_per_seed.get(su)
+            if bucket is not None:
+                bucket.extend(extra)
+    return hits_per_seed
+
+
+def _nearest_expansion_hits(
+    hits: list[_Hit],
+    *,
+    include_tests: bool,
+    max_per_seed: int,
+) -> list[_Hit]:
+    """Dedupe expansion hits by uid (shallowest wins), optionally fence tests."""
+    nearest_by_uid: dict[str, _Hit] = {}
+    for h in hits:
+        if not include_tests and is_test_path(h.file_path or ""):
+            continue
+        existing = nearest_by_uid.get(h.uid)
+        if existing is None or h.depth < existing.depth:
+            nearest_by_uid[h.uid] = h
+    return sorted(
+        nearest_by_uid.values(),
+        key=lambda h: (h.depth, (h.name or "").lower(), h.uid),
+    )[:max_per_seed]
+
+
+def _plan_candidate_expansions(
+    candidates: list[RoleCandidate],
+    hits_per_seed: dict[str, list[_Hit]],
+    *,
+    include_tests: bool,
+    max_per_seed: int,
+) -> tuple[list[tuple[RoleCandidate, list[_Hit]]], set[str]]:
+    expansion_per_candidate: list[tuple[RoleCandidate, list[_Hit]]] = []
+    uids_to_fetch: set[str] = set()
+    for cand in candidates:
+        uids_to_fetch.add(cand.uid)
+        ordered = _nearest_expansion_hits(
+            hits_per_seed.get(cand.uid, []),
+            include_tests=include_tests,
+            max_per_seed=max_per_seed,
+        )
+        expansion_per_candidate.append((cand, ordered))
+        for h in ordered:
+            uids_to_fetch.add(h.uid)
+    return expansion_per_candidate, uids_to_fetch
+
+
+def _resolve_context_payloads(
+    lance,
+    db,
+    workspace_id: str,
+    uids_to_fetch: set[str],
+    *,
+    overlay: Any | None,
+    user_id: str,
+) -> dict[str, dict[str, str | None]]:
+    payload_by_uid = _fetch_symbol_payloads(lance, workspace_id, uids_to_fetch)
+    if overlay is not None:
+        from context_engine.axis.overlay_context import merge_saved_overlay_payloads
+
+        payload_by_uid = merge_saved_overlay_payloads(
+            payload_by_uid,
+            overlay=overlay,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+    return _hydrate_missing_symbol_code(
+        db,
+        workspace_id,
+        uids_to_fetch,
+        payload_by_uid,
+    )
+
+
+def _context_symbol_from_hit(
+    hit: _Hit,
+    payload_by_uid: dict[str, dict[str, str | None]],
+) -> ContextSymbol:
+    payload = payload_by_uid.get(hit.uid, {})
+    return ContextSymbol(
+        uid=hit.uid,
+        name=hit.name,
+        file_path=hit.file_path,
+        role=hit.step or "related",
+        distance_from_seed=hit.depth,
+        expansion_step=hit.step,
+        code=payload.get("code"),
+        qualified_name=str(payload.get("qualified_name") or ""),
+    )
+
+
+def _context_bundle_for_candidate(
+    cand: RoleCandidate,
+    hits: list[_Hit],
+    payload_by_uid: dict[str, dict[str, str | None]],
+    *,
+    utility_score_fn: Callable[[RoleCandidate], float] | None,
+) -> ContextBundle:
+    seed_payload = payload_by_uid.get(cand.uid, {})
+    seed = ContextSymbol(
+        uid=cand.uid,
+        name=cand.name,
+        file_path=cand.file_path,
+        role=cand.role,
+        distance_from_seed=cand.depth or 0,
+        expansion_step=None,
+        code=seed_payload.get("code"),
+        qualified_name=cand.qualified_name or str(seed_payload.get("qualified_name") or ""),
+        kind=cand.satisfying_kinds[0] if cand.satisfying_kinds else "",
+        direction=_candidate_direction(cand),
+        edge_type=cand.edge_type,
+        relevance_score=cand.score,
+        utility_score=cand.utility_score if cand.utility_score is not None else cand.score,
+    )
+    related = tuple(_context_symbol_from_hit(h, payload_by_uid) for h in hits)
+    return ContextBundle(
+        role=cand.role,
+        seed=seed,
+        related=related,
+        utility_score=_candidate_utility_score(cand, utility_score_fn),
+    )
+
+
+def _build_context_bundles(
+    expansion_per_candidate: list[tuple[RoleCandidate, list[_Hit]]],
+    payload_by_uid: dict[str, dict[str, str | None]],
+    *,
+    utility_score_fn: Callable[[RoleCandidate], float] | None,
+) -> list[ContextBundle]:
+    return [
+        _context_bundle_for_candidate(
+            cand,
+            hits,
+            payload_by_uid,
+            utility_score_fn=utility_score_fn,
+        )
+        for cand, hits in expansion_per_candidate
+    ]
+
+
+def _apply_overlay_to_context_bundles(
+    bundles: list[ContextBundle],
+    *,
+    overlay: Any,
+    workspace_id: str,
+    user_id: str,
+) -> list[ContextBundle]:
+    from context_engine.axis.overlay_context import apply_dirty_overlay_to_bundles
+
+    return apply_dirty_overlay_to_bundles(
+        bundles,
+        overlay=overlay,
+        workspace_id=workspace_id,
+        user_id=user_id,
+    )
+
+
 def build_context_for_candidates(
     candidates: Iterable[RoleCandidate],
     *,
@@ -1747,157 +1951,45 @@ def build_context_for_candidates(
     ``token_budget`` hands the pool to the Token Credit packer, which buys the
     minimal render per bundle by marginal utility per token.
     """
-    from context_engine.axis.test_file_filter import is_test_path
-
     candidates = list(candidates)
     if not candidates:
         return []
 
-    def _utility_score(candidate: RoleCandidate) -> float:
-        if utility_score_fn is None:
-            return (
-                candidate.utility_score if candidate.utility_score is not None else candidate.score
-            )
-        return utility_score_fn(candidate)
-
-    # One batched grouped walk per expansion step over ALL candidate uids,
-    # instead of a per-candidate traversal (N graph round-trips collapse to
-    # one per step). Each seed still gets its OWN neighbourhood —
-    # ``walk_neighbours_grouped`` returns ``{seed_uid: [neighbours]}`` — so
-    # the per-seed dedupe/fence/cap below is byte-identical to the old
-    # AxisGraphTraversal path. Steps run in order so a uid reached by an
-    # earlier step keeps its (shallower) label on a depth tie.
     all_uids = [c.uid for c in candidates]
-    hits_per_seed: dict[str, list[_Hit]] = {u: [] for u in all_uids}
-    steps = steps_for_mode(traversal_mode) if traversal_mode is not None else ()
-    for step_name, edges, direction, max_hops in steps:
-        grouped = walk_neighbours_grouped(
-            db,
-            workspace_id,
-            all_uids,
-            edges=edges,
-            direction=direction,
-            max_hops=max_hops,
-            limit_per_seed=max_per_seed * 4,
-        )
-        for su, neighbours in grouped.items():
-            bucket = hits_per_seed.get(su)
-            if bucket is None:
-                continue
-            for nb in neighbours:
-                bucket.append(_Hit(nb.uid, nb.name, nb.file_path, nb.depth, step_name))
-
-    # Hook transparency: open hook-DECLARATION seeds through their registration
-    # lifecycle (incoming HOOK sites -> the registration API they go through).
-    # Inert for non-hook seeds. See ``_hook_transparency_hits``.
-    if hook_transparency:
-        for su, extra in _hook_transparency_hits(
-            db, workspace_id, all_uids, limit=max_per_seed
-        ).items():
-            bucket = hits_per_seed.get(su)
-            if bucket is not None:
-                bucket.extend(extra)
-
-    expansion_per_candidate: list[tuple[RoleCandidate, list]] = []
-    uids_to_fetch: set[str] = set()
-    for cand in candidates:
-        uids_to_fetch.add(cand.uid)
-        hits = hits_per_seed.get(cand.uid, [])
-        # Dedupe by uid, keep the shallowest occurrence (closer wins).
-        # The test-file fence applies after dedup: an expansion hit
-        # that lands in a test surface is dropped unless the caller
-        # opted in via ``include_tests``.
-        nearest_by_uid: dict[str, _Hit] = {}
-        for h in hits:
-            if not include_tests and is_test_path(h.file_path or ""):
-                continue
-            existing = nearest_by_uid.get(h.uid)
-            if existing is None or h.depth < existing.depth:
-                nearest_by_uid[h.uid] = h
-        ordered = sorted(
-            nearest_by_uid.values(),
-            key=lambda h: (h.depth, (h.name or "").lower(), h.uid),
-        )[:max_per_seed]
-        expansion_per_candidate.append((cand, ordered))
-        for h in ordered:
-            uids_to_fetch.add(h.uid)
-
-    payload_by_uid = _fetch_symbol_payloads(lance, workspace_id, uids_to_fetch)
-    if overlay is not None:
-        from context_engine.axis.overlay_context import (
-            apply_dirty_overlay_to_bundles,
-            merge_saved_overlay_payloads,
-        )
-
-        payload_by_uid = merge_saved_overlay_payloads(
-            payload_by_uid,
-            overlay=overlay,
-            workspace_id=workspace_id,
-            user_id=user_id,
-        )
-
-    payload_by_uid = _hydrate_missing_symbol_code(
+    hits_per_seed = _collect_hits_per_seed(
+        db,
+        workspace_id,
+        all_uids,
+        traversal_mode=traversal_mode,
+        max_per_seed=max_per_seed,
+        hook_transparency=hook_transparency,
+    )
+    expansion_per_candidate, uids_to_fetch = _plan_candidate_expansions(
+        candidates,
+        hits_per_seed,
+        include_tests=include_tests,
+        max_per_seed=max_per_seed,
+    )
+    payload_by_uid = _resolve_context_payloads(
+        lance,
         db,
         workspace_id,
         uids_to_fetch,
-        payload_by_uid,
+        overlay=overlay,
+        user_id=user_id,
     )
-
-    def _code(uid: str) -> str | None:
-        return payload_by_uid.get(uid, {}).get("code")
-
-    def _qualified_name(uid: str) -> str:
-        return str(payload_by_uid.get(uid, {}).get("qualified_name") or "")
-
-    bundles: list[ContextBundle] = []
-    for cand, hits in expansion_per_candidate:
-        seed = ContextSymbol(
-            uid=cand.uid,
-            name=cand.name,
-            file_path=cand.file_path,
-            role=cand.role,
-            distance_from_seed=cand.depth or 0,
-            expansion_step=None,
-            code=_code(cand.uid),
-            qualified_name=cand.qualified_name or _qualified_name(cand.uid),
-            kind=cand.satisfying_kinds[0] if cand.satisfying_kinds else "",
-            direction=_candidate_direction(cand),
-            edge_type=cand.edge_type,
-            relevance_score=cand.score,
-            utility_score=cand.utility_score if cand.utility_score is not None else cand.score,
-        )
-        related = tuple(
-            ContextSymbol(
-                uid=h.uid,
-                name=h.name,
-                file_path=h.file_path,
-                role=h.step or "related",
-                distance_from_seed=h.depth,
-                expansion_step=h.step,
-                code=_code(h.uid),
-                qualified_name=_qualified_name(h.uid),
-            )
-            for h in hits
-        )
-        bundles.append(
-            ContextBundle(
-                role=cand.role,
-                seed=seed,
-                related=related,
-                utility_score=_utility_score(cand),
-            )
-        )
-
+    bundles = _build_context_bundles(
+        expansion_per_candidate,
+        payload_by_uid,
+        utility_score_fn=utility_score_fn,
+    )
     if overlay is not None:
-        from context_engine.axis.overlay_context import apply_dirty_overlay_to_bundles
-
-        bundles = apply_dirty_overlay_to_bundles(
+        bundles = _apply_overlay_to_context_bundles(
             bundles,
             overlay=overlay,
             workspace_id=workspace_id,
             user_id=user_id,
         )
-
     return _apply_render_and_budget(
         bundles,
         token_budget=token_budget,

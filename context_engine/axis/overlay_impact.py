@@ -63,6 +63,55 @@ def _overlay_caller_row(
     }
 
 
+def _overlay_call_hit_lines(calls, symbol_name: str) -> list[int]:
+    return sorted(
+        {
+            int(call["call_site_line"])
+            for call in calls
+            if call.get("callee_name") == symbol_name and call.get("call_site_line")
+        }
+    )
+
+
+def _overlay_callers_from_file(
+    overlay: InMemoryOverlay,
+    file_path: str,
+    *,
+    symbol_name: str,
+    workspace_id: str,
+    user_id: str,
+    seen: set[tuple[str, str]],
+    max_items: int,
+) -> list[dict[str, Any]]:
+    try:
+        calls = overlay.get_calls(file_path, workspace_id=workspace_id, user_id=user_id)
+    except Exception:
+        return []
+    hit_lines = _overlay_call_hit_lines(calls, symbol_name)
+    if not hit_lines:
+        return []
+    try:
+        symbols = overlay.get_symbols(file_path, workspace_id=workspace_id, user_id=user_id)
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in hit_lines:
+        caller = _enclosing_symbol(symbols, line)
+        if caller is None:
+            continue
+        name, (start, end) = caller
+        if name == symbol_name:
+            continue
+        key = (file_path, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(_overlay_caller_row(name, file_path, start, end, workspace_id))
+        if len(seen) >= max_items:
+            break
+    return rows
+
+
 def build_overlay_impact_callers(
     overlay: InMemoryOverlay | None,
     *,
@@ -83,38 +132,19 @@ def build_overlay_impact_callers(
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for file_path in overlay.iter_dirty_files(workspace_id=workspace_id, user_id=user_id):
-        try:
-            calls = overlay.get_calls(file_path, workspace_id=workspace_id, user_id=user_id)
-        except Exception:
-            continue
-        hit_lines = sorted(
-            {
-                int(call["call_site_line"])
-                for call in calls
-                if call.get("callee_name") == symbol_name and call.get("call_site_line")
-            }
+        rows.extend(
+            _overlay_callers_from_file(
+                overlay,
+                file_path,
+                symbol_name=symbol_name,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                seen=seen,
+                max_items=max_items,
+            )
         )
-        if not hit_lines:
-            continue
-        try:
-            symbols = overlay.get_symbols(file_path, workspace_id=workspace_id, user_id=user_id)
-        except Exception:
-            continue
-        for line in hit_lines:
-            caller = _enclosing_symbol(symbols, line)
-            if caller is None:
-                continue
-            name, (start, end) = caller
-            if name == symbol_name:
-                # Recursive call inside the target's own body — not a dependent.
-                continue
-            key = (file_path, name)
-            if key in seen:
-                continue
-            seen.add(key)
-            rows.append(_overlay_caller_row(name, file_path, start, end, workspace_id))
-            if len(rows) >= max_items:
-                return rows
+        if len(rows) >= max_items:
+            return rows[:max_items]
     return rows
 
 

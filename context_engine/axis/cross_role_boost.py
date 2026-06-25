@@ -39,41 +39,15 @@ from context_engine.axis.role_retrieval import RoleCandidate
 _PROXIMITY_RELS: tuple[str, ...] = EdgeProfile.PROXIMITY
 
 
-def _query_proximity_roles(
+def _query_proximity_roles_cypher(
     db,
     workspace_id: str,
     primary_uids: list[str],
-    secondary_role_uids: Mapping[str, set[str]],
+    flat_secondary_uids: set[str],
+    role_by_uid: dict[str, set[str]],
     *,
     max_hops: int,
 ) -> dict[str, set[str]]:
-    """For each primary uid, return the set of secondary role names
-    whose candidates lie within ``max_hops`` via the proximity-edge
-    whitelist.
-    """
-    if not primary_uids or not secondary_role_uids:
-        return {}
-    flat_secondary_uids: set[str] = set()
-    role_by_uid: dict[str, set[str]] = {}
-    for role, uids in secondary_role_uids.items():
-        for uid in uids:
-            flat_secondary_uids.add(uid)
-            role_by_uid.setdefault(uid, set()).add(role)
-    if not flat_secondary_uids:
-        return {}
-
-    from context_engine.axis import graph_walk_inproc
-
-    if graph_walk_inproc.should_use(workspace_id):
-        return graph_walk_inproc.query_proximity_roles(
-            db,
-            workspace_id,
-            list(primary_uids),
-            secondary_role_uids,
-            edges=frozenset(_PROXIMITY_RELS),
-            max_hops=max_hops,
-        )
-
     rel_pattern = _safe_rel_pattern(_PROXIMITY_RELS)
     hops = _safe_max_hops(max_hops)
     cypher = f"""
@@ -104,6 +78,47 @@ def _query_proximity_roles(
     except Exception:
         return {}
     return out
+
+
+def _query_proximity_roles(
+    db,
+    workspace_id: str,
+    primary_uids: list[str],
+    secondary_role_uids: Mapping[str, set[str]],
+    *,
+    max_hops: int,
+) -> dict[str, set[str]]:
+    """For each primary uid, return the set of secondary role names
+    whose candidates lie within ``max_hops`` via the proximity-edge
+    whitelist.
+    """
+    if not primary_uids or not secondary_role_uids:
+        return {}
+    from context_engine.axis import graph_walk_inproc
+
+    indexed = graph_walk_inproc._index_roles_by_secondary_uid(secondary_role_uids)
+    if indexed is None:
+        return {}
+    flat_secondary_uids, role_by_uid = indexed
+
+    if graph_walk_inproc.should_use(workspace_id):
+        return graph_walk_inproc.query_proximity_roles(
+            db,
+            workspace_id,
+            list(primary_uids),
+            secondary_role_uids,
+            edges=frozenset(_PROXIMITY_RELS),
+            max_hops=max_hops,
+        )
+
+    return _query_proximity_roles_cypher(
+        db,
+        workspace_id,
+        list(primary_uids),
+        flat_secondary_uids,
+        role_by_uid,
+        max_hops=max_hops,
+    )
 
 
 def intersect_by_cross_role_proximity(

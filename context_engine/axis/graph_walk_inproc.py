@@ -97,6 +97,37 @@ def invalidate_adjacency(workspace_id: str | None = None) -> None:
         _CACHE.pop(workspace_id, None)
 
 
+def _strip_uids_from_adjacency_buckets(
+    mapping: dict[str, dict[str, set[str]]],
+    uids: set[str],
+) -> None:
+    for source_uid, by_type in list(mapping.items()):
+        if source_uid in uids:
+            continue
+        for edge_type, neighbours in list(by_type.items()):
+            remaining = set(neighbours) - uids
+            if remaining:
+                by_type[edge_type] = remaining
+            else:
+                by_type.pop(edge_type, None)
+        if not by_type:
+            mapping.pop(source_uid, None)
+
+
+def _drop_adjacency_uid_indices(adj: _Adjacency, uid: str) -> None:
+    adj.out.pop(uid, None)
+    adj.in_.pop(uid, None)
+    meta = adj.meta.pop(uid, None)
+    if not meta:
+        return
+    path = meta[1]
+    if path not in adj.file_classes:
+        return
+    adj.file_classes[path] = [cu for cu in adj.file_classes[path] if cu != uid]
+    if not adj.file_classes[path]:
+        adj.file_classes.pop(path, None)
+
+
 def invalidate_adjacency_uids(workspace_id: str, uids: set[str]) -> None:
     """Drop selected uids and their incident links from cached adjacency."""
     if not uids:
@@ -104,30 +135,10 @@ def invalidate_adjacency_uids(workspace_id: str, uids: set[str]) -> None:
     adj = _CACHE.get(workspace_id)
     if adj is None:
         return
-    # Remove references from every cached adjacency bucket first.
     for mapping in (adj.out, adj.in_):
-        for source_uid, by_type in list(mapping.items()):
-            if source_uid in uids:
-                continue
-            for edge_type, neighbours in list(by_type.items()):
-                remaining = set(neighbours) - uids
-                if remaining:
-                    by_type[edge_type] = remaining
-                else:
-                    by_type.pop(edge_type, None)
-            if not by_type:
-                mapping.pop(source_uid, None)
-    # Remove target nodes themselves from all indices.
+        _strip_uids_from_adjacency_buckets(mapping, uids)
     for uid in uids:
-        adj.out.pop(uid, None)
-        adj.in_.pop(uid, None)
-        meta = adj.meta.pop(uid, None)
-        if meta:
-            path = meta[1]
-            if path in adj.file_classes:
-                adj.file_classes[path] = [cu for cu in adj.file_classes[path] if cu != uid]
-                if not adj.file_classes[path]:
-                    adj.file_classes.pop(path, None)
+        _drop_adjacency_uid_indices(adj, uid)
 
 
 def load_adjacency(db, workspace_id: str) -> _Adjacency:
@@ -165,47 +176,69 @@ def _attach_external_maps(adj: _Adjacency, db, workspace_id: str) -> None:
         pass
 
 
+def _ingest_neo4j_symbol_meta(rec, adj: _Adjacency) -> None:
+    uid = str(rec.get("uid") or "")
+    if not uid:
+        return
+    name = str(rec.get("name") or "")
+    path = str(rec.get("path") or "")
+    kind = str(rec.get("kind") or "")
+    adj.meta[uid] = (name, path, kind)
+    if kind == "class" and path:
+        adj.file_classes.setdefault(path, []).append(uid)
+
+
+def _ingest_neo4j_symbol_edge(
+    rec,
+    out_adj: dict[str, dict[str, set[str]]],
+    in_adj: dict[str, dict[str, set[str]]],
+) -> None:
+    au = str(rec.get("au") or "")
+    bu = str(rec.get("bu") or "")
+    t = str(rec.get("t") or "")
+    if not au or not bu or not t:
+        return
+    out_adj[au][t].add(bu)
+    in_adj[bu][t].add(au)
+
+
+def _load_neo4j_symbol_meta(session, workspace_id: str, adj: _Adjacency) -> None:
+    for rec in session.run(
+        """
+        MATCH (sf:File {workspace_id: $ws})-[:CONTAINS]->(s:Symbol)
+        RETURN s.uid AS uid, coalesce(s.name, '') AS name,
+               sf.path AS path, coalesce(s.kind, '') AS kind
+        """,
+        ws=workspace_id,
+    ):
+        _ingest_neo4j_symbol_meta(rec, adj)
+
+
+def _load_neo4j_symbol_edges(
+    session,
+    workspace_id: str,
+    out_adj: dict[str, dict[str, set[str]]],
+    in_adj: dict[str, dict[str, set[str]]],
+) -> None:
+    for rec in session.run(
+        """
+        MATCH (a:Symbol)-[r]->(b:Symbol)
+        WHERE coalesce(r.workspace_id, $ws) = $ws
+        RETURN a.uid AS au, b.uid AS bu, type(r) AS t
+        """,
+        ws=workspace_id,
+    ):
+        _ingest_neo4j_symbol_edge(rec, out_adj, in_adj)
+
+
 def _load_adjacency_from_neo4j(db, workspace_id: str) -> _Adjacency:
     adj = _Adjacency()
     out_adj: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     in_adj: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     try:
         with db.driver.session() as session:
-            # Meta = the workspace symbol set (matches the walk's
-            # ``(fn:File {ws})-[:CONTAINS]->(n)`` requirement) + name/path/kind.
-            for rec in session.run(
-                """
-                MATCH (sf:File {workspace_id: $ws})-[:CONTAINS]->(s:Symbol)
-                RETURN s.uid AS uid, coalesce(s.name, '') AS name,
-                       sf.path AS path, coalesce(s.kind, '') AS kind
-                """,
-                ws=workspace_id,
-            ):
-                uid = str(rec.get("uid") or "")
-                if not uid:
-                    continue
-                name = str(rec.get("name") or "")
-                path = str(rec.get("path") or "")
-                kind = str(rec.get("kind") or "")
-                adj.meta[uid] = (name, path, kind)
-                if kind == "class" and path:
-                    adj.file_classes.setdefault(path, []).append(uid)
-            # Edges (every type) with the per-rel workspace filter.
-            for rec in session.run(
-                """
-                MATCH (a:Symbol)-[r]->(b:Symbol)
-                WHERE coalesce(r.workspace_id, $ws) = $ws
-                RETURN a.uid AS au, b.uid AS bu, type(r) AS t
-                """,
-                ws=workspace_id,
-            ):
-                au = str(rec.get("au") or "")
-                bu = str(rec.get("bu") or "")
-                t = str(rec.get("t") or "")
-                if not au or not bu or not t:
-                    continue
-                out_adj[au][t].add(bu)
-                in_adj[bu][t].add(au)
+            _load_neo4j_symbol_meta(session, workspace_id, adj)
+            _load_neo4j_symbol_edges(session, workspace_id, out_adj, in_adj)
             adj.sym_to_ext, adj.ext_to_sym = load_external_maps(session, workspace_id)
     except Exception:
         pass
@@ -363,6 +396,39 @@ def call_fan_in(
     return out
 
 
+def _neighbours_for_edge_types(
+    by_type: dict[str, set[str]] | None,
+    rels: frozenset[str],
+) -> set[str]:
+    if not by_type:
+        return set()
+    res: set[str] = set()
+    for edge_type in rels:
+        res |= by_type.get(edge_type, frozenset())
+    return res
+
+
+def _collect_node_neighbours(
+    adj: _Adjacency,
+    uid: str,
+    rels: frozenset[str],
+    direction: Direction,
+    *,
+    fwd: bool,
+    rev: bool,
+) -> set[str]:
+    res: set[str] = set()
+    if fwd:
+        res |= _neighbours_for_edge_types(adj.out.get(uid), rels)
+    if rev:
+        res |= _neighbours_for_edge_types(adj.in_.get(uid), rels)
+    if uid in adj.meta and (fwd or direction == "undirected"):
+        res |= _neighbours_for_edge_types(adj.sym_to_ext.get(uid, {}), rels)
+    if uid not in adj.meta:
+        res |= _neighbours_for_edge_types(adj.ext_to_sym.get(uid, {}), rels)
+    return res
+
+
 def _neighbours_fn(adj: _Adjacency, rels: frozenset[str], direction: Direction):
     # (rels, direction) are fixed for the whole walk, so neigh(u) is
     # deterministic — memoise it across the call. A multi-seed walk
@@ -376,25 +442,7 @@ def _neighbours_fn(adj: _Adjacency, rels: frozenset[str], direction: Direction):
         hit = cache.get(u)
         if hit is not None:
             return hit
-        res: set[str] = set()
-        if fwd:
-            d = adj.out.get(u)
-            if d:
-                for t in rels:
-                    res |= d.get(t, frozenset())
-        if rev:
-            d = adj.in_.get(u)
-            if d:
-                for t in rels:
-                    res |= d.get(t, frozenset())
-        # Pass through shared external nodes (ExternalPkg, ExternalSymbol, …).
-        if u in adj.meta and (fwd or direction == "undirected"):
-            for t in rels:
-                res |= adj.sym_to_ext.get(u, {}).get(t, frozenset())
-        if u not in adj.meta:
-            for t in rels:
-                res |= adj.ext_to_sym.get(u, {}).get(t, frozenset())
-        frozen = frozenset(res)
+        frozen = frozenset(_collect_node_neighbours(adj, u, rels, direction, fwd=fwd, rev=rev))
         cache[u] = frozen
         return frozen
 
@@ -557,6 +605,50 @@ def walk_neighbours(
     )
 
 
+def _grouped_neighbours_for_seed(
+    dist: dict[str, int],
+    meta: dict[str, tuple[str, str, str]],
+    limit_per_seed: int | None,
+) -> list[Neighbour]:
+    rows: list[Neighbour] = []
+    for node_uid, depth in dist.items():
+        if depth == 0:
+            continue
+        node_meta = meta.get(node_uid)
+        if node_meta is None:
+            continue
+        rows.append(
+            Neighbour(
+                uid=node_uid,
+                name=node_meta[0],
+                file_path=node_meta[1],
+                depth=depth,
+                reach=1,
+            )
+        )
+    rows.sort(key=lambda n: (n.depth, n.uid))
+    if limit_per_seed is not None:
+        return rows[:limit_per_seed]
+    return rows
+
+
+def _grouped_neighbours_by_seed(
+    seeds: list[str],
+    *,
+    neigh,
+    meta: dict[str, tuple[str, str, str]],
+    max_hops: int,
+    limit_per_seed: int | None,
+) -> dict[str, list[Neighbour]]:
+    grouped: dict[str, list[Neighbour]] = {}
+    for seed_uid in seeds:
+        dist = _bfs_distances_from_starts(neigh, [seed_uid], max_hops)
+        rows = _grouped_neighbours_for_seed(dist, meta, limit_per_seed)
+        if rows:
+            grouped[seed_uid] = rows
+    return grouped
+
+
 def walk_neighbours_grouped(
     db,
     workspace_id: str,
@@ -568,42 +660,14 @@ def walk_neighbours_grouped(
     limit_per_seed: int | None = None,
 ) -> dict[str, list[Neighbour]]:
     adj = load_adjacency(db, workspace_id)
-    meta = adj.meta
-    rels = frozenset(edges)
-    neigh = _neighbours_fn(adj, rels, direction)
-    seeds = [u for u in seed_uids if u]
-
-    grouped: dict[str, list[Neighbour]] = {}
-    for su in seeds:
-        # grouped matches the seed by uid only (no File anchor); neighbours
-        # must still be workspace File-contained (in meta).
-        dist: dict[str, int] = {su: 0}
-        frontier = [su]
-        for hop in range(1, max_hops + 1):
-            nxt: list[str] = []
-            for u in frontier:
-                for v in neigh(u):
-                    if v in dist:
-                        continue
-                    dist[v] = hop
-                    nxt.append(v)
-            if not nxt:
-                break
-            frontier = nxt
-        rows: list[Neighbour] = []
-        for v, d in dist.items():
-            if d == 0:
-                continue
-            m = meta.get(v)
-            if m is None:
-                continue
-            rows.append(Neighbour(uid=v, name=m[0], file_path=m[1], depth=d, reach=1))
-        rows.sort(key=lambda n: (n.depth, n.uid))
-        if limit_per_seed is not None:
-            rows = rows[:limit_per_seed]
-        if rows:
-            grouped[su] = rows
-    return grouped
+    neigh = _neighbours_fn(adj, frozenset(edges), direction)
+    return _grouped_neighbours_by_seed(
+        [u for u in seed_uids if u],
+        neigh=neigh,
+        meta=adj.meta,
+        max_hops=max_hops,
+        limit_per_seed=limit_per_seed,
+    )
 
 
 def _index_roles_by_secondary_uid(
@@ -620,6 +684,27 @@ def _index_roles_by_secondary_uid(
     return flat_secondary_uids, role_by_uid
 
 
+def _bfs_expand_frontier_for_secondary(
+    neigh,
+    meta: dict[str, tuple[str, str, str]],
+    frontier: list[str],
+    dist: dict[str, int],
+    hop: int,
+    flat_secondary_uids: set[str],
+    reached_secondary: set[str],
+) -> list[str]:
+    nxt: list[str] = []
+    for u in frontier:
+        for v in neigh(u):
+            if v in dist or v not in meta:
+                continue
+            dist[v] = hop
+            nxt.append(v)
+            if v in flat_secondary_uids:
+                reached_secondary.add(v)
+    return nxt
+
+
 def _bfs_reached_secondary_uids(
     neigh,
     meta: dict[str, tuple[str, str, str]],
@@ -633,18 +718,17 @@ def _bfs_reached_secondary_uids(
     frontier = [primary_uid]
     reached_secondary: set[str] = set()
     for hop in range(1, max_hops + 1):
-        nxt: list[str] = []
-        for u in frontier:
-            for v in neigh(u):
-                if v in dist or v not in meta:
-                    continue
-                dist[v] = hop
-                nxt.append(v)
-                if v in flat_secondary_uids:
-                    reached_secondary.add(v)
-        if not nxt:
+        frontier = _bfs_expand_frontier_for_secondary(
+            neigh,
+            meta,
+            frontier,
+            dist,
+            hop,
+            flat_secondary_uids,
+            reached_secondary,
+        )
+        if not frontier:
             break
-        frontier = nxt
     return reached_secondary
 
 

@@ -105,6 +105,79 @@ def _rank_http_callers(
     return ranked
 
 
+def _http_endpoint_bridge_candidate(
+    neighbour: Neighbour,
+    *,
+    rows_by_uid: dict[str, dict],
+    seed_score: float,
+) -> RoleCandidate:
+    owner_row = rows_by_uid.get(neighbour.uid) or {}
+    return RoleCandidate(
+        uid=neighbour.uid,
+        name=neighbour.name or str(owner_row.get("name") or ""),
+        qualified_name=str(owner_row.get("qualified_name") or ""),
+        file_path=neighbour.file_path or str(owner_row.get("file_path") or ""),
+        role="http_endpoint_bridge",
+        satisfying_contracts=(),
+        satisfying_kinds=("http_client_caller",),
+        contract_count=0,
+        kind_count=1,
+        vector_distance=None,
+        score=seed_score,
+        depth=neighbour.depth,
+        edge_type="CALLS",
+    )
+
+
+def _expand_http_endpoint_for_seed(
+    seed: RoleCandidate,
+    *,
+    db,
+    workspace_id: str,
+    clients_by_seed: dict[str, list[str]],
+    rows_by_uid: dict[str, dict],
+    idf_by_seed: dict[str, float],
+    include_tests: bool,
+    max_per_seed: int,
+    max_total: int,
+    seen: set[str],
+    out: list[RoleCandidate],
+) -> bool:
+    """Expand one handler seed; return True when ``max_total`` is reached."""
+    client_uids = clients_by_seed.get(seed.uid)
+    if not client_uids:
+        return False
+    callers = walk_neighbours(
+        db,
+        workspace_id,
+        client_uids,
+        edges=_CALLS,
+        direction="reverse",
+        max_hops=1,
+        exclude_tests=not include_tests,
+    )
+    if not callers:
+        return False
+    seed_score = max(0.32 * idf_by_seed.get(seed.uid, 1.0), float(seed.score) * 0.45)
+    taken = 0
+    for neighbour in _rank_http_callers(callers, rows_by_uid=rows_by_uid):
+        uid = neighbour.uid
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        out.append(
+            _http_endpoint_bridge_candidate(
+                neighbour,
+                rows_by_uid=rows_by_uid,
+                seed_score=seed_score,
+            )
+        )
+        taken += 1
+        if taken >= max_per_seed or len(out) >= max_total:
+            return len(out) >= max_total
+    return len(out) >= max_total
+
+
 def expand_http_endpoint_bridge(
     seeds: Iterable[RoleCandidate],
     *,
@@ -129,49 +202,19 @@ def expand_http_endpoint_bridge(
     out: list[RoleCandidate] = []
     seen: set[str] = set()
     for seed in seed_list:
-        client_uids = clients_by_seed.get(seed.uid)
-        if not client_uids:
-            continue
-        callers = walk_neighbours(
-            db,
-            workspace_id,
-            client_uids,
-            edges=_CALLS,
-            direction="reverse",
-            max_hops=1,
-            exclude_tests=not include_tests,
-        )
-        if not callers:
-            continue
-        seed_score = max(0.32 * idf_by_seed.get(seed.uid, 1.0), float(seed.score) * 0.45)
-        taken = 0
-        for neighbour in _rank_http_callers(callers, rows_by_uid=rows_by_uid):
-            uid = neighbour.uid
-            if not uid or uid in seen:
-                continue
-            owner_row = rows_by_uid.get(uid) or {}
-            seen.add(uid)
-            out.append(
-                RoleCandidate(
-                    uid=uid,
-                    name=neighbour.name or str(owner_row.get("name") or ""),
-                    qualified_name=str(owner_row.get("qualified_name") or ""),
-                    file_path=neighbour.file_path or str(owner_row.get("file_path") or ""),
-                    role="http_endpoint_bridge",
-                    satisfying_contracts=(),
-                    satisfying_kinds=("http_client_caller",),
-                    contract_count=0,
-                    kind_count=1,
-                    vector_distance=None,
-                    score=seed_score,
-                    depth=neighbour.depth,
-                    edge_type="CALLS",
-                )
-            )
-            taken += 1
-            if taken >= max_per_seed or len(out) >= max_total:
-                break
-        if len(out) >= max_total:
+        if _expand_http_endpoint_for_seed(
+            seed,
+            db=db,
+            workspace_id=workspace_id,
+            clients_by_seed=clients_by_seed,
+            rows_by_uid=rows_by_uid,
+            idf_by_seed=idf_by_seed,
+            include_tests=include_tests,
+            max_per_seed=max_per_seed,
+            max_total=max_total,
+            seen=seen,
+            out=out,
+        ):
             break
     return out
 

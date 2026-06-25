@@ -74,61 +74,114 @@ def _build_kind_to_roles(intent_roles: Iterable[str]) -> dict[str, set[str]]:
     return out
 
 
-def _fetch_neighbour_kinds(
-    lance,
+def _quote_lance_sql(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _kinds_from_prescanned(
+    neighbour_uids: set[str],
+    prescanned,
+) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    rows_by_uid = getattr(prescanned, "rows_by_uid", {}) or {}
+    for uid in neighbour_uids:
+        row = rows_by_uid.get(uid)
+        if not row:
+            continue
+        kinds = set(row.get("_kinds") or set())
+        if not kinds:
+            continue
+        out[uid] = (
+            str(row.get("name") or ""),
+            str(row.get("file_path") or ""),
+            tuple(sorted(kinds)),
+        )
+    return out
+
+
+def _symbol_kinds_filter_sql(
     workspace_id: str,
     neighbour_uids: set[str],
-    prescanned=None,
-) -> dict[str, tuple[str, str, tuple[str, ...]]]:
-    """Read ``(name, file_path, container_kinds)`` for each requested
-    neighbour. Prefer the shared workspace scan (``_kinds`` already
-    parsed) over a fresh Lance materialisation.
-    """
-    if not neighbour_uids:
-        return {}
-    out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
-    if prescanned is not None:
-        rows_by_uid = getattr(prescanned, "rows_by_uid", {}) or {}
-        for uid in neighbour_uids:
-            row = rows_by_uid.get(uid)
-            if not row:
-                continue
-            kinds = set(row.get("_kinds") or set())
-            if not kinds:
-                continue
-            out[uid] = (
-                str(row.get("name") or ""),
-                str(row.get("file_path") or ""),
-                tuple(sorted(kinds)),
-            )
-        return out
-
-    sym_table_fn = getattr(lance, "symbols_table", None)
-    sym_table = sym_table_fn(workspace_id) if callable(sym_table_fn) else lance._sym_table  # noqa: SLF001
-
-    def _quote(value: str) -> str:
-        return "'" + value.replace("'", "''") + "'"
-
-    columns = [
-        "uid",
-        "name",
-        "file_path",
-        "axis_container_kinds_json",
-        "workspace_id",
-    ]
-    lance_table = sym_table.to_lance()
-    uid_filter = ", ".join(_quote(uid) for uid in sorted(neighbour_uids))
+    *,
+    sym_table_fn,
+) -> str:
+    uid_filter = ", ".join(_quote_lance_sql(uid) for uid in sorted(neighbour_uids))
     from context_engine.database.lance_workspace_tables import workspace_partitioned_enabled
 
     if workspace_partitioned_enabled() and callable(sym_table_fn):
-        filter_sql = f"uid IN ({uid_filter})"
-    else:
-        filter_sql = f"workspace_id = {_quote(workspace_id)} AND uid IN ({uid_filter})"
-    try:
-        table = lance_table.to_table(
-            columns=columns,
-            filter=filter_sql,
+        return f"uid IN ({uid_filter})"
+    return f"workspace_id = {_quote_lance_sql(workspace_id)} AND uid IN ({uid_filter})"
+
+
+def _kinds_row_tuple(
+    uid: str,
+    name: object,
+    file_path: object,
+    kinds_json: object,
+) -> tuple[str, str, tuple[str, ...]] | None:
+    kinds = _flat_kinds(kinds_json)
+    if not kinds:
+        return None
+    return (str(name or ""), str(file_path or ""), tuple(sorted(kinds)))
+
+
+def _kinds_from_pylist_rows(
+    table,
+    *,
+    workspace_id: str,
+    neighbour_uids: set[str],
+) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    for row in table.to_pylist():
+        if row.get("workspace_id") != workspace_id:
+            continue
+        uid = str(row.get("uid") or "")
+        if uid not in neighbour_uids:
+            continue
+        parsed = _kinds_row_tuple(
+            uid, row.get("name"), row.get("file_path"), row.get("axis_container_kinds_json")
         )
+        if parsed is not None:
+            out[uid] = parsed
+    return out
+
+
+def _kinds_from_arrow_columns(
+    table,
+    *,
+    workspace_id: str,
+    neighbour_uids: set[str],
+) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    uids = table["uid"].to_pylist()
+    names = table["name"].to_pylist()
+    file_paths = table["file_path"].to_pylist()
+    kinds_jsons = table["axis_container_kinds_json"].to_pylist()
+    workspace_ids = table["workspace_id"].to_pylist()
+    for uid_raw, name, file_path, kinds_json, row_workspace_id in zip(
+        uids, names, file_paths, kinds_jsons, workspace_ids, strict=False
+    ):
+        if row_workspace_id != workspace_id:
+            continue
+        uid = str(uid_raw or "")
+        if uid not in neighbour_uids:
+            continue
+        parsed = _kinds_row_tuple(uid, name, file_path, kinds_json)
+        if parsed is not None:
+            out[uid] = parsed
+    return out
+
+
+def _load_neighbour_kinds_table(
+    lance_table,
+    columns: list[str],
+    filter_sql: str,
+    *,
+    workspace_id: str,
+    neighbour_uids: set[str],
+):
+    try:
+        return lance_table.to_table(columns=columns, filter=filter_sql)
     except TypeError:
         table = lance_table.to_table(columns=columns)
         try:
@@ -143,48 +196,256 @@ def _fetch_neighbour_kinds(
                 ),
                 pc.is_in(table["uid"], value_set=uid_set),
             )
-            table = table.filter(mask)
+            return table.filter(mask)
         except Exception:
-            pass
+            return table
+
+
+def _fetch_neighbour_kinds_from_lance(
+    lance,
+    workspace_id: str,
+    neighbour_uids: set[str],
+) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    sym_table_fn = getattr(lance, "symbols_table", None)
+    sym_table = sym_table_fn(workspace_id) if callable(sym_table_fn) else lance._sym_table  # noqa: SLF001
+    columns = [
+        "uid",
+        "name",
+        "file_path",
+        "axis_container_kinds_json",
+        "workspace_id",
+    ]
+    filter_sql = _symbol_kinds_filter_sql(
+        workspace_id,
+        neighbour_uids,
+        sym_table_fn=sym_table_fn,
+    )
+    table = _load_neighbour_kinds_table(
+        sym_table.to_lance(),
+        columns,
+        filter_sql,
+        workspace_id=workspace_id,
+        neighbour_uids=neighbour_uids,
+    )
     try:
-        uids = table["uid"].to_pylist()
-        names = table["name"].to_pylist()
-        file_paths = table["file_path"].to_pylist()
-        kinds_jsons = table["axis_container_kinds_json"].to_pylist()
-        workspace_ids = table["workspace_id"].to_pylist()
+        return _kinds_from_arrow_columns(
+            table,
+            workspace_id=workspace_id,
+            neighbour_uids=neighbour_uids,
+        )
     except Exception:
-        for row in table.to_pylist():
-            if row.get("workspace_id") != workspace_id:
+        return _kinds_from_pylist_rows(
+            table,
+            workspace_id=workspace_id,
+            neighbour_uids=neighbour_uids,
+        )
+
+
+def _fetch_neighbour_kinds(
+    lance,
+    workspace_id: str,
+    neighbour_uids: set[str],
+    prescanned=None,
+) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+    """Read ``(name, file_path, container_kinds)`` for each requested
+    neighbour. Prefer the shared workspace scan (``_kinds`` already
+    parsed) over a fresh Lance materialisation.
+    """
+    if not neighbour_uids:
+        return {}
+    if prescanned is not None:
+        return _kinds_from_prescanned(neighbour_uids, prescanned)
+    return _fetch_neighbour_kinds_from_lance(lance, workspace_id, neighbour_uids)
+
+
+def _lookahead_injection_candidate(
+    *,
+    uid: str,
+    name: str,
+    file_path: str,
+    target_role: str,
+    evidence_kinds: set[str],
+    base_score: float,
+) -> RoleCandidate:
+    return RoleCandidate(
+        uid=uid,
+        name=name,
+        file_path=file_path,
+        role=target_role,
+        satisfying_contracts=(),
+        satisfying_kinds=tuple(sorted(evidence_kinds)),
+        contract_count=0,
+        kind_count=len(evidence_kinds),
+        vector_distance=None,
+        score=base_score,
+    )
+
+
+def _matched_target_roles_for_neighbour(
+    kinds: tuple[str, ...],
+    *,
+    source_role: str,
+    kind_to_roles: dict[str, set[str]],
+    intent_set: set[str],
+    existing_uids_by_role: dict[str, set[str]],
+    uid: str,
+) -> dict[str, set[str]]:
+    matched_targets: dict[str, set[str]] = {}
+    for kind in kinds:
+        for target_role in kind_to_roles.get(kind, ()):
+            if target_role == source_role:
                 continue
-            uid = str(row.get("uid") or "")
-            if uid not in neighbour_uids:
+            if target_role in intent_set and uid in existing_uids_by_role.get(target_role, set()):
                 continue
-            kinds = _flat_kinds(row.get("axis_container_kinds_json"))
-            if not kinds:
-                continue
-            out[uid] = (
-                str(row.get("name") or ""),
-                str(row.get("file_path") or ""),
-                tuple(sorted(kinds)),
+            matched_targets.setdefault(target_role, set()).add(kind)
+    return matched_targets
+
+
+def _record_neighbour_reach(
+    neighbours,
+    aggregated_neighbour_reach: dict[str, int],
+) -> tuple[dict[str, int], set[str]]:
+    neighbour_reach: dict[str, int] = {}
+    for nb in neighbours:
+        neighbour_reach[nb.uid] = nb.reach
+        aggregated_neighbour_reach[nb.uid] = aggregated_neighbour_reach.get(nb.uid, 0) + nb.reach
+    return neighbour_reach, set(neighbour_reach.keys())
+
+
+def _inject_lookahead_candidates(
+    out: dict[str, list[RoleCandidate]],
+    per_target: dict[str, list[RoleCandidate]],
+    *,
+    neighbour_reach: dict[str, int],
+    max_injected_per_role: int,
+) -> None:
+    for target_role, items in per_target.items():
+        items_sorted = sorted(
+            items,
+            key=lambda c: (neighbour_reach.get(c.uid, 0), c.uid),
+            reverse=True,
+        )
+        out[target_role].extend(items_sorted[:max_injected_per_role])
+
+
+def _auto_promote_lookahead_roles(
+    out: dict[str, list[RoleCandidate]],
+    promotion_evidence: dict[str, dict[str, tuple[str, tuple[str, ...]]]],
+    *,
+    aggregated_neighbour_reach: dict[str, int],
+    auto_promote_min_hits: int,
+    max_injected_per_role: int,
+    base_score: float,
+) -> None:
+    for target_role, uid_evidence in promotion_evidence.items():
+        if len(uid_evidence) < auto_promote_min_hits:
+            continue
+        ranked_uids = sorted(
+            uid_evidence.keys(),
+            key=lambda uid: (aggregated_neighbour_reach.get(uid, 0), uid),
+            reverse=True,
+        )
+        injected: list[RoleCandidate] = []
+        for uid in ranked_uids:
+            name_path, kinds = uid_evidence[uid]
+            name, _, file_path = name_path.partition("|")
+            injected.append(
+                RoleCandidate(
+                    uid=uid,
+                    name=name,
+                    file_path=file_path,
+                    role=target_role,
+                    satisfying_contracts=(),
+                    satisfying_kinds=kinds,
+                    contract_count=0,
+                    kind_count=len(kinds),
+                    vector_distance=None,
+                    score=base_score,
+                )
             )
-    else:
-        for uid_raw, name, file_path, kinds_json, row_workspace_id in zip(
-            uids, names, file_paths, kinds_jsons, workspace_ids, strict=False
-        ):
-            if row_workspace_id != workspace_id:
-                continue
-            uid = str(uid_raw or "")
-            if uid not in neighbour_uids:
-                continue
-            kinds = _flat_kinds(kinds_json)
-            if not kinds:
-                continue
-            out[uid] = (
-                str(name or ""),
-                str(file_path or ""),
-                tuple(sorted(kinds)),
-            )
-    return out
+        out[target_role] = injected[:max_injected_per_role]
+
+
+def _expand_lookahead_for_source_role(
+    source_role: str,
+    *,
+    candidates_by_role: Mapping[str, list[RoleCandidate]],
+    db,
+    lance,
+    workspace_id: str,
+    max_hops: int,
+    include_tests: bool,
+    prescanned,
+    kind_to_roles: dict[str, set[str]],
+    intent_set: set[str],
+    existing_uids_by_role: dict[str, set[str]],
+    all_seed_uids: set[str],
+    base_score: float,
+    max_injected_per_role: int,
+    out: dict[str, list[RoleCandidate]],
+    promotion_evidence: dict[str, dict[str, tuple[str, tuple[str, ...]]]],
+    aggregated_neighbour_reach: dict[str, int],
+) -> None:
+    seed_uids = [c.uid for c in (candidates_by_role.get(source_role) or [])]
+    if not seed_uids:
+        return
+
+    neighbours = walk_neighbours(
+        db,
+        workspace_id,
+        seed_uids,
+        edges=EdgeProfile.PROXIMITY,
+        direction="undirected",
+        max_hops=max_hops,
+        exclude_tests=not include_tests,
+    )
+    neighbour_reach, flat_neighbours = _record_neighbour_reach(
+        neighbours,
+        aggregated_neighbour_reach,
+    )
+    flat_neighbours -= all_seed_uids
+    if not flat_neighbours:
+        return
+
+    kinds_by_uid = _fetch_neighbour_kinds(
+        lance,
+        workspace_id,
+        flat_neighbours,
+        prescanned=prescanned,
+    )
+    per_target: dict[str, list[RoleCandidate]] = {}
+    for uid, (name, file_path, kinds) in kinds_by_uid.items():
+        matched_targets = _matched_target_roles_for_neighbour(
+            kinds,
+            source_role=source_role,
+            kind_to_roles=kind_to_roles,
+            intent_set=intent_set,
+            existing_uids_by_role=existing_uids_by_role,
+            uid=uid,
+        )
+        for target_role, evidence_kinds in matched_targets.items():
+            if target_role in intent_set:
+                per_target.setdefault(target_role, []).append(
+                    _lookahead_injection_candidate(
+                        uid=uid,
+                        name=name,
+                        file_path=file_path,
+                        target_role=target_role,
+                        evidence_kinds=evidence_kinds,
+                        base_score=base_score,
+                    )
+                )
+                existing_uids_by_role[target_role].add(uid)
+            else:
+                bucket = promotion_evidence.setdefault(target_role, {})
+                bucket[uid] = (f"{name}|{file_path}", tuple(sorted(evidence_kinds)))
+
+    _inject_lookahead_candidates(
+        out,
+        per_target,
+        neighbour_reach=neighbour_reach,
+        max_injected_per_role=max_injected_per_role,
+    )
 
 
 def expand_candidates_via_neighbourhood(
@@ -258,131 +519,34 @@ def expand_candidates_via_neighbourhood(
     aggregated_neighbour_reach: dict[str, int] = {}
 
     for source_role in intent_roles:
-        seeds = out.get(source_role) or []
-        if not seeds:
-            continue
-        # Seed by *original* vector candidates only — keeps the
-        # lookahead one hop of indirection deep, not a recursive
-        # expansion.
-        seed_uids = [c.uid for c in (candidates_by_role.get(source_role) or [])]
-        if not seed_uids:
-            continue
-
-        # Per-neighbour reach count: how many distinct seeds reach
-        # this uid. The shared walk returns it directly (``Neighbour.reach``
-        # = ``count(DISTINCT su)``). It is the ranking signal that
-        # drives co-dependent promotion — a declaration reachable from
-        # *many* use sites (e.g. celery's ``Task.apply`` from every
-        # routing seed) is structurally more central than one reachable
-        # from a single seed, and must beat lance-scan insertion order
-        # when the ``max_injected_per_role`` cap selects winners.
-        neighbours = walk_neighbours(
-            db,
-            workspace_id,
-            seed_uids,
-            edges=EdgeProfile.PROXIMITY,
-            direction="undirected",
+        _expand_lookahead_for_source_role(
+            source_role,
+            candidates_by_role=candidates_by_role,
+            db=db,
+            lance=lance,
+            workspace_id=workspace_id,
             max_hops=max_hops,
-            exclude_tests=not include_tests,
-        )
-        neighbour_reach: dict[str, int] = {}
-        for nb in neighbours:
-            neighbour_reach[nb.uid] = nb.reach
-            aggregated_neighbour_reach[nb.uid] = (
-                aggregated_neighbour_reach.get(nb.uid, 0) + nb.reach
-            )
-        flat_neighbours = set(neighbour_reach.keys())
-        flat_neighbours -= all_seed_uids
-        if not flat_neighbours:
-            continue
-
-        kinds_by_uid = _fetch_neighbour_kinds(
-            lance,
-            workspace_id,
-            flat_neighbours,
+            include_tests=include_tests,
             prescanned=prescanned,
+            kind_to_roles=kind_to_roles,
+            intent_set=intent_set,
+            existing_uids_by_role=existing_uids_by_role,
+            all_seed_uids=all_seed_uids,
+            base_score=base_score,
+            max_injected_per_role=max_injected_per_role,
+            out=out,
+            promotion_evidence=promotion_evidence,
+            aggregated_neighbour_reach=aggregated_neighbour_reach,
         )
-        per_target: dict[str, list[RoleCandidate]] = {}
-        for uid, (name, file_path, kinds) in kinds_by_uid.items():
-            matched_targets: dict[str, set[str]] = {}
-            for kind in kinds:
-                for target_role in kind_to_roles.get(kind, ()):
-                    if target_role == source_role:
-                        continue
-                    if target_role in intent_set and uid in existing_uids_by_role.get(
-                        target_role, set()
-                    ):
-                        continue
-                    matched_targets.setdefault(target_role, set()).add(kind)
-            for target_role, evidence_kinds in matched_targets.items():
-                if target_role in intent_set:
-                    per_target.setdefault(target_role, []).append(
-                        RoleCandidate(
-                            uid=uid,
-                            name=name,
-                            file_path=file_path,
-                            role=target_role,
-                            satisfying_contracts=(),
-                            satisfying_kinds=tuple(sorted(evidence_kinds)),
-                            contract_count=0,
-                            kind_count=len(evidence_kinds),
-                            vector_distance=None,
-                            score=base_score,
-                        )
-                    )
-                    existing_uids_by_role[target_role].add(uid)
-                else:
-                    # Non-intent role — bank evidence for promotion
-                    # decision. ``(file_path, kinds)`` are kept so the
-                    # synthesised RoleCandidate can be built later.
-                    bucket = promotion_evidence.setdefault(target_role, {})
-                    bucket[uid] = (
-                        f"{name}|{file_path}",
-                        tuple(sorted(evidence_kinds)),
-                    )
 
-        # Rank intent-target injections by reach count so a
-        # declaration reachable from many use sites beats whichever
-        # candidate the Lance scan listed first.
-        for target_role, items in per_target.items():
-            items_sorted = sorted(
-                items,
-                key=lambda c: (neighbour_reach.get(c.uid, 0), c.uid),
-                reverse=True,
-            )
-            out[target_role].extend(items_sorted[:max_injected_per_role])
-
-    # Auto-promote non-intent roles that accumulated enough evidence.
-    for target_role, uid_evidence in promotion_evidence.items():
-        if len(uid_evidence) < auto_promote_min_hits:
-            continue
-        # Rank by reach across ALL source roles' walks combined.
-        # uid_evidence.keys() is dict-key order (PYTHONHASHSEED-randomized);
-        # the uid tiebreaker makes the reach-ranked auto-promotion cap reproducible.
-        ranked_uids = sorted(
-            uid_evidence.keys(),
-            key=lambda uid: (aggregated_neighbour_reach.get(uid, 0), uid),
-            reverse=True,
-        )
-        injected: list[RoleCandidate] = []
-        for uid in ranked_uids:
-            name_path, kinds = uid_evidence[uid]
-            name, _, file_path = name_path.partition("|")
-            injected.append(
-                RoleCandidate(
-                    uid=uid,
-                    name=name,
-                    file_path=file_path,
-                    role=target_role,
-                    satisfying_contracts=(),
-                    satisfying_kinds=kinds,
-                    contract_count=0,
-                    kind_count=len(kinds),
-                    vector_distance=None,
-                    score=base_score,
-                )
-            )
-        out[target_role] = injected[:max_injected_per_role]
+    _auto_promote_lookahead_roles(
+        out,
+        promotion_evidence,
+        aggregated_neighbour_reach=aggregated_neighbour_reach,
+        auto_promote_min_hits=auto_promote_min_hits,
+        max_injected_per_role=max_injected_per_role,
+        base_score=base_score,
+    )
 
     return out
 

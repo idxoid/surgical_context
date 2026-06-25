@@ -355,6 +355,144 @@ def _symbol_targeted_budget(
     return token_budget, render_mode, budget_profile
 
 
+def _impact_mode_context_candidates(
+    anchor: RoleCandidate,
+    *,
+    db,
+    workspace_id: str,
+    max_impacted: int,
+    intent_roles: list[str],
+    intent_similarities: dict[str, float],
+) -> tuple[list[RoleCandidate], str | None, bool]:
+    impact_anchor = replace(
+        anchor,
+        role="impact_analysis",
+        satisfying_kinds=("target_seed",),
+        kind_count=1,
+        depth=0,
+        edge_type="TARGET",
+        utility_score=1.0,
+    )
+    impacted = impact_traversal.expand_impact_neighbourhood(
+        [impact_anchor],
+        db=db,
+        workspace_id=workspace_id,
+        max_impacted=max_impacted,
+        include_tests=True,
+        intent_roles=intent_roles,
+        intent_similarities=intent_similarities,
+    )
+    return [impact_anchor, *impacted], None, True
+
+
+def _trace_mode_context_candidates(
+    anchor: RoleCandidate,
+    *,
+    db,
+    workspace_id: str,
+) -> tuple[list[RoleCandidate], str | None]:
+    trace_anchor = replace(
+        anchor,
+        role="trace_dependency",
+        satisfying_kinds=("target_seed",),
+        kind_count=1,
+        depth=0,
+        edge_type="TARGET",
+        utility_score=1.0,
+    )
+    traced = trace_traversal.expand_trace_neighbourhood(
+        [trace_anchor],
+        db=db,
+        workspace_id=workspace_id,
+    )
+    return [trace_anchor, *traced], None
+
+
+def _symbol_targeted_context_plan(
+    anchor: RoleCandidate,
+    mode_roles: set[str],
+    *,
+    db,
+    workspace_id: str,
+    max_impacted: int,
+    intent: list[IntentMatch],
+    include_tests_in_walks: bool,
+) -> tuple[list[RoleCandidate], str | None, bool]:
+    intent_roles = [match.role for match in intent]
+    intent_similarities = {match.role: match.similarity for match in intent}
+    if "impact_analysis" in mode_roles:
+        return _impact_mode_context_candidates(
+            anchor,
+            db=db,
+            workspace_id=workspace_id,
+            max_impacted=max_impacted,
+            intent_roles=intent_roles,
+            intent_similarities=intent_similarities,
+        )
+    if "trace_dependency" in mode_roles:
+        candidates, traversal_mode = _trace_mode_context_candidates(
+            anchor,
+            db=db,
+            workspace_id=workspace_id,
+        )
+        return candidates, traversal_mode, include_tests_in_walks
+    return [anchor], "deferred_binding_flow", include_tests_in_walks
+
+
+def _build_context_bundles_with_budget(
+    candidates: list[RoleCandidate],
+    *,
+    workspace_id: str,
+    db: Any,
+    lance: Any,
+    context_per_seed: int,
+    hook_transparency: bool,
+    token_budget: int | None,
+    render_mode: str,
+    budget_profile: Any | None,
+    utility_score_fn: Any | None,
+    traversal_mode: str | None,
+    include_tests: bool,
+    overlay: Any | None,
+    user_id: str,
+) -> list[ContextBundle]:
+    return context_builder.build_context_for_candidates(
+        candidates,
+        workspace_id=workspace_id,
+        db=db,
+        lance=lance,
+        max_per_seed=context_per_seed,
+        hook_transparency=hook_transparency,
+        token_budget=token_budget,
+        render_mode=render_mode,
+        per_transaction_share=budget_profile.per_transaction_share if budget_profile else 0.10,
+        file_soft_cap_share=budget_profile.file_soft_cap_share if budget_profile else 0.25,
+        signature_only_initial=budget_profile.signature_only_initial if budget_profile else False,
+        traversal_mode=traversal_mode,
+        include_tests=include_tests,
+        overlay=overlay,
+        user_id=user_id,
+        utility_score_fn=utility_score_fn,
+    )
+
+
+def _move_anchor_bundle_first(
+    bundles: list[ContextBundle],
+    anchor_uid: str,
+) -> list[ContextBundle]:
+    if len(bundles) <= 1:
+        return bundles
+    anchor_index = next(
+        (index for index, bundle in enumerate(bundles) if bundle.seed.uid == anchor_uid),
+        None,
+    )
+    if anchor_index is None or anchor_index == 0:
+        return bundles
+    anchor_bundle = bundles.pop(anchor_index)
+    bundles.insert(0, anchor_bundle)
+    return bundles
+
+
 def _try_symbol_targeted_retrieval(
     *,
     anchor_symbol: str | None,
@@ -425,90 +563,42 @@ def _try_symbol_targeted_retrieval(
             graph_walk_inproc.load_adjacency(db, workspace_id)
 
     intent_roles = [match.role for match in intent]
-    intent_similarities = {match.role: match.similarity for match in intent}
     mode_roles = set(intent_roles) & _MODE_ROLES
-    context_candidates = [anchor]
-    traversal_mode: str | None = "deferred_binding_flow"
-    include_tests = include_tests_in_walks
-
-    if with_context and "impact_analysis" in mode_roles:
-        impact_anchor = replace(
+    if with_context and mode_roles:
+        context_candidates, traversal_mode, include_tests = _symbol_targeted_context_plan(
             anchor,
-            role="impact_analysis",
-            satisfying_kinds=("target_seed",),
-            kind_count=1,
-            depth=0,
-            edge_type="TARGET",
-            utility_score=1.0,
-        )
-        impacted = impact_traversal.expand_impact_neighbourhood(
-            [impact_anchor],
+            mode_roles,
             db=db,
             workspace_id=workspace_id,
             max_impacted=max_impacted,
-            include_tests=True,
-            intent_roles=intent_roles,
-            intent_similarities=intent_similarities,
+            intent=intent,
+            include_tests_in_walks=include_tests_in_walks,
         )
-        context_candidates = [impact_anchor, *impacted]
-        traversal_mode = None
-        include_tests = True
-    elif with_context and "trace_dependency" in mode_roles:
-        trace_anchor = replace(
-            anchor,
-            role="trace_dependency",
-            satisfying_kinds=("target_seed",),
-            kind_count=1,
-            depth=0,
-            edge_type="TARGET",
-            utility_score=1.0,
-        )
-        traced = trace_traversal.expand_trace_neighbourhood(
-            [trace_anchor],
-            db=db,
-            workspace_id=workspace_id,
-        )
-        context_candidates = [trace_anchor, *traced]
-        traversal_mode = None
+    else:
+        context_candidates = [anchor]
+        traversal_mode = "deferred_binding_flow"
+        include_tests = include_tests_in_walks
 
     bundles: list[ContextBundle] = []
     if with_context:
         with trace.stage("context"):
-            bundles = context_builder.build_context_for_candidates(
+            bundles = _build_context_bundles_with_budget(
                 context_candidates,
                 workspace_id=workspace_id,
                 db=db,
                 lance=lance,
-                max_per_seed=context_per_seed,
+                context_per_seed=context_per_seed,
                 hook_transparency=hook_transparency,
                 token_budget=token_budget,
                 render_mode=render_mode,
-                per_transaction_share=(
-                    budget_profile.per_transaction_share if budget_profile else 0.10
-                ),
-                file_soft_cap_share=(
-                    budget_profile.file_soft_cap_share if budget_profile else 0.25
-                ),
-                signature_only_initial=(
-                    budget_profile.signature_only_initial if budget_profile else False
-                ),
+                budget_profile=budget_profile,
+                utility_score_fn=None,
                 traversal_mode=traversal_mode,
                 include_tests=include_tests,
                 overlay=overlay,
                 user_id=user_id,
             )
-            if len(bundles) > 1:
-                anchor_index = next(
-                    (
-                        index
-                        for index, bundle in enumerate(bundles)
-                        if bundle.seed.uid == anchor.uid
-                    ),
-                    None,
-                )
-                if anchor_index is not None and anchor_index != 0:
-                    anchor_bundle = bundles.pop(anchor_index)
-                    bundles.insert(0, anchor_bundle)
+            bundles = _move_anchor_bundle_first(bundles, anchor.uid)
 
     seed_path = (anchor.file_path or "").strip()
     return AxisRetrievalResult(
@@ -585,6 +675,320 @@ def _overlay_only_result(
     )
 
 
+def _classify_retrieval_intent(
+    question: str,
+    lance: Any,
+    *,
+    intent_override: list[IntentMatch] | None,
+    top_roles: int,
+    intent_threshold: float,
+    trace: Any,
+) -> list[IntentMatch]:
+    def _embed(text: str):
+        return lance._embed([text])[0]  # noqa: SLF001
+
+    with trace.stage("intent"):
+        if intent_override is not None:
+            return list(intent_override)
+        return intent_classifier.classify_intent(
+            question,
+            _embed,
+            top_k=top_roles,
+            threshold=intent_threshold,
+        )
+
+
+def _retrieve_role_seeds(
+    question: str,
+    intent: list[IntentMatch],
+    *,
+    workspace_id: str,
+    db: Any,
+    lance: Any,
+    seed_limit: int,
+    trace: Any,
+):
+    with trace.stage("retrieval"):
+        scanned = role_retrieval.scan_workspace_rows(workspace_id, lance=lance)
+        raw_by_role = role_retrieval.find_symbols_by_roles(
+            workspace_id,
+            [m.role for m in intent],
+            query_text=question,
+            embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
+            limit=seed_limit,
+            prescanned=scanned,
+        )
+        from context_engine.axis import graph_walk_inproc
+
+        if graph_walk_inproc.should_use(workspace_id):
+            with trace.stage("adjacency"):
+                graph_walk_inproc.load_adjacency(db, workspace_id)
+    return scanned, raw_by_role
+
+
+def _candidate_file_paths(candidates: list[RoleCandidate]) -> set[str]:
+    return {getattr(c, "file_path", "") or "" for c in candidates}
+
+
+def _run_doc_anchor_bridge(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    *,
+    db: Any,
+    workspace_id: str,
+    scanned,
+    include_tests: bool,
+    trace: Any,
+) -> set[str]:
+    doc_anchor_seeds = raw_by_role.get("doc_anchor") or []
+    if not doc_anchor_seeds:
+        return set()
+    with trace.stage("doc_anchor_bridge"):
+        raw_by_role["doc_anchor_bridge"] = doc_anchor_bridge.expand_doc_anchor_bridge(
+            doc_anchor_seeds,
+            db=db,
+            workspace_id=workspace_id,
+            prescanned=scanned,
+            include_tests=include_tests,
+        )
+    return _candidate_file_paths(raw_by_role.get("doc_anchor_bridge", []))
+
+
+def _run_http_endpoint_bridge(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    intent: list[IntentMatch],
+    *,
+    db: Any,
+    workspace_id: str,
+    scanned,
+    include_tests: bool,
+    trace: Any,
+) -> set[str]:
+    http_bridge_roles = {m.role for m in intent} | {
+        "routing_surface",
+        "trace_dependency",
+        "vector_seed",
+    }
+    http_bridge_seeds = [
+        c for role in http_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
+    ]
+    if not http_bridge_seeds:
+        return set()
+    with trace.stage("http_endpoint_bridge"):
+        raw_by_role["http_endpoint_bridge"] = http_endpoint_bridge.expand_http_endpoint_bridge(
+            http_bridge_seeds,
+            db=db,
+            workspace_id=workspace_id,
+            prescanned=scanned,
+            include_tests=include_tests,
+        )
+    return _candidate_file_paths(raw_by_role.get("http_endpoint_bridge", []))
+
+
+def _run_hook_api_bridge(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    intent: list[IntentMatch],
+    *,
+    db: Any,
+    workspace_id: str,
+    scanned,
+    include_tests: bool,
+    trace: Any,
+) -> set[str]:
+    hook_bridge_roles = {m.role for m in intent} | {
+        "routing_surface",
+        "trace_dependency",
+        "vector_seed",
+        "binding_surface",
+    }
+    hook_bridge_seeds = [
+        c for role in hook_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
+    ]
+    if not hook_bridge_seeds:
+        return set()
+    with trace.stage("hook_api_bridge"):
+        raw_by_role["hook_api_bridge"] = hook_api_bridge.expand_hook_api_bridge(
+            hook_bridge_seeds,
+            db=db,
+            workspace_id=workspace_id,
+            prescanned=scanned,
+            include_tests=include_tests,
+        )
+    return _candidate_file_paths(raw_by_role.get("hook_api_bridge", []))
+
+
+def _run_structural_pool_passes(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    *,
+    db: Any,
+    lance: Any,
+    workspace_id: str,
+    scanned,
+    trace: Any,
+) -> None:
+    existing_pool_for_struct = [
+        c
+        for role, cands in raw_by_role.items()
+        if role not in {"impact_analysis", "structural_neighbour"}
+        for c in cands
+    ]
+    if not existing_pool_for_struct:
+        return
+    with trace.stage("structural_neighbours"):
+        affects_pool = structural_neighbours.expand_structural_neighbours(
+            existing_pool_for_struct,
+            db=db,
+            workspace_id=workspace_id,
+        )
+    ancestor_pool = inheritance_ancestors.expand_inheritance_ancestors(
+        existing_pool_for_struct,
+        db=db,
+        workspace_id=workspace_id,
+        exclude_uids=[c.uid for c in affects_pool],
+    )
+    already = {c.uid for c in (list(affects_pool) + list(ancestor_pool))}
+    with trace.stage("phased"):
+        phased_pool = axis_phased.expand_phased(
+            existing_pool_for_struct,
+            db=db,
+            lance=lance,
+            workspace_id=workspace_id,
+            exclude_uids=already,
+            prescanned=scanned,
+        )
+    raw_by_role["structural_neighbour"] = (
+        list(affects_pool) + list(ancestor_pool) + list(phased_pool)
+    )
+
+
+def _run_mode_traversal_passes(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    intent: list[IntentMatch],
+    *,
+    db: Any,
+    workspace_id: str,
+    max_impacted: int,
+    include_tests_in_walks: bool,
+    trace: Any,
+) -> None:
+    mode_intents_present = {m.role for m in intent if m.role in _MODE_ROLES}
+    if not mode_intents_present:
+        return
+    existing_pool = [
+        c for role, cands in raw_by_role.items() if role not in _MODE_ROLES for c in cands
+    ]
+    if not existing_pool:
+        return
+    if "impact_analysis" in mode_intents_present:
+        with trace.stage("impact_traversal"):
+            raw_by_role["impact_analysis"] = impact_traversal.expand_impact_neighbourhood(
+                existing_pool,
+                db=db,
+                workspace_id=workspace_id,
+                max_impacted=max_impacted,
+                include_tests=include_tests_in_walks,
+                intent_roles=[m.role for m in intent],
+                intent_similarities={m.role: m.similarity for m in intent},
+            )
+    if "trace_dependency" in mode_intents_present:
+        with trace.stage("trace_traversal"):
+            raw_by_role["trace_dependency"] = trace_traversal.expand_trace_neighbourhood(
+                existing_pool,
+                db=db,
+                workspace_id=workspace_id,
+            )
+
+
+def _apply_cross_role_intersection(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    intent: list[IntentMatch],
+    *,
+    db: Any,
+    workspace_id: str,
+    trace: Any,
+) -> None:
+    has_mode_intent = any(m.role in _MODE_ROLES for m in intent)
+    if len(intent) < 2 or has_mode_intent:
+        return
+    with trace.stage("cross_role_intersection"):
+        for i, match in enumerate(intent):
+            primary = raw_by_role.get(match.role) or []
+            secondary = {
+                other.role: raw_by_role.get(other.role) or []
+                for j, other in enumerate(intent)
+                if j != i
+            }
+            raw_by_role[match.role] = cross_role_boost.intersect_by_cross_role_proximity(
+                primary,
+                secondary,
+                db=db,
+                workspace_id=workspace_id,
+            )
+
+
+def _flatten_candidates_for_context(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    intent: list[IntentMatch],
+    *,
+    context_seeds_per_role: int | None,
+) -> list[RoleCandidate]:
+    intent_role_keys = [m.role for m in intent]
+    ordered_keys = intent_role_keys + [r for r in raw_by_role if r not in set(intent_role_keys)]
+    candidates_for_context: list[RoleCandidate] = []
+    seen_keys: set[str] = set()
+    for key in ordered_keys:
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        cands = raw_by_role.get(key) or []
+        if context_seeds_per_role is not None:
+            cands = cands[:context_seeds_per_role]
+        candidates_for_context.extend(cands)
+    return candidates_for_context
+
+
+def _prepare_budgeted_candidates(
+    candidates_for_context: list[RoleCandidate],
+    intent: list[IntentMatch],
+    *,
+    intent_budget: bool,
+    base_token_budget: int,
+    render_mode_override: str | None,
+    anchor_path: str | None,
+    anchor_symbol: str | None,
+) -> tuple[
+    list[RoleCandidate],
+    int | None,
+    str,
+    Any | None,
+    Any | None,
+]:
+    token_budget: int | None = None
+    render_mode = "full"
+    budget_profile = None
+    utility_score_fn = None
+    active = candidates_for_context
+    symbol_targeted = bool((anchor_symbol or "").strip())
+    if not intent_budget:
+        return active, token_budget, render_mode, budget_profile, utility_score_fn
+
+    budget_profile = ARCHITECTURE if symbol_targeted else budget_for_intent(intent)
+
+    def _budget_utility_score(c: RoleCandidate) -> float:
+        return c.score + proximity_boost(c.file_path, anchor_path)
+
+    utility_score_fn = _budget_utility_score
+    active = sorted(
+        candidates_for_context,
+        key=lambda c: c.score + proximity_boost(c.file_path, anchor_path),
+        reverse=True,
+    )
+    token_budget = budget_profile.effective_tokens(base_token_budget)
+    render_mode = (
+        budget_profile.render_mode if render_mode_override is None else render_mode_override
+    )
+    return active, token_budget, render_mode, budget_profile, utility_score_fn
+
+
 def run_axis_retrieval(
     question: str,
     *,
@@ -626,23 +1030,16 @@ def run_axis_retrieval(
     """
 
     tr = trace if trace is not None else _NullTrace()
+    intent = _classify_retrieval_intent(
+        question,
+        lance,
+        intent_override=intent_override,
+        top_roles=top_roles,
+        intent_threshold=intent_threshold,
+        trace=tr,
+    )
 
-    def _embed(text: str):
-        return lance._embed([text])[0]  # noqa: SLF001
-
-    with tr.stage("intent"):
-        if intent_override is not None:
-            intent = list(intent_override)
-        else:
-            intent = intent_classifier.classify_intent(
-                question,
-                _embed,
-                top_k=top_roles,
-                threshold=intent_threshold,
-            )
-
-    symbol_targeted = bool((anchor_symbol or "").strip())
-    if symbol_targeted:
+    if (anchor_symbol or "").strip():
         fast = _try_symbol_targeted_retrieval(
             anchor_symbol=anchor_symbol,
             anchor_path=anchor_path,
@@ -665,56 +1062,24 @@ def run_axis_retrieval(
         if fast is not None:
             return fast
 
-    # Impact questions explicitly ask "what tests are affected". Tests reach
-    # the pool ONLY through the dedicated, hub-gated ``impacted_tests`` walk in
-    # ``impact_traversal`` (and the context render of what it finds) — never via
-    # Lance seeds (test rows drown production symbols in vector top-k) nor via
-    # the broad structural / lookahead / phased passes (a test flood there
-    # displaces production neighbours unrelated to the change).
     include_tests_in_walks = any(m.role == "impact_analysis" for m in intent)
-
-    # Seed budget. ``per_role_limit`` was tuned for the original two-stage
-    # pipeline (seed -> walker). The seed layer now feeds a MULTI-stage pool
-    # (cross-role lookahead, structural neighbours, phased — each a 1-hop
-    # axis expansion) before the mode walker, and a mode question's answer
-    # surface is a blast radius, not a point. Both widen what the seeds must
-    # carry, so a budget sized for seed->walker starves the real seeds (the
-    # changed symbol ranks just outside the cut and never anchors the impact
-    # walk). Widen the seed budget for mode intents — a relative ×factor over
-    # the caller's ``per_role_limit``, not an absolute cap.
     impact_mode = any(m.role in _MODE_ROLES for m in intent)
     seed_limit = per_role_limit * _MODE_SEED_LIMIT_FACTOR if impact_mode else per_role_limit
 
-    with tr.stage("retrieval"):
-        # One workspace-scoped scan (predicate pushdown + parse once)
-        # feeds every role retrieval and the vector seeds.
-        scanned = role_retrieval.scan_workspace_rows(workspace_id, lance=lance)
-        raw_by_role: dict[str, list] = role_retrieval.find_symbols_by_roles(
-            workspace_id,
-            [m.role for m in intent],
-            query_text=question,
-            embed_fn=_embed,
-            limit=seed_limit,
-            prescanned=scanned,
-        )
-        from context_engine.axis import graph_walk_inproc
+    scanned, raw_by_role = _retrieve_role_seeds(
+        question,
+        intent,
+        workspace_id=workspace_id,
+        db=db,
+        lance=lance,
+        seed_limit=seed_limit,
+        trace=tr,
+    )
 
-        if graph_walk_inproc.should_use(workspace_id):
-            with tr.stage("adjacency"):
-                graph_walk_inproc.load_adjacency(db, workspace_id)
-
-    # Seed layer — intent-role retrieval plus role-agnostic vector seeds.
-    # Doc-anchor owner paths are excluded; bridge implementors are included
-    # once ``doc_anchor_bridge`` runs (see below).
-    seed_files: set[str] = {
+    seed_files = {
         getattr(c, "file_path", "") or "" for cands in raw_by_role.values() for c in cands
     }
 
-    # Cross-role *lookahead*: walk K hops from each role's vector
-    # candidates, inject neighbours whose container_kinds back a different
-    # intent role. Closes the case where the intent classifier picks the
-    # right theme but the answer lives in a sibling role. Injection-only —
-    # it never displaces vector candidates.
     if len(intent) >= 2 and any(raw_by_role.values()):
         with tr.stage("cross_role_lookahead"):
             raw_by_role = role_lookahead.expand_candidates_via_neighbourhood(
@@ -726,15 +1091,11 @@ def run_axis_retrieval(
                 prescanned=scanned,
             )
 
-    # Role-AGNOSTIC vector seeds — added AFTER lookahead (which rebuilds
-    # the dict around intent roles and would drop a non-intent key). Intent
-    # stays a resource manager (ranking + depth), out of structure
-    # selection: pure similarity keeps the right nodes when intent misroutes.
     with tr.stage("vector_seeds"):
         raw_by_role["vector_seed"] = role_retrieval.find_seeds_by_vector(
             workspace_id,
             question,
-            embed_fn=_embed,
+            embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
             limit=seed_limit,
             impact_mode=impact_mode,
             prescanned=scanned,
@@ -742,218 +1103,83 @@ def run_axis_retrieval(
         raw_by_role["doc_anchor"] = role_retrieval.find_seeds_by_doc_anchor(
             workspace_id,
             question,
-            embed_fn=_embed,
+            embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
             limit=seed_limit,
             impact_mode=impact_mode,
             prescanned=scanned,
             lance=lance,
         )
 
-    # Doc-anchor vector search lands on interface/docstring owners; seed
-    # recall wants the reverse-USES_TYPE implementors (``doc_anchor_bridge``),
-    # not those owner files.
-    doc_anchor_seeds = raw_by_role.get("doc_anchor") or []
-    if doc_anchor_seeds:
-        with tr.stage("doc_anchor_bridge"):
-            raw_by_role["doc_anchor_bridge"] = doc_anchor_bridge.expand_doc_anchor_bridge(
-                doc_anchor_seeds,
-                db=db,
-                workspace_id=workspace_id,
-                prescanned=scanned,
-                include_tests=include_tests_in_walks,
-            )
+    seed_files |= _run_doc_anchor_bridge(
+        raw_by_role,
+        db=db,
+        workspace_id=workspace_id,
+        scanned=scanned,
+        include_tests=include_tests_in_walks,
+        trace=tr,
+    )
+    seed_files |= _candidate_file_paths(raw_by_role.get("vector_seed", []))
+    seed_files |= _run_http_endpoint_bridge(
+        raw_by_role,
+        intent,
+        db=db,
+        workspace_id=workspace_id,
+        scanned=scanned,
+        include_tests=include_tests_in_walks,
+        trace=tr,
+    )
+    seed_files |= _run_hook_api_bridge(
+        raw_by_role,
+        intent,
+        db=db,
+        workspace_id=workspace_id,
+        scanned=scanned,
+        include_tests=include_tests_in_walks,
+        trace=tr,
+    )
 
-    seed_files |= {getattr(c, "file_path", "") or "" for c in raw_by_role.get("vector_seed", [])}
-    seed_files |= {
-        getattr(c, "file_path", "") or "" for c in raw_by_role.get("doc_anchor_bridge", [])
-    }
+    _run_structural_pool_passes(
+        raw_by_role,
+        db=db,
+        lance=lance,
+        workspace_id=workspace_id,
+        scanned=scanned,
+        trace=tr,
+    )
+    _run_mode_traversal_passes(
+        raw_by_role,
+        intent,
+        db=db,
+        workspace_id=workspace_id,
+        max_impacted=max_impacted,
+        include_tests_in_walks=include_tests_in_walks,
+        trace=tr,
+    )
+    _apply_cross_role_intersection(
+        raw_by_role,
+        intent,
+        db=db,
+        workspace_id=workspace_id,
+        trace=tr,
+    )
 
-    http_bridge_roles = {m.role for m in intent} | {
-        "routing_surface",
-        "trace_dependency",
-        "vector_seed",
-    }
-    http_bridge_seeds = [
-        c for role in http_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
-    ]
-    if http_bridge_seeds:
-        with tr.stage("http_endpoint_bridge"):
-            raw_by_role["http_endpoint_bridge"] = http_endpoint_bridge.expand_http_endpoint_bridge(
-                http_bridge_seeds,
-                db=db,
-                workspace_id=workspace_id,
-                prescanned=scanned,
-                include_tests=include_tests_in_walks,
-            )
-
-    seed_files |= {
-        getattr(c, "file_path", "") or "" for c in raw_by_role.get("http_endpoint_bridge", [])
-    }
-
-    hook_bridge_roles = {m.role for m in intent} | {
-        "routing_surface",
-        "trace_dependency",
-        "vector_seed",
-        "binding_surface",
-    }
-    hook_bridge_seeds = [
-        c for role in hook_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
-    ]
-    if hook_bridge_seeds:
-        with tr.stage("hook_api_bridge"):
-            raw_by_role["hook_api_bridge"] = hook_api_bridge.expand_hook_api_bridge(
-                hook_bridge_seeds,
-                db=db,
-                workspace_id=workspace_id,
-                prescanned=scanned,
-                include_tests=include_tests_in_walks,
-            )
-
-    seed_files |= {
-        getattr(c, "file_path", "") or "" for c in raw_by_role.get("hook_api_bridge", [])
-    }
-
-    # Structural-neighbour pass — file-level adjacency via undirected
-    # AFFECTS, plus the upward inheritance walk and the reactive phased
-    # walk (REGISTRY*->CONTROL) seeded by the pool's kinds (not intent).
-    existing_pool_for_struct = [
-        c
-        for role, cands in raw_by_role.items()
-        if role not in {"impact_analysis", "structural_neighbour"}
-        for c in cands
-    ]
-    if existing_pool_for_struct:
-        with tr.stage("structural_neighbours"):
-            affects_pool = structural_neighbours.expand_structural_neighbours(
-                existing_pool_for_struct,
-                db=db,
-                workspace_id=workspace_id,
-            )
-        ancestor_pool = inheritance_ancestors.expand_inheritance_ancestors(
-            existing_pool_for_struct,
-            db=db,
-            workspace_id=workspace_id,
-            exclude_uids=[c.uid for c in affects_pool],
-        )
-        already = {c.uid for c in (list(affects_pool) + list(ancestor_pool))}
-        with tr.stage("phased"):
-            phased_pool = axis_phased.expand_phased(
-                existing_pool_for_struct,
-                db=db,
-                lance=lance,
-                workspace_id=workspace_id,
-                exclude_uids=already,
-                prescanned=scanned,
-            )
-        raw_by_role["structural_neighbour"] = (
-            list(affects_pool) + list(ancestor_pool) + list(phased_pool)
-        )
-
-    # Mode passes — both anchor on every concrete candidate already
-    # nominated, but keep their traversal semantics separate:
-    # impact_analysis is blast-radius; trace_dependency is CALLS-only.
-    mode_intents_present = {m.role for m in intent if m.role in _MODE_ROLES}
-    if mode_intents_present:
-        existing_pool = [
-            c for role, cands in raw_by_role.items() if role not in _MODE_ROLES for c in cands
-        ]
-        if existing_pool:
-            if "impact_analysis" in mode_intents_present:
-                with tr.stage("impact_traversal"):
-                    raw_by_role["impact_analysis"] = impact_traversal.expand_impact_neighbourhood(
-                        existing_pool,
-                        db=db,
-                        workspace_id=workspace_id,
-                        max_impacted=max_impacted,
-                        include_tests=include_tests_in_walks,
-                        intent_roles=[m.role for m in intent],
-                        intent_similarities={m.role: m.similarity for m in intent},
-                    )
-            if "trace_dependency" in mode_intents_present:
-                with tr.stage("trace_traversal"):
-                    raw_by_role["trace_dependency"] = trace_traversal.expand_trace_neighbourhood(
-                        existing_pool,
-                        db=db,
-                        workspace_id=workspace_id,
-                    )
-
-    # Multi-role *intersection* — weaker signals act as structural
-    # constraints, not a separate pool. Skipped under a mode intent, where
-    # the right answer often has no proximity to the tangential candidates.
-    has_mode_intent = any(m.role in _MODE_ROLES for m in intent)
-    if len(intent) >= 2 and not has_mode_intent:
-        with tr.stage("cross_role_intersection"):
-            for i, match in enumerate(intent):
-                primary = raw_by_role.get(match.role) or []
-                secondary = {
-                    other.role: raw_by_role.get(other.role) or []
-                    for j, other in enumerate(intent)
-                    if j != i
-                }
-                raw_by_role[match.role] = cross_role_boost.intersect_by_cross_role_proximity(
-                    primary,
-                    secondary,
-                    db=db,
-                    workspace_id=workspace_id,
-                )
-
-    # Intent-axis ranking — intent as a ranker (not a selector). Boost
-    # candidates whose kind-axes match the intent's axes; pools re-sort.
-    # Role-agnostic seeds (no kinds) pass through untouched.
     raw_by_role = axis_ranking.apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
-
-    # Flatten in intent-role order, then any lookahead-promoted roles.
-    # ``raw_by_role`` may carry roles the intent classifier never produced
-    # (see ``expand_candidates_via_neighbourhood`` auto-promote); skipping
-    # them would discard graph-evidenced candidates.
-    intent_role_keys = [m.role for m in intent]
-    ordered_keys = intent_role_keys + [r for r in raw_by_role if r not in set(intent_role_keys)]
-    candidates_for_context: list[RoleCandidate] = []
-    seen_keys: set[str] = set()
-    for key in ordered_keys:
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        cands = raw_by_role.get(key) or []
-        if context_seeds_per_role is not None:
-            cands = cands[:context_seeds_per_role]
-        candidates_for_context.extend(cands)
-
-    # Intent-driven budgeting (opt-in; benchmark leaves it off -> walk all).
-    # The Token Credit System IS the budget: walk the full ranked scope (no
-    # pre-cut), then let the marginal token-credit packer (echelon 2) buy the
-    # minimal render context per bundle. Pre-cutting the walk would only let the
-    # token budget post-process an already truncated scope, so there is no
-    # active/passive split — the whole pool is active.
-    token_budget: int | None = None
-    render_mode = "full"
-    budget_profile = None
-    active = candidates_for_context
-    utility_score_fn = None
-    symbol_targeted = bool((anchor_symbol or "").strip())
-    if intent_budget:
-        # CodeLens / ask-from-code names the seed explicitly — prefer full
-        # structural context on that symbol over impact blast-radius stubs.
-        budget_profile = ARCHITECTURE if symbol_targeted else budget_for_intent(intent)
-        # S_utility = score (S_vector × W_type, already in the candidate score)
-        # + B_proximity (path-locality from the ask anchor). The boost only
-        # reorders the packing priority; it does not mutate the candidate score
-        # the response/bundle carries. anchor_path is None -> boost 0 -> rank by
-        # score alone (no downside).
-        active = sorted(
+    candidates_for_context = _flatten_candidates_for_context(
+        raw_by_role,
+        intent,
+        context_seeds_per_role=context_seeds_per_role,
+    )
+    active, token_budget, render_mode, budget_profile, utility_score_fn = (
+        _prepare_budgeted_candidates(
             candidates_for_context,
-            key=lambda c: c.score + proximity_boost(c.file_path, anchor_path),
-            reverse=True,
+            intent,
+            intent_budget=intent_budget,
+            base_token_budget=base_token_budget,
+            render_mode_override=render_mode_override,
+            anchor_path=anchor_path,
+            anchor_symbol=anchor_symbol,
         )
-
-        def _budget_utility_score(c: RoleCandidate) -> float:
-            return c.score + proximity_boost(c.file_path, anchor_path)
-
-        utility_score_fn = _budget_utility_score
-        token_budget = budget_profile.effective_tokens(base_token_budget)
-        render_mode = (
-            budget_profile.render_mode if render_mode_override is None else render_mode_override
-        )
+    )
 
     if anchor_symbol:
         active = _pin_anchor_symbol(
@@ -972,33 +1198,24 @@ def run_axis_retrieval(
             db=db,
             scanned=scanned,
         )
-        # Symbol-targeted ask: expand only the pinned anchor's neighbourhood,
-        # not every vector/role candidate in the pool.
         if active:
             active = [active[0]]
 
     bundles: list[ContextBundle] = []
     if with_context and active:
         with tr.stage("context"):
-            bundles = context_builder.build_context_for_candidates(
+            bundles = _build_context_bundles_with_budget(
                 active,
                 workspace_id=workspace_id,
                 db=db,
                 lance=lance,
-                max_per_seed=context_per_seed,
+                context_per_seed=context_per_seed,
                 hook_transparency=hook_transparency,
                 token_budget=token_budget,
                 render_mode=render_mode,
-                per_transaction_share=(
-                    budget_profile.per_transaction_share if budget_profile else 0.10
-                ),
-                file_soft_cap_share=(
-                    budget_profile.file_soft_cap_share if budget_profile else 0.25
-                ),
-                signature_only_initial=(
-                    budget_profile.signature_only_initial if budget_profile else False
-                ),
+                budget_profile=budget_profile,
                 utility_score_fn=utility_score_fn,
+                traversal_mode="deferred_binding_flow",
                 include_tests=include_tests_in_walks,
                 overlay=overlay,
                 user_id=user_id,
