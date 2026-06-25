@@ -1,8 +1,10 @@
 """Unit tests for incremental indexing with hash-based skip logic."""
 
 import json
+from typing import cast
 from unittest.mock import MagicMock, patch
 
+from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient, _import_row
 from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
 from context_engine.indexer.code import index_file
@@ -17,6 +19,11 @@ from context_engine.indexer.fast.pipeline import (
     _type_reference_phase,
 )
 from context_engine.parser.protocol import ImportEdge, SymbolMetadata
+
+
+class _StubLanceDBClient(LanceDBClient):
+    def __init__(self) -> None:
+        pass  # Skip Lance storage setup; tests override methods as needed.
 
 
 def _symbol(uid: str, content_hash: str, start_line: int = 1, end_line: int = 2):
@@ -242,7 +249,12 @@ class TestIncrementalIndexing:
             changed_symbols=[_symbol("b", "hb")],
         )
 
-        _apply_graph([first, second], FakeDb(), "acme/repo@main", _NullReporter())
+        _apply_graph(
+            [first, second],
+            cast(Neo4jClient, FakeDb()),
+            "acme/repo@main",
+            _NullReporter(),
+        )
 
         edge_start = min(i for i, call in enumerate(calls) if call[0] == "clear")
         upsert_end = max(i for i, call in enumerate(calls) if call[0] == "upsert")
@@ -282,7 +294,7 @@ export function configureStore<S>(
 
         count = _type_reference_phase(
             [diff],
-            FakeDb(),
+            cast(Neo4jClient, FakeDb()),
             "acme/repo@main",
             _NullReporter(),
             project_path="/repo",
@@ -324,7 +336,7 @@ exports.response = res;
 
         count, touched = _symbol_alias_phase(
             [diff],
-            FakeDb(),
+            cast(Neo4jClient, FakeDb()),
             "acme/repo@main",
             _NullReporter(),
             project_path=str(tmp_path),
@@ -368,7 +380,7 @@ res.status = function status(code) {
 
         count, touched = _property_api_phase(
             [diff],
-            FakeDb(),
+            cast(Neo4jClient, FakeDb()),
             "acme/repo@main",
             _NullReporter(),
             project_path=str(tmp_path),
@@ -409,7 +421,7 @@ def run(x: int):
             changed_symbols=[symbol],
         )
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             index_profile_name = AXIS_PYTHON_V1_PROFILE
 
             def __init__(self):
@@ -472,7 +484,7 @@ def run(x: int):
             changed_symbols=[run_symbol],
         )
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             index_profile_name = AXIS_PYTHON_V1_PROFILE
 
             def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
@@ -523,7 +535,7 @@ class Settings:
             changed_symbols=[symbol],
         )
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             index_profile_name = AXIS_PYTHON_V1_PROFILE
 
             def __init__(self):
@@ -583,7 +595,7 @@ export class GuardsContextCreator {
             changed_symbols=[symbol],
         )
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             index_profile_name = AXIS_PYTHON_V1_PROFILE
 
             def __init__(self):
@@ -666,7 +678,7 @@ export class GuardsContextCreator {
             changed_symbols=[symbol],
         )
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             index_profile_name = AXIS_PYTHON_V1_PROFILE
 
             def __init__(self):
@@ -743,7 +755,7 @@ export class GuardsContextCreator {
             changed_symbols=[symbol],
         )
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             index_profile_name = "legacy"
 
             def __init__(self):
@@ -867,7 +879,7 @@ export class GuardsContextCreator {
             def link_inheritance(self, inheritance_edges, workspace_id):
                 raise AssertionError("No inheritance expected")
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             def __init__(self):
                 self.upserted = []
                 self.deleted = []
@@ -923,7 +935,13 @@ export class GuardsContextCreator {
         db = FakeDb()
         lance = FakeLance()
 
-        index_file(str(source_file), db, lance, FakeExtractor(), workspace_id="acme/repo@main")
+        index_file(
+            str(source_file),
+            cast(Neo4jClient, db),
+            lance,
+            FakeExtractor(),
+            workspace_id="acme/repo@main",
+        )
 
         assert db.upserted == ["changed", "new"]
         assert db.pruned_keep == ["unchanged", "changed", "new"]
@@ -969,7 +987,7 @@ export class GuardsContextCreator {
             def delete_imports_for_file(self, file_path, workspace_id):
                 self.deleted_imports = True
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             def upsert_symbol_embeddings(self, symbols):
                 self.upserted = symbols
 
@@ -998,7 +1016,13 @@ export class GuardsContextCreator {
         db = FakeDb()
         lance = FakeLance()
 
-        index_file(str(source_file), db, lance, FakeExtractor(), workspace_id="acme/repo@main")
+        index_file(
+            str(source_file),
+            cast(Neo4jClient, db),
+            lance,
+            FakeExtractor(),
+            workspace_id="acme/repo@main",
+        )
 
         assert db.upserted == []
         assert db.keep_uids == ["unchanged"]
@@ -1028,39 +1052,39 @@ class Settings:
                 self.upserted = [s.uid for s in symbols]
 
             def prune_symbols_for_file(self, file_path, keep_uids, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; pruning is not asserted here.
 
             def clear_outgoing_symbol_edges(self, symbol_uids, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; edge clearing is not asserted here.
 
             def link_calls(self, calls, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; call linking is not asserted here.
 
             def delete_imports_for_file(self, file_path, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; import cleanup is not asserted here.
 
             def link_imports(self, imports, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; import linking is not asserted here.
 
             def link_inheritance(self, inheritance_edges, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; inheritance linking is not asserted here.
 
             def delete_proxy_bindings_for_file(self, file_path, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; proxy cleanup is not asserted here.
 
             def delete_decorators_for_file(self, file_path, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; decorator cleanup is not asserted here.
 
             def delete_type_references_for_file(self, file_path, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; type-ref cleanup is not asserted here.
 
             def delete_injections_for_file(self, file_path, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; injection cleanup is not asserted here.
 
             def recompute_degree_for_closure(self, seed_uids, workspace_id):
-                pass
+                pass  # Stub: index_file calls this; degree recompute is not asserted here.
 
-        class FakeLance:
+        class FakeLance(_StubLanceDBClient):
             index_profile_name = AXIS_PYTHON_V1_PROFILE
 
             def __init__(self):
@@ -1093,7 +1117,7 @@ class Settings:
         lance = FakeLance()
         index_file(
             str(path),
-            FakeDb(),
+            cast(Neo4jClient, FakeDb()),
             lance,
             extractor,
             workspace_id="local/repo@main+axis_python_v1",

@@ -163,7 +163,7 @@ def test_persist_records_warning_when_disk_unwritable(tmp_path):
             return 1
 
         def save_index_manifest(self, *args, **kwargs):
-            pass
+            pass  # Stub: this test only asserts disk-write warning handling, not Neo4j persistence.
 
     stats: dict = {
         "collected": 0,
