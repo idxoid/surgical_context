@@ -21,36 +21,36 @@ _engine = AxisEngine()
 @mcp.tool()
 def ask_code(
     question: str,
-    token_budget: int = 6000,
+    token_budget: int = 4000,
     workspace: str | None = None,
     roles: list[str] | None = None,
     render: str = "full",
 ) -> str:
-    """Retrieve surgical code context for a natural-language question about the
-    indexed codebase.
+    """Semantic, cross-file code retrieval: a natural-language question → ranked,
+    graph-expanded code bundles to reason over. Returns *context, not an answer*.
 
-    Returns ranked, graph-expanded code bundles (the same role-intent retrieval
-    the surgical_context ``/ask`` pipeline uses) for you to reason over — it does
-    NOT itself produce an answer. Use it whenever you need to know how something
-    works in this repo's code: which symbols implement a behaviour, what calls
-    what, where a mechanism lives.
+    COST — this is the HEAVY tool (it returns many symbols' code). Prefer the
+    cheap, targeted tools when you can name what you want:
+      - file_outline(path)            — a file's symbol map
+      - read_symbol(name)             — one symbol's code
+      - callers(name) / callees(name) — direct call edges
+      - find_definition / search_code — locate a symbol by name or text
+      - impact(symbol)                — downstream blast radius (structural, cheap)
+      - classify_intent(question)     — preview roles only (no retrieval)
+    Reach for ask_code only when you need semantic retrieval ACROSS files and
+    cannot name the targets (e.g. "how does X work", "where is Y handled").
 
     Args:
         question: Plain-language question, e.g. "how does workspace scoping work".
-        token_budget: Soft cap on the volume of code returned (default 6000).
-        workspace: Optional base workspace id (e.g. "qa_repo/django@main") to
-            target a specific indexed repo. Call ``list_workspaces`` to discover
-            options. Defaults to SURGICAL_CONTEXT_WORKSPACE.
-        roles: Optional explicit roles to drive retrieval, bypassing the
-            embedding intent-classifier — supply when you can target the
-            mechanism better than cosine similarity of role descriptions (the
-            vector seeds still rerank, only role *selection* changes). Call
-            ``list_roles`` for the vocabulary. Omit to auto-classify.
-        render: "full" (default) = ranked code bundles to reason over. "names" =
-            census view — one line per symbol (file :: name + role/depth, NO
-            code) with no budget eviction, so far more coupling symbols/files
-            surface per token. Use "names" to map structure/blast surface ("which
-            symbols/files touch X"); "full" to read the actual code.
+        token_budget: Soft cap on the volume of code returned (default 4000).
+            Raise it for more depth; lower it (or render="names") to stay cheap.
+        workspace: Optional base workspace id (e.g. "qa_repo/django@main"); call
+            list_workspaces for options. Defaults to SURGICAL_CONTEXT_WORKSPACE.
+        roles: Optional explicit roles, bypassing the embedding intent-classifier
+            (vector seeds still rerank). Call list_roles for the vocabulary.
+        render: "full" (default) = ranked code bundles. "names" = cheap structural
+            census (one line per symbol, no code) — use to map "which symbols /
+            files touch X" without paying for bodies.
     """
     workspace_id = resolve_workspace_id(workspace)
 
@@ -71,12 +71,12 @@ def ask_code(
         question, workspace_id, token_budget=token_budget, roles=roles, render=render
     )
 
-    roles = ", ".join(f"{r}({s:.2f})" for r, s in result.intent)
+    roles_str = ", ".join(f"{r}({s:.2f})" for r, s in result.intent)
     if not result.text:
         return (
             f"No code context found for: {question!r}\n"
             f"workspace: {workspace_id}\n"
-            f"intent roles: {roles or '(none above threshold)'}\n\n"
+            f"intent roles: {roles_str or '(none above threshold)'}\n\n"
             "The repo may not be indexed under the axis_python_v1 profile, the "
             "Neo4j/LanceDB backends may be down, or the question matched no role. "
             "Verify the index exists for this workspace."
@@ -84,10 +84,18 @@ def ask_code(
 
     header = (
         f"# Surgical context for: {question}\n"
-        f"workspace: {workspace_id} · intent: {roles} · "
+        f"workspace: {workspace_id} · intent: {roles_str} · "
         f"{result.candidate_count} candidates · {len(result.files)} files\n"
     )
-    return header + "\n" + result.text
+    body = header + "\n" + result.text
+    if render == "full":
+        # Footer nudges toward cheaper follow-ups instead of always maxing budget.
+        body += (
+            f"\n---\n_Shown under token_budget={token_budget}. More depth: raise "
+            'token_budget. Cheap structural map: render="names". '
+            "Targeted facts: read_symbol / callers / impact._\n"
+        )
+    return body
 
 
 @mcp.tool()

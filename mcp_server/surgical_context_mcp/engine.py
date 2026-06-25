@@ -9,6 +9,7 @@ when ``intent_budget`` is on); the host chat model reasons over them.
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -203,15 +204,35 @@ _EXPLAIN_EDGE_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
+def _common_dir_prefix(paths: list[str]) -> str:
+    """Longest shared directory prefix (with trailing /) across ``paths``.
+
+    Stripping it from every header drops the repeated absolute-root noise (one
+    workspace = one repo per call) — printed once instead of per symbol.
+    """
+    real = [p for p in paths if p]
+    if len(real) < 2:
+        return ""
+    try:
+        pref = os.path.commonpath(real)
+    except ValueError:
+        return ""
+    if not pref or pref == "/":
+        return ""
+    return pref.rstrip("/") + "/"
+
+
 def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str]:
     """Flatten ``result.bundles`` into a deduped, prompt-ready markdown block.
 
     Dedupes by uid (highest-rank / shallowest occurrence wins), preserving the
     candidate-rank, seed-before-related order — the same content the benchmark
-    counts as the prompt the LLM actually receives.
+    counts as the prompt the LLM actually receives. Headers are compact: the
+    shared path prefix is factored out once, ``depth`` → ``d``, and the
+    expansion ``step`` is dropped when it just echoes the role or the seed.
 
-    ``names_only`` emits one compact line per symbol (file :: name + role/depth,
-    NO code) — a census view: many coupling symbols fit per token. Pair it with
+    ``names_only`` emits one line per symbol (file :: name + role/depth, NO
+    code) — a census view: many coupling symbols fit per token. Pair it with
     ``intent_budget=False`` upstream so the token-credit packer doesn't evict
     expanded neighbours before they reach here.
     """
@@ -221,34 +242,43 @@ def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str
     seen_uid: set[str] = set()
     seen_file: set[str] = set()
     files: list[str] = []
-    parts: list[str] = []
+    syms = []
 
     for bundle in result.bundles:
         for sym in bundle.all_symbols():
             if sym.uid in seen_uid:
                 continue
             seen_uid.add(sym.uid)
-
+            syms.append(sym)
             fp = sym.file_path or ""
             if fp and fp not in seen_file:
                 seen_file.add(fp)
                 files.append(fp)
 
-            step = sym.expansion_step or "seed"
-            if names_only:
-                parts.append(
-                    f"- {fp} :: {sym.name} ({sym.role}, d{sym.distance_from_seed}, {step})"
-                )
-                continue
+    prefix = _common_dir_prefix(files)
+    parts: list[str] = []
+    if prefix:
+        parts.append(f"_paths relative to {prefix}_")
+        parts.append("")
 
-            parts.append(
-                f"### {fp} :: {sym.name}  ({sym.role}, depth={sym.distance_from_seed}, {step})"
-            )
-            if sym.code:
-                parts.append("```python")
-                parts.append(sym.code.rstrip())
-                parts.append("```")
-            parts.append("")
+    for sym in syms:
+        fp = sym.file_path or ""
+        rel = fp[len(prefix):] if prefix and fp.startswith(prefix) else fp
+        meta = f"{sym.role} · d{sym.distance_from_seed}"
+        step = sym.expansion_step or ""
+        if step and step not in (sym.role, "seed"):
+            meta += f" · {step}"
+
+        if names_only:
+            parts.append(f"- {rel} :: {sym.name} ({meta})")
+            continue
+
+        parts.append(f"### {rel} :: {sym.name} · {meta}")
+        if sym.code:
+            parts.append("```python")
+            parts.append(sym.code.rstrip())
+            parts.append("```")
+        parts.append("")
 
     return files, "\n".join(parts).rstrip() + "\n"
 
