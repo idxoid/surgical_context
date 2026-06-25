@@ -1714,6 +1714,35 @@ def _candidate_utility_score(
     return utility_score_fn(candidate)
 
 
+def _merge_grouped_walk_hits(
+    hits_per_seed: dict[str, list[_Hit]],
+    grouped: dict[str, list],
+    step_name: str,
+) -> None:
+    for su, neighbours in grouped.items():
+        bucket = hits_per_seed.get(su)
+        if bucket is None:
+            continue
+        for nb in neighbours:
+            bucket.append(_Hit(nb.uid, nb.name, nb.file_path, nb.depth, step_name))
+
+
+def _append_hook_transparency_hits(
+    hits_per_seed: dict[str, list[_Hit]],
+    db,
+    workspace_id: str,
+    seed_uids: list[str],
+    *,
+    max_per_seed: int,
+) -> None:
+    for su, extra in _hook_transparency_hits(
+        db, workspace_id, seed_uids, limit=max_per_seed
+    ).items():
+        bucket = hits_per_seed.get(su)
+        if bucket is not None:
+            bucket.extend(extra)
+
+
 def _collect_hits_per_seed(
     db,
     workspace_id: str,
@@ -1740,20 +1769,16 @@ def _collect_hits_per_seed(
             max_hops=max_hops,
             limit_per_seed=max_per_seed * 4,
         )
-        for su, neighbours in grouped.items():
-            bucket = hits_per_seed.get(su)
-            if bucket is None:
-                continue
-            for nb in neighbours:
-                bucket.append(_Hit(nb.uid, nb.name, nb.file_path, nb.depth, step_name))
+        _merge_grouped_walk_hits(hits_per_seed, grouped, step_name)
 
     if hook_transparency:
-        for su, extra in _hook_transparency_hits(
-            db, workspace_id, seed_uids, limit=max_per_seed
-        ).items():
-            bucket = hits_per_seed.get(su)
-            if bucket is not None:
-                bucket.extend(extra)
+        _append_hook_transparency_hits(
+            hits_per_seed,
+            db,
+            workspace_id,
+            seed_uids,
+            max_per_seed=max_per_seed,
+        )
     return hits_per_seed
 
 

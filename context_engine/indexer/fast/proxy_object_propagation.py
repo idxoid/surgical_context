@@ -68,19 +68,13 @@ def _proxy_binding_uids(db: Neo4jClient, workspace_id: str) -> set[str]:
     return {str(uid) for uid in ((rows and rows.get("uids")) or []) if uid}
 
 
-def propagate_proxy_object(
-    db: Neo4jClient,
-    lance,
-    workspace_id: str,
-) -> int:
-    """Tag proxy carriers and propagate the kind down inheritance."""
-    lance_kinds = _read_lance_kinds(lance, workspace_id)
-    evidence_rows = read_axis_evidence_rows(lance, workspace_id)
-    qn_by_uid = {str(r["uid"]): str(r.get("qualified_name") or "") for r in evidence_rows}
-
-    seed_uids: set[str] = set(_proxy_binding_uids(db, workspace_id))
-    update_map: dict[str, dict[str, Any]] = {}
-
+def _stage_proxy_binding_seeds(
+    seed_uids: set[str],
+    *,
+    lance_kinds,
+    qn_by_uid: dict[str, str],
+    update_map: dict[str, dict[str, Any]],
+) -> None:
     for binding_uid in seed_uids:
         self_data = lance_kinds.get(binding_uid)
         if not self_data:
@@ -97,6 +91,8 @@ def propagate_proxy_object(
         )
         stage_kind_update(update_map, lance_kinds, binding_uid, new_kinds, new_json)
 
+
+def _collect_proxy_delegate_method_uids(evidence_rows: list[dict]) -> list[str]:
     method_uids: list[str] = []
     for row in evidence_rows:
         if str(row.get("symbol_kind") or "") != "method":
@@ -106,10 +102,21 @@ def propagate_proxy_object(
             facts = json.loads(row.get("axis_evidence_json") or "[]")
         except json.JSONDecodeError:
             continue
-        if not method_facts_show_proxy_delegation(facts):
-            continue
-        method_uids.append(uid)
+        if method_facts_show_proxy_delegation(facts):
+            method_uids.append(uid)
+    return method_uids
 
+
+def _stage_proxy_delegate_class_seeds(
+    method_uids: list[str],
+    *,
+    db: Neo4jClient,
+    workspace_id: str,
+    lance_kinds,
+    qn_by_uid: dict[str, str],
+    update_map: dict[str, dict[str, Any]],
+    seed_uids: set[str],
+) -> None:
     method_owner = owner_class_uid_for_methods(db, workspace_id, method_uids)
     for method_uid in method_uids:
         class_uid = method_owner.get(method_uid)
@@ -130,6 +137,37 @@ def propagate_proxy_object(
             payload={"via": "delegated_attribute_method"},
         )
         stage_kind_update(update_map, lance_kinds, class_uid, new_kinds, new_json)
+
+
+def propagate_proxy_object(
+    db: Neo4jClient,
+    lance,
+    workspace_id: str,
+) -> int:
+    """Tag proxy carriers and propagate the kind down inheritance."""
+    lance_kinds = _read_lance_kinds(lance, workspace_id)
+    evidence_rows = read_axis_evidence_rows(lance, workspace_id)
+    qn_by_uid = {str(r["uid"]): str(r.get("qualified_name") or "") for r in evidence_rows}
+
+    seed_uids: set[str] = set(_proxy_binding_uids(db, workspace_id))
+    update_map: dict[str, dict[str, Any]] = {}
+    _stage_proxy_binding_seeds(
+        seed_uids,
+        lance_kinds=lance_kinds,
+        qn_by_uid=qn_by_uid,
+        update_map=update_map,
+    )
+
+    method_uids = _collect_proxy_delegate_method_uids(evidence_rows)
+    _stage_proxy_delegate_class_seeds(
+        method_uids,
+        db=db,
+        workspace_id=workspace_id,
+        lance_kinds=lance_kinds,
+        qn_by_uid=qn_by_uid,
+        update_map=update_map,
+        seed_uids=seed_uids,
+    )
 
     updated = apply_lance_kind_updates(lance, workspace_id, update_map)
     inherited = propagate_container_kind_via_inheritance(

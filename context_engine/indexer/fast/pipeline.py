@@ -69,6 +69,7 @@ from context_engine.workspace import WorkspaceResolver
 
 if TYPE_CHECKING:
     from context_engine.axis.container_kind import GraphContextProbe
+    from context_engine.axis.schema import AxisProfile
 
 _silence()
 
@@ -77,6 +78,69 @@ _silence()
 # releases the GIL inside the C extension.
 _DEFAULT_HASH_WORKERS = max(4, (os.cpu_count() or 4) * 2)
 _DEFAULT_PARSE_WORKERS = max(2, os.cpu_count() or 4)
+
+
+def _parse_link_phase_result(result, fallback_count: int) -> tuple[int, set[str]]:
+    if isinstance(result, tuple):
+        return int(result[0] or 0), {str(uid) for uid in (result[1] or set()) if uid}
+    if isinstance(result, set):
+        return fallback_count, {str(uid) for uid in result if uid}
+    if isinstance(result, int):
+        return result, set()
+    return fallback_count, set()
+
+
+def _collect_adapter_facts_from_diffs(
+    diffs: list[FileDiff],
+    extract_attr: str,
+) -> list:
+    from context_engine.parser.registry import REGISTRY
+
+    facts: list = []
+    for diff in diffs:
+        ex = diff.extracted
+        try:
+            language = REGISTRY.detect_language(ex.path)
+            adapter = REGISTRY.get_adapter(language)
+        except Exception:
+            continue
+        extract_fn = getattr(adapter, extract_attr, None)
+        if not callable(extract_fn):
+            continue
+        try:
+            facts.extend(extract_fn(ex.source, ex.path))
+        except Exception:
+            continue
+    return facts
+
+
+def _collect_decorator_facts(
+    diffs: list[FileDiff],
+    py_adapter,
+    ts_adapter,
+) -> tuple[list[dict], list[dict]]:
+    decorators: list[dict] = []
+    compositions: list[dict] = []
+    for diff in diffs:
+        ex = diff.extracted
+        if ex.path.endswith((".py", ".pyi")):
+            adapter = py_adapter
+        elif ex.path.endswith((".ts", ".tsx")):
+            adapter = ts_adapter
+        else:
+            continue
+        try:
+            decorators.extend(adapter.extract_decorators(ex.source, ex.path))
+        except Exception:
+            continue
+        extract_compose = getattr(adapter, "extract_decorator_compositions", None)
+        if not callable(extract_compose):
+            continue
+        try:
+            compositions.extend(extract_compose(ex.source, ex.path))
+        except Exception:
+            continue
+    return decorators, compositions
 
 
 class ProgressReporter(Protocol):
@@ -626,28 +690,7 @@ def _decorator_phase(
         py_adapter = PythonAdapter()
         ts_adapter = TypeScriptAdapter()
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                if ex.path.endswith((".py", ".pyi")):
-                    adapter: PythonAdapter | TypeScriptAdapter = py_adapter
-                elif ex.path.endswith((".ts", ".tsx")):
-                    adapter = ts_adapter
-                else:
-                    continue
-                try:
-                    decorators.extend(adapter.extract_decorators(ex.source, ex.path))
-                except Exception:
-                    continue
-                # Subtype 2 composition refs are TS-only today (decorator-arg
-                # object literals with arrays of class references) — the
-                # method is gated on adapter capability so this is safe to
-                # call uniformly when broader language support lands.
-                extract_compose = getattr(adapter, "extract_decorator_compositions", None)
-                if callable(extract_compose):
-                    try:
-                        compositions.extend(extract_compose(ex.source, ex.path))
-                    except Exception:
-                        continue
+            decorators, compositions = _collect_decorator_facts(diffs, py_adapter, ts_adapter)
         if decorators:
             link_deco(decorators, workspace_id=workspace_id)
         if compositions and callable(link_compose):
@@ -881,7 +924,6 @@ def _symbol_alias_phase(
     surfaced as another. Runs after `_apply_graph` so both endpoints exist, and
     before degree recompute because REFERENCES participates in degree.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_aliases = getattr(db, "link_symbol_references", None)
@@ -891,32 +933,12 @@ def _symbol_alias_phase(
     touched: set[str] = set()
     if callable(link_aliases):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_aliases = getattr(adapter, "extract_symbol_aliases", None)
-                if not callable(extract_aliases):
-                    continue
-                try:
-                    aliases.extend(extract_aliases(ex.source, ex.path))
-                except Exception:
-                    continue
+            aliases = _collect_adapter_facts_from_diffs(diffs, "extract_symbol_aliases")
         if aliases:
-            result = link_aliases(aliases, workspace_id=workspace_id)
-            if isinstance(result, tuple):
-                linked = int(result[0] or 0)
-                touched = {str(uid) for uid in (result[1] or set()) if uid}
-            elif isinstance(result, set):
-                touched = {str(uid) for uid in result if uid}
-                linked = len(aliases)
-            elif isinstance(result, int):
-                linked = result
-            else:
-                linked = len(aliases)
+            linked, touched = _parse_link_phase_result(
+                link_aliases(aliases, workspace_id=workspace_id),
+                len(aliases),
+            )
     reporter.step("symbol_aliases")
     reporter.stage_end("symbol_aliases")
     return linked, touched
@@ -1072,7 +1094,6 @@ def _property_api_phase(
     project_path: str = "",
 ) -> tuple[int, set[str]]:
     """Create HAS_API edges from property-owner API assignments."""
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_api = getattr(db, "link_symbol_api_edges", None)
@@ -1082,32 +1103,12 @@ def _property_api_phase(
     touched: set[str] = set()
     if callable(link_api):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_edges = getattr(adapter, "extract_property_api_edges", None)
-                if not callable(extract_edges):
-                    continue
-                try:
-                    edges.extend(extract_edges(ex.source, ex.path))
-                except Exception:
-                    continue
+            edges = _collect_adapter_facts_from_diffs(diffs, "extract_property_api_edges")
         if edges:
-            result = link_api(edges, workspace_id=workspace_id)
-            if isinstance(result, tuple):
-                linked = int(result[0] or 0)
-                touched = {str(uid) for uid in (result[1] or set()) if uid}
-            elif isinstance(result, set):
-                touched = {str(uid) for uid in result if uid}
-                linked = len(edges)
-            elif isinstance(result, int):
-                linked = result
-            else:
-                linked = len(edges)
+            linked, touched = _parse_link_phase_result(
+                link_api(edges, workspace_id=workspace_id),
+                len(edges),
+            )
     reporter.step("property_api")
     reporter.stage_end("property_api")
     return linked, touched
@@ -1341,21 +1342,12 @@ class _PeerAwarePeerProbe:
         return fn(symbol_uid)
 
 
-def _axis_payloads_for_extracted_file(
+def _load_axis_extraction_for_file(
     ex: ExtractedFile,
     *,
     project_path: str = "",
-    graph_probe: GraphContextProbe | None = None,
-) -> dict[str, dict]:
-    """Return per-symbol axis payloads keyed by uid and qualified name.
-
-    UID generation should line up with parser symbols, but this first isolated
-    index keeps a qualified-name fallback so signature-normalization drift does
-    not silently drop physical AST facts.
-    """
-    from context_engine.axis.container_kind import ContainerKindClassifier, GraphContextProbe
-    from context_engine.axis.contract_compiler import AxisContractCompiler
-    from context_engine.axis.schema import AxisExtraction, AxisFact, AxisProfile
+):
+    from context_engine.axis.schema import AxisExtraction
     from context_engine.parser.registry import REGISTRY
 
     if ex.axis_facts is not None:
@@ -1372,24 +1364,17 @@ def _axis_payloads_for_extracted_file(
                 symbols=ex.symbols,
                 project_root=project_path or None,
             )
-    extraction = AxisExtraction(file_path=ex.path, facts=facts)
+    return AxisExtraction(file_path=ex.path, facts=facts)
 
-    base_probe = graph_probe if graph_probe is not None else None
-    contract_compiler = AxisContractCompiler()
-    payloads: dict[str, dict] = {}
 
-    # ``extraction.profiles`` is a ``@property`` — re-derived from facts on
-    # every access. We materialize it once, then extend with stub profiles
-    # for module-level Variable Symbols emitted by the parser.
-    #
-    # The axis extractor walks scopes (module/class/function); it does NOT
-    # profile module-level variable assignments. But the parser does — and
-    # those Variable Symbols carry EXTENDS_EXTERNAL / INSTANTIATES_EXTERNAL
-    # edges in the graph that the marker-only container kinds (proxy_object,
-    # web_route_register, signal_register, …) read through the probe. Without
-    # the stub profile, the classifier never runs for those uids and the
-    # catalogue stays silent on consumer-style ``app = FastAPI()`` /
-    # ``current_app = LocalProxy(...)`` patterns.
+def _merge_extraction_profiles(
+    extraction,
+    ex: ExtractedFile,
+    *,
+    graph_probe: GraphContextProbe | None,
+) -> dict[str, AxisProfile]:
+    from context_engine.axis.schema import AxisFact, AxisProfile
+
     parser_uid_by_qn = {s.qualified_name: s.uid for s in ex.symbols if s.qualified_name}
     profiles_by_uid: dict[str, AxisProfile] = {}
     for profile in extraction.profiles.values():
@@ -1420,20 +1405,13 @@ def _axis_payloads_for_extracted_file(
                 )
             )
     for sym in ex.symbols:
-        if sym.kind != "variable":
-            continue
-        if sym.uid in profiles_by_uid:
+        if sym.kind != "variable" or sym.uid in profiles_by_uid:
             continue
         stub = AxisProfile(
             symbol_uid=sym.uid,
             qualified_name=sym.qualified_name,
             symbol_kind="variable",
         )
-        # Pull the cross-axis structural use signal from the graph: how many
-        # HANDLES edges leave this variable. Non-zero means the registry has
-        # been used (≥1 handler bound via decorator), which is what L3
-        # contracts like ``route_register_binding`` need to prove the marker
-        # is real, not just instantiated.
         handles_count = (
             graph_probe.outgoing_handles_count(sym.uid) if graph_probe is not None else 0
         )
@@ -1452,39 +1430,44 @@ def _axis_payloads_for_extracted_file(
                 )
             )
         profiles_by_uid[sym.uid] = stub
+    return profiles_by_uid
 
-    # Function/method profiles: probe the graph for INJECTS edges. Non-zero
-    # count is the cross-symbol DFG proof that this function's parameter
-    # defaults resolved to provider symbols (the ``Depends(provider)`` /
-    # ``Inject(provider)`` pattern actually wired in the graph). Emitted as
-    # ``dfg.injected_dependency``; consumed by the
-    # ``dependency_injection_binding`` contract on top of ``di_container``.
-    if graph_probe is not None:
-        for uid, profile in profiles_by_uid.items():
-            if profile.symbol_kind not in {"function", "method"}:
-                continue
-            injects_count = graph_probe.outgoing_injects_count(uid)
-            if injects_count <= 0:
-                continue
-            profile.add_fact(
-                AxisFact(
-                    symbol_uid=uid,
-                    qualified_name=profile.qualified_name,
-                    symbol_kind=profile.symbol_kind,
-                    axis="dfg",
-                    bit="injected_dependency",
-                    line=0,
-                    evidence=f"<injects:{injects_count}>",
-                    ast_kind="GraphProbe",
-                    payload={"count": injects_count},
-                )
+
+def _add_injection_probe_facts(
+    profiles_by_uid: dict[str, AxisProfile],
+    graph_probe: GraphContextProbe | None,
+) -> None:
+    from context_engine.axis.schema import AxisFact
+
+    if graph_probe is None:
+        return
+    for uid, profile in profiles_by_uid.items():
+        if profile.symbol_kind not in {"function", "method"}:
+            continue
+        injects_count = graph_probe.outgoing_injects_count(uid)
+        if injects_count <= 0:
+            continue
+        profile.add_fact(
+            AxisFact(
+                symbol_uid=uid,
+                qualified_name=profile.qualified_name,
+                symbol_kind=profile.symbol_kind,
+                axis="dfg",
+                bit="injected_dependency",
+                line=0,
+                evidence=f"<injects:{injects_count}>",
+                ast_kind="GraphProbe",
+                payload={"count": injects_count},
             )
+        )
 
-    # Two-pass classification: methods/variables/etc. first so the per-file
-    # peer-kind map is fully populated before class profiles are classified.
-    # ``registry_class`` reads this map through the peer-aware probe wrapper
-    # below to fire when a class's same-file methods carry registry-shape
-    # kinds (``metadata_carrier`` / ``middleware_chain``).
+
+def _classify_profiles_by_uid(
+    profiles_by_uid: dict[str, AxisProfile],
+    base_probe: GraphContextProbe | None,
+) -> dict[str, list]:
+    from context_engine.axis.container_kind import ContainerKindClassifier, GraphContextProbe
+
     classifier = (
         ContainerKindClassifier(probe=base_probe)
         if base_probe is not None
@@ -1511,7 +1494,15 @@ def _axis_payloads_for_extracted_file(
         if profile.symbol_kind != "class":
             continue
         container_kinds_by_uid[uid] = class_classifier.classify(profile)
+    return container_kinds_by_uid
 
+
+def _compile_axis_payloads(
+    profiles_by_uid: dict[str, AxisProfile],
+    container_kinds_by_uid: dict[str, list],
+    contract_compiler,
+) -> dict[str, dict]:
+    payloads: dict[str, dict] = {}
     for profile in profiles_by_uid.values():
         container_kinds = container_kinds_by_uid.get(profile.symbol_uid, [])
         contracts = contract_compiler.compile(profile, container_kinds)
@@ -1537,6 +1528,33 @@ def _axis_payloads_for_extracted_file(
         payloads[profile.symbol_uid] = payload
         payloads[profile.qualified_name] = payload
     return payloads
+
+
+def _axis_payloads_for_extracted_file(
+    ex: ExtractedFile,
+    *,
+    project_path: str = "",
+    graph_probe: GraphContextProbe | None = None,
+) -> dict[str, dict]:
+    """Return per-symbol axis payloads keyed by uid and qualified name.
+
+    UID generation should line up with parser symbols, but this first isolated
+    index keeps a qualified-name fallback so signature-normalization drift does
+    not silently drop physical AST facts.
+    """
+    from context_engine.axis.contract_compiler import AxisContractCompiler
+
+    extraction = _load_axis_extraction_for_file(ex, project_path=project_path)
+    base_probe = graph_probe if graph_probe is not None else None
+    contract_compiler = AxisContractCompiler()
+    profiles_by_uid = _merge_extraction_profiles(
+        extraction,
+        ex,
+        graph_probe=graph_probe,
+    )
+    _add_injection_probe_facts(profiles_by_uid, graph_probe)
+    container_kinds_by_uid = _classify_profiles_by_uid(profiles_by_uid, base_probe)
+    return _compile_axis_payloads(profiles_by_uid, container_kinds_by_uid, contract_compiler)
 
 
 def _affects_phase(
@@ -1712,6 +1730,182 @@ def _use_repository_profile(
     stats["repository_profile_store"] = "neo4j_workspace"
 
 
+def _fast_indexing_initial_stats(
+    project_path: str,
+    base_workspace_id: str,
+    workspace_id: str,
+    profile,
+    *,
+    skip_affects: bool,
+) -> dict:
+    return {
+        "project_path": project_path,
+        "base_workspace_id": base_workspace_id,
+        "workspace_id": workspace_id,
+        "index_profile": profile.name,
+        "index_profile_schema_version": profile.schema_version,
+        "index_profile_language_scope": profile.language_scope,
+        "lancedb_docs_table": profile.docs_table,
+        "lancedb_symbols_table": profile.symbols_table,
+        "skip_affects": skip_affects,
+        "performed": True,
+        "skipped": False,
+        "collected": 0,
+        "tombstoned": 0,
+        "changed": 0,
+        "parsed": 0,
+        "symbols_encoded": 0,
+        "symbols_removed": 0,
+        "affects_rebuilt": 0,
+        "axis_adjacency_materialized": 0,
+        "docs_files_indexed": 0,
+        "docs_chunks_indexed": 0,
+        "docs_timings_sec": {},
+        "timings_sec": {},
+        "repository_profile": build_empty_repository_profile(
+            project_path, workspace_id, reason="not_built"
+        ),
+        "repository_profile_store": "",
+    }
+
+
+def _finish_no_indexable_files(
+    stats: dict,
+    db: Neo4jClient,
+    *,
+    workspace_id: str,
+    project_path: str,
+) -> dict:
+    _use_repository_profile(
+        stats,
+        build_empty_repository_profile(project_path, workspace_id, reason="no_indexable_files"),
+        db,
+        workspace_id,
+    )
+    persist_index_manifest(
+        stats=stats,
+        db=db,
+        workspace_id=workspace_id,
+        project_path=project_path,
+        outcome="no_indexable_files",
+    )
+    print(f"❌ No indexable files under {project_path}")
+    return stats
+
+
+def _finish_tombstone_only(
+    stats: dict,
+    db: Neo4jClient,
+    *,
+    workspace_id: str,
+    project_path: str,
+    tombstoned_paths: list[str],
+    tombstone_uids: set[str],
+    skip_affects: bool,
+    reporter: ProgressReporter,
+) -> dict:
+    if tombstone_uids and not skip_affects:
+        t_stage = time.perf_counter()
+        stats["affects_rebuilt"] = _rebuild_affects_for_uids(
+            tombstone_uids, db, workspace_id, reporter
+        )
+        stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
+    persist_index_manifest(
+        stats=stats,
+        db=db,
+        workspace_id=workspace_id,
+        project_path=project_path,
+        outcome="tombstone_only",
+    )
+    print(f"🪦 Tombstoned {len(tombstoned_paths)} stale indexed file(s).")
+    return stats
+
+
+def _finish_unchanged_files(
+    stats: dict,
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    *,
+    workspace_id: str,
+    project_path: str,
+    files: list[str],
+    tombstoned_paths: list[str],
+    tombstone_uids: set[str],
+    skip_affects: bool,
+    reporter: ProgressReporter,
+) -> dict:
+    if tombstone_uids and not skip_affects:
+        t_stage = time.perf_counter()
+        stats["affects_rebuilt"] = _rebuild_affects_for_uids(
+            tombstone_uids, db, workspace_id, reporter
+        )
+        stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
+    get_profile = getattr(db, "get_repository_profile", None)
+    existing_profile = get_profile(workspace_id=workspace_id) if callable(get_profile) else None
+    if existing_profile:
+        stats["repository_profile"] = existing_profile
+        stats["repository_profile_store"] = "neo4j_workspace"
+    else:
+        _use_repository_profile(
+            stats,
+            _build_profile_from_diffs(project_path, workspace_id, files, [], stats, db),
+            db,
+            workspace_id,
+        )
+    print(f"   readiness={summarize_repository_profile(stats['repository_profile'])}")
+    t_stage = time.perf_counter()
+    stats["axis_adjacency_materialized"] = _ensure_adjacency_materialized(
+        db,
+        lance,
+        workspace_id,
+        reporter,
+    )
+    if stats["axis_adjacency_materialized"]:
+        print(f"🕸️  Axis adjacency: materialized {stats['axis_adjacency_materialized']} rows")
+    stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
+    if tombstoned_paths:
+        print(f"🪦 Tombstoned {len(tombstoned_paths)} stale indexed file(s).")
+    print("✅ All files up-to-date, nothing to re-index.")
+    persist_index_manifest(
+        stats=stats,
+        db=db,
+        workspace_id=workspace_id,
+        project_path=project_path,
+        outcome="noop_unchanged" if not tombstoned_paths else "tombstone_noop",
+    )
+    return stats
+
+
+def _run_axis_python_propagation_stage(
+    db: Neo4jClient,
+    lance: LanceDBClient,
+    workspace_id: str,
+    project_path: str,
+    stats: dict,
+) -> None:
+    from context_engine.indexer.fast.error_dispatch_propagation import propagate_error_dispatch
+    from context_engine.indexer.fast.proxy_object_propagation import propagate_proxy_object
+    from context_engine.indexer.fast.registry_class_inheritance import (
+        propagate_error_model_via_inheritance,
+        propagate_registry_class_via_inheritance,
+    )
+
+    stats["registry_class_propagated"] = propagate_registry_class_via_inheritance(
+        db,
+        lance,
+        workspace_id,
+        project_path=project_path,
+    )
+    stats["error_model_propagated"] = propagate_error_model_via_inheritance(
+        db,
+        lance,
+        workspace_id,
+        project_path=project_path,
+    )
+    stats["error_dispatch_propagated"] = propagate_error_dispatch(db, lance, workspace_id)
+    stats["proxy_object_propagated"] = propagate_proxy_object(db, lance, workspace_id)
+
+
 def run_fast_indexing(
     project_path: str,
     workspace_id: str | None = None,
@@ -1738,38 +1932,13 @@ def run_fast_indexing(
     lance = LanceDBClient(index_profile=profile)
     job_log = IndexJobLog()
 
-    stats: dict = {
-        "project_path": project_path,
-        "base_workspace_id": base_workspace_id,
-        "workspace_id": workspace_id,
-        "index_profile": profile.name,
-        "index_profile_schema_version": profile.schema_version,
-        "index_profile_language_scope": profile.language_scope,
-        "lancedb_docs_table": profile.docs_table,
-        "lancedb_symbols_table": profile.symbols_table,
-        "skip_affects": skip_affects,
-        # `performed` / `skipped` mirror the shape indexing summary consumers expect.
-        "performed": True,
-        "skipped": False,
-        "collected": 0,
-        "tombstoned": 0,
-        "changed": 0,
-        "parsed": 0,
-        "symbols_encoded": 0,
-        "symbols_removed": 0,
-        "affects_rebuilt": 0,
-        "axis_adjacency_materialized": 0,
-        # Doc indexing is done by the caller (`index_docs` separately). Pre-seed keys
-        # so consumers can always read them without KeyError.
-        "docs_files_indexed": 0,
-        "docs_chunks_indexed": 0,
-        "docs_timings_sec": {},
-        "timings_sec": {},
-        "repository_profile": build_empty_repository_profile(
-            project_path, workspace_id, reason="not_built"
-        ),
-        "repository_profile_store": "",
-    }
+    stats = _fast_indexing_initial_stats(
+        project_path,
+        base_workspace_id,
+        workspace_id,
+        profile,
+        skip_affects=skip_affects,
+    )
 
     t0 = time.perf_counter()
     print(f"🚀 Fast indexing: {project_path} ({workspace_id})")
@@ -1811,40 +1980,24 @@ def run_fast_indexing(
         stats["timings_sec"]["tombstone"] = round(time.perf_counter() - t_stage, 3)
 
         if not files and not tombstoned_paths:
-            _use_repository_profile(
+            return _finish_no_indexable_files(
                 stats,
-                build_empty_repository_profile(
-                    project_path, workspace_id, reason="no_indexable_files"
-                ),
                 db,
-                workspace_id,
-            )
-            persist_index_manifest(
-                stats=stats,
-                db=db,
                 workspace_id=workspace_id,
                 project_path=project_path,
-                outcome="no_indexable_files",
             )
-            print(f"❌ No indexable files under {project_path}")
-            return stats
 
         if not files and tombstoned_paths:
-            if tombstone_uids and not skip_affects:
-                t_stage = time.perf_counter()
-                stats["affects_rebuilt"] = _rebuild_affects_for_uids(
-                    tombstone_uids, db, workspace_id, reporter
-                )
-                stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
-            persist_index_manifest(
-                stats=stats,
-                db=db,
+            return _finish_tombstone_only(
+                stats,
+                db,
                 workspace_id=workspace_id,
                 project_path=project_path,
-                outcome="tombstone_only",
+                tombstoned_paths=tombstoned_paths,
+                tombstone_uids=tombstone_uids,
+                skip_affects=skip_affects,
+                reporter=reporter,
             )
-            print(f"🪦 Tombstoned {len(tombstoned_paths)} stale indexed file(s).")
-            return stats
 
         # Stage 2: parallel hash + diff
         t_stage = time.perf_counter()
@@ -1857,57 +2010,18 @@ def run_fast_indexing(
         stats["timings_sec"]["hash"] = round(time.perf_counter() - t_stage, 3)
 
         if not changed_files:
-            if tombstone_uids and not skip_affects:
-                t_stage = time.perf_counter()
-                stats["affects_rebuilt"] = _rebuild_affects_for_uids(
-                    tombstone_uids, db, workspace_id, reporter
-                )
-                stats["timings_sec"]["affects"] = round(time.perf_counter() - t_stage, 3)
-            get_profile = getattr(db, "get_repository_profile", None)
-            existing_profile = (
-                get_profile(workspace_id=workspace_id) if callable(get_profile) else None
-            )
-            if existing_profile:
-                stats["repository_profile"] = existing_profile
-                stats["repository_profile_store"] = "neo4j_workspace"
-            else:
-                _use_repository_profile(
-                    stats,
-                    _build_profile_from_diffs(
-                        project_path,
-                        workspace_id,
-                        files,
-                        [],
-                        stats,
-                        db,
-                    ),
-                    db,
-                    workspace_id,
-                )
-            print(f"   readiness={summarize_repository_profile(stats['repository_profile'])}")
-            t_stage = time.perf_counter()
-            stats["axis_adjacency_materialized"] = _ensure_adjacency_materialized(
+            return _finish_unchanged_files(
+                stats,
                 db,
                 lance,
-                workspace_id,
-                reporter,
-            )
-            if stats["axis_adjacency_materialized"]:
-                print(
-                    f"🕸️  Axis adjacency: materialized {stats['axis_adjacency_materialized']} rows"
-                )
-            stats["timings_sec"]["axis_adjacency"] = round(time.perf_counter() - t_stage, 3)
-            if tombstoned_paths:
-                print(f"🪦 Tombstoned {len(tombstoned_paths)} stale indexed file(s).")
-            print("✅ All files up-to-date, nothing to re-index.")
-            persist_index_manifest(
-                stats=stats,
-                db=db,
                 workspace_id=workspace_id,
                 project_path=project_path,
-                outcome="noop_unchanged" if not tombstoned_paths else "tombstone_noop",
+                files=files,
+                tombstoned_paths=tombstoned_paths,
+                tombstone_uids=tombstone_uids,
+                skip_affects=skip_affects,
+                reporter=reporter,
             )
-            return stats
         print(f"🔄 {len(changed_files)}/{len(files)} files changed")
 
         # Stage 3: parallel parse
@@ -2128,51 +2242,13 @@ def run_fast_indexing(
         # detected per-file.
         if profile.name == AXIS_PYTHON_V1_PROFILE:
             t_stage = time.perf_counter()
-            from context_engine.indexer.fast.error_dispatch_propagation import (
-                propagate_error_dispatch,
-            )
-            from context_engine.indexer.fast.registry_class_inheritance import (
-                propagate_error_model_via_inheritance,
-                propagate_registry_class_via_inheritance,
-            )
-
-            propagated = propagate_registry_class_via_inheritance(
+            _run_axis_python_propagation_stage(
                 db,
                 lance,
                 workspace_id,
-                project_path=project_path,
+                project_path,
+                stats,
             )
-            stats["registry_class_propagated"] = propagated
-            # Exception-type classes get the ``error_model`` kind from
-            # builtin-exception inheritance — the definition side of
-            # ``error_surface``, distinct from ``error_dispatch``.
-            error_models = propagate_error_model_via_inheritance(
-                db,
-                lance,
-                workspace_id,
-                project_path=project_path,
-            )
-            stats["error_model_propagated"] = error_models
-            # Registry symbols whose keyed writes target exception types, plus
-            # descendants that inherit the kind — closes the class-level gap
-            # where registration methods live on the class API, not the class
-            # profile itself (``ExceptionMiddleware`` and similar).
-            error_dispatch = propagate_error_dispatch(
-                db,
-                lance,
-                workspace_id,
-            )
-            stats["error_dispatch_propagated"] = error_dispatch
-            from context_engine.indexer.fast.proxy_object_propagation import (
-                propagate_proxy_object,
-            )
-
-            proxy_objects = propagate_proxy_object(
-                db,
-                lance,
-                workspace_id,
-            )
-            stats["proxy_object_propagated"] = proxy_objects
             stats["timings_sec"]["registry_class_inheritance"] = round(
                 time.perf_counter() - t_stage, 3
             )

@@ -591,6 +591,75 @@ class LanceDBClient:
     def _quote_delete_value(value: str) -> str:
         return value.replace("'", "''")
 
+    def _uid_batch_delete_predicate(
+        self,
+        batch: list[str],
+        workspace_id: str,
+        *,
+        partitioned: bool,
+    ) -> str:
+        if partitioned:
+            return " OR ".join(f"uid = '{self._quote_delete_value(uid)}'" for uid in batch)
+        return " OR ".join(
+            (
+                f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                f"AND uid = '{self._quote_delete_value(uid)}')"
+            )
+            for uid in batch
+        )
+
+    def _delete_uid_batch_fallback(
+        self,
+        table,
+        batch: list[str],
+        workspace_id: str,
+        *,
+        partitioned: bool,
+    ) -> None:
+        for uid in batch:
+            try:
+                if partitioned:
+                    table.delete(f"uid = '{self._quote_delete_value(uid)}'")
+                else:
+                    table.delete(
+                        f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+                        f"AND uid = '{self._quote_delete_value(uid)}')"
+                    )
+            except Exception:
+                pass
+
+    def _delete_uid_batches(
+        self,
+        table,
+        uids: list[str],
+        workspace_id: str,
+        *,
+        partitioned: bool,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        if not uids:
+            return
+        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
+        total = len(uids)
+        for start in range(0, total, batch_size):
+            batch = uids[start : start + batch_size]
+            predicate = self._uid_batch_delete_predicate(
+                batch,
+                workspace_id,
+                partitioned=partitioned,
+            )
+            try:
+                table.delete(predicate)
+            except Exception:
+                self._delete_uid_batch_fallback(
+                    table,
+                    batch,
+                    workspace_id,
+                    partitioned=partitioned,
+                )
+            if progress_callback:
+                progress_callback(f"delete progress: {min(start + len(batch), total)}/{total}")
+
     def _scan_table_by_workspace(
         self,
         table,
@@ -901,38 +970,14 @@ class LanceDBClient:
         uids: list[str],
         workspace_id: str,
     ) -> None:
-        if not uids:
-            return
         table = self.axis_adjacency_table(workspace_id)
         partitioned = self._uses_workspace_adjacency_partition(table)
-        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
-        total = len(uids)
-        for start in range(0, total, batch_size):
-            batch = uids[start : start + batch_size]
-            if partitioned:
-                predicate = " OR ".join(f"uid = '{self._quote_delete_value(uid)}'" for uid in batch)
-            else:
-                predicate = " OR ".join(
-                    (
-                        f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                        f"AND uid = '{self._quote_delete_value(uid)}')"
-                    )
-                    for uid in batch
-                )
-            try:
-                table.delete(predicate)
-            except Exception:
-                for uid in batch:
-                    try:
-                        if partitioned:
-                            table.delete(f"uid = '{self._quote_delete_value(uid)}'")
-                        else:
-                            table.delete(
-                                f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                                f"AND uid = '{self._quote_delete_value(uid)}')"
-                            )
-                    except Exception:
-                        pass
+        self._delete_uid_batches(
+            table,
+            uids,
+            workspace_id,
+            partitioned=partitioned,
+        )
 
     def _delete_doc_rows(
         self,
@@ -975,53 +1020,18 @@ class LanceDBClient:
         *,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
-        if not uids:
-            return
         table = self.symbols_table(workspace_id)
         partitioned = self._uses_workspace_symbol_partition(table)
-        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
-        total = len(uids)
-        for start in range(0, total, batch_size):
-            batch = uids[start : start + batch_size]
-            if partitioned:
-                predicate = " OR ".join(f"uid = '{self._quote_delete_value(uid)}'" for uid in batch)
-            else:
-                predicate = " OR ".join(
-                    (
-                        f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                        f"AND uid = '{self._quote_delete_value(uid)}')"
-                    )
-                    for uid in batch
-                )
-            try:
-                table.delete(predicate)
-            except Exception:
-                for uid in batch:
-                    try:
-                        if partitioned:
-                            table.delete(f"uid = '{self._quote_delete_value(uid)}'")
-                        else:
-                            table.delete(
-                                f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                                f"AND uid = '{self._quote_delete_value(uid)}')"
-                            )
-                    except Exception:
-                        pass
-            if progress_callback:
-                progress_callback(f"delete progress: {min(start + len(batch), total)}/{total}")
+        self._delete_uid_batches(
+            table,
+            uids,
+            workspace_id,
+            partitioned=partitioned,
+            progress_callback=progress_callback,
+        )
 
-    def _embed(
-        self,
-        texts: list[str],
-        progress_callback: Callable[[str], None] | None = None,
-    ) -> list[list[float]]:
-        if not texts:
-            return []
-
-        vectors: list[list[float] | None] = [None] * len(texts)
-        missing_by_hash: OrderedDict[str, str] = OrderedDict()
-        content_hashes = [compute_chunk_hash(text) for text in texts]
-        cache_keys: dict[str, EmbeddingCacheKey] = {
+    def _embed_cache_keys(self, content_hashes: list[str]) -> dict[str, EmbeddingCacheKey]:
+        return {
             content_hash: EmbeddingCacheKey(
                 model_name=EMBED_MODEL,
                 model_version=self._model_metadata.version,
@@ -1029,12 +1039,20 @@ class LanceDBClient:
             )
             for content_hash in dict.fromkeys(content_hashes)
         }
+
+    def _embed_fill_from_cache(
+        self,
+        texts: list[str],
+        content_hashes: list[str],
+        cache_keys: dict[str, EmbeddingCacheKey],
+    ) -> tuple[list[list[float] | None], OrderedDict[str, str]]:
+        vectors: list[list[float] | None] = [None] * len(texts)
+        missing_by_hash: OrderedDict[str, str] = OrderedDict()
         cached_vectors = (
             self._embedding_cache.get_many(list(cache_keys.values()))
             if self._embedding_cache
             else {}
         )
-
         for index, (text, content_hash) in enumerate(zip(texts, content_hashes, strict=False)):
             key = cache_keys[content_hash]
             cached = cached_vectors.get(key)
@@ -1044,12 +1062,22 @@ class LanceDBClient:
             else:
                 missing_by_hash.setdefault(content_hash, text)
                 self._embedding_stats["cache_misses"] += 1
+        return vectors, missing_by_hash
 
+    def _embed_encode_cache_misses(
+        self,
+        missing_by_hash: OrderedDict[str, str],
+        cache_keys: dict[str, EmbeddingCacheKey],
+        *,
+        total_texts: int,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> dict[str, list[float]]:
         encoded_by_hash: dict[str, list[float]] = {}
         missing_items = list(missing_by_hash.items())
         if progress_callback:
             progress_callback(
-                f"cache scan: total={len(texts)} missing={len(missing_items)} batch_size={self._embed_batch_size}"
+                f"cache scan: total={total_texts} missing={len(missing_items)} "
+                f"batch_size={self._embed_batch_size}"
             )
         for start in range(0, len(missing_items), self._embed_batch_size):
             batch = missing_items[start : start + self._embed_batch_size]
@@ -1072,17 +1100,105 @@ class LanceDBClient:
                 )
             if self._embed_throttle_seconds and start + self._embed_batch_size < len(missing_items):
                 time.sleep(self._embed_throttle_seconds)
+        return encoded_by_hash
+
+    def _embed(
+        self,
+        texts: list[str],
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> list[list[float]]:
+        if not texts:
+            return []
+
+        content_hashes = [compute_chunk_hash(text) for text in texts]
+        cache_keys = self._embed_cache_keys(content_hashes)
+        vectors, missing_by_hash = self._embed_fill_from_cache(texts, content_hashes, cache_keys)
+        encoded_by_hash = self._embed_encode_cache_misses(
+            missing_by_hash,
+            cache_keys,
+            total_texts=len(texts),
+            progress_callback=progress_callback,
+        )
 
         for index, content_hash in enumerate(content_hashes):
             if vectors[index] is None:
                 vectors[index] = encoded_by_hash[content_hash]
 
-        output = []
+        output: list[list[float]] = []
         for maybe_vector in vectors:
             if maybe_vector is None:
                 raise RuntimeError("Embedding vector was not populated")
             output.append(maybe_vector)
         return output
+
+    def _symbol_embedding_rows(
+        self,
+        symbols: list[dict],
+        vectors: list[list[float]],
+        signature_vectors: list[list[float]] | None,
+        *,
+        workspace_id: str,
+    ) -> list[dict]:
+        rows: list[dict] = []
+        for idx, (symbol, vec) in enumerate(zip(symbols, vectors, strict=False)):
+            metadata = EmbeddingMetadata(
+                model_name=EMBED_MODEL,
+                model_version=self._model_metadata.version,
+                chunk_hash=compute_chunk_hash(symbol["code"]),
+                embedding_hash=compute_embedding_hash(vec),
+            )
+            row = {
+                "uid": symbol["uid"],
+                "workspace_id": str(symbol.get("workspace_id") or workspace_id),
+                "name": symbol["name"],
+                "qualified_name": str(symbol.get("qualified_name") or ""),
+                "file_path": symbol["file_path"],
+                "code": symbol["code"],
+                "vector": vec,
+                "embedding_metadata": json.dumps(
+                    {
+                        "model_name": metadata.model_name,
+                        "model_version": metadata.model_version,
+                        "chunk_hash": metadata.chunk_hash,
+                        "embedding_hash": metadata.embedding_hash,
+                    }
+                ),
+                **self._axis_symbol_payload(symbol),
+            }
+            if signature_vectors is not None:
+                row["signature_vector"] = signature_vectors[idx]
+            rows.append(row)
+        return rows
+
+    def _apply_symbol_upsert_delete_strategy(
+        self,
+        uids: list[str],
+        workspace_id: str,
+        existing: int,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        bulk_replace = (
+            existing > 0
+            and len(uids) >= LANCEDB_SYMBOL_BULK_REPLACE_MIN
+            and (len(uids) >= int(existing * LANCEDB_SYMBOL_BULK_REPLACE_RATIO))
+        )
+        if existing == 0:
+            if progress_callback:
+                progress_callback("insert symbol vectors: skip delete (new workspace)")
+            return
+        if bulk_replace:
+            if progress_callback:
+                progress_callback(
+                    f"replace symbol vectors: bulk clear {existing} existing, full reindex"
+                )
+            self.delete_symbols_workspace(workspace_id)
+            return
+        if progress_callback:
+            progress_callback(
+                f"patch symbol vectors: {len(uids)} uid deletes, {existing} already indexed"
+            )
+        self._delete_symbol_rows(uids, workspace_id, progress_callback=progress_callback)
 
     def embedding_cache_stats(self) -> dict:
         cache_stats = self._embedding_cache.stats() if self._embedding_cache else {"enabled": False}
@@ -1379,64 +1495,25 @@ class LanceDBClient:
                 [symbol_signature_text(s["code"]) for s in symbols],
                 progress_callback=progress_callback,
             )
-        rows = []
-        for idx, (s, vec) in enumerate(zip(symbols, vectors, strict=False)):
-            metadata = EmbeddingMetadata(
-                model_name=EMBED_MODEL,
-                model_version=self._model_metadata.version,
-                chunk_hash=compute_chunk_hash(s["code"]),
-                embedding_hash=compute_embedding_hash(vec),
-            )
-            row = {
-                "uid": s["uid"],
-                "workspace_id": str(s.get("workspace_id") or workspace_id),
-                "name": s["name"],
-                "qualified_name": str(s.get("qualified_name") or ""),
-                "file_path": s["file_path"],
-                "code": s["code"],
-                "vector": vec,
-                "embedding_metadata": json.dumps(
-                    {
-                        "model_name": metadata.model_name,
-                        "model_version": metadata.model_version,
-                        "chunk_hash": metadata.chunk_hash,
-                        "embedding_hash": metadata.embedding_hash,
-                    }
-                ),
-                **self._axis_symbol_payload(s),
-            }
-            if signature_vectors is not None:
-                row["signature_vector"] = signature_vectors[idx]
-            rows.append(row)
+        rows = self._symbol_embedding_rows(
+            symbols,
+            vectors,
+            signature_vectors,
+            workspace_id=workspace_id,
+        )
         uids = [s["uid"] for s in symbols]
         existing = self.count_symbols_workspace(workspace_id)
-        bulk_replace = (
-            existing > 0
-            and len(uids) >= LANCEDB_SYMBOL_BULK_REPLACE_MIN
-            and (len(uids) >= int(existing * LANCEDB_SYMBOL_BULK_REPLACE_RATIO))
-        )
         t0 = time.perf_counter()
-        if existing == 0:
-            if progress_callback:
-                progress_callback(
-                    f"insert symbol vectors: {len(rows)} (new workspace, skip delete)"
-                )
-        elif bulk_replace:
-            if progress_callback:
-                progress_callback(
-                    f"replace symbol vectors: {len(rows)} "
-                    f"(bulk clear {existing} existing, full reindex)"
-                )
-            self.delete_symbols_workspace(workspace_id)
-        else:
-            if progress_callback:
-                progress_callback(
-                    f"patch symbol vectors: {len(rows)} "
-                    f"({len(uids)} uid deletes, {existing} already indexed)"
-                )
-            self._delete_symbol_rows(uids, workspace_id, progress_callback=progress_callback)
+        self._apply_symbol_upsert_delete_strategy(
+            uids,
+            workspace_id,
+            existing,
+            progress_callback=progress_callback,
+        )
         if progress_callback and existing > 0:
             progress_callback(f"clear/delete done in {time.perf_counter() - t0:.2f}s")
+        if progress_callback:
+            progress_callback(f"prepare insert: symbols={len(rows)}")
         t0 = time.perf_counter()
         self.symbols_table(workspace_id).add(rows)
         if progress_callback:
@@ -1631,6 +1708,66 @@ class LanceDBClient:
         except Exception:
             pass
 
+    def _path_prefix_clauses(self, prefixes: list[str]) -> list[str]:
+        path_clauses: list[str] = []
+        for prefix in prefixes:
+            escaped = self._quote_delete_value(str(Path(prefix).resolve()))
+            path_clauses.append(f"file_path = '{escaped}'")
+            path_clauses.append(f"file_path LIKE '{escaped}/%'")
+        return path_clauses
+
+    def _workspace_path_predicate(self, workspace_id: str, prefixes: list[str]) -> str:
+        ws = self._quote_delete_value(workspace_id)
+        path_predicate = " OR ".join(self._path_prefix_clauses(prefixes))
+        return f"workspace_id = '{ws}' AND ({path_predicate})"
+
+    def _reset_axis_adjacency_for_workspace(self, workspace_id: str, adj_table) -> None:
+        ws = self._quote_delete_value(workspace_id)
+        if self._uses_workspace_adjacency_partition(adj_table):
+            drop_workspace_partition_table(self._db, AXIS_ADJACENCY_TABLE, workspace_id)
+            if hasattr(self, "_workspace_adj_tables"):
+                self._workspace_adj_tables.pop(workspace_id, None)
+            return
+        try:
+            adj_table.delete(f"workspace_id = '{ws}'")
+        except Exception:
+            pass
+
+    def _rematerialize_adjacency_survivors(
+        self,
+        db: Any,
+        workspace_id: str,
+        survivors: set[str],
+    ) -> bool:
+        if not survivors:
+            return False
+        try:
+            from context_engine.indexer.fast.adjacency_materialization import (
+                materialize_axis_adjacency_subset,
+            )
+
+            materialize_axis_adjacency_subset(db, self, workspace_id, survivors)
+        except Exception:
+            return False
+        return True
+
+    def _invalidate_adjacency_graph_cache(
+        self,
+        workspace_id: str,
+        *,
+        use_full_reset: bool,
+        incident_uids: set[str],
+    ) -> None:
+        try:
+            from context_engine.axis import graph_walk_inproc
+
+            if use_full_reset:
+                graph_walk_inproc.invalidate_adjacency(workspace_id)
+            else:
+                graph_walk_inproc.invalidate_adjacency_uids(workspace_id, incident_uids)
+        except Exception:
+            pass
+
     def delete_path_prefixes(
         self,
         workspace_id: str,
@@ -1642,17 +1779,12 @@ class LanceDBClient:
         """Delete rows whose file_path equals or lives under any prefix (no full-table scan)."""
         if not prefixes:
             return
-        ws = self._quote_delete_value(workspace_id)
-        path_clauses: list[str] = []
-        for prefix in prefixes:
-            escaped = self._quote_delete_value(str(Path(prefix).resolve()))
-            path_clauses.append(f"file_path = '{escaped}'")
-            path_clauses.append(f"file_path LIKE '{escaped}/%'")
-        path_predicate = " OR ".join(path_clauses)
-        predicate = f"workspace_id = '{ws}' AND ({path_predicate})"
+        predicate = self._workspace_path_predicate(workspace_id, prefixes)
         sym_table = self.symbols_table(workspace_id)
         sym_predicate = (
-            path_predicate if self._uses_workspace_symbol_partition(sym_table) else predicate
+            " OR ".join(self._path_prefix_clauses(prefixes))
+            if self._uses_workspace_symbol_partition(sym_table)
+            else predicate
         )
 
         target_uids = self.list_symbol_uids_by_prefixes(workspace_id, prefixes)
@@ -1678,41 +1810,20 @@ class LanceDBClient:
 
         adj_table = self.axis_adjacency_table(workspace_id)
         if use_full_reset:
-            if self._uses_workspace_adjacency_partition(adj_table):
-                drop_workspace_partition_table(self._db, AXIS_ADJACENCY_TABLE, workspace_id)
-                if hasattr(self, "_workspace_adj_tables"):
-                    self._workspace_adj_tables.pop(workspace_id, None)
-            else:
-                try:
-                    adj_table.delete(f"workspace_id = '{ws}'")
-                except Exception:
-                    pass
+            self._reset_axis_adjacency_for_workspace(workspace_id, adj_table)
         else:
             self.delete_axis_adjacency_uids(workspace_id, incident_uids)
 
         if not use_full_reset and db is not None:
             survivors = incident_uids - target_uids
-            if survivors:
-                try:
-                    from context_engine.indexer.fast.adjacency_materialization import (
-                        materialize_axis_adjacency_subset,
-                    )
+            if self._rematerialize_adjacency_survivors(db, workspace_id, survivors):
+                return
 
-                    materialize_axis_adjacency_subset(db, self, workspace_id, survivors)
-                except Exception:
-                    pass
-                else:
-                    return
-
-        try:
-            from context_engine.axis import graph_walk_inproc
-
-            if use_full_reset:
-                graph_walk_inproc.invalidate_adjacency(workspace_id)
-            else:
-                graph_walk_inproc.invalidate_adjacency_uids(workspace_id, incident_uids)
-        except Exception:
-            pass
+        self._invalidate_adjacency_graph_cache(
+            workspace_id,
+            use_full_reset=use_full_reset,
+            incident_uids=incident_uids,
+        )
 
     def delete_symbol_embeddings(
         self,
@@ -1789,6 +1900,37 @@ class LanceDBClient:
                 )
         return out
 
+    def _axis_symbol_search_query(self, vector: list[float], plan: "AxisQueryPlan", table):
+        query = table.search(vector).limit(plan.limit)
+        if self._uses_workspace_symbol_partition(table):
+            bits_predicate = render_axis_bits_predicate(
+                required_bits=plan.required_bits,
+                container_kinds=plan.container_kinds,
+            )
+            if bits_predicate != "true":
+                query = query.where(bits_predicate, prefilter=True)
+            return query
+        return query.where(plan.lance_predicate, prefilter=True)
+
+    @staticmethod
+    def _axis_symbol_search_hit(row: dict, threshold: float) -> dict | None:
+        distance = row.get("_distance", 1.0)
+        if distance > threshold:
+            return None
+        return {
+            "uid": row["uid"],
+            "name": row["name"],
+            "file_path": row["file_path"],
+            "distance": distance,
+            "score": _l2_to_score(float(distance)),
+            "cfg_bits": list(row.get("cfg_bits") or []),
+            "dfg_bits": list(row.get("dfg_bits") or []),
+            "struct_bits": list(row.get("struct_bits") or []),
+            "container_kinds": list(row.get("container_kinds") or []),
+            "axis_container_kinds_json": str(row.get("axis_container_kinds_json") or "[]"),
+            "axis_contracts_json": str(row.get("axis_contracts_json") or "[]"),
+        }
+
     def search_axis_symbols_by_vector(
         self,
         vector: list[float],
@@ -1803,38 +1945,13 @@ class LanceDBClient:
             vector = vector.tolist()
         workspace_id = plan.workspace_id or DEFAULT_WORKSPACE_ID
         table = self.symbols_table(workspace_id)
-        query = table.search(vector).limit(plan.limit)
-        if self._uses_workspace_symbol_partition(table):
-            bits_predicate = render_axis_bits_predicate(
-                required_bits=plan.required_bits,
-                container_kinds=plan.container_kinds,
-            )
-            if bits_predicate != "true":
-                query = query.where(bits_predicate, prefilter=True)
-        else:
-            query = query.where(plan.lance_predicate, prefilter=True)
+        query = self._axis_symbol_search_query(vector, plan, table)
         results = query.to_list()
-        out = []
-        for r in results:
-            distance = r.get("_distance", 1.0)
-            if distance <= threshold:
-                out.append(
-                    {
-                        "uid": r["uid"],
-                        "name": r["name"],
-                        "file_path": r["file_path"],
-                        "distance": distance,
-                        "score": _l2_to_score(float(distance)),
-                        "cfg_bits": list(r.get("cfg_bits") or []),
-                        "dfg_bits": list(r.get("dfg_bits") or []),
-                        "struct_bits": list(r.get("struct_bits") or []),
-                        "container_kinds": list(r.get("container_kinds") or []),
-                        "axis_container_kinds_json": str(
-                            r.get("axis_container_kinds_json") or "[]"
-                        ),
-                        "axis_contracts_json": str(r.get("axis_contracts_json") or "[]"),
-                    }
-                )
+        out: list[dict] = []
+        for row in results:
+            hit = self._axis_symbol_search_hit(row, threshold)
+            if hit is not None:
+                out.append(hit)
         return out
 
     def search_axis_symbols(

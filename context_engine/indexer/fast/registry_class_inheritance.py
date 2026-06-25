@@ -297,6 +297,151 @@ def resolve_error_model_uids(
     return error_model_uids
 
 
+def _class_short_names(rows: list[dict[str, Any]]) -> dict[str, str]:
+    return {r["class_uid"]: (r["class_qn"] or "").split(".")[-1] for r in rows}
+
+
+def _depends_on_names_by_class(
+    rows: list[dict[str, Any]],
+    name_by_uid: dict[str, str],
+) -> dict[str, set[str]]:
+    depends_on_names: dict[str, set[str]] = {}
+    for row in rows:
+        names = {name_by_uid.get(anc, "") for anc in (row.get("ancestor_uids") or [])}
+        depends_on_names[row["class_uid"]] = names
+    return depends_on_names
+
+
+def _alias_local_qns_by_class(
+    rows: list[dict[str, Any]],
+    parsed_bases_by_uid: dict[str, list[str]],
+    depends_on_names_by_class: dict[str, set[str]],
+    package: str | None,
+    project_path: str,
+    workspace_id: str,
+) -> tuple[dict[str, list[str]], set[str]]:
+    needed_local_qns: set[str] = set()
+    alias_targets: dict[str, list[str]] = {}
+    cached_bindings: dict[str, dict[str, str]] = {}
+    with project_root_scope(project_path, workspace_id):
+        for row in rows:
+            class_uid = row["class_uid"]
+            base_names = parsed_bases_by_uid.get(class_uid, [])
+            if not base_names:
+                continue
+            file_path = str(row.get("file_path") or "")
+            bindings = cached_bindings.get(file_path)
+            if bindings is None:
+                try:
+                    with open(file_path, encoding="utf-8") as fh:
+                        source = fh.read()
+                except OSError:
+                    cached_bindings[file_path] = {}
+                    continue
+                bindings = _PYTHON_ADAPTER._extract_import_bindings(source, file_path)  # noqa: SLF001
+                cached_bindings[file_path] = bindings
+            depends_on_names = depends_on_names_by_class.get(class_uid, set())
+            local_qns: list[str] = []
+            for base in base_names:
+                if base in depends_on_names:
+                    continue
+                upstream_qn = bindings.get(base)
+                if not upstream_qn:
+                    continue
+                local_qn = _strip_package_prefix(upstream_qn, package)
+                if not local_qn:
+                    continue
+                local_qns.append(local_qn)
+                needed_local_qns.add(local_qn)
+            if local_qns:
+                alias_targets[class_uid] = local_qns
+    return alias_targets, needed_local_qns
+
+
+def _ancestors_by_uid(
+    rows: list[dict[str, Any]],
+    alias_targets: dict[str, list[str]],
+    candidate_uids_by_local_qn: dict[str, str],
+) -> dict[str, set[str]]:
+    ancestors_by_uid: dict[str, set[str]] = {}
+    for row in rows:
+        uid = row["class_uid"]
+        ancestors = set(row.get("ancestor_uids") or [])
+        for local_qn in alias_targets.get(uid, []):
+            anc_uid = candidate_uids_by_local_qn.get(local_qn)
+            if anc_uid:
+                ancestors.add(anc_uid)
+        ancestors_by_uid[uid] = ancestors
+    return ancestors_by_uid
+
+
+def _build_error_model_lance_updates(
+    error_model_uids: set[str],
+    lance_kinds: dict[str, dict[str, Any]],
+    name_by_uid: dict[str, str],
+) -> dict[str, dict[str, Any]]:
+    update_map: dict[str, dict[str, Any]] = {}
+    for uid in error_model_uids:
+        self_data = lance_kinds.get(uid)
+        if not self_data or "error_model" in self_data["container_kinds"]:
+            continue
+        new_container_kinds = sorted(set(self_data["container_kinds"]) | {"error_model"})
+        try:
+            existing_matches = json.loads(self_data["axis_container_kinds_json"] or "[]")
+        except json.JSONDecodeError:
+            existing_matches = []
+        existing_matches.append(
+            {
+                "kind": "error_model",
+                "symbol_uid": uid,
+                "qualified_name": name_by_uid.get(uid, ""),
+                "evidence_bits": [["struct", "class_def"]],
+                "evidence_probes": ["inherits_builtin_exception"],
+                "payload": {},
+            }
+        )
+        update_map[uid] = {
+            "container_kinds": new_container_kinds,
+            "axis_container_kinds_json": json.dumps(existing_matches, sort_keys=True),
+        }
+    return update_map
+
+
+def _persist_lance_container_kind_updates(
+    lance,
+    workspace_id: str,
+    update_map: dict[str, dict[str, Any]],
+) -> int:
+    if not update_map:
+        return 0
+    from context_engine.database.lance_workspace_tables import workspace_partitioned_enabled
+
+    table = lance.symbols_table(workspace_id)  # type: ignore[attr-defined]
+    existing_rows = [
+        row
+        for row in table.to_lance().to_table().to_pylist()
+        if row.get("uid") in update_map
+        and (workspace_partitioned_enabled() or row.get("workspace_id") == workspace_id)
+    ]
+    if not existing_rows:
+        return 0
+    for row in existing_rows:
+        payload = update_map[row["uid"]]
+        row["container_kinds"] = list(payload["container_kinds"])
+        row["axis_container_kinds_json"] = payload["axis_container_kinds_json"]
+    import pyarrow as pa
+
+    arrow = pa.Table.from_pylist(existing_rows, schema=table.schema)
+    uid_in = ", ".join("'" + uid.replace("'", "''") + "'" for uid in update_map)
+    if workspace_partitioned_enabled():
+        table.delete(f"uid IN ({uid_in})")
+    else:
+        quoted_ws = workspace_id.replace("'", "''")
+        table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
+    table.add(arrow)
+    return len(existing_rows)
+
+
 def propagate_error_model_via_inheritance(
     db: Neo4jClient,
     lance,
@@ -334,130 +479,25 @@ def propagate_error_model_via_inheritance(
     parsed_bases_by_uid: dict[str, list[str]] = {
         r["class_uid"]: list(r.get("parsed_base_names") or []) for r in rows
     }
-
-    # Alias-resolved ancestor uids per class — same resolution the
-    # registry propagator uses, so a base imported under a local alias
-    # still links to its in-workspace class uid.
-    depends_on_names_by_class: dict[str, set[str]] = {}
-    name_by_uid: dict[str, str] = {
-        r["class_uid"]: (r["class_qn"] or "").split(".")[-1] for r in rows
-    }
-    for r in rows:
-        names = {name_by_uid.get(a, "") for a in (r.get("ancestor_uids") or [])}
-        depends_on_names_by_class[r["class_uid"]] = names
-
-    needed_local_qns: set[str] = set()
-    alias_targets: dict[str, list[str]] = {}
-    cached_bindings: dict[str, dict[str, str]] = {}
-    with project_root_scope(project_path, workspace_id):
-        for r in rows:
-            base_names = parsed_bases_by_uid.get(r["class_uid"], [])
-            if not base_names:
-                continue
-            file_path = str(r.get("file_path") or "")
-            bindings = cached_bindings.get(file_path)
-            if bindings is None:
-                try:
-                    with open(file_path, encoding="utf-8") as fh:
-                        source = fh.read()
-                except OSError:
-                    cached_bindings[file_path] = {}
-                    continue
-                bindings = _PYTHON_ADAPTER._extract_import_bindings(  # noqa: SLF001
-                    source, file_path
-                )
-                cached_bindings[file_path] = bindings
-            depends_on_names = depends_on_names_by_class.get(r["class_uid"], set())
-            local_qns: list[str] = []
-            for base in base_names:
-                if base in depends_on_names:
-                    continue
-                upstream_qn = bindings.get(base)
-                if not upstream_qn:
-                    continue
-                local_qn = _strip_package_prefix(upstream_qn, package)
-                if not local_qn:
-                    continue
-                local_qns.append(local_qn)
-                needed_local_qns.add(local_qn)
-            if local_qns:
-                alias_targets[r["class_uid"]] = local_qns
-
+    name_by_uid = _class_short_names(rows)
+    depends_on_names_by_class = _depends_on_names_by_class(rows, name_by_uid)
+    alias_targets, needed_local_qns = _alias_local_qns_by_class(
+        rows,
+        parsed_bases_by_uid,
+        depends_on_names_by_class,
+        package,
+        project_path,
+        workspace_id,
+    )
     candidate_uids_by_local_qn = _query_classes_by_local_qn(
         db,
         workspace_id,
         needed_local_qns,
     )
-
-    # Full ancestor set per class = DEPENDS_ON transitive ∪ alias-resolved.
-    ancestors_by_uid: dict[str, set[str]] = {}
-    for r in rows:
-        uid = r["class_uid"]
-        ancestors = set(r.get("ancestor_uids") or [])
-        for local_qn in alias_targets.get(uid, []):
-            anc_uid = candidate_uids_by_local_qn.get(local_qn)
-            if anc_uid:
-                ancestors.add(anc_uid)
-        ancestors_by_uid[uid] = ancestors
-
+    ancestors_by_uid = _ancestors_by_uid(rows, alias_targets, candidate_uids_by_local_qn)
     error_model_uids = resolve_error_model_uids(parsed_bases_by_uid, ancestors_by_uid)
-
-    # Build Lance row updates for classes that don't already carry it.
-    update_map: dict[str, dict[str, Any]] = {}
-    for uid in error_model_uids:
-        self_data = lance_kinds.get(uid)
-        if not self_data:
-            continue
-        if "error_model" in self_data["container_kinds"]:
-            continue
-        new_container_kinds = sorted(set(self_data["container_kinds"]) | {"error_model"})
-        try:
-            existing_matches = json.loads(self_data["axis_container_kinds_json"] or "[]")
-        except json.JSONDecodeError:
-            existing_matches = []
-        existing_matches.append(
-            {
-                "kind": "error_model",
-                "symbol_uid": uid,
-                "qualified_name": name_by_uid.get(uid, ""),
-                "evidence_bits": [["struct", "class_def"]],
-                "evidence_probes": ["inherits_builtin_exception"],
-                "payload": {},
-            }
-        )
-        update_map[uid] = {
-            "container_kinds": new_container_kinds,
-            "axis_container_kinds_json": json.dumps(existing_matches, sort_keys=True),
-        }
-
-    if not update_map:
-        return 0
-    from context_engine.database.lance_workspace_tables import workspace_partitioned_enabled
-
-    table = lance.symbols_table(workspace_id)  # type: ignore[attr-defined]
-    existing_rows = [
-        r
-        for r in table.to_lance().to_table().to_pylist()
-        if r.get("uid") in update_map
-        and (workspace_partitioned_enabled() or r.get("workspace_id") == workspace_id)
-    ]
-    if not existing_rows:
-        return 0
-    for row in existing_rows:
-        payload = update_map[row["uid"]]
-        row["container_kinds"] = list(payload["container_kinds"])
-        row["axis_container_kinds_json"] = payload["axis_container_kinds_json"]
-    import pyarrow as pa
-
-    arrow = pa.Table.from_pylist(existing_rows, schema=table.schema)
-    uid_in = ", ".join("'" + uid.replace("'", "''") + "'" for uid in update_map)
-    if workspace_partitioned_enabled():
-        table.delete(f"uid IN ({uid_in})")
-    else:
-        quoted_ws = workspace_id.replace("'", "''")
-        table.delete(f"workspace_id = '{quoted_ws}' AND uid IN ({uid_in})")
-    table.add(arrow)
-    return len(existing_rows)
+    update_map = _build_error_model_lance_updates(error_model_uids, lance_kinds, name_by_uid)
+    return _persist_lance_container_kind_updates(lance, workspace_id, update_map)
 
 
 def propagate_registry_class_via_inheritance(

@@ -1124,6 +1124,182 @@ class PythonAdapter(TreeSitterAdapter):
                     positional += 1
         return route_path, methods
 
+    def _hook_call_base_name(self, fn_node) -> str:
+        if fn_node.type == "identifier":
+            return _node_text(fn_node)
+        if fn_node.type == "attribute":
+            tail = fn_node.child_by_field_name("attribute")
+            return _node_text(tail) if tail is not None else ""
+        return ""
+
+    def _hook_name_from_call_args(self, call_node) -> str:
+        arg_list = call_node.child_by_field_name("arguments")
+        if arg_list is None:
+            return ""
+        for child in arg_list.named_children:
+            if child.type == "string":
+                val = self._string_literal_text(child)
+                if val.isidentifier():
+                    return val
+            elif child.type == "keyword_argument":
+                break
+        return ""
+
+    def _hook_first_arg_name(self, call_node) -> str:
+        arg_list = call_node.child_by_field_name("arguments")
+        if arg_list is None:
+            return ""
+        for child in arg_list.named_children:
+            if child.type == "identifier":
+                return _node_text(child)
+            if child.type == "attribute":
+                leaf = child.child_by_field_name("attribute")
+                return _node_text(leaf) if leaf is not None else ""
+            break
+        return ""
+
+    def _hook_receiver_name(self, fn_attr) -> str:
+        recv = fn_attr.child_by_field_name("object")
+        if recv is None:
+            return ""
+        if recv.type == "identifier":
+            return _node_text(recv)
+        if recv.type == "attribute":
+            leaf = recv.child_by_field_name("attribute")
+            return _node_text(leaf) if leaf is not None else ""
+        return ""
+
+    def _emit_hook_fact(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+        *,
+        site_uid: str,
+        hook_name: str,
+        kind: str,
+        target_kind: str,
+        via: str,
+        file_path: str,
+    ) -> None:
+        if not site_uid or not hook_name:
+            return
+        key = (site_uid, hook_name, kind, target_kind, via)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(
+            {
+                "site_uid": site_uid,
+                "hook_name": hook_name,
+                "kind": kind,
+                "target_kind": target_kind,
+                "via": via,
+                "file_path": file_path,
+            }
+        )
+
+    def _hook_site_uid(
+        self,
+        node,
+        source_code: str,
+        file_path: str,
+        *,
+        decorated: bool,
+    ) -> str:
+        site_node = (
+            self._hook_decorated_def(node) if decorated else None
+        ) or self._enclosing_def_node(node)
+        return (
+            self._uid_for_node(site_node, source_code, file_path) if site_node is not None else ""
+        )
+
+    def _process_hook_call(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        register_names: frozenset[str],
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+    ) -> None:
+        fn = node.child_by_field_name("function")
+        if fn is None:
+            return
+        base = self._hook_call_base_name(fn)
+
+        if base in register_names:
+            hook_name = self._hook_name_from_call_args(node)
+            if hook_name:
+                self._emit_hook_fact(
+                    out,
+                    seen,
+                    site_uid=self._hook_site_uid(node, source_code, file_path, decorated=True),
+                    hook_name=hook_name,
+                    kind="config",
+                    target_kind="method",
+                    via=base,
+                    file_path=file_path,
+                )
+            return
+
+        if base == "receiver":
+            sig = self._hook_first_arg_name(node)
+            if sig.isidentifier():
+                site = self._hook_decorated_def(node)
+                if site is not None:
+                    self._emit_hook_fact(
+                        out,
+                        seen,
+                        site_uid=self._uid_for_node(site, source_code, file_path),
+                        hook_name=sig,
+                        kind="config",
+                        target_kind="object",
+                        via="receiver",
+                        file_path=file_path,
+                    )
+            return
+
+        if base in ("connect", "send", "send_robust") and fn.type == "attribute":
+            sig = self._hook_receiver_name(fn)
+            if sig.isidentifier():
+                kind = "config" if base == "connect" else "exec"
+                via = "connect" if base == "connect" else "send"
+                self._emit_hook_fact(
+                    out,
+                    seen,
+                    site_uid=self._hook_site_uid(node, source_code, file_path, decorated=True),
+                    hook_name=sig,
+                    kind=kind,
+                    target_kind="object",
+                    via=via,
+                    file_path=file_path,
+                )
+            return
+
+        if fn.type != "attribute":
+            return
+        obj = fn.child_by_field_name("object")
+        tail = fn.child_by_field_name("attribute")
+        if obj is None or tail is None or obj.type != "attribute" or tail.type != "identifier":
+            return
+        inner_attr = obj.child_by_field_name("attribute")
+        if inner_attr is None or _node_text(inner_attr) != "dispatch":
+            return
+        hook_name = _node_text(tail)
+        if not hook_name.isidentifier():
+            return
+        self._emit_hook_fact(
+            out,
+            seen,
+            site_uid=self._hook_site_uid(node, source_code, file_path, decorated=False),
+            hook_name=hook_name,
+            kind="exec",
+            target_kind="method",
+            via="dispatch",
+            file_path=file_path,
+        )
+
     def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Hook/event facts — make named-hook & pub/sub boundaries transparent.
 
@@ -1154,147 +1330,17 @@ class PythonAdapter(TreeSitterAdapter):
         register_names = frozenset({"listen", "listens_for"})
         out: list[dict] = []
         seen: set[tuple[str, str, str, str, str]] = set()
-
-        def hook_name_from_args(call_node) -> str:
-            arg_list = call_node.child_by_field_name("arguments")
-            if arg_list is None:
-                return ""
-            for child in arg_list.named_children:
-                if child.type == "string":
-                    val = self._string_literal_text(child)
-                    if val.isidentifier():
-                        return val
-                elif child.type == "keyword_argument":
-                    break
-            return ""
-
-        def first_arg_name(call_node) -> str:
-            """First positional arg as an object-signal name (identifier or
-            attribute leaf): ``@receiver(post_save)`` / ``@receiver(signals.x)``."""
-            arg_list = call_node.child_by_field_name("arguments")
-            if arg_list is None:
-                return ""
-            for child in arg_list.named_children:
-                if child.type == "identifier":
-                    return _node_text(child)
-                if child.type == "attribute":
-                    leaf = child.child_by_field_name("attribute")
-                    return _node_text(leaf) if leaf is not None else ""
-                break  # first positional is not a plain reference
-            return ""
-
-        def receiver_name(fn_attr) -> str:
-            """Leaf name of the receiver of ``<recv>.connect`` / ``<recv>.send``."""
-            recv = fn_attr.child_by_field_name("object")
-            if recv is None:
-                return ""
-            if recv.type == "identifier":
-                return _node_text(recv)
-            if recv.type == "attribute":
-                leaf = recv.child_by_field_name("attribute")
-                return _node_text(leaf) if leaf is not None else ""
-            return ""
-
-        def emit(site_uid: str, hook_name: str, kind: str, target_kind: str, via: str) -> None:
-            if not site_uid or not hook_name:
-                return
-            key = (site_uid, hook_name, kind, target_kind, via)
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(
-                {
-                    "site_uid": site_uid,
-                    "hook_name": hook_name,
-                    "kind": kind,
-                    "target_kind": target_kind,
-                    "via": via,
-                    "file_path": file_path,
-                }
-            )
-
-        def site_uid_for(node, *, decorated: bool) -> str:
-            site_node = (
-                self._hook_decorated_def(node) if decorated else None
-            ) or self._enclosing_def_node(node)
-            return (
-                self._uid_for_node(site_node, source_code, file_path)
-                if site_node is not None
-                else ""
-            )
-
         for node in self._iter_nodes(tree.root_node):
             if node.type != "call":
                 continue
-            fn = node.child_by_field_name("function")
-            if fn is None:
-                continue
-            if fn.type == "identifier":
-                base = _node_text(fn)
-            elif fn.type == "attribute":
-                tail = fn.child_by_field_name("attribute")
-                base = _node_text(tail) if tail is not None else ""
-            else:
-                base = ""
-
-            # --- method-kind config: ``listen``/``listens_for`` string-literal name
-            if base in register_names:
-                hook_name = hook_name_from_args(node)
-                if hook_name:
-                    emit(site_uid_for(node, decorated=True), hook_name, "config", "method", base)
-                continue
-
-            # --- object-signal config: ``@receiver(<signal>)`` decorator. The
-            #     ``receiver`` idiom is unambiguously signal-specific, so the
-            #     linker admits it without the connect+send co-occurrence check.
-            if base == "receiver":
-                sig = first_arg_name(node)
-                if sig.isidentifier():
-                    site = self._hook_decorated_def(node)
-                    if site is not None:
-                        emit(
-                            self._uid_for_node(site, source_code, file_path),
-                            sig,
-                            "config",
-                            "object",
-                            "receiver",
-                        )
-                continue
-
-            # --- object-signal config/exec: ``<signal>.connect(..)`` registers,
-            #     ``<signal>.send(..)`` / ``.send_robust(..)`` emits. ``connect``/
-            #     ``send`` are generic verbs (a DB connection, a websocket manager
-            #     also ``.connect``), so ``via`` is threaded and the linker keeps
-            #     the edge only when the target is BOTH connected and sent-from.
-            if base in ("connect", "send", "send_robust") and fn.type == "attribute":
-                sig = receiver_name(fn)
-                if sig.isidentifier():
-                    kind = "config" if base == "connect" else "exec"
-                    via = "connect" if base == "connect" else "send"
-                    emit(site_uid_for(node, decorated=True), sig, kind, "object", via)
-                continue
-
-            # --- method-kind exec: ``<expr>.dispatch.<hook>(...)`` dispatch
-            if fn.type == "attribute":
-                obj = fn.child_by_field_name("object")
-                tail = fn.child_by_field_name("attribute")
-                if (
-                    obj is not None
-                    and obj.type == "attribute"
-                    and tail is not None
-                    and tail.type == "identifier"
-                ):
-                    inner_attr = obj.child_by_field_name("attribute")
-                    if inner_attr is not None and _node_text(inner_attr) == "dispatch":
-                        hook_name = _node_text(tail)
-                        if hook_name.isidentifier():
-                            emit(
-                                site_uid_for(node, decorated=False),
-                                hook_name,
-                                "exec",
-                                "method",
-                                "dispatch",
-                            )
+            self._process_hook_call(
+                node,
+                source_code=source_code,
+                file_path=file_path,
+                register_names=register_names,
+                out=out,
+                seen=seen,
+            )
         return out
 
     @staticmethod

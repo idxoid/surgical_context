@@ -228,6 +228,146 @@ def _row_indices_for_evidence(scan: WorkspaceScan, evidence) -> tuple[int, ...]:
     return tuple(sorted(seen))
 
 
+def _cached_workspace_scan(cache_key: tuple[str, str, bool, bool]) -> WorkspaceScan | None:
+    if not _SCAN_CACHE_ENABLED:
+        return None
+    return _SCAN_CACHE.get(cache_key)
+
+
+def _store_workspace_scan(
+    cache_key: tuple[str, str, bool, bool], scan: WorkspaceScan
+) -> WorkspaceScan:
+    if _SCAN_CACHE_ENABLED:
+        _SCAN_CACHE[cache_key] = scan
+    return scan
+
+
+def _workspace_filter_sql(workspace_id: str) -> str:
+    ws_quoted = workspace_id.replace("'", "''")
+    return f"workspace_id = '{ws_quoted}'"
+
+
+def _open_scan_symbols_table(
+    workspace_id: str,
+    lance_db_path: str,
+    lance: Any | None,
+) -> tuple[Any, str | None]:
+    from context_engine.database.lance_workspace_tables import (
+        workspace_partition_table_exists,
+        workspace_partition_table_name,
+        workspace_partitioned_enabled,
+    )
+    from context_engine.index_profile import active_index_profile
+
+    profile = active_index_profile()
+    partitioned = workspace_partitioned_enabled()
+
+    if lance is not None and hasattr(lance, "symbols_table"):
+        table = lance.symbols_table(workspace_id)
+        return table, None
+
+    db = lancedb.connect(lance_db_path)
+    base_table = profile.symbols_table
+    if partitioned and workspace_partition_table_exists(db, base_table, workspace_id):
+        return db.open_table(workspace_partition_table_name(base_table, workspace_id)), None
+    return db.open_table(base_table), _workspace_filter_sql(workspace_id)
+
+
+def _schema_has_column(table, name: str) -> bool:
+    try:
+        return name in set(table.schema.names)
+    except Exception:
+        return False
+
+
+def _scan_reader_columns(table, *, with_vector: bool) -> list[str]:
+    columns = [
+        "uid",
+        "name",
+        "file_path",
+        "axis_contracts_json",
+        "axis_container_kinds_json",
+        "workspace_id",
+    ]
+    if _schema_has_column(table, "qualified_name"):
+        columns.append("qualified_name")
+    if _schema_has_column(table, "file_tier"):
+        columns.append("file_tier")
+    if with_vector:
+        columns.append("vector")
+        if _schema_has_column(table, "signature_vector"):
+            columns.append("signature_vector")
+    return columns
+
+
+def _read_scan_arrow(table, columns: list[str], table_filter: str | None):
+    lance_reader = table.to_lance()
+    if table_filter:
+        return lance_reader.to_table(columns=columns, filter=table_filter)
+    return lance_reader.to_table(columns=columns)
+
+
+def _vector_matrix_from_arrow(arrow, col_name: str):
+    if col_name not in arrow.column_names or not arrow.num_rows:
+        return None
+    try:
+        import numpy as np
+
+        col = arrow.column(col_name).combine_chunks()
+        return np.asarray(col.values.to_numpy(zero_copy_only=False)).reshape(arrow.num_rows, -1)
+    except Exception:
+        return None
+
+
+def _extract_scan_vector_matrices(arrow, *, with_vector: bool) -> tuple[Any, Any, list[str]]:
+    if not with_vector or "vector" not in arrow.column_names or not arrow.num_rows:
+        return None, None, []
+    drop_cols = ["vector"]
+    vectors_all = _vector_matrix_from_arrow(arrow, "vector")
+    signature_vectors_all = None
+    if "signature_vector" in arrow.column_names:
+        signature_vectors_all = _vector_matrix_from_arrow(arrow, "signature_vector")
+        drop_cols.append("signature_vector")
+    return vectors_all, signature_vectors_all, drop_cols
+
+
+def _parse_axis_contract_kinds(row: dict) -> tuple[set[str], set[str]]:
+    try:
+        contract_objs = json.loads(row.get("axis_contracts_json") or "[]")
+    except json.JSONDecodeError:
+        contract_objs = []
+    try:
+        kind_objs = json.loads(row.get("axis_container_kinds_json") or "[]")
+    except json.JSONDecodeError:
+        kind_objs = []
+    contracts = {str(c.get("contract") or "") for c in contract_objs}
+    kinds = {str(k.get("kind") or "") for k in kind_objs}
+    return contracts, kinds
+
+
+def _build_kept_scan_rows(meta: list[dict], *, include_tests: bool) -> tuple[list[dict], list[int]]:
+    from context_engine.axis.test_file_filter import is_test_path
+
+    kept_rows: list[dict] = []
+    kept_idx: list[int] = []
+    for i, row in enumerate(meta):
+        if not include_tests and is_test_path(str(row.get("file_path") or "")):
+            continue
+        contracts, kinds = _parse_axis_contract_kinds(row)
+        row["_contracts"] = contracts
+        row["_kinds"] = kinds
+        row["_idx"] = len(kept_rows)
+        kept_rows.append(row)
+        kept_idx.append(i)
+    return kept_rows, kept_idx
+
+
+def _subset_scan_matrix(matrix, kept_idx: list[int]):
+    if matrix is None or not kept_idx:
+        return None
+    return matrix[kept_idx]
+
+
 def scan_workspace_rows(
     workspace_id: str,
     *,
@@ -256,134 +396,94 @@ def scan_workspace_rows(
     (``LANCEDB_WORKSPACE_SCAN_CACHE``, default on) until the index mutates.
     """
     cache_key = _scan_cache_key(workspace_id, lance_db_path, include_tests, with_vector)
-    if _SCAN_CACHE_ENABLED:
-        cached = _SCAN_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+    cached = _cached_workspace_scan(cache_key)
+    if cached is not None:
+        return cached
 
-    from context_engine.database.lance_workspace_tables import (
-        workspace_partition_table_exists,
-        workspace_partition_table_name,
-        workspace_partitioned_enabled,
+    table, table_filter = _open_scan_symbols_table(workspace_id, lance_db_path, lance)
+    columns = _scan_reader_columns(table, with_vector=with_vector)
+    arrow = _read_scan_arrow(table, columns, table_filter)
+    vectors_all, signature_vectors_all, drop_cols = _extract_scan_vector_matrices(
+        arrow,
+        with_vector=with_vector,
     )
-    from context_engine.index_profile import active_index_profile
-
-    profile = active_index_profile()
-    partitioned = workspace_partitioned_enabled()
-    table_filter: str | None = None
-
-    if lance is not None and hasattr(lance, "symbols_table"):
-        table = lance.symbols_table(workspace_id)
-        partitioned = partitioned and table is not getattr(lance, "_sym_table", None)
-    else:
-        db = lancedb.connect(lance_db_path)
-        base_table = profile.symbols_table
-        if partitioned:
-            part_name = workspace_partition_table_name(base_table, workspace_id)
-            if workspace_partition_table_exists(db, base_table, workspace_id):
-                table = db.open_table(part_name)
-            else:
-                table = db.open_table(base_table)
-                ws_quoted = workspace_id.replace("'", "''")
-                table_filter = f"workspace_id = '{ws_quoted}'"
-        else:
-            table = db.open_table(base_table)
-            ws_quoted = workspace_id.replace("'", "''")
-            table_filter = f"workspace_id = '{ws_quoted}'"
-    columns = [
-        "uid",
-        "name",
-        "file_path",
-        "axis_contracts_json",
-        "axis_container_kinds_json",
-        "workspace_id",
-    ]
-    try:
-        _have_qualified_name = "qualified_name" in set(table.schema.names)
-    except Exception:
-        _have_qualified_name = False
-    if _have_qualified_name:
-        columns.append("qualified_name")
-    # ``file_tier`` is materialised at index time (schema v5+). Request it
-    # only when the table actually carries the column, so the scan still
-    # works against an index written before the tier landed (pre-reindex);
-    # absent → the ranker reads the default ``core``.
-    try:
-        _have_tier = "file_tier" in set(table.schema.names)
-    except Exception:
-        _have_tier = False
-    if _have_tier:
-        columns.append("file_tier")
-    # ``signature_vector`` is the optional signature facet (schema-gated like
-    # ``file_tier``). Present → dual-facet retrieval; absent → body-only.
-    try:
-        _have_sig_vec = "signature_vector" in set(table.schema.names)
-    except Exception:
-        _have_sig_vec = False
-    if with_vector:
-        columns.append("vector")
-        if _have_sig_vec:
-            columns.append("signature_vector")
-    lance_reader = table.to_lance()
-    if table_filter:
-        arrow = lance_reader.to_table(columns=columns, filter=table_filter)
-    else:
-        arrow = lance_reader.to_table(columns=columns)
-    from context_engine.axis.test_file_filter import is_test_path
-
-    def _matrix(col_name: str):
-        if col_name not in arrow.column_names or not arrow.num_rows:
-            return None
-        try:
-            import numpy as np
-
-            col = arrow.column(col_name).combine_chunks()
-            return np.asarray(col.values.to_numpy(zero_copy_only=False)).reshape(arrow.num_rows, -1)
-        except Exception:
-            return None
-
-    # Extract the vector columns as numpy matrices without round-tripping
-    # them through Python objects; metadata to_pylist drops them.
-    vectors_all = None
-    signature_vectors_all = None
-    drop_cols: list[str] = []
-    if with_vector and "vector" in arrow.column_names and arrow.num_rows:
-        vectors_all = _matrix("vector")
-        drop_cols.append("vector")
-        if _have_sig_vec and "signature_vector" in arrow.column_names:
-            signature_vectors_all = _matrix("signature_vector")
-            drop_cols.append("signature_vector")
     meta = arrow.drop(drop_cols).to_pylist() if drop_cols else arrow.to_pylist()
+    kept_rows, kept_idx = _build_kept_scan_rows(meta, include_tests=include_tests)
+    scan = WorkspaceScan(
+        rows=kept_rows,
+        vectors=_subset_scan_matrix(vectors_all, kept_idx),
+        signature_vectors=_subset_scan_matrix(signature_vectors_all, kept_idx),
+    )
+    return _store_workspace_scan(cache_key, scan)
 
-    kept_rows: list[dict] = []
-    kept_idx: list[int] = []
-    for i, r in enumerate(meta):
-        if not include_tests and is_test_path(str(r.get("file_path") or "")):
-            continue
-        try:
-            contract_objs = json.loads(r.get("axis_contracts_json") or "[]")
-        except json.JSONDecodeError:
-            contract_objs = []
-        try:
-            kind_objs = json.loads(r.get("axis_container_kinds_json") or "[]")
-        except json.JSONDecodeError:
-            kind_objs = []
-        r["_contracts"] = {str(c.get("contract") or "") for c in contract_objs}
-        r["_kinds"] = {str(k.get("kind") or "") for k in kind_objs}
-        r["_idx"] = len(kept_rows)
-        kept_rows.append(r)
-        kept_idx.append(i)
 
-    kept_vectors = None
-    if vectors_all is not None and kept_idx:
-        kept_vectors = vectors_all[kept_idx]
-    kept_sig_vectors = None
-    if signature_vectors_all is not None and kept_idx:
-        kept_sig_vectors = signature_vectors_all[kept_idx]
-    scan = WorkspaceScan(rows=kept_rows, vectors=kept_vectors, signature_vectors=kept_sig_vectors)
-    if _SCAN_CACHE_ENABLED:
-        _SCAN_CACHE[cache_key] = scan
-    return scan
+def _candidate_from_role_row(
+    row: dict,
+    *,
+    role: str,
+    evidence,
+    distance: float | None,
+    has_query: bool,
+    impact_mode: bool,
+) -> RoleCandidate | None:
+    matched_contracts = sorted(row["_contracts"] & evidence.contracts)
+    matched_kinds = sorted(row["_kinds"] & evidence.kinds)
+    if not (matched_contracts or matched_kinds):
+        return None
+    total_contracts = len(evidence.contracts)
+    total_kinds = len(evidence.kinds)
+    structural = _structural_score(
+        len(matched_contracts),
+        len(matched_kinds),
+        total_contracts,
+        total_kinds,
+    )
+    semantic = _semantic_score(distance)
+    tier_w = _tier_weight(row.get("file_tier"), impact_mode=impact_mode)
+    return RoleCandidate(
+        uid=str(row.get("uid") or ""),
+        name=str(row.get("name") or ""),
+        qualified_name=str(row.get("qualified_name") or ""),
+        file_path=str(row.get("file_path") or ""),
+        role=role,
+        satisfying_contracts=tuple(matched_contracts),
+        satisfying_kinds=tuple(matched_kinds),
+        contract_count=len(matched_contracts),
+        kind_count=len(matched_kinds),
+        vector_distance=(float(distance) if distance is not None else None),
+        score=_combined_score(structural, semantic, has_query) * tier_w,
+    )
+
+
+def _candidates_for_role(
+    scan: WorkspaceScan,
+    role: str,
+    *,
+    limit: int,
+    distances,
+    has_query: bool,
+    impact_mode: bool,
+) -> list[RoleCandidate]:
+    evidence = ROLE_EVIDENCE_MAP.get(role)
+    if evidence is None or (not evidence.contracts and not evidence.kinds):
+        return []
+    rows = scan.rows
+    candidates: list[RoleCandidate] = []
+    for idx in _row_indices_for_evidence(scan, evidence):
+        row = rows[idx]
+        distance = None if distances is None else distances[row.get("_idx")]
+        candidate = _candidate_from_role_row(
+            row,
+            role=role,
+            evidence=evidence,
+            distance=distance,
+            has_query=has_query,
+            impact_mode=impact_mode,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    candidates.sort(key=lambda c: (c.score, c.uid), reverse=True)
+    return candidates[:limit]
 
 
 def find_symbols_by_roles(
@@ -413,66 +513,20 @@ def find_symbols_by_roles(
             include_tests=include_tests,
         )
     )
-    rows = scan.rows
     has_query = bool(query_text and embed_fn is not None)
-    # Vectorised distance: one numpy pass over the whole matrix, indexed
-    # by each row's ``_idx`` — no per-row Python distance loop. Dual-facet:
-    # min(body, signature) so a signature-shaped query reaches body-diluted
-    # symbols.
     distances = _scan_distances(scan, query_text, embed_fn) if has_query else None
-
-    def _distance(row: dict) -> float | None:
-        if distances is None:
-            return None
-        idx = row.get("_idx")
-        return None if idx is None else distances[idx]
-
     impact_mode = bool(_MODE_ROLES & set(roles))
-    out: dict[str, list[RoleCandidate]] = {}
-    for role in roles:
-        evidence = ROLE_EVIDENCE_MAP.get(role)
-        if evidence is None or (not evidence.contracts and not evidence.kinds):
-            out[role] = []
-            continue
-        total_contracts = len(evidence.contracts)
-        total_kinds = len(evidence.kinds)
-        candidates: list[RoleCandidate] = []
-        for idx in _row_indices_for_evidence(scan, evidence):
-            row = rows[idx]
-            matched_contracts = sorted(row["_contracts"] & evidence.contracts)
-            matched_kinds = sorted(row["_kinds"] & evidence.kinds)
-            if not (matched_contracts or matched_kinds):
-                continue
-            distance = _distance(row)
-            structural = _structural_score(
-                len(matched_contracts),
-                len(matched_kinds),
-                total_contracts,
-                total_kinds,
-            )
-            semantic = _semantic_score(distance)
-            tier_w = _tier_weight(row.get("file_tier"), impact_mode=impact_mode)
-            candidates.append(
-                RoleCandidate(
-                    uid=str(row.get("uid") or ""),
-                    name=str(row.get("name") or ""),
-                    qualified_name=str(row.get("qualified_name") or ""),
-                    file_path=str(row.get("file_path") or ""),
-                    role=role,
-                    satisfying_contracts=tuple(matched_contracts),
-                    satisfying_kinds=tuple(matched_kinds),
-                    contract_count=len(matched_contracts),
-                    kind_count=len(matched_kinds),
-                    vector_distance=(float(distance) if distance is not None else None),
-                    score=_combined_score(structural, semantic, has_query) * tier_w,
-                )
-            )
-        # uid breaks score ties so the per-role cap is reproducible — without
-        # it, equal-score candidates keep their Lance/dict input order, which is
-        # PYTHONHASHSEED-randomized per process and flips which survive ``[:limit]``.
-        candidates.sort(key=lambda c: (c.score, c.uid), reverse=True)
-        out[role] = candidates[:limit]
-    return out
+    return {
+        role: _candidates_for_role(
+            scan,
+            role,
+            limit=limit,
+            distances=distances,
+            has_query=has_query,
+            impact_mode=impact_mode,
+        )
+        for role in roles
+    }
 
 
 def find_symbols_by_role(
@@ -663,6 +717,145 @@ def _scan_distances(scan: WorkspaceScan, query_text, embed_fn):
         return None
 
 
+def _doc_anchor_lance_client(lance):
+    if lance is not None:
+        return lance
+    try:
+        from context_engine.database.lancedb_client import LanceDBClient
+        from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+
+        return LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
+    except Exception:
+        return None
+
+
+def _doc_anchor_query_vector(query_text, embed_fn):
+    import numpy as np
+
+    try:
+        qv = embed_fn(query_text)
+        if hasattr(qv, "tolist"):
+            qv = qv.tolist()
+        return np.asarray(qv, dtype=np.float32)
+    except Exception:
+        return None
+
+
+def _search_doc_anchor_rows(lance, qv_arr, workspace_id: str, limit: int) -> list[dict]:
+    search_docs = getattr(lance, "search_doc_anchors", None)
+    if not callable(search_docs):
+        return []
+    try:
+        return search_docs(qv_arr, workspace_id=workspace_id, limit=limit)
+    except Exception:
+        return []
+
+
+def _scan_doc_anchor_rows(lance, qv_arr, workspace_id: str, limit: int) -> list[dict]:
+    import numpy as np
+
+    scan_docs = getattr(lance, "scan_doc_anchors_workspace", None)
+    if not callable(scan_docs):
+        return []
+    try:
+        all_rows = scan_docs(workspace_id)
+    except Exception:
+        return []
+    if not all_rows:
+        return []
+    vectors: list = []
+    kept: list[dict] = []
+    for row in all_rows:
+        vector = row.get("vector")
+        owner_uid = str(row.get("owner_uid") or "").strip()
+        if not owner_uid or vector is None:
+            continue
+        if hasattr(vector, "tolist"):
+            vector = vector.tolist()
+        if not vector:
+            continue
+        kept.append(row)
+        vectors.append(vector)
+    if not kept:
+        return []
+    matrix = np.asarray(vectors, dtype=np.float32)
+    distances = np.linalg.norm(matrix - qv_arr, axis=1)
+    n = len(kept)
+    k = min(limit, n)
+    nearest = np.argpartition(distances, k - 1)[:k] if k < n else np.arange(n)
+    nearest = nearest[np.argsort(distances[nearest])]
+    rows: list[dict] = []
+    for idx in nearest:
+        row = dict(kept[int(idx)])
+        row["_distance"] = float(distances[int(idx)])
+        rows.append(row)
+    return rows
+
+
+def _doc_anchor_row_distance(row: dict, qv_arr) -> float:
+    import numpy as np
+
+    distance = row.get("_distance")
+    if distance is not None:
+        return float(distance)
+    vector = row.get("vector")
+    if vector is None:
+        return float("inf")
+    if hasattr(vector, "tolist"):
+        vector = vector.tolist()
+    return float(np.linalg.norm(np.asarray(vector, dtype=np.float32) - qv_arr))
+
+
+def _score_doc_anchor_rows(
+    rows: list[dict],
+    scan: WorkspaceScan,
+    qv_arr,
+    *,
+    impact_mode: bool,
+) -> list[tuple[float, float, dict]]:
+    scored: list[tuple[float, float, dict]] = []
+    for row in rows:
+        owner_uid = str(row.get("owner_uid") or "")
+        owner = scan.rows_by_uid.get(owner_uid) or {}
+        distance = _doc_anchor_row_distance(row, qv_arr)
+        tier_w = _tier_weight(
+            str(owner.get("file_tier") or "core"),
+            impact_mode=impact_mode,
+        )
+        adjusted = distance / max(tier_w, 1e-6)
+        scored.append((adjusted, distance, row))
+    scored.sort(key=lambda item: item[0])
+    return scored
+
+
+def _doc_anchor_candidate(
+    row: dict,
+    scan: WorkspaceScan,
+    distance: float,
+    *,
+    impact_mode: bool,
+) -> RoleCandidate:
+    owner_uid = str(row.get("owner_uid") or "")
+    owner = scan.rows_by_uid.get(owner_uid) or {}
+    tier_w = _tier_weight(
+        str(owner.get("file_tier") or "core"),
+        impact_mode=impact_mode,
+    )
+    return RoleCandidate(
+        uid=owner_uid,
+        name=str(owner.get("name") or ""),
+        qualified_name=str(owner.get("qualified_name") or ""),
+        file_path=str(row.get("file_path") or owner.get("file_path") or ""),
+        role="doc_anchor",
+        satisfying_contracts=(),
+        satisfying_kinds=(),
+        contract_count=0,
+        kind_count=0,
+        vector_distance=distance,
+        score=_semantic_score(distance) * tier_w,
+    )
+
+
 def find_seeds_by_doc_anchor(
     workspace_id: str,
     query_text: str,
@@ -676,18 +869,11 @@ def find_seeds_by_doc_anchor(
     lance=None,
 ) -> list[RoleCandidate]:
     """Vector-search in-code docstring anchors → owner symbol seeds."""
-    import numpy as np
-
     if not query_text or embed_fn is None:
         return []
+    lance = _doc_anchor_lance_client(lance)
     if lance is None:
-        try:
-            from context_engine.database.lancedb_client import LanceDBClient
-            from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
-
-            lance = LanceDBClient(index_profile=AXIS_PYTHON_V1_PROFILE)
-        except Exception:
-            return []
+        return []
     scan_docs = getattr(lance, "scan_doc_anchors_workspace", None)
     search_docs = getattr(lance, "search_doc_anchors", None)
     if not callable(scan_docs) and not callable(search_docs):
@@ -703,108 +889,22 @@ def find_seeds_by_doc_anchor(
         )
     )
 
-    try:
-        qv = embed_fn(query_text)
-        if hasattr(qv, "tolist"):
-            qv = qv.tolist()
-        qv_arr = np.asarray(qv, dtype=np.float32)
-    except Exception:
+    qv_arr = _doc_anchor_query_vector(query_text, embed_fn)
+    if qv_arr is None:
         return []
 
-    if callable(search_docs):
-        try:
-            rows = search_docs(qv, workspace_id=workspace_id, limit=limit)
-        except Exception:
-            rows = []
-    else:
-        rows = []
-
-    if not rows and callable(scan_docs):
-        try:
-            all_rows = scan_docs(workspace_id)
-        except Exception:
-            return []
-        if not all_rows:
-            return []
-        vectors = []
-        kept: list[dict] = []
-        for row in all_rows:
-            vector = row.get("vector")
-            owner_uid = str(row.get("owner_uid") or "").strip()
-            if not owner_uid or vector is None:
-                continue
-            if hasattr(vector, "tolist"):
-                vector = vector.tolist()
-            if not vector:
-                continue
-            kept.append(row)
-            vectors.append(vector)
-        if not kept:
-            return []
-        matrix = np.asarray(vectors, dtype=np.float32)
-        distances = np.linalg.norm(matrix - qv_arr, axis=1)
-        n = len(kept)
-        k = min(limit, n)
-        nearest = np.argpartition(distances, k - 1)[:k] if k < n else np.arange(n)
-        nearest = nearest[np.argsort(distances[nearest])]
-        rows = []
-        for idx in nearest:
-            row = dict(kept[int(idx)])
-            row["_distance"] = float(distances[int(idx)])
-            rows.append(row)
-
+    rows = _search_doc_anchor_rows(lance, qv_arr, workspace_id, limit)
+    if not rows:
+        rows = _scan_doc_anchor_rows(lance, qv_arr, workspace_id, limit)
     if not rows:
         return []
 
-    scored: list[tuple[float, float, dict]] = []
-    for row in rows:
-        owner_uid = str(row.get("owner_uid") or "")
-        owner = scan.rows_by_uid.get(owner_uid) or {}
-        distance = row.get("_distance")
-        if distance is None:
-            vector = row.get("vector")
-            if vector is not None:
-                if hasattr(vector, "tolist"):
-                    vector = vector.tolist()
-                distance = float(np.linalg.norm(np.asarray(vector, dtype=np.float32) - qv_arr))
-            else:
-                distance = float("inf")
-        else:
-            distance = float(distance)
-        tier_w = _tier_weight(
-            str(owner.get("file_tier") or "core"),
-            impact_mode=impact_mode,
-        )
-        adjusted = distance / max(tier_w, 1e-6)
-        scored.append((adjusted, distance, row))
-
-    scored.sort(key=lambda item: item[0])
+    scored = _score_doc_anchor_rows(rows, scan, qv_arr, impact_mode=impact_mode)
     k = min(limit, len(scored))
-
-    out: list[RoleCandidate] = []
-    for _adjusted, distance, row in scored[:k]:
-        owner_uid = str(row.get("owner_uid") or "")
-        owner = scan.rows_by_uid.get(owner_uid) or {}
-        tier_w = _tier_weight(
-            str(owner.get("file_tier") or "core"),
-            impact_mode=impact_mode,
-        )
-        out.append(
-            RoleCandidate(
-                uid=owner_uid,
-                name=str(owner.get("name") or ""),
-                qualified_name=str(owner.get("qualified_name") or ""),
-                file_path=str(row.get("file_path") or owner.get("file_path") or ""),
-                role="doc_anchor",
-                satisfying_contracts=(),
-                satisfying_kinds=(),
-                contract_count=0,
-                kind_count=0,
-                vector_distance=distance,
-                score=_semantic_score(distance) * tier_w,
-            )
-        )
-    return out
+    return [
+        _doc_anchor_candidate(row, scan, distance, impact_mode=impact_mode)
+        for _adjusted, distance, row in scored[:k]
+    ]
 
 
 __all__ = [

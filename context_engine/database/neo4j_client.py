@@ -581,6 +581,53 @@ class Neo4jClient:
                 workspace_id=workspace_id,
             )
 
+    @staticmethod
+    def _build_call_resolution_index(
+        rows: list[dict],
+    ) -> tuple[dict[str, str], dict[str, list[str]], list[tuple[str, str]]]:
+        by_qn: dict[str, str] = {}
+        by_name: dict[str, list[str]] = {}
+        object_api: list[tuple[str, str]] = []
+        for row in rows:
+            uid = row["uid"]
+            if not uid:
+                continue
+            qn = row["qn"] or ""
+            if qn:
+                by_qn.setdefault(qn, uid)
+            name = row["name"] or ""
+            if name:
+                by_name.setdefault(name, []).append(uid)
+            if row["kind"] == "object_api" and qn:
+                object_api.append((qn, uid))
+        object_api.sort(key=lambda item: -len(item[0]))
+        return by_qn, by_name, object_api
+
+    @staticmethod
+    def _resolve_call_callee_uid(
+        call: dict,
+        by_qn: dict[str, str],
+        by_name: dict[str, list[str]],
+        object_api: list[tuple[str, str]],
+    ) -> str | None:
+        caller_uid = call.get("caller_uid")
+        qn = call.get("callee_qualified_name")
+        if qn:
+            hit = by_qn.get(qn)
+            if hit is None:
+                for surf_qn, surf_uid in object_api:
+                    if qn.startswith(surf_qn + "."):
+                        hit = surf_uid
+                        break
+            if hit and hit != caller_uid:
+                return hit
+        name = call.get("callee_name")
+        if name:
+            cands = by_name.get(name) or []
+            if len(cands) == 1 and cands[0] != caller_uid:
+                return cands[0]
+        return None
+
     def _resolve_call_callees(
         self,
         calls: list[dict],
@@ -610,56 +657,16 @@ class Neo4jClient:
                 workspace_id=workspace_id,
             )
             rows = list(result)
-        by_qn: dict[str, str] = {}
-        by_name: dict[str, list[str]] = {}
-        # Object-API surfaces sorted by qn length DESC, so the longest matching
-        # prefix wins (the old query did the same via ORDER BY size(qn) DESC).
-        object_api: list[tuple[str, str]] = []
-        for r in rows:
-            uid = r["uid"]
-            if not uid:
-                continue
-            qn = r["qn"] or ""
-            if qn:
-                by_qn.setdefault(qn, uid)
-            name = r["name"] or ""
-            if name:
-                by_name.setdefault(name, []).append(uid)
-            if r["kind"] == "object_api" and qn:
-                object_api.append((qn, uid))
-        object_api.sort(key=lambda x: -len(x[0]))
+        by_qn, by_name, object_api = self._build_call_resolution_index(rows)
 
         out: list[dict] = []
         for call in calls:
             if call.get("callee_uid"):
                 out.append(call)
                 continue
-            qn = call.get("callee_qualified_name")
-            if qn:
-                hit = by_qn.get(qn)
-                if hit is None:
-                    for surf_qn, surf_uid in object_api:
-                        if qn.startswith(surf_qn + "."):
-                            hit = surf_uid
-                            break
-                if hit and hit != call.get("caller_uid"):
-                    out.append({**call, "callee_uid": hit})
-                    continue
-                # qn miss → fall through to unique-name resolution. The qn was
-                # the extractor's best guess (typically derived from an import
-                # statement), but the in-graph qualified_name can prefix or
-                # otherwise diverge from that guess when the project layout
-                # adds a path segment (e.g. ``src/dathund_core/X`` stores as
-                # ``src.dathund_core.X`` while the import reads
-                # ``dathund_core.X``). The downstream name fallback is already
-                # gated on workspace-wide uniqueness, so this can only
-                # *recover* a call that would otherwise be silently dropped —
-                # it cannot bind to the wrong target.
-            name = call.get("callee_name")
-            if name:
-                cands = by_name.get(name) or []
-                if len(cands) == 1 and cands[0] != call.get("caller_uid"):
-                    out.append({**call, "callee_uid": cands[0]})
+            callee_uid = self._resolve_call_callee_uid(call, by_qn, by_name, object_api)
+            if callee_uid:
+                out.append({**call, "callee_uid": callee_uid})
         return out
 
     @staticmethod
@@ -693,6 +700,36 @@ class Neo4jClient:
                 workspace_id=workspace_id,
             )
 
+    @staticmethod
+    def _build_import_suffix_index(file_paths: list[str]) -> dict[str, str]:
+        suffix_index: dict[str, str] = {}
+        for path in file_paths:
+            parts = path.split("/")
+            for k in range(1, min(5, len(parts)) + 1):
+                key = "/" + "/".join(parts[-k:])
+                suffix_index.setdefault(key, path)
+        return suffix_index
+
+    @staticmethod
+    def _resolve_import_target_path(
+        imp: ImportEdge,
+        row: dict[str, object],
+        file_path_set: set[str],
+        suffix_index: dict[str, str],
+    ) -> str | None:
+        path_suffixes = row.get("path_suffixes")
+        if not isinstance(path_suffixes, list):
+            return None
+        for suffix in path_suffixes:
+            if not isinstance(suffix, str):
+                continue
+            if suffix in file_path_set:
+                return suffix
+            hit = suffix_index.get(suffix)
+            if hit is not None:
+                return hit
+        return None
+
     def link_imports(self, imports: list[ImportEdge], workspace_id: str = DEFAULT_WORKSPACE_ID):
         if not imports:
             return
@@ -704,34 +741,16 @@ class Neo4jClient:
         # a Python dict lookup and the Cypher becomes an index-friendly MATCH.
         file_paths = list(self.list_file_paths(workspace_id=workspace_id))
         file_path_set = set(file_paths)
-        # Suffix index: every path is registered under each of its trailing 1..4
-        # segments. Imports rarely care beyond 3-4 segments, so this is O(M) build
-        # for O(1) lookup per suffix (vs O(M) scan with str.endswith).
-        suffix_index: dict[str, str] = {}
-        for path in file_paths:
-            parts = path.split("/")
-            for k in range(1, min(5, len(parts)) + 1):
-                key = "/" + "/".join(parts[-k:])
-                # First registrant wins; later collisions keep the earlier (shorter)
-                # path, matching the original "first match" semantics of the loop.
-                suffix_index.setdefault(key, path)
+        suffix_index = self._build_import_suffix_index(file_paths)
         resolved: list[dict[str, object]] = []
         for imp in imports:
             row = _import_row(imp)
-            target_path: str | None = None
-            path_suffixes = row.get("path_suffixes")
-            if not isinstance(path_suffixes, list):
-                continue
-            for suffix in path_suffixes:
-                if not isinstance(suffix, str):
-                    continue
-                if suffix in file_path_set:
-                    target_path = suffix  # type: ignore[assignment]
-                    break
-                hit = suffix_index.get(suffix)
-                if hit is not None:
-                    target_path = hit
-                    break
+            target_path = self._resolve_import_target_path(
+                imp,
+                row,
+                file_path_set,
+                suffix_index,
+            )
             if target_path is None or target_path == imp.source_file:
                 continue
             resolved.append(
