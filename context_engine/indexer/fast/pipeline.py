@@ -40,6 +40,7 @@ sys.path.append(
 
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
+from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 from context_engine.index_profile import (
     AXIS_PYTHON_V1_PROFILE,
     active_index_profile,
@@ -70,9 +71,6 @@ if TYPE_CHECKING:
     from context_engine.axis.container_kind import GraphContextProbe
 
 _silence()
-
-
-from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
 # Parallelism knobs. Default hash pool is high because hashing is I/O-bound;
 # parse pool tracks CPU count because tree-sitter parsing is CPU-bound but

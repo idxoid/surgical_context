@@ -170,7 +170,7 @@ def test_leader_pool_metrics_counts_symbols_above_noise_floor():
 
 def test_noise_level_from_tail_matches_robust_formula():
     tail = [90.0, 92.0, 94.0, 96.0]
-    assert _noise_level_from_tail(tail) == _median(tail) + 1.4826 * _mad(tail)
+    assert _noise_level_from_tail(tail) == pytest.approx(_median(tail) + 1.4826 * _mad(tail))
 
 
 def test_leader_transaction_limit_single_symbol_gets_full_budget():

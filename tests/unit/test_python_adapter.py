@@ -129,7 +129,7 @@ class Celery:
         calls = adapter.extract_calls_from_source(source, "pkg/app/base.py")
         call = next(c for c in calls if c["callee_name"] == "create_task_message")
         assert call["tier"] == "typed"
-        assert call["confidence"] == 0.8
+        assert call["confidence"] == pytest.approx(0.8)
         assert call["callee_qualified_name"] == "pkg.app.amqp.AMQP.create_task_message"
 
     def test_typed_tier_resolves_init_instantiation_direct_attribute(self, adapter):

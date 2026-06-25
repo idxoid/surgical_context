@@ -14,7 +14,6 @@ import pytest
 from context_engine.axis import impact_traversal
 from context_engine.axis.graph_walk import EdgeProfile, Neighbour
 from context_engine.axis.role_retrieval import RoleCandidate
-
 from tests.unit.axis_helpers import axis_test_file_path
 
 WORKSPACE = "qa_repo/test@axis"
@@ -41,7 +40,9 @@ def _seed(uid: str, *, role: str = "dispatch_surface") -> RoleCandidate:
 
 
 def _n(uid: str, *, name: str = "x", path: str | None = None, depth: int = 1) -> Neighbour:
-    return Neighbour(uid=uid, name=name, file_path=path or axis_test_file_path("x"), depth=depth, reach=1)
+    return Neighbour(
+        uid=uid, name=name, file_path=path or axis_test_file_path("x"), depth=depth, reach=1
+    )
 
 
 def _install(monkeypatch, *, seed_uids, by_label: dict[str, list[Neighbour]], fanin=None):
@@ -114,7 +115,9 @@ def test_forward_calls_pass_emits_publisher_spine(monkeypatch):
     _install(
         monkeypatch,
         seed_uids=["u:apply_async"],
-        by_label={"forward_calls": [_n("u:send_task", name="send_task", path=axis_test_file_path("base"))]},
+        by_label={
+            "forward_calls": [_n("u:send_task", name="send_task", path=axis_test_file_path("base"))]
+        },
         fanin={"u:send_task": 1},
     )
     out = expand([_seed("u:apply_async")])
@@ -149,7 +152,7 @@ def test_hub_gate_uses_production_only_fan_in(monkeypatch):
 
     def capture_fan_in(db, workspace_id, uids, *, edges=EdgeProfile.CALLS, exclude_tests=False):
         seen["exclude_tests"] = exclude_tests
-        return {u: 1 for u in uids}
+        return dict.fromkeys(uids, 1)
 
     monkeypatch.setattr(impact_traversal, "call_fan_in", capture_fan_in)
 

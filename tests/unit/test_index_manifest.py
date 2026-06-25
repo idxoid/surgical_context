@@ -15,7 +15,6 @@ from context_engine.retrieval.manifest import (
     write_manifest_to_disk,
 )
 
-
 TEST_PROJECT = "qa_repo/test_manifest_project"
 
 

@@ -32,13 +32,14 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 from context_engine.silence import install as _silence
 
 _silence()
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 LANCEDB_PATH = os.path.join(ROOT, "data", "lancedb")
-from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 WORKSPACE_ID = os.getenv("DEFAULT_WORKSPACE_ID", "local/surgical_context@main")
 DEFAULT_SYMBOL = "run_axis_retrieval"

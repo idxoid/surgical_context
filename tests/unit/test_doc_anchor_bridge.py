@@ -46,7 +46,7 @@ def test_expand_doc_anchor_bridge_tier_filters_and_caps(monkeypatch):
     monkeypatch.setattr("context_engine.axis.doc_anchor_bridge.walk_neighbours", _fake_walk)
     monkeypatch.setattr(
         "context_engine.axis.doc_anchor_bridge._seed_idf_weights",
-        lambda seed_uids, **kwargs: {uid: 1.0 for uid in seed_uids},
+        lambda seed_uids, **kwargs: dict.fromkeys(seed_uids, 1.0),
     )
 
     scan = WorkspaceScan(

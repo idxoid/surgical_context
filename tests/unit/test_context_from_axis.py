@@ -10,6 +10,8 @@ test-free.
 
 from __future__ import annotations
 
+import pytest
+
 from context_engine import main as context_engine_main
 from context_engine.axis.context_builder import ContextBundle, ContextSymbol
 from context_engine.axis.intent_classifier import IntentMatch
@@ -81,7 +83,7 @@ def test_context_from_axis_builds_prompt_context(monkeypatch):
     assert ctx.primary_source.code == "app = FastAPI()"
     assert any(s.symbol == "handler" for s in ctx.graph_context)
     assert ctx.intent_distribution == {"routing_surface": 0.7}
-    assert ctx.intent_confidence == 0.7
+    assert ctx.intent_confidence == pytest.approx(0.7)
     assert ctx.intent_effective_mode == "architecture"
     assert ctx.intent_resolution["source"] == "axis_classifier"
     assert ctx.tier_tokens["code"] > 0
@@ -234,8 +236,8 @@ def test_adapter_preserves_impact_relation_direction_depth_and_score():
     assert dep.direction == "caller"
     assert dep.edge_type == "CALLS_*"
     assert dep.depth == 1
-    assert dep.relevance_score == 0.35
-    assert dep.blended_score == 0.9
+    assert dep.relevance_score == pytest.approx(0.35)
+    assert dep.blended_score == pytest.approx(0.9)
     serialized = ctx.to_dict()["graph_context"][0]
     assert serialized["edge_type"] == "CALLS_*"
     assert serialized["provenance"] == ["reverse_calls", "CALLS_*"]

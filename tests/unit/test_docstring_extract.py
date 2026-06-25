@@ -55,7 +55,10 @@ def test_typescript_adapter_attaches_jsdoc():
         """
     )
     symbols = TypeScriptAdapter().extract_symbols(source, "src/app.module.ts")
-    assert symbols[0].docstring == "Nest module metadata."
+    assert len(symbols) >= 1
+    docstring = symbols[0].docstring
+    assert docstring is not None
+    assert docstring == "Nest module metadata."
 
 
 def test_typescript_jsdoc_skips_decorators():

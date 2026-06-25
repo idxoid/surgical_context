@@ -17,9 +17,7 @@ router = APIRouter(tags=["feedback"])
     responses={
         400: {"description": "Invalid feedback event (e.g. duplicate or malformed payload)"},
         403: {
-            "description": (
-                "Feedback token belongs to another workspace or user"
-            ),
+            "description": ("Feedback token belongs to another workspace or user"),
         },
         404: {"description": "Unknown feedback token"},
     },

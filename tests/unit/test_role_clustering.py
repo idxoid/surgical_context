@@ -1,5 +1,7 @@
 """Pass 1 discriminator cascade tests on synthetic graphs."""
 
+import pytest
+
 from context_engine.indexer.role_cascade import assign_symbol_roles
 from context_engine.indexer.role_clustering import (
     SymbolRow,
@@ -150,9 +152,9 @@ def test_assemble_symbol_rows_splits_uses_type_kind():
         ("u:a", "u:b", "USES_TYPE", 0.5, "isinstance"),
     ]
     rows = {row.uid: row for row in assemble_symbol_rows(symbols, edges, {})}
-    assert rows["u:b"].type_fan_in_param == 1.0
-    assert rows["u:b"].type_fan_in_isinstance == 0.5
-    assert rows["u:b"].type_fan_in == 1.5
+    assert rows["u:b"].type_fan_in_param == pytest.approx(1.0)
+    assert rows["u:b"].type_fan_in_isinstance == pytest.approx(0.5)
+    assert rows["u:b"].type_fan_in == pytest.approx(1.5)
 
 
 def test_assemble_symbol_rows_tracks_handle_fan_out_on_decorator():
@@ -164,8 +166,8 @@ def test_assemble_symbol_rows_tracks_handle_fan_out_on_decorator():
         ("u:deco", "u:handler", "HANDLES", 1.0, ""),
     ]
     rows = {row.uid: row for row in assemble_symbol_rows(symbols, edges, {})}
-    assert rows["u:deco"].handle_fan_out == 1.0
-    assert rows["u:handler"].handle_fan_in == 1.0
+    assert rows["u:deco"].handle_fan_out == pytest.approx(1.0)
+    assert rows["u:handler"].handle_fan_in == pytest.approx(1.0)
 
 
 def test_assemble_symbol_rows_depth_from_public_uses_full_graph_f13():

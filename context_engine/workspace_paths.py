@@ -53,9 +53,7 @@ def resolve_cli_directory(raw_path: str) -> Path:
     root = resolve_project_root(raw_path)
     trusted = trusted_workspace_roots()
     if trusted and not any(is_path_within_root(root, base) for base in trusted):
-        raise WorkspaceRootNotAllowedError(
-            f"Path '{root}' is not under WORKSPACE_TRUSTED_ROOTS"
-        )
+        raise WorkspaceRootNotAllowedError(f"Path '{root}' is not under WORKSPACE_TRUSTED_ROOTS")
     return root
 
 

@@ -1,5 +1,7 @@
 """Unit tests for the embedding model benchmark harness."""
 
+import pytest
+
 from QA.embedding_benchmark import (
     QuestionRecord,
     SymbolRecord,
@@ -65,8 +67,8 @@ def test_evaluate_model_scores_target_hits_with_fake_encoder():
     )
 
     assert result["status"] == "ok"
-    assert result["summary"]["target_hit_rate_at_k"] == 1.0
-    assert result["summary"]["mrr"] == 1.0
+    assert result["summary"]["target_hit_rate_at_k"] == pytest.approx(1.0)
+    assert result["summary"]["mrr"] == pytest.approx(1.0)
     assert result["questions"][0]["top_symbols"][0]["name"] == "process_payment"
     assert result["questions"][1]["top_symbols"][0]["name"] == "format_amount"
 

@@ -8,7 +8,10 @@ from context_engine.parser.adapters.js_ts_fallback_patterns import (
     PROPERTY_ARROW_API_RE,
     PROPERTY_FUNC_API_RE,
 )
-from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, flatten_ts_query_captures
+from context_engine.parser.adapters.treesitter_base import (
+    TreeSitterAdapter,
+    flatten_ts_query_captures,
+)
 from context_engine.parser.adapters.ts_reexport_resolver import TsReexportResolver
 from context_engine.parser.adapters.ts_scope_graph import TsBinding, TsScopeGraph
 from context_engine.parser.import_scan import (

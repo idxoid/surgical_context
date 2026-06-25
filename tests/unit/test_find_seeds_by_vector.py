@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pyarrow as pa
+import pytest
 
 import context_engine.axis.role_retrieval as rr
 from context_engine.axis.role_retrieval import find_seeds_by_vector
@@ -162,10 +163,10 @@ def test_include_tests_keeps_test_files(monkeypatch):
 
 
 def test_tier_weight_table():
-    assert rr._tier_weight("core", impact_mode=False) == 1.0
-    assert rr._tier_weight("example", impact_mode=False) == 0.2
-    assert rr._tier_weight(None, impact_mode=False) == 1.0  # default → core
-    assert rr._tier_weight("example", impact_mode=True) == 0.6  # demotion relaxed
+    assert rr._tier_weight("core", impact_mode=False) == pytest.approx(1.0)
+    assert rr._tier_weight("example", impact_mode=False) == pytest.approx(0.2)
+    assert rr._tier_weight(None, impact_mode=False) == pytest.approx(1.0)  # default → core
+    assert rr._tier_weight("example", impact_mode=True) == pytest.approx(0.6)  # demotion relaxed
 
 
 def _scan_with_tiers():

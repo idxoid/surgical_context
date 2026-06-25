@@ -1,5 +1,7 @@
 """Unit tests for embedding cache and recomputation controls."""
 
+import pytest
+
 from context_engine.axis.query_plan import AxisQueryRequest, AxisRequirement, compile_axis_query
 from context_engine.database import lancedb_client as lancedb_client_module
 from context_engine.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
@@ -372,7 +374,7 @@ def test_lancedb_client_search_axis_symbols_embeds_query_text():
 
         def search_axis_symbols_by_vector(self, vector, plan, *, threshold=0.4):
             assert vector == [0.5, 0.25]
-            assert threshold == 0.7
+            assert threshold == pytest.approx(0.7)
             return [{"uid": "u"}]
 
     plan = compile_axis_query(

@@ -94,7 +94,9 @@ def test_lookup_allowed_repo_checkout_uses_predefined_mapping(tmp_path):
     checkouts = {
         "django": (qa_dir / "repos" / "django").resolve(),
     }
-    checkout = lookup_allowed_repo_checkout("django", allowed=frozenset({"django"}), checkouts=checkouts)
+    checkout = lookup_allowed_repo_checkout(
+        "django", allowed=frozenset({"django"}), checkouts=checkouts
+    )
     assert checkout == checkouts["django"]
 
 

@@ -302,8 +302,22 @@ def test_each_candidate_expands_independently():
             # binding step — ONE batched grouped walk over all seeds; each
             # seed's neighbour is grouped back by seed_uid.
             [
-                _hit_record("u:A", "u:Anbr", "Anbr", axis_test_file_path("a"), "binding_structure_expansion", 1),
-                _hit_record("u:B", "u:Bnbr", "Bnbr", axis_test_file_path("b"), "binding_structure_expansion", 1),
+                _hit_record(
+                    "u:A",
+                    "u:Anbr",
+                    "Anbr",
+                    axis_test_file_path("a"),
+                    "binding_structure_expansion",
+                    1,
+                ),
+                _hit_record(
+                    "u:B",
+                    "u:Bnbr",
+                    "Bnbr",
+                    axis_test_file_path("b"),
+                    "binding_structure_expansion",
+                    1,
+                ),
             ],
             # runtime step — batched, empty
             [],

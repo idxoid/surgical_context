@@ -1,10 +1,7 @@
 from unittest.mock import MagicMock
 
-from tests.unit.doc_anchor_test_helpers import (
-    FakeAnchorLance,
-    make_doc_row,
-    run_link_docs_to_symbols,
-)
+import pytest
+
 from context_engine.indexer.anchor import (
     _add_covers_edges,
     _add_covers_edges_batch,
@@ -14,6 +11,11 @@ from context_engine.indexer.anchor import (
     _matches_allowed_prefix,
     _normalize_allowed_prefixes,
     _write_anchors,
+)
+from tests.unit.doc_anchor_test_helpers import (
+    FakeAnchorLance,
+    make_doc_row,
+    run_link_docs_to_symbols,
 )
 
 
@@ -101,7 +103,7 @@ def test_cover_link_carries_confidence_type_and_primary_bias():
 
     assert link["anchor_type"] == "definition"
     assert link["confidence"] > 0.8
-    assert link["primary_bias"] == 1.0
+    assert link["primary_bias"] == pytest.approx(1.0)
     assert link["resolver"] == "identifier"
 
 
@@ -194,11 +196,13 @@ def test_link_docs_to_symbols_normalizes_array_like_pending(monkeypatch):
 
     _neo4j, lance = run_link_docs_to_symbols(
         monkeypatch,
-        rows=[make_doc_row(
-            chunk="No identifiers here",
-            vector=[0.1, 0.2],
-            pending=PendingArray(),
-        )],
+        rows=[
+            make_doc_row(
+                chunk="No identifiers here",
+                vector=[0.1, 0.2],
+                pending=PendingArray(),
+            )
+        ],
         identifiers=[],
         lance_factory=PendingLance,
     )
@@ -224,10 +228,12 @@ def test_link_docs_to_symbols_uses_local_symbol_index_when_available(monkeypatch
 
     _neo4j, lance = run_link_docs_to_symbols(
         monkeypatch,
-        rows=[make_doc_row(
-            chunk="Descriptive prose with no identifiers",
-            vector=[0.0, 0.0],
-        )],
+        rows=[
+            make_doc_row(
+                chunk="Descriptive prose with no identifiers",
+                vector=[0.0, 0.0],
+            )
+        ],
         identifiers=[],
         lance_factory=LocalIndexLance,
     )

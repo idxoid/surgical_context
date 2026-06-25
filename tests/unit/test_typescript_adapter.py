@@ -110,7 +110,7 @@ function bar() {}
 
         assert call["rel_type"] == "CALLS_SCOPED"
         assert call["tier"] == "scoped"
-        assert call["confidence"] == 0.9
+        assert call["confidence"] == pytest.approx(0.9)
         assert call["resolver"] == "ts-scope-v1"
 
     def test_extract_calls_classifies_this_member_as_scoped(self, adapter):
@@ -128,7 +128,7 @@ class Worker {
 
         assert call["rel_type"] == "CALLS_SCOPED"
         assert call["tier"] == "scoped"
-        assert call["confidence"] == 0.9
+        assert call["confidence"] == pytest.approx(0.9)
         assert call["resolver"] == "ts-scope-v1"
         assert call.get("callee_uid")
 

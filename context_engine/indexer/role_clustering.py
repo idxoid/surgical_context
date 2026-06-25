@@ -589,7 +589,7 @@ def _bfs_depths(
 ) -> dict[str, int]:
     if not sources:
         return {}
-    depths: dict[str, int] = {src: 0 for src in sources}
+    depths: dict[str, int] = dict.fromkeys(sources, 0)
     queue: deque[str] = deque(sources)
     while queue:
         u = queue.popleft()

@@ -9,7 +9,5 @@ _LINE = r"(?m)^[ \t]*"
 _FUNC_TAIL = rf"{_ASYNC}function(?:\s+({_IDENT}))?\b"
 
 PROPERTY_FUNC_API_RE = re.compile(rf"{_LINE}{_PROP_ASSIGN}{_FUNC_TAIL}")
-PROPERTY_ARROW_API_RE = re.compile(
-    rf"{_LINE}{_PROP_ASSIGN}{_ASYNC}(?:\([^)]*\)|{_IDENT})\s*=>"
-)
+PROPERTY_ARROW_API_RE = re.compile(rf"{_LINE}{_PROP_ASSIGN}{_ASYNC}(?:\([^)]*\)|{_IDENT})\s*=>")
 CHAINED_PROPERTY_FUNC_API_RE = re.compile(rf"{_LINE}{_PROP_ASSIGN}{_PROP_ASSIGN}{_FUNC_TAIL}")

@@ -6,15 +6,14 @@ from typing import Any
 
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
+from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 from context_engine.indexer.anchor import link_docs_to_symbols
 from context_engine.indexer.progress import make_progress as _make_progress
 from context_engine.workspace import DEFAULT_WORKSPACE_ID
+from context_engine.workspace_paths import WorkspaceRootNotAllowedError, resolve_cli_directory
 
 CHUNK_SIZE = 400
 CHUNK_OVERLAP = 80
-
-from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
-from context_engine.workspace_paths import WorkspaceRootNotAllowedError, resolve_cli_directory
 
 _HEADING_RE = re.compile(r"^#{1,3} .+", re.MULTILINE)
 

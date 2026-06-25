@@ -46,7 +46,7 @@ def test_metrics_registry_record_trace_emits_request_summary(caplog):
     request_event = next(event for event in events if event["event"] == "context_engine.request")
     assert request_event["trace_id"] == "trace-2"
     assert request_event["status"] == "ok"
-    assert request_event["total_latency_ms"] == 3.75
+    assert request_event["total_latency_ms"] == pytest.approx(3.75)
     assert request_event["latency_slo"]["status"] == "met"
     assert request_event["latency_slo"]["target_ms"] == pytest.approx(200.0)
     assert request_event["stage_timings_ms"] == {"context": 1.25, "llm": 2.5}
