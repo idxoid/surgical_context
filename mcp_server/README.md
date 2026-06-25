@@ -52,6 +52,11 @@ navigate primitives the budget-trimmed `ask_code` can't guarantee. Only
 - **`docs_for(symbol, file_path=None, limit=20, workspace=None)`** — doc chunks
   anchored to `symbol` via DocAnchor `COVERS` edges (anchor type, confidence,
   source files).
+- **`explain(concept, file_path=None, workspace=None)`** — concept card: resolve
+  `concept` to a symbol (exact name, else nearest by embedding), then its
+  signature + one-hop connections grouped by relationship (calls/called by, uses
+  type, instantiates, decorated by, inherits…) + documentation. The graphify
+  `explain` analog. AFFECTS is excluded (too broad — use `impact`).
 
 ### Uncommitted-edit tools (P2 — overlay)
 
@@ -146,4 +151,8 @@ PYTHONPATH=..:. ../.venv/bin/python -c \
   single-user (`user_id="mcp"`) — it does not share buffers with the HTTP server.
   Persisting an edit still goes through the normal save (HTTP `/overlay`) → git
   commit (post-commit `graphify`/index) path; there is no `reindex_file` tool
-  (redundant with that flow). An `explain`-style concept walk remains a follow-on.
+  (redundant with that flow).
+- **Concept explain**: `explain` is symbol-centric (resolve → connections +
+  docs). Free-text concepts resolve to the nearest symbol by embedding, which
+  can be approximate (flagged "nearest match"); a true abstract-concept graph
+  (cross-file doc-anchor concept links) is out of scope.

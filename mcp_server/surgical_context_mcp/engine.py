@@ -145,6 +145,64 @@ class DocsForResult:
     rows: list[DocCoverRow] = field(default_factory=list)
 
 
+@dataclass
+class ExplainConnection:
+    name: str
+    file_path: str
+
+
+@dataclass
+class ExplainGroup:
+    label: str
+    rows: list[ExplainConnection] = field(default_factory=list)
+
+
+@dataclass
+class ExplainResult:
+    concept: str
+    workspace_id: str
+    found: bool = False
+    resolved_via: str = ""  # "exact" | "vector"
+    seed_name: str = ""
+    seed_uid: str = ""
+    seed_file: str = ""
+    signature: str = ""
+    groups: list[ExplainGroup] = field(default_factory=list)
+    docs: list[DocCoverRow] = field(default_factory=list)
+
+
+# Edge type -> (outgoing label, incoming label) for explain's connection map.
+# AFFECTS / CONTAINS are deliberately omitted: too broad (impact covers AFFECTS).
+_EXPLAIN_EDGE_LABELS: dict[str, tuple[str, str]] = {
+    "CALLS": ("calls", "called by"),
+    "CALLS_DIRECT": ("calls", "called by"),
+    "CALLS_SCOPED": ("calls", "called by"),
+    "CALLS_IMPORTED": ("calls", "called by"),
+    "CALLS_DYNAMIC": ("calls", "called by"),
+    "CALLS_INFERRED": ("calls", "called by"),
+    "CALLS_GUESS": ("calls", "called by"),
+    "USES_TYPE": ("uses type", "used as type by"),
+    "INSTANTIATES": ("instantiates", "instantiated by"),
+    "DECORATED_BY": ("decorated by", "decorates"),
+    "INJECTS": ("injects", "injected by"),
+    "HANDLES": ("handles", "handled by"),
+    "HAS_API": ("exposes API", "API exposed by"),
+    "INHERITED_API": ("inherited API", "inherited API by"),
+    "DEPENDS_ON": ("inherits from / depends on", "subclassed by / depended on by"),
+    "REFERENCES": ("references", "referenced by"),
+    "READS_ATTR": ("reads attr of", "attr read by"),
+    "WRITES_ATTR": ("writes attr of", "attr written by"),
+    "RESOLVES_ATTR": ("resolves attr of", "attr resolved by"),
+    "EVENT_PUB": ("publishes event to", "event published by"),
+    "EVENT_SUB": ("subscribes to event from", "event subscribed by"),
+    "METADATA_BRIDGE": ("metadata bridge to", "metadata bridge from"),
+    "HOOK_CONFIG": ("hook config for", "hook configured by"),
+    "HOOK_EXEC": ("hook exec for", "hook executed by"),
+    "CALLS_ENDPOINT": ("calls endpoint", "endpoint called by"),
+    "IMPLEMENTS_ENDPOINT": ("implements endpoint", "endpoint implemented by"),
+}
+
+
 def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str]:
     """Flatten ``result.bundles`` into a deduped, prompt-ready markdown block.
 
@@ -818,6 +876,123 @@ class AxisEngine:
                 )
                 for r in rows
             ],
+        )
+
+    def explain(
+        self,
+        concept: str,
+        workspace_id: str,
+        *,
+        file_path: str | None = None,
+        max_per_group: int = 8,
+    ) -> ExplainResult:
+        """Concept card for ``concept``: resolve it to a seed symbol, then map
+        its one-hop connections grouped by relationship type (calls, uses type,
+        decorated by, inherits, …) plus its documentation. The graphify
+        ``explain`` analog — structured connections + source locations for the
+        host LLM to narrate. AFFECTS is excluded (too broad; use ``impact``).
+
+        Resolution: exact symbol name first (no embedding); free-text falls back
+        to the top vector hit (pulls the model)."""
+        from context_engine.axis.graph_walk import EdgeProfile
+
+        allowed = sorted(set(EdgeProfile.PROXIMITY) & set(_EXPLAIN_EDGE_LABELS))
+
+        # 1) Resolve concept → seed uid. Exact name is cheap (Neo4j only).
+        resolved_via = "exact"
+        with self._lock:
+            self._ensure_db()
+            uid = self._resolve_uid(concept, workspace_id, file_path)
+
+        if not uid:
+            # Free-text concept: take the nearest symbol by embedding.
+            hits = self.search_code(concept, workspace_id, limit=1, kind="symbol")
+            if hits:
+                uid = str(hits[0].get("uid") or "")
+                resolved_via = "vector"
+        if not uid:
+            return ExplainResult(concept=concept, workspace_id=workspace_id, found=False)
+
+        # 2) Seed signature (read body off disk, trim to signature) + 3) edges.
+        from context_engine.axis.context_builder import _code_signature  # noqa: PLC0415
+        from context_engine.workspace_paths import (
+            registered_workspace_root,
+            resolve_graph_file_path,
+        )
+
+        with self._lock:
+            self._ensure_db()
+            spans = self._db.get_symbol_spans_by_uids([uid], workspace_id=workspace_id)
+            span = spans.get(uid) or {}
+            seed_name = str(span.get("name") or concept)
+            seed_file = str(span.get("file_path") or "")
+            start = int(span.get("start_line") or 0)
+            end = int(span.get("end_line") or 0)
+
+            signature = ""
+            root = registered_workspace_root(self._db, workspace_id)
+            resolved = resolve_graph_file_path(seed_file, workspace_root=root)
+            if resolved and start >= 1 and end >= start:
+                try:
+                    lines = Path(resolved).read_text(encoding="utf-8").splitlines()
+                    signature = _code_signature("\n".join(lines[start - 1 : end]))
+                except OSError:
+                    signature = ""
+
+            with self._db.driver.session() as session:
+                edge_rows = session.run(
+                    """
+                    MATCH (a:Symbol {uid: $uid})-[r]-(n:Symbol)
+                    MATCH (fn:File {workspace_id: $ws})-[:CONTAINS]->(n)
+                    WHERE type(r) IN $allowed
+                      AND coalesce(r.workspace_id, $ws) = $ws
+                    RETURN type(r) AS rel, (startNode(r) = a) AS outgoing,
+                           coalesce(n.name, '') AS name, fn.path AS file_path
+                    """,
+                    uid=uid,
+                    ws=workspace_id,
+                    allowed=allowed,
+                ).data()
+
+        # 4) Docs covering the seed.
+        docs = self.docs_for(seed_name, workspace_id, file_path=seed_file, limit=10)
+
+        # Group edges by human label; dedupe by (name, file), cap per group.
+        buckets: dict[str, list[ExplainConnection]] = {}
+        seen: dict[str, set[tuple[str, str]]] = {}
+        for row in edge_rows:
+            rel = str(row.get("rel") or "")
+            labels = _EXPLAIN_EDGE_LABELS.get(rel)
+            if not labels:
+                continue
+            label = labels[0] if row.get("outgoing") else labels[1]
+            name = str(row.get("name") or "")
+            fp = str(row.get("file_path") or "")
+            if not name:
+                continue
+            key = (name, fp)
+            seen.setdefault(label, set())
+            if key in seen[label]:
+                continue
+            seen[label].add(key)
+            buckets.setdefault(label, []).append(ExplainConnection(name=name, file_path=fp))
+
+        groups = [
+            ExplainGroup(label=label, rows=rows[:max_per_group])
+            for label, rows in sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        ]
+
+        return ExplainResult(
+            concept=concept,
+            workspace_id=workspace_id,
+            found=True,
+            resolved_via=resolved_via,
+            seed_name=seed_name,
+            seed_uid=uid,
+            seed_file=seed_file,
+            signature=signature,
+            groups=groups,
+            docs=docs.rows if docs.found else [],
         )
 
     def close(self) -> None:

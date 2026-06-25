@@ -524,6 +524,53 @@ def clear_overlay(file_path: str, workspace: str | None = None) -> str:
     return f"No overlay buffer was set for {file_path} (workspace: {workspace_id})."
 
 
+@mcp.tool()
+def explain(concept: str, file_path: str | None = None, workspace: str | None = None) -> str:
+    """Concept card for ``concept``: resolve it to a symbol, then lay out its
+    one-hop connections grouped by relationship (calls / called by, uses type,
+    instantiates, decorated by, inherits, …) plus its documentation and
+    signature. The "what is X and how does it sit in the codebase" overview —
+    a structured map for you to narrate, complementary to ``ask_code`` (which
+    returns code) and ``impact`` (downstream AFFECTS closure, excluded here).
+
+    Args:
+        concept: A symbol name (exact match preferred) or free-text concept
+            (resolved to the nearest symbol by embedding).
+        file_path: Optional file to disambiguate an exact symbol name.
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    r = _engine.explain(concept, workspace_id, file_path=file_path)
+    if not r.found:
+        return (
+            f"Could not resolve '{concept}' to a symbol (workspace: {workspace_id}). "
+            "Try an exact symbol name, or ``search_code`` / ``find_definition`` first."
+        )
+    via = " (nearest match)" if r.resolved_via == "vector" else ""
+    lines = [
+        f"# {r.seed_name}{via}",
+        f"{r.seed_file} · workspace: {workspace_id} · uid: {r.seed_uid}",
+        "",
+    ]
+    if r.signature:
+        lines += ["```python", r.signature.rstrip(), "```", ""]
+    if r.groups:
+        lines.append("## Connections")
+        for g in r.groups:
+            names = ", ".join(f"{c.name}" for c in g.rows)
+            lines.append(f"- **{g.label}** ({len(g.rows)}): {names}")
+        lines.append("")
+    else:
+        lines.append("## Connections\n(No structural connections found.)\n")
+    if r.docs:
+        lines.append("## Documentation")
+        for d in r.docs:
+            files = ", ".join(d.files) if d.files else "(source unknown)"
+            lines.append(f"- [{d.anchor_type or 'doc'}] conf={d.confidence:.2f} — {files}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def main() -> None:
     # Startup banner goes to stderr — stdout is the MCP JSON-RPC channel.
     print(
