@@ -25,6 +25,34 @@ pipeline directly.
   API/inheritance, AFFECTS closure). Committed index surface only (no overlay).
 - **`list_workspaces()`** — indexed repos you can target via `workspace=`.
 
+### Navigation & read tools (P0/P1)
+
+Thin, mostly Neo4j-only wrappers over the same read path — precise locate/read/
+navigate primitives the budget-trimmed `ask_code` can't guarantee. Only
+`search_code` pulls the embedding model; everything else is graph + filesystem.
+
+- **`read_symbol(name, file_path=None, workspace=None)`** — exact, untrimmed
+  on-disk source of one symbol (resolve uid → Neo4j line span → sandboxed disk
+  read). Use when you must READ specific code precisely.
+- **`search_code(query, limit=10, kind="symbol", workspace=None)`** — cheap
+  vector search (no graph expansion). `kind="symbol"` reuses the axis seed
+  recall (`find_seeds_by_vector`); `kind="doc"` searches doc chunks. LOCATE fast.
+- **`callers(symbol, file_path=None, max_hops=1, limit=50, workspace=None)`** —
+  incoming CALLS edges ("who calls X"); cheaper/narrower than `impact`.
+- **`callees(symbol, file_path=None, max_hops=1, limit=50, workspace=None)`** —
+  outgoing CALLS edges ("what X calls").
+- **`find_definition(name, limit=20, workspace=None)`** — every symbol named
+  `name` with file:line (go-to-definition, incl. collisions). Disambiguate
+  before `read_symbol`/`callers`.
+- **`file_outline(file_path, limit=400, workspace=None)`** — symbol map of one
+  file (name, kind, start line; no bodies).
+- **`path(symbol_a, symbol_b, file_a=None, file_b=None, max_hops=6, workspace=None)`**
+  — shortest connecting path across ALL edge types (calls, inheritance, API,
+  type refs…); surfaces indirect coupling `callers`/`callees` miss.
+- **`docs_for(symbol, file_path=None, limit=20, workspace=None)`** — doc chunks
+  anchored to `symbol` via DocAnchor `COVERS` edges (anchor type, confidence,
+  source files).
+
 `workspace` is an optional base id (e.g. `qa_repo/django@main`); the
 `+axis_python_v1` index suffix is added automatically. Omit it to use
 `SURGICAL_CONTEXT_WORKSPACE`.
@@ -92,6 +120,11 @@ PYTHONPATH=..:. ../.venv/bin/python -c \
   indexed repo via `workspace=` (discover with `list_workspaces`). Auto-resolve
   from the chat's cwd (graphify's `graphify-out/`-detect analog) is still TODO.
 - **Python-only** (`axis_python_v1` is `language_scope="python"`).
-- **Caller-supplied intent** (skip the embedding role-classifier, let the host
-  model pick roles) — proposed; see notes. `search_code` (cheap,
-  `with_context=False`) is another easy follow-on.
+- **Docs** (`search_code(kind="doc")`, `docs_for`) need the docstring/anchor
+  pass (fast-pipeline Stage 7 `ingest_symbol_docstrings` → `DocAnchor`-`COVERS`
+  edges over in-code docstrings / out-of-function doc comments). A workspace
+  indexed without that stage (e.g. the current dogfood axis index, 0 anchors)
+  yields empty — the queries are correct, there's just no data until reindex.
+- **Write/verify loop** (P2, not yet wired): overlay-aware `impact`/`ask` over
+  an uncommitted buffer, single-file `reindex_file`, and an `explain` concept
+  walk remain follow-ons.

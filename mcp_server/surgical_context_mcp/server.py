@@ -187,6 +187,290 @@ def list_roles() -> str:
     return "\n".join(lines) + "\n"
 
 
+@mcp.tool()
+def read_symbol(
+    name: str,
+    file_path: str | None = None,
+    workspace: str | None = None,
+) -> str:
+    """Exact source of a single named symbol (function/class/method) — the full,
+    untrimmed body straight from disk. Use this when you need to READ specific
+    code precisely rather than the budget-trimmed bundles ``ask_code`` returns:
+    e.g. "show me the body of run_axis_retrieval".
+
+    Args:
+        name: Symbol name, e.g. "build_impact_surface".
+        file_path: Optional file to disambiguate a non-unique name. Call
+            ``find_definition`` first if a name resolves to several files.
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    r = _engine.read_symbol(name, workspace_id, file_path=file_path)
+    if not r.found:
+        hint = f" in {file_path}" if file_path else ""
+        return (
+            f"Symbol '{name}'{hint} not found in the index (workspace: {workspace_id}). "
+            f"Try ``find_definition('{name}')`` or check the spelling/path."
+        )
+    header = (
+        f"# {r.name}  ({r.file_path}:{r.start_line}-{r.end_line})\n"
+        f"workspace: {workspace_id} · uid: {r.uid}\n"
+    )
+    if not r.code:
+        return (
+            header
+            + "\n(Source unavailable — the file is outside the indexed workspace root "
+            "or could not be read. The span above still locates the definition.)\n"
+        )
+    return header + "\n```python\n" + r.code.rstrip() + "\n```\n"
+
+
+@mcp.tool()
+def search_code(
+    query: str,
+    limit: int = 10,
+    kind: str = "symbol",
+    workspace: str | None = None,
+) -> str:
+    """Cheap semantic search for symbols or doc chunks — ranked hits with NO
+    graph expansion. Use it to LOCATE things fast ("which symbol embeds vector
+    seeds", "find the workspace-scoping doc") before a deeper ``ask_code`` or a
+    precise ``read_symbol``. Lighter than ``ask_code``: vectors only, no traversal.
+
+    Args:
+        query: Free-text search, e.g. "token credit budget packer".
+        limit: Max hits (default 10).
+        kind: "symbol" (default) = code symbols; "doc" = documentation chunks.
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    if kind not in ("symbol", "doc"):
+        return f"Unknown kind '{kind}'. Use 'symbol' or 'doc'."
+    rows = _engine.search_code(query, workspace_id, limit=limit, kind=kind)
+    if not rows:
+        return f"No {kind} hits for: {query!r} (workspace: {workspace_id})."
+    lines = [f"# {kind} search: {query}", f"workspace: {workspace_id} · {len(rows)} hits", ""]
+    if kind == "symbol":
+        for r in rows:
+            score = r.get("score")
+            score_s = f" · score={score:.2f}" if isinstance(score, (int, float)) else ""
+            lines.append(f"- {r.get('name', '?')} — {r.get('file_path', '')}{score_s}")
+    else:
+        for r in rows:
+            fp = r.get("file_path") or r.get("id") or ""
+            snippet = " ".join(str(r.get("chunk") or "").split())[:160]
+            lines.append(f"- {fp}\n  {snippet}")
+    return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def callers(
+    symbol: str,
+    file_path: str | None = None,
+    max_hops: int = 1,
+    limit: int = 50,
+    workspace: str | None = None,
+) -> str:
+    """Who calls ``symbol`` — incoming CALLS edges (reverse walk). Cheaper and
+    more precise than ``impact``: a direct "what invokes this function" rather
+    than the full AFFECTS blast closure. Use it to trace control flow upward.
+
+    Args:
+        symbol: Symbol name, e.g. "run_axis_retrieval".
+        file_path: Optional file to disambiguate a non-unique name.
+        max_hops: Call-chain depth, 1-4 (default 1 = direct callers).
+        limit: Max rows (default 50).
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    return _format_neighbours("callers", symbol, file_path, max_hops, limit, workspace)
+
+
+@mcp.tool()
+def callees(
+    symbol: str,
+    file_path: str | None = None,
+    max_hops: int = 1,
+    limit: int = 50,
+    workspace: str | None = None,
+) -> str:
+    """What ``symbol`` calls — outgoing CALLS edges (forward walk). The
+    dependency view: which functions this one invokes. Use it to trace control
+    flow downward without the full ``ask_code`` expansion.
+
+    Args:
+        symbol: Symbol name, e.g. "run_axis_retrieval".
+        file_path: Optional file to disambiguate a non-unique name.
+        max_hops: Call-chain depth, 1-4 (default 1 = direct callees).
+        limit: Max rows (default 50).
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    return _format_neighbours("callees", symbol, file_path, max_hops, limit, workspace)
+
+
+def _format_neighbours(
+    which: str,
+    symbol: str,
+    file_path: str | None,
+    max_hops: int,
+    limit: int,
+    workspace: str | None,
+) -> str:
+    workspace_id = resolve_workspace_id(workspace)
+    direction = "reverse" if which == "callers" else "forward"
+    depth = max_hops if isinstance(max_hops, int) and 1 <= max_hops <= 4 else 1
+    r = _engine.call_neighbours(
+        symbol, workspace_id, direction=direction, file_path=file_path, max_hops=depth, limit=limit
+    )
+    if not r.found:
+        hint = f" in {file_path}" if file_path else ""
+        return (
+            f"Symbol '{symbol}'{hint} not found in the index (workspace: {workspace_id}). "
+            f"Try ``find_definition('{symbol}')``."
+        )
+    rel = "called by" if which == "callers" else "calls"
+    lines = [
+        f"# {symbol} — {which} (max_hops={depth})",
+        f"workspace: {workspace_id} · uid: {r.symbol_uid} · {len(r.rows)} {which}",
+        "",
+    ]
+    if not r.rows:
+        lines.append(f"No {which} found ({'entry point' if which == 'callers' else 'leaf'}).")
+        return "\n".join(lines) + "\n"
+    for row in r.rows:
+        lines.append(f"- {row.name} — {row.file_path} (depth={row.depth}) [{rel}]")
+    return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def find_definition(name: str, limit: int = 20, workspace: str | None = None) -> str:
+    """Locate where a name is defined: every symbol called ``name`` with its
+    file and start line (go-to-definition, including collisions/overloads).
+    Cheap Neo4j lookup — use it to pick the right ``file_path`` before
+    ``read_symbol``/``callers`` when a name is ambiguous.
+
+    Args:
+        name: Symbol name to locate.
+        limit: Max definitions (default 20).
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    hits = _engine.find_definition(name, workspace_id, limit=limit)
+    if not hits:
+        return f"No definition of '{name}' in the index (workspace: {workspace_id})."
+    lines = [f"# Definitions of `{name}`", f"workspace: {workspace_id} · {len(hits)} found", ""]
+    for h in hits:
+        kind = f" ({h.kind})" if h.kind else ""
+        lines.append(f"- {h.file_path}:{h.start_line}{kind}")
+    return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def file_outline(file_path: str, limit: int = 400, workspace: str | None = None) -> str:
+    """Symbol map of one file: every defined symbol with kind and start line,
+    top-to-bottom (no code). Use it to understand a file's structure before
+    reading specific symbols, or to find what to ``read_symbol`` next.
+
+    Args:
+        file_path: File path (absolute, or a suffix like "axis/pipeline.py").
+        limit: Max symbols (default 400).
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    r = _engine.file_outline(file_path, workspace_id, limit=limit)
+    if not r.found:
+        return (
+            f"No indexed file matching '{file_path}' (workspace: {workspace_id}). "
+            "Pass a longer path suffix, or check the file is indexed."
+        )
+    lines = [f"# Outline: {r.file_path}", f"workspace: {workspace_id} · {len(r.rows)} symbols", ""]
+    for row in r.rows:
+        kind = f"{row.kind} " if row.kind else ""
+        lines.append(f"- L{row.start_line}: {kind}{row.name}")
+    return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def path(
+    symbol_a: str,
+    symbol_b: str,
+    file_a: str | None = None,
+    file_b: str | None = None,
+    max_hops: int = 6,
+    workspace: str | None = None,
+) -> str:
+    """How two symbols relate: the shortest connecting path across ALL edge
+    types (calls, inheritance, API, type refs, …). Answers "how does A reach
+    B" / "what links these two". Use it to discover indirect coupling that
+    ``callers``/``callees`` (CALLS-only) miss.
+
+    Args:
+        symbol_a: First symbol name.
+        symbol_b: Second symbol name.
+        file_a: Optional file to disambiguate ``symbol_a``.
+        file_b: Optional file to disambiguate ``symbol_b``.
+        max_hops: Max path length, 1-10 (default 6).
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    r = _engine.path(
+        symbol_a, symbol_b, workspace_id, file_a=file_a, file_b=file_b, max_hops=max_hops
+    )
+    if not r.found:
+        return (
+            f"No path from '{symbol_a}' to '{symbol_b}' "
+            f"(workspace: {workspace_id}): {r.reason}."
+        )
+    # Interleave node names with the edge type that links each consecutive pair.
+    parts = [r.node_names[0]] if r.node_names else []
+    for i, rel in enumerate(r.rel_types):
+        nxt = r.node_names[i + 1] if i + 1 < len(r.node_names) else "?"
+        parts.append(f"--[{rel}]--> {nxt}")
+    chain = " ".join(parts)
+    return (
+        f"# Path: {symbol_a} → {symbol_b}\n"
+        f"workspace: {workspace_id} · {len(r.rel_types)} hops\n\n"
+        f"{chain}\n"
+    )
+
+
+@mcp.tool()
+def docs_for(
+    symbol: str,
+    file_path: str | None = None,
+    limit: int = 20,
+    workspace: str | None = None,
+) -> str:
+    """Documentation anchored to ``symbol`` via DocAnchor COVERS edges: which
+    doc chunks describe it, their anchor type (definition/example/warning/…)
+    and confidence, and the source doc files. Use it to find prose explaining a
+    symbol's contract before reading code.
+
+    Args:
+        symbol: Symbol name.
+        file_path: Optional file to disambiguate a non-unique name.
+        limit: Max doc anchors (default 20).
+        workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    r = _engine.docs_for(symbol, workspace_id, file_path=file_path, limit=limit)
+    if not r.found:
+        hint = f" in {file_path}" if file_path else ""
+        return (
+            f"Symbol '{symbol}'{hint} not found in the index (workspace: {workspace_id}). "
+            f"Try ``find_definition('{symbol}')``."
+        )
+    if not r.rows:
+        return (
+            f"No documentation anchors cover `{symbol}` (workspace: {workspace_id}). "
+            "The symbol may be undocumented, or docs aren't indexed for this workspace."
+        )
+    lines = [f"# Docs for `{symbol}`", f"workspace: {workspace_id} · {len(r.rows)} anchors", ""]
+    for row in r.rows:
+        files = ", ".join(row.files) if row.files else "(source file unknown)"
+        lines.append(f"- [{row.anchor_type or 'doc'}] conf={row.confidence:.2f} — {files}")
+    return "\n".join(lines) + "\n"
+
+
 def main() -> None:
     # Startup banner goes to stderr — stdout is the MCP JSON-RPC channel.
     print(

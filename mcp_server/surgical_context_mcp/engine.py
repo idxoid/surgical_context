@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # Load the repo .env (NEO4J_*, model creds) before any heavy import — exactly
 # what context_engine/main.py does for the server.
@@ -46,6 +47,94 @@ class WorkspaceInfo:
     base: str  # client-facing id (profile suffix stripped) — pass to `workspace=`
     indexed: str  # physical index namespace (with profile suffix)
     files: int
+
+
+@dataclass
+class SymbolSource:
+    """Exact on-disk source of one symbol — the deterministic read ``ask_code``
+    can't guarantee (it budget-trims). ``found=False`` when the name/path miss."""
+
+    name: str
+    workspace_id: str
+    found: bool = False
+    uid: str = ""
+    file_path: str = ""
+    start_line: int = 0
+    end_line: int = 0
+    code: str = ""
+
+
+@dataclass
+class NeighbourRow:
+    uid: str
+    name: str
+    file_path: str
+    depth: int
+
+
+@dataclass
+class NeighbourResult:
+    """Result of a one-direction call walk (callers / callees)."""
+
+    symbol: str
+    workspace_id: str
+    found: bool = False
+    symbol_uid: str = ""
+    direction: str = ""
+    rows: list[NeighbourRow] = field(default_factory=list)
+
+
+@dataclass
+class DefinitionHit:
+    uid: str
+    name: str
+    file_path: str
+    kind: str
+    start_line: int
+
+
+@dataclass
+class OutlineRow:
+    name: str
+    kind: str
+    start_line: int
+
+
+@dataclass
+class FileOutline:
+    requested_path: str
+    workspace_id: str
+    found: bool = False
+    file_path: str = ""
+    rows: list[OutlineRow] = field(default_factory=list)
+
+
+@dataclass
+class PathResult:
+    symbol_a: str
+    symbol_b: str
+    workspace_id: str
+    found: bool = False
+    reason: str = ""
+    node_names: list[str] = field(default_factory=list)
+    rel_types: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DocCoverRow:
+    chunk_id: str
+    anchor_type: str
+    confidence: float
+    files: list[str]
+
+
+@dataclass
+class DocsForResult:
+    symbol: str
+    workspace_id: str
+    found: bool = False
+    symbol_uid: str = ""
+    rows: list[DocCoverRow] = field(default_factory=list)
 
 
 def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str]:
@@ -312,6 +401,324 @@ class AxisEngine:
                 WorkspaceInfo(base=base_workspace_id(ws), indexed=ws, files=int(r["n"] or 0))
             )
         return out
+
+    # ------------------------------------------------------------------
+    # P0/P1 navigation primitives — thin wrappers over the engine read path.
+    # All graph-only tools stay on the cheap ``_ensure_db`` (no embedding
+    # cold-start); only ``search_code`` pulls the SentenceTransformer.
+    # ------------------------------------------------------------------
+
+    def _resolve_uid(
+        self, name: str, workspace_id: str, file_path: str | None = None
+    ) -> str | None:
+        """Resolve ``name`` to a workspace uid. Caller MUST hold ``self._lock``
+        and have opened the Neo4j handle (the lock is non-reentrant)."""
+        path = file_path.strip() if isinstance(file_path, str) and file_path.strip() else None
+        if path:
+            return self._db.get_symbol_uid_by_name_in_file(name, path, workspace_id)
+        return self._db.get_symbol_uid_by_name(name, workspace_id)
+
+    def read_symbol(
+        self, name: str, workspace_id: str, *, file_path: str | None = None
+    ) -> SymbolSource:
+        """Exact source of one symbol: resolve uid → Neo4j line span → read the
+        slice off disk (sandboxed to the registered workspace root). No
+        embedding — pure Neo4j + filesystem."""
+        from context_engine.workspace_paths import (
+            registered_workspace_root,
+            resolve_graph_file_path,
+        )
+
+        with self._lock:
+            self._ensure_db()
+            uid = self._resolve_uid(name, workspace_id, file_path)
+            if not uid:
+                return SymbolSource(name=name, workspace_id=workspace_id, found=False)
+            spans = self._db.get_symbol_spans_by_uids([uid], workspace_id=workspace_id)
+            span = spans.get(uid)
+            if not span:
+                return SymbolSource(name=name, workspace_id=workspace_id, found=False)
+            fp = str(span.get("file_path") or "")
+            start = int(span.get("start_line") or 0)
+            end = int(span.get("end_line") or 0)
+            root = registered_workspace_root(self._db, workspace_id)
+            code = ""
+            resolved = resolve_graph_file_path(fp, workspace_root=root)
+            if resolved and start >= 1 and end >= start:
+                try:
+                    lines = Path(resolved).read_text(encoding="utf-8").splitlines()
+                    code = "\n".join(lines[start - 1 : end])
+                except OSError:
+                    code = ""
+
+        return SymbolSource(
+            name=str(span.get("name") or name),
+            workspace_id=workspace_id,
+            found=True,
+            uid=uid,
+            file_path=fp,
+            start_line=start,
+            end_line=end,
+            code=code,
+        )
+
+    def search_code(
+        self,
+        query: str,
+        workspace_id: str,
+        *,
+        limit: int = 10,
+        kind: str = "symbol",
+    ) -> list[dict]:
+        """Cheap vector search — symbol or doc hits, no graph expansion. Pulls
+        the embedding model (one-time cold-start) but skips Neo4j entirely.
+
+        Symbol search reuses the axis pipeline's role-agnostic seed recall
+        (``find_seeds_by_vector`` — a numpy scan over the workspace vector
+        matrix), which is the schema-correct path for the multi-vector axis
+        symbols table (a plain ``table.search`` can't pick the vector column)."""
+        with self._lock:
+            self._ensure_lance()
+            if kind == "doc":
+                return self._lance.search(query, limit, workspace_id=workspace_id)
+
+            from context_engine.axis.role_retrieval import find_seeds_by_vector
+            from context_engine.database.lancedb_client import DB_PATH
+
+            def embed(text: str):
+                return self._lance._embed([text])[0]  # noqa: SLF001
+
+            candidates = find_seeds_by_vector(
+                workspace_id,
+                query,
+                embed_fn=embed,
+                limit=limit,
+                lance_db_path=DB_PATH,
+            )
+        return [
+            {
+                "uid": c.uid,
+                "name": c.name,
+                "file_path": c.file_path,
+                "distance": c.vector_distance,
+                "score": c.score,
+            }
+            for c in candidates
+        ]
+
+    def call_neighbours(
+        self,
+        symbol: str,
+        workspace_id: str,
+        *,
+        direction: str,
+        file_path: str | None = None,
+        max_hops: int = 1,
+        limit: int = 50,
+    ) -> NeighbourResult:
+        """Directional CALLS walk: ``reverse`` = callers (who calls symbol),
+        ``forward`` = callees (what symbol calls). Pure Neo4j graph walk."""
+        from context_engine.axis.graph_walk import EdgeProfile, walk_neighbours
+
+        with self._lock:
+            self._ensure_db()
+            uid = self._resolve_uid(symbol, workspace_id, file_path)
+            if not uid:
+                return NeighbourResult(
+                    symbol=symbol, workspace_id=workspace_id, found=False, direction=direction
+                )
+            neighbours = walk_neighbours(
+                self._db,
+                workspace_id,
+                [uid],
+                edges=EdgeProfile.CALLS,
+                direction=direction,
+                max_hops=max_hops,
+                limit=limit,
+            )
+
+        return NeighbourResult(
+            symbol=symbol,
+            workspace_id=workspace_id,
+            found=True,
+            symbol_uid=uid,
+            direction=direction,
+            rows=[
+                NeighbourRow(uid=n.uid, name=n.name, file_path=n.file_path, depth=n.depth)
+                for n in neighbours
+            ],
+        )
+
+    def find_definition(
+        self, name: str, workspace_id: str, *, limit: int = 20
+    ) -> list[DefinitionHit]:
+        """Every symbol defined under ``name`` in the workspace (go-to-definition;
+        returns all overloads/collisions). Pure Neo4j."""
+        with self._lock:
+            self._ensure_db()
+            with self._db.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $ws})-[c:CONTAINS]->(s:Symbol {name: $name})
+                    RETURN s.uid AS uid, s.name AS name, f.path AS file_path,
+                           coalesce(s.kind, '') AS kind,
+                           coalesce(c.start_line, s.range[0], 0) AS start_line
+                    ORDER BY file_path, start_line
+                    LIMIT $limit
+                    """,
+                    ws=workspace_id,
+                    name=name,
+                    limit=int(limit),
+                ).data()
+        return [
+            DefinitionHit(
+                uid=str(r.get("uid") or ""),
+                name=str(r.get("name") or name),
+                file_path=str(r.get("file_path") or ""),
+                kind=str(r.get("kind") or ""),
+                start_line=int(r.get("start_line") or 0),
+            )
+            for r in rows
+        ]
+
+    def file_outline(
+        self, file_path: str, workspace_id: str, *, limit: int = 400
+    ) -> FileOutline:
+        """Symbol map of one file (name, kind, start line), ordered top-to-bottom.
+        Pure Neo4j — no code bodies."""
+        path = file_path.strip()
+        if not path:
+            return FileOutline(requested_path=file_path, workspace_id=workspace_id, found=False)
+        suffix = f"/{path.rsplit('/', 1)[-1]}"
+        with self._lock:
+            self._ensure_db()
+            with self._db.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $ws})-[c:CONTAINS]->(s:Symbol)
+                    WHERE f.path = $path OR f.path ENDS WITH $path OR f.path ENDS WITH $suffix
+                    RETURN f.path AS file_path, s.name AS name,
+                           coalesce(s.kind, '') AS kind,
+                           coalesce(c.start_line, s.range[0], 0) AS start_line
+                    ORDER BY start_line
+                    LIMIT $limit
+                    """,
+                    ws=workspace_id,
+                    path=path,
+                    suffix=suffix,
+                    limit=int(limit),
+                ).data()
+        if not rows:
+            return FileOutline(requested_path=file_path, workspace_id=workspace_id, found=False)
+        return FileOutline(
+            requested_path=file_path,
+            workspace_id=workspace_id,
+            found=True,
+            file_path=str(rows[0].get("file_path") or path),
+            rows=[
+                OutlineRow(
+                    name=str(r.get("name") or ""),
+                    kind=str(r.get("kind") or ""),
+                    start_line=int(r.get("start_line") or 0),
+                )
+                for r in rows
+            ],
+        )
+
+    def path(
+        self,
+        symbol_a: str,
+        symbol_b: str,
+        workspace_id: str,
+        *,
+        file_a: str | None = None,
+        file_b: str | None = None,
+        max_hops: int = 6,
+    ) -> PathResult:
+        """Shortest undirected path between two symbols across all edge types —
+        the "how does A relate to B" navigator. Pure Neo4j."""
+        hops = max_hops if isinstance(max_hops, int) and 1 <= max_hops <= 10 else 6
+        with self._lock:
+            self._ensure_db()
+            uid_a = self._resolve_uid(symbol_a, workspace_id, file_a)
+            uid_b = self._resolve_uid(symbol_b, workspace_id, file_b)
+            if not uid_a or not uid_b:
+                missing = symbol_a if not uid_a else symbol_b
+                return PathResult(
+                    symbol_a=symbol_a,
+                    symbol_b=symbol_b,
+                    workspace_id=workspace_id,
+                    found=False,
+                    reason=f"symbol not found: {missing}",
+                )
+            cypher = (
+                "MATCH (a:Symbol {uid: $ua}), (b:Symbol {uid: $ub}) "
+                f"MATCH p = shortestPath((a)-[*..{hops}]-(b)) "
+                "RETURN [n IN nodes(p) | coalesce(n.name, n.uid)] AS names, "
+                "[r IN relationships(p) | type(r)] AS rels"
+            )
+            with self._db.driver.session() as session:
+                rec = session.run(cypher, ua=uid_a, ub=uid_b).single()
+        if not rec:
+            return PathResult(
+                symbol_a=symbol_a,
+                symbol_b=symbol_b,
+                workspace_id=workspace_id,
+                found=False,
+                reason=f"no path within {hops} hops",
+            )
+        return PathResult(
+            symbol_a=symbol_a,
+            symbol_b=symbol_b,
+            workspace_id=workspace_id,
+            found=True,
+            node_names=[str(n) for n in (rec.get("names") or [])],
+            rel_types=[str(t) for t in (rec.get("rels") or [])],
+        )
+
+    def docs_for(
+        self, symbol: str, workspace_id: str, *, file_path: str | None = None, limit: int = 20
+    ) -> DocsForResult:
+        """Documentation anchored to ``symbol`` via DocAnchor COVERS edges
+        (anchor type + confidence + source doc files). Pure Neo4j."""
+        with self._lock:
+            self._ensure_db()
+            uid = self._resolve_uid(symbol, workspace_id, file_path)
+            if not uid:
+                return DocsForResult(symbol=symbol, workspace_id=workspace_id, found=False)
+            with self._db.driver.session() as session:
+                rows = session.run(
+                    """
+                    MATCH (a:DocAnchor)-[r:COVERS]->(s:Symbol {uid: $uid})
+                    WHERE coalesce(r.workspace_id, $ws) = $ws
+                    OPTIONAL MATCH (a)-[:FROM]->(f:File {workspace_id: $ws})
+                    WITH a, r, collect(DISTINCT f.path) AS files
+                    RETURN coalesce(a.chunk_id, '') AS chunk_id,
+                           coalesce(r.anchor_type, '') AS anchor_type,
+                           coalesce(r.confidence, 0.0) AS confidence,
+                           files AS files
+                    ORDER BY confidence DESC
+                    LIMIT $limit
+                    """,
+                    ws=workspace_id,
+                    uid=uid,
+                    limit=int(limit),
+                ).data()
+        return DocsForResult(
+            symbol=symbol,
+            workspace_id=workspace_id,
+            found=True,
+            symbol_uid=uid,
+            rows=[
+                DocCoverRow(
+                    chunk_id=str(r.get("chunk_id") or ""),
+                    anchor_type=str(r.get("anchor_type") or ""),
+                    confidence=float(r.get("confidence") or 0.0),
+                    files=[str(f) for f in (r.get("files") or []) if f],
+                )
+                for r in rows
+            ],
+        )
 
     def close(self) -> None:
         if self._db is not None:
