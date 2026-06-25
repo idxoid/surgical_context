@@ -25,6 +25,49 @@ const webviewEntryPoints = {
   dashboard: path.join('src/webview', 'dashboard.ts'),
 };
 
+/** esbuild ESM chunks emit `var` for exported bindings; Sonar expects `const`. */
+function rewriteImmutableVarExports(mediaDir) {
+  if (!fs.existsSync(mediaDir)) {
+    return;
+  }
+  const immutableBindings = [
+    'vscode',
+    'VSCODE_WEBVIEW_ORIGIN_PREFIX',
+    'DEFAULT_SETTINGS',
+    'SETTINGS_FORM_FIELD_KEYS',
+  ];
+  for (const fileName of fs.readdirSync(mediaDir)) {
+    if (!fileName.endsWith('.js')) {
+      continue;
+    }
+    const filePath = path.join(mediaDir, fileName);
+    let text = fs.readFileSync(filePath, 'utf8');
+    let changed = false;
+    for (const binding of immutableBindings) {
+      const pattern = new RegExp(`\\bvar ${binding}\\b`, 'g');
+      const next = text.replace(pattern, `const ${binding}`);
+      if (next !== text) {
+        text = next;
+        changed = true;
+      }
+    }
+    if (changed) {
+      fs.writeFileSync(filePath, text);
+    }
+  }
+}
+
+function immutableVarExportPlugin() {
+  return {
+    name: 'immutable-var-to-const',
+    setup(build) {
+      build.onEnd(() => {
+        rewriteImmutableVarExports(path.join(__dirname, 'media'));
+      });
+    },
+  };
+}
+
 /** Webview bundles (Browser) — ESM + splitting shares runtime helpers across entries. */
 const webviewOptions = Object.values(webviewEntryPoints).every(f => fs.existsSync(f))
   ? {
@@ -38,16 +81,15 @@ const webviewOptions = Object.values(webviewEntryPoints).every(f => fs.existsSyn
       sourcemap: !production,
       minify: production,
       external: [],
+      plugins: [immutableVarExportPlugin()],
     }
   : null;
 
 async function build() {
   try {
-    // Build host
     await esbuild.build(hostOptions);
     console.log('✓ Host bundle built');
 
-    // Build webviews (if any exist)
     if (webviewOptions) {
       await esbuild.build(webviewOptions);
       console.log('✓ Webview bundles built');

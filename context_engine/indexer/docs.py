@@ -14,6 +14,7 @@ CHUNK_SIZE = 400
 CHUNK_OVERLAP = 80
 
 from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+from context_engine.workspace_paths import WorkspaceRootNotAllowedError, resolve_cli_directory
 
 _HEADING_RE = re.compile(r"^#{1,3} .+", re.MULTILINE)
 
@@ -48,15 +49,16 @@ def _chunk_text(text: str) -> list[str]:
 
 
 def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict[str, Any]:
+    resolved_docs_path = str(resolve_cli_directory(docs_path))
     lance = LanceDBClient()
     neo4j = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
 
-    md_files = sorted(glob.glob(os.path.join(docs_path, "**/*.md"), recursive=True))
+    md_files = sorted(glob.glob(os.path.join(resolved_docs_path, "**/*.md"), recursive=True))
     if not md_files:
-        print(f"No markdown files found in {docs_path}")
+        print(f"No markdown files found in {resolved_docs_path}")
         neo4j.close()
         return {
-            "docs_path": docs_path,
+            "docs_path": resolved_docs_path,
             "files_indexed": 0,
             "chunks_indexed": 0,
             "link_stats": {},
@@ -108,7 +110,7 @@ def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict
         neo4j,
         lance,
         workspace_id=workspace_id,
-        allowed_prefixes=[docs_path],
+        allowed_prefixes=[resolved_docs_path],
     )
     link_seconds = time.perf_counter() - t_stage
     link_progress.update(1)
@@ -125,7 +127,7 @@ def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict
     }
     print(f"Doc indexing complete. files={len(md_files)} chunks={total_chunks} timings={timings}")
     return {
-        "docs_path": docs_path,
+        "docs_path": resolved_docs_path,
         "files_indexed": len(md_files),
         "chunks_indexed": total_chunks,
         "link_stats": link_stats or {},
@@ -136,4 +138,8 @@ def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict
 if __name__ == "__main__":
     import sys
 
-    index_docs(sys.argv[1] if len(sys.argv) > 1 else "./docs")
+    raw_docs_path = sys.argv[1] if len(sys.argv) > 1 else "./docs"
+    try:
+        index_docs(raw_docs_path)
+    except (FileNotFoundError, WorkspaceRootNotAllowedError) as exc:
+        raise SystemExit(str(exc)) from exc

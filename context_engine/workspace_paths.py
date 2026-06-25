@@ -52,6 +52,17 @@ def resolve_project_root(raw_path: str) -> Path:
     return candidate
 
 
+def resolve_cli_directory(raw_path: str) -> Path:
+    """Resolve and authorize a CLI directory path before filesystem access."""
+    root = resolve_project_root(raw_path)
+    trusted = trusted_workspace_roots()
+    if trusted and not any(is_path_within_root(root, base) for base in trusted):
+        raise WorkspaceRootNotAllowedError(
+            f"Path '{root}' is not under WORKSPACE_TRUSTED_ROOTS"
+        )
+    return root
+
+
 def trusted_workspace_roots() -> list[Path]:
     """Optional allowlist from WORKSPACE_TRUSTED_ROOTS (os.pathsep-separated).
 

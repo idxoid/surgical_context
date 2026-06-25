@@ -43,7 +43,13 @@ def _resolve_committed_uid(
     return symbol_uid or None
 
 
-@router.get("/impact", response_model=ImpactResponse)
+@router.get(
+    "/impact",
+    response_model=ImpactResponse,
+    responses={
+        404: {"description": "Symbol not found in the workspace or overlay"},
+    },
+)
 def impact(
     symbol: str,
     max_depth: int = Query(default=3, ge=IMPACT_DEPTH_MIN, le=IMPACT_DEPTH_MAX),

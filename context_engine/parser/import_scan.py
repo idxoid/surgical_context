@@ -9,6 +9,8 @@ from pathlib import Path
 from context_engine.parser.adapters.ts_package_aliases import resolve_package_subpath
 from context_engine.parser.uid import current_project_root, module_name_from_path
 
+_REQUIRE_CALL = "require("
+
 
 def read_quoted_literal(source_code: str, start: int) -> tuple[str, int] | None:
     if start >= len(source_code) or source_code[start] not in "'\"":
@@ -147,10 +149,7 @@ def _scan_const_destructure_require(source_code: str, idx: int) -> _ConstDestruc
     if cursor >= len(source_code) or source_code[cursor] != "=":
         return _ConstDestructureScan(idx + 5)
     cursor = _skip_js_whitespace(source_code, cursor + 1)
-    if not source_code.startswith("require(", cursor):
-        return _ConstDestructureScan(idx + 5)
-    cursor = _skip_js_whitespace(source_code, cursor + len("require("))
-    parsed = read_quoted_literal(source_code, cursor)
+    parsed = _parse_require_literal(source_code, cursor)
     if parsed is None:
         return _ConstDestructureScan(idx + 5)
     source_path, cursor = parsed
@@ -200,9 +199,9 @@ def _read_js_identifier(source_code: str, cursor: int) -> tuple[str, int] | None
 
 def _parse_require_literal(source_code: str, cursor: int) -> tuple[str, int] | None:
     cursor = _skip_js_whitespace(source_code, cursor)
-    if not source_code.startswith("require(", cursor):
+    if not source_code.startswith(_REQUIRE_CALL, cursor):
         return None
-    cursor = _skip_js_whitespace(source_code, cursor + len("require("))
+    cursor = _skip_js_whitespace(source_code, cursor + len(_REQUIRE_CALL))
     return read_quoted_literal(source_code, cursor)
 
 
@@ -262,6 +261,38 @@ def parse_named_import_bindings(spec: str, source: str, out: dict[str, str]) -> 
             out[alias] = f"{source}.{imported}"
 
 
+def _register_es_module_import(
+    spec: str,
+    import_source: str,
+    normalize_source: Callable[[str], str],
+    bindings: dict[str, str],
+    module_aliases: set[str],
+) -> None:
+    spec = spec.strip()
+    source = normalize_source(import_source.strip())
+    if not spec or not source:
+        return
+    if spec.startswith("{") and spec.endswith("}"):
+        parse_named_import_bindings(spec[1:-1], source, bindings)
+        return
+    if spec.startswith("* as "):
+        alias = spec[len("* as ") :].strip()
+        if alias:
+            bindings[alias] = source
+            module_aliases.add(alias)
+        return
+    if "," in spec:
+        default_alias, rest = spec.split(",", 1)
+        default_alias = default_alias.strip()
+        if default_alias:
+            bindings[default_alias] = source
+        rest = rest.strip()
+        if rest.startswith("{") and rest.endswith("}"):
+            parse_named_import_bindings(rest[1:-1], source, bindings)
+        return
+    bindings[spec] = source
+
+
 def build_js_module_import_bindings(
     source_code: str,
     normalize_source: Callable[[str], str],
@@ -270,27 +301,13 @@ def build_js_module_import_bindings(
     bindings: dict[str, str] = {}
     module_aliases: set[str] = set()
     for spec, import_source in iter_es_module_imports(source_code):
-        spec = spec.strip()
-        source = normalize_source(import_source.strip())
-        if not spec or not source:
-            continue
-        if spec.startswith("{") and spec.endswith("}"):
-            parse_named_import_bindings(spec[1:-1], source, bindings)
-        elif spec.startswith("* as "):
-            alias = spec[len("* as ") :].strip()
-            if alias:
-                bindings[alias] = source
-                module_aliases.add(alias)
-        elif "," in spec:
-            default_alias, rest = spec.split(",", 1)
-            default_alias = default_alias.strip()
-            if default_alias:
-                bindings[default_alias] = source
-            rest = rest.strip()
-            if rest.startswith("{") and rest.endswith("}"):
-                parse_named_import_bindings(rest[1:-1], source, bindings)
-        else:
-            bindings[spec] = source
+        _register_es_module_import(
+            spec,
+            import_source,
+            normalize_source,
+            bindings,
+            module_aliases,
+        )
     for body, import_source in iter_const_destructure_requires(source_code):
         source = normalize_source(import_source.strip())
         parse_named_import_bindings(body, source, bindings)

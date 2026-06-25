@@ -1099,7 +1099,7 @@ ${doc.content}`);
 }
 
 // src/webview/shared/settingsDefaults.ts
-var DEFAULT_SETTINGS = {
+const DEFAULT_SETTINGS = {
   backendUrl: "http://localhost:8000",
   workspaceId: "",
   modelPreference: "auto",
@@ -1112,7 +1112,7 @@ var DEFAULT_SETTINGS = {
   overlaySync: true,
   autoOpenInspector: false
 };
-var SETTINGS_FORM_FIELD_KEYS = [
+const SETTINGS_FORM_FIELD_KEYS = [
   "backendUrl",
   "workspaceId",
   "modelPreference",

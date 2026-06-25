@@ -174,14 +174,18 @@ class ExplainResult:
 
 # Edge type -> (outgoing label, incoming label) for explain's connection map.
 # AFFECTS / CONTAINS are deliberately omitted: too broad (impact covers AFFECTS).
+_LABEL_CALLS = "calls"
+_LABEL_CALLED_BY = "called by"
+_CALLS_EDGE_LABELS = (_LABEL_CALLS, _LABEL_CALLED_BY)
+
 _EXPLAIN_EDGE_LABELS: dict[str, tuple[str, str]] = {
-    "CALLS": ("calls", "called by"),
-    "CALLS_DIRECT": ("calls", "called by"),
-    "CALLS_SCOPED": ("calls", "called by"),
-    "CALLS_IMPORTED": ("calls", "called by"),
-    "CALLS_DYNAMIC": ("calls", "called by"),
-    "CALLS_INFERRED": ("calls", "called by"),
-    "CALLS_GUESS": ("calls", "called by"),
+    "CALLS": _CALLS_EDGE_LABELS,
+    "CALLS_DIRECT": _CALLS_EDGE_LABELS,
+    "CALLS_SCOPED": _CALLS_EDGE_LABELS,
+    "CALLS_IMPORTED": _CALLS_EDGE_LABELS,
+    "CALLS_DYNAMIC": _CALLS_EDGE_LABELS,
+    "CALLS_INFERRED": _CALLS_EDGE_LABELS,
+    "CALLS_GUESS": _CALLS_EDGE_LABELS,
     "USES_TYPE": ("uses type", "used as type by"),
     "INSTANTIATES": ("instantiates", "instantiated by"),
     "DECORATED_BY": ("decorated by", "decorates"),

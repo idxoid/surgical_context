@@ -48,8 +48,8 @@ function replaceElementHtml(element, html) {
 }
 
 // src/webview/shared/webviewRuntime.ts
-var vscode = acquireVsCodeApi();
-var VSCODE_WEBVIEW_ORIGIN_PREFIX = "vscode-webview://";
+const vscode = acquireVsCodeApi();
+const VSCODE_WEBVIEW_ORIGIN_PREFIX = "vscode-webview://";
 function listenForHostMessages(handler) {
   const webviewOrigin = window.location.origin;
   function receiveHostMessage(event) {

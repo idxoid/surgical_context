@@ -122,7 +122,15 @@ def index(
     return {"status": "indexed", "path": str(project_root)}
 
 
-@router.post("/index/file", response_model=IndexFileResponse)
+@router.post(
+    "/index/file",
+    response_model=IndexFileResponse,
+    responses={
+        400: {"description": "File not found at the sandboxed path"},
+        429: {"description": "Index queue rejected the file (backpressure or duplicate)"},
+        500: {"description": "Synchronous index failed"},
+    },
+)
 def index_file_endpoint(
     req: IndexFileRequest,
     x_user_id: str = Header(None),
@@ -285,7 +293,12 @@ def index_files_endpoint(
     }
 
 
-@router.post("/index/git-delta")
+@router.post(
+    "/index/git-delta",
+    responses={
+        400: {"description": "project_path required when workspace has no registered project root"},
+    },
+)
 def index_git_delta_endpoint(
     req: IndexGitDeltaRequest,
     x_user_id: str = Header(None),
@@ -375,7 +388,12 @@ def index_stats(
     }
 
 
-@router.get("/index/manifest")
+@router.get(
+    "/index/manifest",
+    responses={
+        404: {"description": "Index manifest not found for this workspace (run indexing first)"},
+    },
+)
 def index_manifest_endpoint(
     x_user_id: str = Header(None),
     authorization: str = Header(None),
@@ -399,7 +417,13 @@ def index_manifest_endpoint(
     return manifest
 
 
-@router.post("/index/docs", response_model=StatusPathResponse)
+@router.post(
+    "/index/docs",
+    response_model=StatusPathResponse,
+    responses={
+        400: {"description": "Docs path not found at the sandboxed directory"},
+    },
+)
 def index_docs_endpoint(
     req: IndexDocsRequest,
     x_user_id: str = Header(None),

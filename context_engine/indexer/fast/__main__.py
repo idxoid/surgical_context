@@ -10,10 +10,10 @@ parallel pipeline. The baseline indexer is untouched.
 """
 
 import argparse
-import os
 
 from context_engine.indexer.fast.collector import ROOT
 from context_engine.indexer.fast.pipeline import run_fast_indexing
+from context_engine.workspace_paths import WorkspaceRootNotAllowedError, resolve_cli_directory
 
 
 def main():
@@ -51,7 +51,12 @@ def main():
     )
 
     args = parser.parse_args()
-    project_path = os.path.abspath(args.path)
+    try:
+        project_path = str(resolve_cli_directory(args.path))
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    except WorkspaceRootNotAllowedError as exc:
+        parser.error(str(exc))
 
     if args.fresh:
         if not args.workspace:

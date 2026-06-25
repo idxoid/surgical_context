@@ -14,6 +14,7 @@ from context_engine.workspace_paths import (
     registered_workspace_root,
     resolve_graph_file_path,
     resolve_path_under_workspace_root,
+    resolve_cli_directory,
     resolve_project_root,
     trusted_workspace_roots,
     validate_workspace_project_root,
@@ -68,6 +69,20 @@ def test_resolve_project_root(tmp_path):
     root = tmp_path / "proj"
     root.mkdir()
     assert resolve_project_root(str(root)) == root.resolve()
+
+
+def test_resolve_cli_directory_honors_trusted_roots(tmp_path, monkeypatch):
+    allowed_parent = tmp_path / "allowed"
+    allowed_parent.mkdir()
+    project = allowed_parent / "repo"
+    project.mkdir()
+    outside = tmp_path / "outside" / "repo"
+    outside.mkdir(parents=True)
+
+    monkeypatch.setenv("WORKSPACE_TRUSTED_ROOTS", str(allowed_parent))
+    assert resolve_cli_directory(str(project)) == project.resolve()
+    with pytest.raises(WorkspaceRootNotAllowedError):
+        resolve_cli_directory(str(outside))
 
 
 def test_resolve_graph_file_path_rejects_outside_root_when_registered(tmp_path):
