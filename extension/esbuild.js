@@ -151,6 +151,37 @@ function findMatchingBrace(text, openBraceIdx) {
   return -1;
 }
 
+function cleanupOrphanChunks(mediaDir) {
+  const entryFiles = ['main.js', 'dashboard.js'];
+  const referenced = new Set();
+
+  for (const entry of entryFiles) {
+    const entryPath = path.join(mediaDir, entry);
+    if (!fs.existsSync(entryPath)) {
+      continue;
+    }
+    const text = fs.readFileSync(entryPath, 'utf8');
+    for (const match of text.matchAll(/from\s+["'](\.\/chunk-[^"']+)["']/g)) {
+      referenced.add(match[1]);
+    }
+  }
+
+  for (const fileName of fs.readdirSync(mediaDir)) {
+    if (!fileName.startsWith('chunk-') || !fileName.endsWith('.js')) {
+      continue;
+    }
+    const importPath = `./${fileName}`;
+    if (referenced.has(importPath)) {
+      continue;
+    }
+    fs.unlinkSync(path.join(mediaDir, fileName));
+    const mapPath = path.join(mediaDir, `${fileName}.map`);
+    if (fs.existsSync(mapPath)) {
+      fs.unlinkSync(mapPath);
+    }
+  }
+}
+
 function webviewPostProcessPlugin() {
   return {
     name: 'webview-post-process',
@@ -159,6 +190,7 @@ function webviewPostProcessPlugin() {
         const mediaDir = path.join(__dirname, 'media');
         rewriteImmutableVarExports(mediaDir);
         rewriteMainSurfaceClassFields(mediaDir);
+        cleanupOrphanChunks(mediaDir);
       });
     },
   };

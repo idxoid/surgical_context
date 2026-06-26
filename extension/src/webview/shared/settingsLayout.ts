@@ -320,47 +320,57 @@ function checkboxValue(id: string): boolean {
   return (document.getElementById(id) as HTMLInputElement | null)?.checked || false;
 }
 
-export function readSettingsFormFromDom(): SettingsFormValues {
-  return {
-    backendUrl: inputValue('backendUrl'),
-    workspaceId: inputValue('workspaceId'),
-    modelPreference: selectValue('modelPreference', DEFAULT_SETTINGS.modelPreference),
-    authToken: inputValue('authToken'),
-    tokenBudget: Number(inputValue('tokenBudget') || String(DEFAULT_SETTINGS.tokenBudget)),
-    lancedbPath: inputValue('lancedbPath'),
-    historyPath: inputValue('historyPath'),
-    neo4jUri: inputValue('neo4jUri'),
-    indexProfile: selectValue('indexProfile', DEFAULT_SETTINGS.indexProfile),
-    overlaySync: checkboxValue('overlaySync'),
-    autoOpenInspector: checkboxValue('autoOpenInspector'),
-  };
+const SETTINGS_CHECKBOX_FIELDS = new Set<keyof SettingsFormValues>(['overlaySync', 'autoOpenInspector']);
+const SETTINGS_SELECT_FIELDS = new Set<keyof SettingsFormValues>(['modelPreference', 'indexProfile']);
+
+function readSettingsFormField(key: keyof SettingsFormValues): SettingsFormValues[keyof SettingsFormValues] {
+  if (SETTINGS_CHECKBOX_FIELDS.has(key)) {
+    return checkboxValue(key);
+  }
+  if (SETTINGS_SELECT_FIELDS.has(key)) {
+    return selectValue(key, String(DEFAULT_SETTINGS[key]));
+  }
+  if (key === 'tokenBudget') {
+    return Number(inputValue(key) || String(DEFAULT_SETTINGS.tokenBudget));
+  }
+  return inputValue(key);
 }
 
-export function applySettingsDefaultsToDom(defaults: SettingsFormValues = DEFAULT_SETTINGS): void {
-  const setInput = (id: string, value: string) => {
+function applySettingsFormField(key: keyof SettingsFormValues, value: SettingsFormValues[keyof SettingsFormValues]): void {
+  const setInput = (id: string, nextValue: string) => {
     const element = document.getElementById(id) as HTMLInputElement | null;
-    if (element) element.value = value;
+    if (element) element.value = nextValue;
   };
-  const setSelect = (id: string, value: string) => {
+  const setSelect = (id: string, nextValue: string) => {
     const element = document.getElementById(id) as HTMLSelectElement | null;
-    if (element) element.value = value;
+    if (element) element.value = nextValue;
   };
   const setCheckbox = (id: string, checked: boolean) => {
     const element = document.getElementById(id) as HTMLInputElement | null;
     if (element) element.checked = checked;
   };
 
-  setInput('backendUrl', defaults.backendUrl);
-  setInput('workspaceId', defaults.workspaceId);
-  setSelect('modelPreference', defaults.modelPreference);
-  setInput('authToken', defaults.authToken);
-  setInput('tokenBudget', String(defaults.tokenBudget));
-  setInput('lancedbPath', defaults.lancedbPath);
-  setInput('historyPath', defaults.historyPath);
-  setInput('neo4jUri', defaults.neo4jUri);
-  setSelect('indexProfile', defaults.indexProfile);
-  setCheckbox('overlaySync', defaults.overlaySync);
-  setCheckbox('autoOpenInspector', defaults.autoOpenInspector);
+  if (SETTINGS_CHECKBOX_FIELDS.has(key)) {
+    setCheckbox(key, Boolean(value));
+    return;
+  }
+  if (SETTINGS_SELECT_FIELDS.has(key)) {
+    setSelect(key, String(value));
+    return;
+  }
+  setInput(key, String(value));
+}
+
+export function readSettingsFormFromDom(): SettingsFormValues {
+  return Object.fromEntries(
+    SETTINGS_FORM_FIELD_KEYS.map(key => [key, readSettingsFormField(key)]),
+  ) as SettingsFormValues;
+}
+
+export function applySettingsDefaultsToDom(defaults: SettingsFormValues = DEFAULT_SETTINGS): void {
+  for (const key of SETTINGS_FORM_FIELD_KEYS) {
+    applySettingsFormField(key, defaults[key]);
+  }
 }
 
 export type SettingsValidationError = { fieldId: string; message: string };

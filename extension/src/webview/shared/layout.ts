@@ -281,6 +281,40 @@ export function renderComposerDock(isStreaming = false): string {
   `;
 }
 
+export function createUserChatMessage(
+  requestId: string,
+  content: string,
+  symbol?: string,
+): ChatMessage {
+  const id = `msg-${Date.now()}`;
+  return {
+    id,
+    requestId,
+    type: 'user',
+    content,
+    timestamp: Date.now(),
+    symbol,
+  };
+}
+
+export function createAssistantChatMessage(
+  requestId: string,
+  symbol?: string,
+  status: ChatMessage['status'] = 'streaming',
+  error?: string,
+): ChatMessage {
+  return {
+    id: requestId,
+    requestId,
+    type: 'assistant',
+    content: '',
+    timestamp: Date.now(),
+    symbol,
+    status,
+    error,
+  };
+}
+
 export function resizeComposerToFit(textarea: HTMLTextAreaElement, maxHeightPx = 220): void {
   textarea.style.height = 'auto';
   const scrollHeight = textarea.scrollHeight;

@@ -45,6 +45,112 @@ def _symbol(uid: str, content_hash: str, start_line: int = 1, end_line: int = 2)
     )
 
 
+_AXIS_TASK_SOURCE = """
+@app.task(name="jobs.run")
+def run(x: int):
+    return {"x": x}
+"""
+
+_AXIS_EMBED_WORKSPACE = "local/repo@main+axis_python_v1"
+
+
+def _parser_symbol(
+    uid: str,
+    name: str,
+    file_path: str,
+    *,
+    kind: str = "function",
+    start_line: int = 1,
+    end_line: int = 2,
+    qualified_name: str | None = None,
+    language: str = "python",
+    content_hash: str = "hash",
+) -> SymbolMetadata:
+    return SymbolMetadata(
+        uid=uid,
+        name=name,
+        kind=kind,
+        start_line=start_line,
+        end_line=end_line,
+        content_hash=content_hash,
+        file_path=file_path,
+        qualified_name=qualified_name or name,
+        signature=f"{name}()->_",
+        signature_hash="sig",
+        signature_status="resolved",
+        language=language,
+    )
+
+
+def _file_diff(
+    path: str,
+    source: str,
+    symbols: list[SymbolMetadata],
+    file_hash: str = "hash",
+) -> FileDiff:
+    uids = [symbol.uid for symbol in symbols]
+    return FileDiff(
+        extracted=ExtractedFile(path, source, file_hash, symbols, [], [], []),
+        current_uids=uids,
+        changed_uids=uids,
+        changed_symbols=list(symbols),
+    )
+
+
+def _run_embed_phase(
+    diff: FileDiff,
+    lance: LanceDBClient,
+    project_path,
+    **kwargs,
+):
+    return _embed_phase(
+        [diff],
+        lance,
+        _AXIS_EMBED_WORKSPACE,
+        _NullReporter(),
+        project_path=str(project_path),
+        **kwargs,
+    )
+
+
+class _RecordingEmbedLance(_StubLanceDBClient):
+    def __init__(self, index_profile_name: str = AXIS_PYTHON_V1_PROFILE) -> None:
+        self.index_profile_name = index_profile_name
+        self.rows: list = []
+
+    def upsert_symbol_embeddings(
+        self,
+        symbols,
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        progress_callback=None,
+    ):
+        self.rows = list(symbols)
+
+
+class _IndexFileLance(_StubLanceDBClient):
+    def __init__(self) -> None:
+        self.upserted: list = []
+        self.deleted: list = []
+
+    def upsert_symbol_embeddings(
+        self,
+        symbols,
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        progress_callback=None,
+    ):
+        self.upserted = [symbol["uid"] for symbol in symbols]
+
+    def delete_symbol_embeddings(
+        self,
+        uids,
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        self.deleted = list(uids)
+
+
 class TestIncrementalIndexing:
     """Test hash-based file skipping and incremental re-indexing."""
 
@@ -394,59 +500,21 @@ res.status = function status(code) {
         assert linked[0].edge_type == "HAS_API"
 
     def test_fast_embed_phase_adds_axis_payload_for_axis_python_profile(self, tmp_path):
-        source = """
-@app.task(name="jobs.run")
-def run(x: int):
-    return {"x": x}
-"""
         path = tmp_path / "pkg" / "tasks.py"
         path.parent.mkdir()
-        path.write_text(source, encoding="utf-8")
-        symbol = SymbolMetadata(
-            uid="run-uid-from-parser",
-            name="run",
-            kind="function",
+        path.write_text(_AXIS_TASK_SOURCE, encoding="utf-8")
+        symbol = _parser_symbol(
+            "run-uid-from-parser",
+            "run",
+            str(path),
             start_line=2,
             end_line=4,
-            content_hash="hash",
-            file_path=str(path),
             qualified_name="pkg.tasks.run",
-            signature="run(int)->_",
-            signature_hash="sig",
-            signature_status="resolved",
-            language="python",
         )
-        diff = FileDiff(
-            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
-            current_uids=[symbol.uid],
-            changed_uids=[symbol.uid],
-            changed_symbols=[symbol],
-        )
+        diff = _file_diff(str(path), _AXIS_TASK_SOURCE, [symbol])
+        lance = _RecordingEmbedLance()
 
-        class FakeLance(_StubLanceDBClient):
-            index_profile_name = AXIS_PYTHON_V1_PROFILE
-
-            def __init__(self):
-                self.rows = []
-
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.rows = symbols
-
-        lance = FakeLance()
-
-        encoded, removed = _embed_phase(
-            [diff],
-            lance,
-            "local/repo@main+axis_python_v1",
-            _NullReporter(),
-            project_path=str(tmp_path),
-        )
+        encoded, removed = _run_embed_phase(diff, lance, tmp_path)
 
         assert encoded == 1
         assert removed == 0
@@ -468,14 +536,9 @@ def run(x: int):
         assert json.loads(lance.rows[0]["axis_contracts_json"]) == []
 
     def test_fast_embed_phase_reuses_axis_facts_from_parse(self, tmp_path):
-        source = """
-@app.task(name="jobs.run")
-def run(x: int):
-    return {"x": x}
-"""
         path = tmp_path / "pkg" / "tasks.py"
         path.parent.mkdir()
-        path.write_text(source, encoding="utf-8")
+        path.write_text(_AXIS_TASK_SOURCE, encoding="utf-8")
         from context_engine.indexer.fast.extractor import FastExtractor
 
         extracted = FastExtractor(
@@ -491,28 +554,9 @@ def run(x: int):
             changed_uids=[run_symbol.uid],
             changed_symbols=[run_symbol],
         )
+        lance = _RecordingEmbedLance()
 
-        class FakeLance(_StubLanceDBClient):
-            index_profile_name = AXIS_PYTHON_V1_PROFILE
-
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.rows = symbols
-
-        lance = FakeLance()
-
-        encoded, removed = _embed_phase(
-            [diff],
-            lance,
-            "local/repo@main+axis_python_v1",
-            _NullReporter(),
-            project_path=str(tmp_path),
-        )
+        encoded, removed = _run_embed_phase(diff, lance, tmp_path)
 
         assert encoded == 1
         assert removed == 0
@@ -528,51 +572,20 @@ class Settings:
 """
         path = tmp_path / "settings.py"
         path.write_text(source, encoding="utf-8")
-        symbol = SymbolMetadata(
-            uid="settings-class-uid-from-parser",
-            name="Settings",
+        symbol = _parser_symbol(
+            "settings-class-uid-from-parser",
+            "Settings",
+            str(path),
             kind="class",
             start_line=2,
             end_line=4,
-            content_hash="hash",
-            file_path=str(path),
             qualified_name="settings.Settings",
-            signature="class Settings",
-            signature_hash="sig",
-            signature_status="resolved",
             language="python",
         )
-        diff = FileDiff(
-            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
-            current_uids=[symbol.uid],
-            changed_uids=[symbol.uid],
-            changed_symbols=[symbol],
-        )
+        diff = _file_diff(str(path), source, [symbol])
+        lance = _RecordingEmbedLance()
 
-        class FakeLance(_StubLanceDBClient):
-            index_profile_name = AXIS_PYTHON_V1_PROFILE
-
-            def __init__(self):
-                self.rows = []
-
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.rows = symbols
-
-        lance = FakeLance()
-
-        _embed_phase(
-            [diff],
-            lance,
-            "local/repo@main+axis_python_v1",
-            _NullReporter(),
-            project_path=str(tmp_path),
-        )
+        _run_embed_phase(diff, lance, tmp_path)
 
         matches = json.loads(lance.rows[0]["axis_container_kinds_json"])
         contracts = json.loads(lance.rows[0]["axis_contracts_json"])
@@ -594,41 +607,17 @@ export class GuardsContextCreator {
 """
         path = tmp_path / "guards-context-creator.ts"
         path.write_text(source, encoding="utf-8")
-        symbol = SymbolMetadata(
-            uid="create-uid",
-            name="create",
-            kind="function",
+        symbol = _parser_symbol(
+            "create-uid",
+            "create",
+            str(path),
             start_line=3,
             end_line=5,
-            content_hash="hash",
-            file_path=str(path),
             qualified_name="guards-context-creator.GuardsContextCreator.create",
-            signature="create()->_",
-            signature_hash="sig",
-            signature_status="resolved",
             language="typescript",
         )
-        diff = FileDiff(
-            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
-            current_uids=[symbol.uid],
-            changed_uids=[symbol.uid],
-            changed_symbols=[symbol],
-        )
-
-        class FakeLance(_StubLanceDBClient):
-            index_profile_name = AXIS_PYTHON_V1_PROFILE
-
-            def __init__(self):
-                self.rows = []
-
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.rows = symbols
+        diff = _file_diff(str(path), source, [symbol])
+        lance = _RecordingEmbedLance()
 
         class BridgeProbe:
             def metadata_bridge_keys(self, symbol_uid):
@@ -658,16 +647,7 @@ export class GuardsContextCreator {
             def is_event_signal(self, symbol_uid):
                 return False
 
-        lance = FakeLance()
-
-        _embed_phase(
-            [diff],
-            lance,
-            "local/repo@main+axis_python_v1",
-            _NullReporter(),
-            project_path=str(tmp_path),
-            graph_probe=BridgeProbe(),
-        )
+        _run_embed_phase(diff, lance, tmp_path, graph_probe=BridgeProbe())
 
         row = lance.rows[0]
         assert {"callable_body"} <= set(row["cfg_bits"])
@@ -683,41 +663,13 @@ export class GuardsContextCreator {
         source = "def run():\n    return 1\n"
         path = tmp_path / "routes.py"
         path.write_text(source, encoding="utf-8")
-        symbol = SymbolMetadata(
-            uid="run-uid-from-parser",
-            name="run",
-            kind="function",
-            start_line=1,
-            end_line=2,
-            content_hash="hash",
-            file_path=str(path),
+        symbol = _parser_symbol(
+            "run-uid-from-parser",
+            "run",
+            str(path),
             qualified_name="routes.run",
-            signature="run()->_",
-            signature_hash="sig",
-            signature_status="resolved",
-            language="python",
         )
-        diff = FileDiff(
-            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
-            current_uids=[symbol.uid],
-            changed_uids=[symbol.uid],
-            changed_symbols=[symbol],
-        )
-
-        class FakeLance(_StubLanceDBClient):
-            index_profile_name = AXIS_PYTHON_V1_PROFILE
-
-            def __init__(self):
-                self.rows = []
-
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.rows = symbols
+        diff = _file_diff(str(path), source, [symbol])
 
         class MarkerProbe:
             def outgoing_kind_edges(self, symbol_uid, kinds):
@@ -744,16 +696,9 @@ export class GuardsContextCreator {
             def is_event_signal(self, symbol_uid):
                 return False
 
-        lance = FakeLance()
+        lance = _RecordingEmbedLance()
 
-        _embed_phase(
-            [diff],
-            lance,
-            "local/repo@main+axis_python_v1",
-            _NullReporter(),
-            project_path=str(tmp_path),
-            graph_probe=MarkerProbe(),
-        )
+        _run_embed_phase(diff, lance, tmp_path, graph_probe=MarkerProbe())
 
         matches = json.loads(lance.rows[0]["axis_container_kinds_json"])
 
@@ -766,43 +711,9 @@ export class GuardsContextCreator {
         source = "def run():\n    return 1\n"
         path = tmp_path / "tasks.py"
         path.write_text(source, encoding="utf-8")
-        symbol = SymbolMetadata(
-            uid="run",
-            name="run",
-            kind="function",
-            start_line=1,
-            end_line=2,
-            content_hash="hash",
-            file_path=str(path),
-            qualified_name="tasks.run",
-            signature="run()->_",
-            signature_hash="sig",
-            signature_status="resolved",
-            language="python",
-        )
-        diff = FileDiff(
-            extracted=ExtractedFile(str(path), source, "hash", [symbol], [], [], []),
-            current_uids=[symbol.uid],
-            changed_uids=[symbol.uid],
-            changed_symbols=[symbol],
-        )
-
-        class FakeLance(_StubLanceDBClient):
-            index_profile_name = "legacy"
-
-            def __init__(self):
-                self.rows = []
-
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.rows = symbols
-
-        lance = FakeLance()
+        symbol = _parser_symbol("run", "run", str(path), qualified_name="tasks.run")
+        diff = _file_diff(str(path), source, [symbol])
+        lance = _RecordingEmbedLance(index_profile_name="legacy")
 
         _embed_phase([diff], lance, "local/repo@main", _NullReporter(), project_path=str(tmp_path))
 
@@ -917,28 +828,6 @@ export class GuardsContextCreator {
             def link_inheritance(self, inheritance_edges, workspace_id):
                 raise AssertionError("No inheritance expected")
 
-        class FakeLance(_StubLanceDBClient):
-            def __init__(self):
-                self.upserted = []
-                self.deleted = []
-
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.upserted = [s["uid"] for s in symbols]
-
-            def delete_symbol_embeddings(
-                self,
-                uids,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-            ):
-                self.deleted = uids
-
         class FakeExtractor:
             def extract(self, file_path):
                 return [
@@ -982,7 +871,7 @@ export class GuardsContextCreator {
             encoding="utf-8",
         )
         db = FakeDb()
-        lance = FakeLance()
+        lance = _IndexFileLance()
 
         index_file(
             str(source_file),
@@ -1036,24 +925,6 @@ export class GuardsContextCreator {
             def delete_imports_for_file(self, file_path, workspace_id):
                 self.deleted_imports = True
 
-        class FakeLance(_StubLanceDBClient):
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.upserted = symbols
-
-            def delete_symbol_embeddings(
-                self,
-                uids,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-            ):
-                self.deleted = uids
-
         class FakeExtractor:
             def extract(self, file_path):
                 return [_symbol("unchanged", "same", 1, 2)]
@@ -1077,7 +948,7 @@ export class GuardsContextCreator {
         source_file = tmp_path / "test.py"
         source_file.write_text("def unchanged():\n    pass\n", encoding="utf-8")
         db = FakeDb()
-        lance = FakeLance()
+        lance = _IndexFileLance()
 
         index_file(
             str(source_file),
@@ -1147,21 +1018,6 @@ class Settings:
             def recompute_degree_for_closure(self, seed_uids, workspace_id):
                 pass  # Stub: index_file calls this; degree recompute is not asserted here.
 
-        class FakeLance(_StubLanceDBClient):
-            index_profile_name = AXIS_PYTHON_V1_PROFILE
-
-            def __init__(self):
-                self.rows = []
-
-            def upsert_symbol_embeddings(
-                self,
-                symbols,
-                *,
-                workspace_id: str = DEFAULT_WORKSPACE_ID,
-                progress_callback=None,
-            ):
-                self.rows = symbols
-
         finalize_calls = []
 
         monkeypatch.setattr(
@@ -1181,7 +1037,7 @@ class Settings:
 
         extractor = SymbolExtractor()
         extractor.project_root = str(tmp_path)
-        lance = FakeLance()
+        lance = _RecordingEmbedLance()
         index_file(
             str(path),
             cast(Neo4jClient, FakeDb()),

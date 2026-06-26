@@ -1,7 +1,20 @@
 import { IntentMatch, PromptContextPayload } from './protocol';
 import { escapeHtml } from './html';
+import { renderInspectorSurfaceShell } from './surfaceChrome';
 
 export { escapeHtml };
+
+export type InspectorTab = 'primary' | 'intent' | 'graph' | 'docs' | 'tokens' | 'json' | 'api';
+
+const INSPECTOR_TABS: Array<{ id: InspectorTab; label: string }> = [
+  { id: 'primary', label: 'Primary' },
+  { id: 'intent', label: 'Intent' },
+  { id: 'graph', label: 'Graph' },
+  { id: 'docs', label: 'Docs' },
+  { id: 'tokens', label: 'Tokens' },
+  { id: 'json', label: 'JSON' },
+  { id: 'api', label: 'API' },
+];
 
 function renderTable(headers: string[], bodyRows: string, tableClass = ''): string {
   const classAttr = tableClass ? ` class="${tableClass}"` : '';
@@ -289,4 +302,80 @@ function buildSystemPrompt(context: PromptContextPayload): string {
   }
 
   return blocks.join('\n');
+}
+
+function renderInspectorTabButton(tab: InspectorTab, label: string, activeTab: InspectorTab): string {
+  return `
+    <button
+      class="tab-button ${activeTab === tab ? 'active' : ''}"
+      data-action="switchInspectorTab"
+      data-inspector-tab="${tab}"
+      role="tab"
+      aria-selected="${activeTab === tab}"
+    >
+      ${label}
+    </button>
+  `;
+}
+
+export function renderInspectorTabContent(
+  activeTab: InspectorTab,
+  context: PromptContextPayload,
+  intentMatches: IntentMatch[] | null,
+): string {
+  switch (activeTab) {
+    case 'intent':
+      return renderIntentTab(intentMatches);
+    case 'graph':
+      return renderGraphContextTab(context);
+    case 'docs':
+      return renderDocumentationTab(context);
+    case 'tokens':
+      return renderTokenBreakdownTab(context);
+    case 'json':
+      return renderPromptJsonTab(context);
+    case 'api':
+      return renderApiPayloadTab(context);
+    case 'primary':
+    default:
+      return renderPrimarySourceTab(context);
+  }
+}
+
+export function renderInspectorSurfaceView(
+  chrome: string,
+  context: PromptContextPayload | null,
+  activeTab: InspectorTab,
+  subtitle: string,
+  intentMatches: IntentMatch[] | null,
+): string {
+  if (!context) {
+    return renderInspectorSurfaceShell(
+      chrome,
+      `
+        <div class="surface-title">Context Inspector</div>
+        <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
+        <div class="empty-state">
+          No prompt context yet. Ask a question first, then come back here.
+        </div>
+        <button class="primary-action surface-inline-action" data-action="openChat">Open Chat</button>
+      `,
+    );
+  }
+
+  return renderInspectorSurfaceShell(
+    chrome,
+    `
+      <div class="inspector-header">
+        <h2>Context Inspector</h2>
+        <div class="surface-subtitle">${escapeHtml(subtitle)}</div>
+        <div class="inspector-tab-bar" role="tablist" aria-label="Context detail tabs">
+          ${INSPECTOR_TABS.map(tab => renderInspectorTabButton(tab.id, tab.label, activeTab)).join('')}
+        </div>
+      </div>
+      <div class="inspector-content">
+        ${renderInspectorTabContent(activeTab, context, intentMatches)}
+      </div>
+    `,
+  );
 }

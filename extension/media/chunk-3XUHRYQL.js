@@ -38,6 +38,16 @@ function fragmentFromHtml(html) {
 function mountLayoutHtml(element, html) {
   element.replaceChildren(...Array.from(fragmentFromHtml(html).childNodes));
 }
+function toggleAriaExpandedSection(header, content, group, expandedClass) {
+  const expanded = header.getAttribute("aria-expanded") === "true";
+  header.setAttribute("aria-expanded", String(!expanded));
+  content.toggleAttribute("hidden", expanded);
+  content.classList.toggle("expanded", !expanded);
+  if (expandedClass) {
+    group.classList.toggle(expandedClass, !expanded);
+  }
+  return !expanded;
+}
 function replaceElementHtml(element, html) {
   const doc = new DOMParser().parseFromString(html, "text/html");
   sanitizeParsedDocument(doc);
@@ -84,10 +94,11 @@ export {
   bindClickAction,
   bindDataActions,
   mountLayoutHtml,
+  toggleAriaExpandedSection,
   replaceElementHtml,
   vscode,
   listenForHostMessages,
   bootWebview,
   escapeHtml
 };
-//# sourceMappingURL=chunk-HRWW4XWW.js.map
+//# sourceMappingURL=chunk-3XUHRYQL.js.map

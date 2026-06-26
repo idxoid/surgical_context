@@ -32,6 +32,22 @@ export function mountLayoutHtml(element: HTMLElement, html: string): void {
   element.replaceChildren(...Array.from(fragmentFromHtml(html).childNodes));
 }
 
+export function toggleAriaExpandedSection(
+  header: HTMLElement,
+  content: Element,
+  group: Element,
+  expandedClass?: string,
+): boolean {
+  const expanded = header.getAttribute('aria-expanded') === 'true';
+  header.setAttribute('aria-expanded', String(!expanded));
+  content.toggleAttribute('hidden', expanded);
+  content.classList.toggle('expanded', !expanded);
+  if (expandedClass) {
+    group.classList.toggle(expandedClass, !expanded);
+  }
+  return !expanded;
+}
+
 export function replaceElementHtml(element: Element, html: string): void {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   sanitizeParsedDocument(doc);

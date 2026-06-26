@@ -1,5 +1,5 @@
 import { bindDataActions } from './shared/domActions';
-import { mountLayoutHtml, replaceElementHtml } from './shared/domRender';
+import { mountLayoutHtml, replaceElementHtml, toggleAriaExpandedSection } from './shared/domRender';
 import { bootWebview, listenForHostMessages, vscode } from './shared/webviewRuntime';
 
 import {
@@ -14,6 +14,8 @@ import {
   WebviewToHostMessage,
 } from './shared/protocol';
 import {
+  createAssistantChatMessage,
+  createUserChatMessage,
   escapeHtml,
   renderAdvancedInfoAccordion,
   renderComposerDock,
@@ -28,16 +30,18 @@ import {
   renderImpactWorkspace,
 } from './shared/impactLayout';
 import { hydrateFromPromptContext } from './shared/impactTransforms';
-import { renderImpactSurfaceShell } from './shared/surfaceChrome';
 import {
-  renderDocumentationTab,
-  renderGraphContextTab,
-  renderPrimarySourceTab,
-  renderPromptJsonTab,
-  renderApiPayloadTab,
-  renderTokenBreakdownTab,
-  renderIntentTab,
+  renderImpactSurfaceShell,
+  renderSurfaceShell,
+  renderMainSurfaceTabBar,
+  Surface,
+} from './shared/surfaceChrome';
+import {
+  InspectorTab,
+  renderInspectorSurfaceView,
 } from './shared/inspectorLayout';
+import { dispatchMainHostMessage, MainSurfaceHostDelegate } from './shared/mainSurfaceHost';
+import { handleMainSurfaceAction, MainSurfaceActionHost } from './shared/mainSurfaceActions';
 import {
   applySettingsDefaultsToDom,
   readSettingsFormFromDom,
@@ -48,8 +52,6 @@ import {
   validateSettingsForm,
 } from './shared/settingsLayout';
 
-type Surface = 'chat' | 'inspector' | 'impact' | 'settings';
-type InspectorTab = 'primary' | 'intent' | 'graph' | 'docs' | 'tokens' | 'json' | 'api';
 type ImpactSource = 'prompt' | 'graph' | 'none';
 
 interface StoredDialog {
@@ -94,80 +96,48 @@ class MainSurface {
 
   private initializeMessageListener(): void {
     listenForHostMessages<HostToWebviewMessage>((message) => {
-      switch (message.type) {
-        case 'surface.init':
-          this.onSurfaceInit(message);
-          break;
-        case 'surface.showChat':
-          this.showSurface('chat');
-          break;
-        case 'surface.showInspector':
-          this.showSurface('inspector');
-          break;
-        case 'surface.showImpact':
-          this.showSurface('impact');
-          break;
-        case 'surface.showSettings':
-          this.showSurface('settings', () => this.requestSettings());
-          break;
-        case 'chat.requestStarted':
-          this.surface = 'chat';
-          this.onRequestStarted(message.requestId, message.symbol);
-          break;
-        case 'chat.streamChunk':
-          this.onStreamChunk(message.requestId, message.chunk);
-          break;
-        case 'chat.requestCompleted':
-          this.onRequestCompleted(message.requestId, message.answer, message.context);
-          break;
-        case 'chat.requestFailed':
-          this.onRequestFailed(message.requestId, message.error);
-          break;
-        case 'chat.requestStopped':
-          this.onRequestStopped(message.requestId);
-          break;
-        case 'chat.contextSummary':
-          this.currentContextSummary = message.summary;
-          this.refreshAccordions();
-          break;
-        case 'workspace.updated':
-          this.onWorkspaceUpdated(message);
-          break;
-        case 'backend.updated':
-          this.onBackendUpdated(message);
-          break;
-        case 'impact.loading':
-          this.onImpactLoading();
-          break;
-        case 'impact.loaded':
-          this.onImpactLoaded(message);
-          break;
-        case 'impact.loadFailed':
-          this.onImpactLoadFailed(message);
-          break;
-        case 'inspector.loaded':
-          this.onInspectorLoaded(message);
-          break;
-        case 'inspector.intentLoaded':
-          this.onInspectorIntentLoaded(message);
-          break;
-        case 'settings.loaded':
-          this.onSettingsLoaded(message);
-          break;
-        case 'settings.saved':
-          showFeedback(message.message, 'success');
-          break;
-        case 'settings.saveFailed':
-          showFeedback(message.error, 'error');
-          break;
-        case 'settings.testUrlComplete':
-          showFieldStatus('backendUrl', message.success, message.message);
-          break;
-        case 'toast.show':
-          this.showToast(message.message, message.level);
-          break;
-      }
+      dispatchMainHostMessage(this.hostDelegate(), message);
     });
+  }
+
+  private hostDelegate(): MainSurfaceHostDelegate {
+    return this as unknown as MainSurfaceHostDelegate;
+  }
+
+  private actionHost(): MainSurfaceActionHost {
+    return this as unknown as MainSurfaceActionHost;
+  }
+
+  private setSurface(surface: Surface): void {
+    this.surface = surface;
+  }
+
+  private setContextSummary(summary: ContextSummaryDto): void {
+    this.currentContextSummary = summary;
+  }
+
+  private getSurface(): Surface {
+    return this.surface;
+  }
+
+  private getInspectorTab(): InspectorTab {
+    return this.inspectorTab;
+  }
+
+  private postOpenDashboard(): void {
+    this.postMessage({ type: 'action.openDashboard' });
+  }
+
+  private postOpenKeybindings(): void {
+    this.postMessage({ type: 'settings.openKeybindings' });
+  }
+
+  private showSearchComingSoon(): void {
+    this.showToast('Search is coming soon.', 'info');
+  }
+
+  private getActiveImpactSymbol(): string | null {
+    return this.currentImpactSymbol;
   }
 
   private showSurface(surface: Surface, beforeRender?: () => void): void {
@@ -282,12 +252,15 @@ class MainSurface {
     const root = document.getElementById('root');
     if (!root) return;
 
-    mountLayoutHtml(root, `
-      <section class="surface surface-chat" aria-label="Surgical Context loading">
-        ${this.renderSurfaceTabs()}
-        <div class="loading-state">Loading Surgical Context...</div>
-      </section>
-    `);
+    mountLayoutHtml(
+      root,
+      renderSurfaceShell(
+        'surface-chat',
+        'Surgical Context loading',
+        this.renderSurfaceTabs(),
+        '<div class="loading-state">Loading Surgical Context...</div>',
+      ),
+    );
 
     this.attachEventListeners();
   }
@@ -311,61 +284,17 @@ class MainSurface {
   }
 
   private renderSurfaceTabs(): string {
-    const tabs: Array<{ id: Surface; label: string; icon: string }> = [
-      { id: 'chat', label: 'Chat', icon: '◌' },
-      { id: 'inspector', label: 'Inspector', icon: '◎' },
-      { id: 'impact', label: 'Impact', icon: '⌁' },
-    ];
-
-    return `
-      <nav class="surface-tab-bar" aria-label="Surgical Context sections">
-        <div class="surface-tab-group">
-          ${tabs
-            .map(tab => `
-            <button
-              class="surface-tab ${this.surface === tab.id ? 'active' : ''}"
-              data-action="switchSurface"
-              data-surface="${tab.id}"
-              aria-current="${this.surface === tab.id ? 'page' : 'false'}"
-              title="${tab.label}"
-              aria-label="${tab.label}"
-            >
-              <span aria-hidden="true">${tab.icon}</span>
-            </button>
-          `)
-            .join('')}
-          <button
-            class="surface-tab"
-            data-action="openDashboard"
-            title="Dashboard"
-            aria-label="Dashboard"
-          >
-            <span aria-hidden="true">▦</span>
-          </button>
-        </div>
-        <div class="surface-tab-actions">
-          ${this.surface === 'chat' ? this.renderChatSessionActions() : ''}
-          <button
-            class="surface-tab ${this.surface === 'settings' ? 'active' : ''}"
-            data-action="switchSurface"
-            data-surface="settings"
-            aria-current="${this.surface === 'settings' ? 'page' : 'false'}"
-            title="Settings"
-            aria-label="Settings"
-          >
-            <span aria-hidden="true">⚙</span>
-          </button>
-        </div>
-      </nav>
-    `;
+    return renderMainSurfaceTabBar(this.surface, this.renderChatSessionActions());
   }
 
   private renderChatSurface(): string {
     if (!this.state) return '';
 
-    return `
-      <section class="surface surface-chat" aria-label="Surgical Context chat">
-        ${this.renderChrome()}
+    return renderSurfaceShell(
+      'surface-chat',
+      'Surgical Context chat',
+      this.renderChrome(),
+      `
         <div class="conversation-viewport" id="conversation"></div>
         <div class="accordion-stack">
           ${this.renderAccordions()}
@@ -376,8 +305,8 @@ class MainSurface {
           graphFirst: true,
           docLinked: true,
         })}
-      </section>
-    `;
+      `,
+    );
   }
 
   private renderChatSessionActions(): string {
@@ -433,136 +362,66 @@ class MainSurface {
 
   private renderImpactSurface(): string {
     const symbol = this.currentImpactSymbol || this.currentPromptContext?.primary_source.symbol || this.state?.workspace.selectedSymbol || 'No symbol selected';
-    const selectedPromptText = this.selectedPromptText();
-    const subtitle = selectedPromptText || 'Related code and files for the selected prompt.';
-    const chrome = this.renderChrome();
+    const subtitle = this.selectedPromptText() || 'Related code and files for the selected prompt.';
+    return renderImpactSurfaceShell(this.renderChrome(), subtitle, this.buildImpactSurfaceBody(symbol));
+  }
 
+  private buildImpactSurfaceBody(symbol: string): string {
     if (this.impactLoading) {
-      return renderImpactSurfaceShell(chrome, subtitle, '<div class="loading-state">Loading impact analysis...</div>');
+      return '<div class="loading-state">Loading impact analysis...</div>';
     }
 
     if (this.impactError) {
-      return renderImpactSurfaceShell(
-        chrome,
-        subtitle,
-        `<div class="error-state">${escapeHtml(this.impactError)}</div>
-          <button class="secondary-action" data-action="openChat">Back to Ask</button>`,
-      );
+      return `
+        <div class="error-state">${escapeHtml(this.impactError)}</div>
+        <button class="secondary-action" data-action="openChat">Back to Ask</button>
+      `;
     }
 
     if (!this.currentImpact) {
-      return renderImpactSurfaceShell(
-        chrome,
-        subtitle,
-        `<div class="empty-state">Select a symbol to see its impact.</div>
-          <button class="primary-action" data-action="showImpact">Analyze Current Symbol</button>`,
-      );
+      return `
+        <div class="empty-state">Select a symbol to see its impact.</div>
+        <button class="primary-action" data-action="showImpact">Analyze Current Symbol</button>
+      `;
     }
 
-    return renderImpactSurfaceShell(
-      chrome,
-      subtitle,
-      `${renderImpactWorkspace(
+    return `
+      ${renderImpactWorkspace(
         this.currentImpact,
         symbol,
         this.impactContextSubtitle(),
         { depth: this.currentImpactDepth },
       )}
-        <div class="surface-footer">
-          <span>${this.impactFooterSubtitle()}</span>
-          <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
-        </div>`,
-    );
-  }
-
-  private renderInspectorSurfaceShell(content: string): string {
-    return `
-      <section class="surface surface-inspector" aria-label="Context inspector">
-        ${this.renderChrome()}
-        ${content}
-      </section>
+      <div class="surface-footer">
+        <span>${this.impactFooterSubtitle()}</span>
+        <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
+      </div>
     `;
   }
 
   private renderInspectorSurface(): string {
-    const context = this.currentPromptContext;
-
-    if (!context) {
-      return this.renderInspectorSurfaceShell(`
-          <div class="surface-title">Context Inspector</div>
-          <div class="surface-subtitle">${escapeHtml(this.selectedPromptText() || 'Inspect the evidence behind the selected answer.')}</div>
-          <div class="empty-state">
-            No prompt context yet. Ask a question first, then come back here.
-          </div>
-          <button class="primary-action surface-inline-action" data-action="openChat">Open Chat</button>
-      `);
-    }
-
-    return this.renderInspectorSurfaceShell(`
-        <div class="inspector-header">
-          <h2>Context Inspector</h2>
-          <div class="surface-subtitle">${escapeHtml(this.selectedPromptText() || 'Selected prompt')}</div>
-          <div class="inspector-tab-bar" role="tablist" aria-label="Context detail tabs">
-            ${this.renderInspectorTabButton('primary', 'Primary')}
-            ${this.renderInspectorTabButton('intent', 'Intent')}
-            ${this.renderInspectorTabButton('graph', 'Graph')}
-            ${this.renderInspectorTabButton('docs', 'Docs')}
-            ${this.renderInspectorTabButton('tokens', 'Tokens')}
-            ${this.renderInspectorTabButton('json', 'JSON')}
-            ${this.renderInspectorTabButton('api', 'API')}
-          </div>
-        </div>
-        <div class="inspector-content">
-          ${this.renderInspectorTabContent(context)}
-        </div>
-    `);
-  }
-
-  private renderInspectorTabButton(tab: InspectorTab, label: string): string {
-    return `
-      <button
-        class="tab-button ${this.inspectorTab === tab ? 'active' : ''}"
-        data-action="switchInspectorTab"
-        data-inspector-tab="${tab}"
-        role="tab"
-        aria-selected="${this.inspectorTab === tab}"
-      >
-        ${label}
-      </button>
-    `;
-  }
-
-  private renderInspectorTabContent(context: PromptContextPayload): string {
-    switch (this.inspectorTab) {
-      case 'intent':
-        return renderIntentTab(this.intentMatches);
-      case 'graph':
-        return renderGraphContextTab(context);
-      case 'docs':
-        return renderDocumentationTab(context);
-      case 'tokens':
-        return renderTokenBreakdownTab(context);
-      case 'json':
-        return renderPromptJsonTab(context);
-      case 'api' :
-         return renderApiPayloadTab(context);
-      case 'primary':
-      default:
-        return renderPrimarySourceTab(context);
-    }
+    return renderInspectorSurfaceView(
+      this.renderChrome(),
+      this.currentPromptContext,
+      this.inspectorTab,
+      this.selectedPromptText() || (
+        this.currentPromptContext
+          ? 'Selected prompt'
+          : 'Inspect the evidence behind the selected answer.'
+      ),
+      this.intentMatches,
+    );
   }
 
   private renderSettingsSurface(): string {
-    return `
-      <section class="surface surface-settings" aria-label="Surgical Context settings">
-        ${this.renderChrome()}
-        ${
-          this.settings
-            ? renderSettingsForm(settingsFormDataFromSettings(this.settings))
-            : '<div class="loading-state">Loading settings...</div>'
-        }
-      </section>
-    `;
+    return renderSurfaceShell(
+      'surface-settings',
+      'Surgical Context settings',
+      this.renderChrome(),
+      this.settings
+        ? renderSettingsForm(settingsFormDataFromSettings(this.settings))
+        : '<div class="loading-state">Loading settings...</div>',
+    );
   }
 
   private renderAccordions(): string {
@@ -586,7 +445,7 @@ class MainSurface {
   }
 
   private attachEventListeners(): void {
-    bindDataActions(document, event => this.handleAction(event));
+    bindDataActions(document, event => handleMainSurfaceAction(this.actionHost(), event));
 
     document.querySelectorAll('.accordion-header').forEach(header => {
       header.addEventListener('click', () => this.toggleAccordion(header as HTMLElement));
@@ -617,123 +476,35 @@ class MainSurface {
       document.addEventListener('keydown', event => {
         if ((event.ctrlKey || event.metaKey) && event.key === 'l') {
           event.preventDefault();
-          (document.getElementById('composer-input') as HTMLTextAreaElement | null)?.focus();
+          this.focusComposer();
         }
       });
       this.keyboardListenerAttached = true;
     }
   }
 
-  private handleAction(event: Event): void {
-    const target = event.currentTarget as HTMLElement;
-    const action = target.dataset.action;
-
-    if (
-      action === 'copy' ||
-      action === 'copy-json' ||
-      action === 'copy-api-json' ||
-      action === 'feedback'
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
+  private handleSurfaceDomAction(surface: Surface, action: string, target: HTMLElement): void {
+    this.switchSurface(surface);
+    if (action === 'openChat') {
+      this.focusComposerDeferred();
+    } else if (action === 'showImpact' && target.classList.contains('icon-action')) {
+      this.requestImpactForActiveSymbol();
     }
+  }
 
-    switch (action) {
-      case 'switchSurface':
-        this.switchSurface(target.dataset.surface as Surface);
-        break;
-      case 'switchInspectorTab':
-        this.switchInspectorTab(target.dataset.inspectorTab as InspectorTab);
-        break;
-      case 'selectPrompt':
-        this.selectPrompt(target.dataset.requestId ?? null);
-        break;
-      case 'toggleHistory':
-        this.toggleHistory();
-        break;
-      case 'newDialog':
-        this.startNewDialog();
-        break;
-      case 'restoreDialog':
-        this.restoreDialog(target.dataset.dialogId ?? null);
-        break;
-      case 'openDashboard':
-        this.postMessage({ type: 'action.openDashboard' });
-        break;
-      case 'ask':
-        (document.getElementById('composer-input') as HTMLTextAreaElement | null)?.focus();
-        break;
-      case 'openChat':
-        this.switchSurface('chat');
-        setTimeout(() => {
-          (document.getElementById('composer-input') as HTMLTextAreaElement | null)?.focus();
-        }, 0);
-        break;
-      case 'openInspector':
-        this.switchSurface('inspector');
-        break;
-      case 'openSettings':
-        this.switchSurface('settings');
-        break;
-      case 'showImpact':
-        this.switchSurface('impact');
-        if (target.classList.contains('icon-action')) {
-          this.requestImpactForActiveSymbol();
-        }
-        break;
-      case 'ask-followup':
-        this.prefillImpactAsk(
-          `What should I check before changing ${this.currentImpactSymbol || 'this symbol'}?`
-        );
-        break;
-      case 'open-related-files':
-        this.openRelatedImpactFiles();
-        break;
-      case 'openFile':
-        this.openFileFromImpact(target);
-        break;
-      case 'showMoreImpact':
-        this.showMoreImpactRows(target);
-        break;
-      case 'explainImpact':
-        this.toggleImpactExplanation(target);
-        break;
-      case 'create-refactor-plan':
-        this.prefillImpactAsk(
-          `Create a refactor plan for ${this.currentImpactSymbol || 'this symbol'}.`
-        );
-        break;
-      case 'save':
-        this.saveSettings();
-        break;
-      case 'reset':
-        this.resetSettings();
-        break;
-      case 'testUrl':
-        this.testSettingsUrl();
-        break;
-      case 'openKeybindings':
-        this.postMessage({ type: 'settings.openKeybindings' });
-        break;
-      case 'search':
-        this.showToast('Search is coming soon.', 'info');
-        break;
-      case 'noop':
-        this.toggleImpactGroup(target);
-        break;
-      case 'feedback':
-        this.submitFeedback(target);
-        break;
-      case 'copy':
-        this.copyMessage(target);
-        break;
-      case 'copy-json':
-      case 'copy-api-json':
-        this.copyInspectorJson(target);
-        break;
-      case 'stopStreaming':
-        this.stopStreaming();
-        break;
+  private focusComposer(): void {
+    (document.getElementById('composer-input') as HTMLTextAreaElement | null)?.focus();
+  }
+
+  private focusComposerDeferred(): void {
+    setTimeout(() => this.focusComposer(), 0);
+  }
+
+  private syncView(scrollToConversation = false): void {
+    this.persistState();
+    this.render();
+    if (scrollToConversation) {
+      this.scrollToBottom();
     }
   }
 
@@ -972,28 +743,11 @@ class MainSurface {
     const prompt = this.pendingPrompt || 'Ask about current symbol';
     this.pendingPrompt = null;
 
-    const userMessageId = `msg-${Date.now()}`;
-    this.messages.set(userMessageId, {
-      id: userMessageId,
-      requestId,
-      type: 'user',
-      content: prompt,
-      timestamp: Date.now(),
-      symbol,
-    });
-    this.messages.set(requestId, {
-      id: requestId,
-      requestId,
-      type: 'assistant',
-      content: '',
-      timestamp: Date.now(),
-      symbol,
-      status: 'streaming',
-    });
+    const userMessage = createUserChatMessage(requestId, prompt, symbol);
+    this.messages.set(userMessage.id, userMessage);
+    this.messages.set(requestId, createAssistantChatMessage(requestId, symbol));
 
-    this.persistState();
-    this.render();
-    this.scrollToBottom();
+    this.syncView(true);
   }
 
   private onStreamChunk(requestId: string, chunk: string): void {
@@ -1033,14 +787,7 @@ class MainSurface {
       message.status = 'error';
       message.error = error;
     } else {
-      this.messages.set(requestId, {
-        id: requestId,
-        type: 'assistant',
-        content: '',
-        timestamp: Date.now(),
-        status: 'error',
-        error,
-      });
+      this.messages.set(requestId, createAssistantChatMessage(requestId, undefined, 'error', error));
     }
     this.persistState();
     this.updateConversationView();
@@ -1093,7 +840,7 @@ class MainSurface {
         .join(''),
     );
 
-    bindDataActions(viewport, event => this.handleAction(event));
+    bindDataActions(viewport, event => handleMainSurfaceAction(this.actionHost(), event));
 
     viewport.querySelectorAll('.message-card.selectable').forEach(element => {
       element.addEventListener('keydown', event => {
@@ -1122,8 +869,7 @@ class MainSurface {
     }
 
     this.historyCollapsed = true;
-    this.persistState();
-    this.render();
+    this.syncView();
   }
 
   private toggleHistory(): void {
@@ -1150,8 +896,7 @@ class MainSurface {
     this.impactError = null;
     this.impactLoading = false;
     this.historyCollapsed = true;
-    this.persistState();
-    this.render();
+    this.syncView();
   }
 
   private restoreDialog(dialogId: string | null): void {
@@ -1176,9 +921,13 @@ class MainSurface {
     }
 
     this.historyCollapsed = true;
-    this.persistState();
-    this.render();
-    this.scrollToBottom();
+    this.syncView(true);
+  }
+
+  private trimDialogHistory(dialogs: StoredDialog[]): StoredDialog[] {
+    return dialogs
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 30);
   }
 
   private dialogsForHistory(): StoredDialog[] {
@@ -1186,10 +935,7 @@ class MainSurface {
     const dialogs = current
       ? [current, ...this.dialogHistory.filter(dialog => dialog.id !== current.id)]
       : [...this.dialogHistory];
-    return dialogs
-      .filter(dialog => dialog.messages.length > 0)
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .slice(0, 30);
+    return this.trimDialogHistory(dialogs.filter(dialog => dialog.messages.length > 0));
   }
 
   private currentDialogSnapshot(): StoredDialog | null {
@@ -1216,12 +962,10 @@ class MainSurface {
       return;
     }
 
-    this.dialogHistory = [
+    this.dialogHistory = this.trimDialogHistory([
       snapshot,
       ...this.dialogHistory.filter(dialog => dialog.id !== snapshot.id),
-    ]
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .slice(0, 30);
+    ]);
   }
 
   private latestContextRequestId(): string | null {
@@ -1318,13 +1062,9 @@ class MainSurface {
     const content = group?.querySelector('.accordion-content');
     if (!group || !content || !id) return;
 
-    const expanded = header.getAttribute('aria-expanded') === 'true';
-    header.setAttribute('aria-expanded', String(!expanded));
-    content.toggleAttribute('hidden', expanded);
-    content.classList.toggle('expanded', !expanded);
-
+    const expanded = toggleAriaExpandedSection(header, content, group);
     if (this.state) {
-      this.state.expandedAccordions[id] = !expanded;
+      this.state.expandedAccordions[id] = expanded;
       this.persistState();
     }
   }
@@ -1334,10 +1074,7 @@ class MainSurface {
     const content = group?.querySelector('.group-content');
     if (!group || !content) return;
 
-    const expanded = header.getAttribute('aria-expanded') === 'true';
-    header.setAttribute('aria-expanded', String(!expanded));
-    group.classList.toggle('expanded', !expanded);
-    content.toggleAttribute('hidden', expanded);
+    toggleAriaExpandedSection(header, content, group, 'expanded');
   }
 
   private showMoreImpactRows(target: HTMLElement): void {
