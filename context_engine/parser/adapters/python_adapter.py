@@ -1555,9 +1555,7 @@ class PythonAdapter(TreeSitterAdapter):
         site_node = (
             self._hook_decorated_def(node) if decorated else None
         ) or self._enclosing_def_node(node)
-        return (
-            self._uid_for_node(site_node, file_path) if site_node is not None else ""
-        )
+        return self._uid_for_node(site_node, file_path) if site_node is not None else ""
 
     def _process_hook_register_call(
         self,

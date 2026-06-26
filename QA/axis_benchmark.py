@@ -342,7 +342,9 @@ def _run_axis_retrieval_for_question(
             intent_budget=intent_budget,
             base_token_budget=base_token_budget,
             render_mode_override=render_mode_override,
-            anchor_path=(None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)),
+            anchor_path=(
+                None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)
+            ),
             anchor_symbol=(str(question_entry.get("symbol") or "") or None),
             hook_transparency=hook_transparency,
             trace=timer,
