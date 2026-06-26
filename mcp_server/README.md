@@ -24,6 +24,11 @@ pipeline directly.
   blast radius of a change to `symbol` (reverse callers, structural
   API/inheritance, AFFECTS closure). Committed index surface only (no overlay).
 - **`list_workspaces()`** — indexed repos you can target via `workspace=`.
+- **`list_files(workspace=None, path_prefix=None, with_counts=False, limit=400)`**
+  — indexed files of a workspace; the navigation entry point
+  (`list_workspaces → list_files → file_outline → read_symbol`). The only way to
+  enumerate a NON-local workspace the host's Glob can't see; for the local repo
+  the host's Glob is usually cheaper.
 
 ### Navigation & read tools (P0/P1)
 
@@ -77,6 +82,19 @@ your change breaks → `clear_overlay`.
 `workspace` is an optional base id (e.g. `qa_repo/django@main`); the
 `+axis_python_v1` index suffix is added automatically. Omit it to use
 `SURGICAL_CONTEXT_WORKSPACE`.
+
+### Batching (cost)
+
+- **`batch(ops)`** — run several read/nav ops in ONE call, de-duplicating
+  repeated code across results. `ops=[{"tool": <name>, ...args}]` over
+  read_symbol/callers/callees/impact/file_outline/find_definition/search_code/
+  docs_for/path/classify_intent/list_files.
+
+Why it matters: each tool round-trip re-bills the whole conversation context
+(cache_read), measured as the dominant token cost — so at large context FEWER
+rich calls beat MANY granular ones. For a multi-step question, one `batch`
+collapses N round-trips into 1 and emits each symbol's body once. (`ask_code`'s
+docstring carries the same "batch, don't drip" note.)
 
 ## Prerequisites
 

@@ -59,6 +59,12 @@ class WorkspaceInfo:
 
 
 @dataclass
+class FileEntry:
+    path: str
+    symbols: int = 0
+
+
+@dataclass
 class SymbolSource:
     """Exact on-disk source of one symbol — the deterministic read ``ask_code``
     can't guarantee (it budget-trims). ``found=False`` when the name/path miss."""
@@ -622,6 +628,42 @@ class AxisEngine:
                 WorkspaceInfo(base=base_workspace_id(ws), indexed=ws, files=int(r["n"] or 0))
             )
         return out
+
+    def list_files(
+        self,
+        workspace_id: str,
+        *,
+        path_prefix: str | None = None,
+        with_counts: bool = False,
+        limit: int = 400,
+    ) -> list[FileEntry]:
+        """Indexed files of one workspace — the top rung of navigation
+        (list_workspaces → list_files → file_outline → read_symbol). Pure Neo4j;
+        the only way to enumerate a non-local workspace the host can't glob.
+        ``path_prefix`` substring-filters; ``with_counts`` adds per-file symbol
+        counts (one extra OPTIONAL MATCH)."""
+        prefix = (path_prefix or "").strip()
+        count_clause = (
+            "OPTIONAL MATCH (f)-[:CONTAINS]->(s:Symbol) RETURN f.path AS path, count(s) AS n"
+            if with_counts
+            else "RETURN f.path AS path, 0 AS n"
+        )
+        query = (
+            "MATCH (f:File {workspace_id: $ws}) "
+            "WHERE $prefix = '' OR f.path CONTAINS $prefix "
+            f"{count_clause} ORDER BY path LIMIT $limit"
+        )
+        with self._lock:
+            self._ensure_db()
+            with self._db.driver.session() as session:
+                rows = session.run(
+                    query, ws=workspace_id, prefix=prefix, limit=int(limit)
+                ).data()
+        return [
+            FileEntry(path=str(r["path"]), symbols=int(r.get("n") or 0))
+            for r in rows
+            if r.get("path")
+        ]
 
     # ------------------------------------------------------------------
     # P0/P1 navigation primitives — thin wrappers over the engine read path.

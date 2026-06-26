@@ -14,7 +14,7 @@ import sys
 from mcp.server.fastmcp import FastMCP
 
 from surgical_context_mcp.config import resolve_workspace_id
-from surgical_context_mcp.engine import AxisEngine
+from surgical_context_mcp.engine import AxisEngine, _common_dir_prefix
 
 mcp = FastMCP("surgical-context")
 _engine = AxisEngine()
@@ -174,6 +174,44 @@ def list_workspaces() -> str:
         return "No indexed workspaces found. Is the index built and Neo4j up?"
     lines = ["# Indexed workspaces — pass `base` as workspace=", ""]
     lines.extend(f"- {w.base}  ({w.files} files)" for w in rows)
+    return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def list_files(
+    workspace: str | None = None,
+    path_prefix: str | None = None,
+    with_counts: bool = False,
+    limit: int = 400,
+) -> str:
+    """List indexed files of a workspace — the navigation entry point:
+    list_workspaces → **list_files** → file_outline(path) → read_symbol(name).
+
+    The only way to enumerate a NON-local workspace (workspace="qa_repo/django@main")
+    the host's file tools can't see; for the local repo the host's Glob is usually
+    cheaper. Cheap — paths from the index, no code.
+
+    Args:
+        workspace: base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
+        path_prefix: substring filter on the file path (e.g. "api/routes").
+        with_counts: also show per-file indexed-symbol count.
+        limit: max files returned (default 400).
+    """
+    workspace_id = resolve_workspace_id(workspace)
+    rows = _engine.list_files(
+        workspace_id, path_prefix=path_prefix, with_counts=with_counts, limit=limit
+    )
+    if not rows:
+        where = f" under {path_prefix!r}" if path_prefix else ""
+        return f"No indexed files{where} in {workspace_id}."
+    prefix = _common_dir_prefix([r.path for r in rows])
+    lines = [f"# {len(rows)} files · {workspace_id}"]
+    if prefix:
+        lines.append(f"_paths relative to {prefix}_")
+    lines.append("")
+    for r in rows:
+        rel = r.path[len(prefix):] if prefix and r.path.startswith(prefix) else r.path
+        lines.append(f"- {rel}" + (f"  ({r.symbols} symbols)" if with_counts else ""))
     return "\n".join(lines) + "\n"
 
 
@@ -586,6 +624,7 @@ _FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 # Read/nav tools safe to batch. Excludes ask_code (already one rich call),
 # overlay mutations, and trivial list_* tools.
 _BATCHABLE = {
+    "list_files": list_files,
     "read_symbol": read_symbol,
     "callers": callers,
     "callees": callees,
