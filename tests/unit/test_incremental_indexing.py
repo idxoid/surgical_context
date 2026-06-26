@@ -115,8 +115,12 @@ def _run_embed_phase(
 
 class _RecordingEmbedLance(_StubLanceDBClient):
     def __init__(self, index_profile_name: str = AXIS_PYTHON_V1_PROFILE) -> None:
-        self.index_profile_name = index_profile_name
+        self._index_profile_name = index_profile_name
         self.rows: list = []
+
+    @property
+    def index_profile_name(self) -> str:
+        return self._index_profile_name
 
     def upsert_symbol_embeddings(
         self,
