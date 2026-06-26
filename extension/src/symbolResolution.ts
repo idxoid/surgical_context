@@ -49,17 +49,34 @@ const IGNORED_SYMBOLS = new Set([
 ]);
 
 const DEFINITION_PATTERNS = [
-  /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/,
-  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)/,
-  /^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[=:]/,
-  /^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|readonly\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/,
+  /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/,
+  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum)\s+([$\w]+)/,
+  /^(?:export\s+)?(?:const|let|var)\s+([$\w]+)\s*[=:]/,
 ];
 
-const LOCAL_BINDING_PATTERN = /^\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[=:]/;
+const LOCAL_BINDING_PATTERN = /^\s+(?:const|let|var)\s+([$\w]+)\s*[=:]/;
+const METHOD_MODIFIER_PREFIX = /^\s*(?:(?:public|private|protected|static|async|readonly)\s+)*/;
+
+function matchMethodDefinitionLine(line: string): { name: string; character: number } | null {
+  const prefixMatch = METHOD_MODIFIER_PREFIX.exec(line);
+  if (!prefixMatch) {
+    return null;
+  }
+
+  const nameMatch = /^([$\w]+)\s*\(/.exec(line.slice(prefixMatch[0].length));
+  if (!nameMatch?.[1] || IGNORED_SYMBOLS.has(nameMatch[1])) {
+    return null;
+  }
+
+  return {
+    name: nameMatch[1],
+    character: prefixMatch[0].length,
+  };
+}
 
 export function symbolFromDefinitionLine(line: string): { name: string; character: number } | null {
   for (const pattern of DEFINITION_PATTERNS) {
-    const match = line.match(pattern);
+    const match = pattern.exec(line);
     const name = match?.[1];
     if (name && !IGNORED_SYMBOLS.has(name)) {
       return {
@@ -68,7 +85,7 @@ export function symbolFromDefinitionLine(line: string): { name: string; characte
       };
     }
   }
-  return null;
+  return matchMethodDefinitionLine(line);
 }
 
 export function isIgnoredSymbol(name: string): boolean {
@@ -83,7 +100,7 @@ export function isFileNameSymbol(name: string, filePath?: string): boolean {
 }
 
 export function isLocalBindingLine(line: string, name: string): boolean {
-  const match = line.match(LOCAL_BINDING_PATTERN);
+  const match = LOCAL_BINDING_PATTERN.exec(line);
   return match?.[1] === name;
 }
 

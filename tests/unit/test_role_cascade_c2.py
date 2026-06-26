@@ -6,16 +6,16 @@ from context_engine.indexer.role_clustering import SymbolRow
 
 
 def _row(**kwargs) -> SymbolRow:
-    base = dict(
-        uid="u:gw",
-        kind="function",
-        fan_in=0,
-        fan_out=0,
-        cross_package_in=0,
-        cross_package_out=0,
-        depth_from_public=2,
-        doc_anchor_count=0,
-    )
+    base = {
+        "uid": "u:gw",
+        "kind": "function",
+        "fan_in": 0,
+        "fan_out": 0,
+        "cross_package_in": 0,
+        "cross_package_out": 0,
+        "depth_from_public": 2,
+        "doc_anchor_count": 0,
+    }
     base.update(kwargs)
     return SymbolRow(**base)
 

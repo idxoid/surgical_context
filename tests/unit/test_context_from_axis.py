@@ -144,7 +144,6 @@ def test_context_from_axis_queries_index_workspace(monkeypatch):
 def test_adapter_promotes_top_seed_and_dedupes():
     ctx = axis_bundles_to_prompt_context(
         [_bundle(), _bundle()],  # duplicate uids across bundles
-        question="q",
         workspace_id="ws",
     )
     assert ctx is not None
@@ -157,7 +156,7 @@ def test_adapter_promotes_top_seed_and_dedupes():
 
 
 def test_adapter_returns_none_on_empty():
-    assert axis_bundles_to_prompt_context([], question="q", workspace_id="ws") is None
+    assert axis_bundles_to_prompt_context([], workspace_id="ws") is None
 
 
 def test_adapter_uses_expansion_step_not_anchor_role_for_related():
@@ -184,7 +183,7 @@ def test_adapter_uses_expansion_step_not_anchor_role_for_related():
             ),
         ),
     )
-    ctx = axis_bundles_to_prompt_context([anchor_bundle], question="q", workspace_id="ws")
+    ctx = axis_bundles_to_prompt_context([anchor_bundle], workspace_id="ws")
     assert ctx is not None
     assert ctx.primary_source.symbol == "walk_neighbours"
     assert len(ctx.graph_context) == 1
@@ -228,7 +227,7 @@ def test_adapter_preserves_impact_relation_direction_depth_and_score():
         utility_score=0.9,
     )
 
-    ctx = axis_bundles_to_prompt_context([anchor, caller], question="impact", workspace_id="ws")
+    ctx = axis_bundles_to_prompt_context([anchor, caller], workspace_id="ws")
 
     assert ctx is not None
     [dep] = ctx.graph_context

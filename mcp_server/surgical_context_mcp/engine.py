@@ -440,7 +440,7 @@ class AxisEngine:
         roles: list[str] | None = None,
         render: str = "full",
     ) -> AskResult:
-        from context_engine.axis.pipeline import run_axis_retrieval
+        from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
 
         # render="names": census view — strip bodies AND disable the token-credit
         # eviction so the full graph expansion survives (signature_only can't do
@@ -473,17 +473,19 @@ class AxisEngine:
                 workspace_id=workspace_id,
                 db=self._db,
                 lance=self._lance,
-                top_roles=top_roles,
-                per_role_limit=per_role_limit,
-                with_context=with_context,
-                intent_budget=not names_only,
-                base_token_budget=token_budget,
-                hook_transparency=True,
-                intent_override=intent_override,
-                # Uncommitted edits pushed via ``set_overlay`` win over indexed
-                # code (dirty buffers patched in, brand-new symbols anchored).
-                overlay=self._overlay,
-                user_id=OVERLAY_USER_ID,
+                config=AxisRetrievalConfig(
+                    top_roles=top_roles,
+                    per_role_limit=per_role_limit,
+                    with_context=with_context,
+                    intent_budget=not names_only,
+                    base_token_budget=token_budget,
+                    hook_transparency=True,
+                    intent_override=intent_override,
+                    # Uncommitted edits pushed via ``set_overlay`` win over indexed
+                    # code (dirty buffers patched in, brand-new symbols anchored).
+                    overlay=self._overlay,
+                    user_id=OVERLAY_USER_ID,
+                ),
             )
 
         intent = [(m.role, m.similarity) for m in result.intent]

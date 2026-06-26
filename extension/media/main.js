@@ -6,7 +6,7 @@ import {
   mountLayoutHtml,
   replaceElementHtml,
   vscode
-} from "./chunk-G3IIAS2Y.js";
+} from "./chunk-CB47NA2A.js";
 
 // src/webview/shared/layout.ts
 function renderMessageCard(message, selectedRequestId) {
@@ -42,10 +42,15 @@ function renderMessageFooter(message) {
         <button class="message-action-button" data-action="feedback" data-rating="up" title="Helpful" aria-label="Helpful">+</button>
         <button class="message-action-button" data-action="feedback" data-rating="down" title="Not helpful" aria-label="Not helpful">-</button>
       ` : "";
+  let routeMarkup = "";
+  if (route) {
+    const routeClass = route.fallback ? "fallback" : "";
+    routeMarkup = `<span class="message-route ${routeClass}" title="${escapeHtml(route.title)}">${escapeHtml(route.label)}</span>`;
+  }
   return `
     <div class="message-footer">
       <time class="message-time" datetime="${escapeHtml(time.iso)}" title="${escapeHtml(time.title)}">${escapeHtml(time.label)}</time>
-      ${route ? `<span class="message-route ${route.fallback ? "fallback" : ""}" title="${escapeHtml(route.title)}">${escapeHtml(route.label)}</span>` : ""}
+      ${routeMarkup}
       <div class="message-actions">
         ${assistantFeedback}
         <button class="message-action-button" data-action="copy" title="Copy message" aria-label="Copy message">
@@ -439,8 +444,20 @@ function classifyZone(category, depth, filePath) {
   return depth === void 0 || depth <= 1 ? "direct" : "reach";
 }
 function fallbackUtility(severity, category, depth) {
-  const base = severity === "high" ? 0.88 : severity === "medium" ? 0.66 : 0.42;
-  const categoryBoost = category === "api" || category === "data" ? 0.08 : category === "event" ? 0.05 : 0;
+  let base;
+  if (severity === "high") {
+    base = 0.88;
+  } else if (severity === "medium") {
+    base = 0.66;
+  } else {
+    base = 0.42;
+  }
+  let categoryBoost = 0;
+  if (category === "api" || category === "data") {
+    categoryBoost = 0.08;
+  } else if (category === "event") {
+    categoryBoost = 0.05;
+  }
   const depthPenalty = typeof depth === "number" ? Math.min(depth, 4) * 0.04 : 0;
   return Math.max(0.15, Math.min(0.99, base + categoryBoost - depthPenalty));
 }
@@ -786,10 +803,15 @@ function numberField(sym, ...keys) {
 function arrayField(sym, key) {
   const value = sym[key];
   if (!Array.isArray(value)) return [];
-  return value.map((item) => String(item)).filter(Boolean);
+  return value.map(String).filter(Boolean);
 }
+var TEST_DIRECTORY_SEGMENT = /(^|[/.])(tests?|specs?|__tests__)([/.]|$)/;
+var JS_TS_TEST_SUFFIX = /(\.|_)(test|spec)\.[jt]sx?$/;
+var PYTHON_TEST_PREFIX = /test_.*\.py$/;
+var PYTHON_TEST_SUFFIX = /_test\.py$/;
 function isTestFile(filePath) {
-  return /(^|[/.])(tests?|specs?|__tests__)([/.]|$)|(\.|_)(test|spec)\.[jt]sx?$|test_.*\.py$|_test\.py$/.test(filePath.toLowerCase());
+  const path = filePath.toLowerCase();
+  return TEST_DIRECTORY_SEGMENT.test(path) || JS_TS_TEST_SUFFIX.test(path) || PYTHON_TEST_PREFIX.test(path) || PYTHON_TEST_SUFFIX.test(path);
 }
 function isDocFile(filePath) {
   return /\.(md|mdx|rst|txt)$/i.test(filePath);
@@ -2197,7 +2219,7 @@ const MainSurface = class {
   }
   askAboutSymbol() {
     const composer = document.getElementById("composer-input");
-    if (!composer || !composer.value.trim() || !this.state) return;
+    if (!composer?.value.trim() || !this.state) return;
     if (this.currentStreamingRequestId) {
       this.showToast("Stop the current response before sending another ask.", "info");
       return;

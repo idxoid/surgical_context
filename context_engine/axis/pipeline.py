@@ -440,6 +440,21 @@ def _symbol_targeted_context_plan(
 
 
 @dataclass(frozen=True)
+class _SymbolTargetedRetrievalOptions:
+    workspace_id: str
+    db: Any
+    lance: Any
+    user_id: str
+    overlay: Any | None
+    trace: Any
+    with_context: bool
+    context_per_seed: int
+    max_impacted: int
+    hook_transparency: bool
+    include_tests_in_walks: bool
+
+
+@dataclass(frozen=True)
 class _ContextBuildOptions:
     workspace_id: str
     db: Any
@@ -505,21 +520,11 @@ def _try_symbol_targeted_retrieval(
     *,
     anchor_symbol: str | None,
     anchor_path: str | None,
-    workspace_id: str,
-    db: Any,
-    lance: Any,
-    with_context: bool,
-    context_per_seed: int,
-    max_impacted: int,
+    options: _SymbolTargetedRetrievalOptions,
     intent: list[IntentMatch],
     intent_budget: bool,
     base_token_budget: int,
     render_mode_override: str | None,
-    hook_transparency: bool,
-    include_tests_in_walks: bool,
-    overlay: Any | None,
-    user_id: str,
-    trace: Any,
 ) -> AxisRetrievalResult | None:
     """CodeLens / ask-from-code fast path — pin the seed, skip pool retrieval.
 
@@ -530,15 +535,16 @@ def _try_symbol_targeted_retrieval(
     if not (anchor_symbol or "").strip():
         return None
 
+    workspace_id = options.workspace_id
     pinned = _pin_anchor_symbol(
         [],
         anchor_symbol=anchor_symbol,
         anchor_path=anchor_path,
         workspace_id=workspace_id,
-        db=db,
+        db=options.db,
         scanned=None,
-        overlay=overlay,
-        user_id=user_id,
+        overlay=options.overlay,
+        user_id=options.user_id,
     )
     if not pinned:
         return None
@@ -549,10 +555,10 @@ def _try_symbol_targeted_retrieval(
         # graph node, so render its overlay body and skip every walk.
         return _overlay_only_result(
             anchor,
-            overlay=overlay,
+            overlay=options.overlay,
             workspace_id=workspace_id,
-            user_id=user_id,
-            with_context=with_context,
+            user_id=options.user_id,
+            with_context=options.with_context,
             render_mode=render_mode_override or "full",
             intent=intent,
         )
@@ -567,45 +573,45 @@ def _try_symbol_targeted_retrieval(
     from context_engine.axis import graph_walk_inproc
 
     if graph_walk_inproc.should_use(workspace_id):
-        with trace.stage("adjacency"):
-            graph_walk_inproc.load_adjacency(db, workspace_id)
+        with options.trace.stage("adjacency"):
+            graph_walk_inproc.load_adjacency(options.db, workspace_id)
 
     intent_roles = [match.role for match in intent]
     mode_roles = set(intent_roles) & _MODE_ROLES
-    if with_context and mode_roles:
+    if options.with_context and mode_roles:
         context_candidates, traversal_mode, include_tests = _symbol_targeted_context_plan(
             anchor,
             mode_roles,
-            db=db,
+            db=options.db,
             workspace_id=workspace_id,
-            max_impacted=max_impacted,
+            max_impacted=options.max_impacted,
             intent=intent,
-            include_tests_in_walks=include_tests_in_walks,
+            include_tests_in_walks=options.include_tests_in_walks,
         )
     else:
         context_candidates = [anchor]
         traversal_mode = "deferred_binding_flow"
-        include_tests = include_tests_in_walks
+        include_tests = options.include_tests_in_walks
 
     bundles: list[ContextBundle] = []
-    if with_context:
-        with trace.stage("context"):
+    if options.with_context:
+        with options.trace.stage("context"):
             bundles = _build_context_bundles_with_budget(
                 context_candidates,
                 _ContextBuildOptions(
                     workspace_id=workspace_id,
-                    db=db,
-                    lance=lance,
-                    context_per_seed=context_per_seed,
-                    hook_transparency=hook_transparency,
+                    db=options.db,
+                    lance=options.lance,
+                    context_per_seed=options.context_per_seed,
+                    hook_transparency=options.hook_transparency,
                     token_budget=token_budget,
                     render_mode=render_mode,
                     budget_profile=budget_profile,
                     utility_score_fn=None,
                     traversal_mode=traversal_mode,
                     include_tests=include_tests,
-                    overlay=overlay,
-                    user_id=user_id,
+                    overlay=options.overlay,
+                    user_id=options.user_id,
                 ),
             )
             bundles = _move_anchor_bundle_first(bundles, anchor.uid)
@@ -999,29 +1005,34 @@ def _prepare_budgeted_candidates(
     return active, token_budget, render_mode, budget_profile, utility_score_fn
 
 
+@dataclass(frozen=True)
+class AxisRetrievalConfig:
+    top_roles: int = 3
+    per_role_limit: int = 7
+    max_impacted: int = 35
+    intent_threshold: float = 0.20
+    with_context: bool = True
+    context_per_seed: int = 4
+    context_seeds_per_role: int | None = None
+    intent_budget: bool = True
+    base_token_budget: int = 6000
+    render_mode_override: str | None = None
+    anchor_path: str | None = None
+    anchor_symbol: str | None = None
+    hook_transparency: bool = False
+    trace: Any | None = None
+    overlay: Any | None = None
+    user_id: str = "anonymous"
+    intent_override: list[IntentMatch] | None = None
+
+
 def run_axis_retrieval(
     question: str,
     *,
     workspace_id: str,
     db: Any,
     lance: Any,
-    top_roles: int = 3,
-    per_role_limit: int = 7,
-    max_impacted: int = 35,
-    intent_threshold: float = 0.20,
-    with_context: bool = True,
-    context_per_seed: int = 4,
-    context_seeds_per_role: int | None = None,
-    intent_budget: bool = True,
-    base_token_budget: int = 6000,
-    render_mode_override: str | None = None,
-    anchor_path: str | None = None,
-    anchor_symbol: str | None = None,
-    hook_transparency: bool = False,
-    trace: Any | None = None,
-    overlay: Any | None = None,
-    user_id: str = "anonymous",
-    intent_override: list[IntentMatch] | None = None,
+    config: AxisRetrievalConfig | None = None,
 ) -> AxisRetrievalResult:
     """Run the axis read-side pipeline and return its layered result.
 
@@ -1039,42 +1050,45 @@ def run_axis_retrieval(
     ``None`` (every existing caller) the classifier runs as before.
     """
 
-    tr = trace if trace is not None else _NullTrace()
+    cfg = config or AxisRetrievalConfig()
+    tr = cfg.trace if cfg.trace is not None else _NullTrace()
     intent = _classify_retrieval_intent(
         question,
         lance,
-        intent_override=intent_override,
-        top_roles=top_roles,
-        intent_threshold=intent_threshold,
+        intent_override=cfg.intent_override,
+        top_roles=cfg.top_roles,
+        intent_threshold=cfg.intent_threshold,
         trace=tr,
     )
 
-    if (anchor_symbol or "").strip():
+    if (cfg.anchor_symbol or "").strip():
         fast = _try_symbol_targeted_retrieval(
-            anchor_symbol=anchor_symbol,
-            anchor_path=anchor_path,
-            workspace_id=workspace_id,
-            db=db,
-            lance=lance,
-            with_context=with_context,
-            context_per_seed=context_per_seed,
-            max_impacted=max_impacted,
+            anchor_symbol=cfg.anchor_symbol,
+            anchor_path=cfg.anchor_path,
+            options=_SymbolTargetedRetrievalOptions(
+                workspace_id=workspace_id,
+                db=db,
+                lance=lance,
+                user_id=cfg.user_id,
+                overlay=cfg.overlay,
+                trace=tr,
+                with_context=cfg.with_context,
+                context_per_seed=cfg.context_per_seed,
+                max_impacted=cfg.max_impacted,
+                hook_transparency=cfg.hook_transparency,
+                include_tests_in_walks=False,
+            ),
             intent=list(intent),
-            intent_budget=intent_budget,
-            base_token_budget=base_token_budget,
-            render_mode_override=render_mode_override,
-            hook_transparency=hook_transparency,
-            include_tests_in_walks=False,
-            overlay=overlay,
-            user_id=user_id,
-            trace=tr,
+            intent_budget=cfg.intent_budget,
+            base_token_budget=cfg.base_token_budget,
+            render_mode_override=cfg.render_mode_override,
         )
         if fast is not None:
             return fast
 
     include_tests_in_walks = any(m.role == "impact_analysis" for m in intent)
     impact_mode = any(m.role in _MODE_ROLES for m in intent)
-    seed_limit = per_role_limit * _MODE_SEED_LIMIT_FACTOR if impact_mode else per_role_limit
+    seed_limit = cfg.per_role_limit * _MODE_SEED_LIMIT_FACTOR if impact_mode else cfg.per_role_limit
 
     scanned, raw_by_role = _retrieve_role_seeds(
         question,
@@ -1161,7 +1175,7 @@ def run_axis_retrieval(
         intent,
         db=db,
         workspace_id=workspace_id,
-        max_impacted=max_impacted,
+        max_impacted=cfg.max_impacted,
         include_tests_in_walks=include_tests_in_walks,
         trace=tr,
     )
@@ -1177,33 +1191,33 @@ def run_axis_retrieval(
     candidates_for_context = _flatten_candidates_for_context(
         raw_by_role,
         intent,
-        context_seeds_per_role=context_seeds_per_role,
+        context_seeds_per_role=cfg.context_seeds_per_role,
     )
     active, token_budget, render_mode, budget_profile, utility_score_fn = (
         _prepare_budgeted_candidates(
             candidates_for_context,
             intent,
-            intent_budget=intent_budget,
-            base_token_budget=base_token_budget,
-            render_mode_override=render_mode_override,
-            anchor_path=anchor_path,
-            anchor_symbol=anchor_symbol,
+            intent_budget=cfg.intent_budget,
+            base_token_budget=cfg.base_token_budget,
+            render_mode_override=cfg.render_mode_override,
+            anchor_path=cfg.anchor_path,
+            anchor_symbol=cfg.anchor_symbol,
         )
     )
 
-    if anchor_symbol:
+    if cfg.anchor_symbol:
         active = _pin_anchor_symbol(
             active,
-            anchor_symbol=anchor_symbol,
-            anchor_path=anchor_path,
+            anchor_symbol=cfg.anchor_symbol,
+            anchor_path=cfg.anchor_path,
             workspace_id=workspace_id,
             db=db,
             scanned=scanned,
         )
         candidates_for_context = _pin_anchor_symbol(
             candidates_for_context,
-            anchor_symbol=anchor_symbol,
-            anchor_path=anchor_path,
+            anchor_symbol=cfg.anchor_symbol,
+            anchor_path=cfg.anchor_path,
             workspace_id=workspace_id,
             db=db,
             scanned=scanned,
@@ -1212,7 +1226,7 @@ def run_axis_retrieval(
             active = [active[0]]
 
     bundles: list[ContextBundle] = []
-    if with_context and active:
+    if cfg.with_context and active:
         with tr.stage("context"):
             bundles = _build_context_bundles_with_budget(
                 active,
@@ -1220,16 +1234,16 @@ def run_axis_retrieval(
                     workspace_id=workspace_id,
                     db=db,
                     lance=lance,
-                    context_per_seed=context_per_seed,
-                    hook_transparency=hook_transparency,
+                    context_per_seed=cfg.context_per_seed,
+                    hook_transparency=cfg.hook_transparency,
                     token_budget=token_budget,
                     render_mode=render_mode,
                     budget_profile=budget_profile,
                     utility_score_fn=utility_score_fn,
                     traversal_mode="deferred_binding_flow",
                     include_tests=include_tests_in_walks,
-                    overlay=overlay,
-                    user_id=user_id,
+                    overlay=cfg.overlay,
+                    user_id=cfg.user_id,
                 ),
             )
 
@@ -1243,4 +1257,4 @@ def run_axis_retrieval(
     )
 
 
-__all__ = ["AxisRetrievalResult", "run_axis_retrieval"]
+__all__ = ["AxisRetrievalConfig", "AxisRetrievalResult", "run_axis_retrieval"]

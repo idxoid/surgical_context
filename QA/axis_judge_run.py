@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from context_engine.axis.pipeline import run_axis_retrieval
+from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
 from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
@@ -158,22 +158,23 @@ def main() -> int:
             workspace_id=workspace_id,
             db=db,
             lance=lance,
-            top_roles=args.top_roles,
-            per_role_limit=args.per_role_limit,
-            max_impacted=args.max_impacted,
-            intent_threshold=args.intent_threshold,
-            with_context=True,
-            context_per_seed=args.context_per_seed,
-            context_seeds_per_role=args.context_seeds_per_role,
-            intent_budget=True,
-            base_token_budget=args.token_budget,
-            anchor_path=str(entry.get("anchor") or "") or None,
-            hook_transparency=True,
+            config=AxisRetrievalConfig(
+                top_roles=args.top_roles,
+                per_role_limit=args.per_role_limit,
+                max_impacted=args.max_impacted,
+                intent_threshold=args.intent_threshold,
+                with_context=True,
+                context_per_seed=args.context_per_seed,
+                context_seeds_per_role=args.context_seeds_per_role,
+                intent_budget=True,
+                base_token_budget=args.token_budget,
+                anchor_path=str(entry.get("anchor") or "") or None,
+                hook_transparency=True,
+            ),
         )
         intent_label = retrieval.intent[0].role if retrieval.intent else ""
         ctx = axis_bundles_to_prompt_context(
             retrieval.bundles,
-            question=question,
             workspace_id=workspace_id,
             intent=intent_label,
         )

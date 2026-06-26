@@ -41,7 +41,7 @@ from typing import Any, TextIO
 
 import yaml
 
-from context_engine.axis.pipeline import run_axis_retrieval
+from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
 from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
@@ -331,20 +331,22 @@ def _run_axis_retrieval_for_question(
         workspace_id=workspace_id,
         db=db,
         lance=lance,
-        top_roles=top_roles,
-        per_role_limit=per_role_limit,
-        max_impacted=max_impacted,
-        intent_threshold=intent_threshold,
-        with_context=True,
-        context_per_seed=context_per_seed,
-        context_seeds_per_role=context_seeds_per_role,
-        intent_budget=intent_budget,
-        base_token_budget=base_token_budget,
-        render_mode_override=render_mode_override,
-        anchor_path=(None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)),
-        anchor_symbol=(str(question_entry.get("symbol") or "") or None),
-        hook_transparency=hook_transparency,
-        trace=timer,
+        config=AxisRetrievalConfig(
+            top_roles=top_roles,
+            per_role_limit=per_role_limit,
+            max_impacted=max_impacted,
+            intent_threshold=intent_threshold,
+            with_context=True,
+            context_per_seed=context_per_seed,
+            context_seeds_per_role=context_seeds_per_role,
+            intent_budget=intent_budget,
+            base_token_budget=base_token_budget,
+            render_mode_override=render_mode_override,
+            anchor_path=(None if ignore_anchor else (str(question_entry.get("anchor") or "") or None)),
+            anchor_symbol=(str(question_entry.get("symbol") or "") or None),
+            hook_transparency=hook_transparency,
+            trace=timer,
+        ),
     )
 
 

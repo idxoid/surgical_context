@@ -581,7 +581,7 @@ class AskService:
         trace: RequestTrace,
         db: Any,
     ) -> AskAxisResponse:
-        from context_engine.axis.pipeline import run_axis_retrieval
+        from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
 
         index_workspace_id = effective_index_workspace_id(base_workspace_id)
         result = run_axis_retrieval(
@@ -589,17 +589,19 @@ class AskService:
             workspace_id=index_workspace_id,
             db=db,
             lance=self.context_builder.lance_for_index_workspace(index_workspace_id),
-            top_roles=req.top_roles,
-            per_role_limit=req.per_role_limit,
-            intent_threshold=req.intent_threshold,
-            with_context=req.with_context,
-            context_per_seed=req.context_per_seed,
-            context_seeds_per_role=req.context_seeds_per_role,
-            intent_budget=req.intent_budget,
-            base_token_budget=req.token_budget,
-            trace=trace,
-            overlay=self.overlay,
-            user_id=user_id,
+            config=AxisRetrievalConfig(
+                top_roles=req.top_roles,
+                per_role_limit=req.per_role_limit,
+                intent_threshold=req.intent_threshold,
+                with_context=req.with_context,
+                context_per_seed=req.context_per_seed,
+                context_seeds_per_role=req.context_seeds_per_role,
+                intent_budget=req.intent_budget,
+                base_token_budget=req.token_budget,
+                trace=trace,
+                overlay=self.overlay,
+                user_id=user_id,
+            ),
         )
 
         intent_payload = [

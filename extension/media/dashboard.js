@@ -5,7 +5,7 @@ import {
   listenForHostMessages,
   mountLayoutHtml,
   vscode
-} from "./chunk-G3IIAS2Y.js";
+} from "./chunk-CB47NA2A.js";
 
 // src/webview/shared/dashboardLayout.ts
 function renderDashboardHeader(workspaceId, lastUpdate) {
@@ -74,7 +74,14 @@ function renderMetricCardGrid(props) {
   const metrics = props.metrics;
   const healthStatus = props.health === "up" ? "success" : "danger";
   const cloudStatus = props.cloudStatus === "connected" || props.cloudStatus === "local" || props.cloudStatus === "fallback-local" ? "success" : "danger";
-  const queueStatus = metrics.queueFailedBatches && metrics.queueFailedBatches > 0 ? "danger" : metrics.queuePending && metrics.queuePending > 0 ? "warning" : "success";
+  let queueStatus;
+  if (metrics.queueFailedBatches && metrics.queueFailedBatches > 0) {
+    queueStatus = "danger";
+  } else if (metrics.queuePending && metrics.queuePending > 0) {
+    queueStatus = "warning";
+  } else {
+    queueStatus = "success";
+  }
   return `
     <div class="metric-card-grid">
       ${renderMetricCard("Sidecar health", healthLabel(props.health), props.health === "up" ? "Ready for requests" : "Check backend URL", "pulse", healthStatus)}
@@ -363,8 +370,9 @@ function summarizeDetails(details) {
   if (entries.length === 0) return "N/A";
   return entries.map(([key, value]) => `${key}: ${String(value)}`).join(" \u2022 ");
 }
+var MISSING_SYMBOL_PATTERN = /Symbol '([^']+)' not found in graph/i;
 function summarizeError(error) {
-  const missingSymbol = error.match(/Symbol '([^']+)' not found in graph/i);
+  const missingSymbol = MISSING_SYMBOL_PATTERN.exec(error);
   if (missingSymbol) {
     return `Symbol not indexed: ${missingSymbol[1]}`;
   }

@@ -115,10 +115,12 @@ def test_run_axis_retrieval_overlay_only_mode(overlay):
         workspace_id=WS,
         db=object(),
         lance=_FakeLance(),
-        anchor_symbol="brand_new",
-        anchor_path=PATH,
-        overlay=overlay,
-        user_id=USER,
+        config=axis_pipeline.AxisRetrievalConfig(
+            anchor_symbol="brand_new",
+            anchor_path=PATH,
+            overlay=overlay,
+            user_id=USER,
+        ),
     )
     # Overlay-only path returns before intent classification and any walk.
     assert result.intent == []
@@ -147,9 +149,11 @@ def test_overlay_only_skips_graph_walk(overlay, monkeypatch):
         workspace_id=WS,
         db=object(),
         lance=_FakeLance(),
-        anchor_symbol="brand_new",
-        anchor_path=PATH,
-        overlay=overlay,
-        user_id=USER,
+        config=axis_pipeline.AxisRetrievalConfig(
+            anchor_symbol="brand_new",
+            anchor_path=PATH,
+            overlay=overlay,
+            user_id=USER,
+        ),
     )
     assert _is_overlay_anchor(result.candidates_for_context[0])

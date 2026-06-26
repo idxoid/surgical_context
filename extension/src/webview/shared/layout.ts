@@ -49,10 +49,16 @@ function renderMessageFooter(message: ChatMessage): string {
       `
     : '';
 
+  let routeMarkup = '';
+  if (route) {
+    const routeClass = route.fallback ? 'fallback' : '';
+    routeMarkup = `<span class="message-route ${routeClass}" title="${escapeHtml(route.title)}">${escapeHtml(route.label)}</span>`;
+  }
+
   return `
     <div class="message-footer">
       <time class="message-time" datetime="${escapeHtml(time.iso)}" title="${escapeHtml(time.title)}">${escapeHtml(time.label)}</time>
-      ${route ? `<span class="message-route ${route.fallback ? 'fallback' : ''}" title="${escapeHtml(route.title)}">${escapeHtml(route.label)}</span>` : ''}
+      ${routeMarkup}
       <div class="message-actions">
         ${assistantFeedback}
         <button class="message-action-button" data-action="copy" title="Copy message" aria-label="Copy message">

@@ -623,7 +623,7 @@ class DisabledHistoryProvider:
         return []
 
     def append_message(self, **kwargs: Any) -> str:
-        _ = kwargs
+        _ = kwargs.get("conversation_id")
         return ""
 
     def list_messages(self, conversation_id: str, *, limit: int = 200) -> list[dict[str, Any]]:

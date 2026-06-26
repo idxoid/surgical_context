@@ -14,11 +14,11 @@ function isAllowedHostMessageOrigin(origin: string, webviewOrigin: string): bool
 
 /** Accept only messages posted by the VS Code extension host into this webview. */
 export function isTrustedHostWebviewMessage(event: MessageEvent): boolean {
-  return isAllowedHostMessageOrigin(event.origin, window.location.origin);
+  return isAllowedHostMessageOrigin(event.origin, globalThis.location.origin);
 }
 
 export function listenForHostMessages<T>(handler: (message: T) => void): void {
-  const webviewOrigin = window.location.origin;
+  const webviewOrigin = globalThis.location.origin;
 
   function receiveHostMessage(event: MessageEvent<T>): void {
     if (

@@ -48,9 +48,9 @@ class _LRU[T]:
             self._items.popitem(last=False)
 
     def clear_prefix(self, prefix: tuple) -> None:
-        for key in list(self._items):
-            if key[: len(prefix)] == prefix:
-                del self._items[key]
+        to_delete = [key for key in self._items if key[: len(prefix)] == prefix]
+        for key in to_delete:
+            del self._items[key]
 
 
 class InMemoryBodyCache:
@@ -173,7 +173,7 @@ class InMemoryResponseCache:
             self._unindex_key(key)
 
         # Remove dropped keys from every path bucket in the file index.
-        for path in list(self._file_index):
+        for path in self._file_index.copy():
             self._file_index[path].difference_update(keys_to_drop)
             if not self._file_index[path]:
                 del self._file_index[path]

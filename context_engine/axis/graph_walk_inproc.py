@@ -104,8 +104,8 @@ def _strip_uids_from_adjacency_buckets(
     for source_uid, by_type in list(mapping.items()):
         if source_uid in uids:
             continue
-        for edge_type, neighbours in list(by_type.items()):
-            remaining = set(neighbours) - uids
+        for edge_type in list(by_type):
+            remaining = set(by_type[edge_type]) - uids
             if remaining:
                 by_type[edge_type] = remaining
             else:

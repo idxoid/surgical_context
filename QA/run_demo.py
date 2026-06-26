@@ -111,7 +111,7 @@ def index_docs():
 
 
 def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"):
-    from context_engine.axis.pipeline import run_axis_retrieval
+    from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
     from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
     from context_engine.context_types import DocChunk
     from context_engine.database.lancedb_client import LanceDBClient
@@ -129,13 +129,11 @@ def assemble_and_ask(symbol: str, question: str, no_llm: bool, fmt: str = "json"
             workspace_id=workspace_id,
             db=db,
             lance=lance,
-            with_context=True,
-            intent_budget=True,
+            config=AxisRetrievalConfig(with_context=True, intent_budget=True),
         )
         intent = ", ".join(match.role for match in result.intent)
         ctx = axis_bundles_to_prompt_context(
             result.bundles,
-            question=retrieval_question,
             workspace_id=workspace_id,
             intent=intent,
             render_mode=result.render_mode,

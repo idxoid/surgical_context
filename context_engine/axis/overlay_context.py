@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from context_engine.axis.context_builder import ContextBundle, ContextSymbol
 
@@ -94,7 +94,7 @@ def apply_dirty_overlay_to_bundles(
         )
         if code is None:
             return sym
-        return replace(sym, code=code)
+        return cast(ContextSymbol, replace(sym, code=code))
 
     patched: list[ContextBundle] = []
     for bundle in bundles:

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SidecarClient } from '../context_engineClient';
+import { SidecarClient, PromptContextPayload } from '../context_engineClient';
 import { AskHistoryInput, buildAskHistoryRecord } from '../historyRecorder';
 import { OverlayManager } from '../overlayManager';
 import { SSECallbacks, getWebviewContent } from '../utils';
@@ -10,17 +10,16 @@ import {
   WebviewToHostMessage,
   HostToWebviewMessage,
 } from '../webview/shared/protocol';
-import { PromptContextPayload } from '../context_engineClient';
 import { isFileNameSymbol } from '../symbolResolution';
 
 export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'surgicalContext.main';
 
   private webviewView: vscode.WebviewView | undefined;
-  private disposables: vscode.Disposable[] = [];
+  private readonly disposables: vscode.Disposable[] = [];
   private currentAbortController: AbortController | null = null;
   private webviewReady = false;
-  private queuedMessages: HostToWebviewMessage[] = [];
+  private readonly queuedMessages: HostToWebviewMessage[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -54,10 +53,8 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     );
 
     const unsubscribeState = stateManager.subscribe(() => this.pushStateToWebview());
-    this.disposables.push(new vscode.Disposable(unsubscribeState));
-
-    // Listen to editor changes
     this.disposables.push(
+      new vscode.Disposable(unsubscribeState),
       vscode.window.onDidChangeActiveTextEditor(() => this.pushWorkspaceState()),
       vscode.window.onDidChangeTextEditorSelection(() => this.pushWorkspaceState()),
       vscode.workspace.onDidChangeTextDocument(() => this.pushWorkspaceState()),
@@ -484,7 +481,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     } finally {
-      if (stream && this.currentAbortController === stream.controller) {
+      if (this.currentAbortController === stream?.controller) {
         this.currentAbortController = null;
       }
     }

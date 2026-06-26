@@ -68,7 +68,6 @@ def _seed_relation(bundle: ContextBundle) -> str:
 def axis_bundles_to_prompt_context(
     bundles: Iterable[ContextBundle],
     *,
-    question: str,
     workspace_id: str = "",
     intent: str = "",
     trace_id: str = "",

@@ -277,8 +277,22 @@ function classifyZone(category: string, depth: number | undefined, filePath: str
 }
 
 function fallbackUtility(severity: Severity, category: string, depth: number | undefined): number {
-  const base = severity === 'high' ? 0.88 : severity === 'medium' ? 0.66 : 0.42;
-  const categoryBoost = category === 'api' || category === 'data' ? 0.08 : category === 'event' ? 0.05 : 0;
+  let base: number;
+  if (severity === 'high') {
+    base = 0.88;
+  } else if (severity === 'medium') {
+    base = 0.66;
+  } else {
+    base = 0.42;
+  }
+
+  let categoryBoost = 0;
+  if (category === 'api' || category === 'data') {
+    categoryBoost = 0.08;
+  } else if (category === 'event') {
+    categoryBoost = 0.05;
+  }
+
   const depthPenalty = typeof depth === 'number' ? Math.min(depth, 4) * 0.04 : 0;
   return Math.max(0.15, Math.min(0.99, base + categoryBoost - depthPenalty));
 }
@@ -739,11 +753,22 @@ function numberField(sym: Record<string, unknown>, ...keys: string[]): number | 
 function arrayField(sym: Record<string, unknown>, key: string): string[] {
   const value = sym[key];
   if (!Array.isArray(value)) return [];
-  return value.map(item => String(item)).filter(Boolean);
+  return value.map(String).filter(Boolean);
 }
 
+const TEST_DIRECTORY_SEGMENT = /(^|[/.])(tests?|specs?|__tests__)([/.]|$)/;
+const JS_TS_TEST_SUFFIX = /(\.|_)(test|spec)\.[jt]sx?$/;
+const PYTHON_TEST_PREFIX = /test_.*\.py$/;
+const PYTHON_TEST_SUFFIX = /_test\.py$/;
+
 function isTestFile(filePath: string): boolean {
-  return /(^|[/.])(tests?|specs?|__tests__)([/.]|$)|(\.|_)(test|spec)\.[jt]sx?$|test_.*\.py$|_test\.py$/.test(filePath.toLowerCase());
+  const path = filePath.toLowerCase();
+  return (
+    TEST_DIRECTORY_SEGMENT.test(path)
+    || JS_TS_TEST_SUFFIX.test(path)
+    || PYTHON_TEST_PREFIX.test(path)
+    || PYTHON_TEST_SUFFIX.test(path)
+  );
 }
 
 function isDocFile(filePath: string): boolean {

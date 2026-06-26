@@ -135,8 +135,8 @@ class AuraClient(Neo4jClient):
             return f"neo4j+s://{instance_name}"
         return f"neo4j+s://{instance_name}.databases.neo4j.io"
 
-    def add_user_metadata(self, node_type: str, node_id: str, metadata: dict):
-        """Add user-specific metadata to a node (e.g., last_modified_by, modified_at)."""
+    def add_user_metadata(self, metadata: dict) -> None:
+        """Enrich a metadata dict with user/timestamp/source fields."""
         import time
 
         metadata["modified_by"] = self.user_id

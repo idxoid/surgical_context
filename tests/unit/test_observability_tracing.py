@@ -54,7 +54,7 @@ def test_request_stage_creates_otel_span_when_enabled(monkeypatch):
     trace = RequestTrace(trace_id="trace-otel", endpoint="/ask", workspace_id="acme/repo@main")
 
     with trace.stage("context"):
-        pass
+        assert trace.trace_id == "trace-otel"
 
     assert tracer.names == ["context_engine.ask.context"]
     span = tracer.spans[0]

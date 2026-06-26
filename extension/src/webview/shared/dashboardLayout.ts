@@ -3,9 +3,12 @@ import { escapeHtml } from './html';
 
 export { escapeHtml };
 
+export type DashboardHealth = 'up' | 'down' | 'degraded';
+export type DashboardCloudStatus = 'connected' | 'fallback-local' | 'local' | 'offline';
+
 export interface MetricCardGridProps {
-  health: 'up' | 'down' | 'degraded';
-  cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline';
+  health: DashboardHealth;
+  cloudStatus: DashboardCloudStatus;
   metrics: DashboardMetrics;
 }
 
@@ -85,11 +88,15 @@ export function renderMetricCardGrid(props: MetricCardGridProps): string {
   const cloudStatus = props.cloudStatus === 'connected' || props.cloudStatus === 'local' || props.cloudStatus === 'fallback-local'
     ? 'success'
     : 'danger';
-  const queueStatus = metrics.queueFailedBatches && metrics.queueFailedBatches > 0
-    ? 'danger'
-    : metrics.queuePending && metrics.queuePending > 0
-      ? 'warning'
-      : 'success';
+
+  let queueStatus: 'success' | 'warning' | 'danger';
+  if (metrics.queueFailedBatches && metrics.queueFailedBatches > 0) {
+    queueStatus = 'danger';
+  } else if (metrics.queuePending && metrics.queuePending > 0) {
+    queueStatus = 'warning';
+  } else {
+    queueStatus = 'success';
+  }
 
   return `
     <div class="metric-card-grid">
@@ -352,19 +359,19 @@ function statusSymbol(status: HealthCheckItem['status']): string {
   return '○';
 }
 
-function healthLabel(health: 'up' | 'down' | 'degraded'): string {
+function healthLabel(health: DashboardHealth): string {
   if (health === 'up') return 'healthy';
   if (health === 'degraded') return 'degraded';
   return 'down';
 }
 
-function cloudLabel(status: 'connected' | 'fallback-local' | 'local' | 'offline'): string {
+function cloudLabel(status: DashboardCloudStatus): string {
   if (status === 'connected') return 'aura';
   if (status === 'local' || status === 'fallback-local') return 'local';
   return 'offline';
 }
 
-function cloudNote(status: 'connected' | 'fallback-local' | 'local' | 'offline'): string {
+function cloudNote(status: DashboardCloudStatus): string {
   if (status === 'connected') return 'Neo4j Aura connected';
   if (status === 'local' || status === 'fallback-local') return 'Local Neo4j active';
   return 'Graph provider offline';
@@ -426,8 +433,10 @@ function summarizeDetails(details: Record<string, unknown>): string {
   return entries.map(([key, value]) => `${key}: ${String(value)}`).join(' • ');
 }
 
+const MISSING_SYMBOL_PATTERN = /Symbol '([^']+)' not found in graph/i;
+
 function summarizeError(error: string): string {
-  const missingSymbol = error.match(/Symbol '([^']+)' not found in graph/i);
+  const missingSymbol = MISSING_SYMBOL_PATTERN.exec(error);
   if (missingSymbol) {
     return `Symbol not indexed: ${missingSymbol[1]}`;
   }
@@ -436,8 +445,8 @@ function summarizeError(error: string): string {
 }
 
 export interface DashboardViewState {
-  health: 'up' | 'down' | 'degraded' | null;
-  cloudStatus: 'connected' | 'fallback-local' | 'local' | 'offline' | null;
+  health: DashboardHealth | null;
+  cloudStatus: DashboardCloudStatus | null;
   auditActions: AuditAction[];
   metrics: DashboardMetrics;
   healthChecks: HealthCheckItem[];

@@ -277,7 +277,7 @@ class AskContextBuilder:
         user_id: str = "anonymous",
     ) -> PromptContext | None:
         """Axis-pipeline provider: canonical retrieval -> renderable PromptContext."""
-        from context_engine.axis.pipeline import run_axis_retrieval
+        from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
         from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
         from context_engine.axis.retrieval_budget import budget_for_intent
 
@@ -286,18 +286,19 @@ class AskContextBuilder:
             workspace_id=index_workspace_id,
             db=db,
             lance=self.lance_for_index_workspace(index_workspace_id),
-            intent_budget=True,
-            base_token_budget=token_budget,
-            anchor_path=anchor_path,
-            anchor_symbol=anchor_symbol,
-            hook_transparency=True,
-            overlay=self.overlay,
-            user_id=user_id,
+            config=AxisRetrievalConfig(
+                intent_budget=True,
+                base_token_budget=token_budget,
+                anchor_path=anchor_path,
+                anchor_symbol=anchor_symbol,
+                hook_transparency=True,
+                overlay=self.overlay,
+                user_id=user_id,
+            ),
         )
         intent = result.intent[0].role if result.intent else ""
         ctx = axis_bundles_to_prompt_context(
             result.bundles,
-            question=question,
             workspace_id=base_workspace_id,
             intent=intent,
             trace_id=trace_id,

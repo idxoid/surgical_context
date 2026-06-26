@@ -98,14 +98,18 @@ def stub_stages(monkeypatch):
 
 
 def _run(**overrides):
-    kwargs = dict(
-        question="how does routing work",
-        workspace_id="ws",
-        db=object(),  # walk_neighbours degrades to [] against a bare object
-        lance=_FakeLance(),
+    question = overrides.pop("question", "how does routing work")
+    workspace_id = overrides.pop("workspace_id", "ws")
+    db = overrides.pop("db", object())
+    lance = overrides.pop("lance", _FakeLance())
+    config = axis_pipeline.AxisRetrievalConfig(**overrides)
+    return axis_pipeline.run_axis_retrieval(
+        question,
+        workspace_id=workspace_id,
+        db=db,
+        lance=lance,
+        config=config,
     )
-    kwargs.update(overrides)
-    return axis_pipeline.run_axis_retrieval(**kwargs)
 
 
 def test_result_layers_are_populated(stub_stages):
@@ -199,8 +203,10 @@ def test_anchor_symbol_fast_path_classifies_question_but_skips_pool_retrieval(
         workspace_id="ws",
         db=_PinDB(),
         lance=_FakeLance(),
-        anchor_symbol="walk_neighbours",
-        anchor_path="/repo/context_engine/axis/graph_walk.py",
+        config=axis_pipeline.AxisRetrievalConfig(
+            anchor_symbol="walk_neighbours",
+            anchor_path="/repo/context_engine/axis/graph_walk.py",
+        ),
     )
 
     assert intent_calls == ["impact of walk_neighbours"]
@@ -281,8 +287,10 @@ def test_anchor_symbol_impact_uses_directional_impact_candidates(stub_stages, mo
         workspace_id="ws",
         db=_PinDB(),
         lance=_FakeLance(),
-        anchor_symbol="_resolve_committed_uid",
-        anchor_path="/repo/context_engine/api/routes/impact.py",
+        config=axis_pipeline.AxisRetrievalConfig(
+            anchor_symbol="_resolve_committed_uid",
+            anchor_path="/repo/context_engine/api/routes/impact.py",
+        ),
     )
 
     assert [match.role for match in result.intent] == ["impact_analysis"]
@@ -330,9 +338,11 @@ def test_anchor_symbol_prefers_file_path_when_disambiguating(stub_stages, monkey
         workspace_id="ws",
         db=object(),
         lance=_FakeLance(),
-        with_context=False,
-        anchor_symbol="Neighbour",
-        anchor_path="/repo/context_engine/axis/graph_walk.py",
+        config=axis_pipeline.AxisRetrievalConfig(
+            with_context=False,
+            anchor_symbol="Neighbour",
+            anchor_path="/repo/context_engine/axis/graph_walk.py",
+        ),
     )
 
     assert result.candidates_for_context[0].file_path == "/repo/context_engine/axis/graph_walk.py"

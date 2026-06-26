@@ -849,7 +849,7 @@ class MainSurface {
 
   private askAboutSymbol(): void {
     const composer = document.getElementById('composer-input') as HTMLTextAreaElement | null;
-    if (!composer || !composer.value.trim() || !this.state) return;
+    if (!composer?.value.trim() || !this.state) return;
     if (this.currentStreamingRequestId) {
       this.showToast('Stop the current response before sending another ask.', 'info');
       return;

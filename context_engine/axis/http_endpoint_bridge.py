@@ -56,16 +56,18 @@ def _http_client_uids_for_seed(session, seed_uid: str, workspace_id: str) -> lis
         uid = row.get("uid")
         if uid:
             clients.append(str(uid))
-    if session.run(
-        """
+    if (
+        session.run(
+            """
         MATCH (s:Symbol {uid: $uid})-[:CALLS_ENDPOINT {workspace_id: $ws}]->(:ApiEndpoint)
         RETURN s.uid AS uid LIMIT 1
         """,
-        uid=seed_uid,
-        ws=workspace_id,
-    ).single():
-        if seed_uid not in clients:
-            clients.append(seed_uid)
+            uid=seed_uid,
+            ws=workspace_id,
+        ).single()
+        and seed_uid not in clients
+    ):
+        clients.append(seed_uid)
     return clients
 
 
