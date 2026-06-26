@@ -32,7 +32,7 @@ import {
   toggleAriaExpandedSection,
   validateSettingsForm,
   vscode
-} from "./chunk-V573SA7E.js";
+} from "./chunk-OV4XPCVF.js";
 
 // src/webview/main.ts
 const MainSurface = class {

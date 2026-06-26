@@ -66,13 +66,13 @@ type TargetActionMethod = {
 
 function invokeVoidAction(method: VoidActionMethod): DomActionHandler {
   return (host) => {
-    (host[method] as () => void).call(host);
+    (host[method] as () => void)();
   };
 }
 
 function invokeTargetAction(method: TargetActionMethod): DomActionHandler {
   return (host, target) => {
-    (host[method] as (target: HTMLElement) => void).call(host, target);
+    (host[method] as (target: HTMLElement) => void)(target);
   };
 }
 

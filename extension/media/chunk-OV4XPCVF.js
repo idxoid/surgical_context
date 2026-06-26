@@ -1759,12 +1759,12 @@ function hostHandler(handler) {
 }
 function callDelegate(method) {
   return hostHandler((delegate) => {
-    delegate[method].call(delegate);
+    delegate[method]();
   });
 }
 function forwardMessage(method) {
   return hostHandler((delegate, message) => {
-    delegate[method].call(delegate, message);
+    delegate[method](message);
   });
 }
 const MAIN_SURFACE_HOST_HANDLERS = {
@@ -1815,12 +1815,12 @@ const IMPACT_CHANGE_CHECK_PROMPT = (symbol) => `What should I check before chang
 const IMPACT_REFACTOR_PLAN_PROMPT = (symbol) => `Create a refactor plan for ${symbol || "this symbol"}.`;
 function invokeVoidAction(method) {
   return (host) => {
-    host[method].call(host);
+    host[method]();
   };
 }
 function invokeTargetAction(method) {
   return (host, target) => {
-    host[method].call(host, target);
+    host[method](target);
   };
 }
 const MAIN_SURFACE_DOM_ACTION_HANDLERS = {
@@ -1905,4 +1905,4 @@ export {
   dispatchMainHostMessage,
   handleMainSurfaceAction
 };
-//# sourceMappingURL=chunk-V573SA7E.js.map
+//# sourceMappingURL=chunk-OV4XPCVF.js.map

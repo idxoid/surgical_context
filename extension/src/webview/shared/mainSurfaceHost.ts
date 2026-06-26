@@ -88,13 +88,13 @@ type OneArgDelegateMethod = {
 
 function callDelegate(method: NoArgDelegateMethod): HostHandler {
   return hostHandler((delegate) => {
-    (delegate[method] as () => void).call(delegate);
+    (delegate[method] as () => void)();
   });
 }
 
 function forwardMessage(method: OneArgDelegateMethod): HostHandler {
   return hostHandler((delegate, message) => {
-    (delegate[method] as (message: HostToWebviewMessage) => void).call(delegate, message);
+    (delegate[method] as (message: HostToWebviewMessage) => void)(message);
   });
 }
 
