@@ -821,7 +821,6 @@ class JavaScriptAdapter(TreeSitterAdapter):
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
         """Extract JavaScript calls with ambiguity-gated resolution."""
-        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
         if tree is None:
             tree = self._parse(source_code)

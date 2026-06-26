@@ -78,8 +78,8 @@ def _finalize_index_batch(
             list(dict.fromkeys(all_changed_uids)),
             workspace_id=index_workspace_id,
         )
-    from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
     from context_engine.indexer.anchor import resolve_pending_anchors
+    from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
 
     adjacency_seeds.update(all_changed_uids)
     run_axis_incremental_finalize(

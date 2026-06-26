@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 
-from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter, iter_ts_query_matches
+from context_engine.parser.adapters.treesitter_base import TreeSitterAdapter
 from context_engine.parser.import_scan import split_python_from_import, split_python_import_clause
 from context_engine.parser.protocol import ImportEdge, InheritanceEdge, SymbolMetadata
 from context_engine.parser.uid import (
@@ -3749,7 +3749,6 @@ class PythonAdapter(TreeSitterAdapter):
         attr = left.child_by_field_name("attribute")
         if obj is None or _node_text(obj) != "self" or attr is None:
             return None
-        aname = _node_text(attr)
         if typ is not None:
             targets = self._type_ref_targets(typ, import_bindings, module)
             if targets:

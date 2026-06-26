@@ -1430,7 +1430,7 @@ def _merge_extraction_profiles(
     *,
     graph_probe: GraphContextProbe | None,
 ) -> dict[str, AxisProfile]:
-    from context_engine.axis.schema import AxisFact, AxisProfile
+    from context_engine.axis.schema import AxisProfile
 
     parser_uid_by_qn = {s.qualified_name: s.uid for s in ex.symbols if s.qualified_name}
     profiles_by_uid: dict[str, AxisProfile] = {}
