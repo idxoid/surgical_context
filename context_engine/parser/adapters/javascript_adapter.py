@@ -314,7 +314,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
         from context_engine.parser.docstring_extract import attach_docstrings
 
         ts_helpers = TypeScriptAdapter()
-        ts_helpers._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
+        ts_helpers._mark_property_accessor_symbols(symbols, tree, file_path)
         ts_helpers._mark_react_hook_symbols(symbols)
         ts_helpers._mark_behavioral_shape_symbols(symbols, tree)
         attach_docstrings(
@@ -380,13 +380,10 @@ class JavaScriptAdapter(TreeSitterAdapter):
         tag: str,
         name: str,
         *,
-        source_code: str,
         file_path: str,
     ) -> bool:
         """Treat exported lexical declarations as public API symbols."""
-        if super().should_include_variable_symbol(
-            node, tag, name, source_code=source_code, file_path=file_path
-        ):
+        if super().should_include_variable_symbol(node, tag, name, file_path=file_path):
             return True
         if tag == "var.exported_def":
             return True

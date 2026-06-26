@@ -790,7 +790,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
         file_path: str,
     ) -> list[InheritanceEdge]:
         args = node.child_by_field_name("superclasses")
@@ -833,9 +832,7 @@ class PythonAdapter(TreeSitterAdapter):
             if node.type != "class_definition":
                 continue
             edges.extend(
-                self._inheritance_edges_for_class(
-                    node, source_code=source_code, file_path=file_path
-                )
+                self._inheritance_edges_for_class(node, file_path=file_path)
             )
         return edges
 
@@ -1001,7 +998,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         cls,
         *,
-        source_code: str,
         file_path: str,
         import_bindings: dict[str, str],
     ) -> list[dict]:
@@ -1069,7 +1065,6 @@ class PythonAdapter(TreeSitterAdapter):
             out.extend(
                 self._self_method_proxy_calls_in_class(
                     cls,
-                    source_code=source_code,
                     file_path=file_path,
                     import_bindings=import_bindings,
                 )
@@ -1229,7 +1224,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
         file_path: str,
         import_bindings: dict[str, str],
         module: str,
@@ -1278,7 +1272,6 @@ class PythonAdapter(TreeSitterAdapter):
             out.extend(
                 self._decorator_records_for_definition(
                     node,
-                    source_code=source_code,
                     file_path=file_path,
                     import_bindings=import_bindings,
                     module=module,
@@ -1321,7 +1314,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
         file_path: str,
         non_http_decorators: frozenset[str],
         emit,
@@ -1381,7 +1373,6 @@ class PythonAdapter(TreeSitterAdapter):
                 continue
             self._http_endpoint_records_for_definition(
                 node,
-                source_code=source_code,
                 file_path=file_path,
                 non_http_decorators=_NON_HTTP_DECORATORS,
                 emit=emit,
@@ -1547,7 +1538,6 @@ class PythonAdapter(TreeSitterAdapter):
     def _hook_site_uid(
         self,
         node,
-        source_code: str,
         file_path: str,
         *,
         decorated: bool,
@@ -1562,7 +1552,6 @@ class PythonAdapter(TreeSitterAdapter):
         node,
         *,
         base: str,
-        source_code: str,
         file_path: str,
         out: list[dict],
         seen: set[tuple[str, str, str, str, str]],
@@ -1573,7 +1562,7 @@ class PythonAdapter(TreeSitterAdapter):
         self._emit_hook_fact(
             out,
             seen,
-            site_uid=self._hook_site_uid(node, source_code, file_path, decorated=True),
+            site_uid=self._hook_site_uid(node, file_path, decorated=True),
             hook_name=hook_name,
             kind="config",
             target_kind="method",
@@ -1585,7 +1574,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
         file_path: str,
         out: list[dict],
         seen: set[tuple[str, str, str, str, str]],
@@ -1613,7 +1601,6 @@ class PythonAdapter(TreeSitterAdapter):
         fn,
         *,
         base: str,
-        source_code: str,
         file_path: str,
         out: list[dict],
         seen: set[tuple[str, str, str, str, str]],
@@ -1626,7 +1613,7 @@ class PythonAdapter(TreeSitterAdapter):
         self._emit_hook_fact(
             out,
             seen,
-            site_uid=self._hook_site_uid(node, source_code, file_path, decorated=True),
+            site_uid=self._hook_site_uid(node, file_path, decorated=True),
             hook_name=sig,
             kind=kind,
             target_kind="object",
@@ -1639,7 +1626,6 @@ class PythonAdapter(TreeSitterAdapter):
         node,
         fn,
         *,
-        source_code: str,
         file_path: str,
         out: list[dict],
         seen: set[tuple[str, str, str, str, str]],
@@ -1657,7 +1643,7 @@ class PythonAdapter(TreeSitterAdapter):
         self._emit_hook_fact(
             out,
             seen,
-            site_uid=self._hook_site_uid(node, source_code, file_path, decorated=False),
+            site_uid=self._hook_site_uid(node, file_path, decorated=False),
             hook_name=hook_name,
             kind="exec",
             target_kind="method",
@@ -1669,7 +1655,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
         file_path: str,
         register_names: frozenset[str],
         out: list[dict],
@@ -1684,7 +1669,6 @@ class PythonAdapter(TreeSitterAdapter):
             self._process_hook_register_call(
                 node,
                 base=base,
-                source_code=source_code,
                 file_path=file_path,
                 out=out,
                 seen=seen,
@@ -1694,7 +1678,6 @@ class PythonAdapter(TreeSitterAdapter):
         if base == "receiver":
             self._process_hook_receiver_call(
                 node,
-                source_code=source_code,
                 file_path=file_path,
                 out=out,
                 seen=seen,
@@ -1706,7 +1689,6 @@ class PythonAdapter(TreeSitterAdapter):
                 node,
                 fn,
                 base=base,
-                source_code=source_code,
                 file_path=file_path,
                 out=out,
                 seen=seen,
@@ -1718,7 +1700,6 @@ class PythonAdapter(TreeSitterAdapter):
         self._process_hook_dispatch_call(
             node,
             fn,
-            source_code=source_code,
             file_path=file_path,
             out=out,
             seen=seen,
@@ -1759,7 +1740,6 @@ class PythonAdapter(TreeSitterAdapter):
                 continue
             self._process_hook_call(
                 node,
-                source_code=source_code,
                 file_path=file_path,
                 register_names=register_names,
                 out=out,
@@ -1959,7 +1939,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         fn,
         *,
-        source_code: str,
         file_path: str,
         import_bindings: dict[str, str],
         module: str,
@@ -2058,7 +2037,6 @@ class PythonAdapter(TreeSitterAdapter):
                 continue
             self._attr_accesses_for_function(
                 fn,
-                source_code=source_code,
                 file_path=file_path,
                 import_bindings=import_bindings,
                 module=module,
@@ -2124,7 +2102,6 @@ class PythonAdapter(TreeSitterAdapter):
         type_node,
         kind: str,
         *,
-        source_code: str,
         file_path: str,
         import_bindings: dict[str, str],
         module: str,
@@ -2189,7 +2166,6 @@ class PythonAdapter(TreeSitterAdapter):
                 referrer_node,
                 type_node,
                 kind,
-                source_code=source_code,
                 file_path=file_path,
                 import_bindings=import_bindings,
                 module=module,
@@ -2334,7 +2310,7 @@ class PythonAdapter(TreeSitterAdapter):
         for call in self._iter_nodes(param_node):
             if call.type != "call":
                 continue
-            for prov in self._positional_identifier_arguments(call, source_code):
+            for prov in self._positional_identifier_arguments(call):
                 record = self._injection_record_for_provider(
                     owner_uid=owner_uid,
                     owner_name=owner_name,
@@ -2352,7 +2328,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
         file_path: str,
     ) -> tuple[str, str] | None:
         params = node.child_by_field_name("parameters")
@@ -2381,11 +2356,7 @@ class PythonAdapter(TreeSitterAdapter):
         module: str,
         seen: set[tuple[str, str]],
     ) -> list[dict]:
-        owner = self._function_injection_owner(
-            node,
-            source_code=source_code,
-            file_path=file_path,
-        )
+        owner = self._function_injection_owner(node, file_path=file_path)
         if owner is None:
             return []
         owner_uid, owner_name = owner
@@ -2665,7 +2636,6 @@ class PythonAdapter(TreeSitterAdapter):
         type_name: str,
         type_qn: str,
         is_external: bool,
-        source_code: str,
         file_path: str,
         module: str,
         module_uid: str,
@@ -2724,7 +2694,6 @@ class PythonAdapter(TreeSitterAdapter):
             else {}
         )
         emit_kwargs = {
-            "source_code": source_code,
             "file_path": file_path,
             "module": module,
             "module_uid": module_uid,
@@ -3024,7 +2993,7 @@ class PythonAdapter(TreeSitterAdapter):
         return ""
 
     def _positional_identifier_arguments(
-        self, call_node, _source_code: str, *, limit: int = 8
+        self, call_node, *, limit: int = 8
     ) -> list[str]:
         """Leading positional arguments that are bare identifiers (for DI-style hints)."""
         arg_list = call_node.child_by_field_name("arguments")
@@ -3150,7 +3119,6 @@ class PythonAdapter(TreeSitterAdapter):
         confidence: float,
         callee_uid: str | None,
         callee_qualified_name: str | None,
-        source_code: str,
     ) -> None:
         if callee_uid == caller_uid:
             return
@@ -3167,7 +3135,7 @@ class PythonAdapter(TreeSitterAdapter):
             call["callee_uid"] = callee_uid
         if callee_qualified_name:
             call["callee_qualified_name"] = callee_qualified_name
-        pos_args = self._positional_identifier_arguments(node, source_code)
+        pos_args = self._positional_identifier_arguments(node)
         if pos_args:
             call["arguments"] = pos_args
         calls.append(call)
@@ -3182,7 +3150,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
         file_path: str,
         import_bindings: dict[str, str],
         by_name: dict[str, list],
@@ -3278,7 +3245,6 @@ class PythonAdapter(TreeSitterAdapter):
         calls: list[dict],
         captures: list[tuple[object, str]],
         *,
-        source_code: str,
         file_path: str,
         by_name: dict[str, list],
         import_bindings: dict[str, str],
@@ -3293,7 +3259,6 @@ class PythonAdapter(TreeSitterAdapter):
                 continue
             resolved = self._py_call_from_capture(
                 node,
-                source_code=source_code,
                 file_path=file_path,
                 import_bindings=import_bindings,
                 by_name=by_name,
@@ -3318,7 +3283,6 @@ class PythonAdapter(TreeSitterAdapter):
                 confidence=confidence,
                 callee_uid=callee_uid,
                 callee_qualified_name=callee_qualified_name,
-                source_code=source_code,
             )
 
     def extract_calls_from_source(
@@ -3343,7 +3307,6 @@ class PythonAdapter(TreeSitterAdapter):
         self._append_resolved_py_calls(
             calls,
             captures,
-            source_code=source_code,
             file_path=file_path,
             by_name=by_name,
             import_bindings=import_bindings,
@@ -4137,7 +4100,7 @@ class PythonAdapter(TreeSitterAdapter):
         fn = func_nodes.get(resolved_wrapped)
         if fn is None:
             return None
-        target_qn = self._constructed_imported_class(fn, source_code, import_bindings, module)
+        target_qn = self._constructed_imported_class(fn, import_bindings, module)
         if not target_qn:
             return None
         return {
@@ -4381,7 +4344,7 @@ class PythonAdapter(TreeSitterAdapter):
         return constructed
 
     def _constructed_imported_class(
-        self, func_node, _source_code: str, import_bindings: dict[str, str], module: str
+        self, func_node, import_bindings: dict[str, str], module: str
     ) -> str:
         """The single class a function imports-and-constructs in its body, else ''.
 

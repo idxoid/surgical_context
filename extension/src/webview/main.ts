@@ -767,7 +767,7 @@ class MainSurface {
       message.error = error;
       this.updateConversationView();
     } else {
-      this.messages.set(requestId, createAssistantChatMessage(requestId, undefined, 'error', error));
+      this.messages.set(requestId, createAssistantChatMessage(requestId, undefined, error, 'error'));
       this.updateConversationView();
     }
     this.finalizeAssistantExchange();
@@ -903,9 +903,8 @@ class MainSurface {
   }
 
   private trimDialogHistory(dialogs: StoredDialog[]): StoredDialog[] {
-    return dialogs
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .slice(0, 30);
+    const sorted = dialogs.toSorted((left, right) => right.updatedAt - left.updatedAt);
+    return sorted.slice(0, 30);
   }
 
   private dialogsForHistory(): StoredDialog[] {

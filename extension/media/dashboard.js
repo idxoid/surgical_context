@@ -5,7 +5,7 @@ import {
   listenForHostMessages,
   mountLayoutHtml,
   vscode
-} from "./chunk-Y7IV3U52.js";
+} from "./chunk-44YOORCP.js";
 
 // src/webview/shared/dashboardLayout.ts
 function renderDashboardHeader(workspaceId, lastUpdate) {

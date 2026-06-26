@@ -287,7 +287,7 @@ function createUserChatMessage(requestId, content, symbol) {
     symbol
   };
 }
-function createAssistantChatMessage(requestId, symbol, status = "streaming", error) {
+function createAssistantChatMessage(requestId, symbol, error, status = "streaming") {
   return {
     id: requestId,
     requestId,
@@ -308,14 +308,14 @@ function resizeComposerToFit(textarea, maxHeightPx = 220) {
 }
 
 // src/webview/shared/impactLayout.ts
-var REACH_CATEGORIES = /* @__PURE__ */ new Set(["event", "config", "data", "api"]);
-var HIGH_SEVERITY_CATEGORIES = /* @__PURE__ */ new Set(["api", "data", "cross_repo"]);
-var SEVERITY_BASE_SCORE = {
+const REACH_CATEGORIES = /* @__PURE__ */ new Set(["event", "config", "data", "api"]);
+const HIGH_SEVERITY_CATEGORIES = /* @__PURE__ */ new Set(["api", "data", "cross_repo"]);
+const SEVERITY_BASE_SCORE = {
   high: 0.88,
   medium: 0.66,
   low: 0.42
 };
-var CATEGORY_UTILITY_BOOST = {
+const CATEGORY_UTILITY_BOOST = {
   api: 0.08,
   data: 0.08,
   event: 0.05
@@ -973,19 +973,19 @@ function hydrateFromPromptContext(context) {
 }
 
 // src/webview/shared/surfaceChrome.ts
-var SURFACE_FROM_HOST_MESSAGE = {
+const SURFACE_FROM_HOST_MESSAGE = {
   "surface.showChat": "chat",
   "surface.showInspector": "inspector",
   "surface.showImpact": "impact",
   "surface.showSettings": "settings"
 };
-var SURFACE_FROM_DOM_ACTION = {
+const SURFACE_FROM_DOM_ACTION = {
   openChat: "chat",
   openInspector: "inspector",
   openSettings: "settings",
   showImpact: "impact"
 };
-var MAIN_SURFACE_TABS = [
+const MAIN_SURFACE_TABS = [
   { id: "chat", label: "Chat", icon: "\u25CC" },
   { id: "inspector", label: "Inspector", icon: "\u25CE" },
   { id: "impact", label: "Impact", icon: "\u2301" }
@@ -1059,7 +1059,7 @@ function renderInspectorSurfaceShell(chrome, body) {
 }
 
 // src/webview/shared/inspectorLayout.ts
-var INSPECTOR_TABS = [
+const INSPECTOR_TABS = [
   { id: "primary", label: "Primary" },
   { id: "intent", label: "Intent" },
   { id: "graph", label: "Graph" },
@@ -1647,8 +1647,8 @@ function selectValue(id, fallback) {
 function checkboxValue(id) {
   return document.getElementById(id)?.checked || false;
 }
-var SETTINGS_CHECKBOX_FIELDS = /* @__PURE__ */ new Set(["overlaySync", "autoOpenInspector"]);
-var SETTINGS_SELECT_FIELDS = /* @__PURE__ */ new Set(["modelPreference", "indexProfile"]);
+const SETTINGS_CHECKBOX_FIELDS = /* @__PURE__ */ new Set(["overlaySync", "autoOpenInspector"]);
+const SETTINGS_SELECT_FIELDS = /* @__PURE__ */ new Set(["modelPreference", "indexProfile"]);
 function readSettingsFormField(key) {
   if (SETTINGS_CHECKBOX_FIELDS.has(key)) {
     return checkboxValue(key);
@@ -1757,7 +1757,7 @@ function bootWebview(init) {
 function hostHandler(handler) {
   return handler;
 }
-var MAIN_SURFACE_HOST_HANDLERS = {
+const MAIN_SURFACE_HOST_HANDLERS = {
   "surface.init": hostHandler((d, m) => d.onSurfaceInit(m)),
   "chat.requestStarted": hostHandler((d, m) => {
     d.setSurface("chat");
@@ -1800,13 +1800,13 @@ function dispatchMainHostMessage(delegate, message) {
 }
 
 // src/webview/shared/mainSurfaceActions.ts
-var COPY_ACTIONS = /* @__PURE__ */ new Set(["copy", "copy-json", "copy-api-json", "feedback"]);
-var IMPACT_CHANGE_CHECK_PROMPT = (symbol) => `What should I check before changing ${symbol || "this symbol"}?`;
-var IMPACT_REFACTOR_PLAN_PROMPT = (symbol) => `Create a refactor plan for ${symbol || "this symbol"}.`;
+const COPY_ACTIONS = /* @__PURE__ */ new Set(["copy", "copy-json", "copy-api-json", "feedback"]);
+const IMPACT_CHANGE_CHECK_PROMPT = (symbol) => `What should I check before changing ${symbol || "this symbol"}?`;
+const IMPACT_REFACTOR_PLAN_PROMPT = (symbol) => `Create a refactor plan for ${symbol || "this symbol"}.`;
 function domAction(handler) {
   return handler;
 }
-var MAIN_SURFACE_DOM_ACTION_HANDLERS = {
+const MAIN_SURFACE_DOM_ACTION_HANDLERS = {
   switchSurface: domAction((h, t) => h.switchSurface(t.dataset.surface)),
   switchInspectorTab: domAction((h, t) => h.switchInspectorTab(t.dataset.inspectorTab)),
   selectPrompt: domAction((h, t) => h.selectPrompt(t.dataset.requestId ?? null)),
@@ -1888,4 +1888,4 @@ export {
   dispatchMainHostMessage,
   handleMainSurfaceAction
 };
-//# sourceMappingURL=chunk-Y7IV3U52.js.map
+//# sourceMappingURL=chunk-44YOORCP.js.map

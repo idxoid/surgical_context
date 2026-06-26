@@ -32,7 +32,7 @@ import {
   toggleAriaExpandedSection,
   validateSettingsForm,
   vscode
-} from "./chunk-Y7IV3U52.js";
+} from "./chunk-44YOORCP.js";
 
 // src/webview/main.ts
 const MainSurface = class {
@@ -625,7 +625,7 @@ const MainSurface = class {
       message.error = error;
       this.updateConversationView();
     } else {
-      this.messages.set(requestId, createAssistantChatMessage(requestId, void 0, "error", error));
+      this.messages.set(requestId, createAssistantChatMessage(requestId, void 0, error, "error"));
       this.updateConversationView();
     }
     this.finalizeAssistantExchange();
@@ -737,7 +737,8 @@ const MainSurface = class {
     this.syncView(true);
   }
   trimDialogHistory(dialogs) {
-    return dialogs.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 30);
+    const sorted = dialogs.toSorted((left, right) => right.updatedAt - left.updatedAt);
+    return sorted.slice(0, 30);
   }
   dialogsForHistory() {
     const current = this.currentDialogSnapshot();

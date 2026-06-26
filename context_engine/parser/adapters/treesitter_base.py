@@ -134,7 +134,6 @@ class TreeSitterAdapter(LanguageAdapter):
         node,
         tag: str,
         var_names: dict[int, str],
-        source_code: str,
         file_path: str,
     ) -> SymbolMetadata | None:
         var_name = var_names.get(node.id)
@@ -142,7 +141,6 @@ class TreeSitterAdapter(LanguageAdapter):
             node,
             tag,
             var_name,
-            source_code=source_code,
             file_path=file_path,
         ):
             return None
@@ -177,13 +175,12 @@ class TreeSitterAdapter(LanguageAdapter):
         node,
         tag: str,
         var_names: dict[int, str],
-        source_code: str,
         file_path: str,
     ) -> SymbolMetadata | None:
         if tag in ("func.def", "class.def"):
             return self._declaration_symbol_from_capture(node, tag, file_path)
         if tag.startswith("var."):
-            return self._variable_symbol_from_capture(node, tag, var_names, source_code, file_path)
+            return self._variable_symbol_from_capture(node, tag, var_names, file_path)
         return None
 
     def extract_symbols(
@@ -201,7 +198,7 @@ class TreeSitterAdapter(LanguageAdapter):
         var_names = self._var_names_by_parent_id(captures)
         symbols: list[SymbolMetadata] = []
         for node, tag in captures:
-            symbol = self._symbol_from_capture(node, tag, var_names, source_code, file_path)
+            symbol = self._symbol_from_capture(node, tag, var_names, file_path)
             if symbol is not None:
                 symbols.append(symbol)
         return symbols
@@ -212,7 +209,6 @@ class TreeSitterAdapter(LanguageAdapter):
         tag: str,
         name: str,
         *,
-        source_code: str,
         file_path: str,
     ) -> bool:
         """Decide whether a captured module-level variable should be indexed.
@@ -221,7 +217,7 @@ class TreeSitterAdapter(LanguageAdapter):
         as symbols. Language adapters can override this for ecosystems where
         exported lexical declarations are part of the public API surface.
         """
-        _ = (node, tag, source_code, file_path)
+        _ = (node, tag, file_path)
         return name.isupper()
 
     def _enclosing_parent_for_call(self, node):
@@ -233,7 +229,6 @@ class TreeSitterAdapter(LanguageAdapter):
     def _call_edge_from_name_capture(
         self,
         node,
-        source_code: str,
         file_path: str,
     ) -> dict | None:
         call_name = _node_text(node)
@@ -266,7 +261,7 @@ class TreeSitterAdapter(LanguageAdapter):
         for node, tag in captures:
             if tag != "call.name":
                 continue
-            call = self._call_edge_from_name_capture(node, source_code, file_path)
+            call = self._call_edge_from_name_capture(node, file_path)
             if call is not None:
                 calls.append(call)
         return calls

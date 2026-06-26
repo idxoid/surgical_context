@@ -41,6 +41,21 @@ function rewriteImmutableVarExports(mediaDir) {
     'IMPACT_KIND_EXPLAINERS',
     'DEFAULT_CALLS_EDGE_LABEL',
     'MISSING_SYMBOL_PATTERN',
+    'REACH_CATEGORIES',
+    'HIGH_SEVERITY_CATEGORIES',
+    'SEVERITY_BASE_SCORE',
+    'CATEGORY_UTILITY_BOOST',
+    'SURFACE_FROM_HOST_MESSAGE',
+    'SURFACE_FROM_DOM_ACTION',
+    'MAIN_SURFACE_TABS',
+    'INSPECTOR_TABS',
+    'SETTINGS_CHECKBOX_FIELDS',
+    'SETTINGS_SELECT_FIELDS',
+    'MAIN_SURFACE_HOST_HANDLERS',
+    'COPY_ACTIONS',
+    'IMPACT_CHANGE_CHECK_PROMPT',
+    'IMPACT_REFACTOR_PLAN_PROMPT',
+    'MAIN_SURFACE_DOM_ACTION_HANDLERS',
   ];
   for (const fileName of fs.readdirSync(mediaDir)) {
     if (!fileName.endsWith('.js')) {
@@ -59,6 +74,24 @@ function rewriteImmutableVarExports(mediaDir) {
     }
     if (changed) {
       fs.writeFileSync(filePath, text);
+    }
+  }
+}
+
+/** esbuild chunk files only use top-level `var` for immutable module bindings. */
+function rewriteChunkVarDeclarations(mediaDir) {
+  if (!fs.existsSync(mediaDir)) {
+    return;
+  }
+  for (const fileName of fs.readdirSync(mediaDir)) {
+    if (!fileName.startsWith('chunk-') || !fileName.endsWith('.js')) {
+      continue;
+    }
+    const filePath = path.join(mediaDir, fileName);
+    const text = fs.readFileSync(filePath, 'utf8');
+    const next = text.replace(/^var (\w+) = /gm, 'const $1 = ');
+    if (next !== text) {
+      fs.writeFileSync(filePath, next);
     }
   }
 }
@@ -190,6 +223,7 @@ function webviewPostProcessPlugin() {
       build.onEnd(() => {
         const mediaDir = path.join(__dirname, 'media');
         rewriteImmutableVarExports(mediaDir);
+        rewriteChunkVarDeclarations(mediaDir);
         rewriteMainSurfaceClassFields(mediaDir);
         cleanupOrphanChunks(mediaDir);
       });

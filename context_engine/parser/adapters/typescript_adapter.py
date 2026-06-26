@@ -350,7 +350,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             for symbol in symbols:
                 if symbol.name in higher_order_factory_names:
                     symbol.returns_function_expression = True
-        self._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
+        self._mark_property_accessor_symbols(symbols, tree, file_path)
         self._mark_react_hook_symbols(symbols)
         self._mark_behavioral_shape_symbols(symbols, tree)
 
@@ -741,7 +741,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self,
         symbols: list[SymbolMetadata],
         tree,
-        source_code: str,
         file_path: str,
     ) -> None:
         """Stamp ``is_getter`` / ``is_setter`` on class accessor method symbols."""
@@ -967,7 +966,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         tag: str,
         name: str,
         *,
-        source_code: str,
         file_path: str,
     ) -> bool:
         """Treat exported lexical declarations as public API symbols.
@@ -977,9 +975,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         those declarations makes retrieval work across TS codebases without
         hard-coding framework names like Redux Toolkit.
         """
-        if super().should_include_variable_symbol(
-            node, tag, name, source_code=source_code, file_path=file_path
-        ):
+        if super().should_include_variable_symbol(node, tag, name, file_path=file_path):
             return True
         return tag == "var.exported_def"
 
@@ -1442,7 +1438,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         class_node,
         member,
         *,
-        source_code: str,
         file_path: str,
         import_bindings: dict[str, str],
         module: str,
@@ -1472,7 +1467,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self,
         class_node,
         *,
-        source_code: str,
         file_path: str,
         import_bindings: dict[str, str],
         module: str,
@@ -1491,7 +1485,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 self._injection_records_from_constructor(
                     class_node,
                     member,
-                    source_code=source_code,
                     file_path=file_path,
                     import_bindings=import_bindings,
                     module=module,
@@ -1519,7 +1512,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 continue
             self._injection_records_from_class(
                 class_node,
-                source_code=source_code,
                 file_path=file_path,
                 import_bindings=import_bindings,
                 module=module,
@@ -1540,7 +1532,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
     ) -> tuple[str, str, bool] | None:
         typed_locals = self._class_typed_locals(
             owner,
-            source_code,
             import_bindings,
             module,
             local_classes,
@@ -1669,7 +1660,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
         file_path: str,
         out: list[dict],
         seen: set[tuple[str, str, str, str, str]],
@@ -1861,7 +1851,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for node in self._iter_nodes(tree.root_node):
             if self._try_extract_lifecycle_hook(
                 node,
-                source_code=source_code,
                 file_path=file_path,
                 out=out,
                 seen=seen,
@@ -2065,7 +2054,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self,
         tree,
         *,
-        source_code: str,
         file_path: str,
     ) -> dict[str, str]:
         controller_prefix_by_class: dict[str, str] = {}
@@ -2088,7 +2076,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self,
         tree,
         *,
-        source_code: str,
         file_path: str,
         controller_prefix_by_class: dict[str, str],
         out: list[dict],
@@ -2114,7 +2101,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if not site_uid:
                 continue
             subpath = self._http_path_from_decorator(deco) or ""
-            class_uid = self._enclosing_class_uid(decorated, source_code, file_path)
+            class_uid = self._enclosing_class_uid(decorated, file_path)
             prefix = controller_prefix_by_class.get(class_uid, "")
             path = (
                 combine_controller_path(prefix, subpath)
@@ -2299,12 +2286,10 @@ class TypeScriptAdapter(TreeSitterAdapter):
         seen: set[tuple[str, str, str, str]] = set()
         controller_prefix_by_class = self._collect_controller_prefixes(
             tree,
-            source_code=source_code,
             file_path=file_path,
         )
         self._collect_route_decorator_endpoints(
             tree,
-            source_code=source_code,
             file_path=file_path,
             controller_prefix_by_class=controller_prefix_by_class,
             out=out,
@@ -2325,7 +2310,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return ""
         return self._caller_uid_for_owner(owner, source_code, file_path) or ""
 
-    def _enclosing_class_uid(self, node, source_code: str, file_path: str) -> str:
+    def _enclosing_class_uid(self, node, file_path: str) -> str:
         parent = node.parent
         while parent:
             if parent.type in self._CLASS_DECL_TYPES:
@@ -2709,7 +2694,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self,
         fn,
         *,
-        source_code: str,
         file_path: str,
         module: str,
         out: list[dict],
@@ -2759,7 +2743,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 continue
             self._attr_accesses_from_function_body(
                 fn,
-                source_code=source_code,
                 file_path=file_path,
                 module=module,
                 out=out,
@@ -3998,7 +3981,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def _class_typed_locals(
         self,
         owner,
-        _source_code: str,
         import_bindings: dict[str, str],
         module: str,
         local_classes: set[str],

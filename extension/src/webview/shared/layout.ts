@@ -300,8 +300,8 @@ export function createUserChatMessage(
 export function createAssistantChatMessage(
   requestId: string,
   symbol?: string,
-  status: ChatMessage['status'] = 'streaming',
   error?: string,
+  status: ChatMessage['status'] = 'streaming',
 ): ChatMessage {
   return {
     id: requestId,
