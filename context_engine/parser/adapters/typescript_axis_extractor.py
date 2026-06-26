@@ -67,32 +67,32 @@ class TypeScriptAxisExtractor:
         if cached is not None:
             return cached
         handlers: dict[str, str] = {
-            "import_statement": "_axis_node_import",
-            "variable_declarator": "_axis_node_variable_declarator",
-            "decorator": "_axis_node_decorator",
-            "call_expression": "_axis_node_call",
-            "new_expression": "_axis_node_new",
-            "return_statement": "_axis_node_return",
-            "assignment_expression": "_axis_node_assignment",
-            "augmented_assignment_expression": "_axis_node_augmented_assignment",
-            "await_expression": "_axis_node_await",
-            "yield_expression": "_axis_node_yield",
-            "try_statement": "_axis_node_try",
-            "catch_clause": "_axis_node_catch",
-            "throw_statement": "_axis_node_throw",
-            "member_expression": "_axis_node_member",
-            "subscript_expression": "_axis_node_subscript",
+            "import_statement": "import",
+            "variable_declarator": "_emit_variable_declarator_facts",
+            "decorator": "decorator",
+            "call_expression": "_emit_call_facts",
+            "new_expression": "_emit_new_facts",
+            "return_statement": "_emit_return_facts",
+            "assignment_expression": "_emit_assignment_facts",
+            "augmented_assignment_expression": "_emit_augmented_assignment_facts",
+            "await_expression": "_emit_await_facts",
+            "yield_expression": "_emit_yield_facts",
+            "try_statement": "_emit_try_facts",
+            "catch_clause": "_emit_catch_facts",
+            "throw_statement": "_emit_throw_facts",
+            "member_expression": "_emit_member_read_facts",
+            "subscript_expression": "_emit_subscript_read_facts",
         }
         for node_type in cls._CLASS_TYPES:
-            handlers[node_type] = "_axis_node_class"
+            handlers[node_type] = "class"
         for node_type in cls._CALLABLE_TYPES:
-            handlers[node_type] = "_axis_node_callable"
+            handlers[node_type] = "callable"
         for node_type in cls._SHAPE_TYPES:
-            handlers[node_type] = "_axis_node_shape"
+            handlers[node_type] = "_emit_literal_shape_facts"
         for node_type in cls._BRANCH_TYPES:
-            handlers[node_type] = "_axis_node_branch"
+            handlers[node_type] = "_emit_branch_facts"
         for node_type in cls._LOOP_TYPES:
-            handlers[node_type] = "_axis_node_loop"
+            handlers[node_type] = "_emit_loop_facts"
         cls._CACHED_AXIS_NODE_HANDLER_MAP = handlers
         return handlers
 
@@ -110,15 +110,25 @@ class TypeScriptAxisExtractor:
         handler_name = self._axis_node_handler_map().get(node.type)
         if handler_name is None:
             return
-        getattr(self, handler_name)(
-            node,
-            source=source,
-            file_path=file_path,
-            module_scope=module_scope,
-            emit=emit,
-            emit_scope=emit_scope,
-            seen_decorators=seen_decorators,
-        )
+        if handler_name == "import":
+            self._emit_import_facts(node, source, module_scope, emit_scope)
+            return
+        if handler_name == "class":
+            self._emit_class_def_facts(node, source, file_path, emit)
+            self._emit_inheritance_facts(node, source, file_path, emit)
+            return
+        if handler_name == "callable":
+            self._emit_callable_def_facts(node, file_path, emit)
+            self._emit_parameter_facts(node, source, file_path, emit)
+            self._emit_return_annotation(node, source, file_path, emit)
+            return
+        if handler_name == "decorator":
+            if node.start_byte in seen_decorators:
+                return
+            seen_decorators.add(node.start_byte)
+            self._emit_decorator_facts(node, source, file_path, emit)
+            return
+        getattr(self, handler_name)(node, source, file_path, emit)
 
     def extract(
         self,
@@ -189,72 +199,6 @@ class TypeScriptAxisExtractor:
             )
 
         return AxisExtraction(file_path=file_path, facts=facts)
-
-    def _axis_node_import(self, node, *, source, module_scope, emit_scope, **_) -> None:
-        self._emit_import_facts(node, source, module_scope, emit_scope)
-
-    def _axis_node_class(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_class_def_facts(node, source, file_path, emit)
-        self._emit_inheritance_facts(node, source, file_path, emit)
-
-    def _axis_node_callable(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_callable_def_facts(node, file_path, emit)
-        self._emit_parameter_facts(node, source, file_path, emit)
-        self._emit_return_annotation(node, source, file_path, emit)
-
-    def _axis_node_variable_declarator(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_variable_declarator_facts(node, source, file_path, emit)
-
-    def _axis_node_decorator(self, node, *, source, file_path, emit, seen_decorators, **_) -> None:
-        if node.start_byte in seen_decorators:
-            return
-        seen_decorators.add(node.start_byte)
-        self._emit_decorator_facts(node, source, file_path, emit)
-
-    def _axis_node_call(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_call_facts(node, source, file_path, emit)
-
-    def _axis_node_new(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_new_facts(node, source, file_path, emit)
-
-    def _axis_node_return(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_return_facts(node, source, file_path, emit)
-
-    def _axis_node_shape(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_literal_shape_facts(node, source, file_path, emit)
-
-    def _axis_node_assignment(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_assignment_facts(node, source, file_path, emit)
-
-    def _axis_node_augmented_assignment(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_augmented_assignment_facts(node, source, file_path, emit)
-
-    def _axis_node_branch(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_branch_facts(node, source, file_path, emit)
-
-    def _axis_node_loop(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_loop_facts(node, source, file_path, emit)
-
-    def _axis_node_await(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_await_facts(node, source, file_path, emit)
-
-    def _axis_node_yield(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_yield_facts(node, source, file_path, emit)
-
-    def _axis_node_try(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_try_facts(node, source, file_path, emit)
-
-    def _axis_node_catch(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_catch_facts(node, source, file_path, emit)
-
-    def _axis_node_throw(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_throw_facts(node, source, file_path, emit)
-
-    def _axis_node_member(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_member_read_facts(node, source, file_path, emit)
-
-    def _axis_node_subscript(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_subscript_read_facts(node, source, file_path, emit)
 
     def extract_facts(self, source: str, file_path: str, *, tree=None) -> list[AxisFact]:
         return self.extract(source, file_path, tree=tree).facts

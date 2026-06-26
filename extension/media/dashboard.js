@@ -5,7 +5,7 @@ import {
   listenForHostMessages,
   mountLayoutHtml,
   vscode
-} from "./chunk-44YOORCP.js";
+} from "./chunk-V573SA7E.js";
 
 // src/webview/shared/dashboardLayout.ts
 function renderDashboardHeader(workspaceId, lastUpdate) {
@@ -103,12 +103,11 @@ function renderTokenSavingsCard(metrics) {
   const savings = metrics.tokenSavingsPercent;
   const value = formatPercent(savings);
   const bars = savings === null ? [38, 42, 44, 40, 46, 43, 45, 41, 39, 44, 47, 45] : [56, 62, 67, 64, 70, 73, Math.max(8, savings), 68, 71, 66, 74, 76];
-  return `
-    <div class="dashboard-card token-savings-card">
-      <div class="card-header">
-        <span>Token savings vs naive context</span>
-        <span class="card-header-meta">${savings === null ? "pending" : "live"}</span>
-      </div>
+  return renderDashboardCard(
+    "token-savings-card",
+    "Token savings vs naive context",
+    savings === null ? "pending" : "live",
+    `
       <div class="token-savings-body">
         <div>
           <div class="token-savings-value">${value}</div>
@@ -126,8 +125,8 @@ function renderTokenSavingsCard(metrics) {
           `).join("")}
         </div>
       </div>
-    </div>
-  `;
+    `
+  );
 }
 function renderIndexingJobsCard(metrics) {
   const queueUnavailable = metrics.queuePending === null && metrics.queueProcessing === null && metrics.queueProcessed === null && metrics.queueFailedBatches === null;
@@ -168,12 +167,11 @@ function renderIndexingJobsCard(metrics) {
       duration: formatNumber(metrics.queuePending)
     }
   ];
-  return `
-    <div class="dashboard-card indexing-card">
-      <div class="card-header">
-        <span>Recent indexing jobs</span>
-        <span class="card-header-meta">queue</span>
-      </div>
+  return renderDashboardCard(
+    "indexing-card",
+    "Recent indexing jobs",
+    "queue",
+    `
       <div class="dashboard-table" role="table" aria-label="Recent indexing jobs">
         <div class="dashboard-table-row header" role="row">
           <span>Time</span>
@@ -192,22 +190,21 @@ function renderIndexingJobsCard(metrics) {
           </div>
         `).join("")}
       </div>
-    </div>
-  `;
+    `
+  );
 }
 function renderIndexingStateCard(title, message, status) {
-  return `
-    <div class="dashboard-card indexing-card">
-      <div class="card-header">
-        <span>Recent indexing jobs</span>
-        <span class="card-header-meta">${escapeHtml(status)}</span>
-      </div>
+  return renderDashboardCard(
+    "indexing-card",
+    "Recent indexing jobs",
+    status,
+    `
       <div class="dashboard-empty-state">
         <div class="dashboard-empty-title">${escapeHtml(title)}</div>
         <div class="dashboard-empty-message">${escapeHtml(message)}</div>
       </div>
-    </div>
-  `;
+    `
+  );
 }
 function renderHealthChecklistCard(items) {
   const rows = items.length === 0 ? `
@@ -224,17 +221,16 @@ function renderHealthChecklistCard(items) {
         <div class="health-check-value">${escapeHtml(item.value)}</div>
       </div>
     `).join("");
-  return `
-    <div class="dashboard-card health-check-card">
-      <div class="card-header">
-        <span>Health checklist</span>
-        <span class="card-header-meta">local</span>
-      </div>
+  return renderDashboardCard(
+    "health-check-card",
+    "Health checklist",
+    "local",
+    `
       <div class="health-check-list">
         ${rows}
       </div>
-    </div>
-  `;
+    `
+  );
 }
 function renderAuditEventsCard(auditActions) {
   const rows = auditActions.length === 0 ? `
@@ -256,12 +252,11 @@ function renderAuditEventsCard(auditActions) {
           </div>
         `;
   }).join("");
-  return `
-    <div class="dashboard-card audit-card">
-      <div class="card-header">
-        <span>Recent audit events</span>
-        <span class="card-header-meta">latest</span>
-      </div>
+  return renderDashboardCard(
+    "audit-card",
+    "Recent audit events",
+    "latest",
+    `
       <div class="dashboard-table audit-table" role="table" aria-label="Recent audit events">
         <div class="dashboard-table-row header" role="row">
           <span>Time</span>
@@ -271,6 +266,17 @@ function renderAuditEventsCard(auditActions) {
         </div>
         ${rows}
       </div>
+    `
+  );
+}
+function renderDashboardCard(className, title, meta, body) {
+  return `
+    <div class="dashboard-card ${escapeHtml(className)}">
+      <div class="card-header">
+        <span>${escapeHtml(title)}</span>
+        <span class="card-header-meta">${escapeHtml(meta)}</span>
+      </div>
+      ${body}
     </div>
   `;
 }

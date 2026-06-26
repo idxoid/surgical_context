@@ -1757,8 +1757,18 @@ function bootWebview(init) {
 function hostHandler(handler) {
   return handler;
 }
+function callDelegate(method) {
+  return hostHandler((delegate) => {
+    delegate[method].call(delegate);
+  });
+}
+function forwardMessage(method) {
+  return hostHandler((delegate, message) => {
+    delegate[method].call(delegate, message);
+  });
+}
 const MAIN_SURFACE_HOST_HANDLERS = {
-  "surface.init": hostHandler((d, m) => d.onSurfaceInit(m)),
+  "surface.init": forwardMessage("onSurfaceInit"),
   "chat.requestStarted": hostHandler((d, m) => {
     d.setSurface("chat");
     d.onRequestStarted(m.requestId, m.symbol);
@@ -1771,14 +1781,14 @@ const MAIN_SURFACE_HOST_HANDLERS = {
     d.setContextSummary(m.summary);
     d.refreshAccordions();
   }),
-  "workspace.updated": hostHandler((d, m) => d.onWorkspaceUpdated(m)),
-  "backend.updated": hostHandler((d, m) => d.onBackendUpdated(m)),
-  "impact.loading": hostHandler((d) => d.onImpactLoading()),
-  "impact.loaded": hostHandler((d, m) => d.onImpactLoaded(m)),
-  "impact.loadFailed": hostHandler((d, m) => d.onImpactLoadFailed(m)),
-  "inspector.loaded": hostHandler((d, m) => d.onInspectorLoaded(m)),
-  "inspector.intentLoaded": hostHandler((d, m) => d.onInspectorIntentLoaded(m)),
-  "settings.loaded": hostHandler((d, m) => d.onSettingsLoaded(m)),
+  "workspace.updated": forwardMessage("onWorkspaceUpdated"),
+  "backend.updated": forwardMessage("onBackendUpdated"),
+  "impact.loading": callDelegate("onImpactLoading"),
+  "impact.loaded": forwardMessage("onImpactLoaded"),
+  "impact.loadFailed": forwardMessage("onImpactLoadFailed"),
+  "inspector.loaded": forwardMessage("onInspectorLoaded"),
+  "inspector.intentLoaded": forwardMessage("onInspectorIntentLoaded"),
+  "settings.loaded": forwardMessage("onSettingsLoaded"),
   "settings.saved": hostHandler((_d, m) => showFeedback(m.message, "success")),
   "settings.saveFailed": hostHandler((_d, m) => showFeedback(m.error, "error")),
   "settings.testUrlComplete": hostHandler((_d, m) => showFieldStatus("backendUrl", m.success, m.message)),
@@ -1803,35 +1813,42 @@ function dispatchMainHostMessage(delegate, message) {
 const COPY_ACTIONS = /* @__PURE__ */ new Set(["copy", "copy-json", "copy-api-json", "feedback"]);
 const IMPACT_CHANGE_CHECK_PROMPT = (symbol) => `What should I check before changing ${symbol || "this symbol"}?`;
 const IMPACT_REFACTOR_PLAN_PROMPT = (symbol) => `Create a refactor plan for ${symbol || "this symbol"}.`;
-function domAction(handler) {
-  return handler;
+function invokeVoidAction(method) {
+  return (host) => {
+    host[method].call(host);
+  };
+}
+function invokeTargetAction(method) {
+  return (host, target) => {
+    host[method].call(host, target);
+  };
 }
 const MAIN_SURFACE_DOM_ACTION_HANDLERS = {
-  switchSurface: domAction((h, t) => h.switchSurface(t.dataset.surface)),
-  switchInspectorTab: domAction((h, t) => h.switchInspectorTab(t.dataset.inspectorTab)),
-  selectPrompt: domAction((h, t) => h.selectPrompt(t.dataset.requestId ?? null)),
-  toggleHistory: domAction((h) => h.toggleHistory()),
-  newDialog: domAction((h) => h.startNewDialog()),
-  restoreDialog: domAction((h, t) => h.restoreDialog(t.dataset.dialogId ?? null)),
-  openDashboard: domAction((h) => h.postOpenDashboard()),
-  ask: domAction((h) => h.focusComposer()),
-  "ask-followup": domAction((h) => h.prefillImpactAsk(IMPACT_CHANGE_CHECK_PROMPT(h.getActiveImpactSymbol()))),
-  "open-related-files": domAction((h) => h.openRelatedImpactFiles()),
-  openFile: domAction((h, t) => h.openFileFromImpact(t)),
-  showMoreImpact: domAction((h, t) => h.showMoreImpactRows(t)),
-  explainImpact: domAction((h, t) => h.toggleImpactExplanation(t)),
-  "create-refactor-plan": domAction((h) => h.prefillImpactAsk(IMPACT_REFACTOR_PLAN_PROMPT(h.getActiveImpactSymbol()))),
-  save: domAction((h) => h.saveSettings()),
-  reset: domAction((h) => h.resetSettings()),
-  testUrl: domAction((h) => h.testSettingsUrl()),
-  openKeybindings: domAction((h) => h.postOpenKeybindings()),
-  search: domAction((h) => h.showSearchComingSoon()),
-  noop: domAction((h, t) => h.toggleImpactGroup(t)),
-  feedback: domAction((h, t) => h.submitFeedback(t)),
-  copy: domAction((h, t) => h.copyMessage(t)),
-  "copy-json": domAction((h, t) => h.copyInspectorJson(t)),
-  "copy-api-json": domAction((h, t) => h.copyInspectorJson(t)),
-  stopStreaming: domAction((h) => h.stopStreaming())
+  switchSurface: (h, t) => h.switchSurface(t.dataset.surface),
+  switchInspectorTab: (h, t) => h.switchInspectorTab(t.dataset.inspectorTab),
+  selectPrompt: (h, t) => h.selectPrompt(t.dataset.requestId ?? null),
+  toggleHistory: invokeVoidAction("toggleHistory"),
+  newDialog: invokeVoidAction("startNewDialog"),
+  restoreDialog: (h, t) => h.restoreDialog(t.dataset.dialogId ?? null),
+  openDashboard: invokeVoidAction("postOpenDashboard"),
+  ask: invokeVoidAction("focusComposer"),
+  "ask-followup": (h) => h.prefillImpactAsk(IMPACT_CHANGE_CHECK_PROMPT(h.getActiveImpactSymbol())),
+  "open-related-files": invokeVoidAction("openRelatedImpactFiles"),
+  openFile: invokeTargetAction("openFileFromImpact"),
+  showMoreImpact: invokeTargetAction("showMoreImpactRows"),
+  explainImpact: invokeTargetAction("toggleImpactExplanation"),
+  "create-refactor-plan": (h) => h.prefillImpactAsk(IMPACT_REFACTOR_PLAN_PROMPT(h.getActiveImpactSymbol())),
+  save: invokeVoidAction("saveSettings"),
+  reset: invokeVoidAction("resetSettings"),
+  testUrl: invokeVoidAction("testSettingsUrl"),
+  openKeybindings: invokeVoidAction("postOpenKeybindings"),
+  search: invokeVoidAction("showSearchComingSoon"),
+  noop: invokeTargetAction("toggleImpactGroup"),
+  feedback: invokeTargetAction("submitFeedback"),
+  copy: invokeTargetAction("copyMessage"),
+  "copy-json": invokeTargetAction("copyInspectorJson"),
+  "copy-api-json": invokeTargetAction("copyInspectorJson"),
+  stopStreaming: invokeVoidAction("stopStreaming")
 };
 function handleMainSurfaceAction(host, event) {
   const target = event.currentTarget;
@@ -1888,4 +1905,4 @@ export {
   dispatchMainHostMessage,
   handleMainSurfaceAction
 };
-//# sourceMappingURL=chunk-44YOORCP.js.map
+//# sourceMappingURL=chunk-V573SA7E.js.map

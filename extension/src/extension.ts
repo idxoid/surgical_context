@@ -16,6 +16,45 @@ interface SymbolCommandTarget {
   character?: number;
 }
 
+type RevealSurgicalContextView = () => Promise<void>;
+
+async function showChatForCommandTarget(
+  overlayManager: OverlayManager,
+  view: SurgicalContextViewProvider,
+  revealView: RevealSurgicalContextView,
+  args: unknown[],
+): Promise<void> {
+  const target = await resolveSymbolCommandTarget(overlayManager, args);
+  await applySymbolCommandTarget(target);
+  await revealView();
+  pushTargetState(target, view);
+  view.showChat();
+}
+
+async function showImpactForCommandTarget(
+  overlayManager: OverlayManager,
+  view: SurgicalContextViewProvider,
+  revealView: RevealSurgicalContextView,
+  args: unknown[],
+): Promise<void> {
+  const target = await resolveSymbolCommandTarget(overlayManager, args);
+  await applySymbolCommandTarget(target);
+  await revealView();
+  pushTargetState(target, view);
+  await view.showImpact(target.symbol, 3, target.filePath);
+}
+
+function registerChatCommand(
+  command: string,
+  overlayManager: OverlayManager,
+  view: SurgicalContextViewProvider,
+  revealView: RevealSurgicalContextView,
+): vscode.Disposable {
+  return vscode.commands.registerCommand(command, async (...args: unknown[]) => {
+    await showChatForCommandTarget(overlayManager, view, revealView, args);
+  });
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   // Create persistent status bar item
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -88,21 +127,19 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider),
 
     // Spec commands
-    vscode.commands.registerCommand('surgicalContext.askCurrentSymbol', async (...args: unknown[]) => {
-      const target = await resolveSymbolCommandTarget(overlayManager, args);
-      await applySymbolCommandTarget(target);
-      await revealSurgicalContextView();
-      pushTargetState(target, surgicalContextView);
-      surgicalContextView.showChat();
-    }),
+    registerChatCommand(
+      'surgicalContext.askCurrentSymbol',
+      overlayManager,
+      surgicalContextView,
+      revealSurgicalContextView,
+    ),
 
-    vscode.commands.registerCommand('surgicalContext.askSelection', async (...args: unknown[]) => {
-      const target = await resolveSymbolCommandTarget(overlayManager, args);
-      await applySymbolCommandTarget(target);
-      await revealSurgicalContextView();
-      pushTargetState(target, surgicalContextView);
-      surgicalContextView.showChat();
-    }),
+    registerChatCommand(
+      'surgicalContext.askSelection',
+      overlayManager,
+      surgicalContextView,
+      revealSurgicalContextView,
+    ),
 
     vscode.commands.registerCommand('surgicalContext.openInspector', async () => {
       await revealSurgicalContextView();
@@ -110,11 +147,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('surgicalContext.showImpact', async (...args: unknown[]) => {
-      const target = await resolveSymbolCommandTarget(overlayManager, args);
-      await applySymbolCommandTarget(target);
-      await revealSurgicalContextView();
-      pushTargetState(target, surgicalContextView);
-      await surgicalContextView.showImpact(target.symbol, 3, target.filePath);
+      await showImpactForCommandTarget(
+        overlayManager,
+        surgicalContextView,
+        revealSurgicalContextView,
+        args,
+      );
     }),
 
     vscode.commands.registerCommand('surgicalContext.findDocs', async () => {
@@ -160,21 +198,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // Legacy commands for backward compatibility
-    vscode.commands.registerCommand('surgicalContext.openChat', async (...args: unknown[]) => {
-      const target = await resolveSymbolCommandTarget(overlayManager, args);
-      await applySymbolCommandTarget(target);
-      await revealSurgicalContextView();
-      pushTargetState(target, surgicalContextView);
-      surgicalContextView.showChat();
-    }),
+    registerChatCommand(
+      'surgicalContext.openChat',
+      overlayManager,
+      surgicalContextView,
+      revealSurgicalContextView,
+    ),
 
-    vscode.commands.registerCommand('surgicalContext.askAboutCursor', async (...args: unknown[]) => {
-      const target = await resolveSymbolCommandTarget(overlayManager, args);
-      await applySymbolCommandTarget(target);
-      await revealSurgicalContextView();
-      pushTargetState(target, surgicalContextView);
-      surgicalContextView.showChat();
-    }),
+    registerChatCommand(
+      'surgicalContext.askAboutCursor',
+      overlayManager,
+      surgicalContextView,
+      revealSurgicalContextView,
+    ),
 
     vscode.commands.registerCommand('surgicalContext.indexProject', async () => {
       const folders = vscode.workspace.workspaceFolders;
@@ -209,7 +245,7 @@ async function resolveSymbolCommandTarget(
   overlayManager: OverlayManager,
   args: unknown[]
 ): Promise<SymbolCommandTarget> {
-  const explicit = explicitTargetFromArgs(args);
+  const explicit = explicitTargetFromArgs(args, overlayManager);
   const target = explicit || await targetFromActiveEditorAsync(overlayManager);
 
   if (!target.symbol && target.filePath && target.line !== undefined) {
@@ -226,7 +262,10 @@ async function resolveSymbolCommandTarget(
   return target;
 }
 
-function explicitTargetFromArgs(args: unknown[]): SymbolCommandTarget | null {
+function explicitTargetFromArgs(
+  args: unknown[],
+  overlayManager: OverlayManager,
+): SymbolCommandTarget | null {
   const first = args[0];
   const second = args[1];
 
@@ -241,8 +280,8 @@ function explicitTargetFromArgs(args: unknown[]): SymbolCommandTarget | null {
     };
   }
 
-  if (first instanceof vscode.Position && args[1] instanceof vscode.TextDocument) {
-    const document = args[1] as vscode.TextDocument;
+  if (first instanceof vscode.Position && isTextDocument(second)) {
+    const document = second;
     const position = first as vscode.Position;
     return {
       filePath: document.fileName,
@@ -264,6 +303,15 @@ function explicitTargetFromArgs(args: unknown[]): SymbolCommandTarget | null {
   }
 
   return null;
+}
+
+function isTextDocument(value: unknown): value is vscode.TextDocument {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && typeof (value as vscode.TextDocument).fileName === 'string'
+    && typeof (value as vscode.TextDocument).lineAt === 'function'
+  );
 }
 
 function isSymbolCommandTarget(value: unknown): value is SymbolCommandTarget {

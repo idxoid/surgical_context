@@ -25,11 +25,11 @@ surfaced each file.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 
 from context_engine.axis.axis_profiles import Axis, axes_for_kinds, edges_for_axes
 from context_engine.axis.graph_walk import walk_neighbours
+from context_engine.axis.kind_rows import flat_kinds
 from context_engine.axis.role_retrieval import RoleCandidate
 
 # Discovery axes: how the walk reaches the entities a seed *organises*
@@ -41,25 +41,6 @@ from context_engine.axis.role_retrieval import RoleCandidate
 # metadata_carrier), so the dense attribute edges are not walked from
 # arbitrary seeds.
 _DISCOVERY_AXES = frozenset({Axis.REGISTRY, Axis.STRUCTURAL, Axis.COMPOSITION})
-
-
-def _flat_kinds(raw) -> set[str]:
-    if not raw:
-        return set()
-    try:
-        parsed = json.loads(raw) if isinstance(raw, str) else raw
-    except Exception:
-        return set()
-    out: set[str] = set()
-    for item in parsed:
-        if isinstance(item, dict):
-            name = item.get("kind") or item.get("name")
-            if name:
-                out.add(str(name))
-        elif item is not None:
-            out.add(str(item))
-    return out
-
 
 def _kinds_from_prescanned_rows(prescanned, uids: set[str]) -> dict[str, set[str]]:
     return {
@@ -81,7 +62,7 @@ def _kinds_from_lance_rows(
             continue
         uid = str(row.get("uid") or "")
         if uid in uids:
-            out[uid] = _flat_kinds(row.get("axis_container_kinds_json"))
+            out[uid] = flat_kinds(row.get("axis_container_kinds_json"))
     return out
 
 

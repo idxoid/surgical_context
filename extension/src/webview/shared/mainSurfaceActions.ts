@@ -40,36 +40,68 @@ export interface MainSurfaceActionHost {
 
 type DomActionHandler = (host: MainSurfaceActionHost, target: HTMLElement) => void;
 
-function domAction(handler: DomActionHandler): DomActionHandler {
-  return handler;
+type VoidActionMethod = {
+  [K in keyof MainSurfaceActionHost]: MainSurfaceActionHost[K] extends (
+    ...args: infer Args
+  ) => infer Return
+    ? Args extends []
+      ? Return extends void
+        ? K
+        : never
+      : never
+    : never;
+}[keyof MainSurfaceActionHost];
+
+type TargetActionMethod = {
+  [K in keyof MainSurfaceActionHost]: MainSurfaceActionHost[K] extends (
+    ...args: infer Args
+  ) => infer Return
+    ? Args extends [HTMLElement]
+      ? Return extends void
+        ? K
+        : never
+      : never
+    : never;
+}[keyof MainSurfaceActionHost];
+
+function invokeVoidAction(method: VoidActionMethod): DomActionHandler {
+  return (host) => {
+    (host[method] as () => void).call(host);
+  };
+}
+
+function invokeTargetAction(method: TargetActionMethod): DomActionHandler {
+  return (host, target) => {
+    (host[method] as (target: HTMLElement) => void).call(host, target);
+  };
 }
 
 const MAIN_SURFACE_DOM_ACTION_HANDLERS: Record<string, DomActionHandler> = {
-  switchSurface: domAction((h, t) => h.switchSurface(t.dataset.surface as Surface)),
-  switchInspectorTab: domAction((h, t) => h.switchInspectorTab(t.dataset.inspectorTab as InspectorTab)),
-  selectPrompt: domAction((h, t) => h.selectPrompt(t.dataset.requestId ?? null)),
-  toggleHistory: domAction((h) => h.toggleHistory()),
-  newDialog: domAction((h) => h.startNewDialog()),
-  restoreDialog: domAction((h, t) => h.restoreDialog(t.dataset.dialogId ?? null)),
-  openDashboard: domAction((h) => h.postOpenDashboard()),
-  ask: domAction((h) => h.focusComposer()),
-  'ask-followup': domAction((h) => h.prefillImpactAsk(IMPACT_CHANGE_CHECK_PROMPT(h.getActiveImpactSymbol()))),
-  'open-related-files': domAction((h) => h.openRelatedImpactFiles()),
-  openFile: domAction((h, t) => h.openFileFromImpact(t)),
-  showMoreImpact: domAction((h, t) => h.showMoreImpactRows(t)),
-  explainImpact: domAction((h, t) => h.toggleImpactExplanation(t)),
-  'create-refactor-plan': domAction((h) => h.prefillImpactAsk(IMPACT_REFACTOR_PLAN_PROMPT(h.getActiveImpactSymbol()))),
-  save: domAction((h) => h.saveSettings()),
-  reset: domAction((h) => h.resetSettings()),
-  testUrl: domAction((h) => h.testSettingsUrl()),
-  openKeybindings: domAction((h) => h.postOpenKeybindings()),
-  search: domAction((h) => h.showSearchComingSoon()),
-  noop: domAction((h, t) => h.toggleImpactGroup(t)),
-  feedback: domAction((h, t) => h.submitFeedback(t)),
-  copy: domAction((h, t) => h.copyMessage(t)),
-  'copy-json': domAction((h, t) => h.copyInspectorJson(t)),
-  'copy-api-json': domAction((h, t) => h.copyInspectorJson(t)),
-  stopStreaming: domAction((h) => h.stopStreaming()),
+  switchSurface: (h, t) => h.switchSurface(t.dataset.surface as Surface),
+  switchInspectorTab: (h, t) => h.switchInspectorTab(t.dataset.inspectorTab as InspectorTab),
+  selectPrompt: (h, t) => h.selectPrompt(t.dataset.requestId ?? null),
+  toggleHistory: invokeVoidAction('toggleHistory'),
+  newDialog: invokeVoidAction('startNewDialog'),
+  restoreDialog: (h, t) => h.restoreDialog(t.dataset.dialogId ?? null),
+  openDashboard: invokeVoidAction('postOpenDashboard'),
+  ask: invokeVoidAction('focusComposer'),
+  'ask-followup': (h) => h.prefillImpactAsk(IMPACT_CHANGE_CHECK_PROMPT(h.getActiveImpactSymbol())),
+  'open-related-files': invokeVoidAction('openRelatedImpactFiles'),
+  openFile: invokeTargetAction('openFileFromImpact'),
+  showMoreImpact: invokeTargetAction('showMoreImpactRows'),
+  explainImpact: invokeTargetAction('toggleImpactExplanation'),
+  'create-refactor-plan': (h) => h.prefillImpactAsk(IMPACT_REFACTOR_PLAN_PROMPT(h.getActiveImpactSymbol())),
+  save: invokeVoidAction('saveSettings'),
+  reset: invokeVoidAction('resetSettings'),
+  testUrl: invokeVoidAction('testSettingsUrl'),
+  openKeybindings: invokeVoidAction('postOpenKeybindings'),
+  search: invokeVoidAction('showSearchComingSoon'),
+  noop: invokeTargetAction('toggleImpactGroup'),
+  feedback: invokeTargetAction('submitFeedback'),
+  copy: invokeTargetAction('copyMessage'),
+  'copy-json': invokeTargetAction('copyInspectorJson'),
+  'copy-api-json': invokeTargetAction('copyInspectorJson'),
+  stopStreaming: invokeVoidAction('stopStreaming'),
 };
 
 export function handleMainSurfaceAction(host: MainSurfaceActionHost, event: Event): void {

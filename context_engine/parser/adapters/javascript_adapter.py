@@ -344,34 +344,37 @@ class JavaScriptAdapter(TreeSitterAdapter):
         self._finalize_javascript_symbols(symbols, source_code, file_path, tree=tree)
         return symbols
 
-    def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+    def _delegate_typescript_extractor(
+        self,
+        method_name: str,
+        source_code: str,
+        file_path: str,
+        *,
+        tree=None,
+    ) -> list[dict]:
         from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
-        return TypeScriptAdapter.extract_proxy_bindings(
-            cast(TypeScriptAdapter, self), source_code, file_path, tree=tree
+        method = getattr(TypeScriptAdapter, method_name)
+        return method(cast(TypeScriptAdapter, self), source_code, file_path, tree=tree)
+
+    def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        return self._delegate_typescript_extractor(
+            "extract_proxy_bindings", source_code, file_path, tree=tree
         )
 
     def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
-        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
-
-        return TypeScriptAdapter.extract_hooks(
-            cast(TypeScriptAdapter, self), source_code, file_path, tree=tree
-        )
+        return self._delegate_typescript_extractor("extract_hooks", source_code, file_path, tree=tree)
 
     def extract_metadata_bridges(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
-        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
-
-        return TypeScriptAdapter.extract_metadata_bridges(
-            cast(TypeScriptAdapter, self), source_code, file_path, tree=tree
+        return self._delegate_typescript_extractor(
+            "extract_metadata_bridges", source_code, file_path, tree=tree
         )
 
     def extract_http_endpoints(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
-        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
-
-        return TypeScriptAdapter.extract_http_endpoints(
-            cast(TypeScriptAdapter, self), source_code, file_path, tree=tree
+        return self._delegate_typescript_extractor(
+            "extract_http_endpoints", source_code, file_path, tree=tree
         )
 
     def should_include_variable_symbol(

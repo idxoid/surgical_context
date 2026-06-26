@@ -23,13 +23,13 @@ Neo4j bulk load as fallback).
 
 from __future__ import annotations
 
-import json
 import os
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from context_engine.axis.adjacency_bridges import load_external_maps
+from context_engine.axis.edge_json import decode_edge_uid_map
 from context_engine.axis.graph_walk import Direction, Neighbour
 from context_engine.axis.test_file_filter import is_test_path
 
@@ -334,35 +334,12 @@ def _adjacency_from_lance_rows(rows: list[dict]) -> _Adjacency:
         adj.meta[uid] = (name, path, kind)
         if kind == "class" and path:
             adj.file_classes.setdefault(path, []).append(uid)
-        out_adj[uid] = _decode_edges(row.get("out_edges_json"))
-        in_adj[uid] = _decode_edges(row.get("in_edges_json"))
+        out_adj[uid] = decode_edge_uid_map(row.get("out_edges_json"))
+        in_adj[uid] = decode_edge_uid_map(row.get("in_edges_json"))
 
     adj.out = out_adj
     adj.in_ = in_adj
     return adj
-
-
-def _decode_edges(raw: object) -> dict[str, set[str]]:
-    if not raw:
-        return {}
-    if isinstance(raw, dict):
-        payload = raw
-    else:
-        try:
-            payload = json.loads(str(raw))
-        except (TypeError, json.JSONDecodeError):
-            return {}
-    if not isinstance(payload, dict):
-        return {}
-    decoded: dict[str, set[str]] = {}
-    for edge_type, uids in payload.items():
-        if not isinstance(edge_type, str):
-            continue
-        if not isinstance(uids, list):
-            continue
-        decoded[edge_type] = {str(uid) for uid in uids if uid}
-    return decoded
-
 
 def call_fan_in(
     db, workspace_id: str, uids, *, edges, exclude_tests: bool = False

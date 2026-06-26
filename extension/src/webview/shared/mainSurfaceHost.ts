@@ -56,17 +56,50 @@ type HostHandler = (
   message: Extract<HostToWebviewMessage, { type: MainSurfaceHostMessage['type'] }>,
 ) => void;
 
-function hostHandler<M extends MainSurfaceHostMessage['type']>(
-  handler: (
-    delegate: MainSurfaceHostDelegate,
-    message: Extract<HostToWebviewMessage, { type: M }>,
-  ) => void,
+function hostHandler(
+  handler: (delegate: MainSurfaceHostDelegate, message: any) => void,
 ): HostHandler {
   return handler as HostHandler;
 }
 
+type NoArgDelegateMethod = {
+  [K in keyof MainSurfaceHostDelegate]: MainSurfaceHostDelegate[K] extends (
+    ...args: infer Args
+  ) => infer Return
+    ? Args extends []
+      ? Return extends void
+        ? K
+        : never
+      : never
+    : never;
+}[keyof MainSurfaceHostDelegate];
+
+type OneArgDelegateMethod = {
+  [K in keyof MainSurfaceHostDelegate]: MainSurfaceHostDelegate[K] extends (
+    ...args: infer Args
+  ) => infer Return
+    ? Args extends [unknown]
+      ? Return extends void
+        ? K
+        : never
+      : never
+    : never;
+}[keyof MainSurfaceHostDelegate];
+
+function callDelegate(method: NoArgDelegateMethod): HostHandler {
+  return hostHandler((delegate) => {
+    (delegate[method] as () => void).call(delegate);
+  });
+}
+
+function forwardMessage(method: OneArgDelegateMethod): HostHandler {
+  return hostHandler((delegate, message) => {
+    (delegate[method] as (message: HostToWebviewMessage) => void).call(delegate, message);
+  });
+}
+
 const MAIN_SURFACE_HOST_HANDLERS: Record<MainSurfaceHostMessage['type'], HostHandler> = {
-  'surface.init': hostHandler((d, m) => d.onSurfaceInit(m)),
+  'surface.init': forwardMessage('onSurfaceInit'),
   'chat.requestStarted': hostHandler((d, m) => {
     d.setSurface('chat');
     d.onRequestStarted(m.requestId, m.symbol);
@@ -79,14 +112,14 @@ const MAIN_SURFACE_HOST_HANDLERS: Record<MainSurfaceHostMessage['type'], HostHan
     d.setContextSummary(m.summary);
     d.refreshAccordions();
   }),
-  'workspace.updated': hostHandler((d, m) => d.onWorkspaceUpdated(m)),
-  'backend.updated': hostHandler((d, m) => d.onBackendUpdated(m)),
-  'impact.loading': hostHandler((d) => d.onImpactLoading()),
-  'impact.loaded': hostHandler((d, m) => d.onImpactLoaded(m)),
-  'impact.loadFailed': hostHandler((d, m) => d.onImpactLoadFailed(m)),
-  'inspector.loaded': hostHandler((d, m) => d.onInspectorLoaded(m)),
-  'inspector.intentLoaded': hostHandler((d, m) => d.onInspectorIntentLoaded(m)),
-  'settings.loaded': hostHandler((d, m) => d.onSettingsLoaded(m)),
+  'workspace.updated': forwardMessage('onWorkspaceUpdated'),
+  'backend.updated': forwardMessage('onBackendUpdated'),
+  'impact.loading': callDelegate('onImpactLoading'),
+  'impact.loaded': forwardMessage('onImpactLoaded'),
+  'impact.loadFailed': forwardMessage('onImpactLoadFailed'),
+  'inspector.loaded': forwardMessage('onInspectorLoaded'),
+  'inspector.intentLoaded': forwardMessage('onInspectorIntentLoaded'),
+  'settings.loaded': forwardMessage('onSettingsLoaded'),
   'settings.saved': hostHandler((_d, m) => showFeedback(m.message, 'success')),
   'settings.saveFailed': hostHandler((_d, m) => showFeedback(m.error, 'error')),
   'settings.testUrlComplete': hostHandler((_d, m) => showFieldStatus('backendUrl', m.success, m.message)),

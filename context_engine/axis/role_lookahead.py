@@ -30,35 +30,13 @@ dense graph touches many neighbours.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
 
 from context_engine.axis.graph_walk import EdgeProfile, walk_neighbours
+from context_engine.axis.kind_rows import flat_kinds
 from context_engine.axis.role_resolver import ROLE_EVIDENCE_MAP
 from context_engine.axis.role_retrieval import RoleCandidate
-
-
-def _flat_kinds(raw: Any) -> set[str]:
-    """``axis_container_kinds_json`` is a JSON list of either kind names
-    (older indexer) or dicts carrying ``{kind, payload, evidence_bits}``
-    (current indexer). Flatten to a set of kind names."""
-    if not raw:
-        return set()
-    try:
-        parsed = json.loads(raw) if isinstance(raw, str) else raw
-    except Exception:
-        return set()
-    out: set[str] = set()
-    for item in parsed:
-        if isinstance(item, dict):
-            name = item.get("kind") or item.get("name")
-            if name:
-                out.add(str(name))
-        elif item is not None:
-            out.add(str(item))
-    return out
 
 
 def _build_kind_to_roles(intent_roles: Iterable[str]) -> dict[str, set[str]]:
@@ -119,7 +97,7 @@ def _kinds_row_tuple(
     file_path: object,
     kinds_json: object,
 ) -> tuple[str, str, tuple[str, ...]] | None:
-    kinds = _flat_kinds(kinds_json)
+    kinds = flat_kinds(kinds_json)
     if not kinds:
         return None
     return (str(name or ""), str(file_path or ""), tuple(sorted(kinds)))

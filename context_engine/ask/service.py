@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Callable, Generator
+from dataclasses import dataclass
 from typing import Any, cast
 
 from context_engine.ai.engine import AIEngine
@@ -42,6 +43,21 @@ from context_engine.observability import (
 from context_engine.overlay import InMemoryOverlay
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _PreparedAsk:
+    ctx: PromptContext
+    ask_anchor: str
+    system_prompt: str
+    context_tokens: int
+    prompt_hash: str
+
+
+@dataclass
+class _AnswerRouteState:
+    response_cache_hit: bool = False
+    degraded_response: bool = False
 
 
 class AskService:
@@ -273,7 +289,7 @@ class AskService:
             f"{ctx.to_system_prompt()}"
         )
 
-    def ask(
+    def prepare_ask(
         self,
         req: AskRequest,
         *,
@@ -282,7 +298,7 @@ class AskService:
         trace: RequestTrace,
         db: Any,
         resolve_ask_context: Callable[..., PromptContext],
-    ) -> dict[str, Any]:
+    ) -> _PreparedAsk:
         with trace.stage("context"):
             ctx = resolve_ask_context(
                 req=req,
@@ -305,50 +321,57 @@ class AskService:
             }
             trace.model_route = self.model_route(context_tokens, ctx.intent)
 
-        with trace.stage("llm"):
-            response_cache_hit = False
-            degraded_response = False
-            prompt_hash = hashlib.sha256(f"{system_prompt}\n{req.question}".encode()).hexdigest()
-            cached_response = self.default_cache.get_response(prompt_hash, workspace_id)
-            if cached_response:
-                response_cache_hit = True
-                answer = cached_response.answer
-                if hasattr(ctx, "budget"):
-                    ctx.budget["cache_hits"] = sorted(
-                        {*ctx.budget.get("cache_hits", []), "l3_response"}
-                    )
-                trace.model_route = {
-                    **trace.model_route,
-                    "cached": True,
-                    "cache_layer": "l3_response",
-                }
-            else:
-                try:
-                    answer = self.ai_engine.chat(
-                        system_prompt=system_prompt,
-                        user_message=req.question,
-                        token_count=context_tokens,
-                        intent=ctx.intent,
-                    )
-                except RuntimeError as exc:
-                    degraded_response = True
-                    answer = self.degraded_llm_answer(exc)
-                    trace.model_route = self.mark_degraded_route(trace.model_route, exc)
-                    self.metrics.increment(
-                        "context_engine_llm_degraded_total",
-                        labels={"endpoint": "/ask", "workspace": workspace_id},
-                    )
-                else:
-                    self.default_cache.put_response(
-                        prompt_hash,
-                        workspace_id,
-                        answer,
-                        {"intent": ctx.intent, "mode": ctx.mode},
-                        file_paths=AskContextBuilder.context_file_paths(ctx),
-                    )
-        if not response_cache_hit and not degraded_response:
+        prompt_hash = hashlib.sha256(f"{system_prompt}\n{req.question}".encode()).hexdigest()
+        return _PreparedAsk(
+            ctx=ctx,
+            ask_anchor=ask_anchor,
+            system_prompt=system_prompt,
+            context_tokens=context_tokens,
+            prompt_hash=prompt_hash,
+        )
+
+    @staticmethod
+    def mark_l3_response_cache_hit(ctx: PromptContext, trace: RequestTrace) -> None:
+        if hasattr(ctx, "budget"):
+            ctx.budget["cache_hits"] = sorted(
+                {*ctx.budget.get("cache_hits", []), "l3_response"}
+            )
+        trace.model_route = {
+            **trace.model_route,
+            "cached": True,
+            "cache_layer": "l3_response",
+        }
+
+    def cache_response(
+        self,
+        prepared: _PreparedAsk,
+        *,
+        workspace_id: str,
+        answer: str,
+    ) -> None:
+        self.default_cache.put_response(
+            prepared.prompt_hash,
+            workspace_id,
+            answer,
+            {"intent": prepared.ctx.intent, "mode": prepared.ctx.mode},
+            file_paths=AskContextBuilder.context_file_paths(prepared.ctx),
+        )
+
+    def update_route_after_answer(
+        self,
+        trace: RequestTrace,
+        state: _AnswerRouteState,
+    ) -> None:
+        if not state.response_cache_hit and not state.degraded_response:
             trace.model_route = self.last_model_route(trace.model_route)
 
+    @staticmethod
+    def attach_answer_cost(
+        trace: RequestTrace,
+        *,
+        answer: str,
+        context_tokens: int,
+    ) -> None:
         output_tokens = estimate_text_tokens(answer)
         trace.token_counts["output_estimate"] = output_tokens
         trace.estimated_cost_usd, trace.cost_basis = estimate_cost_usd(
@@ -357,11 +380,36 @@ class AskService:
             output_tokens=output_tokens,
         )
 
+    def finalize_ask(
+        self,
+        req: AskRequest,
+        prepared: _PreparedAsk,
+        *,
+        user_id: str,
+        workspace_id: str,
+        manifest_workspace_id: str,
+        trace: RequestTrace,
+        db: Any,
+        answer: str,
+    ) -> str:
+        self.attach_answer_cost(
+            trace,
+            answer=answer,
+            context_tokens=prepared.context_tokens,
+        )
+
+        ctx = prepared.ctx
         with trace.stage("audit"):
-            self.audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
+            self.audit_log.log_query(
+                user_id,
+                prepared.ask_anchor,
+                req.question,
+                ctx.intent,
+                ctx.mode,
+            )
 
         self.attach_trace_metadata(ctx, trace)
-        self.attach_index_manifest(ctx, db, effective_index_workspace_id(workspace_id))
+        self.attach_index_manifest(ctx, db, manifest_workspace_id)
         feedback_token = self.feedback_store.issue_token()
         ctx.feedback_token = feedback_token
         with trace.stage("feedback_snapshot"):
@@ -369,16 +417,73 @@ class AskService:
                 feedback_token=feedback_token,
                 user_id=user_id,
                 workspace_id=workspace_id,
-                symbol=ask_anchor,
+                symbol=prepared.ask_anchor,
                 question=req.question,
                 ctx=ctx,
                 trace=trace,
             )
+        return feedback_token
+
+    def ask(
+        self,
+        req: AskRequest,
+        *,
+        user_id: str,
+        workspace_id: str,
+        trace: RequestTrace,
+        db: Any,
+        resolve_ask_context: Callable[..., PromptContext],
+    ) -> dict[str, Any]:
+        prepared = self.prepare_ask(
+            req,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            trace=trace,
+            db=db,
+            resolve_ask_context=resolve_ask_context,
+        )
+        route_state = _AnswerRouteState()
+        with trace.stage("llm"):
+            cached_response = self.default_cache.get_response(prepared.prompt_hash, workspace_id)
+            if cached_response:
+                route_state.response_cache_hit = True
+                answer = cached_response.answer
+                self.mark_l3_response_cache_hit(prepared.ctx, trace)
+            else:
+                try:
+                    answer = self.ai_engine.chat(
+                        system_prompt=prepared.system_prompt,
+                        user_message=req.question,
+                        token_count=prepared.context_tokens,
+                        intent=prepared.ctx.intent,
+                    )
+                except RuntimeError as exc:
+                    route_state.degraded_response = True
+                    answer = self.degraded_llm_answer(exc)
+                    trace.model_route = self.mark_degraded_route(trace.model_route, exc)
+                    self.metrics.increment(
+                        "context_engine_llm_degraded_total",
+                        labels={"endpoint": "/ask", "workspace": workspace_id},
+                    )
+                else:
+                    self.cache_response(prepared, workspace_id=workspace_id, answer=answer)
+        self.update_route_after_answer(trace, route_state)
+
+        feedback_token = self.finalize_ask(
+            req,
+            prepared,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            manifest_workspace_id=effective_index_workspace_id(workspace_id),
+            trace=trace,
+            db=db,
+            answer=answer,
+        )
         logger.info("trace_id=%s endpoint=/ask status=ok", trace.trace_id)
         return {
-            "symbol": ask_anchor,
+            "symbol": prepared.ask_anchor,
             "answer": answer,
-            "context": ctx.to_dict(),
+            "context": prepared.ctx.to_dict(),
             "user": user_id,
             "cloud": db.is_cloud(),
             "workspace_id": workspace_id,
@@ -386,8 +491,8 @@ class AskService:
             "feedback_token": feedback_token,
             "model_route": trace.model_route,
             "metrics": self.request_metrics(trace),
-            "index_manifest_id": ctx.index_manifest_id or None,
-            "index_manifest_schema_version": ctx.index_manifest_schema_version,
+            "index_manifest_id": prepared.ctx.index_manifest_id or None,
+            "index_manifest_schema_version": prepared.ctx.index_manifest_schema_version,
         }
 
     def ask_stream(
@@ -404,64 +509,41 @@ class AskService:
         yield format_sse("trace", {"type": "trace", "trace_id": trace.trace_id})
         status = "ok"
         try:
-            with trace.stage("context"):
-                ctx = resolve_ask_context(
-                    req=req,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                    db=db,
-                )
-                ask_anchor = ctx.primary_source.symbol
-                self.metrics.increment(
-                    "context_engine_ask_context_total",
-                    labels={"mode": ctx.mode, "workspace": workspace_id},
-                )
-
-            with trace.stage("prompt"):
-                system_prompt = self.system_prompt_for_context(ctx)
-                context_tokens = ctx.token_count()
-                trace.token_counts = {
-                    "context": context_tokens,
-                    "user": estimate_text_tokens(req.question),
-                }
-                trace.model_route = self.model_route(context_tokens, ctx.intent)
-
+            prepared = self.prepare_ask(
+                req,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                trace=trace,
+                db=db,
+                resolve_ask_context=resolve_ask_context,
+            )
+            route_state = _AnswerRouteState()
             with trace.stage("llm"):
-                response_cache_hit = False
-                degraded_response = False
-                prompt_hash = hashlib.sha256(
-                    f"{system_prompt}\n{req.question}".encode()
-                ).hexdigest()
-                cached_response = self.default_cache.get_response(prompt_hash, workspace_id)
+                cached_response = self.default_cache.get_response(
+                    prepared.prompt_hash,
+                    workspace_id,
+                )
                 if cached_response:
-                    response_cache_hit = True
+                    route_state.response_cache_hit = True
                     answer_parts.append(cached_response.answer)
-                    if hasattr(ctx, "budget"):
-                        ctx.budget["cache_hits"] = sorted(
-                            {*ctx.budget.get("cache_hits", []), "l3_response"}
-                        )
-                    trace.model_route = {
-                        **trace.model_route,
-                        "cached": True,
-                        "cache_layer": "l3_response",
-                    }
+                    self.mark_l3_response_cache_hit(prepared.ctx, trace)
                     yield format_sse(
                         "trace",
-                        self.stream_trace_payload(trace, stage="llm", ctx=ctx),
+                        self.stream_trace_payload(trace, stage="llm", ctx=prepared.ctx),
                     )
                     yield format_sse("chunk", {"type": "chunk", "content": cached_response.answer})
                 else:
                     try:
                         for chunk in self.ai_engine.stream_chat(
-                            system_prompt=system_prompt,
+                            system_prompt=prepared.system_prompt,
                             user_message=req.question,
-                            token_count=context_tokens,
-                            intent=ctx.intent,
+                            token_count=prepared.context_tokens,
+                            intent=prepared.ctx.intent,
                         ):
                             answer_parts.append(chunk)
                             yield format_sse("chunk", {"type": "chunk", "content": chunk})
                     except RuntimeError as exc:
-                        degraded_response = True
+                        route_state.degraded_response = True
                         degraded_text = self.degraded_llm_answer(exc)
                         answer_parts.append(degraded_text)
                         trace.model_route = self.mark_degraded_route(trace.model_route, exc)
@@ -474,51 +556,33 @@ class AskService:
                         )
                         yield format_sse("chunk", {"type": "chunk", "content": degraded_text})
                     else:
-                        self.default_cache.put_response(
-                            prompt_hash,
-                            workspace_id,
-                            "".join(answer_parts),
-                            {"intent": ctx.intent, "mode": ctx.mode},
-                            file_paths=AskContextBuilder.context_file_paths(ctx),
+                        self.cache_response(
+                            prepared,
+                            workspace_id=workspace_id,
+                            answer="".join(answer_parts),
                         )
-            if not response_cache_hit and not degraded_response:
-                trace.model_route = self.last_model_route(trace.model_route)
+            self.update_route_after_answer(trace, route_state)
 
-            output_tokens = estimate_text_tokens("".join(answer_parts))
-            trace.token_counts["output_estimate"] = output_tokens
-            trace.estimated_cost_usd, trace.cost_basis = estimate_cost_usd(
-                trace.model_route,
-                input_tokens=context_tokens + trace.token_counts["user"],
-                output_tokens=output_tokens,
+            feedback_token = self.finalize_ask(
+                req,
+                prepared,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                manifest_workspace_id=workspace_id,
+                trace=trace,
+                db=db,
+                answer="".join(answer_parts),
             )
-
-            with trace.stage("audit"):
-                self.audit_log.log_query(user_id, ask_anchor, req.question, ctx.intent, ctx.mode)
-
-            self.attach_trace_metadata(ctx, trace)
-            self.attach_index_manifest(ctx, db, workspace_id)
-            feedback_token = self.feedback_store.issue_token()
-            ctx.feedback_token = feedback_token
-            with trace.stage("feedback_snapshot"):
-                self.record_retrieval_snapshot(
-                    feedback_token=feedback_token,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                    symbol=ask_anchor,
-                    question=req.question,
-                    ctx=ctx,
-                    trace=trace,
-                )
             yield format_sse(
                 "context",
                 {
                     "type": "context",
                     "trace_id": trace.trace_id,
                     "feedback_token": feedback_token,
-                    "context": ctx.to_dict(),
+                    "context": prepared.ctx.to_dict(),
                     "metrics": self.request_metrics(trace),
-                    "index_manifest_id": ctx.index_manifest_id or None,
-                    "index_manifest_schema_version": ctx.index_manifest_schema_version,
+                    "index_manifest_id": prepared.ctx.index_manifest_id or None,
+                    "index_manifest_schema_version": prepared.ctx.index_manifest_schema_version,
                 },
             )
             yield format_sse("done", {"type": "done", "trace_id": trace.trace_id})

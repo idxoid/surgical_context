@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 import lancedb
 import pyarrow as pa
 
+from context_engine.axis.edge_json import decode_edge_uid_map
 from context_engine.axis.query_plan import render_axis_bits_predicate
 from context_engine.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
 from context_engine.database.embedding_registry import (
@@ -118,28 +119,6 @@ def _l2_to_score(distance: float) -> float:
     """
     cos = 1.0 - (distance * distance) / 2.0
     return max(0.0, min(1.0, (1.0 + cos) / 2.0))
-
-
-def _decode_edges_json(raw: object) -> dict[str, set[str]]:
-    if not raw:
-        return {}
-    if isinstance(raw, dict):
-        payload = raw
-    else:
-        try:
-            payload = json.loads(str(raw))
-        except (TypeError, json.JSONDecodeError):
-            return {}
-    if not isinstance(payload, dict):
-        return {}
-    decoded: dict[str, set[str]] = {}
-    for edge_type, uids in payload.items():
-        if not isinstance(edge_type, str):
-            continue
-        if not isinstance(uids, list):
-            continue
-        decoded[edge_type] = {str(uid) for uid in uids if uid}
-    return decoded
 
 
 DOCS_SCHEMA = pa.schema(
@@ -628,6 +607,56 @@ class LanceDBClient:
             except Exception:
                 pass
 
+    def _workspace_value_predicate(self, workspace_id: str, field: str, value: str) -> str:
+        return (
+            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
+            f"AND {field} = '{self._quote_delete_value(value)}')"
+        )
+
+    def _delete_workspace_value_batch_fallback(
+        self,
+        table,
+        batch: list[str],
+        workspace_id: str,
+        *,
+        field: str,
+    ) -> None:
+        for value in batch:
+            try:
+                table.delete(self._workspace_value_predicate(workspace_id, field, value))
+            except Exception:
+                pass
+
+    def _delete_workspace_value_batches(
+        self,
+        table,
+        values: list[str],
+        workspace_id: str,
+        *,
+        field: str,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        if not values:
+            return
+        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
+        total = len(values)
+        for start in range(0, total, batch_size):
+            batch = values[start : start + batch_size]
+            predicate = " OR ".join(
+                self._workspace_value_predicate(workspace_id, field, value) for value in batch
+            )
+            try:
+                table.delete(predicate)
+            except Exception:
+                self._delete_workspace_value_batch_fallback(
+                    table,
+                    batch,
+                    workspace_id,
+                    field=field,
+                )
+            if progress_callback:
+                progress_callback(f"delete progress: {min(start + len(batch), total)}/{total}")
+
     def _delete_uid_batches(
         self,
         table,
@@ -839,27 +868,12 @@ class LanceDBClient:
                 return
         except Exception:
             return
-        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
-        for start in range(0, len(uids), batch_size):
-            batch = uids[start : start + batch_size]
-            predicate = " OR ".join(
-                (
-                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                    f"AND owner_uid = '{self._quote_delete_value(uid)}')"
-                )
-                for uid in batch
-            )
-            try:
-                self._table.delete(predicate)
-            except Exception:
-                for uid in batch:
-                    try:
-                        self._table.delete(
-                            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                            f"AND owner_uid = '{self._quote_delete_value(uid)}')"
-                        )
-                    except Exception:
-                        pass
+        self._delete_workspace_value_batches(
+            self._table,
+            uids,
+            workspace_id,
+            field="owner_uid",
+        )
 
     def scan_symbols_workspace(
         self,
@@ -945,8 +959,8 @@ class LanceDBClient:
             uid = str(row.get("uid") or "")
             if not uid:
                 continue
-            out_edges = _decode_edges_json(row.get("out_edges_json"))
-            in_edges = _decode_edges_json(row.get("in_edges_json"))
+            out_edges = decode_edge_uid_map(row.get("out_edges_json"))
+            in_edges = decode_edge_uid_map(row.get("in_edges_json"))
             out_neighbours = {v for values in out_edges.values() for v in values}
             in_neighbours = {v for values in in_edges.values() for v in values}
             if (
@@ -986,32 +1000,13 @@ class LanceDBClient:
         *,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
-        if not file_paths:
-            return
-        batch_size = max(1, LANCEDB_DELETE_BATCH_SIZE)
-        total = len(file_paths)
-        for start in range(0, total, batch_size):
-            batch = file_paths[start : start + batch_size]
-            predicate = " OR ".join(
-                (
-                    f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                    f"AND file_path = '{self._quote_delete_value(file_path)}')"
-                )
-                for file_path in batch
-            )
-            try:
-                self._table.delete(predicate)
-            except Exception:
-                for file_path in batch:
-                    try:
-                        self._table.delete(
-                            f"(workspace_id = '{self._quote_delete_value(workspace_id)}' "
-                            f"AND file_path = '{self._quote_delete_value(file_path)}')"
-                        )
-                    except Exception:
-                        pass
-            if progress_callback:
-                progress_callback(f"delete progress: {min(start + len(batch), total)}/{total}")
+        self._delete_workspace_value_batches(
+            self._table,
+            file_paths,
+            workspace_id,
+            field="file_path",
+            progress_callback=progress_callback,
+        )
 
     def _delete_symbol_rows(
         self,

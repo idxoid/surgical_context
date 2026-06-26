@@ -123,12 +123,11 @@ export function renderTokenSavingsCard(metrics: DashboardMetrics): string {
     ? [38, 42, 44, 40, 46, 43, 45, 41, 39, 44, 47, 45]
     : [56, 62, 67, 64, 70, 73, Math.max(8, savings), 68, 71, 66, 74, 76];
 
-  return `
-    <div class="dashboard-card token-savings-card">
-      <div class="card-header">
-        <span>Token savings vs naive context</span>
-        <span class="card-header-meta">${savings === null ? 'pending' : 'live'}</span>
-      </div>
+  return renderDashboardCard(
+    'token-savings-card',
+    'Token savings vs naive context',
+    savings === null ? 'pending' : 'live',
+    `
       <div class="token-savings-body">
         <div>
           <div class="token-savings-value">${value}</div>
@@ -146,8 +145,8 @@ export function renderTokenSavingsCard(metrics: DashboardMetrics): string {
           `).join('')}
         </div>
       </div>
-    </div>
-  `;
+    `,
+  );
 }
 
 export function renderIndexingJobsCard(metrics: DashboardMetrics): string {
@@ -196,12 +195,11 @@ export function renderIndexingJobsCard(metrics: DashboardMetrics): string {
     },
   ];
 
-  return `
-    <div class="dashboard-card indexing-card">
-      <div class="card-header">
-        <span>Recent indexing jobs</span>
-        <span class="card-header-meta">queue</span>
-      </div>
+  return renderDashboardCard(
+    'indexing-card',
+    'Recent indexing jobs',
+    'queue',
+    `
       <div class="dashboard-table" role="table" aria-label="Recent indexing jobs">
         <div class="dashboard-table-row header" role="row">
           <span>Time</span>
@@ -220,23 +218,22 @@ export function renderIndexingJobsCard(metrics: DashboardMetrics): string {
           </div>
         `).join('')}
       </div>
-    </div>
-  `;
+    `,
+  );
 }
 
 function renderIndexingStateCard(title: string, message: string, status: string): string {
-  return `
-    <div class="dashboard-card indexing-card">
-      <div class="card-header">
-        <span>Recent indexing jobs</span>
-        <span class="card-header-meta">${escapeHtml(status)}</span>
-      </div>
+  return renderDashboardCard(
+    'indexing-card',
+    'Recent indexing jobs',
+    status,
+    `
       <div class="dashboard-empty-state">
         <div class="dashboard-empty-title">${escapeHtml(title)}</div>
         <div class="dashboard-empty-message">${escapeHtml(message)}</div>
       </div>
-    </div>
-  `;
+    `,
+  );
 }
 
 export function renderHealthChecklistCard(items: HealthCheckItem[]): string {
@@ -257,17 +254,16 @@ export function renderHealthChecklistCard(items: HealthCheckItem[]): string {
       </div>
     `).join('');
 
-  return `
-    <div class="dashboard-card health-check-card">
-      <div class="card-header">
-        <span>Health checklist</span>
-        <span class="card-header-meta">local</span>
-      </div>
+  return renderDashboardCard(
+    'health-check-card',
+    'Health checklist',
+    'local',
+    `
       <div class="health-check-list">
         ${rows}
       </div>
-    </div>
-  `;
+    `,
+  );
 }
 
 export function renderAuditEventsCard(auditActions: AuditAction[]): string {
@@ -296,12 +292,11 @@ export function renderAuditEventsCard(auditActions: AuditAction[]): string {
       })
       .join('');
 
-  return `
-    <div class="dashboard-card audit-card">
-      <div class="card-header">
-        <span>Recent audit events</span>
-        <span class="card-header-meta">latest</span>
-      </div>
+  return renderDashboardCard(
+    'audit-card',
+    'Recent audit events',
+    'latest',
+    `
       <div class="dashboard-table audit-table" role="table" aria-label="Recent audit events">
         <div class="dashboard-table-row header" role="row">
           <span>Time</span>
@@ -311,6 +306,23 @@ export function renderAuditEventsCard(auditActions: AuditAction[]): string {
         </div>
         ${rows}
       </div>
+    `,
+  );
+}
+
+function renderDashboardCard(
+  className: string,
+  title: string,
+  meta: string,
+  body: string,
+): string {
+  return `
+    <div class="dashboard-card ${escapeHtml(className)}">
+      <div class="card-header">
+        <span>${escapeHtml(title)}</span>
+        <span class="card-header-meta">${escapeHtml(meta)}</span>
+      </div>
+      ${body}
     </div>
   `;
 }
