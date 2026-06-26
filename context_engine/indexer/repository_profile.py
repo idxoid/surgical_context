@@ -366,7 +366,12 @@ def _capability_flags(
 
     static_calls = _level(call_density, high=0.6, medium=0.15)
     inheritance = "medium" if inheritance_count else "low"
-    imports = "high" if import_count > 100 else "medium" if import_count else "low"
+    if import_count > 100:
+        imports = "high"
+    elif import_count:
+        imports = "medium"
+    else:
+        imports = "low"
     doc_code_bridge = "medium" if supported_ratio >= 0.5 else "low"
 
     if skip_affects:

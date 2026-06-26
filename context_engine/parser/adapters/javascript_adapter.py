@@ -5,6 +5,13 @@ from typing import cast
 
 from context_engine.parser.adapters.js_ts_fallback_patterns import (
     CHAINED_PROPERTY_FUNC_API_RE,
+    COMMONJS_EXPORT_ALIAS_RE,
+    COMMONJS_REQUIRE_DEFAULT_RE,
+    EXPORT_DECL_FUNC_FALLBACK_RE,
+    EXPORT_DECL_VAR_FALLBACK_RE,
+    EXPORTS_FUNC_FALLBACK_RE,
+    EXPORTS_VAR_FALLBACK_RE,
+    MODULE_EXPORT_FUNC_FALLBACK_RE,
     PROPERTY_ARROW_API_RE,
     PROPERTY_FUNC_API_RE,
 )
@@ -52,30 +59,16 @@ class JavaScriptAdapter(TreeSitterAdapter):
         }
     )
 
-    _EXPORTED_VAR_FALLBACK_RE = re.compile(
-        r"(?m)^exports\.([A-Za-z_$][\w$]*)\s*=|^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b"
-    )
-    _EXPORTED_FUNC_FALLBACK_RE = re.compile(
-        r"(?m)^exports\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function|^export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b"
-    )
-    _MODULE_EXPORT_FUNC_FALLBACK_RE = re.compile(
-        r"(?m)^module\.exports\s*=\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b"
-    )
-    _PROPERTY_FUNC_FALLBACK_RE = re.compile(
-        r"(?m)^[ \t]*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function(?:\s+([A-Za-z_$][\w$]*))?\b"
-    )
-    _PROPERTY_ARROW_FALLBACK_RE = re.compile(
-        r"(?m)^[ \t]*[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>"
-    )
+    _EXPORTS_VAR_FALLBACK_RE = EXPORTS_VAR_FALLBACK_RE
+    _EXPORT_DECL_VAR_FALLBACK_RE = EXPORT_DECL_VAR_FALLBACK_RE
+    _EXPORTS_FUNC_FALLBACK_RE = EXPORTS_FUNC_FALLBACK_RE
+    _EXPORT_DECL_FUNC_FALLBACK_RE = EXPORT_DECL_FUNC_FALLBACK_RE
+    _MODULE_EXPORT_FUNC_FALLBACK_RE = MODULE_EXPORT_FUNC_FALLBACK_RE
     _PROPERTY_FUNC_API_RE = PROPERTY_FUNC_API_RE
     _PROPERTY_ARROW_API_RE = PROPERTY_ARROW_API_RE
     _CHAINED_PROPERTY_FUNC_API_RE = CHAINED_PROPERTY_FUNC_API_RE
-    _COMMONJS_REQUIRE_DEFAULT_RE = re.compile(
-        r"(?m)^[ \t]*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"]([^'\"]+)['\"]\s*\)"
-    )
-    _COMMONJS_EXPORT_ALIAS_RE = re.compile(
-        r"(?m)^[ \t]*(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)"
-    )
+    _COMMONJS_REQUIRE_DEFAULT_RE = COMMONJS_REQUIRE_DEFAULT_RE
+    _COMMONJS_EXPORT_ALIAS_RE = COMMONJS_EXPORT_ALIAS_RE
     _IDENTIFIER_TEXT_RE = re.compile(r"^[A-Za-z_$][\w$]*$")
     _MEMBER_TEXT_RE = re.compile(r"^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$")
 
@@ -214,17 +207,21 @@ class JavaScriptAdapter(TreeSitterAdapter):
         file_path: str,
         source_code: str,
     ) -> None:
-        for match in self._EXPORTED_FUNC_FALLBACK_RE.finditer(source_code):
-            self._append_module_fallback_symbol(
-                symbols,
-                existing_names,
-                existing_uids,
-                file_path,
-                source_code,
-                start_offset=match.start(),
-                name=match.group(1) or match.group(2),
-                kind="function",
-            )
+        for pattern in (
+            self._EXPORTS_FUNC_FALLBACK_RE,
+            self._EXPORT_DECL_FUNC_FALLBACK_RE,
+        ):
+            for match in pattern.finditer(source_code):
+                self._append_module_fallback_symbol(
+                    symbols,
+                    existing_names,
+                    existing_uids,
+                    file_path,
+                    source_code,
+                    start_offset=match.start(),
+                    name=match.group(1),
+                    kind="function",
+                )
         for match in self._MODULE_EXPORT_FUNC_FALLBACK_RE.finditer(source_code):
             self._append_module_fallback_symbol(
                 symbols,
@@ -236,17 +233,21 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 name=match.group(1),
                 kind="function",
             )
-        for match in self._EXPORTED_VAR_FALLBACK_RE.finditer(source_code):
-            self._append_module_fallback_symbol(
-                symbols,
-                existing_names,
-                existing_uids,
-                file_path,
-                source_code,
-                start_offset=match.start(),
-                name=match.group(1) or match.group(2),
-                kind="variable",
-            )
+        for pattern in (
+            self._EXPORTS_VAR_FALLBACK_RE,
+            self._EXPORT_DECL_VAR_FALLBACK_RE,
+        ):
+            for match in pattern.finditer(source_code):
+                self._append_module_fallback_symbol(
+                    symbols,
+                    existing_names,
+                    existing_uids,
+                    file_path,
+                    source_code,
+                    start_offset=match.start(),
+                    name=match.group(1),
+                    kind="variable",
+                )
         for name, start_offset in self._module_export_object_keys(source_code):
             self._append_module_fallback_symbol(
                 symbols,
@@ -453,6 +454,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[ClassApiEdge]:
         """Extract owner-symbol API edges from static property function assignments."""
+        _ = tree
         edges: list[ClassApiEdge] = []
         seen: set[tuple[str, str]] = set()
 
@@ -501,6 +503,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
     def extract_symbol_aliases(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Extract static symbol-level aliases from CommonJS export surfaces."""
+        _ = tree
         module_name = module_name_from_path(file_path)
         import_bindings, _ = self._extract_import_bindings(source_code, file_path)
         aliases: list[dict] = []
@@ -594,6 +597,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
         Line-based regex; ``tree`` is accepted for ``extract_all`` parity.
         """
+        _ = tree
         edges = []
         lines = source_code.split("\n")
         for line in lines:

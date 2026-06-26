@@ -605,9 +605,11 @@ class DisabledHistoryProvider:
     retention_days: int | None = None
 
     def create_conversation(self, **kwargs: Any) -> str:
+        _ = kwargs
         return ""
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        _ = conversation_id
         return None
 
     def list_conversations(
@@ -617,36 +619,47 @@ class DisabledHistoryProvider:
         user_id: str,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
+        _ = (workspace_id, user_id, limit)
         return []
 
     def append_message(self, **kwargs: Any) -> str:
+        _ = kwargs
         return ""
 
     def list_messages(self, conversation_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+        _ = (conversation_id, limit)
         return []
 
     def set_selected_request(self, conversation_id: str, request_id: str) -> None:
+        _ = (conversation_id, request_id)
         return None
 
     def save_ask_snapshot(self, message_id: str, snapshot: dict[str, Any]) -> None:
+        _ = (message_id, snapshot)
         return None
 
     def save_inspector_snapshot(self, message_id: str, snapshot: dict[str, Any]) -> None:
+        _ = (message_id, snapshot)
         return None
 
     def save_impact_snapshot(self, message_id: str, snapshot: dict[str, Any]) -> None:
+        _ = (message_id, snapshot)
         return None
 
     def get_ask_snapshot(self, message_id: str) -> dict[str, Any] | None:
+        _ = message_id
         return None
 
     def get_inspector_snapshot(self, message_id: str) -> dict[str, Any] | None:
+        _ = message_id
         return None
 
     def get_impact_snapshot(self, message_id: str) -> dict[str, Any] | None:
+        _ = message_id
         return None
 
     def get_message_bundle(self, message_id: str) -> dict[str, Any] | None:
+        _ = message_id
         return None
 
     def get_conversation_bundle(
@@ -655,6 +668,7 @@ class DisabledHistoryProvider:
         *,
         message_limit: int = 200,
     ) -> dict[str, Any] | None:
+        _ = (conversation_id, message_limit)
         return None
 
     def get_request_bundle(
@@ -662,6 +676,7 @@ class DisabledHistoryProvider:
         conversation_id: str,
         request_id: str,
     ) -> dict[str, Any] | None:
+        _ = (conversation_id, request_id)
         return None
 
     def prune_retention(self) -> int:

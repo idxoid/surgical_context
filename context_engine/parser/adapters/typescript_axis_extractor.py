@@ -384,7 +384,7 @@ class TypeScriptAxisExtractor:
                 emit_scope=emit_scope,
             )
 
-    def _emit_import_facts(self, node, source: str, module_scope, emit_scope) -> None:
+    def _emit_import_facts(self, node, _source: str, module_scope, emit_scope) -> None:
         module = self._import_module_from_statement(node)
         clause = next((c for c in node.children if c.type == "import_clause"), None)
         if clause is None:
@@ -404,7 +404,7 @@ class TypeScriptAxisExtractor:
                 emit_scope=emit_scope,
             )
 
-    def _emit_class_def_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_class_def_facts(self, node, _source: str, _file_path: str, emit) -> None:
         name_node = node.child_by_field_name("name")
         payload = {"name": self.adapter._node_text(name_node) if name_node else ""}
         emit(node, node, "struct", "class_def", payload=payload)
@@ -460,7 +460,7 @@ class TypeScriptAxisExtractor:
                 payload={"owner": owner_qn, "name": name},
             )
 
-    def _emit_variable_declarator_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_variable_declarator_facts(self, node, _source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node) or node
         name_node = node.child_by_field_name("name")
         value = node.child_by_field_name("value")
@@ -478,7 +478,7 @@ class TypeScriptAxisExtractor:
             self._emit_value_origin(owner, value, emit, destination="assignment")
             self._maybe_emit_callable_value(owner, value, emit, source="assignment_value")
 
-    def _emit_decorator_facts(self, deco, source: str, file_path: str, emit) -> None:
+    def _emit_decorator_facts(self, deco, _source: str, _file_path: str, emit) -> None:
         base_name_fn = getattr(self.adapter, "_decorator_base_name", None)
         if not callable(base_name_fn):
             return
@@ -497,7 +497,7 @@ class TypeScriptAxisExtractor:
         emit(decorated, deco, "struct", "decorator_shape", payload=payload)
         emit(decorated, deco, "cfg", "decorator_application", payload=payload)
 
-    def _emit_call_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_call_facts(self, node, _source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -519,7 +519,7 @@ class TypeScriptAxisExtractor:
         for arg_payload in self._argument_payloads(node):
             emit(owner, node, "dfg", "call_argument", payload={**payload, **arg_payload})
 
-    def _emit_new_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_new_facts(self, node, _source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -538,7 +538,7 @@ class TypeScriptAxisExtractor:
         for arg_payload in self._argument_payloads(node):
             emit(owner, node, "dfg", "call_argument", payload={**payload, **arg_payload})
 
-    def _emit_return_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_return_facts(self, node, _source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -560,7 +560,7 @@ class TypeScriptAxisExtractor:
         if self._contains_attr_read(value):
             emit(owner, value, "dfg", "projection")
 
-    def _emit_literal_shape_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_literal_shape_facts(self, node, source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -672,7 +672,7 @@ class TypeScriptAxisExtractor:
             self._emit_value_shape(owner, right, emit)
             self._maybe_emit_callable_value(owner, right, emit, source="assignment_value")
 
-    def _emit_branch_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_branch_facts(self, node, source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -689,7 +689,7 @@ class TypeScriptAxisExtractor:
             emit(owner, condition, "cfg", "branch_condition", payload=payload)
             emit(owner, condition, "dfg", "branch_influence", payload=payload)
 
-    def _emit_loop_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_loop_facts(self, node, source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -741,8 +741,8 @@ class TypeScriptAxisExtractor:
     def _emit_using_facts(
         self,
         node,
-        source: str,
-        file_path: str,
+        _source: str,
+        _file_path: str,
         emit,
         *,
         is_async: bool = False,
@@ -761,7 +761,7 @@ class TypeScriptAxisExtractor:
         if name:
             emit(owner, node, "dfg", "context_resource", payload={"target": name})
 
-    def _emit_augmented_assignment_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_augmented_assignment_facts(self, node, source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -808,7 +808,7 @@ class TypeScriptAxisExtractor:
         if right is not None:
             self._emit_value_shape(owner, right, emit)
 
-    def _emit_yield_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_yield_facts(self, node, _source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -817,13 +817,13 @@ class TypeScriptAxisExtractor:
         if value is not None:
             emit(owner, value, "dfg", "yield_output", payload={"value_kind": value.type})
 
-    def _emit_try_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_try_facts(self, node, _source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
         emit(owner, node, "cfg", "exception_transfer")
 
-    def _emit_catch_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_catch_facts(self, node, source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -838,7 +838,7 @@ class TypeScriptAxisExtractor:
         if param is not None:
             emit(owner, param, "dfg", "exception_value", payload={"name": payload["bound_name"]})
 
-    def _emit_throw_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_throw_facts(self, node, source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
         if owner is None:
             return
@@ -852,7 +852,7 @@ class TypeScriptAxisExtractor:
                 payload["callee"] = self._callee_name(value.child_by_field_name("constructor"))
         emit(owner, node, "cfg", "exception_raise_value", payload=payload)
 
-    def _emit_member_read_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_member_read_facts(self, node, _source: str, _file_path: str, emit) -> None:
         if not self._is_attr_read(node):
             return
         owner = self._owner_for_fact(node)
@@ -869,7 +869,7 @@ class TypeScriptAxisExtractor:
             },
         )
 
-    def _emit_subscript_read_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_subscript_read_facts(self, node, source: str, _file_path: str, emit) -> None:
         if not self._is_subscript_read(node):
             return
         owner = self._owner_for_fact(node)
@@ -890,7 +890,7 @@ class TypeScriptAxisExtractor:
                 payload={**payload, "context": "subscript_read"},
             )
 
-    def _emit_parameter_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_parameter_facts(self, node, source: str, _file_path: str, emit) -> None:
         params = self._parameters_node(node)
         if params is None:
             return
@@ -924,7 +924,7 @@ class TypeScriptAxisExtractor:
                 self._emit_annotation_facts(node, type_node, emit, target=name)
             index += 1
 
-    def _emit_return_annotation(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_return_annotation(self, node, _source: str, _file_path: str, emit) -> None:
         return_type = node.child_by_field_name("return_type")
         if return_type is None:
             lookup = getattr(self.adapter, "_node_field_by_type", None)
@@ -933,7 +933,7 @@ class TypeScriptAxisExtractor:
             return
         self._emit_annotation_facts(node, return_type, emit, target="return")
 
-    def _emit_inheritance_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_inheritance_facts(self, node, _source: str, _file_path: str, emit) -> None:
         seen: set[str] = set()
         for child in node.children:
             if child.type not in {"class_heritage", "extends_clause", "implements_clause"}:
@@ -1321,7 +1321,7 @@ class TypeScriptAxisExtractor:
             return self.adapter._node_text(node)
         return ""
 
-    def _expr_text(self, node, source: str) -> str:
+    def _expr_text(self, node, _source: str) -> str:
         if node is None:
             return ""
         return self.adapter._node_text(node)

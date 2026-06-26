@@ -222,6 +222,7 @@ class TreeSitterAdapter(LanguageAdapter):
         as symbols. Language adapters can override this for ecosystems where
         exported lexical declarations are part of the public API surface.
         """
+        _ = (node, tag, source_code, file_path)
         return name.isupper()
 
     def _enclosing_parent_for_call(self, node):

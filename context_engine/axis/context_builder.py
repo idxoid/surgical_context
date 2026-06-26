@@ -832,25 +832,28 @@ def _render_bundle(
         "hybrid",
         "hybrid_compact",
     ):
-        rendered = replace(
-            bundle,
-            seed=_trim_symbol_for_mode(
-                bundle.seed,
-                render_mode,
-                full_render_max_depth=full_render_max_depth,
-            ),
-            related=tuple(
-                _trim_symbol_for_mode(
-                    rel,
+        rendered = cast(
+            ContextBundle,
+            replace(
+                bundle,
+                seed=_trim_symbol_for_mode(
+                    bundle.seed,
                     render_mode,
                     full_render_max_depth=full_render_max_depth,
-                )
-                for rel in bundle.related
+                ),
+                related=tuple(
+                    _trim_symbol_for_mode(
+                        rel,
+                        render_mode,
+                        full_render_max_depth=full_render_max_depth,
+                    )
+                    for rel in bundle.related
+                ),
             ),
         )
     else:
         rendered = bundle
-    return replace(rendered, render_mode=render_mode)
+    return cast(ContextBundle, replace(rendered, render_mode=render_mode))
 
 
 def _bundle_token_count(bundle: ContextBundle) -> int:

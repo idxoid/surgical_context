@@ -1015,6 +1015,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
 
         Line-based regex; ``tree`` is accepted for ``extract_all`` parity.
         """
+        _ = tree
         import re
 
         edges = []
@@ -2774,6 +2775,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[ClassApiEdge]:
         """HAS_API edges from static ``owner.prop = function`` assignments."""
+        _ = tree
         edges: list[ClassApiEdge] = []
         seen: set[tuple[str, str]] = set()
 
@@ -3290,7 +3292,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self,
         calls: list[dict],
         source_code: str,
-        file_path: str,
+        _file_path: str,
         symbols: list[SymbolMetadata],
         import_bindings: dict[str, str],
     ) -> None:
@@ -4001,7 +4003,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def _class_typed_locals(
         self,
         owner,
-        source_code: str,
+        _source_code: str,
         import_bindings: dict[str, str],
         module: str,
         local_classes: set[str],

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
-from context_engine.api.routes.deps import require_main
+from context_engine.api.routes.deps import AuthHeader, UserIdHeader, WorkspaceHeader, require_main
 from context_engine.api.schemas import (
     AuditActionsResponse,
     AuthTokenResponse,
@@ -30,10 +30,10 @@ router = APIRouter(tags=["auth"])
 )
 def auth_token(
     user_id: str = None,  # type: ignore
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     """Generate a signed token scoped to a workspace.
 
@@ -69,9 +69,9 @@ def auth_token(
 
 @router.get("/auth/users", response_model=UsersResponse)
 def list_users(
-    request: Request = None,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
+    request: Request | None = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
 ):
     """List all active users (requires a valid bearer token)."""
     main = require_main(request)
@@ -81,9 +81,9 @@ def list_users(
 
 @router.get("/status/cloud", response_model=CloudStatusResponse)
 def cloud_status(
-    request: Request = None,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
+    request: Request | None = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
 ):
     """Get cloud (Aura) connection status."""
     main = require_main(request)
@@ -124,9 +124,9 @@ def cloud_status(
 def audit_actions(
     user_id: str = None,  # type: ignore
     limit: int = 100,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    request: Request | None = None,
 ):
     """Get recent audit log entries."""
     main = require_main(request)

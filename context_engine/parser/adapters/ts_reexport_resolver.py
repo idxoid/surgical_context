@@ -122,7 +122,7 @@ class TsReexportResolver:
 
     def _surface_from_source(
         self,
-        source_code: str,
+        _source_code: str,
         file_path: str,
         *,
         tree,
@@ -169,7 +169,7 @@ class TsReexportResolver:
         for name, qn in nested.items():
             out.setdefault(name, qn)
 
-    def _module_qn_to_path(self, mod_qn: str, hint_file: str) -> str | None:
+    def _module_qn_to_path(self, mod_qn: str, _hint_file: str) -> str | None:
         project_root = current_project_root()
         if not project_root:
             return None

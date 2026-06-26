@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -15,6 +15,12 @@ from context_engine.api.routes.deps import (
 from context_engine.api.schemas import IMPACT_DEPTH_MAX, IMPACT_DEPTH_MIN, ImpactResponse
 
 router = APIRouter(tags=["impact"])
+
+MaxDepthQuery = Annotated[
+    int,
+    Query(default=3, ge=IMPACT_DEPTH_MIN, le=IMPACT_DEPTH_MAX),
+]
+FilePathQuery = Annotated[str | None, Query(default=None)]
 
 
 def _symbol_in_local_file(file_path: str, symbol: str) -> bool:
@@ -176,8 +182,8 @@ def _impact_result_uid(
 )
 def impact(
     symbol: str,
-    max_depth: int = Query(default=3, ge=IMPACT_DEPTH_MIN, le=IMPACT_DEPTH_MAX),
-    file_path: str | None = Query(default=None),
+    max_depth: MaxDepthQuery = 3,
+    file_path: FilePathQuery = None,
     x_user_id: UserIdHeader = None,
     authorization: AuthHeader = None,
     x_workspace: WorkspaceHeader = None,

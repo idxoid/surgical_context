@@ -739,6 +739,7 @@ class PythonAdapter(TreeSitterAdapter):
         Imports are line-based regex; ``tree`` is unused but accepted for
         ``extract_all`` parity.
         """
+        _ = tree
         imports: list[ImportEdge] = []
         for line in source_code.split("\n"):
             imports.extend(self._import_edges_from_line(line.strip(), file_path))
@@ -3026,7 +3027,7 @@ class PythonAdapter(TreeSitterAdapter):
         return ""
 
     def _positional_identifier_arguments(
-        self, call_node, source_code: str, *, limit: int = 8
+        self, call_node, _source_code: str, *, limit: int = 8
     ) -> list[str]:
         """Leading positional arguments that are bare identifiers (for DI-style hints)."""
         arg_list = call_node.child_by_field_name("arguments")
@@ -4383,7 +4384,7 @@ class PythonAdapter(TreeSitterAdapter):
         return constructed
 
     def _constructed_imported_class(
-        self, func_node, source_code: str, import_bindings: dict[str, str], module: str
+        self, func_node, _source_code: str, import_bindings: dict[str, str], module: str
     ) -> str:
         """The single class a function imports-and-constructs in its body, else ''.
 
