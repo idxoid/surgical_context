@@ -366,7 +366,8 @@ button {
   color: var(--sc-text);
   line-height: 1.65;
   white-space: pre-wrap;
-  word-break: break-word;
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 
 .message-card.user .message-content {
@@ -1108,7 +1109,7 @@ button {
   color: var(--sc-muted);
   min-width: 0;
   overflow-wrap: anywhere;
-  word-break: break-word;
+  word-break: normal;
   white-space: normal;
 }
 

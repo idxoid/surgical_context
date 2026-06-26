@@ -877,6 +877,10 @@ def test_index_queue_status_endpoint(monkeypatch):
     assert body["queue"]["pending"] == 0
 
 
+def _raise_index_file_should_not_run(*_args, **_kwargs) -> None:
+    raise AssertionError("index_file should not run")
+
+
 def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path):
     main = import_main_with_fakes(monkeypatch)
     skipped_file = tmp_path / "settings.json"
@@ -890,7 +894,7 @@ def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path)
     )
     monkeypatch.setattr(
         "context_engine.indexer.code.index_file",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("index_file should not run")),
+        _raise_index_file_should_not_run,
     )
 
     main._process_index_batch(

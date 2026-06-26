@@ -642,7 +642,7 @@ class DisabledHistoryProvider:
         _ = message_id
         _ = len(snapshot)
 
-    def save_impact_snapshot(self, message_id: str, snapshot: dict[str, Any]) -> None:
+    def save_impact_snapshot(self, _message_id: str, snapshot: dict[str, Any]) -> None:
         _ = snapshot
 
     def get_ask_snapshot(self, message_id: str) -> dict[str, Any] | None:

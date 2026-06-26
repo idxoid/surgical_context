@@ -8,8 +8,8 @@ const SAVE_BATCH_DEBOUNCE_MS = 500;
 const MAX_SAVE_BATCH_SIZE = 100;
 
 export class OverlayManager {
-  private timers = new Map<string, NodeJS.Timeout>();
-  private savedFiles = new Set<string>();
+  private readonly timers = new Map<string, NodeJS.Timeout>();
+  private readonly savedFiles = new Set<string>();
   private saveBatchTimer: NodeJS.Timeout | undefined;
 
   onDocumentChanged(event: vscode.TextDocumentChangeEvent): void {

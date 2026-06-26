@@ -49,7 +49,7 @@ function rewriteImmutableVarExports(mediaDir) {
     let text = fs.readFileSync(filePath, 'utf8');
     let changed = false;
     for (const binding of immutableBindings) {
-      const pattern = new RegExp(`\\bvar ${binding}\\b`, 'g');
+      const pattern = new RegExp(String.raw`\bvar ${binding}\b`, 'g');
       const next = text.replace(pattern, `const ${binding}`);
       if (next !== text) {
         text = next;
@@ -62,12 +62,103 @@ function rewriteImmutableVarExports(mediaDir) {
   }
 }
 
-function immutableVarExportPlugin() {
+function isStaticClassFieldValue(value) {
+  const trimmed = value.trim();
+  if (/^("([^"\\]|\\.)*"|'([^'\\]|\\.)*')$/.test(trimmed)) {
+    return true;
+  }
+  if (/^(true|false|null)$/.test(trimmed)) {
+    return true;
+  }
+  if (/^-?\d+$/.test(trimmed)) {
+    return true;
+  }
+  if (trimmed === '[]') {
+    return true;
+  }
+  return /^(\/\* @__PURE__ \*\/ )?new Map\(\)$/.test(trimmed);
+}
+
+/** esbuild lowers TS class fields into constructor assignments; hoist static literals for Sonar. */
+function rewriteMainSurfaceClassFields(mediaDir) {
+  const mainPath = path.join(mediaDir, 'main.js');
+  if (!fs.existsSync(mainPath)) {
+    return;
+  }
+
+  let text = fs.readFileSync(mainPath, 'utf8');
+  const marker = 'const MainSurface = class {';
+  const markerIdx = text.indexOf(marker);
+  if (markerIdx === -1) {
+    return;
+  }
+
+  const ctorNeedle = 'constructor() {';
+  const ctorIdx = text.indexOf(ctorNeedle, markerIdx);
+  if (ctorIdx === -1) {
+    return;
+  }
+
+  const openBraceIdx = text.indexOf('{', ctorIdx);
+  const closeBraceIdx = findMatchingBrace(text, openBraceIdx);
+  if (closeBraceIdx === -1) {
+    return;
+  }
+
+  const bodyStart = openBraceIdx + 1;
+  const ctorBody = text.slice(bodyStart, closeBraceIdx);
+  const fieldLines = [];
+  const keptLines = [];
+
+  for (const line of ctorBody.split('\n')) {
+    const match = line.match(/^    this\.(\w+) = (.+);$/);
+    if (match && isStaticClassFieldValue(match[2])) {
+      fieldLines.push(`  ${match[1]} = ${match[2]};`);
+    } else {
+      keptLines.push(line);
+    }
+  }
+
+  if (fieldLines.length === 0) {
+    return;
+  }
+
+  const insertPoint = markerIdx + marker.length;
+  text =
+    text.slice(0, insertPoint) +
+    '\n' +
+    fieldLines.join('\n') +
+    text.slice(insertPoint, bodyStart) +
+    keptLines.join('\n') +
+    text.slice(closeBraceIdx);
+
+  fs.writeFileSync(mainPath, text);
+}
+
+function findMatchingBrace(text, openBraceIdx) {
+  let depth = 0;
+  for (let i = openBraceIdx; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+function webviewPostProcessPlugin() {
   return {
-    name: 'immutable-var-to-const',
+    name: 'webview-post-process',
     setup(build) {
       build.onEnd(() => {
-        rewriteImmutableVarExports(path.join(__dirname, 'media'));
+        const mediaDir = path.join(__dirname, 'media');
+        rewriteImmutableVarExports(mediaDir);
+        rewriteMainSurfaceClassFields(mediaDir);
       });
     },
   };
@@ -81,12 +172,12 @@ const webviewOptions = Object.values(webviewEntryPoints).every(f => fs.existsSyn
       splitting: true,
       outdir: 'media',
       platform: 'browser',
-      target: 'es2020',
+      target: 'es2022',
       format: 'esm',
       sourcemap: !production,
       minify: production,
       external: [],
-      plugins: [immutableVarExportPlugin()],
+      plugins: [webviewPostProcessPlugin()],
     }
   : null;
 

@@ -21,7 +21,7 @@ def test_request_trace_stage_emits_structured_log(caplog):
     trace = RequestTrace(trace_id="trace-1", endpoint="/ask", workspace_id="acme/repo@main")
 
     with trace.stage("context"):
-        pass
+        assert trace.trace_id == "trace-1"
 
     events = _json_messages(caplog.records)
     stage_event = next(event for event in events if event["event"] == "context_engine.stage")

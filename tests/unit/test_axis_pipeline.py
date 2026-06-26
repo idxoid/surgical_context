@@ -35,6 +35,18 @@ def _cand(uid: str, path: str, *, score: float = 0.8) -> RoleCandidate:
     )
 
 
+def _intent_budget_token_limit(render_budget) -> int | None:
+    if render_budget is None:
+        return None
+    return render_budget.token_budget
+
+
+def _intent_budget_render_mode(render_budget) -> str:
+    if render_budget is None:
+        return "full"
+    return render_budget.render_mode
+
+
 class _FakeLance:
     def _embed(self, texts):  # noqa: D401 - stub
         return [[0.0] * 4]
@@ -363,8 +375,8 @@ def test_intent_budget_can_be_disabled_for_ab(stub_stages, monkeypatch):
         "build_context_for_candidates",
         lambda candidates, **kw: (
             captured.update(
-                token_budget=(budget.token_budget if (budget := kw.get("render_budget")) else None),
-                render_mode=(budget.render_mode if budget else "full"),
+                token_budget=_intent_budget_token_limit(kw.get("render_budget")),
+                render_mode=_intent_budget_render_mode(kw.get("render_budget")),
             )
             or []
         ),

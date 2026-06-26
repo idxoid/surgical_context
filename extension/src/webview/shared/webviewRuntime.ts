@@ -31,7 +31,7 @@ export function listenForHostMessages<T>(handler: (message: T) => void): void {
     handler(event.data);
   }
 
-  window.addEventListener('message', receiveHostMessage);
+  globalThis.addEventListener('message', receiveHostMessage);
 }
 
 export function bootWebview(init: () => void): void {

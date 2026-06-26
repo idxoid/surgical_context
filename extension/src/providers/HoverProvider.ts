@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { OverlayManager } from '../overlayManager';
 
 export class SurgicalContextHoverProvider implements vscode.HoverProvider {
-  constructor(private overlayManager: OverlayManager) {}
+  constructor(private readonly overlayManager: OverlayManager) {}
 
   provideHover(
     document: vscode.TextDocument,

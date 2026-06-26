@@ -77,7 +77,7 @@ def test_empty_inproc_walk_falls_back_to_neo4j(monkeypatch):
         db,
         AXIS_TEST_WORKSPACE,
         ["u:seed"],
-        edges=(edge for edge in EdgeProfile.CALLS),
+        edges=EdgeProfile.CALLS,
         direction="reverse",
     )
 

@@ -386,7 +386,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         attach_docstrings(
             symbols,
             source_code,
-            file_path,
             tree=tree,
             language=self.language_name,
         )
@@ -3634,7 +3633,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         return compute_uid(qualified_name, f"{name}()->_", self.language_name)
 
     def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
-        qualified_name = qualified_name_for(node, source_code, file_path)
+        qualified_name = qualified_name_for(node, file_path)
         if node.type == "method_definition":
             owner = self._object_literal_owner_variable(node)
             if owner is not None:

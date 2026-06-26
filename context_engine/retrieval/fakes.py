@@ -21,7 +21,7 @@ class FakeVectorSearchProvider:
 
     def search_docs(
         self,
-        query: str,
+        _query: str,
         limit: int = 30,
         *,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
@@ -31,7 +31,7 @@ class FakeVectorSearchProvider:
 
     def search_symbols(
         self,
-        query: str,
+        _query: str,
         limit: int = 30,
         *,
         workspace_id: str = DEFAULT_WORKSPACE_ID,

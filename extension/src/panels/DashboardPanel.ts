@@ -58,6 +58,8 @@ function parseOnePrometheusLabel(
   return { key, value: labelText.slice(eq + 2, close), next: close + 1 };
 }
 
+const PROMETHEUS_LINE_PATTERN = /^([a-zA-Z_:][\w:]*)({([^}]*)})?\s+([-+0-9.eE]+)$/;
+
 function parsePrometheusLabels(labelText: string): Record<string, string> {
   const labels: Record<string, string> = {};
   let i = 0;
@@ -83,7 +85,7 @@ export class DashboardPanel {
 
   private readonly panel: vscode.WebviewPanel;
   private readonly extensionUri: vscode.Uri;
-  private disposables: vscode.Disposable[] = [];
+  private readonly disposables: vscode.Disposable[] = [];
   private refreshInterval: NodeJS.Timeout | undefined;
 
   private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
@@ -353,15 +355,7 @@ export class DashboardPanel {
     if (!response) return {};
 
     const queue = response.queue;
-    const lastIndexJobStatus = queue.processing > 0
-      ? 'processing'
-      : queue.pending > 0
-        ? 'queued'
-        : queue.last_error
-          ? 'attention'
-          : this.hasQueueActivity(queue)
-            ? 'idle'
-            : 'not indexed';
+    const lastIndexJobStatus = this.resolveLastIndexJobStatus(queue);
 
     return {
       queuePending: queue.pending,
@@ -392,6 +386,22 @@ export class DashboardPanel {
       || (metrics.indexedSymbols || 0) > 0
       || (metrics.docChunks || 0) > 0;
     return !hasCatalogMetrics && !this.hasQueueActivity(response.queue);
+  }
+
+  private resolveLastIndexJobStatus(queue: IndexQueueResponse['queue']): string {
+    if (queue.processing > 0) {
+      return 'processing';
+    }
+    if (queue.pending > 0) {
+      return 'queued';
+    }
+    if (queue.last_error) {
+      return 'attention';
+    }
+    if (this.hasQueueActivity(queue)) {
+      return 'idle';
+    }
+    return 'not indexed';
   }
 
   private hasQueueActivity(queue: IndexQueueResponse['queue']): boolean {
@@ -663,7 +673,7 @@ export class DashboardPanel {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) return null;
 
-    const match = trimmed.match(/^([a-zA-Z_:][\w:]*)({([^}]*)})?\s+([-+0-9.eE]+)$/);
+    const match = PROMETHEUS_LINE_PATTERN.exec(trimmed);
     if (!match) return null;
 
     const labels: Record<string, string> = {};

@@ -22,6 +22,10 @@ class BagOfWordsEncoder:
         return vectors
 
 
+def _missing_encoder(_model):
+    raise RuntimeError("not cached")
+
+
 def test_evaluate_model_scores_target_hits_with_fake_encoder():
     symbols = [
         SymbolRecord(
@@ -99,7 +103,7 @@ def test_evaluate_model_reports_unavailable_model():
         symbols,
         questions,
         top_k=1,
-        encoder_factory=lambda _model: (_ for _ in ()).throw(RuntimeError("not cached")),
+        encoder_factory=_missing_encoder,
     )
 
     assert result["status"] == "unavailable"

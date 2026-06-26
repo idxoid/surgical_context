@@ -407,7 +407,6 @@ class PythonAdapter(TreeSitterAdapter):
         attach_docstrings(
             symbols,
             source_code,
-            file_path,
             tree=tree,
             language="python",
         )
@@ -2102,7 +2101,7 @@ class PythonAdapter(TreeSitterAdapter):
         referrer = self._enclosing_def_node(node)
         if args is None or referrer is None:
             return
-        type_args = [c for c in args.named_children]
+        type_args = list(args.named_children)
         if len(type_args) >= 2:
             emit(referrer, type_args[1], "isinstance")
 
@@ -3388,7 +3387,7 @@ class PythonAdapter(TreeSitterAdapter):
         return compute_uid(qualified_name, f"{name}()->_", self.language_name)
 
     def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
-        qualified_name = qualified_name_for(node, source_code, file_path)
+        qualified_name = qualified_name_for(node, file_path)
         raw_signature, _ = signature_from_node(node, source_code, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
 

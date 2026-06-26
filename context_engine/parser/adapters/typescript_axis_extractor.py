@@ -277,7 +277,7 @@ class TypeScriptAxisExtractor:
         if node.type in self._CLASS_TYPES:
             return (
                 self.adapter._uid_for_node(node, source, file_path),
-                qualified_name_for(node, source, file_path),
+                qualified_name_for(node, file_path),
                 "class",
             )
         if node.type in self._CALLABLE_TYPES:
@@ -286,7 +286,7 @@ class TypeScriptAxisExtractor:
                 return self._scope(owner, source, file_path)
             return (
                 self.adapter._uid_for_node(node, source, file_path),
-                qualified_name_for(node, source, file_path),
+                qualified_name_for(node, file_path),
                 "function",
             )
         return None
@@ -451,7 +451,7 @@ class TypeScriptAxisExtractor:
             class_owner = self._enclosing_class(node)
             owner_qn = ""
             if class_owner is not None:
-                owner_qn = qualified_name_for(class_owner, source, file_path)
+                owner_qn = qualified_name_for(class_owner, file_path)
             emit(
                 node,
                 node,

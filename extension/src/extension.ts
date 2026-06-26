@@ -23,7 +23,7 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBarItem.text = '$(loading~spin) Surgical Context';
   statusBarItem.tooltip = 'Click to check context_engine health';
   statusBarItem.show();
-  context.subscriptions.push(statusBarItem);
+  const disposables: vscode.Disposable[] = [statusBarItem];
 
   // Verify context_engine is reachable and update state (non-blocking)
   SidecarClient.health().then(ok => {
@@ -69,40 +69,23 @@ export function activate(context: vscode.ExtensionContext): void {
     );
   };
 
-  // Register document lifecycle subscriptions
-  context.subscriptions.push(
+  const codeLensProvider = new SurgicalContextCodeLensProvider();
+  const hoverProvider = new SurgicalContextHoverProvider(overlayManager);
+
+  disposables.push(
     vscode.workspace.onDidChangeTextDocument(e => overlayManager.onDocumentChanged(e)),
     vscode.workspace.onDidSaveTextDocument(doc => overlayManager.onDocumentSaved(doc)),
     vscode.workspace.onDidCloseTextDocument(doc => overlayManager.onDocumentClosed(doc)),
-    // Clear stale lastRequest when user switches files
     vscode.window.onDidChangeActiveTextEditor(() => {
       stateManager.clearLastRequestIfStale();
-    })
-  );
-
-  // Register the single sidebar surface used by the mocks for chat and impact.
-  context.subscriptions.push(
+    }),
     vscode.window.registerWebviewViewProvider(
       SurgicalContextViewProvider.viewType,
       surgicalContextView,
       { webviewOptions: { retainContextWhenHidden: true } }
-    )
-  );
-
-  // Register CodeLens provider
-  const codeLensProvider = new SurgicalContextCodeLensProvider();
-  context.subscriptions.push(
-    vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLensProvider)
-  );
-
-  // Register Hover provider
-  const hoverProvider = new SurgicalContextHoverProvider(overlayManager);
-  context.subscriptions.push(
-    vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider)
-  );
-
-  // Register commands
-  context.subscriptions.push(
+    ),
+    vscode.languages.registerCodeLensProvider({ scheme: 'file' }, codeLensProvider),
+    vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider),
 
     // Spec commands
     vscode.commands.registerCommand('surgicalContext.askCurrentSymbol', async (...args: unknown[]) => {
@@ -135,8 +118,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('surgicalContext.findDocs', async () => {
-      vscode.window.showInformationMessage('Find Docs coming in Phase 3');
-      // TODO: Implement doc search
+      await runUnifiedSearch({ title: 'Search documentation', docOnly: true });
     }),
 
     vscode.commands.registerCommand('surgicalContext.openDashboard', async () => {
@@ -168,13 +150,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('surgicalContext.toggleOverlaySync', () => {
       const config = vscode.workspace.getConfiguration('surgicalContext');
       const current = config.get<boolean>('overlaySync', true);
-      config.update('overlaySync', !current, vscode.ConfigurationTarget.Workspace);
-      vscode.window.showInformationMessage(`Overlay sync ${!current ? 'enabled' : 'disabled'}.`);
+      const next = !current;
+      config.update('overlaySync', next, vscode.ConfigurationTarget.Workspace);
+      vscode.window.showInformationMessage(`Overlay sync ${next ? 'enabled' : 'disabled'}.`);
     }),
 
     vscode.commands.registerCommand('surgicalContext.searchWorkspace', async () => {
-      vscode.window.showInformationMessage('Workspace search coming soon');
-      // TODO: Implement search
+      await runUnifiedSearch({ title: 'Search workspace symbols and docs' });
     }),
 
     // Legacy commands for backward compatibility
@@ -214,6 +196,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     })
   );
+  context.subscriptions.push(...disposables);
 
   void promptForSecondarySideBarPlacement(context, openSecondarySideBarMovePicker);
 }
@@ -323,7 +306,7 @@ async function targetFromActiveEditorAsync(
 
 function targetFromActiveEditorIfSameFile(filePath: string): SymbolCommandTarget {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.fileName !== filePath) return {};
+  if (editor?.document.fileName !== filePath) return {};
 
   const position = editor.selection.active;
   return {
@@ -363,6 +346,44 @@ function pushTargetState(target: SymbolCommandTarget, view?: SurgicalContextView
 
 function clampLine(line: number, document: vscode.TextDocument): number {
   return Math.max(0, Math.min(line, document.lineCount - 1));
+}
+
+async function runUnifiedSearch(options: { title: string; docOnly?: boolean }): Promise<void> {
+  const query = await vscode.window.showInputBox({ prompt: options.title });
+  if (!query?.trim()) {
+    return;
+  }
+
+  try {
+    const response = await SidecarClient.unifiedSearch(query.trim(), undefined, 15);
+    const results = options.docOnly
+      ? response.results.filter(result => result.type === 'doc')
+      : response.results;
+    if (results.length === 0) {
+      vscode.window.showInformationMessage('No matches found.');
+      return;
+    }
+
+    const pick = await vscode.window.showQuickPick(
+      results.map(result => ({
+        label: result.title || result.file_path,
+        description: result.file_path,
+        detail: result.content.slice(0, 160),
+        result,
+      })),
+      { placeHolder: options.title, matchOnDescription: true, matchOnDetail: true }
+    );
+    if (!pick?.result.file_path) {
+      return;
+    }
+
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(pick.result.file_path));
+    await vscode.window.showTextDocument(document, { preview: true });
+  } catch (error) {
+    vscode.window.showErrorMessage(
+      `Search failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 async function promptForSecondarySideBarPlacement(

@@ -38,7 +38,7 @@ export const defaultState: ExtensionState = {
  */
 class StateManager {
   private state: ExtensionState = { ...defaultState };
-  private listeners: Set<(state: ExtensionState) => void> = new Set();
+  private readonly listeners: Set<(state: ExtensionState) => void> = new Set();
 
   getState(): ExtensionState {
     return { ...this.state };

@@ -124,7 +124,7 @@ def _node_text(node) -> str:
     return text.decode("utf-8") if text is not None else ""
 
 
-def qualified_name_for(node, source_code: str, file_path: str) -> str:
+def qualified_name_for(node, file_path: str) -> str:
     """Build a dotted qualified name for a tree-sitter symbol node."""
     module = module_name_from_path(file_path)
     parts: list[str] = []
@@ -164,7 +164,7 @@ def signature_from_node(node, source_code: str, language: str = "python") -> tup
 
     params_node = node.child_by_field_name("parameters")
     params = _node_text(params_node) if params_node else "()"
-    returns = _return_annotation_from_node(node, source_code, language)
+    returns = _return_annotation_from_node(node, language)
     raw = f"{name}{params}"
     if returns:
         raw = f"{raw}->{returns}"
@@ -239,7 +239,7 @@ def _typescript_return_annotation_from_header(header: str) -> str:
     return header[i:end].strip()
 
 
-def _return_annotation_from_node(node, source_code: str, language: str) -> str:
+def _return_annotation_from_node(node, language: str) -> str:
     return_node = node.child_by_field_name("return_type") or node.child_by_field_name("type")
     if return_node is not None:
         text = _node_text(return_node)

@@ -6,7 +6,7 @@ import {
   mountLayoutHtml,
   replaceElementHtml,
   vscode
-} from "./chunk-CB47NA2A.js";
+} from "./chunk-HRWW4XWW.js";
 
 // src/webview/shared/layout.ts
 function renderMessageCard(message, selectedRequestId) {
@@ -1534,30 +1534,30 @@ function showFeedback(message, level) {
 
 // src/webview/main.ts
 const MainSurface = class {
+  surface = "chat";
+  state = null;
+  messages = /* @__PURE__ */ new Map();
+  dialogHistory = [];
+  currentStreamingRequestId = null;
+  currentContextSummary = null;
+  currentPromptContext = null;
+  selectedPromptRequestId = null;
+  inspectorTab = "primary";
+  intentMatches = null;
+  pendingPrompt = null;
+  pendingAskAnchor = null;
+  currentImpact = null;
+  currentImpactSymbol = null;
+  currentImpactFilePath = null;
+  currentImpactSource = null;
+  currentImpactDepth = 3;
+  impactError = null;
+  impactLoading = false;
+  historyCollapsed = true;
+  settings = null;
+  keyboardListenerAttached = false;
   constructor() {
-    this.surface = "chat";
-    this.state = null;
-    this.messages = /* @__PURE__ */ new Map();
-    this.dialogHistory = [];
     this.currentDialogId = `dialog-${Date.now()}`;
-    this.currentStreamingRequestId = null;
-    this.currentContextSummary = null;
-    this.currentPromptContext = null;
-    this.selectedPromptRequestId = null;
-    this.inspectorTab = "primary";
-    this.intentMatches = null;
-    this.pendingPrompt = null;
-    this.pendingAskAnchor = null;
-    this.currentImpact = null;
-    this.currentImpactSymbol = null;
-    this.currentImpactFilePath = null;
-    this.currentImpactSource = null;
-    this.currentImpactDepth = 3;
-    this.impactError = null;
-    this.impactLoading = false;
-    this.historyCollapsed = true;
-    this.settings = null;
-    this.keyboardListenerAttached = false;
     this.initializeMessageListener();
     this.restoreState();
     this.renderLoadingShell();

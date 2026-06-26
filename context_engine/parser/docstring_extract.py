@@ -120,7 +120,7 @@ def docstrings_by_start_line(source_code: str, tree, *, language: str) -> dict[i
     return out
 
 
-def attach_docstrings(symbols, source_code: str, file_path: str, *, tree, language: str) -> None:
+def attach_docstrings(symbols, source_code: str, *, tree, language: str) -> None:
     """Mutate ``SymbolMetadata`` rows in place with extracted docstrings."""
     by_line = docstrings_by_start_line(source_code, tree, language=language)
     if not by_line:

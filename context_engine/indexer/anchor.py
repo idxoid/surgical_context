@@ -500,7 +500,7 @@ def _build_symbol_vector_index(lance, workspace_id: str):
         "file_paths": file_paths,
         "matrix": matrix,
         "norm_sq": np.einsum("ij,ij->i", matrix, matrix),
-        "name_to_uid": {name: uid for name, uid in zip(names, uids, strict=False)},
+        "name_to_uid": dict(zip(names, uids, strict=False)),
     }
 
 

@@ -559,9 +559,11 @@ def test_lancedb_delete_path_prefixes_falls_back_to_full_axis_reset(monkeypatch)
         "u:c",
     }
     client.count_axis_adjacency_workspace = lambda workspace_id: 4
-    client.delete_axis_adjacency_uids = lambda workspace_id, uids: (_ for _ in ()).throw(
-        AssertionError("partial delete must not be used")
-    )
+
+    def _reject_partial_delete(workspace_id, uids):
+        raise AssertionError("partial delete must not be used")
+
+    client.delete_axis_adjacency_uids = _reject_partial_delete
 
     invalidations = []
     monkeypatch.setattr(

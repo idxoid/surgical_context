@@ -58,7 +58,7 @@ function listenForHostMessages(handler) {
     }
     handler(event.data);
   }
-  window.addEventListener("message", receiveHostMessage);
+  globalThis.addEventListener("message", receiveHostMessage);
 }
 function bootWebview(init) {
   if (document.readyState === "loading") {
@@ -90,4 +90,4 @@ export {
   bootWebview,
   escapeHtml
 };
-//# sourceMappingURL=chunk-CB47NA2A.js.map
+//# sourceMappingURL=chunk-HRWW4XWW.js.map

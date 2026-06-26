@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -428,7 +429,7 @@ def launch_code(args: argparse.Namespace) -> int:
     return _run(code_command(), dry_run=args.dry_run).returncode
 
 
-def _smoke_step(label: str, action) -> object:
+def _smoke_step[T](label: str, action: Callable[[], T]) -> T:
     print(f"[smoke] {label} ... ", end="", flush=True)
     try:
         result = action()

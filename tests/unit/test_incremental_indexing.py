@@ -1067,9 +1067,12 @@ export class GuardsContextCreator {
             def extract_inheritance(self, file_path):
                 return []
 
+        def _affects_must_not_rebuild(db):
+            raise AssertionError("AFFECTS should not rebuild")
+
         monkeypatch.setattr(
             "context_engine.indexer.affects.AFFECTSIndexer",
-            lambda db: (_ for _ in ()).throw(AssertionError("AFFECTS should not rebuild")),
+            _affects_must_not_rebuild,
         )
         source_file = tmp_path / "test.py"
         source_file.write_text("def unchanged():\n    pass\n", encoding="utf-8")
