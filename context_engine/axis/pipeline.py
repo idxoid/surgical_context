@@ -439,40 +439,45 @@ def _symbol_targeted_context_plan(
     return [anchor], "deferred_binding_flow", include_tests_in_walks
 
 
+@dataclass(frozen=True)
+class _ContextBuildOptions:
+    workspace_id: str
+    db: Any
+    lance: Any
+    context_per_seed: int
+    hook_transparency: bool
+    token_budget: int | None
+    render_mode: str
+    budget_profile: Any | None
+    utility_score_fn: Any | None
+    traversal_mode: str | None
+    include_tests: bool
+    overlay: Any | None
+    user_id: str
+
+
 def _build_context_bundles_with_budget(
     candidates: list[RoleCandidate],
-    *,
-    workspace_id: str,
-    db: Any,
-    lance: Any,
-    context_per_seed: int,
-    hook_transparency: bool,
-    token_budget: int | None,
-    render_mode: str,
-    budget_profile: Any | None,
-    utility_score_fn: Any | None,
-    traversal_mode: str | None,
-    include_tests: bool,
-    overlay: Any | None,
-    user_id: str,
+    options: _ContextBuildOptions,
 ) -> list[ContextBundle]:
+    profile = options.budget_profile
     return context_builder.build_context_for_candidates(
         candidates,
-        workspace_id=workspace_id,
-        db=db,
-        lance=lance,
-        max_per_seed=context_per_seed,
-        hook_transparency=hook_transparency,
-        token_budget=token_budget,
-        render_mode=render_mode,
-        per_transaction_share=budget_profile.per_transaction_share if budget_profile else 0.10,
-        file_soft_cap_share=budget_profile.file_soft_cap_share if budget_profile else 0.25,
-        signature_only_initial=budget_profile.signature_only_initial if budget_profile else False,
-        traversal_mode=traversal_mode,
-        include_tests=include_tests,
-        overlay=overlay,
-        user_id=user_id,
-        utility_score_fn=utility_score_fn,
+        workspace_id=options.workspace_id,
+        db=options.db,
+        lance=options.lance,
+        max_per_seed=options.context_per_seed,
+        hook_transparency=options.hook_transparency,
+        token_budget=options.token_budget,
+        render_mode=options.render_mode,
+        per_transaction_share=profile.per_transaction_share if profile else 0.10,
+        file_soft_cap_share=profile.file_soft_cap_share if profile else 0.25,
+        signature_only_initial=profile.signature_only_initial if profile else False,
+        traversal_mode=options.traversal_mode,
+        include_tests=options.include_tests,
+        overlay=options.overlay,
+        user_id=options.user_id,
+        utility_score_fn=options.utility_score_fn,
     )
 
 
@@ -584,19 +589,21 @@ def _try_symbol_targeted_retrieval(
         with trace.stage("context"):
             bundles = _build_context_bundles_with_budget(
                 context_candidates,
-                workspace_id=workspace_id,
-                db=db,
-                lance=lance,
-                context_per_seed=context_per_seed,
-                hook_transparency=hook_transparency,
-                token_budget=token_budget,
-                render_mode=render_mode,
-                budget_profile=budget_profile,
-                utility_score_fn=None,
-                traversal_mode=traversal_mode,
-                include_tests=include_tests,
-                overlay=overlay,
-                user_id=user_id,
+                _ContextBuildOptions(
+                    workspace_id=workspace_id,
+                    db=db,
+                    lance=lance,
+                    context_per_seed=context_per_seed,
+                    hook_transparency=hook_transparency,
+                    token_budget=token_budget,
+                    render_mode=render_mode,
+                    budget_profile=budget_profile,
+                    utility_score_fn=None,
+                    traversal_mode=traversal_mode,
+                    include_tests=include_tests,
+                    overlay=overlay,
+                    user_id=user_id,
+                ),
             )
             bundles = _move_anchor_bundle_first(bundles, anchor.uid)
 
@@ -1206,19 +1213,21 @@ def run_axis_retrieval(
         with tr.stage("context"):
             bundles = _build_context_bundles_with_budget(
                 active,
-                workspace_id=workspace_id,
-                db=db,
-                lance=lance,
-                context_per_seed=context_per_seed,
-                hook_transparency=hook_transparency,
-                token_budget=token_budget,
-                render_mode=render_mode,
-                budget_profile=budget_profile,
-                utility_score_fn=utility_score_fn,
-                traversal_mode="deferred_binding_flow",
-                include_tests=include_tests_in_walks,
-                overlay=overlay,
-                user_id=user_id,
+                _ContextBuildOptions(
+                    workspace_id=workspace_id,
+                    db=db,
+                    lance=lance,
+                    context_per_seed=context_per_seed,
+                    hook_transparency=hook_transparency,
+                    token_budget=token_budget,
+                    render_mode=render_mode,
+                    budget_profile=budget_profile,
+                    utility_score_fn=utility_score_fn,
+                    traversal_mode="deferred_binding_flow",
+                    include_tests=include_tests_in_walks,
+                    overlay=overlay,
+                    user_id=user_id,
+                ),
             )
 
     return AxisRetrievalResult(

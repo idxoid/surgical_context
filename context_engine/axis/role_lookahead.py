@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from context_engine.axis.graph_walk import EdgeProfile, walk_neighbours
@@ -114,7 +115,6 @@ def _symbol_kinds_filter_sql(
 
 
 def _kinds_row_tuple(
-    uid: str,
     name: object,
     file_path: object,
     kinds_json: object,
@@ -139,7 +139,7 @@ def _kinds_from_pylist_rows(
         if uid not in neighbour_uids:
             continue
         parsed = _kinds_row_tuple(
-            uid, row.get("name"), row.get("file_path"), row.get("axis_container_kinds_json")
+            row.get("name"), row.get("file_path"), row.get("axis_container_kinds_json")
         )
         if parsed is not None:
             out[uid] = parsed
@@ -166,7 +166,7 @@ def _kinds_from_arrow_columns(
         uid = str(uid_raw or "")
         if uid not in neighbour_uids:
             continue
-        parsed = _kinds_row_tuple(uid, name, file_path, kinds_json)
+        parsed = _kinds_row_tuple(name, file_path, kinds_json)
         if parsed is not None:
             out[uid] = parsed
     return out
@@ -366,6 +366,15 @@ def _auto_promote_lookahead_roles(
         out[target_role] = injected[:max_injected_per_role]
 
 
+@dataclass
+class _LookaheadExpansionState:
+    out: dict[str, list[RoleCandidate]]
+    promotion_evidence: dict[str, dict[str, tuple[str, tuple[str, ...]]]]
+    aggregated_neighbour_reach: dict[str, int]
+    existing_uids_by_role: dict[str, set[str]]
+    all_seed_uids: set[str]
+
+
 def _expand_lookahead_for_source_role(
     source_role: str,
     *,
@@ -378,13 +387,9 @@ def _expand_lookahead_for_source_role(
     prescanned,
     kind_to_roles: dict[str, set[str]],
     intent_set: set[str],
-    existing_uids_by_role: dict[str, set[str]],
-    all_seed_uids: set[str],
     base_score: float,
     max_injected_per_role: int,
-    out: dict[str, list[RoleCandidate]],
-    promotion_evidence: dict[str, dict[str, tuple[str, tuple[str, ...]]]],
-    aggregated_neighbour_reach: dict[str, int],
+    state: _LookaheadExpansionState,
 ) -> None:
     seed_uids = [c.uid for c in (candidates_by_role.get(source_role) or [])]
     if not seed_uids:
@@ -401,9 +406,9 @@ def _expand_lookahead_for_source_role(
     )
     neighbour_reach, flat_neighbours = _record_neighbour_reach(
         neighbours,
-        aggregated_neighbour_reach,
+        state.aggregated_neighbour_reach,
     )
-    flat_neighbours -= all_seed_uids
+    flat_neighbours -= state.all_seed_uids
     if not flat_neighbours:
         return
 
@@ -420,7 +425,7 @@ def _expand_lookahead_for_source_role(
             source_role=source_role,
             kind_to_roles=kind_to_roles,
             intent_set=intent_set,
-            existing_uids_by_role=existing_uids_by_role,
+            existing_uids_by_role=state.existing_uids_by_role,
             uid=uid,
         )
         for target_role, evidence_kinds in matched_targets.items():
@@ -435,13 +440,13 @@ def _expand_lookahead_for_source_role(
                         base_score=base_score,
                     )
                 )
-                existing_uids_by_role[target_role].add(uid)
+                state.existing_uids_by_role[target_role].add(uid)
             else:
-                bucket = promotion_evidence.setdefault(target_role, {})
+                bucket = state.promotion_evidence.setdefault(target_role, {})
                 bucket[uid] = (f"{name}|{file_path}", tuple(sorted(evidence_kinds)))
 
     _inject_lookahead_candidates(
-        out,
+        state.out,
         per_target,
         neighbour_reach=neighbour_reach,
         max_injected_per_role=max_injected_per_role,
@@ -518,6 +523,14 @@ def expand_candidates_via_neighbourhood(
     # structurally central than one reached from a single use site.
     aggregated_neighbour_reach: dict[str, int] = {}
 
+    expansion_state = _LookaheadExpansionState(
+        out=out,
+        promotion_evidence=promotion_evidence,
+        aggregated_neighbour_reach=aggregated_neighbour_reach,
+        existing_uids_by_role=existing_uids_by_role,
+        all_seed_uids=all_seed_uids,
+    )
+
     for source_role in intent_roles:
         _expand_lookahead_for_source_role(
             source_role,
@@ -530,13 +543,9 @@ def expand_candidates_via_neighbourhood(
             prescanned=prescanned,
             kind_to_roles=kind_to_roles,
             intent_set=intent_set,
-            existing_uids_by_role=existing_uids_by_role,
-            all_seed_uids=all_seed_uids,
             base_score=base_score,
             max_injected_per_role=max_injected_per_role,
-            out=out,
-            promotion_evidence=promotion_evidence,
-            aggregated_neighbour_reach=aggregated_neighbour_reach,
+            state=expansion_state,
         )
 
     _auto_promote_lookahead_roles(

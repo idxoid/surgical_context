@@ -431,6 +431,20 @@ class TypeScriptAdapter(TreeSitterAdapter):
         }
     )
 
+    def _apply_behavioral_shape_flags(
+        self, symbol: SymbolMetadata, shape: dict[str, bool]
+    ) -> None:
+        if shape.get("mapping"):
+            symbol.returns_mapping = True
+        if shape.get("sequence"):
+            symbol.returns_sequence = True
+        if shape.get("constructed"):
+            symbol.returns_constructed_type = True
+        if shape.get("iterates"):
+            symbol.iterates_attr_call = True
+        if shape.get("assembles"):
+            symbol.assembles_mapping_in_loop = True
+
     def _mark_behavioral_shape_symbols(self, symbols: list[SymbolMetadata], tree) -> None:
         """Stamp return-/iteration-shape flags (Python adapter parity for TS).
 
@@ -448,18 +462,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if symbol.kind not in {"function", "method"}:
                 continue
             shape = table.get(symbol.name)
-            if not shape:
-                continue
-            if shape["mapping"]:
-                symbol.returns_mapping = True
-            if shape["sequence"]:
-                symbol.returns_sequence = True
-            if shape["constructed"]:
-                symbol.returns_constructed_type = True
-            if shape["iterates"]:
-                symbol.iterates_attr_call = True
-            if shape["assembles"]:
-                symbol.assembles_mapping_in_loop = True
+            if shape:
+                self._apply_behavioral_shape_flags(symbol, shape)
 
     def _function_shape_table(self, tree) -> dict[str, dict[str, bool]]:
         """``function_name → shape flags`` (ORed across same-named functions)."""
@@ -515,40 +519,70 @@ class TypeScriptAdapter(TreeSitterAdapter):
         return expr
 
     @classmethod
+    def _classify_ts_new_expression(cls, expr) -> str:
+        ctor = expr.child_by_field_name("constructor")
+        if ctor is None or ctor.type != "identifier":
+            return "constructed"
+        name = cls._node_text(ctor)
+        if name in cls._SHAPE_MAPPING_CTORS:
+            return "mapping"
+        if name in cls._SHAPE_SEQUENCE_CTORS:
+            return "sequence"
+        return "constructed"
+
+    @classmethod
+    def _classify_ts_call_expression(cls, expr) -> str:
+        fn = expr.child_by_field_name("function")
+        if fn is None or fn.type != "member_expression":
+            return ""
+        obj = fn.child_by_field_name("object")
+        prop = fn.child_by_field_name("property")
+        if obj is None or prop is None or obj.type != "identifier":
+            return ""
+        head, tail = cls._node_text(obj), cls._node_text(prop)
+        if head == "Object" and tail in {"fromEntries", "assign"}:
+            return "mapping"
+        if head == "Array" and tail in {"from", "of"}:
+            return "sequence"
+        return ""
+
+    @classmethod
     def _classify_ts_return_expr(cls, expr) -> str:
         expr = cls._unwrap_shape_expr(expr)
         if expr is None:
             return ""
-        t = expr.type
-        if t == "object":
+        if expr.type == "object":
             return "mapping"
-        if t == "array":
+        if expr.type == "array":
             return "sequence"
-        if t == "new_expression":
-            ctor = expr.child_by_field_name("constructor")
-            if ctor is not None and ctor.type == "identifier":
-                name = cls._node_text(ctor)
-                if name in cls._SHAPE_MAPPING_CTORS:
-                    return "mapping"
-                if name in cls._SHAPE_SEQUENCE_CTORS:
-                    return "sequence"
-            return "constructed"
-        if t == "call_expression":
-            fn = expr.child_by_field_name("function")
-            if fn is not None and fn.type == "member_expression":
-                obj = fn.child_by_field_name("object")
-                prop = fn.child_by_field_name("property")
-                if obj is not None and prop is not None and obj.type == "identifier":
-                    head, tail = cls._node_text(obj), cls._node_text(prop)
-                    if head == "Object" and tail in {"fromEntries", "assign"}:
-                        return "mapping"
-                    if head == "Array" and tail in {"from", "of"}:
-                        return "sequence"
+        if expr.type == "new_expression":
+            return cls._classify_ts_new_expression(expr)
+        if expr.type == "call_expression":
+            return cls._classify_ts_call_expression(expr)
         return ""
 
     @classmethod
-    def _collect_ts_return_shape(cls, body) -> dict[str, bool]:
-        # Pass 1: local bindings whose initializer is itself a known shape.
+    def _record_ts_shape_local_from_declarator(cls, node, local: dict[str, str]) -> None:
+        name_node = node.child_by_field_name("name")
+        value = node.child_by_field_name("value")
+        if name_node is None or value is None or name_node.type != "identifier":
+            return
+        kind = cls._classify_ts_return_expr(value)
+        if kind:
+            local[cls._node_text(name_node)] = kind
+
+    @classmethod
+    def _record_ts_shape_local_from_assignment(cls, node, local: dict[str, str]) -> None:
+        left = node.child_by_field_name("left")
+        right = node.child_by_field_name("right")
+        if left is None or right is None or left.type != "identifier":
+            return
+        kind = cls._classify_ts_return_expr(right)
+        if kind:
+            local[cls._node_text(left)] = kind
+
+    @classmethod
+    def _collect_ts_return_shape_locals(cls, body) -> dict[str, str]:
         local: dict[str, str] = {}
         stack = [body]
         while stack:
@@ -556,43 +590,77 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if n.type in cls._SHAPE_FUNC_TYPES:
                 continue
             if n.type == "variable_declarator":
-                name_node = n.child_by_field_name("name")
-                value = n.child_by_field_name("value")
-                if name_node is not None and value is not None and name_node.type == "identifier":
-                    kind = cls._classify_ts_return_expr(value)
-                    if kind:
-                        local[cls._node_text(name_node)] = kind
+                cls._record_ts_shape_local_from_declarator(n, local)
             elif n.type == "assignment_expression":
-                left = n.child_by_field_name("left")
-                right = n.child_by_field_name("right")
-                if left is not None and right is not None and left.type == "identifier":
-                    kind = cls._classify_ts_return_expr(right)
-                    if kind:
-                        local[cls._node_text(left)] = kind
+                cls._record_ts_shape_local_from_assignment(n, local)
             for child in n.children:
                 stack.append(child)
+        return local
 
-        # Pass 2: return statements (bare identifier falls back to Pass 1).
+    @classmethod
+    def _apply_ts_return_statement_shape(
+        cls,
+        node,
+        local: dict[str, str],
+        shape: dict[str, bool],
+    ) -> None:
+        expr = node.named_children[0] if node.named_children else None
+        if expr is None:
+            return
+        kind = cls._classify_ts_return_expr(expr)
+        if not kind:
+            unwrapped = cls._unwrap_shape_expr(expr)
+            if unwrapped is not None and unwrapped.type == "identifier":
+                kind = local.get(cls._node_text(unwrapped), "")
+        if kind:
+            shape[kind] = True
+
+    @classmethod
+    def _collect_ts_return_shape_from_returns(
+        cls,
+        body,
+        local: dict[str, str],
+    ) -> dict[str, bool]:
         shape = {"mapping": False, "sequence": False, "constructed": False}
         stack = [body]
         while stack:
             n = stack.pop()
             if n.type == "return_statement":
-                expr = n.named_children[0] if n.named_children else None
-                if expr is not None:
-                    kind = cls._classify_ts_return_expr(expr)
-                    if not kind:
-                        unwrapped = cls._unwrap_shape_expr(expr)
-                        if unwrapped is not None and unwrapped.type == "identifier":
-                            kind = local.get(cls._node_text(unwrapped), "")
-                    if kind:
-                        shape[kind] = True
+                cls._apply_ts_return_statement_shape(n, local, shape)
                 continue
             if n.type in cls._SHAPE_FUNC_TYPES:
                 continue
             for child in n.children:
                 stack.append(child)
         return shape
+
+    @classmethod
+    def _collect_ts_return_shape(cls, body) -> dict[str, bool]:
+        local = cls._collect_ts_return_shape_locals(body)
+        return cls._collect_ts_return_shape_from_returns(body, local)
+
+    @classmethod
+    def _ts_for_in_iteration_flag(cls, node) -> bool:
+        if node.type != "for_in_statement":
+            return False
+        fbody = node.child_by_field_name("body")
+        left = node.child_by_field_name("left")
+        right = node.child_by_field_name("right")
+        if fbody is None or right is None or right.type != "member_expression":
+            return False
+        if left is None or left.type != "identifier":
+            return False
+        return cls._for_body_calls_on(fbody, cls._node_text(left))
+
+    @classmethod
+    def _apply_ts_iteration_loop_flags(cls, node, flags: dict[str, bool]) -> None:
+        if node.type not in ("for_in_statement", "for_statement"):
+            return
+        if cls._ts_for_in_iteration_flag(node):
+            flags["iterates"] = True
+        fbody = node.child_by_field_name("body")
+        if fbody is not None and cls._for_body_writes_subscript(fbody):
+            flags["assembles"] = True
 
     @classmethod
     def _collect_ts_iteration_shape(cls, body) -> dict[str, bool]:
@@ -603,25 +671,24 @@ class TypeScriptAdapter(TreeSitterAdapter):
             n = stack.pop()
             if n.type in cls._SHAPE_FUNC_TYPES:
                 continue
-            if n.type in ("for_in_statement", "for_statement"):
-                fbody = n.child_by_field_name("body")
-                if n.type == "for_in_statement":
-                    left = n.child_by_field_name("left")
-                    right = n.child_by_field_name("right")
-                    if (
-                        fbody is not None
-                        and right is not None
-                        and right.type == "member_expression"
-                        and left is not None
-                        and left.type == "identifier"
-                        and cls._for_body_calls_on(fbody, cls._node_text(left))
-                    ):
-                        flags["iterates"] = True
-                if fbody is not None and cls._for_body_writes_subscript(fbody):
-                    flags["assembles"] = True
+            cls._apply_ts_iteration_loop_flags(n, flags)
             for child in n.children:
                 stack.append(child)
         return flags
+
+    @classmethod
+    def _member_call_on_loop_var(cls, node, loop_var: str) -> bool:
+        if node.type != "call_expression":
+            return False
+        fn = node.child_by_field_name("function")
+        if fn is None or fn.type != "member_expression":
+            return False
+        obj = fn.child_by_field_name("object")
+        return (
+            obj is not None
+            and obj.type == "identifier"
+            and cls._node_text(obj) == loop_var
+        )
 
     @classmethod
     def _for_body_calls_on(cls, body, loop_var: str) -> bool:
@@ -632,19 +699,24 @@ class TypeScriptAdapter(TreeSitterAdapter):
             n = stack.pop()
             if n.type in cls._SHAPE_FUNC_TYPES:
                 continue
-            if n.type == "call_expression":
-                fn = n.child_by_field_name("function")
-                if fn is not None and fn.type == "member_expression":
-                    obj = fn.child_by_field_name("object")
-                    if (
-                        obj is not None
-                        and obj.type == "identifier"
-                        and cls._node_text(obj) == loop_var
-                    ):
-                        return True
+            if cls._member_call_on_loop_var(n, loop_var):
+                return True
             for child in n.children:
                 stack.append(child)
         return False
+
+    @classmethod
+    def _node_writes_subscript_or_collection(cls, node) -> bool:
+        if node.type == "assignment_expression":
+            left = node.child_by_field_name("left")
+            return left is not None and left.type == "subscript_expression"
+        if node.type != "call_expression":
+            return False
+        fn = node.child_by_field_name("function")
+        if fn is None or fn.type != "member_expression":
+            return False
+        prop = fn.child_by_field_name("property")
+        return prop is not None and cls._node_text(prop) in {"set", "push", "add"}
 
     @classmethod
     def _for_body_writes_subscript(cls, body) -> bool:
@@ -654,16 +726,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
             n = stack.pop()
             if n.type in cls._SHAPE_FUNC_TYPES:
                 continue
-            if n.type == "assignment_expression":
-                left = n.child_by_field_name("left")
-                if left is not None and left.type == "subscript_expression":
-                    return True
-            if n.type == "call_expression":
-                fn = n.child_by_field_name("function")
-                if fn is not None and fn.type == "member_expression":
-                    prop = fn.child_by_field_name("property")
-                    if prop is not None and cls._node_text(prop) in {"set", "push", "add"}:
-                        return True
+            if cls._node_writes_subscript_or_collection(n):
+                return True
             for child in n.children:
                 stack.append(child)
         return False
@@ -704,6 +768,27 @@ class TypeScriptAdapter(TreeSitterAdapter):
             symbol.is_getter = is_get
             symbol.is_setter = is_set
 
+    def _maybe_add_higher_order_factory_name(self, names: set[str], node) -> None:
+        if node.type == "function_declaration":
+            name = node.child_by_field_name("name")
+            body = node.child_by_field_name("body")
+            if (
+                name is not None
+                and body is not None
+                and self._body_returns_function_expression(body)
+            ):
+                names.add(self._node_text(name))
+            return
+        if node.type != "variable_declarator":
+            return
+        name = node.child_by_field_name("name")
+        value = node.child_by_field_name("value")
+        if name is None or value is None or value.type != "arrow_function":
+            return
+        body = value.child_by_field_name("body")
+        if body is not None and self._body_returns_function_expression(body):
+            names.add(self._node_text(name))
+
     def _higher_order_factory_names(self, tree) -> set[str]:
         """Collect names of functions whose body returns a function expression.
 
@@ -723,23 +808,8 @@ class TypeScriptAdapter(TreeSitterAdapter):
         """
         names: set[str] = set()
         for node in self._iter_nodes(tree.root_node):
-            if node.type == "function_declaration":
-                name = node.child_by_field_name("name")
-                body = node.child_by_field_name("body")
-                if (
-                    name is not None
-                    and body is not None
-                    and self._body_returns_function_expression(body)
-                ):
-                    names.add(self._node_text(name))
-            elif node.type == "variable_declarator":
-                name = node.child_by_field_name("name")
-                value = node.child_by_field_name("value")
-                if name is None or value is None or value.type != "arrow_function":
-                    continue
-                body = value.child_by_field_name("body")
-                if body is not None and self._body_returns_function_expression(body):
-                    names.add(self._node_text(name))
+            if node.type in ("function_declaration", "variable_declarator"):
+                self._maybe_add_higher_order_factory_name(names, node)
         return names
 
     @staticmethod
@@ -1102,6 +1172,16 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return self._node_text(name) if name is not None else ""
         return ""
 
+    def _decorator_base_name_from_call(self, call_node) -> str:
+        fn = call_node.child_by_field_name("function")
+        if fn is None:
+            return ""
+        if fn.type == "identifier":
+            return self._node_text(fn)
+        if fn.type == "member_expression":
+            return self._member_expression_dotted(fn)
+        return ""
+
     def _decorator_base_name(self, deco) -> str:
         """Resolve ``@Foo`` / ``@Foo(args)`` / ``@a.b`` / ``@a.b(args)`` to a name.
 
@@ -1114,13 +1194,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if child.type == "member_expression":
                 return self._member_expression_dotted(child)
             if child.type == "call_expression":
-                fn = child.child_by_field_name("function")
-                if fn is None:
-                    continue
-                if fn.type == "identifier":
-                    return self._node_text(fn)
-                if fn.type == "member_expression":
-                    return self._member_expression_dotted(fn)
+                name = self._decorator_base_name_from_call(child)
+                if name:
+                    return name
         return ""
 
     def extract_decorator_compositions(
@@ -1178,6 +1254,33 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 )
         return out
 
+    def _decorator_arg_object(self, deco):
+        call = next(
+            (c for c in deco.children if c.type == "call_expression"),
+            None,
+        )
+        if call is None:
+            return None
+        args = call.child_by_field_name("arguments")
+        if args is None:
+            return None
+        return next(
+            (c for c in args.named_children if c.type == "object"),
+            None,
+        )
+
+    def _refs_from_decorator_object_pair(self, pair):
+        key_node = pair.child_by_field_name("key")
+        value_node = pair.child_by_field_name("value")
+        if key_node is None or value_node is None:
+            return
+        key = self._node_text(key_node) if key_node.type == "property_identifier" else ""
+        if not key or value_node.type != "array":
+            return
+        for elem in value_node.named_children:
+            if elem.type == "identifier":
+                yield key, self._node_text(elem)
+
     def _decorator_arg_object_refs(self, deco):
         """Yield ``(property_key, identifier)`` for every identifier inside an
         object-literal-of-arrays decorator argument.
@@ -1186,37 +1289,13 @@ class TypeScriptAdapter(TreeSitterAdapter):
         elements (``...spread``) are skipped — their expansion is not visible
         in the AST. Returns nothing for decorators with no args, with non-object
         args, or with arrays of non-identifier values (strings, calls, …)."""
-        call = next(
-            (c for c in deco.children if c.type == "call_expression"),
-            None,
-        )
-        if call is None:
-            return
-        args = call.child_by_field_name("arguments")
-        if args is None:
-            return
-        # First object argument: ``@Foo({...}, other)`` only the first object counts.
-        obj = next(
-            (c for c in args.named_children if c.type == "object"),
-            None,
-        )
+        obj = self._decorator_arg_object(deco)
         if obj is None:
             return
         for pair in obj.named_children:
             if pair.type != "pair":
                 continue
-            key_node = pair.child_by_field_name("key")
-            value_node = pair.child_by_field_name("value")
-            if key_node is None or value_node is None:
-                continue
-            key = self._node_text(key_node) if key_node.type == "property_identifier" else ""
-            if not key:
-                continue
-            if value_node.type != "array":
-                continue
-            for elem in value_node.named_children:
-                if elem.type == "identifier":
-                    yield key, self._node_text(elem)
+            yield from self._refs_from_decorator_object_pair(pair)
 
     def _member_expression_dotted(self, node) -> str:
         obj = node.child_by_field_name("object")
@@ -1229,6 +1308,78 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if prop.type == "property_identifier":
             return self._node_text(prop)
         return ""
+
+    def _emit_ts_type_reference(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str, str]],
+        owner,
+        type_node,
+        kind: str,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> None:
+        owner_uid = self._owner_uid_for_type_reference(owner, source_code, file_path)
+        owner_name = self._owner_name_for_type_reference(owner, source_code)
+        if not owner_uid or not owner_name:
+            return
+        skip_names = self._type_parameter_names(owner, source_code) | {owner_name}
+        for type_name, type_qn in self._type_ref_targets(
+            type_node,
+            import_bindings,
+            module,
+            skip_names=skip_names,
+        ):
+            key = (owner_uid, type_qn, kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "referrer_uid": owner_uid,
+                    "referrer_name": owner_name,
+                    "type_name": type_name,
+                    "type_qualified_name": type_qn,
+                    "kind": kind,
+                    "file_path": file_path,
+                }
+            )
+
+    def _collect_type_refs_from_callable_owner(self, owner, emit) -> None:
+        params = owner.child_by_field_name("parameters")
+        if params is not None:
+            for param in params.named_children:
+                self._emit_ts_type_annotations(param, "param", emit, owner)
+        type_params = next(
+            (child for child in owner.named_children if child.type == "type_parameters"),
+            None,
+        )
+        if type_params is not None:
+            emit(owner, type_params, "annotation")
+        return_type = owner.child_by_field_name("return_type")
+        if return_type is None:
+            return_type = self._node_field_by_type(owner, "type_annotation")
+        if return_type is not None:
+            emit(owner, return_type, "return")
+        body = owner.child_by_field_name("body")
+        if body is None:
+            return
+        for node in self._iter_nodes(body):
+            if node.type in {"lexical_declaration", "variable_declarator"}:
+                self._emit_ts_type_annotations(node, "annotation", emit, owner)
+
+    def _collect_type_refs_from_owner(self, owner, emit) -> None:
+        if owner.type in {"function_declaration", "method_definition"}:
+            self._collect_type_refs_from_callable_owner(owner, emit)
+        elif owner.type in {"interface_declaration", "type_alias_declaration"}:
+            emit(owner, owner, "annotation")
+        elif owner.type in self._CLASS_DECL_TYPES:
+            emit(owner, owner, "annotation")
+        elif owner.type == "variable_declarator":
+            self._emit_ts_type_annotations(owner, "annotation", emit, owner)
 
     def extract_type_references(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Extract TypeScript ``USES_TYPE`` references from AST-visible type syntax.
@@ -1246,31 +1397,17 @@ class TypeScriptAdapter(TreeSitterAdapter):
         seen: set[tuple[str, str, str]] = set()
 
         def emit(owner, type_node, kind: str) -> None:
-            owner_uid = self._owner_uid_for_type_reference(owner, source_code, file_path)
-            owner_name = self._owner_name_for_type_reference(owner, source_code)
-            if not owner_uid or not owner_name:
-                return
-            skip_names = self._type_parameter_names(owner, source_code) | {owner_name}
-            for type_name, type_qn in self._type_ref_targets(
+            self._emit_ts_type_reference(
+                out,
+                seen,
+                owner,
                 type_node,
-                import_bindings,
-                module,
-                skip_names=skip_names,
-            ):
-                key = (owner_uid, type_qn, kind)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(
-                    {
-                        "referrer_uid": owner_uid,
-                        "referrer_name": owner_name,
-                        "type_name": type_name,
-                        "type_qualified_name": type_qn,
-                        "kind": kind,
-                        "file_path": file_path,
-                    }
-                )
+                kind,
+                source_code=source_code,
+                file_path=file_path,
+                import_bindings=import_bindings,
+                module=module,
+            )
 
         for owner in self._iter_nodes(tree.root_node):
             if owner.type not in self._TYPE_OWNER_TYPES:
@@ -1279,34 +1416,97 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 owner
             ):
                 continue
-            if owner.type in {"function_declaration", "method_definition"}:
-                params = owner.child_by_field_name("parameters")
-                if params is not None:
-                    for param in params.named_children:
-                        self._emit_ts_type_annotations(param, "param", emit, owner)
-                type_params = next(
-                    (child for child in owner.named_children if child.type == "type_parameters"),
-                    None,
-                )
-                if type_params is not None:
-                    emit(owner, type_params, "annotation")
-                return_type = owner.child_by_field_name("return_type")
-                if return_type is None:
-                    return_type = self._node_field_by_type(owner, "type_annotation")
-                if return_type is not None:
-                    emit(owner, return_type, "return")
-                body = owner.child_by_field_name("body")
-                if body is not None:
-                    for node in self._iter_nodes(body):
-                        if node.type in {"lexical_declaration", "variable_declarator"}:
-                            self._emit_ts_type_annotations(node, "annotation", emit, owner)
-            elif owner.type in {"interface_declaration", "type_alias_declaration"}:
-                emit(owner, owner, "annotation")
-            elif owner.type in self._CLASS_DECL_TYPES:
-                emit(owner, owner, "annotation")
-            elif owner.type == "variable_declarator":
-                self._emit_ts_type_annotations(owner, "annotation", emit, owner)
+            self._collect_type_refs_from_owner(owner, emit)
         return out
+
+    def _append_injection_record(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str]],
+        *,
+        owner_uid: str,
+        owner_name: str,
+        provider_name: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> None:
+        prov_qn = self._resolve_type_name(provider_name, import_bindings, module)
+        key = (owner_uid, prov_qn)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(
+            {
+                "owner_uid": owner_uid,
+                "owner_name": owner_name,
+                "provider_name": provider_name,
+                "provider_qualified_name": prov_qn,
+                "file_path": file_path,
+            }
+        )
+
+    def _injection_records_from_constructor(
+        self,
+        class_node,
+        member,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+        out: list[dict],
+        seen: set[tuple[str, str]],
+    ) -> None:
+        owner_uid = self._uid_for_node(member, source_code, file_path)
+        owner_name_node = class_node.child_by_field_name("name")
+        owner_name = self._node_text(owner_name_node) if owner_name_node is not None else ""
+        params = member.child_by_field_name("parameters")
+        if params is None:
+            return
+        for param in params.named_children:
+            for provider_name in self._parameter_decorator_provider_names(param):
+                self._append_injection_record(
+                    out,
+                    seen,
+                    owner_uid=owner_uid,
+                    owner_name=owner_name,
+                    provider_name=provider_name,
+                    file_path=file_path,
+                    import_bindings=import_bindings,
+                    module=module,
+                )
+
+    def _injection_records_from_class(
+        self,
+        class_node,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+        out: list[dict],
+        seen: set[tuple[str, str]],
+    ) -> None:
+        for child in class_node.named_children:
+            if child.type != "class_body":
+                continue
+            for member in child.named_children:
+                if member.type != "method_definition":
+                    continue
+                name_node = member.child_by_field_name("name")
+                if name_node is None or self._node_text(name_node) != "constructor":
+                    continue
+                self._injection_records_from_constructor(
+                    class_node,
+                    member,
+                    source_code=source_code,
+                    file_path=file_path,
+                    import_bindings=import_bindings,
+                    module=module,
+                    out=out,
+                    seen=seen,
+                )
 
     def extract_injections(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Dependency-injection bindings from parameter decorators.
@@ -1323,45 +1523,18 @@ class TypeScriptAdapter(TreeSitterAdapter):
         import_bindings, _ = self._extract_import_bindings(source_code, file_path)
         out: list[dict] = []
         seen: set[tuple[str, str]] = set()
-
         for class_node in self._iter_nodes(tree.root_node):
             if class_node.type not in self._CLASS_DECL_TYPES:
                 continue
-            for child in class_node.named_children:
-                if child.type != "class_body":
-                    continue
-                for member in child.named_children:
-                    if member.type != "method_definition":
-                        continue
-                    name_node = member.child_by_field_name("name")
-                    if name_node is None or self._node_text(name_node) != "constructor":
-                        continue
-                    owner_uid = self._uid_for_node(member, source_code, file_path)
-                    owner_name_node = class_node.child_by_field_name("name")
-                    owner_name = (
-                        self._node_text(owner_name_node) if owner_name_node is not None else ""
-                    )
-                    params = member.child_by_field_name("parameters")
-                    if params is None:
-                        continue
-                    for param in params.named_children:
-                        for provider_name in self._parameter_decorator_provider_names(param):
-                            prov_qn = self._resolve_type_name(
-                                provider_name, import_bindings, module
-                            )
-                            key = (owner_uid, prov_qn)
-                            if key in seen:
-                                continue
-                            seen.add(key)
-                            out.append(
-                                {
-                                    "owner_uid": owner_uid,
-                                    "owner_name": owner_name,
-                                    "provider_name": provider_name,
-                                    "provider_qualified_name": prov_qn,
-                                    "file_path": file_path,
-                                }
-                            )
+            self._injection_records_from_class(
+                class_node,
+                source_code=source_code,
+                file_path=file_path,
+                import_bindings=import_bindings,
+                module=module,
+                out=out,
+                seen=seen,
+            )
         return out
 
     def extract_instantiations(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
@@ -1431,6 +1604,208 @@ class TypeScriptAdapter(TreeSitterAdapter):
             )
         return out
 
+    def _append_hook_fact(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+        *,
+        file_path: str,
+        site_uid: str,
+        hook_name: str,
+        kind: str,
+        target_kind: str,
+        via: str,
+        wrapper_only: bool = False,
+    ) -> None:
+        if not site_uid or (not hook_name and not wrapper_only):
+            return
+        key = (site_uid, hook_name, kind, target_kind, via)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(
+            {
+                "site_uid": site_uid,
+                "hook_name": hook_name,
+                "kind": kind,
+                "target_kind": target_kind,
+                "via": via,
+                "file_path": file_path,
+            }
+        )
+
+    def _try_extract_lifecycle_hook(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+    ) -> bool:
+        if node.type != "method_definition":
+            return False
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return False
+        method_name = self._node_text(name_node)
+        if method_name not in self._LIFECYCLE_METHOD_NAMES:
+            return False
+        site_uid = self._uid_for_node(node, source_code, file_path)
+        self._append_hook_fact(
+            out,
+            seen,
+            file_path=file_path,
+            site_uid=site_uid,
+            hook_name=method_name,
+            kind="config",
+            target_kind="method",
+            via=method_name,
+        )
+        return True
+
+    def _extract_next_hook(
+        self,
+        call_site_uid: str,
+        path: list[str],
+        *,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+        file_path: str,
+    ) -> None:
+        receiver = path[0] if path else ""
+        if receiver.isidentifier():
+            self._append_hook_fact(
+                out,
+                seen,
+                file_path=file_path,
+                site_uid=call_site_uid,
+                hook_name=receiver,
+                kind="exec",
+                target_kind="object",
+                via="next",
+            )
+            return
+        self._append_hook_fact(
+            out,
+            seen,
+            file_path=file_path,
+            site_uid=call_site_uid,
+            hook_name="",
+            kind="exec",
+            target_kind="object",
+            via="next",
+            wrapper_only=True,
+        )
+
+    def _extract_event_hooks(
+        self,
+        node,
+        *,
+        call_site_uid: str,
+        callee: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+        file_path: str,
+    ) -> None:
+        kind = "config" if callee in self._EVENT_CONFIG_CALLEES else "exec"
+        topic = self._first_positional_string_literal(node)
+        topic_is_identifier = bool(topic) and topic.isidentifier()
+        if topic_is_identifier:
+            self._append_hook_fact(
+                out,
+                seen,
+                file_path=file_path,
+                site_uid=call_site_uid,
+                hook_name=topic,
+                kind=kind,
+                target_kind="method",
+                via=callee,
+            )
+        if kind == "config":
+            handler_name = self._second_positional_identifier(node)
+            if handler_name:
+                self._append_hook_fact(
+                    out,
+                    seen,
+                    file_path=file_path,
+                    site_uid=call_site_uid,
+                    hook_name=handler_name,
+                    kind="config",
+                    target_kind="handler",
+                    via=callee,
+                )
+        if not topic_is_identifier:
+            self._append_hook_fact(
+                out,
+                seen,
+                file_path=file_path,
+                site_uid=call_site_uid,
+                hook_name="",
+                kind=kind,
+                target_kind="method",
+                via=callee,
+                wrapper_only=True,
+            )
+
+    def _process_hook_call_expression(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+    ) -> None:
+        func = node.child_by_field_name("function")
+        if func is None or func.type != "member_expression":
+            return
+        path = self._member_expression_path(func)
+        if not path:
+            return
+        callee = path[-1]
+        owner = self._enclosing_symbol_owner(node)
+        if owner is None:
+            return
+        call_site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
+        if not call_site_uid:
+            return
+        if callee in self._EVENT_CONFIG_CALLEES or callee in self._EVENT_EXEC_CALLEES:
+            if callee == "next":
+                self._extract_next_hook(
+                    call_site_uid,
+                    path,
+                    out=out,
+                    seen=seen,
+                    file_path=file_path,
+                )
+                return
+            self._extract_event_hooks(
+                node,
+                call_site_uid=call_site_uid,
+                callee=callee,
+                out=out,
+                seen=seen,
+                file_path=file_path,
+            )
+            return
+        if callee not in self._HOOK_REGISTER_CALLEE_NAMES:
+            return
+        handler_name = self._first_positional_identifier(node)
+        if not handler_name:
+            return
+        via = "interceptors" if "interceptors" in path else callee
+        self._append_hook_fact(
+            out,
+            seen,
+            file_path=file_path,
+            site_uid=call_site_uid,
+            hook_name=handler_name,
+            kind="config",
+            target_kind="handler",
+            via=via,
+        )
+
     def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Hook / registration facts for JS/TS middleware, lifecycle, and event surfaces.
 
@@ -1452,133 +1827,23 @@ class TypeScriptAdapter(TreeSitterAdapter):
             tree = self._parse(source_code)
         out: list[dict] = []
         seen: set[tuple[str, str, str, str, str]] = set()
-
-        def emit(
-            site_uid: str,
-            hook_name: str,
-            *,
-            kind: str,
-            target_kind: str,
-            via: str,
-            wrapper_only: bool = False,
-        ) -> None:
-            if not site_uid or (not hook_name and not wrapper_only):
-                return
-            key = (site_uid, hook_name, kind, target_kind, via)
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(
-                {
-                    "site_uid": site_uid,
-                    "hook_name": hook_name,
-                    "kind": kind,
-                    "target_kind": target_kind,
-                    "via": via,
-                    "file_path": file_path,
-                }
-            )
-
         for node in self._iter_nodes(tree.root_node):
-            if node.type == "method_definition":
-                name_node = node.child_by_field_name("name")
-                if name_node is None:
-                    continue
-                method_name = self._node_text(name_node)
-                if method_name not in self._LIFECYCLE_METHOD_NAMES:
-                    continue
-                site_uid = self._uid_for_node(node, source_code, file_path)
-                emit(
-                    site_uid,
-                    method_name,
-                    kind="config",
-                    target_kind="method",
-                    via=method_name,
-                )
+            if self._try_extract_lifecycle_hook(
+                node,
+                source_code=source_code,
+                file_path=file_path,
+                out=out,
+                seen=seen,
+            ):
                 continue
-
             if node.type != "call_expression":
                 continue
-            func = node.child_by_field_name("function")
-            if func is None or func.type != "member_expression":
-                continue
-            path = self._member_expression_path(func)
-            if not path:
-                continue
-            callee = path[-1]
-            owner = self._enclosing_symbol_owner(node)
-            if owner is None:
-                continue
-            call_site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
-            if not call_site_uid:
-                continue
-
-            if callee in self._EVENT_CONFIG_CALLEES or callee in self._EVENT_EXEC_CALLEES:
-                kind = "config" if callee in self._EVENT_CONFIG_CALLEES else "exec"
-                if callee == "next":
-                    receiver = path[0] if path else ""
-                    if receiver.isidentifier():
-                        emit(
-                            call_site_uid,
-                            receiver,
-                            kind="exec",
-                            target_kind="object",
-                            via="next",
-                        )
-                    else:
-                        emit(
-                            call_site_uid,
-                            "",
-                            kind="exec",
-                            target_kind="object",
-                            via="next",
-                            wrapper_only=True,
-                        )
-                    continue
-
-                topic = self._first_positional_string_literal(node)
-                topic_is_identifier = bool(topic) and topic.isidentifier()
-                if topic_is_identifier:
-                    emit(
-                        call_site_uid,
-                        topic,
-                        kind=kind,
-                        target_kind="method",
-                        via=callee,
-                    )
-                if kind == "config":
-                    handler_name = self._second_positional_identifier(node)
-                    if handler_name:
-                        emit(
-                            call_site_uid,
-                            handler_name,
-                            kind="config",
-                            target_kind="handler",
-                            via=callee,
-                        )
-                if not topic_is_identifier:
-                    emit(
-                        call_site_uid,
-                        "",
-                        kind=kind,
-                        target_kind="method",
-                        via=callee,
-                        wrapper_only=True,
-                    )
-                continue
-
-            if callee not in self._HOOK_REGISTER_CALLEE_NAMES:
-                continue
-            handler_name = self._first_positional_identifier(node)
-            if not handler_name:
-                continue
-            via = "interceptors" if "interceptors" in path else callee
-            emit(
-                call_site_uid,
-                handler_name,
-                kind="config",
-                target_kind="handler",
-                via=via,
+            self._process_hook_call_expression(
+                node,
+                source_code=source_code,
+                file_path=file_path,
+                out=out,
+                seen=seen,
             )
         return out
 
@@ -1675,47 +1940,47 @@ class TypeScriptAdapter(TreeSitterAdapter):
             emit(bridge_site_uid, key_qn, key_name, role, via)
         return out
 
-    def extract_http_endpoints(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
-        """HTTP client/server endpoint facts for cross-language graph bridges.
+    def _append_http_endpoint_fact(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+        *,
+        file_path: str,
+        site_uid: str,
+        method: str,
+        path: str,
+        role: str,
+        via: str,
+    ) -> None:
+        from context_engine.indexer.http_endpoint import normalize_http_method, normalize_http_path
 
-        Emits ``implement`` facts for route handlers (NestJS decorators, Express
-        ``app.get('/path', handler)``) and ``call`` facts for literal-path HTTP
-        clients (``post('/ask')``, ``fetch('/health')``, ``axios.post(...)``).
-        """
-        from context_engine.indexer.http_endpoint import (
-            HTTP_CLIENT_CALLEES,
-            HTTP_ROUTE_REGISTER_CALLEES,
-            combine_controller_path,
-            normalize_http_method,
-            normalize_http_path,
+        normalized_method = normalize_http_method(method)
+        normalized_path = normalize_http_path(path)
+        if not site_uid or not normalized_method or not normalized_path:
+            return
+        key = (site_uid, normalized_method, normalized_path, role)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(
+            {
+                "site_uid": site_uid,
+                "method": normalized_method,
+                "path": normalized_path,
+                "role": role,
+                "via": via,
+                "file_path": file_path,
+            }
         )
 
-        if tree is None:
-            tree = self._parse(source_code)
-        out: list[dict] = []
-        seen: set[tuple[str, str, str, str]] = set()
+    def _collect_controller_prefixes(
+        self,
+        tree,
+        *,
+        source_code: str,
+        file_path: str,
+    ) -> dict[str, str]:
         controller_prefix_by_class: dict[str, str] = {}
-
-        def emit(site_uid: str, method: str, path: str, role: str, via: str) -> None:
-            normalized_method = normalize_http_method(method)
-            normalized_path = normalize_http_path(path)
-            if not site_uid or not normalized_method or not normalized_path:
-                return
-            key = (site_uid, normalized_method, normalized_path, role)
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(
-                {
-                    "site_uid": site_uid,
-                    "method": normalized_method,
-                    "path": normalized_path,
-                    "role": role,
-                    "via": via,
-                    "file_path": file_path,
-                }
-            )
-
         for deco in self._iter_nodes(tree.root_node):
             if deco.type != "decorator":
                 continue
@@ -1729,6 +1994,23 @@ class TypeScriptAdapter(TreeSitterAdapter):
             prefix = self._http_path_from_decorator(deco)
             if class_uid and prefix is not None:
                 controller_prefix_by_class[class_uid] = prefix
+        return controller_prefix_by_class
+
+    def _collect_route_decorator_endpoints(
+        self,
+        tree,
+        *,
+        source_code: str,
+        file_path: str,
+        controller_prefix_by_class: dict[str, str],
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> None:
+        from context_engine.indexer.http_endpoint import (
+            combine_controller_path,
+            normalize_http_method,
+            normalize_http_path,
+        )
 
         for deco in self._iter_nodes(tree.root_node):
             if deco.type != "decorator":
@@ -1751,70 +2033,202 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 if prefix
                 else normalize_http_path(subpath or "/")
             )
-            emit(site_uid, method, path, "implement", f"@{base}")
+            self._append_http_endpoint_fact(
+                out,
+                seen,
+                file_path=file_path,
+                site_uid=site_uid,
+                method=method,
+                path=path,
+                role="implement",
+                via=f"@{base}",
+            )
 
+    def _try_http_route_register_call(
+        self,
+        node,
+        path_parts: list[str],
+        *,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> bool:
+        from context_engine.indexer.http_endpoint import (
+            HTTP_ROUTE_REGISTER_CALLEES,
+            normalize_http_method,
+        )
+
+        callee = path_parts[-1]
+        if callee not in HTTP_ROUTE_REGISTER_CALLEES:
+            return False
+        method = normalize_http_method(callee)
+        route_path = self._http_path_from_call_argument(node, 0)
+        if not method or not route_path:
+            return True
+        handler_uid = self._http_handler_uid_from_call(node, source_code, file_path)
+        if handler_uid:
+            self._append_http_endpoint_fact(
+                out,
+                seen,
+                file_path=file_path,
+                site_uid=handler_uid,
+                method=method,
+                path=route_path,
+                role="implement",
+                via=".".join(path_parts),
+            )
+        return True
+
+    def _try_http_client_member_call(
+        self,
+        node,
+        path_parts: list[str],
+        *,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> bool:
+        from context_engine.indexer.http_endpoint import HTTP_CLIENT_CALLEES, normalize_http_method
+
+        callee = path_parts[-1]
+        if callee not in HTTP_CLIENT_CALLEES and not (
+            len(path_parts) >= 2 and path_parts[-2] in {"axios", "http", "HttpService"}
+        ):
+            return False
+        method = normalize_http_method(callee)
+        if callee == "fetch":
+            method = method or "GET"
+        if not method:
+            return True
+        route_path = self._http_path_from_call_argument(node, 0)
+        if not route_path or self._enclosing_symbol_owner(node) is None:
+            return True
+        site_uid = self._http_call_site_uid(node, source_code, file_path)
+        self._append_http_endpoint_fact(
+            out,
+            seen,
+            file_path=file_path,
+            site_uid=site_uid,
+            method=method,
+            path=route_path,
+            role="call",
+            via=".".join(path_parts),
+        )
+        return True
+
+    def _try_http_client_identifier_call(
+        self,
+        node,
+        callee: str,
+        *,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> None:
+        from context_engine.indexer.http_endpoint import HTTP_CLIENT_CALLEES, normalize_http_method
+
+        if callee == "fetch":
+            method = "GET"
+        elif callee in HTTP_CLIENT_CALLEES:
+            method = normalize_http_method(callee)
+        else:
+            return
+        route_path = self._http_path_from_call_argument(node, 0)
+        if not route_path or self._enclosing_symbol_owner(node) is None:
+            return
+        site_uid = self._http_call_site_uid(node, source_code, file_path)
+        self._append_http_endpoint_fact(
+            out,
+            seen,
+            file_path=file_path,
+            site_uid=site_uid,
+            method=method,
+            path=route_path,
+            role="call",
+            via=callee,
+        )
+
+    def _collect_call_http_endpoints(
+        self,
+        tree,
+        *,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> None:
         for node in self._iter_nodes(tree.root_node):
             if node.type != "call_expression":
                 continue
             func = node.child_by_field_name("function")
             if func is None:
                 continue
-
             if func.type == "member_expression":
                 path_parts = self._member_expression_path(func)
                 if not path_parts:
                     continue
-                callee = path_parts[-1]
-                if callee in HTTP_ROUTE_REGISTER_CALLEES:
-                    method = normalize_http_method(callee)
-                    route_path = self._http_path_from_call_argument(node, 0)
-                    if not method or not route_path:
-                        continue
-                    handler_uid = self._http_handler_uid_from_call(node, source_code, file_path)
-                    if handler_uid:
-                        emit(
-                            handler_uid,
-                            method,
-                            route_path,
-                            "implement",
-                            ".".join(path_parts),
-                        )
-                    continue
-                if callee in HTTP_CLIENT_CALLEES or (
-                    len(path_parts) >= 2 and path_parts[-2] in {"axios", "http", "HttpService"}
+                if self._try_http_route_register_call(
+                    node,
+                    path_parts,
+                    source_code=source_code,
+                    file_path=file_path,
+                    out=out,
+                    seen=seen,
                 ):
-                    method = normalize_http_method(callee)
-                    if callee == "fetch":
-                        method = method or "GET"
-                    if not method:
-                        continue
-                    route_path = self._http_path_from_call_argument(node, 0)
-                    if not route_path:
-                        continue
-                    owner = self._enclosing_symbol_owner(node)
-                    if owner is None:
-                        continue
-                    site_uid = self._http_call_site_uid(node, source_code, file_path)
-                    emit(site_uid, method, route_path, "call", ".".join(path_parts))
+                    continue
+                self._try_http_client_member_call(
+                    node,
+                    path_parts,
+                    source_code=source_code,
+                    file_path=file_path,
+                    out=out,
+                    seen=seen,
+                )
                 continue
-
             if func.type == "identifier":
-                callee = self._node_text(func)
-                if callee == "fetch":
-                    method = "GET"
-                elif callee in HTTP_CLIENT_CALLEES:
-                    method = normalize_http_method(callee)
-                else:
-                    continue
-                route_path = self._http_path_from_call_argument(node, 0)
-                if not route_path:
-                    continue
-                owner = self._enclosing_symbol_owner(node)
-                if owner is None:
-                    continue
-                site_uid = self._http_call_site_uid(node, source_code, file_path)
-                emit(site_uid, method, route_path, "call", callee)
+                self._try_http_client_identifier_call(
+                    node,
+                    self._node_text(func),
+                    source_code=source_code,
+                    file_path=file_path,
+                    out=out,
+                    seen=seen,
+                )
 
+    def extract_http_endpoints(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        """HTTP client/server endpoint facts for cross-language graph bridges.
+
+        Emits ``implement`` facts for route handlers (NestJS decorators, Express
+        ``app.get('/path', handler)``) and ``call`` facts for literal-path HTTP
+        clients (``post('/ask')``, ``fetch('/health')``, ``axios.post(...)``).
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        out: list[dict] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        controller_prefix_by_class = self._collect_controller_prefixes(
+            tree,
+            source_code=source_code,
+            file_path=file_path,
+        )
+        self._collect_route_decorator_endpoints(
+            tree,
+            source_code=source_code,
+            file_path=file_path,
+            controller_prefix_by_class=controller_prefix_by_class,
+            out=out,
+            seen=seen,
+        )
+        self._collect_call_http_endpoints(
+            tree,
+            source_code=source_code,
+            file_path=file_path,
+            out=out,
+            seen=seen,
+        )
         return out
 
     def _http_call_site_uid(self, node, source_code: str, file_path: str) -> str:
@@ -2074,6 +2488,153 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return type_name, type_qn, 0.9
         return None
 
+    def _append_attr_access_fact(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+        *,
+        file_path: str,
+        accessor_uid: str,
+        accessor_name: str,
+        attr_name: str,
+        attr_qn: str,
+        kind: str,
+    ) -> None:
+        if not accessor_uid or not attr_name:
+            return
+        key = (accessor_uid, attr_name, attr_qn, kind)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(
+            {
+                "accessor_uid": accessor_uid,
+                "accessor_name": accessor_name,
+                "attr_name": attr_name,
+                "attr_qualified_name": attr_qn,
+                "kind": kind,
+                "file_path": file_path,
+            }
+        )
+
+    def _is_nested_callable_boundary(self, node, fn) -> bool:
+        return node.type in ("method_definition", "function_declaration", "arrow_function") and node is not fn
+
+    def _skip_this_member_in_call_or_assign_lhs(self, node) -> bool:
+        parent = node.parent
+        if parent is None:
+            return False
+        if parent.type == "call_expression":
+            fn_node = parent.child_by_field_name("function")
+            return fn_node is not None and fn_node.start_byte == node.start_byte
+        if parent.type == "assignment_expression":
+            lhs = parent.child_by_field_name("left")
+            return lhs is not None and lhs.start_byte == node.start_byte
+        return False
+
+    def _try_emit_this_member_read(
+        self,
+        node,
+        *,
+        accessor_uid: str,
+        accessor_name: str,
+        receiver_qn: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+        file_path: str,
+    ) -> None:
+        obj = node.child_by_field_name("object")
+        prop = node.child_by_field_name("property")
+        if obj is None or prop is None or not self._is_this_receiver(obj):
+            return
+        if self._skip_this_member_in_call_or_assign_lhs(node):
+            return
+        attr_name = self._node_text(prop)
+        attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
+        self._append_attr_access_fact(
+            out,
+            seen,
+            file_path=file_path,
+            accessor_uid=accessor_uid,
+            accessor_name=accessor_name,
+            attr_name=attr_name,
+            attr_qn=attr_qn,
+            kind="read",
+        )
+
+    def _try_emit_this_member_write(
+        self,
+        node,
+        *,
+        accessor_uid: str,
+        accessor_name: str,
+        receiver_qn: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+        file_path: str,
+    ) -> None:
+        left = node.child_by_field_name("left")
+        if left is None or left.type != "member_expression":
+            return
+        obj = left.child_by_field_name("object")
+        prop = left.child_by_field_name("property")
+        if obj is None or prop is None or not self._is_this_receiver(obj):
+            return
+        attr_name = self._node_text(prop)
+        attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
+        self._append_attr_access_fact(
+            out,
+            seen,
+            file_path=file_path,
+            accessor_uid=accessor_uid,
+            accessor_name=accessor_name,
+            attr_name=attr_name,
+            attr_qn=attr_qn,
+            kind="write",
+        )
+
+    def _attr_accesses_from_function_body(
+        self,
+        fn,
+        *,
+        source_code: str,
+        file_path: str,
+        module: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> None:
+        body = fn.child_by_field_name("body")
+        name_node = fn.child_by_field_name("name")
+        if body is None or name_node is None:
+            return
+        accessor_uid = self._uid_for_node(fn, source_code, file_path)
+        accessor_name = self._node_text(name_node)
+        class_name = self._enclosing_class_name(fn)
+        receiver_qn = f"{module}.{class_name}" if class_name else ""
+        for node in self._iter_nodes(body):
+            if self._is_nested_callable_boundary(node, fn):
+                continue
+            if node.type == "member_expression":
+                self._try_emit_this_member_read(
+                    node,
+                    accessor_uid=accessor_uid,
+                    accessor_name=accessor_name,
+                    receiver_qn=receiver_qn,
+                    out=out,
+                    seen=seen,
+                    file_path=file_path,
+                )
+            elif node.type == "assignment_expression":
+                self._try_emit_this_member_write(
+                    node,
+                    accessor_uid=accessor_uid,
+                    accessor_name=accessor_name,
+                    receiver_qn=receiver_qn,
+                    out=out,
+                    seen=seen,
+                    file_path=file_path,
+                )
+
     def extract_attr_accesses(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """READS_ATTR / WRITES_ATTR from ``this.member`` in method bodies."""
         if tree is None:
@@ -2081,76 +2642,17 @@ class TypeScriptAdapter(TreeSitterAdapter):
         module = module_name_from_path(file_path)
         out: list[dict] = []
         seen: set[tuple[str, str, str, str]] = set()
-
-        def emit(
-            accessor_uid: str, accessor_name: str, attr_name: str, attr_qn: str, kind: str
-        ) -> None:
-            if not accessor_uid or not attr_name:
-                return
-            key = (accessor_uid, attr_name, attr_qn, kind)
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(
-                {
-                    "accessor_uid": accessor_uid,
-                    "accessor_name": accessor_name,
-                    "attr_name": attr_name,
-                    "attr_qualified_name": attr_qn,
-                    "kind": kind,
-                    "file_path": file_path,
-                }
-            )
-
         for fn in self._iter_nodes(tree.root_node):
             if fn.type not in ("method_definition", "function_declaration"):
                 continue
-            body = fn.child_by_field_name("body")
-            name_node = fn.child_by_field_name("name")
-            if body is None or name_node is None:
-                continue
-            accessor_uid = self._uid_for_node(fn, source_code, file_path)
-            accessor_name = self._node_text(name_node)
-            class_name = self._enclosing_class_name(fn)
-            receiver_qn = f"{module}.{class_name}" if class_name else ""
-
-            for node in self._iter_nodes(body):
-                if node.type in ("method_definition", "function_declaration", "arrow_function"):
-                    if node is not fn:
-                        continue
-                if node.type == "member_expression":
-                    obj = node.child_by_field_name("object")
-                    prop = node.child_by_field_name("property")
-                    if obj is None or prop is None:
-                        continue
-                    if not self._is_this_receiver(obj):
-                        continue
-                    parent = node.parent
-                    if parent is not None and parent.type == "call_expression":
-                        fn_node = parent.child_by_field_name("function")
-                        if fn_node is not None and fn_node.start_byte == node.start_byte:
-                            continue
-                    if parent is not None and parent.type == "assignment_expression":
-                        lhs = parent.child_by_field_name("left")
-                        if lhs is not None and lhs.start_byte == node.start_byte:
-                            continue
-                    attr_name = self._node_text(prop)
-                    attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
-                    emit(accessor_uid, accessor_name, attr_name, attr_qn, "read")
-                elif node.type == "assignment_expression":
-                    left = node.child_by_field_name("left")
-                    if left is None or left.type != "member_expression":
-                        continue
-                    obj = left.child_by_field_name("object")
-                    prop = left.child_by_field_name("property")
-                    if obj is None or prop is None:
-                        continue
-                    if not self._is_this_receiver(obj):
-                        continue
-                    attr_name = self._node_text(prop)
-                    attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
-                    emit(accessor_uid, accessor_name, attr_name, attr_qn, "write")
-
+            self._attr_accesses_from_function_body(
+                fn,
+                source_code=source_code,
+                file_path=file_path,
+                module=module,
+                out=out,
+                seen=seen,
+            )
         return out
 
     def extract_property_api_edges(
@@ -2455,6 +2957,33 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if call is not None:
                 calls.append(call)
 
+    def _ts_call_extraction_context(
+        self,
+        source_code: str,
+        file_path: str,
+        tree,
+    ) -> tuple[list, dict[str, list], dict[str, str], TsScopeGraph, list[SymbolMetadata]]:
+        captures = flatten_ts_query_captures(
+            self.language,
+            """
+            (call_expression) @call
+            (new_expression) @call
+            """,
+            tree.root_node,
+        )
+        symbols = self.extract_symbols(source_code, file_path, tree=tree)
+        by_name: dict[str, list] = {}
+        for symbol in symbols:
+            by_name.setdefault(symbol.name, []).append(symbol)
+        import_bindings, _module_aliases = self._extract_import_bindings(source_code, file_path)
+        scope_graph = TsScopeGraph.build(
+            tree.root_node,
+            import_bindings=import_bindings,
+            node_text=self._node_text,
+            normalize_require=lambda path: self._normalize_import_source(file_path, path),
+        )
+        return captures, by_name, import_bindings, scope_graph, symbols
+
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -2467,26 +2996,10 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if tree is None:
             tree = self._parse(source_code)
 
-        captures = flatten_ts_query_captures(
-            self.language,
-            """
-            (call_expression) @call
-            (new_expression) @call
-            """,
-            tree.root_node,
-        )
-
-        symbols = self.extract_symbols(source_code, file_path, tree=tree)
-        by_name: dict[str, list] = {}
-        for symbol in symbols:
-            by_name.setdefault(symbol.name, []).append(symbol)
-
-        import_bindings, module_aliases = self._extract_import_bindings(source_code, file_path)
-        scope_graph = TsScopeGraph.build(
-            tree.root_node,
-            import_bindings=import_bindings,
-            node_text=self._node_text,
-            normalize_require=lambda path: self._normalize_import_source(file_path, path),
+        captures, by_name, import_bindings, scope_graph, symbols = self._ts_call_extraction_context(
+            source_code,
+            file_path,
+            tree,
         )
         calls: list[dict] = []
         self._append_resolved_ts_calls(
@@ -2498,7 +3011,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
             by_name=by_name,
             scope_graph=scope_graph,
         )
-
         self._append_exported_initializer_call_fallbacks(
             calls,
             source_code,

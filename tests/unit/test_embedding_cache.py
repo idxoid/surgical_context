@@ -366,6 +366,7 @@ def test_lancedb_client_search_axis_symbols_rejects_legacy_profile():
 def test_lancedb_client_search_axis_symbols_embeds_query_text():
     class FakeClient(LanceDBClient):
         def __init__(self):
+            # Skip LanceDBClient.__init__ — this stub only exercises search_axis_symbols.
             pass
 
         def _embed(self, texts, progress_callback=None):

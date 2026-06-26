@@ -167,6 +167,32 @@ class TreeSitterAdapter(LanguageAdapter):
             language=self.language_name,
         )
 
+    def _flatten_ts_query_captures(self, query: str, root_node) -> list[tuple]:
+        captures: list[tuple] = []
+        for _match_id, captures_dict in iter_ts_query_matches(
+            self.language, query, root_node
+        ):
+            for tag, nodes in captures_dict.items():
+                for node in nodes:
+                    captures.append((node, tag))
+        return captures
+
+    def _symbol_from_capture(
+        self,
+        node,
+        tag: str,
+        var_names: dict[int, str],
+        source_code: str,
+        file_path: str,
+    ) -> SymbolMetadata | None:
+        if tag in ("func.def", "class.def"):
+            return self._declaration_symbol_from_capture(node, tag, source_code, file_path)
+        if tag.startswith("var."):
+            return self._variable_symbol_from_capture(
+                node, tag, var_names, source_code, file_path
+            )
+        return None
+
     def extract_symbols(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[SymbolMetadata]:
@@ -178,27 +204,13 @@ class TreeSitterAdapter(LanguageAdapter):
         if tree is None:
             tree = self._parse(source_code)
 
-        captures = []
-        for _match_id, captures_dict in iter_ts_query_matches(
-            self.language, self.symbol_query, tree.root_node
-        ):
-            for tag, nodes in captures_dict.items():
-                for node in nodes:
-                    captures.append((node, tag))
-
+        captures = self._flatten_ts_query_captures(self.symbol_query, tree.root_node)
         var_names = self._var_names_by_parent_id(captures)
         symbols: list[SymbolMetadata] = []
         for node, tag in captures:
-            if tag in ("func.def", "class.def"):
-                symbol = self._declaration_symbol_from_capture(node, tag, source_code, file_path)
-                if symbol is not None:
-                    symbols.append(symbol)
-            elif tag.startswith("var."):
-                symbol = self._variable_symbol_from_capture(
-                    node, tag, var_names, source_code, file_path
-                )
-                if symbol is not None:
-                    symbols.append(symbol)
+            symbol = self._symbol_from_capture(node, tag, var_names, source_code, file_path)
+            if symbol is not None:
+                symbols.append(symbol)
         return symbols
 
     def should_include_variable_symbol(
@@ -218,6 +230,36 @@ class TreeSitterAdapter(LanguageAdapter):
         """
         return name.isupper()
 
+    def _enclosing_parent_for_call(self, node):
+        parent = node.parent
+        while parent and parent.type not in self.parent_types:
+            parent = parent.parent
+        return parent
+
+    def _call_edge_from_name_capture(
+        self,
+        node,
+        source_code: str,
+        file_path: str,
+    ) -> dict | None:
+        call_name = _node_text(node)
+        parent = self._enclosing_parent_for_call(node)
+        if parent is None:
+            return None
+        parent_name_node = parent.child_by_field_name("name")
+        if parent_name_node is None:
+            return None
+        caller_uid = self._symbol_uid_from_node(parent, source_code, file_path)
+        return {
+            "caller_uid": caller_uid,
+            "callee_name": call_name,
+            "rel_type": "CALLS_DIRECT",
+            "tier": "guess",
+            "confidence": 0.4,
+            "resolver": f"{self.language_name}-scope-v1",
+            "call_site_line": node.start_point[0] + 1,
+        }
+
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -225,37 +267,14 @@ class TreeSitterAdapter(LanguageAdapter):
         if tree is None:
             tree = self._parse(source_code)
 
-        # Flatten captures from matches into (node, tag) tuples
-        captures = []
-        for _match_id, captures_dict in iter_ts_query_matches(
-            self.language, self.call_query, tree.root_node
-        ):
-            for tag, nodes in captures_dict.items():
-                for node in nodes:
-                    captures.append((node, tag))
-
+        captures = self._flatten_ts_query_captures(self.call_query, tree.root_node)
         calls = []
         for node, tag in captures:
-            if tag == "call.name":
-                call_name = _node_text(node)
-                parent = node.parent
-                while parent and parent.type not in self.parent_types:
-                    parent = parent.parent
-                if parent:
-                    parent_name_node = parent.child_by_field_name("name")
-                    if parent_name_node:
-                        caller_uid = self._symbol_uid_from_node(parent, source_code, file_path)
-                        calls.append(
-                            {
-                                "caller_uid": caller_uid,
-                                "callee_name": call_name,
-                                "rel_type": "CALLS_DIRECT",
-                                "tier": "guess",
-                                "confidence": 0.4,
-                                "resolver": f"{self.language_name}-scope-v1",
-                                "call_site_line": node.start_point[0] + 1,
-                            }
-                        )
+            if tag != "call.name":
+                continue
+            call = self._call_edge_from_name_capture(node, source_code, file_path)
+            if call is not None:
+                calls.append(call)
         return calls
 
     def _uid(self, file_path: str, name: str) -> str:

@@ -96,6 +96,50 @@ class TsScopeGraph:
     def _commit(self, decl_byte: int) -> None:
         self._snapshots.append((decl_byte, self._snapshot()))
 
+    def _walk_function_declaration(self, node, node_text: Callable[[object], str]) -> None:
+        if node.type != "function_declaration":
+            return
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        fn_name = node_text(name_node)
+        self._declare(
+            fn_name,
+            TsBinding(name=fn_name, kind="function", decl_byte=node.start_byte),
+        )
+
+    def _walk_catch_clause(self, node, node_text: Callable[[object], str]) -> None:
+        if node.type != "catch_clause":
+            return
+        param = node.child_by_field_name("parameter")
+        if param is None:
+            return
+        for bound_name in _pattern_names(param, node_text):
+            self._declare(
+                bound_name,
+                TsBinding(name=bound_name, kind="param", decl_byte=node.start_byte),
+            )
+
+    def _walk_variable_declarations(
+        self,
+        node,
+        import_bindings: dict[str, str],
+        node_text: Callable[[object], str],
+        normalize_require: Callable[[str], str] | None,
+    ) -> None:
+        if node.type not in {"lexical_declaration", "variable_declaration"}:
+            return
+        type_node = node.child_by_field_name("type")
+        for child in node.named_children:
+            if child.type == "variable_declarator":
+                self._register_variable_declarator(
+                    child,
+                    import_bindings,
+                    node_text,
+                    normalize_require,
+                    type_node=type_node,
+                )
+
     def _walk(
         self,
         node,
@@ -103,40 +147,17 @@ class TsScopeGraph:
         node_text: Callable[[object], str],
         normalize_require: Callable[[str], str] | None,
     ) -> None:
-        if node.type == "function_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node is not None:
-                fn_name = node_text(name_node)
-                self._declare(
-                    fn_name,
-                    TsBinding(name=fn_name, kind="function", decl_byte=node.start_byte),
-                )
-
+        self._walk_function_declaration(node, node_text)
         push = node.type in _SCOPE_PUSH_TYPES
         if push:
             self._layers.append(_ScopeLayer(node.type))
 
         if node.type in _CALLABLE_TYPES:
             self._register_function_params(node, node_text)
-        if node.type == "catch_clause":
-            param = node.child_by_field_name("parameter")
-            if param is not None:
-                for bound_name in _pattern_names(param, node_text):
-                    self._declare(
-                        bound_name,
-                        TsBinding(name=bound_name, kind="param", decl_byte=node.start_byte),
-                    )
-        if node.type in {"lexical_declaration", "variable_declaration"}:
-            type_node = node.child_by_field_name("type")
-            for child in node.named_children:
-                if child.type == "variable_declarator":
-                    self._register_variable_declarator(
-                        child,
-                        import_bindings,
-                        node_text,
-                        normalize_require,
-                        type_node=type_node,
-                    )
+        self._walk_catch_clause(node, node_text)
+        self._walk_variable_declarations(
+            node, import_bindings, node_text, normalize_require
+        )
 
         for child in node.children:
             if child.is_named:

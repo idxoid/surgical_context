@@ -605,6 +605,16 @@ def _compute_fluent_self_return_counts(
     return fluent_self_return_count
 
 
+@dataclass(frozen=True)
+class _ExternalFanMetrics:
+    call_fan_out_per_uid: dict[str, float]
+    root_count_per_uid: dict[str, int]
+    import_fan_out_by_file: dict[str, float]
+    integration_call_fan_out_per_uid: dict[str, float]
+    integration_root_count_per_uid: dict[str, int]
+    integration_import_fan_out_by_file: dict[str, float]
+
+
 def _symbol_row_from_meta(
     uid: str,
     meta: dict,
@@ -617,12 +627,7 @@ def _symbol_row_from_meta(
     import_in_per_uid: dict[str, int],
     reexport_in_per_uid: dict[str, int],
     proxy_uids: set[str],
-    external_call_fan_out_per_uid: dict[str, float],
-    external_root_count_per_uid: dict[str, int],
-    external_import_fan_out_by_file: dict[str, float],
-    external_integration_call_fan_out_per_uid: dict[str, float],
-    external_integration_root_count_per_uid: dict[str, int],
-    external_integration_import_fan_out_by_file: dict[str, float],
+    external_fans: _ExternalFanMetrics,
     handler_call_fan_out: dict[str, float],
     fluent_self_return_count: dict[str, int],
 ) -> SymbolRow:
@@ -672,17 +677,17 @@ def _symbol_row_from_meta(
         attr_writes_subscript_fan_out=fans.attr_writes_subscript_fan_out[uid],
         reexport_in=int(reexport_in_per_uid.get(uid, 0)),
         is_proxy_binding=uid in proxy_uids,
-        external_call_fan_out=float(external_call_fan_out_per_uid.get(uid, 0.0)),
-        external_import_fan_out=float(external_import_fan_out_by_file.get(meta["file_path"], 0.0)),
-        external_root_count=int(external_root_count_per_uid.get(uid, 0)),
+        external_call_fan_out=float(external_fans.call_fan_out_per_uid.get(uid, 0.0)),
+        external_import_fan_out=float(external_fans.import_fan_out_by_file.get(meta["file_path"], 0.0)),
+        external_root_count=int(external_fans.root_count_per_uid.get(uid, 0)),
         external_integration_call_fan_out=float(
-            external_integration_call_fan_out_per_uid.get(uid, 0.0)
+            external_fans.integration_call_fan_out_per_uid.get(uid, 0.0)
         ),
         external_integration_import_fan_out=float(
-            external_integration_import_fan_out_by_file.get(meta["file_path"], 0.0)
+            external_fans.integration_import_fan_out_by_file.get(meta["file_path"], 0.0)
         ),
         external_integration_root_count=int(
-            external_integration_root_count_per_uid.get(uid, 0)
+            external_fans.integration_root_count_per_uid.get(uid, 0)
         ),
         inherits_builtin_exception=bool(meta.get("inherits_builtin_exception")),
         returns_function_expression=bool(meta.get("returns_function_expression")),
@@ -732,6 +737,14 @@ def assemble_symbol_rows(
     handler_call_fan_out = _compute_handler_call_fan_out(call_edges, info, fans.handle_fan_in)
     fluent_self_return_count = _compute_fluent_self_return_counts(call_edges, info)
     depth_by_uid = _depth_from_public_full_graph(call_edges, set(info))
+    external_fans = _ExternalFanMetrics(
+        call_fan_out_per_uid=external_call_fan_out_per_uid,
+        root_count_per_uid=external_root_count_per_uid,
+        import_fan_out_by_file=external_import_fan_out_by_file,
+        integration_call_fan_out_per_uid=external_integration_call_fan_out_per_uid,
+        integration_root_count_per_uid=external_integration_root_count_per_uid,
+        integration_import_fan_out_by_file=external_integration_import_fan_out_by_file,
+    )
 
     return [
         _symbol_row_from_meta(
@@ -745,12 +758,7 @@ def assemble_symbol_rows(
             import_in_per_uid=import_in_per_uid,
             reexport_in_per_uid=reexport_in_per_uid,
             proxy_uids=proxy_uids,
-            external_call_fan_out_per_uid=external_call_fan_out_per_uid,
-            external_root_count_per_uid=external_root_count_per_uid,
-            external_import_fan_out_by_file=external_import_fan_out_by_file,
-            external_integration_call_fan_out_per_uid=external_integration_call_fan_out_per_uid,
-            external_integration_root_count_per_uid=external_integration_root_count_per_uid,
-            external_integration_import_fan_out_by_file=external_integration_import_fan_out_by_file,
+            external_fans=external_fans,
             handler_call_fan_out=handler_call_fan_out,
             fluent_self_return_count=fluent_self_return_count,
         )

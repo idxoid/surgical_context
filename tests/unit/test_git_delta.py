@@ -24,6 +24,7 @@ def _init_repo(tmp_path: Path) -> Path:
 
 class _FakeLance:
     def delete_symbol_embeddings(self, uids, workspace_id=None):
+        # No-op stub: git-delta tests do not assert on embedding tombstones.
         pass
 
 

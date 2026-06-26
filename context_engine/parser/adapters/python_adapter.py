@@ -1417,6 +1417,34 @@ class PythonAdapter(TreeSitterAdapter):
             return ("", 0)
         return raw, positional + 1
 
+    def _http_route_keyword_methods_from_arg(self, child) -> list[str]:
+        if child.type != "keyword_argument":
+            return []
+        key_node = child.child_by_field_name("name")
+        value_node = child.child_by_field_name("value")
+        if key_node is None or value_node is None:
+            return []
+        return self._http_route_keyword_methods(_node_text(key_node), value_node)
+
+    def _http_route_apply_decorator_arg(
+        self,
+        child,
+        *,
+        route_path: str,
+        positional: int,
+    ) -> tuple[str, int, list[str]] | None:
+        path_update = self._http_route_positional_path(child, positional)
+        if path_update is not None:
+            route_path, positional = path_update
+            if not route_path and positional == 0:
+                return None
+            return route_path, positional, []
+        if child.type == "keyword_argument":
+            return route_path, positional, self._http_route_keyword_methods_from_arg(child)
+        if child.type == "string":
+            return route_path, positional + 1, []
+        return route_path, positional, []
+
     def _http_route_from_decorator(self, deco_node) -> tuple[str, list[str]]:
         call_node = self._decorator_call_node(deco_node)
         if call_node is None:
@@ -1428,21 +1456,15 @@ class PythonAdapter(TreeSitterAdapter):
             return route_path, methods
         positional = 0
         for child in arg_list.named_children:
-            path_update = self._http_route_positional_path(child, positional)
-            if path_update is not None:
-                route_path, positional = path_update
-                if not route_path and positional == 0:
-                    return "", []
-                continue
-            if child.type == "keyword_argument":
-                key_node = child.child_by_field_name("name")
-                value_node = child.child_by_field_name("value")
-                if key_node is None or value_node is None:
-                    continue
-                methods.extend(self._http_route_keyword_methods(_node_text(key_node), value_node))
-                continue
-            if child.type == "string":
-                positional += 1
+            applied = self._http_route_apply_decorator_arg(
+                child,
+                route_path=route_path,
+                positional=positional,
+            )
+            if applied is None:
+                return "", []
+            route_path, positional, arg_methods = applied
+            methods.extend(arg_methods)
         return route_path, methods
 
     def _hook_call_base_name(self, fn_node) -> str:
@@ -2050,10 +2072,6 @@ class PythonAdapter(TreeSitterAdapter):
         self,
         node,
         *,
-        source_code: str,
-        file_path: str,
-        import_bindings: dict[str, str],
-        module: str,
         emit,
     ) -> None:
         params = node.child_by_field_name("parameters")
@@ -2093,6 +2111,53 @@ class PythonAdapter(TreeSitterAdapter):
         if referrer is not None:
             emit(referrer, typ, "annotation")
 
+    def _emit_type_reference(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str]],
+        referrer_node,
+        type_node,
+        kind: str,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> None:
+        if referrer_node is None or type_node is None:
+            return
+        referrer_uid = self._uid_for_node(referrer_node, source_code, file_path)
+        rname_node = referrer_node.child_by_field_name("name")
+        referrer_name = _node_text(rname_node) if rname_node is not None else ""
+        for type_name, type_qn in self._type_ref_targets(type_node, import_bindings, module):
+            key = (referrer_uid, type_qn)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "referrer_uid": referrer_uid,
+                    "referrer_name": referrer_name,
+                    "type_name": type_name,
+                    "type_qualified_name": type_qn,
+                    "kind": kind,
+                    "file_path": file_path,
+                }
+            )
+
+    def _collect_type_references_from_tree(
+        self,
+        tree,
+        emit,
+    ) -> None:
+        for node in self._iter_nodes(tree.root_node):
+            if node.type == "function_definition":
+                self._type_ref_records_for_function(node, emit=emit)
+            elif node.type == "call":
+                self._type_ref_records_for_call(node, emit=emit)
+            elif node.type == "assignment":
+                self._type_ref_records_for_assignment(node, emit=emit)
+
     def extract_type_references(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """USES_TYPE references: a symbol names a project class in an AST-visible
         position → ``referrer`` USES_TYPE ``type``.
@@ -2113,41 +2178,19 @@ class PythonAdapter(TreeSitterAdapter):
         seen: set[tuple[str, str]] = set()
 
         def emit(referrer_node, type_node, kind: str) -> None:
-            if referrer_node is None or type_node is None:
-                return
-            referrer_uid = self._uid_for_node(referrer_node, source_code, file_path)
-            rname_node = referrer_node.child_by_field_name("name")
-            referrer_name = _node_text(rname_node) if rname_node is not None else ""
-            for type_name, type_qn in self._type_ref_targets(type_node, import_bindings, module):
-                key = (referrer_uid, type_qn)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(
-                    {
-                        "referrer_uid": referrer_uid,
-                        "referrer_name": referrer_name,
-                        "type_name": type_name,
-                        "type_qualified_name": type_qn,
-                        "kind": kind,
-                        "file_path": file_path,
-                    }
-                )
+            self._emit_type_reference(
+                out,
+                seen,
+                referrer_node,
+                type_node,
+                kind,
+                source_code=source_code,
+                file_path=file_path,
+                import_bindings=import_bindings,
+                module=module,
+            )
 
-        for node in self._iter_nodes(tree.root_node):
-            if node.type == "function_definition":
-                self._type_ref_records_for_function(
-                    node,
-                    source_code=source_code,
-                    file_path=file_path,
-                    import_bindings=import_bindings,
-                    module=module,
-                    emit=emit,
-                )
-            elif node.type == "call":
-                self._type_ref_records_for_call(node, emit=emit)
-            elif node.type == "assignment":
-                self._type_ref_records_for_assignment(node, emit=emit)
+        self._collect_type_references_from_tree(tree, emit)
         return out
 
     def _append_type_ref_attribute(
@@ -2246,6 +2289,83 @@ class PythonAdapter(TreeSitterAdapter):
         )
         return out
 
+    def _injection_record_for_provider(
+        self,
+        *,
+        owner_uid: str,
+        owner_name: str,
+        provider: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+        seen: set[tuple[str, str]],
+    ) -> dict | None:
+        prov_qn = self._resolve_type_name(provider, import_bindings, module)
+        key = (owner_uid, prov_qn)
+        if key in seen:
+            return None
+        seen.add(key)
+        return {
+            "owner_uid": owner_uid,
+            "owner_name": owner_name,
+            "provider_name": provider,
+            "provider_qualified_name": prov_qn,
+            "file_path": file_path,
+        }
+
+    def _injection_records_for_default_parameter(
+        self,
+        param_node,
+        *,
+        owner_uid: str,
+        owner_name: str,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+        seen: set[tuple[str, str]],
+    ) -> list[dict]:
+        records: list[dict] = []
+        for call in self._iter_nodes(param_node):
+            if call.type != "call":
+                continue
+            for prov in self._positional_identifier_arguments(call, source_code):
+                record = self._injection_record_for_provider(
+                    owner_uid=owner_uid,
+                    owner_name=owner_name,
+                    provider=prov,
+                    file_path=file_path,
+                    import_bindings=import_bindings,
+                    module=module,
+                    seen=seen,
+                )
+                if record is not None:
+                    records.append(record)
+        return records
+
+    def _function_injection_owner(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+    ) -> tuple[str, str] | None:
+        params = node.child_by_field_name("parameters")
+        if params is None:
+            return None
+        owner_uid = self._uid_for_node(node, source_code, file_path)
+        owner_name_node = node.child_by_field_name("name")
+        owner_name = _node_text(owner_name_node) if owner_name_node is not None else ""
+        return owner_uid, owner_name
+
+    @staticmethod
+    def _default_parameter_nodes(params) -> list:
+        return [
+            p
+            for p in params.named_children
+            if p.type in ("default_parameter", "typed_default_parameter")
+        ]
+
     def _injection_records_for_function(
         self,
         node,
@@ -2256,34 +2376,29 @@ class PythonAdapter(TreeSitterAdapter):
         module: str,
         seen: set[tuple[str, str]],
     ) -> list[dict]:
-        params = node.child_by_field_name("parameters")
-        if params is None:
+        owner = self._function_injection_owner(
+            node,
+            source_code=source_code,
+            file_path=file_path,
+        )
+        if owner is None:
             return []
-        owner_uid = self._uid_for_node(node, source_code, file_path)
-        owner_name_node = node.child_by_field_name("name")
-        owner_name = _node_text(owner_name_node) if owner_name_node is not None else ""
+        owner_uid, owner_name = owner
+        params = node.child_by_field_name("parameters")
         records: list[dict] = []
-        for p in params.named_children:
-            if p.type not in ("default_parameter", "typed_default_parameter"):
-                continue
-            for call in self._iter_nodes(p):
-                if call.type != "call":
-                    continue
-                for prov in self._positional_identifier_arguments(call, source_code):
-                    prov_qn = self._resolve_type_name(prov, import_bindings, module)
-                    key = (owner_uid, prov_qn)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    records.append(
-                        {
-                            "owner_uid": owner_uid,
-                            "owner_name": owner_name,
-                            "provider_name": prov,
-                            "provider_qualified_name": prov_qn,
-                            "file_path": file_path,
-                        }
-                    )
+        for p in self._default_parameter_nodes(params):
+            records.extend(
+                self._injection_records_for_default_parameter(
+                    p,
+                    owner_uid=owner_uid,
+                    owner_name=owner_name,
+                    source_code=source_code,
+                    file_path=file_path,
+                    import_bindings=import_bindings,
+                    module=module,
+                    seen=seen,
+                )
+            )
         return records
 
     def extract_injections(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
@@ -2316,8 +2431,6 @@ class PythonAdapter(TreeSitterAdapter):
                     seen=seen,
                 )
             )
-        return out
-
         return out
 
     @staticmethod
@@ -2454,6 +2567,58 @@ class PythonAdapter(TreeSitterAdapter):
                 changed = True
         return changed
 
+    def _collect_identifier_assignments(self, func_node) -> list[tuple[str, object]]:
+        assignments: list[tuple[str, object]] = []
+        for n in self._iter_nodes(func_node):
+            if n.type != "assignment":
+                continue
+            lhs = n.child_by_field_name("left")
+            rhs = n.child_by_field_name("right")
+            if lhs is None or rhs is None or lhs.type != "identifier":
+                continue
+            assignments.append((_node_text(lhs), rhs))
+        return assignments
+
+    def _propagate_class_value_locals(
+        self,
+        mapping: dict[str, list[tuple[str, str]]],
+        assignments: list[tuple[str, object]],
+        *,
+        local_classes: dict,
+        import_bindings: dict[str, str],
+    ) -> None:
+        for _ in range(len(assignments) + 1):
+            changed = False
+            for name, rhs in assignments:
+                classes = self._resolve_class_value_expr(
+                    rhs,
+                    mapping,
+                    local_classes=local_classes,
+                    import_bindings=import_bindings,
+                )
+                if self._merge_class_value_local(mapping, name, classes):
+                    changed = True
+            if not changed:
+                break
+
+    def _initial_class_value_locals_mapping(
+        self,
+        func_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        typed_local_cache: dict[int, dict[str, list[tuple[str, str]]]],
+    ) -> dict[str, list[tuple[str, str]]]:
+        return {
+            k: list(v)
+            for k, v in self._class_typed_locals_map(
+                func_node,
+                import_bindings=import_bindings,
+                module=module,
+                typed_local_cache=typed_local_cache,
+            ).items()
+        }
+
     def _class_value_locals_map(
         self,
         func_node,
@@ -2469,39 +2634,19 @@ class PythonAdapter(TreeSitterAdapter):
         cached = value_local_cache.get(func_node.id)
         if cached is not None:
             return cached
-        mapping = {
-            k: list(v)
-            for k, v in self._class_typed_locals_map(
-                func_node,
-                import_bindings=import_bindings,
-                module=module,
-                typed_local_cache=typed_local_cache,
-            ).items()
-        }
-        assignments: list[tuple[str, object]] = []
-        for n in self._iter_nodes(func_node):
-            if n.type != "assignment":
-                continue
-            lhs = n.child_by_field_name("left")
-            rhs = n.child_by_field_name("right")
-            if lhs is None or rhs is None or lhs.type != "identifier":
-                continue
-            assignments.append((_node_text(lhs), rhs))
-
-        for _ in range(len(assignments) + 1):
-            changed = False
-            for name, rhs in assignments:
-                classes = self._resolve_class_value_expr(
-                    rhs,
-                    mapping,
-                    local_classes=local_classes,
-                    import_bindings=import_bindings,
-                )
-                if self._merge_class_value_local(mapping, name, classes):
-                    changed = True
-            if not changed:
-                break
-
+        mapping = self._initial_class_value_locals_mapping(
+            func_node,
+            import_bindings=import_bindings,
+            module=module,
+            typed_local_cache=typed_local_cache,
+        )
+        assignments = self._collect_identifier_assignments(func_node)
+        self._propagate_class_value_locals(
+            mapping,
+            assignments,
+            local_classes=local_classes,
+            import_bindings=import_bindings,
+        )
         value_local_cache[func_node.id] = mapping
         return mapping
 
@@ -2894,7 +3039,6 @@ class PythonAdapter(TreeSitterAdapter):
 
     def _py_call_from_identifier(
         self,
-        func_node,
         *,
         call_name: str,
         import_bindings: dict[str, str],
@@ -3056,7 +3200,6 @@ class PythonAdapter(TreeSitterAdapter):
             call_name = _node_text(func_node)
             rel_type, tier, confidence, callee_uid, callee_qualified_name = (
                 self._py_call_from_identifier(
-                    func_node,
                     call_name=call_name,
                     import_bindings=import_bindings,
                     by_name=by_name,
@@ -3091,14 +3234,7 @@ class PythonAdapter(TreeSitterAdapter):
         )
 
     def _py_call_query_captures(self, tree) -> list[tuple[object, str]]:
-        captures: list[tuple[object, str]] = []
-        for _match_id, captures_dict in iter_ts_query_matches(
-            self.language, self.call_query, tree.root_node
-        ):
-            for tag, nodes in captures_dict.items():
-                for node in nodes:
-                    captures.append((node, tag))
-        return captures
+        return self._flatten_ts_query_captures(self.call_query, tree.root_node)
 
     def _py_call_resolution_context(
         self,
@@ -3507,6 +3643,65 @@ class PythonAdapter(TreeSitterAdapter):
         )
         return mapping
 
+    def _class_body_attr_from_cls_string(
+        self,
+        left,
+        right,
+    ) -> tuple[str, str] | None:
+        lname = _node_text(left)
+        if not lname.endswith("_cls") or right is None or right.type != "string":
+            return None
+        literal = self._string_literal_text(right)
+        if ":" not in literal:
+            return None
+        return lname[:-4], literal.replace(":", ".")
+
+    def _class_body_attr_from_annotation(
+        self,
+        left,
+        typ,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> tuple[str, str] | None:
+        if typ is None:
+            return None
+        type_ident = self._type_identifier(typ)
+        if not type_ident:
+            return None
+        return _node_text(left), self._resolve_type_name(type_ident, import_bindings, module)
+
+    @staticmethod
+    def _iter_class_body_assignments(body):
+        for stmt in body.children:
+            if stmt.type != "expression_statement":
+                continue
+            for assign in stmt.children:
+                if assign.type == "assignment":
+                    yield assign
+
+    def _parse_class_body_assignment(
+        self,
+        assign,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> tuple[str, str] | None:
+        left = assign.child_by_field_name("left")
+        right = assign.child_by_field_name("right")
+        typ = assign.child_by_field_name("type")
+        if left is None or left.type != "identifier":
+            return None
+        parsed = self._class_body_attr_from_cls_string(left, right)
+        if parsed is None:
+            parsed = self._class_body_attr_from_annotation(
+                left,
+                typ,
+                import_bindings=import_bindings,
+                module=module,
+            )
+        return parsed
+
     def _class_body_level_attrs(
         self,
         body,
@@ -3515,28 +3710,14 @@ class PythonAdapter(TreeSitterAdapter):
         module: str,
     ) -> dict[str, str]:
         attrs: dict[str, str] = {}
-        for stmt in body.children:
-            if stmt.type != "expression_statement":
-                continue
-            for assign in stmt.children:
-                if assign.type != "assignment":
-                    continue
-                left = assign.child_by_field_name("left")
-                right = assign.child_by_field_name("right")
-                typ = assign.child_by_field_name("type")
-                if left is None or left.type != "identifier":
-                    continue
-                lname = _node_text(left)
-                if lname.endswith("_cls") and right is not None and right.type == "string":
-                    literal = self._string_literal_text(right)
-                    if ":" in literal:
-                        attrs.setdefault(lname[:-4], literal.replace(":", "."))
-                elif typ is not None:
-                    type_ident = self._type_identifier(typ)
-                    if type_ident:
-                        attrs.setdefault(
-                            lname, self._resolve_type_name(type_ident, import_bindings, module)
-                        )
+        for assign in self._iter_class_body_assignments(body):
+            parsed = self._parse_class_body_assignment(
+                assign,
+                import_bindings=import_bindings,
+                module=module,
+            )
+            if parsed is not None:
+                attrs.setdefault(parsed[0], parsed[1])
         return attrs
 
     def _self_attr_type_from_method_assignment(
@@ -3583,6 +3764,67 @@ class PythonAdapter(TreeSitterAdapter):
             allow_bare_constructor=method_name == "__init__",
         ) or None
 
+    @staticmethod
+    def _self_attr_name_from_assignment(assign) -> str | None:
+        left = assign.child_by_field_name("left")
+        if left is None or left.type != "attribute":
+            return None
+        obj = left.child_by_field_name("object")
+        attr = left.child_by_field_name("attribute")
+        if obj is None or _node_text(obj) != "self" or attr is None:
+            return None
+        return _node_text(attr)
+
+    def _infer_instance_attrs_from_method(
+        self,
+        fn,
+        *,
+        cname: str,
+        attrs: dict[str, str],
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns: dict[tuple[str, str], str],
+        function_returns: dict[str, str],
+    ) -> None:
+        fn_name = fn.child_by_field_name("name")
+        if fn_name is None:
+            return
+        method_name = _node_text(fn_name)
+        local_types = self._local_value_types(
+            fn,
+            cls_table=attrs,
+            enclosing_class=cname,
+            import_bindings=import_bindings,
+            module=module,
+            method_returns=method_returns,
+            function_returns=function_returns,
+        )
+        for assign in self._iter_nodes(fn):
+            if assign.type != "assignment":
+                continue
+            aname = self._self_attr_name_from_assignment(assign)
+            if aname is None:
+                continue
+            inferred = self._self_attr_type_from_method_assignment(
+                assign,
+                cname=cname,
+                attrs=attrs,
+                local_types=local_types,
+                import_bindings=import_bindings,
+                module=module,
+                method_returns=method_returns,
+                function_returns=function_returns,
+                method_name=method_name,
+            )
+            if inferred:
+                attrs.setdefault(aname, inferred)
+
+    @staticmethod
+    def _class_method_definitions(body):
+        for fn in body.children:
+            if fn.type == "function_definition":
+                yield fn
+
     def _infer_instance_attrs_from_methods(
         self,
         body,
@@ -3594,46 +3836,16 @@ class PythonAdapter(TreeSitterAdapter):
         method_returns: dict[tuple[str, str], str],
         function_returns: dict[str, str],
     ) -> None:
-        for fn in body.children:
-            if fn.type != "function_definition":
-                continue
-            fn_name = fn.child_by_field_name("name")
-            if fn_name is None:
-                continue
-            method_name = _node_text(fn_name)
-            local_types = self._local_value_types(
+        for fn in self._class_method_definitions(body):
+            self._infer_instance_attrs_from_method(
                 fn,
-                cls_table=attrs,
-                enclosing_class=cname,
+                cname=cname,
+                attrs=attrs,
                 import_bindings=import_bindings,
                 module=module,
                 method_returns=method_returns,
                 function_returns=function_returns,
             )
-            for assign in self._iter_nodes(fn):
-                if assign.type != "assignment":
-                    continue
-                left = assign.child_by_field_name("left")
-                if left is None or left.type != "attribute":
-                    continue
-                obj = left.child_by_field_name("object")
-                attr = left.child_by_field_name("attribute")
-                if obj is None or _node_text(obj) != "self" or attr is None:
-                    continue
-                aname = _node_text(attr)
-                inferred = self._self_attr_type_from_method_assignment(
-                    assign,
-                    cname=cname,
-                    attrs=attrs,
-                    local_types=local_types,
-                    import_bindings=import_bindings,
-                    module=module,
-                    method_returns=method_returns,
-                    function_returns=function_returns,
-                    method_name=method_name,
-                )
-                if inferred:
-                    attrs.setdefault(aname, inferred)
 
     def _build_attr_type_table(
         self,
@@ -3740,6 +3952,54 @@ class PythonAdapter(TreeSitterAdapter):
             module=module,
         )
 
+    def _record_inferred_method_return(
+        self,
+        cname: str,
+        fn,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns: dict[tuple[str, str], str],
+    ) -> None:
+        fname_node = fn.child_by_field_name("name")
+        if fname_node is None:
+            return
+        rtype = self._inferred_function_return_type(
+            fn,
+            import_bindings=import_bindings,
+            module=module,
+        )
+        if rtype:
+            method_returns.setdefault((cname, _node_text(fname_node)), rtype)
+
+    def _collect_method_returns_for_class(
+        self,
+        cls,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns: dict[tuple[str, str], str],
+    ) -> None:
+        cname_node = cls.child_by_field_name("name")
+        body = cls.child_by_field_name("body")
+        if cname_node is None or body is None:
+            return
+        cname = _node_text(cname_node)
+        for fn in self._class_method_definitions(body):
+            self._record_inferred_method_return(
+                cname,
+                fn,
+                import_bindings=import_bindings,
+                module=module,
+                method_returns=method_returns,
+            )
+
+    @staticmethod
+    def _iter_class_definitions(root):
+        for node in PythonAdapter._iter_nodes(root):
+            if node.type == "class_definition":
+                yield node
+
     def _collect_class_method_returns(
         self,
         tree,
@@ -3748,27 +4008,13 @@ class PythonAdapter(TreeSitterAdapter):
         module: str,
         method_returns: dict[tuple[str, str], str],
     ) -> None:
-        for cls in self._iter_nodes(tree.root_node):
-            if cls.type != "class_definition":
-                continue
-            cname_node = cls.child_by_field_name("name")
-            body = cls.child_by_field_name("body")
-            if cname_node is None or body is None:
-                continue
-            cname = _node_text(cname_node)
-            for fn in body.children:
-                if fn.type != "function_definition":
-                    continue
-                fname_node = fn.child_by_field_name("name")
-                if fname_node is None:
-                    continue
-                rtype = self._inferred_function_return_type(
-                    fn,
-                    import_bindings=import_bindings,
-                    module=module,
-                )
-                if rtype:
-                    method_returns.setdefault((cname, _node_text(fname_node)), rtype)
+        for cls in self._iter_class_definitions(tree.root_node):
+            self._collect_method_returns_for_class(
+                cls,
+                import_bindings=import_bindings,
+                module=module,
+                method_returns=method_returns,
+            )
 
     def _collect_module_function_returns(
         self,

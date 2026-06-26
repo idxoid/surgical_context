@@ -27,7 +27,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from context_engine.axis.graph_walk import steps_for_mode, walk_neighbours_grouped
 from context_engine.axis.role_retrieval import RoleCandidate
@@ -661,13 +661,16 @@ def _build_folded_class_symbol(
     compact: bool,
 ) -> ContextSymbol:
     first = min(members, key=lambda m: (m.distance_from_seed, m.uid))
-    return replace(
-        first,
-        name=_class_name_from_qualified_name(parent),
-        qualified_name=parent,
-        distance_from_seed=min(m.distance_from_seed for m in members),
-        expansion_step="fold",
-        code=_folded_class_code(parent, members, compact=compact),
+    return cast(
+        ContextSymbol,
+        replace(
+            first,
+            name=_class_name_from_qualified_name(parent),
+            qualified_name=parent,
+            distance_from_seed=min(m.distance_from_seed for m in members),
+            expansion_step="fold",
+            code=_folded_class_code(parent, members, compact=compact),
+        ),
     )
 
 

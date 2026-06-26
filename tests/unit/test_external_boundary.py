@@ -203,6 +203,7 @@ def test_apply_external_boundary_for_file_passes_symbol_imports_through_db_stub(
             self.received_symbol_imports = None
 
         def delete_external_imports_for_file(self, path, *, workspace_id):
+            # No-op stub: this test asserts link_external_boundary inputs only.
             pass
 
         def link_external_boundary(
