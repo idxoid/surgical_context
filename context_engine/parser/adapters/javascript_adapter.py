@@ -574,6 +574,74 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
         return edges
 
+    def _js_classify_identifier_call_node(
+        self,
+        func_node,
+        *,
+        ts,
+        call_at_byte: int,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        scope_graph,
+        source_code: str,
+    ) -> tuple[str, str, str, float, str | None, bool, str, str]:
+        call_name = source_code[func_node.start_byte : func_node.end_byte]
+        rel_type, tier, confidence, _, callee_uid, skip_call, callee_qn = (
+            ts._classify_identifier_call(
+                call_name,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
+                at_byte=call_at_byte,
+            )
+        )
+        resolver = "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
+        return call_name, rel_type, tier, confidence, callee_uid, skip_call, callee_qn, resolver
+
+    def _js_classify_member_call_node(
+        self,
+        func_node,
+        *,
+        parent,
+        ts,
+        call_at_byte: int,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        scope_graph,
+        source_code: str,
+    ) -> tuple[str, str, str, float, str | None, bool, str, str] | None:
+        named_children = [child for child in func_node.children if child.is_named]
+        if len(named_children) < 2:
+            return None
+        receiver_node = named_children[0]
+        method_node = named_children[-1]
+        receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
+        call_name = source_code[method_node.start_byte : method_node.end_byte]
+        rel_type, tier, confidence, _, callee_uid, skip_call, callee_qn = (
+            ts._classify_member_call(
+                receiver_text,
+                call_name,
+                parent=parent,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
+                at_byte=call_at_byte,
+            )
+        )
+        resolved = self._resolve_method_uid(
+            parent,
+            call_name,
+            by_name,
+            source_code=source_code,
+        )
+        if receiver_text == "this" and resolved:
+            callee_uid = resolved
+            rel_type = "CALLS_SCOPED"
+            tier = "scoped"
+            confidence = 0.9
+        resolver = "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
+        return call_name, rel_type, tier, confidence, callee_uid, skip_call, callee_qn, resolver
+
     def _js_call_from_node(
         self,
         node,
@@ -590,61 +658,36 @@ class JavaScriptAdapter(TreeSitterAdapter):
     ) -> dict | None:
         call_at_byte = node.start_byte
         call_kind = "construct" if node.type == "new_expression" else "call"
-        skip_call = False
-        callee_uid = None
-        call_name = ""
-        callee_qn = ""
-        rel_type = "CALLS_GUESS"
-        tier = "guess"
-        confidence = 0.4
-        resolver = "js-ambiguity-gate-v1"
-
+        classified = None
         if func_node.type == "identifier":
-            call_name = source_code[func_node.start_byte : func_node.end_byte]
-            rel_type, tier, confidence, _, callee_uid, skip_call, callee_qn = (
-                ts._classify_identifier_call(
-                    call_name,
-                    import_bindings=import_bindings,
-                    by_name=by_name,
-                    scope_graph=scope_graph,
-                    at_byte=call_at_byte,
-                )
-            )
-            resolver = "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
-        elif func_node.type == "member_expression":
-            named_children = [child for child in func_node.children if child.is_named]
-            if len(named_children) < 2:
-                return None
-            receiver_node = named_children[0]
-            method_node = named_children[-1]
-            receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
-            call_name = source_code[method_node.start_byte : method_node.end_byte]
-            rel_type, tier, confidence, _, callee_uid, skip_call, callee_qn = (
-                ts._classify_member_call(
-                    receiver_text,
-                    call_name,
-                    parent=parent,
-                    import_bindings=import_bindings,
-                    by_name=by_name,
-                    scope_graph=scope_graph,
-                    at_byte=call_at_byte,
-                )
-            )
-            resolved = self._resolve_method_uid(
-                parent,
-                call_name,
-                by_name,
+            classified = self._js_classify_identifier_call_node(
+                func_node,
+                ts=ts,
+                call_at_byte=call_at_byte,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
                 source_code=source_code,
             )
-            if receiver_text == "this" and resolved:
-                callee_uid = resolved
-                rel_type = "CALLS_SCOPED"
-                tier = "scoped"
-                confidence = 0.9
-            resolver = "js-scope-v1" if rel_type != "CALLS_GUESS" else "js-ambiguity-gate-v1"
+        elif func_node.type == "member_expression":
+            classified = self._js_classify_member_call_node(
+                func_node,
+                parent=parent,
+                ts=ts,
+                call_at_byte=call_at_byte,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
+                source_code=source_code,
+            )
         else:
             return None
+        if classified is None:
+            return None
 
+        call_name, rel_type, tier, confidence, callee_uid, skip_call, callee_qn, resolver = (
+            classified
+        )
         if skip_call or callee_uid == caller_uid:
             return None
 

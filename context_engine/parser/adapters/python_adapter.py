@@ -350,6 +350,22 @@ class PythonAdapter(TreeSitterAdapter):
         )
 
     @staticmethod
+    def _apply_return_shape_markers(symbol, shape: dict[str, bool]) -> None:
+        if shape.get("mapping"):
+            symbol.returns_mapping = True
+        if shape.get("sequence"):
+            symbol.returns_sequence = True
+        if shape.get("constructed"):
+            symbol.returns_constructed_type = True
+
+    @staticmethod
+    def _apply_iteration_shape_markers(symbol, it: dict[str, bool]) -> None:
+        if it.get("iterates_attr_call"):
+            symbol.iterates_attr_call = True
+        if it.get("assembles_mapping_in_loop"):
+            symbol.assembles_mapping_in_loop = True
+
+    @staticmethod
     def _apply_python_symbol_shape_markers(
         symbols: list,
         shapes: dict[str, dict[str, bool]] | None,
@@ -358,20 +374,14 @@ class PythonAdapter(TreeSitterAdapter):
         if not shapes and not iteration:
             return
         for symbol in symbols:
-            shape = shapes.get(symbol.name) if shapes else None
-            if shape is not None:
-                if shape.get("mapping"):
-                    symbol.returns_mapping = True
-                if shape.get("sequence"):
-                    symbol.returns_sequence = True
-                if shape.get("constructed"):
-                    symbol.returns_constructed_type = True
-            it = iteration.get(symbol.name) if iteration else None
-            if it is not None:
-                if it.get("iterates_attr_call"):
-                    symbol.iterates_attr_call = True
-                if it.get("assembles_mapping_in_loop"):
-                    symbol.assembles_mapping_in_loop = True
+            if shapes is not None:
+                shape = shapes.get(symbol.name)
+                if shape is not None:
+                    PythonAdapter._apply_return_shape_markers(symbol, shape)
+            if iteration is not None:
+                it = iteration.get(symbol.name)
+                if it is not None:
+                    PythonAdapter._apply_iteration_shape_markers(symbol, it)
 
     def extract_symbols(self, source_code: str, file_path: str, *, tree=None):
         """Patch SymbolMetadata with return-shape AST markers after the base
@@ -879,6 +889,33 @@ class PythonAdapter(TreeSitterAdapter):
                 returns_global[mname] = global_qn
         return returns_global
 
+    def _track_proxy_local_assignment(
+        self,
+        lname: str,
+        method_name: str | None,
+        returns_global: dict[str, str],
+        local_src: dict[str, str],
+        reassigned: set[str],
+    ) -> bool:
+        if method_name is None or method_name not in returns_global:
+            return False
+        if lname in local_src or lname in reassigned:
+            local_src.pop(lname, None)
+            reassigned.add(lname)
+        else:
+            local_src[lname] = method_name
+        return True
+
+    @staticmethod
+    def _track_proxy_local_reassignment(
+        lname: str,
+        local_src: dict[str, str],
+        reassigned: set[str],
+    ) -> None:
+        if lname in local_src:
+            local_src.pop(lname, None)
+        reassigned.add(lname)
+
     def _local_proxy_sources(
         self,
         fn_body,
@@ -895,16 +932,11 @@ class PythonAdapter(TreeSitterAdapter):
                 continue
             lname = _node_text(left)
             method_name = self._self_method_call_name(right)
-            if method_name is not None and method_name in returns_global:
-                if lname in local_src or lname in reassigned:
-                    local_src.pop(lname, None)
-                    reassigned.add(lname)
-                else:
-                    local_src[lname] = method_name
+            if self._track_proxy_local_assignment(
+                lname, method_name, returns_global, local_src, reassigned
+            ):
                 continue
-            if lname in local_src:
-                local_src.pop(lname, None)
-            reassigned.add(lname)
+            self._track_proxy_local_reassignment(lname, local_src, reassigned)
         return local_src
 
     def _proxy_member_calls_from_method(
@@ -1066,6 +1098,24 @@ class PythonAdapter(TreeSitterAdapter):
                 name_alias[_node_text(left)] = global_qn
         return attr_alias, name_alias
 
+    def _returned_import_global_from_return_expr(
+        self,
+        expr,
+        import_bindings: dict[str, str],
+        attr_alias: dict[str, str],
+        name_alias: dict[str, str],
+    ) -> str | None:
+        if expr.type == "identifier":
+            name = _node_text(expr)
+            return import_bindings.get(name) or name_alias.get(name) or None
+        if expr.type != "attribute":
+            return None
+        lo = expr.child_by_field_name("object")
+        la = expr.child_by_field_name("attribute")
+        if self._is_self_or_cls(lo) and la is not None:
+            return attr_alias.get(_node_text(la)) or None
+        return None
+
     def _returned_import_globals_from_body(
         self,
         body,
@@ -1080,20 +1130,14 @@ class PythonAdapter(TreeSitterAdapter):
             expr = ret.named_children[0] if ret.named_children else None
             if expr is None:
                 continue
-            if expr.type == "identifier":
-                name = _node_text(expr)
-                global_qn = import_bindings.get(name) or name_alias.get(name)
-                if global_qn:
-                    found.add(global_qn)
-                continue
-            if expr.type != "attribute":
-                continue
-            lo = expr.child_by_field_name("object")
-            la = expr.child_by_field_name("attribute")
-            if self._is_self_or_cls(lo) and la is not None:
-                global_qn = attr_alias.get(_node_text(la))
-                if global_qn:
-                    found.add(global_qn)
+            global_qn = self._returned_import_global_from_return_expr(
+                expr,
+                import_bindings,
+                attr_alias,
+                name_alias,
+            )
+            if global_qn:
+                found.add(global_qn)
         return found
 
     def _method_returns_imported_global(self, fn, import_bindings: dict[str, str]) -> str:
@@ -1186,6 +1230,34 @@ class PythonAdapter(TreeSitterAdapter):
                     out.append(record)
         return out
 
+    def _emit_http_endpoint_from_decorator(
+        self,
+        deco,
+        *,
+        site_uid: str,
+        non_http_decorators: frozenset[str],
+        emit,
+    ) -> None:
+        from context_engine.indexer.http_endpoint import HTTP_ROUTE_REGISTER_CALLEES, normalize_http_method
+
+        callable_name = self._decorator_callable_name(deco)
+        base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
+        if base in non_http_decorators:
+            return
+        if base not in HTTP_ROUTE_REGISTER_CALLEES and base != "api_route":
+            return
+        route_path, methods = self._http_route_from_decorator(deco)
+        if not route_path:
+            return
+        via = f"@{callable_name or base}"
+        if not methods:
+            method = normalize_http_method(base if base != "route" else "get")
+            if method:
+                emit(site_uid, method, route_path, via)
+            return
+        for method in methods:
+            emit(site_uid, method, route_path, via)
+
     def _http_endpoint_records_for_definition(
         self,
         node,
@@ -1201,28 +1273,15 @@ class PythonAdapter(TreeSitterAdapter):
         site_uid = self._uid_for_node(defn, source_code, file_path)
         if not site_uid:
             return
-        from context_engine.indexer.http_endpoint import HTTP_ROUTE_REGISTER_CALLEES, normalize_http_method
-
         for deco in node.children:
             if deco.type != "decorator":
                 continue
-            callable_name = self._decorator_callable_name(deco)
-            base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
-            if base in non_http_decorators:
-                continue
-            if base not in HTTP_ROUTE_REGISTER_CALLEES and base != "api_route":
-                continue
-            route_path, methods = self._http_route_from_decorator(deco)
-            if not route_path:
-                continue
-            via = f"@{callable_name or base}"
-            if not methods:
-                method = normalize_http_method(base if base != "route" else "get")
-                if method:
-                    emit(site_uid, method, route_path, via)
-                continue
-            for method in methods:
-                emit(site_uid, method, route_path, via)
+            self._emit_http_endpoint_from_decorator(
+                deco,
+                site_uid=site_uid,
+                non_http_decorators=non_http_decorators,
+                emit=emit,
+            )
 
     def extract_http_endpoints(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """FastAPI/Flask-style route decorator facts for HTTP endpoint bridges."""
@@ -1409,72 +1468,93 @@ class PythonAdapter(TreeSitterAdapter):
             self._uid_for_node(site_node, source_code, file_path) if site_node is not None else ""
         )
 
-    def _process_hook_call(
+    def _process_hook_register_call(
+        self,
+        node,
+        *,
+        base: str,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+    ) -> None:
+        hook_name = self._hook_name_from_call_args(node)
+        if not hook_name:
+            return
+        self._emit_hook_fact(
+            out,
+            seen,
+            site_uid=self._hook_site_uid(node, source_code, file_path, decorated=True),
+            hook_name=hook_name,
+            kind="config",
+            target_kind="method",
+            via=base,
+            file_path=file_path,
+        )
+
+    def _process_hook_receiver_call(
         self,
         node,
         *,
         source_code: str,
         file_path: str,
-        register_names: frozenset[str],
         out: list[dict],
         seen: set[tuple[str, str, str, str, str]],
     ) -> None:
-        fn = node.child_by_field_name("function")
-        if fn is None:
+        sig = self._hook_first_arg_name(node)
+        if not sig.isidentifier():
             return
-        base = self._hook_call_base_name(fn)
+        site = self._hook_decorated_def(node)
+        if site is None:
+            return
+        self._emit_hook_fact(
+            out,
+            seen,
+            site_uid=self._uid_for_node(site, source_code, file_path),
+            hook_name=sig,
+            kind="config",
+            target_kind="object",
+            via="receiver",
+            file_path=file_path,
+        )
 
-        if base in register_names:
-            hook_name = self._hook_name_from_call_args(node)
-            if hook_name:
-                self._emit_hook_fact(
-                    out,
-                    seen,
-                    site_uid=self._hook_site_uid(node, source_code, file_path, decorated=True),
-                    hook_name=hook_name,
-                    kind="config",
-                    target_kind="method",
-                    via=base,
-                    file_path=file_path,
-                )
+    def _process_hook_signal_connect_call(
+        self,
+        node,
+        fn,
+        *,
+        base: str,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+    ) -> None:
+        sig = self._hook_receiver_name(fn)
+        if not sig.isidentifier():
             return
+        kind = "config" if base == "connect" else "exec"
+        via = "connect" if base == "connect" else "send"
+        self._emit_hook_fact(
+            out,
+            seen,
+            site_uid=self._hook_site_uid(node, source_code, file_path, decorated=True),
+            hook_name=sig,
+            kind=kind,
+            target_kind="object",
+            via=via,
+            file_path=file_path,
+        )
 
-        if base == "receiver":
-            sig = self._hook_first_arg_name(node)
-            if sig.isidentifier():
-                site = self._hook_decorated_def(node)
-                if site is not None:
-                    self._emit_hook_fact(
-                        out,
-                        seen,
-                        site_uid=self._uid_for_node(site, source_code, file_path),
-                        hook_name=sig,
-                        kind="config",
-                        target_kind="object",
-                        via="receiver",
-                        file_path=file_path,
-                    )
-            return
-
-        if base in ("connect", "send", "send_robust") and fn.type == "attribute":
-            sig = self._hook_receiver_name(fn)
-            if sig.isidentifier():
-                kind = "config" if base == "connect" else "exec"
-                via = "connect" if base == "connect" else "send"
-                self._emit_hook_fact(
-                    out,
-                    seen,
-                    site_uid=self._hook_site_uid(node, source_code, file_path, decorated=True),
-                    hook_name=sig,
-                    kind=kind,
-                    target_kind="object",
-                    via=via,
-                    file_path=file_path,
-                )
-            return
-
-        if fn.type != "attribute":
-            return
+    def _process_hook_dispatch_call(
+        self,
+        node,
+        fn,
+        *,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+    ) -> None:
         obj = fn.child_by_field_name("object")
         tail = fn.child_by_field_name("attribute")
         if obj is None or tail is None or obj.type != "attribute" or tail.type != "identifier":
@@ -1494,6 +1574,65 @@ class PythonAdapter(TreeSitterAdapter):
             target_kind="method",
             via="dispatch",
             file_path=file_path,
+        )
+
+    def _process_hook_call(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        register_names: frozenset[str],
+        out: list[dict],
+        seen: set[tuple[str, str, str, str, str]],
+    ) -> None:
+        fn = node.child_by_field_name("function")
+        if fn is None:
+            return
+        base = self._hook_call_base_name(fn)
+
+        if base in register_names:
+            self._process_hook_register_call(
+                node,
+                base=base,
+                source_code=source_code,
+                file_path=file_path,
+                out=out,
+                seen=seen,
+            )
+            return
+
+        if base == "receiver":
+            self._process_hook_receiver_call(
+                node,
+                source_code=source_code,
+                file_path=file_path,
+                out=out,
+                seen=seen,
+            )
+            return
+
+        if base in ("connect", "send", "send_robust") and fn.type == "attribute":
+            self._process_hook_signal_connect_call(
+                node,
+                fn,
+                base=base,
+                source_code=source_code,
+                file_path=file_path,
+                out=out,
+                seen=seen,
+            )
+            return
+
+        if fn.type != "attribute":
+            return
+        self._process_hook_dispatch_call(
+            node,
+            fn,
+            source_code=source_code,
+            file_path=file_path,
+            out=out,
+            seen=seen,
         )
 
     def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:

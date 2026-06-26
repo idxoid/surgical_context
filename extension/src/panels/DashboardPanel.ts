@@ -24,33 +24,50 @@ import {
   resolveCloudStatus,
 } from '../graphProviderStatus';
 
+function skipPrometheusLabelSeparators(labelText: string, start: number): number {
+  let i = start;
+  while (i < labelText.length && (labelText[i] === ' ' || labelText[i] === ',')) {
+    i += 1;
+  }
+  return i;
+}
+
+function parseOnePrometheusLabel(
+  labelText: string,
+  start: number
+): { key: string; value: string; next: number } | null {
+  let i = skipPrometheusLabelSeparators(labelText, start);
+  if (i >= labelText.length) {
+    return null;
+  }
+  let eq = i;
+  while (eq < labelText.length && labelText[eq] !== '=') {
+    eq += 1;
+  }
+  if (eq + 1 >= labelText.length || labelText[eq + 1] !== '"') {
+    return null;
+  }
+  const key = labelText.slice(i, eq);
+  let close = eq + 2;
+  while (close < labelText.length && labelText[close] !== '"') {
+    close += 1;
+  }
+  if (close >= labelText.length) {
+    return null;
+  }
+  return { key, value: labelText.slice(eq + 2, close), next: close + 1 };
+}
+
 function parsePrometheusLabels(labelText: string): Record<string, string> {
   const labels: Record<string, string> = {};
   let i = 0;
   while (i < labelText.length) {
-    while (i < labelText.length && (labelText[i] === ' ' || labelText[i] === ',')) {
-      i += 1;
-    }
-    if (i >= labelText.length) {
+    const parsed = parseOnePrometheusLabel(labelText, i);
+    if (!parsed) {
       break;
     }
-    let eq = i;
-    while (eq < labelText.length && labelText[eq] !== '=') {
-      eq += 1;
-    }
-    if (eq + 1 >= labelText.length || labelText[eq + 1] !== '"') {
-      break;
-    }
-    const key = labelText.slice(i, eq);
-    let close = eq + 2;
-    while (close < labelText.length && labelText[close] !== '"') {
-      close += 1;
-    }
-    if (close >= labelText.length) {
-      break;
-    }
-    labels[key] = labelText.slice(eq + 2, close);
-    i = close + 1;
+    labels[parsed.key] = parsed.value;
+    i = parsed.next;
   }
   return labels;
 }
