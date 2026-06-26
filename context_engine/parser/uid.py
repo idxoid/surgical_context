@@ -356,22 +356,34 @@ def _looks_like_normalized_type(param: str) -> bool:
     return bool(param[:1].isupper())
 
 
+def _advance_param_scan(
+    quote: str | None,
+    depth: int,
+    char: str,
+    *,
+    open_chars: str = "([{",
+    close_chars: str = ")]}",
+) -> tuple[str | None, int, bool]:
+    """Update quote/depth while scanning a parameter list. Returns (quote, depth, handled)."""
+    if quote:
+        if char == quote:
+            return None, depth, True
+        return quote, depth, True
+    if char in {'"', "'"}:
+        return char, depth, True
+    if char in open_chars:
+        return quote, depth + 1, True
+    if char in close_chars and depth:
+        return quote, depth - 1, True
+    return quote, depth, False
+
+
 def _strip_default(param: str) -> str:
     depth = 0
     quote: str | None = None
     for i, char in enumerate(param):
-        if quote:
-            if char == quote:
-                quote = None
-            continue
-        if char in {'"', "'"}:
-            quote = char
-            continue
-        if char in "([{":
-            depth += 1
-            continue
-        if char in ")]}" and depth:
-            depth -= 1
+        quote, depth, handled = _advance_param_scan(quote, depth, char)
+        if handled:
             continue
         if char == "=" and depth == 0:
             return param[:i]
@@ -384,18 +396,14 @@ def _split_params(params: str) -> list[str]:
     quote: str | None = None
     start = 0
     for i, char in enumerate(params):
-        if quote:
-            if char == quote:
-                quote = None
-            continue
-        if char in {'"', "'"}:
-            quote = char
-            continue
-        if char in "([{<":
-            depth += 1
-            continue
-        if char in ")]}>" and depth:
-            depth -= 1
+        quote, depth, handled = _advance_param_scan(
+            quote,
+            depth,
+            char,
+            open_chars="([{<",
+            close_chars=")]}>",
+        )
+        if handled:
             continue
         if char == "," and depth == 0:
             items.append(params[start:i])

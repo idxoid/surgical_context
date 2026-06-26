@@ -408,60 +408,172 @@ export class DashboardPanel {
   private parsePrometheusMetrics(metricsText: string | null): Partial<DashboardMetrics> {
     if (!metricsText) return {};
 
-    let requestsTotal = 0;
-    let tokensTotal = 0;
-    let costUsdTotal = 0;
-    let askLatencySum = 0;
-    let askLatencyCount = 0;
-    let contextModeTotal = 0;
-    let fallbackTotal = 0;
-    let feedbackTotal = 0;
-    let feedbackAccepted = 0;
-
+    const accum = this.emptyPrometheusMetricAccum();
     for (const line of metricsText.split('\n')) {
       const parsed = this.parsePrometheusLine(line);
       if (!parsed) continue;
-
-      const isAskEndpoint = parsed.labels.endpoint === '/ask'
-        || parsed.labels.endpoint === '/ask/stream';
-
-      if (parsed.name === 'context_engine_requests_total' && isAskEndpoint) {
-        requestsTotal += parsed.value;
-      } else if (parsed.name === 'context_engine_tokens_total' && isAskEndpoint) {
-        tokensTotal += parsed.value;
-      } else if (parsed.name === 'context_engine_estimated_cost_usd_total' && isAskEndpoint) {
-        costUsdTotal += parsed.value;
-      } else if (
-        parsed.name === 'context_engine_request_latency_ms_sum'
-        && isAskEndpoint
-      ) {
-        askLatencySum += parsed.value;
-      } else if (
-        parsed.name === 'context_engine_request_latency_ms_count'
-        && isAskEndpoint
-      ) {
-        askLatencyCount += parsed.value;
-      } else if (parsed.name === 'context_engine_ask_context_total') {
-        contextModeTotal += parsed.value;
-        if (['file', 'workspace', 'direct'].includes(parsed.labels.mode)) {
-          fallbackTotal += parsed.value;
-        }
-      } else if (parsed.name === 'context_engine_feedback_events_total') {
-        feedbackTotal += parsed.value;
-        if (parsed.labels.outcome === 'accept') {
-          feedbackAccepted += parsed.value;
-        }
-      }
+      this.accumulatePrometheusMetric(parsed, accum);
     }
+    return this.dashboardMetricsFromPrometheusAccum(accum);
+  }
 
+  private emptyPrometheusMetricAccum() {
     return {
-      avgLatencyMs: askLatencyCount > 0 ? askLatencySum / askLatencyCount : null,
-      fallbackRatePercent: contextModeTotal > 0 ? (fallbackTotal / contextModeTotal) * 100 : null,
-      contextQualityPercent: feedbackTotal > 0 ? (feedbackAccepted / feedbackTotal) * 100 : null,
-      requestsTotal: requestsTotal || null,
-      tokensTotal: tokensTotal || null,
-      costUsdTotal: costUsdTotal || null,
+      requestsTotal: 0,
+      tokensTotal: 0,
+      costUsdTotal: 0,
+      askLatencySum: 0,
+      askLatencyCount: 0,
+      contextModeTotal: 0,
+      fallbackTotal: 0,
+      feedbackTotal: 0,
+      feedbackAccepted: 0,
     };
+  }
+
+  private isAskEndpointMetric(labels: Record<string, string>): boolean {
+    return labels.endpoint === '/ask' || labels.endpoint === '/ask/stream';
+  }
+
+  private accumulatePrometheusMetric(
+    parsed: { name: string; labels: Record<string, string>; value: number },
+    accum: ReturnType<DashboardPanel['emptyPrometheusMetricAccum']>,
+  ): void {
+    const isAskEndpoint = this.isAskEndpointMetric(parsed.labels);
+    this.accumulateAskTrafficMetrics(parsed.name, parsed.value, isAskEndpoint, accum);
+    this.accumulateAskLatencyMetrics(parsed.name, parsed.value, isAskEndpoint, accum);
+    this.accumulateContextModeMetrics(parsed.name, parsed.value, parsed.labels, accum);
+    this.accumulateFeedbackMetrics(parsed.name, parsed.value, parsed.labels, accum);
+  }
+
+  private accumulateAskTrafficMetrics(
+    name: string,
+    value: number,
+    isAskEndpoint: boolean,
+    accum: ReturnType<DashboardPanel['emptyPrometheusMetricAccum']>,
+  ): void {
+    if (!isAskEndpoint) return;
+    if (name === 'context_engine_requests_total') {
+      accum.requestsTotal += value;
+      return;
+    }
+    if (name === 'context_engine_tokens_total') {
+      accum.tokensTotal += value;
+      return;
+    }
+    if (name === 'context_engine_estimated_cost_usd_total') {
+      accum.costUsdTotal += value;
+    }
+  }
+
+  private accumulateAskLatencyMetrics(
+    name: string,
+    value: number,
+    isAskEndpoint: boolean,
+    accum: ReturnType<DashboardPanel['emptyPrometheusMetricAccum']>,
+  ): void {
+    if (!isAskEndpoint) return;
+    if (name === 'context_engine_request_latency_ms_sum') {
+      accum.askLatencySum += value;
+      return;
+    }
+    if (name === 'context_engine_request_latency_ms_count') {
+      accum.askLatencyCount += value;
+    }
+  }
+
+  private accumulateContextModeMetrics(
+    name: string,
+    value: number,
+    labels: Record<string, string>,
+    accum: ReturnType<DashboardPanel['emptyPrometheusMetricAccum']>,
+  ): void {
+    if (name !== 'context_engine_ask_context_total') return;
+    accum.contextModeTotal += value;
+    if (['file', 'workspace', 'direct'].includes(labels.mode)) {
+      accum.fallbackTotal += value;
+    }
+  }
+
+  private accumulateFeedbackMetrics(
+    name: string,
+    value: number,
+    labels: Record<string, string>,
+    accum: ReturnType<DashboardPanel['emptyPrometheusMetricAccum']>,
+  ): void {
+    if (name !== 'context_engine_feedback_events_total') return;
+    accum.feedbackTotal += value;
+    if (labels.outcome === 'accept') {
+      accum.feedbackAccepted += value;
+    }
+  }
+
+  private dashboardMetricsFromPrometheusAccum(
+    accum: ReturnType<DashboardPanel['emptyPrometheusMetricAccum']>,
+  ): Partial<DashboardMetrics> {
+    return {
+      avgLatencyMs: accum.askLatencyCount > 0 ? accum.askLatencySum / accum.askLatencyCount : null,
+      fallbackRatePercent: accum.contextModeTotal > 0
+        ? (accum.fallbackTotal / accum.contextModeTotal) * 100
+        : null,
+      contextQualityPercent: accum.feedbackTotal > 0
+        ? (accum.feedbackAccepted / accum.feedbackTotal) * 100
+        : null,
+      requestsTotal: accum.requestsTotal || null,
+      tokensTotal: accum.tokensTotal || null,
+      costUsdTotal: accum.costUsdTotal || null,
+    };
+  }
+
+  private indexQueueHealthValue(queue: IndexQueueResponse['queue']): string {
+    if (!queue) return 'unknown';
+    if (queue.processing > 0) return 'processing';
+    if (queue.pending > 0) return 'queued';
+    return 'idle';
+  }
+
+  private indexQueueHealthDetail(queue: IndexQueueResponse['queue']): string {
+    if (!queue) return 'Index queue endpoint unavailable.';
+    return `${queue.pending} pending, ${queue.processing} processing, ${queue.failed_batches} failed batches`;
+  }
+
+  private vectorHealthStatus(metricsText: string | null, healthOk: boolean): HealthCheckItem['status'] {
+    if (metricsText) return 'ok';
+    return healthOk ? 'warning' : 'error';
+  }
+
+  private vectorHealthDetail(metricsText: string | null): string {
+    if (metricsText) {
+      return 'LanceDB client is loaded with the context_engine; retrieval metrics are reachable.';
+    }
+    return 'Metrics endpoint unavailable; vector state cannot be inferred.';
+  }
+
+  private llmHealthStatus(healthOk: boolean, llmDegraded: number): HealthCheckItem['status'] {
+    if (!healthOk) return 'error';
+    if (llmDegraded > 0) return 'warning';
+    return 'ok';
+  }
+
+  private llmHealthDetail(llmDegraded: number): string {
+    if (llmDegraded > 0) {
+      return `${llmDegraded} degraded LLM responses observed.`;
+    }
+    return 'Model route will be validated on the next ask.';
+  }
+
+  private workspaceHealthStatus(
+    workspaceFolders: readonly vscode.WorkspaceFolder[],
+    workspaceId: string | undefined,
+  ): HealthCheckItem['status'] {
+    return workspaceFolders.length > 0 && workspaceId ? 'ok' : 'warning';
+  }
+
+  private workspaceHealthDetail(workspaceFolders: readonly vscode.WorkspaceFolder[]): string {
+    if (workspaceFolders.length > 0) {
+      return workspaceFolders.map(folder => folder.name).join(', ');
+    }
+    return 'No VS Code workspace folder is open.';
   }
 
   private buildHealthChecks(input: {
@@ -496,44 +608,30 @@ export class DashboardPanel {
       {
         id: 'vector',
         label: 'Vector provider',
-        status: input.metricsText ? 'ok' : input.healthOk ? 'warning' : 'error',
+        status: this.vectorHealthStatus(input.metricsText, input.healthOk),
         value: input.metricsText ? 'context_engine-loaded' : 'unknown',
-        detail: input.metricsText
-          ? 'LanceDB client is loaded with the context_engine; retrieval metrics are reachable.'
-          : 'Metrics endpoint unavailable; vector state cannot be inferred.',
+        detail: this.vectorHealthDetail(input.metricsText),
       },
       {
         id: 'index',
         label: 'Index state',
         status: this.indexHealthStatus(input.indexQueue),
-        value: queue
-          ? queue.processing > 0
-            ? 'processing'
-            : queue.pending > 0
-              ? 'queued'
-              : 'idle'
-          : 'unknown',
-        detail: queue
-          ? `${queue.pending} pending, ${queue.processing} processing, ${queue.failed_batches} failed batches`
-          : 'Index queue endpoint unavailable.',
+        value: this.indexQueueHealthValue(queue),
+        detail: this.indexQueueHealthDetail(queue),
       },
       {
         id: 'llm',
         label: 'LLM provider',
-        status: !input.healthOk ? 'error' : llmDegraded > 0 ? 'warning' : 'ok',
+        status: this.llmHealthStatus(input.healthOk, llmDegraded),
         value: modelPreference,
-        detail: llmDegraded > 0
-          ? `${llmDegraded} degraded LLM responses observed.`
-          : 'Model route will be validated on the next ask.',
+        detail: this.llmHealthDetail(llmDegraded),
       },
       {
         id: 'workspace',
         label: 'Workspace',
-        status: workspaceFolders.length > 0 && input.workspaceId ? 'ok' : 'warning',
+        status: this.workspaceHealthStatus(workspaceFolders, input.workspaceId),
         value: input.workspaceId || 'context_engine default',
-        detail: workspaceFolders.length > 0
-          ? workspaceFolders.map(folder => folder.name).join(', ')
-          : 'No VS Code workspace folder is open.',
+        detail: this.workspaceHealthDetail(workspaceFolders),
       },
     ];
   }

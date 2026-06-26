@@ -572,52 +572,80 @@ function renderImpactItemRow(item, targetSymbol) {
     </div>
   `;
 }
-function explainImpactItem(item, targetSymbol) {
-  const kind = stringField(item.source, "kind") || arrayField(item.source, "satisfying_kinds")[0] || item.relation || item.category;
-  const edge = stringField(item.source, "edge_type", "relation") || item.relation;
-  const role = stringField(item.source, "role");
-  const provenance = arrayField(item.source, "provenance");
-  const depth = item.depth ?? 1;
-  const degraded = item.source.degraded === true;
-  let summary;
-  let path;
-  switch (kind) {
-    case "coverage_gap":
-      summary = `No test symbols or test files were returned with the impact surface for ${targetSymbol}.`;
-      path = `${targetSymbol} \u2192 no returned test coverage`;
-      break;
-    case "reverse_calls":
-    case "overlay_caller":
-      summary = depth <= 1 ? `${item.symbolName} calls or directly consumes ${targetSymbol}.` : `${item.symbolName} reaches ${targetSymbol} through ${depth} reverse call hops.`;
-      path = `${item.symbolName} \u2014${edge || "CALLS_*"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${targetSymbol}`;
-      break;
-    case "forward_calls":
-      summary = `${targetSymbol} calls or dispatches into ${item.symbolName}, so behavior can propagate forward.`;
-      path = `${targetSymbol} \u2014${edge || "CALLS_*"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
-      break;
-    case "impacted_tests":
-      summary = `${item.symbolName} exercises ${targetSymbol} or its downstream call spine.`;
-      path = `${item.symbolName} \u2014test call path, ${depth} hop${depth === 1 ? "" : "s"}\u2192 ${targetSymbol}`;
-      break;
-    case "structural_inheritor":
-      summary = `${item.symbolName} inherits an API or structural contract connected to ${targetSymbol}.`;
-      path = `${item.symbolName} \u2014${edge || "INHERITED_API"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${targetSymbol}`;
-      break;
-    case "structural_api_carrier":
-      summary = `${targetSymbol} carries or exposes the API surface ${item.symbolName}.`;
-      path = `${targetSymbol} \u2014${edge || "HAS_API"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
-      break;
-    case "forward_affects":
-      summary = `${item.symbolName} is in the precomputed downstream impact closure of ${targetSymbol}.`;
-      path = `${targetSymbol} \u2014${edge || "AFFECTS"}${depth > 1 ? ` \xD7 ${depth}` : ""}\u2192 ${item.symbolName}`;
-      break;
-    default:
-      summary = `${item.symbolName} was reached from ${targetSymbol} by the impact graph walk.`;
-      path = `${targetSymbol} \u2014${edge || item.relation}, ${depth} hop${depth === 1 ? "" : "s"}\u2192 ${item.symbolName}`;
-      break;
-  }
-  const risk = explainRisk(item);
-  const evidence = [
+function impactHopSuffix(depth) {
+  return depth > 1 ? ` \xD7 ${depth}` : "";
+}
+function impactHopsLabel(depth) {
+  return `${depth} hop${depth === 1 ? "" : "s"}`;
+}
+function explainCoverageGap(ctx) {
+  return {
+    summary: `No test symbols or test files were returned with the impact surface for ${ctx.targetSymbol}.`,
+    path: `${ctx.targetSymbol} \u2192 no returned test coverage`
+  };
+}
+function explainReverseCalls(ctx) {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: depth <= 1 ? `${item.symbolName} calls or directly consumes ${targetSymbol}.` : `${item.symbolName} reaches ${targetSymbol} through ${depth} reverse call hops.`,
+    path: `${item.symbolName} \u2014${edge || "CALLS_*"}${impactHopSuffix(depth)}\u2192 ${targetSymbol}`
+  };
+}
+function explainForwardCalls(ctx) {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${targetSymbol} calls or dispatches into ${item.symbolName}, so behavior can propagate forward.`,
+    path: `${targetSymbol} \u2014${edge || "CALLS_*"}${impactHopSuffix(depth)}\u2192 ${item.symbolName}`
+  };
+}
+function explainImpactedTests(ctx) {
+  const { item, targetSymbol, depth } = ctx;
+  return {
+    summary: `${item.symbolName} exercises ${targetSymbol} or its downstream call spine.`,
+    path: `${item.symbolName} \u2014test call path, ${impactHopsLabel(depth)}\u2192 ${targetSymbol}`
+  };
+}
+function explainStructuralInheritor(ctx) {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${item.symbolName} inherits an API or structural contract connected to ${targetSymbol}.`,
+    path: `${item.symbolName} \u2014${edge || "INHERITED_API"}${impactHopSuffix(depth)}\u2192 ${targetSymbol}`
+  };
+}
+function explainStructuralApiCarrier(ctx) {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${targetSymbol} carries or exposes the API surface ${item.symbolName}.`,
+    path: `${targetSymbol} \u2014${edge || "HAS_API"}${impactHopSuffix(depth)}\u2192 ${item.symbolName}`
+  };
+}
+function explainForwardAffects(ctx) {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${item.symbolName} is in the precomputed downstream impact closure of ${targetSymbol}.`,
+    path: `${targetSymbol} \u2014${edge || "AFFECTS"}${impactHopSuffix(depth)}\u2192 ${item.symbolName}`
+  };
+}
+function explainDefaultImpact(ctx) {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${item.symbolName} was reached from ${targetSymbol} by the impact graph walk.`,
+    path: `${targetSymbol} \u2014${edge || item.relation}, ${impactHopsLabel(depth)}\u2192 ${item.symbolName}`
+  };
+}
+var IMPACT_KIND_EXPLAINERS = {
+  coverage_gap: explainCoverageGap,
+  reverse_calls: explainReverseCalls,
+  overlay_caller: explainReverseCalls,
+  forward_calls: explainForwardCalls,
+  impacted_tests: explainImpactedTests,
+  structural_inheritor: explainStructuralInheritor,
+  structural_api_carrier: explainStructuralApiCarrier,
+  forward_affects: explainForwardAffects
+};
+function buildImpactEvidence(item, options) {
+  const { edge, kind, role, depth, degraded, provenance } = options;
+  return [
     edge ? `edge ${edge}` : "",
     kind ? `walk ${kind}` : "",
     role ? `role ${role}` : "",
@@ -626,12 +654,43 @@ function explainImpactItem(item, targetSymbol) {
     degraded ? "unsaved editor overlay" : "impact response",
     ...provenance.map((value) => `provenance ${value}`)
   ].filter(Boolean);
+}
+function explainImpactCaveat(item, options) {
+  const { depth, degraded } = options;
+  if (item.synthetic) {
+    return "This warning is inferred from missing returned evidence; it does not prove that coverage is absent.";
+  }
+  if (degraded) {
+    return "This connection comes from unsaved buffers and is name-based, so the impact surface is partial.";
+  }
+  if (depth > 1) {
+    return "The response identifies the traversal and hop count, but does not include every intermediate symbol.";
+  }
+  return void 0;
+}
+function explainImpactItem(item, targetSymbol) {
+  const kind = stringField(item.source, "kind") || arrayField(item.source, "satisfying_kinds")[0] || item.relation || item.category;
+  const edge = stringField(item.source, "edge_type", "relation") || item.relation;
+  const role = stringField(item.source, "role");
+  const provenance = arrayField(item.source, "provenance");
+  const depth = item.depth ?? 1;
+  const degraded = item.source.degraded === true;
+  const ctx = { item, targetSymbol, edge, depth };
+  const explainer = IMPACT_KIND_EXPLAINERS[kind] ?? explainDefaultImpact;
+  const { summary, path } = explainer(ctx);
   return {
     summary,
     path,
-    risk,
-    evidence,
-    caveat: item.synthetic ? "This warning is inferred from missing returned evidence; it does not prove that coverage is absent." : degraded ? "This connection comes from unsaved buffers and is name-based, so the impact surface is partial." : depth > 1 ? "The response identifies the traversal and hop count, but does not include every intermediate symbol." : void 0
+    risk: explainRisk(item),
+    evidence: buildImpactEvidence(item, {
+      edge,
+      kind,
+      role,
+      depth,
+      degraded,
+      provenance
+    }),
+    caveat: explainImpactCaveat(item, { depth, degraded })
   };
 }
 function explainRisk(item) {

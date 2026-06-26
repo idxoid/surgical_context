@@ -18,7 +18,9 @@ from context_engine.indexer.fast.pipeline import (
     _symbol_alias_phase,
     _type_reference_phase,
 )
+from context_engine.parser.extractor import SymbolExtractor
 from context_engine.parser.protocol import ImportEdge, SymbolMetadata
+from context_engine.workspace import DEFAULT_WORKSPACE_ID
 
 
 class _StubLanceDBClient(LanceDBClient):
@@ -427,7 +429,13 @@ def run(x: int):
             def __init__(self):
                 self.rows = []
 
-            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.rows = symbols
 
         lance = FakeLance()
@@ -487,7 +495,13 @@ def run(x: int):
         class FakeLance(_StubLanceDBClient):
             index_profile_name = AXIS_PYTHON_V1_PROFILE
 
-            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.rows = symbols
 
         lance = FakeLance()
@@ -541,7 +555,13 @@ class Settings:
             def __init__(self):
                 self.rows = []
 
-            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.rows = symbols
 
         lance = FakeLance()
@@ -601,7 +621,13 @@ export class GuardsContextCreator {
             def __init__(self):
                 self.rows = []
 
-            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.rows = symbols
 
         class BridgeProbe:
@@ -684,7 +710,13 @@ export class GuardsContextCreator {
             def __init__(self):
                 self.rows = []
 
-            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.rows = symbols
 
         class MarkerProbe:
@@ -761,7 +793,13 @@ export class GuardsContextCreator {
             def __init__(self):
                 self.rows = []
 
-            def upsert_symbol_embeddings(self, symbols, *, workspace_id, progress_callback=None):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.rows = symbols
 
         lance = FakeLance()
@@ -884,10 +922,21 @@ export class GuardsContextCreator {
                 self.upserted = []
                 self.deleted = []
 
-            def upsert_symbol_embeddings(self, symbols):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.upserted = [s["uid"] for s in symbols]
 
-            def delete_symbol_embeddings(self, uids):
+            def delete_symbol_embeddings(
+                self,
+                uids,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+            ):
                 self.deleted = uids
 
         class FakeExtractor:
@@ -939,7 +988,7 @@ export class GuardsContextCreator {
             str(source_file),
             cast(Neo4jClient, db),
             lance,
-            FakeExtractor(),
+            cast(SymbolExtractor, FakeExtractor()),
             workspace_id="acme/repo@main",
         )
 
@@ -988,10 +1037,21 @@ export class GuardsContextCreator {
                 self.deleted_imports = True
 
         class FakeLance(_StubLanceDBClient):
-            def upsert_symbol_embeddings(self, symbols):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.upserted = symbols
 
-            def delete_symbol_embeddings(self, uids):
+            def delete_symbol_embeddings(
+                self,
+                uids,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+            ):
                 self.deleted = uids
 
         class FakeExtractor:
@@ -1020,7 +1080,7 @@ export class GuardsContextCreator {
             str(source_file),
             cast(Neo4jClient, db),
             lance,
-            FakeExtractor(),
+            cast(SymbolExtractor, FakeExtractor()),
             workspace_id="acme/repo@main",
         )
 
@@ -1090,7 +1150,13 @@ class Settings:
             def __init__(self):
                 self.rows = []
 
-            def upsert_symbol_embeddings(self, symbols, *, workspace_id=None, **kwargs):
+            def upsert_symbol_embeddings(
+                self,
+                symbols,
+                *,
+                workspace_id: str = DEFAULT_WORKSPACE_ID,
+                progress_callback=None,
+            ):
                 self.rows = symbols
 
         finalize_calls = []
@@ -1109,8 +1175,6 @@ class Settings:
                 finalize_calls.append({"workspace_id": workspace_id, **kwargs}) or {}
             ),
         )
-
-        from context_engine.parser.extractor import SymbolExtractor
 
         extractor = SymbolExtractor()
         extractor.project_root = str(tmp_path)

@@ -267,6 +267,53 @@ def _common_dir_prefix(paths: list[str]) -> str:
     return pref.rstrip("/") + "/"
 
 
+def _collect_deduped_bundle_symbols(result) -> tuple[list, list[str]]:
+    seen_uid: set[str] = set()
+    seen_file: set[str] = set()
+    files: list[str] = []
+    syms = []
+    for bundle in result.bundles:
+        for sym in bundle.all_symbols():
+            if sym.uid in seen_uid:
+                continue
+            seen_uid.add(sym.uid)
+            syms.append(sym)
+            fp = sym.file_path or ""
+            if fp and fp not in seen_file:
+                seen_file.add(fp)
+                files.append(fp)
+    return syms, files
+
+
+def _bundle_symbol_meta(sym) -> str:
+    meta = f"{sym.role} · d{sym.distance_from_seed}"
+    step = sym.expansion_step or ""
+    if step and step not in (sym.role, "seed"):
+        meta += f" · {step}"
+    return meta
+
+
+def _append_bundle_symbol_lines(
+    parts: list[str],
+    sym,
+    *,
+    prefix: str,
+    names_only: bool,
+) -> None:
+    fp = sym.file_path or ""
+    rel = fp[len(prefix) :] if prefix and fp.startswith(prefix) else fp
+    meta = _bundle_symbol_meta(sym)
+    if names_only:
+        parts.append(f"- {rel} :: {sym.name} ({meta})")
+        return
+    parts.append(f"### {rel} :: {sym.name} · {meta}")
+    if sym.code:
+        parts.append("```python")
+        parts.append(sym.code.rstrip())
+        parts.append("```")
+    parts.append("")
+
+
 def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str]:
     """Flatten ``result.bundles`` into a deduped, prompt-ready markdown block.
 
@@ -284,22 +331,7 @@ def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str
     if not result.bundles:
         return [], ""
 
-    seen_uid: set[str] = set()
-    seen_file: set[str] = set()
-    files: list[str] = []
-    syms = []
-
-    for bundle in result.bundles:
-        for sym in bundle.all_symbols():
-            if sym.uid in seen_uid:
-                continue
-            seen_uid.add(sym.uid)
-            syms.append(sym)
-            fp = sym.file_path or ""
-            if fp and fp not in seen_file:
-                seen_file.add(fp)
-                files.append(fp)
-
+    syms, files = _collect_deduped_bundle_symbols(result)
     prefix = _common_dir_prefix(files)
     parts: list[str] = []
     if prefix:
@@ -307,23 +339,7 @@ def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str
         parts.append("")
 
     for sym in syms:
-        fp = sym.file_path or ""
-        rel = fp[len(prefix) :] if prefix and fp.startswith(prefix) else fp
-        meta = f"{sym.role} · d{sym.distance_from_seed}"
-        step = sym.expansion_step or ""
-        if step and step not in (sym.role, "seed"):
-            meta += f" · {step}"
-
-        if names_only:
-            parts.append(f"- {rel} :: {sym.name} ({meta})")
-            continue
-
-        parts.append(f"### {rel} :: {sym.name} · {meta}")
-        if sym.code:
-            parts.append("```python")
-            parts.append(sym.code.rstrip())
-            parts.append("```")
-        parts.append("")
+        _append_bundle_symbol_lines(parts, sym, prefix=prefix, names_only=names_only)
 
     return files, "\n".join(parts).rstrip() + "\n"
 

@@ -489,43 +489,58 @@ def _ensure_context_engine_for_smoke(
         return health, process
 
 
-def smoke(args: argparse.Namespace) -> int:
-    """Run a local product smoke test against a running context_engine."""
+def _smoke_base_url(args: argparse.Namespace) -> str:
     if args.base_url:
-        base_url = args.base_url.rstrip("/")
-    else:
-        base_url = _sidecar_base_url(args.host, args.port, args.scheme or None)
+        return args.base_url.rstrip("/")
+    return _sidecar_base_url(args.host, args.port, args.scheme or None)
+
+
+def _smoke_paths(args: argparse.Namespace) -> tuple[Path, Path]:
     default_project_path = ROOT if args.full_repo else SMOKE_PROJECT_DIR
     default_docs_path = ROOT / "docs" if args.full_repo else SMOKE_DOCS_PATH
     project_path = Path(args.project_path or default_project_path).resolve()
     docs_path = Path(args.docs_path or default_docs_path).resolve()
-    workspace_id = _resolve_smoke_workspace_id(project_path, args.workspace_id)
-    if args.workspace_id.strip():
-        from context_engine.workspace import assert_workspace_repo_matches_project_root
+    return project_path, docs_path
 
-        try:
-            assert_workspace_repo_matches_project_root(project_path, workspace_id)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"{exc}. Use --workspace-id local/{project_path.name}@main, "
-                "or index the full repo with --full-repo."
-            ) from exc
 
-    if args.dry_run:
-        print(
-            "Smoke would check extension assets, local dirs, context_engine health, indexes, ask, impact, and metrics."
-        )
-        if not args.skip_storage:
-            compose = _compose_cmd() or ["docker", "compose"]
-            print(f"$ {_display_cmd([*compose, 'up', '-d', 'neo4j'])}")
-        if not args.no_start_context_engine:
-            print(f"$ {_display_cmd(context_engine_command(args))}")
-        print(f"Project path: {project_path}")
-        print(f"Docs path: {docs_path}")
-        print(f"Base URL: {base_url}")
-        print(f"Workspace: {workspace_id}")
-        return 0
+def _validate_smoke_workspace_id(project_path: Path, workspace_id: str, args: argparse.Namespace) -> None:
+    if not args.workspace_id.strip():
+        return
+    from context_engine.workspace import assert_workspace_repo_matches_project_root
 
+    try:
+        assert_workspace_repo_matches_project_root(project_path, workspace_id)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{exc}. Use --workspace-id local/{project_path.name}@main, "
+            "or index the full repo with --full-repo."
+        ) from exc
+
+
+def _smoke_dry_run(
+    args: argparse.Namespace,
+    *,
+    base_url: str,
+    project_path: Path,
+    docs_path: Path,
+    workspace_id: str,
+) -> int:
+    print(
+        "Smoke would check extension assets, local dirs, context_engine health, indexes, ask, impact, and metrics."
+    )
+    if not args.skip_storage:
+        compose = _compose_cmd() or ["docker", "compose"]
+        print(f"$ {_display_cmd([*compose, 'up', '-d', 'neo4j'])}")
+    if not args.no_start_context_engine:
+        print(f"$ {_display_cmd(context_engine_command(args))}")
+    print(f"Project path: {project_path}")
+    print(f"Docs path: {docs_path}")
+    print(f"Base URL: {base_url}")
+    print(f"Workspace: {workspace_id}")
+    return 0
+
+
+def _run_smoke_preflight(args: argparse.Namespace) -> None:
     _smoke_step(
         "extension assets",
         lambda: [
@@ -540,6 +555,134 @@ def smoke(args: argparse.Namespace) -> int:
     )
     _smoke_step("Neo4j storage", lambda: start_storage(args))
 
+
+def _run_smoke_api_checks(
+    args: argparse.Namespace,
+    *,
+    base_url: str,
+    workspace_id: str,
+    project_path: Path,
+    docs_path: Path,
+) -> None:
+    _smoke_step(
+        "cloud/provider status",
+        lambda: _request_json(
+            "GET",
+            base_url,
+            "/status/cloud",
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+        ),
+    )
+
+    if not args.skip_index:
+        _smoke_step(
+            "index code",
+            lambda: _request_json(
+                "POST",
+                base_url,
+                "/index",
+                payload={"project_path": str(project_path), "queue": False},
+                workspace_id=workspace_id,
+                timeout=args.long_timeout,
+            ),
+        )
+
+    if not args.skip_docs:
+        _smoke_step(
+            "index docs",
+            lambda: _request_json(
+                "POST",
+                base_url,
+                "/index/docs",
+                payload={"docs_path": str(docs_path)},
+                workspace_id=workspace_id,
+                timeout=args.long_timeout,
+            ),
+        )
+
+    search = _smoke_step(
+        "unified search",
+        lambda: _request_json(
+            "POST",
+            base_url,
+            "/search/unified",
+            payload={
+                "query": args.question,
+                "symbol": args.symbol,
+                "limit": 3,
+                "include_graph": True,
+                "token_budget": args.token_budget,
+            },
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+        ),
+    )
+    if "results" not in search:
+        raise RuntimeError(f"Unexpected search response: {search}")
+
+    ask = _smoke_step(
+        "ask",
+        lambda: _request_json(
+            "POST",
+            base_url,
+            "/ask",
+            payload={
+                "symbol": args.symbol,
+                "question": args.question,
+                "token_budget": args.token_budget,
+            },
+            workspace_id=workspace_id,
+            timeout=args.long_timeout,
+        ),
+    )
+    if not ask.get("context") or not ask.get("trace_id"):
+        raise RuntimeError(f"Unexpected ask response keys: {sorted(ask)}")
+
+    _smoke_step(
+        "impact",
+        lambda: _request_json(
+            "GET",
+            base_url,
+            "/impact",
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+            query={"symbol": args.symbol},
+        ),
+    )
+
+    metrics = _smoke_step(
+        "dashboard metrics",
+        lambda: _request_text(
+            "GET",
+            base_url,
+            "/metrics",
+            workspace_id=workspace_id,
+            timeout=args.timeout,
+        ),
+    )
+    if "context_engine_" not in metrics:
+        raise RuntimeError("Metrics response did not contain context_engine metrics.")
+
+
+def smoke(args: argparse.Namespace) -> int:
+    """Run a local product smoke test against a running context_engine."""
+    base_url = _smoke_base_url(args)
+    project_path, docs_path = _smoke_paths(args)
+    workspace_id = _resolve_smoke_workspace_id(project_path, args.workspace_id)
+    _validate_smoke_workspace_id(project_path, workspace_id, args)
+
+    if args.dry_run:
+        return _smoke_dry_run(
+            args,
+            base_url=base_url,
+            project_path=project_path,
+            docs_path=docs_path,
+            workspace_id=workspace_id,
+        )
+
+    _run_smoke_preflight(args)
+
     context_engine_process = None
     try:
         health, context_engine_process = _smoke_step(
@@ -553,105 +696,13 @@ def smoke(args: argparse.Namespace) -> int:
         if health.get("status") != "ok":
             raise RuntimeError(f"Unexpected health response: {health}")
 
-        _smoke_step(
-            "cloud/provider status",
-            lambda: _request_json(
-                "GET",
-                base_url,
-                "/status/cloud",
-                workspace_id=workspace_id,
-                timeout=args.timeout,
-            ),
+        _run_smoke_api_checks(
+            args,
+            base_url=base_url,
+            workspace_id=workspace_id,
+            project_path=project_path,
+            docs_path=docs_path,
         )
-
-        if not args.skip_index:
-            _smoke_step(
-                "index code",
-                lambda: _request_json(
-                    "POST",
-                    base_url,
-                    "/index",
-                    payload={"project_path": str(project_path), "queue": False},
-                    workspace_id=workspace_id,
-                    timeout=args.long_timeout,
-                ),
-            )
-
-        if not args.skip_docs:
-            _smoke_step(
-                "index docs",
-                lambda: _request_json(
-                    "POST",
-                    base_url,
-                    "/index/docs",
-                    payload={"docs_path": str(docs_path)},
-                    workspace_id=workspace_id,
-                    timeout=args.long_timeout,
-                ),
-            )
-
-        search = _smoke_step(
-            "unified search",
-            lambda: _request_json(
-                "POST",
-                base_url,
-                "/search/unified",
-                payload={
-                    "query": args.question,
-                    "symbol": args.symbol,
-                    "limit": 3,
-                    "include_graph": True,
-                    "token_budget": args.token_budget,
-                },
-                workspace_id=workspace_id,
-                timeout=args.timeout,
-            ),
-        )
-        if "results" not in search:
-            raise RuntimeError(f"Unexpected search response: {search}")
-
-        ask = _smoke_step(
-            "ask",
-            lambda: _request_json(
-                "POST",
-                base_url,
-                "/ask",
-                payload={
-                    "symbol": args.symbol,
-                    "question": args.question,
-                    "token_budget": args.token_budget,
-                },
-                workspace_id=workspace_id,
-                timeout=args.long_timeout,
-            ),
-        )
-        if not ask.get("context") or not ask.get("trace_id"):
-            raise RuntimeError(f"Unexpected ask response keys: {sorted(ask)}")
-
-        _smoke_step(
-            "impact",
-            lambda: _request_json(
-                "GET",
-                base_url,
-                "/impact",
-                workspace_id=workspace_id,
-                timeout=args.timeout,
-                query={"symbol": args.symbol},
-            ),
-        )
-
-        metrics = _smoke_step(
-            "dashboard metrics",
-            lambda: _request_text(
-                "GET",
-                base_url,
-                "/metrics",
-                workspace_id=workspace_id,
-                timeout=args.timeout,
-            ),
-        )
-        if "context_engine_" not in metrics:
-            raise RuntimeError("Metrics response did not contain context_engine metrics.")
 
         print("\nLocal smoke test passed.")
         return 0

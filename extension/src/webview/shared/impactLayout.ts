@@ -426,56 +426,113 @@ function renderImpactItemRow(item: ImpactItem, targetSymbol: string): string {
   `;
 }
 
-function explainImpactItem(item: ImpactItem, targetSymbol: string): ImpactExplanation {
-  const kind = stringField(item.source, 'kind') || arrayField(item.source, 'satisfying_kinds')[0] || item.relation || item.category;
-  const edge = stringField(item.source, 'edge_type', 'relation') || item.relation;
-  const role = stringField(item.source, 'role');
-  const provenance = arrayField(item.source, 'provenance');
-  const depth = item.depth ?? 1;
-  const degraded = item.source.degraded === true;
-  let summary: string;
-  let path: string;
+interface ImpactExplainContext {
+  item: ImpactItem;
+  targetSymbol: string;
+  edge: string;
+  depth: number;
+}
 
-  switch (kind) {
-    case 'coverage_gap':
-      summary = `No test symbols or test files were returned with the impact surface for ${targetSymbol}.`;
-      path = `${targetSymbol} → no returned test coverage`;
-      break;
-    case 'reverse_calls':
-    case 'overlay_caller':
-      summary = depth <= 1
-        ? `${item.symbolName} calls or directly consumes ${targetSymbol}.`
-        : `${item.symbolName} reaches ${targetSymbol} through ${depth} reverse call hops.`;
-      path = `${item.symbolName} —${edge || 'CALLS_*'}${depth > 1 ? ` × ${depth}` : ''}→ ${targetSymbol}`;
-      break;
-    case 'forward_calls':
-      summary = `${targetSymbol} calls or dispatches into ${item.symbolName}, so behavior can propagate forward.`;
-      path = `${targetSymbol} —${edge || 'CALLS_*'}${depth > 1 ? ` × ${depth}` : ''}→ ${item.symbolName}`;
-      break;
-    case 'impacted_tests':
-      summary = `${item.symbolName} exercises ${targetSymbol} or its downstream call spine.`;
-      path = `${item.symbolName} —test call path, ${depth} hop${depth === 1 ? '' : 's'}→ ${targetSymbol}`;
-      break;
-    case 'structural_inheritor':
-      summary = `${item.symbolName} inherits an API or structural contract connected to ${targetSymbol}.`;
-      path = `${item.symbolName} —${edge || 'INHERITED_API'}${depth > 1 ? ` × ${depth}` : ''}→ ${targetSymbol}`;
-      break;
-    case 'structural_api_carrier':
-      summary = `${targetSymbol} carries or exposes the API surface ${item.symbolName}.`;
-      path = `${targetSymbol} —${edge || 'HAS_API'}${depth > 1 ? ` × ${depth}` : ''}→ ${item.symbolName}`;
-      break;
-    case 'forward_affects':
-      summary = `${item.symbolName} is in the precomputed downstream impact closure of ${targetSymbol}.`;
-      path = `${targetSymbol} —${edge || 'AFFECTS'}${depth > 1 ? ` × ${depth}` : ''}→ ${item.symbolName}`;
-      break;
-    default:
-      summary = `${item.symbolName} was reached from ${targetSymbol} by the impact graph walk.`;
-      path = `${targetSymbol} —${edge || item.relation}, ${depth} hop${depth === 1 ? '' : 's'}→ ${item.symbolName}`;
-      break;
-  }
+function impactHopSuffix(depth: number): string {
+  return depth > 1 ? ` × ${depth}` : '';
+}
 
-  const risk = explainRisk(item);
-  const evidence = [
+function impactHopsLabel(depth: number): string {
+  return `${depth} hop${depth === 1 ? '' : 's'}`;
+}
+
+function explainCoverageGap(ctx: ImpactExplainContext): Pick<ImpactExplanation, 'summary' | 'path'> {
+  return {
+    summary: `No test symbols or test files were returned with the impact surface for ${ctx.targetSymbol}.`,
+    path: `${ctx.targetSymbol} → no returned test coverage`,
+  };
+}
+
+function explainReverseCalls(ctx: ImpactExplainContext): Pick<ImpactExplanation, 'summary' | 'path'> {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: depth <= 1
+      ? `${item.symbolName} calls or directly consumes ${targetSymbol}.`
+      : `${item.symbolName} reaches ${targetSymbol} through ${depth} reverse call hops.`,
+    path: `${item.symbolName} —${edge || 'CALLS_*'}${impactHopSuffix(depth)}→ ${targetSymbol}`,
+  };
+}
+
+function explainForwardCalls(ctx: ImpactExplainContext): Pick<ImpactExplanation, 'summary' | 'path'> {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${targetSymbol} calls or dispatches into ${item.symbolName}, so behavior can propagate forward.`,
+    path: `${targetSymbol} —${edge || 'CALLS_*'}${impactHopSuffix(depth)}→ ${item.symbolName}`,
+  };
+}
+
+function explainImpactedTests(ctx: ImpactExplainContext): Pick<ImpactExplanation, 'summary' | 'path'> {
+  const { item, targetSymbol, depth } = ctx;
+  return {
+    summary: `${item.symbolName} exercises ${targetSymbol} or its downstream call spine.`,
+    path: `${item.symbolName} —test call path, ${impactHopsLabel(depth)}→ ${targetSymbol}`,
+  };
+}
+
+function explainStructuralInheritor(ctx: ImpactExplainContext): Pick<ImpactExplanation, 'summary' | 'path'> {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${item.symbolName} inherits an API or structural contract connected to ${targetSymbol}.`,
+    path: `${item.symbolName} —${edge || 'INHERITED_API'}${impactHopSuffix(depth)}→ ${targetSymbol}`,
+  };
+}
+
+function explainStructuralApiCarrier(ctx: ImpactExplainContext): Pick<ImpactExplanation, 'summary' | 'path'> {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${targetSymbol} carries or exposes the API surface ${item.symbolName}.`,
+    path: `${targetSymbol} —${edge || 'HAS_API'}${impactHopSuffix(depth)}→ ${item.symbolName}`,
+  };
+}
+
+function explainForwardAffects(ctx: ImpactExplainContext): Pick<ImpactExplanation, 'summary' | 'path'> {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${item.symbolName} is in the precomputed downstream impact closure of ${targetSymbol}.`,
+    path: `${targetSymbol} —${edge || 'AFFECTS'}${impactHopSuffix(depth)}→ ${item.symbolName}`,
+  };
+}
+
+function explainDefaultImpact(ctx: ImpactExplainContext): Pick<ImpactExplanation, 'summary' | 'path'> {
+  const { item, targetSymbol, edge, depth } = ctx;
+  return {
+    summary: `${item.symbolName} was reached from ${targetSymbol} by the impact graph walk.`,
+    path: `${targetSymbol} —${edge || item.relation}, ${impactHopsLabel(depth)}→ ${item.symbolName}`,
+  };
+}
+
+const IMPACT_KIND_EXPLAINERS: Record<
+  string,
+  (ctx: ImpactExplainContext) => Pick<ImpactExplanation, 'summary' | 'path'>
+> = {
+  coverage_gap: explainCoverageGap,
+  reverse_calls: explainReverseCalls,
+  overlay_caller: explainReverseCalls,
+  forward_calls: explainForwardCalls,
+  impacted_tests: explainImpactedTests,
+  structural_inheritor: explainStructuralInheritor,
+  structural_api_carrier: explainStructuralApiCarrier,
+  forward_affects: explainForwardAffects,
+};
+
+function buildImpactEvidence(
+  item: ImpactItem,
+  options: {
+    edge: string;
+    kind: string;
+    role: string;
+    depth: number;
+    degraded: boolean;
+    provenance: string[];
+  },
+): string[] {
+  const { edge, kind, role, depth, degraded, provenance } = options;
+  return [
     edge ? `edge ${edge}` : '',
     kind ? `walk ${kind}` : '',
     role ? `role ${role}` : '',
@@ -484,19 +541,49 @@ function explainImpactItem(item: ImpactItem, targetSymbol: string): ImpactExplan
     degraded ? 'unsaved editor overlay' : 'impact response',
     ...provenance.map(value => `provenance ${value}`),
   ].filter(Boolean);
+}
+
+function explainImpactCaveat(
+  item: ImpactItem,
+  options: { depth: number; degraded: boolean },
+): string | undefined {
+  const { depth, degraded } = options;
+  if (item.synthetic) {
+    return 'This warning is inferred from missing returned evidence; it does not prove that coverage is absent.';
+  }
+  if (degraded) {
+    return 'This connection comes from unsaved buffers and is name-based, so the impact surface is partial.';
+  }
+  if (depth > 1) {
+    return 'The response identifies the traversal and hop count, but does not include every intermediate symbol.';
+  }
+  return undefined;
+}
+
+function explainImpactItem(item: ImpactItem, targetSymbol: string): ImpactExplanation {
+  const kind = stringField(item.source, 'kind') || arrayField(item.source, 'satisfying_kinds')[0] || item.relation || item.category;
+  const edge = stringField(item.source, 'edge_type', 'relation') || item.relation;
+  const role = stringField(item.source, 'role');
+  const provenance = arrayField(item.source, 'provenance');
+  const depth = item.depth ?? 1;
+  const degraded = item.source.degraded === true;
+  const ctx: ImpactExplainContext = { item, targetSymbol, edge, depth };
+  const explainer = IMPACT_KIND_EXPLAINERS[kind] ?? explainDefaultImpact;
+  const { summary, path } = explainer(ctx);
 
   return {
     summary,
     path,
-    risk,
-    evidence,
-    caveat: item.synthetic
-      ? 'This warning is inferred from missing returned evidence; it does not prove that coverage is absent.'
-      : degraded
-        ? 'This connection comes from unsaved buffers and is name-based, so the impact surface is partial.'
-        : depth > 1
-          ? 'The response identifies the traversal and hop count, but does not include every intermediate symbol.'
-          : undefined,
+    risk: explainRisk(item),
+    evidence: buildImpactEvidence(item, {
+      edge,
+      kind,
+      role,
+      depth,
+      degraded,
+      provenance,
+    }),
+    caveat: explainImpactCaveat(item, { depth, degraded }),
   };
 }
 

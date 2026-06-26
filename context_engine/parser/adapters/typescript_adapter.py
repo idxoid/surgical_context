@@ -1537,6 +1537,81 @@ class TypeScriptAdapter(TreeSitterAdapter):
             )
         return out
 
+    def _resolve_new_instantiation_target(
+        self,
+        ctor,
+        owner,
+        *,
+        source_code: str,
+        import_bindings: dict[str, str],
+        module: str,
+        local_classes: set[str],
+    ) -> tuple[str, str, bool] | None:
+        typed_locals = self._class_typed_locals(
+            owner,
+            source_code,
+            import_bindings,
+            module,
+            local_classes,
+        )
+        if ctor.type == "identifier":
+            local_name = self._node_text(ctor)
+            if local_name in typed_locals:
+                return typed_locals[local_name]
+        return self._resolve_new_callee(
+            ctor,
+            import_bindings=import_bindings,
+            local_classes=local_classes,
+            module=module,
+        )
+
+    def _instantiation_from_new_expression(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        module: str,
+        import_bindings: dict[str, str],
+        local_classes: set[str],
+        out: list[dict],
+        seen: set[tuple[str, str, str]],
+    ) -> None:
+        ctor = node.child_by_field_name("constructor")
+        if ctor is None:
+            return
+        owner = self._enclosing_symbol_owner(node)
+        if owner is None:
+            return
+        caller_uid = self._caller_uid_for_owner(owner, source_code, file_path)
+        if not caller_uid:
+            return
+        resolved = self._resolve_new_instantiation_target(
+            ctor,
+            owner,
+            source_code=source_code,
+            import_bindings=import_bindings,
+            module=module,
+            local_classes=local_classes,
+        )
+        if resolved is None:
+            return
+        type_name, type_qn, is_external = resolved
+        bucket = "external" if is_external else "internal"
+        key = (caller_uid, type_qn, bucket)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(
+            {
+                "caller_uid": caller_uid,
+                "type_name": type_name,
+                "type_qualified_name": type_qn,
+                "is_external": is_external,
+                "file_path": file_path,
+            }
+        )
+
     def extract_instantiations(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """INSTANTIATES edges: caller symbol -> the project class it constructs.
 
@@ -1557,50 +1632,15 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for node in self._iter_nodes(tree.root_node):
             if node.type != "new_expression":
                 continue
-            ctor = node.child_by_field_name("constructor")
-            if ctor is None:
-                continue
-            owner = self._enclosing_symbol_owner(node)
-            if owner is None:
-                continue
-            caller_uid = self._caller_uid_for_owner(owner, source_code, file_path)
-            if not caller_uid:
-                continue
-            typed_locals = self._class_typed_locals(
-                owner,
-                source_code,
-                import_bindings,
-                module,
-                local_classes,
-            )
-            resolved = None
-            if ctor.type == "identifier":
-                local_name = self._node_text(ctor)
-                if local_name in typed_locals:
-                    resolved = typed_locals[local_name]
-            if resolved is None:
-                resolved = self._resolve_new_callee(
-                    ctor,
-                    import_bindings=import_bindings,
-                    local_classes=local_classes,
-                    module=module,
-                )
-            if resolved is None:
-                continue
-            type_name, type_qn, is_external = resolved
-            bucket = "external" if is_external else "internal"
-            key = (caller_uid, type_qn, bucket)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(
-                {
-                    "caller_uid": caller_uid,
-                    "type_name": type_name,
-                    "type_qualified_name": type_qn,
-                    "is_external": is_external,
-                    "file_path": file_path,
-                }
+            self._instantiation_from_new_expression(
+                node,
+                source_code=source_code,
+                file_path=file_path,
+                module=module,
+                import_bindings=import_bindings,
+                local_classes=local_classes,
+                out=out,
+                seen=seen,
             )
         return out
 
@@ -1847,6 +1887,100 @@ class TypeScriptAdapter(TreeSitterAdapter):
             )
         return out
 
+    def _append_metadata_bridge_fact(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+        *,
+        file_path: str,
+        site_uid: str,
+        key_qn: str,
+        key_name: str,
+        role: str,
+        via: str,
+    ) -> None:
+        if not site_uid or not key_qn:
+            return
+        key = (site_uid, key_qn, role, via)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(
+            {
+                "site_uid": site_uid,
+                "key_qn": key_qn,
+                "key_name": key_name,
+                "role": role,
+                "via": via,
+                "file_path": file_path,
+            }
+        )
+
+    def _metadata_bridge_call_kind(self, func) -> tuple[str, str, bool, int] | None:
+        if func.type == "member_expression":
+            path = self._member_expression_path(func)
+            if len(path) < 2:
+                return None
+            head, callee = path[0], path[-1]
+            if head == "Reflect" and callee in self._REFLECT_DEFINE_METHODS:
+                return "define", f"Reflect.{callee}", False, 0
+            if head == "Reflect" and callee in self._REFLECT_READ_METHODS:
+                return "read", f"Reflect.{callee}", False, 0
+            if callee in self._REFLECTOR_DISTINCT_METHODS:
+                return "read", f"reflector.{callee}", False, 0
+            if callee in self._REFLECTOR_GENERIC_METHODS:
+                return "read", f"reflector.{callee}", True, 0
+            if callee in self._METADATA_READ_HELPERS:
+                return "read", callee, True, 2
+            return None
+        if func.type == "identifier" and self._node_text(func) in self._METADATA_DEFINE_HELPERS:
+            name = self._node_text(func)
+            return "define", name, False, 0
+        return None
+
+    def _try_extract_metadata_bridge_from_call(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        module: str,
+        import_bindings: dict[str, str],
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> None:
+        func = node.child_by_field_name("function")
+        if func is None:
+            return
+        kind = self._metadata_bridge_call_kind(func)
+        if kind is None:
+            return
+        role, via, require_constant_key, key_arg_index = kind
+        key_arg = self._nth_positional_argument(node, key_arg_index)
+        key_qn, key_name, is_constant = self._resolve_metadata_key(
+            key_arg, import_bindings, module
+        )
+        if not key_qn:
+            return
+        if require_constant_key and not is_constant:
+            return
+        owner = self._enclosing_symbol_owner(node)
+        if owner is None:
+            return
+        bridge_site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
+        if not bridge_site_uid:
+            return
+        self._append_metadata_bridge_fact(
+            out,
+            seen,
+            file_path=file_path,
+            site_uid=bridge_site_uid,
+            key_qn=key_qn,
+            key_name=key_name,
+            role=role,
+            via=via,
+        )
+
     def extract_metadata_bridges(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -1870,74 +2004,18 @@ class TypeScriptAdapter(TreeSitterAdapter):
         out: list[dict] = []
         seen: set[tuple[str, str, str, str]] = set()
 
-        def emit(site_uid: str, key_qn: str, key_name: str, role: str, via: str) -> None:
-            if not site_uid or not key_qn:
-                return
-            key = (site_uid, key_qn, role, via)
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(
-                {
-                    "site_uid": site_uid,
-                    "key_qn": key_qn,
-                    "key_name": key_name,
-                    "role": role,
-                    "via": via,
-                    "file_path": file_path,
-                }
-            )
-
         for node in self._iter_nodes(tree.root_node):
             if node.type != "call_expression":
                 continue
-            func = node.child_by_field_name("function")
-            if func is None:
-                continue
-            role = ""
-            via = ""
-            require_constant_key = False
-            key_arg_index = 0
-            if func.type == "member_expression":
-                path = self._member_expression_path(func)
-                if len(path) < 2:
-                    continue
-                head, callee = path[0], path[-1]
-                if head == "Reflect" and callee in self._REFLECT_DEFINE_METHODS:
-                    role, via = "define", f"Reflect.{callee}"
-                elif head == "Reflect" and callee in self._REFLECT_READ_METHODS:
-                    role, via = "read", f"Reflect.{callee}"
-                elif callee in self._REFLECTOR_DISTINCT_METHODS:
-                    role, via = "read", f"reflector.{callee}"
-                elif callee in self._REFLECTOR_GENERIC_METHODS:
-                    role, via, require_constant_key = "read", f"reflector.{callee}", True
-                elif callee in self._METADATA_READ_HELPERS:
-                    role, via, require_constant_key = "read", callee, True
-                    key_arg_index = 2
-                else:
-                    continue
-            elif (
-                func.type == "identifier" and self._node_text(func) in self._METADATA_DEFINE_HELPERS
-            ):
-                role, via = "define", self._node_text(func)
-            else:
-                continue
-
-            key_arg = self._nth_positional_argument(node, key_arg_index)
-            key_qn, key_name, is_constant = self._resolve_metadata_key(
-                key_arg, import_bindings, module
+            self._try_extract_metadata_bridge_from_call(
+                node,
+                source_code=source_code,
+                file_path=file_path,
+                module=module,
+                import_bindings=import_bindings,
+                out=out,
+                seen=seen,
             )
-            if not key_qn:
-                continue
-            if require_constant_key and not is_constant:
-                continue
-            owner = self._enclosing_symbol_owner(node)
-            if owner is None:
-                continue
-            bridge_site_uid = self._caller_uid_for_owner(owner, source_code, file_path)
-            if not bridge_site_uid:
-                continue
-            emit(bridge_site_uid, key_qn, key_name, role, via)
         return out
 
     def _append_http_endpoint_fact(
@@ -2375,6 +2453,52 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return self._string_literal_text(arg)
         return ""
 
+    def _try_append_proxy_binding(
+        self,
+        decl,
+        *,
+        file_path: str,
+        module: str,
+        import_bindings: dict[str, str],
+        local_classes: set[str],
+        out: list[dict],
+        seen: set[str],
+    ) -> None:
+        if not self._is_top_level_variable_declarator(decl):
+            return
+        name_node = decl.child_by_field_name("name")
+        value = decl.child_by_field_name("value")
+        if name_node is None or value is None or value.type != "new_expression":
+            return
+        ctor = value.child_by_field_name("constructor")
+        if ctor is None or ctor.type != "identifier" or self._node_text(ctor) != "Proxy":
+            return
+        var_name = self._node_text(name_node)
+        if var_name in seen:
+            return
+        resolved = self._resolve_proxy_target_arg(
+            value,
+            import_bindings=import_bindings,
+            local_classes=local_classes,
+            module=module,
+        )
+        if resolved is None:
+            return
+        _type_name, target_qn, confidence = resolved
+        seen.add(var_name)
+        out.append(
+            {
+                "proxy_uid": self._uid(file_path, var_name),
+                "proxy_name": var_name,
+                "proxy_qualified_name": f"{module}.{var_name}",
+                "target_type": target_qn,
+                "target_source": "native_proxy",
+                "wrapped_callable": "",
+                "confidence": confidence,
+                "file_path": file_path,
+            }
+        )
+
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Native ``Proxy`` bindings: ``const x = new Proxy(target, handler)``.
 
@@ -2395,39 +2519,14 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for decl in self._iter_nodes(tree.root_node):
             if decl.type != "variable_declarator":
                 continue
-            if not self._is_top_level_variable_declarator(decl):
-                continue
-            name_node = decl.child_by_field_name("name")
-            value = decl.child_by_field_name("value")
-            if name_node is None or value is None or value.type != "new_expression":
-                continue
-            ctor = value.child_by_field_name("constructor")
-            if ctor is None or ctor.type != "identifier" or self._node_text(ctor) != "Proxy":
-                continue
-            var_name = self._node_text(name_node)
-            if var_name in seen:
-                continue
-            resolved = self._resolve_proxy_target_arg(
-                value,
+            self._try_append_proxy_binding(
+                decl,
+                file_path=file_path,
+                module=module,
                 import_bindings=import_bindings,
                 local_classes=local_classes,
-                module=module,
-            )
-            if resolved is None:
-                continue
-            _type_name, target_qn, confidence = resolved
-            seen.add(var_name)
-            out.append(
-                {
-                    "proxy_uid": self._uid(file_path, var_name),
-                    "proxy_name": var_name,
-                    "proxy_qualified_name": f"{module}.{var_name}",
-                    "target_type": target_qn,
-                    "target_source": "native_proxy",
-                    "wrapped_callable": "",
-                    "confidence": confidence,
-                    "file_path": file_path,
-                }
+                out=out,
+                seen=seen,
             )
         return out
 
@@ -2716,6 +2815,78 @@ class TypeScriptAdapter(TreeSitterAdapter):
             for export_name, export_qn in surface.items()
         ]
 
+    def _append_export_alias_specifier(
+        self,
+        spec,
+        *,
+        source_code: str,
+        file_path: str,
+        target_module: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> None:
+        if spec.type != "export_specifier":
+            return
+        name_node = spec.child_by_field_name("name")
+        alias_node = spec.child_by_field_name("alias")
+        if name_node is None or alias_node is None:
+            return
+        original = self._node_text(name_node)
+        alias = self._node_text(alias_node)
+        if not original or not alias or original == alias or original == "default":
+            return
+        target_qn = f"{target_module}.{original}"
+        key = (alias, original, target_qn, "ts_export_alias")
+        if key in seen:
+            return
+        seen.add(key)
+        line = source_code.count("\n", 0, spec.start_byte) + 1
+        out.append(
+            {
+                "source_uid": self._uid(file_path, alias),
+                "source_name": alias,
+                "target_name": original,
+                "target_qualified_name": target_qn,
+                "file_path": file_path,
+                "kind": "ts_export_alias",
+                "confidence": 0.85,
+                "line": line,
+                "match_by_name": False,
+            }
+        )
+
+    def _append_export_aliases_from_statement(
+        self,
+        stmt,
+        *,
+        source_code: str,
+        file_path: str,
+        out: list[dict],
+        seen: set[tuple[str, str, str, str]],
+    ) -> None:
+        source_node = next((c for c in stmt.children if c.type == "string"), None)
+        if source_node is None:
+            return
+        import_source = self._string_literal_text(source_node)
+        if not import_source:
+            return
+        target_module = self._normalize_import_source(file_path, import_source)
+        export_clause = next(
+            (c for c in stmt.children if c.type == "export_clause"),
+            None,
+        )
+        if export_clause is None:
+            return
+        for spec in export_clause.named_children:
+            self._append_export_alias_specifier(
+                spec,
+                source_code=source_code,
+                file_path=file_path,
+                target_module=target_module,
+                out=out,
+                seen=seen,
+            )
+
     def extract_symbol_aliases(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """REFERENCES from renamed export-from surfaces (``export {{ X as Y }} from``)."""
         if tree is None:
@@ -2726,49 +2897,13 @@ class TypeScriptAdapter(TreeSitterAdapter):
         for stmt in self._iter_nodes(tree.root_node):
             if stmt.type != "export_statement":
                 continue
-            source_node = next((c for c in stmt.children if c.type == "string"), None)
-            if source_node is None:
-                continue
-            import_source = self._string_literal_text(source_node)
-            if not import_source:
-                continue
-            target_module = self._normalize_import_source(file_path, import_source)
-            export_clause = next(
-                (c for c in stmt.children if c.type == "export_clause"),
-                None,
+            self._append_export_aliases_from_statement(
+                stmt,
+                source_code=source_code,
+                file_path=file_path,
+                out=out,
+                seen=seen,
             )
-            if export_clause is None:
-                continue
-            for spec in export_clause.named_children:
-                if spec.type != "export_specifier":
-                    continue
-                name_node = spec.child_by_field_name("name")
-                alias_node = spec.child_by_field_name("alias")
-                if name_node is None or alias_node is None:
-                    continue
-                original = self._node_text(name_node)
-                alias = self._node_text(alias_node)
-                if not original or not alias or original == alias or original == "default":
-                    continue
-                target_qn = f"{target_module}.{original}"
-                key = (alias, original, target_qn, "ts_export_alias")
-                if key in seen:
-                    continue
-                seen.add(key)
-                line = source_code.count("\n", 0, spec.start_byte) + 1
-                out.append(
-                    {
-                        "source_uid": self._uid(file_path, alias),
-                        "source_name": alias,
-                        "target_name": original,
-                        "target_qualified_name": target_qn,
-                        "file_path": file_path,
-                        "kind": "ts_export_alias",
-                        "confidence": 0.85,
-                        "line": line,
-                        "match_by_name": False,
-                    }
-                )
         return out
 
     def _ts_classify_identifier_call_node(
@@ -3060,6 +3195,81 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 scoped_confidence=0.9,
             )
 
+    def _should_scan_symbol_body_fallbacks(
+        self,
+        symbol: SymbolMetadata,
+        *,
+        existing_callers: set[str],
+    ) -> bool:
+        if symbol.kind == "class":
+            return False
+        if symbol.end_line <= symbol.start_line:
+            return False
+        if symbol.signature_status != "fallback_export" and symbol.uid in existing_callers:
+            return False
+        return True
+
+    def _should_skip_body_fallback_callee(
+        self,
+        callee_name: str,
+        *,
+        symbol_name: str,
+        prefix: str,
+        known_names: set[str],
+    ) -> bool:
+        if (
+            not callee_name
+            or callee_name == symbol_name
+            or callee_name in self._BODY_CALL_FALLBACK_SKIP
+            or callee_name not in known_names
+        ):
+            return True
+        previous = prefix.rstrip()[-1:] if prefix.rstrip() else ""
+        if previous in {".", ":"}:
+            return True
+        return bool(re.search(r"\bfunction\s+$", prefix[-32:]))
+
+    def _append_symbol_body_fallback_calls(
+        self,
+        calls: list[dict],
+        seen: set[tuple],
+        *,
+        symbol: SymbolMetadata,
+        body: str,
+        body_start: int,
+        source_code: str,
+        import_bindings: dict[str, str],
+        symbols: list[SymbolMetadata],
+        known_names: set[str],
+    ) -> None:
+        caller_uid = str(symbol.uid)
+        for callee_name, name_pos in iter_typescript_body_call_fallback_names(body):
+            prefix = body[:name_pos]
+            if self._should_skip_body_fallback_callee(
+                callee_name,
+                symbol_name=symbol.name,
+                prefix=prefix,
+                known_names=known_names,
+            ):
+                continue
+            rel_type, callee_qn = self._classify_text_fallback_call(
+                callee_name,
+                import_bindings,
+                symbols,
+            )
+            self._append_text_fallback_call(
+                calls,
+                seen,
+                caller_uid=caller_uid,
+                callee_name=callee_name,
+                rel_type=rel_type,
+                line=source_code.count("\n", 0, body_start + name_pos) + 1,
+                callee_qn=callee_qn,
+                resolver="ts-symbol-body-fallback-v1",
+                imported_confidence=0.75,
+                scoped_confidence=0.75,
+            )
+
     def _append_symbol_body_call_fallbacks(
         self,
         calls: list[dict],
@@ -3082,11 +3292,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
             offset += len(src_line)
 
         for symbol in symbols:
-            if symbol.kind == "class":
-                continue
-            if symbol.end_line <= symbol.start_line:
-                continue
-            if symbol.signature_status != "fallback_export" and symbol.uid in existing_callers:
+            if not self._should_scan_symbol_body_fallbacks(
+                symbol, existing_callers=existing_callers
+            ):
                 continue
             start_idx = max(0, symbol.start_line - 1)
             end_idx = min(len(lines), symbol.end_line)
@@ -3094,39 +3302,17 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 continue
             body_start = line_offsets[start_idx]
             body = "".join(lines[start_idx:end_idx])
-            caller_uid = str(symbol.uid)
-            for callee_name, name_pos in iter_typescript_body_call_fallback_names(body):
-                if (
-                    not callee_name
-                    or callee_name == symbol.name
-                    or callee_name in self._BODY_CALL_FALLBACK_SKIP
-                    or callee_name not in known_names
-                ):
-                    continue
-                prefix = body[:name_pos]
-                previous = prefix.rstrip()[-1:] if prefix.rstrip() else ""
-                if previous in {".", ":"}:
-                    continue
-                if re.search(r"\bfunction\s+$", prefix[-32:]):
-                    continue
-
-                rel_type, callee_qn = self._classify_text_fallback_call(
-                    callee_name,
-                    import_bindings,
-                    symbols,
-                )
-                self._append_text_fallback_call(
-                    calls,
-                    seen,
-                    caller_uid=caller_uid,
-                    callee_name=callee_name,
-                    rel_type=rel_type,
-                    line=source_code.count("\n", 0, body_start + name_pos) + 1,
-                    callee_qn=callee_qn,
-                    resolver="ts-symbol-body-fallback-v1",
-                    imported_confidence=0.75,
-                    scoped_confidence=0.75,
-                )
+            self._append_symbol_body_fallback_calls(
+                calls,
+                seen,
+                symbol=symbol,
+                body=body,
+                body_start=body_start,
+                source_code=source_code,
+                import_bindings=import_bindings,
+                symbols=symbols,
+                known_names=known_names,
+            )
 
     def _extract_import_bindings(
         self, source_code: str, file_path: str
@@ -3566,6 +3752,36 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return "CALLS_DIRECT", "direct", 1.0, "ts-scope-graph-v1", None, False, ""
         return "CALLS_GUESS", "guess", 0.4, "ts-ambiguity-gate-v1", None, False, ""
 
+    def _classify_this_receiver_call(
+        self,
+        method_name: str,
+        *,
+        parent,
+        by_name: dict[str, list],
+    ) -> tuple[str, str, float, str, str | None, bool, str]:
+        callee_uid = self._resolve_method_uid(parent, method_name, by_name)
+        if callee_uid:
+            return "CALLS_SCOPED", "scoped", 0.9, "ts-scope-v1", str(callee_uid), False, ""
+        return "CALLS_GUESS", "guess", 0.4, "ts-ambiguity-gate-v1", None, False, ""
+
+    def _classify_scope_graph_receiver_call(
+        self,
+        recv_binding,
+        *,
+        import_bindings: dict[str, str],
+    ) -> tuple[str, str, float, str, str | None, bool, str]:
+        if recv_binding.init_import_qn:
+            return self._imported_scope_graph_call()
+        if recv_binding.init_callee and recv_binding.init_callee in import_bindings:
+            return self._imported_scope_graph_call()
+        if recv_binding.kind == "param" and recv_binding.ambiguous:
+            return "CALLS_GUESS", "guess", 0.4, "ts-ambiguity-gate-v1", None, False, ""
+        if recv_binding.kind in {"param", "local", "function", "destructure"}:
+            return "CALLS_DYNAMIC", "dynamic", 0.7, "ts-scope-graph-v1", None, False, ""
+        if not recv_binding.ambiguous:
+            return "CALLS_DYNAMIC", "dynamic", 0.7, "ts-scope-graph-v1", None, False, ""
+        return "CALLS_GUESS", "guess", 0.4, "ts-ambiguity-gate-v1", None, False, ""
+
     def _classify_member_call(
         self,
         receiver_text: str,
@@ -3580,24 +3796,16 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if receiver_text in self._STANDARD_JS_GLOBALS:
             return "", "", 0.0, "", None, True, ""
         if receiver_text == "this":
-            callee_uid = self._resolve_method_uid(parent, method_name, by_name)
-            if callee_uid:
-                return "CALLS_SCOPED", "scoped", 0.9, "ts-scope-v1", str(callee_uid), False, ""
-            return "CALLS_GUESS", "guess", 0.4, "ts-ambiguity-gate-v1", None, False, ""
+            return self._classify_this_receiver_call(
+                method_name, parent=parent, by_name=by_name
+            )
         if receiver_text in import_bindings:
             return "CALLS_IMPORTED", "imported", 0.9, "ts-scope-v1", None, False, ""
         recv_binding = scope_graph.resolve_name(receiver_text, at_byte)
         if recv_binding is not None:
-            if recv_binding.init_import_qn:
-                return self._imported_scope_graph_call()
-            if recv_binding.init_callee and recv_binding.init_callee in import_bindings:
-                return self._imported_scope_graph_call()
-            if recv_binding.kind == "param" and recv_binding.ambiguous:
-                return "CALLS_GUESS", "guess", 0.4, "ts-ambiguity-gate-v1", None, False, ""
-            if recv_binding.kind in {"param", "local", "function", "destructure"}:
-                return "CALLS_DYNAMIC", "dynamic", 0.7, "ts-scope-graph-v1", None, False, ""
-            if not recv_binding.ambiguous:
-                return "CALLS_DYNAMIC", "dynamic", 0.7, "ts-scope-graph-v1", None, False, ""
+            return self._classify_scope_graph_receiver_call(
+                recv_binding, import_bindings=import_bindings
+            )
         return "CALLS_GUESS", "guess", 0.4, "ts-ambiguity-gate-v1", None, False, ""
 
     def _enclosing_symbol_owner(self, node):
@@ -3672,6 +3880,44 @@ class TypeScriptAdapter(TreeSitterAdapter):
             parent = parent.parent
         return ""
 
+    def _class_type_from_type_identifier(
+        self,
+        type_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        local_classes: set[str],
+    ) -> tuple[str, str, bool] | None:
+        name = self._node_text(type_node)
+        if name in self._TYPE_REF_SKIP_NAMES:
+            return None
+        if name in local_classes:
+            return name, f"{module}.{name}", False
+        if name in import_bindings:
+            qn = import_bindings[name]
+            return name, qn, not qn.startswith(f"{module}.")
+        return name, f"{module}.{name}", False
+
+    def _class_type_from_type_query(
+        self,
+        type_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        local_classes: set[str],
+    ) -> tuple[str, str, bool] | None:
+        inner = type_node.named_children[0] if type_node.named_children else None
+        if inner is None:
+            return None
+        if inner.type == "identifier":
+            return self._resolve_new_callee(
+                inner,
+                import_bindings=import_bindings,
+                local_classes=local_classes,
+                module=module,
+            )
+        return None
+
     def _class_type_from_type_node(
         self,
         type_node,
@@ -3683,35 +3929,60 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if type_node is None:
             return None
         if type_node.type == "type_annotation":
+            inner = type_node.named_children[0] if type_node.named_children else None
             return self._class_type_from_type_node(
-                type_node.named_children[0] if type_node.named_children else None,
+                inner,
                 import_bindings=import_bindings,
                 module=module,
                 local_classes=local_classes,
             )
         if type_node.type == "type_query":
-            inner = type_node.named_children[0] if type_node.named_children else None
-            if inner is None:
-                return None
-            if inner.type == "identifier":
-                return self._resolve_new_callee(
-                    inner,
-                    import_bindings=import_bindings,
-                    local_classes=local_classes,
-                    module=module,
-                )
-            return None
+            return self._class_type_from_type_query(
+                type_node,
+                import_bindings=import_bindings,
+                module=module,
+                local_classes=local_classes,
+            )
         if type_node.type == "type_identifier":
-            name = self._node_text(type_node)
-            if name in self._TYPE_REF_SKIP_NAMES:
-                return None
-            if name in local_classes:
-                return name, f"{module}.{name}", False
-            if name in import_bindings:
-                qn = import_bindings[name]
-                return name, qn, not qn.startswith(f"{module}.")
-            return name, f"{module}.{name}", False
+            return self._class_type_from_type_identifier(
+                type_node,
+                import_bindings=import_bindings,
+                module=module,
+                local_classes=local_classes,
+            )
         return None
+
+    def _is_owner_lexical_declaration(self, node, owner) -> bool:
+        if node.type in ("method_definition", "function_declaration", "arrow_function"):
+            if node is not owner:
+                return False
+        return node.type == "lexical_declaration"
+
+    def _typed_local_from_declarator(
+        self,
+        declarator,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        local_classes: set[str],
+    ) -> tuple[str, tuple[str, str, bool]] | None:
+        if declarator.type != "variable_declarator":
+            return None
+        name_node = declarator.child_by_field_name("name")
+        type_node = declarator.child_by_field_name("type")
+        if type_node is None:
+            type_node = self._node_field_by_type(declarator, "type_annotation")
+        if name_node is None or type_node is None:
+            return None
+        resolved = self._class_type_from_type_node(
+            type_node,
+            import_bindings=import_bindings,
+            module=module,
+            local_classes=local_classes,
+        )
+        if resolved is None:
+            return None
+        return self._node_text(name_node), resolved
 
     def _class_typed_locals(
         self,
@@ -3726,28 +3997,18 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return {}
         mapping: dict[str, tuple[str, str, bool]] = {}
         for node in self._iter_nodes(body):
-            if node.type in ("method_definition", "function_declaration", "arrow_function"):
-                if node is not owner:
-                    continue
-            if node.type != "lexical_declaration":
+            if not self._is_owner_lexical_declaration(node, owner):
                 continue
             for declarator in node.named_children:
-                if declarator.type != "variable_declarator":
-                    continue
-                name_node = declarator.child_by_field_name("name")
-                type_node = declarator.child_by_field_name("type")
-                if type_node is None:
-                    type_node = self._node_field_by_type(declarator, "type_annotation")
-                if name_node is None or type_node is None:
-                    continue
-                resolved = self._class_type_from_type_node(
-                    type_node,
+                entry = self._typed_local_from_declarator(
+                    declarator,
                     import_bindings=import_bindings,
                     module=module,
                     local_classes=local_classes,
                 )
-                if resolved is not None:
-                    mapping[self._node_text(name_node)] = resolved
+                if entry is not None:
+                    name, resolved = entry
+                    mapping[name] = resolved
         return mapping
 
     def _property_method_uid(self, file_path: str, owner: str, name: str) -> str:

@@ -61,6 +61,65 @@ class TypeScriptAxisExtractor:
     def __init__(self, adapter: TypeScriptAdapter | JavaScriptAdapter) -> None:
         self.adapter = adapter
 
+    @classmethod
+    def _axis_node_handler_map(cls) -> dict[str, str]:
+        cached = getattr(cls, "_CACHED_AXIS_NODE_HANDLER_MAP", None)
+        if cached is not None:
+            return cached
+        handlers: dict[str, str] = {
+            "import_statement": "_axis_node_import",
+            "variable_declarator": "_axis_node_variable_declarator",
+            "decorator": "_axis_node_decorator",
+            "call_expression": "_axis_node_call",
+            "new_expression": "_axis_node_new",
+            "return_statement": "_axis_node_return",
+            "assignment_expression": "_axis_node_assignment",
+            "augmented_assignment_expression": "_axis_node_augmented_assignment",
+            "await_expression": "_axis_node_await",
+            "yield_expression": "_axis_node_yield",
+            "try_statement": "_axis_node_try",
+            "catch_clause": "_axis_node_catch",
+            "throw_statement": "_axis_node_throw",
+            "member_expression": "_axis_node_member",
+            "subscript_expression": "_axis_node_subscript",
+        }
+        for node_type in cls._CLASS_TYPES:
+            handlers[node_type] = "_axis_node_class"
+        for node_type in cls._CALLABLE_TYPES:
+            handlers[node_type] = "_axis_node_callable"
+        for node_type in cls._SHAPE_TYPES:
+            handlers[node_type] = "_axis_node_shape"
+        for node_type in cls._BRANCH_TYPES:
+            handlers[node_type] = "_axis_node_branch"
+        for node_type in cls._LOOP_TYPES:
+            handlers[node_type] = "_axis_node_loop"
+        cls._CACHED_AXIS_NODE_HANDLER_MAP = handlers
+        return handlers
+
+    def _dispatch_axis_node(
+        self,
+        node,
+        *,
+        source: str,
+        file_path: str,
+        module_scope: tuple[str, str, str],
+        emit,
+        emit_scope,
+        seen_decorators: set[int],
+    ) -> None:
+        handler_name = self._axis_node_handler_map().get(node.type)
+        if handler_name is None:
+            return
+        getattr(self, handler_name)(
+            node,
+            source=source,
+            file_path=file_path,
+            module_scope=module_scope,
+            emit=emit,
+            emit_scope=emit_scope,
+            seen_decorators=seen_decorators,
+        )
+
     def extract(
         self,
         source: str,
@@ -119,54 +178,83 @@ class TypeScriptAxisExtractor:
                 emit_scope(module_scope, node, "struct", "module_scope")
                 emitted_module_scope = True
 
-            if node.type == "import_statement":
-                self._emit_import_facts(node, source, module_scope, emit_scope)
-            elif node.type in self._CLASS_TYPES:
-                self._emit_class_def_facts(node, source, file_path, emit)
-                self._emit_inheritance_facts(node, source, file_path, emit)
-            elif node.type in self._CALLABLE_TYPES:
-                self._emit_callable_def_facts(node, source, file_path, emit)
-                self._emit_parameter_facts(node, source, file_path, emit)
-                self._emit_return_annotation(node, source, file_path, emit)
-            elif node.type == "variable_declarator":
-                self._emit_variable_declarator_facts(node, source, file_path, emit)
-            elif node.type == "decorator":
-                if node.start_byte in seen_decorators:
-                    continue
-                seen_decorators.add(node.start_byte)
-                self._emit_decorator_facts(node, source, file_path, emit)
-            elif node.type == "call_expression":
-                self._emit_call_facts(node, source, file_path, emit)
-            elif node.type == "new_expression":
-                self._emit_new_facts(node, source, file_path, emit)
-            elif node.type == "return_statement":
-                self._emit_return_facts(node, source, file_path, emit)
-            elif node.type in self._SHAPE_TYPES:
-                self._emit_literal_shape_facts(node, source, file_path, emit)
-            elif node.type == "assignment_expression":
-                self._emit_assignment_facts(node, source, file_path, emit)
-            elif node.type == "augmented_assignment_expression":
-                self._emit_augmented_assignment_facts(node, source, file_path, emit)
-            elif node.type in self._BRANCH_TYPES:
-                self._emit_branch_facts(node, source, file_path, emit)
-            elif node.type in self._LOOP_TYPES:
-                self._emit_loop_facts(node, source, file_path, emit)
-            elif node.type == "await_expression":
-                self._emit_await_facts(node, source, file_path, emit)
-            elif node.type == "yield_expression":
-                self._emit_yield_facts(node, source, file_path, emit)
-            elif node.type == "try_statement":
-                self._emit_try_facts(node, source, file_path, emit)
-            elif node.type == "catch_clause":
-                self._emit_catch_facts(node, source, file_path, emit)
-            elif node.type == "throw_statement":
-                self._emit_throw_facts(node, source, file_path, emit)
-            elif node.type == "member_expression":
-                self._emit_member_read_facts(node, source, file_path, emit)
-            elif node.type == "subscript_expression":
-                self._emit_subscript_read_facts(node, source, file_path, emit)
+            self._dispatch_axis_node(
+                node,
+                source=source,
+                file_path=file_path,
+                module_scope=module_scope,
+                emit=emit,
+                emit_scope=emit_scope,
+                seen_decorators=seen_decorators,
+            )
 
         return AxisExtraction(file_path=file_path, facts=facts)
+
+    def _axis_node_import(self, node, *, source, module_scope, emit_scope, **_) -> None:
+        self._emit_import_facts(node, source, module_scope, emit_scope)
+
+    def _axis_node_class(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_class_def_facts(node, source, file_path, emit)
+        self._emit_inheritance_facts(node, source, file_path, emit)
+
+    def _axis_node_callable(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_callable_def_facts(node, source, file_path, emit)
+        self._emit_parameter_facts(node, source, file_path, emit)
+        self._emit_return_annotation(node, source, file_path, emit)
+
+    def _axis_node_variable_declarator(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_variable_declarator_facts(node, source, file_path, emit)
+
+    def _axis_node_decorator(self, node, *, source, file_path, emit, seen_decorators, **_) -> None:
+        if node.start_byte in seen_decorators:
+            return
+        seen_decorators.add(node.start_byte)
+        self._emit_decorator_facts(node, source, file_path, emit)
+
+    def _axis_node_call(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_call_facts(node, source, file_path, emit)
+
+    def _axis_node_new(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_new_facts(node, source, file_path, emit)
+
+    def _axis_node_return(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_return_facts(node, source, file_path, emit)
+
+    def _axis_node_shape(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_literal_shape_facts(node, source, file_path, emit)
+
+    def _axis_node_assignment(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_assignment_facts(node, source, file_path, emit)
+
+    def _axis_node_augmented_assignment(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_augmented_assignment_facts(node, source, file_path, emit)
+
+    def _axis_node_branch(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_branch_facts(node, source, file_path, emit)
+
+    def _axis_node_loop(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_loop_facts(node, source, file_path, emit)
+
+    def _axis_node_await(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_await_facts(node, source, file_path, emit)
+
+    def _axis_node_yield(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_yield_facts(node, source, file_path, emit)
+
+    def _axis_node_try(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_try_facts(node, source, file_path, emit)
+
+    def _axis_node_catch(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_catch_facts(node, source, file_path, emit)
+
+    def _axis_node_throw(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_throw_facts(node, source, file_path, emit)
+
+    def _axis_node_member(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_member_read_facts(node, source, file_path, emit)
+
+    def _axis_node_subscript(self, node, *, source, file_path, emit, **_) -> None:
+        self._emit_subscript_read_facts(node, source, file_path, emit)
 
     def extract_facts(self, source: str, file_path: str, *, tree=None) -> list[AxisFact]:
         return self.extract(source, file_path, tree=tree).facts
@@ -214,55 +302,107 @@ class TypeScriptAxisExtractor:
             parent = parent.parent
         return None
 
-    def _emit_import_facts(self, node, source: str, module_scope, emit_scope) -> None:
+    def _import_module_from_statement(self, node) -> str:
         source_node = next((c for c in node.children if c.type == "string"), None)
-        module = self.adapter._string_literal_text(source_node) if source_node else ""
+        if source_node is None:
+            return ""
+        return self.adapter._string_literal_text(source_node)
+
+    def _emit_import_dependency_fact(
+        self,
+        node,
+        module_scope,
+        emit_scope,
+        *,
+        module: str,
+        name: str = "",
+        alias: str = "",
+    ) -> None:
+        payload: dict[str, object] = {"module": module, "alias": alias}
+        if name:
+            payload["name"] = name
+        emit_scope(module_scope, node, "struct", "import_dependency", payload=payload)
+
+    def _emit_named_import_specifier(
+        self,
+        spec,
+        *,
+        module: str,
+        module_scope,
+        emit_scope,
+    ) -> None:
+        if spec.type != "import_specifier":
+            return
+        name = spec.child_by_field_name("name")
+        alias = spec.child_by_field_name("alias")
+        imported = self.adapter._node_text(name) if name else ""
+        local = self.adapter._node_text(alias) if alias else imported
+        self._emit_import_dependency_fact(
+            spec,
+            module_scope,
+            emit_scope,
+            module=module,
+            name=imported,
+            alias=local,
+        )
+
+    def _emit_import_clause_child(
+        self,
+        child,
+        *,
+        module: str,
+        module_scope,
+        emit_scope,
+    ) -> None:
+        if child.type == "identifier":
+            self._emit_import_dependency_fact(
+                child,
+                module_scope,
+                emit_scope,
+                module=module,
+                name=self.adapter._node_text(child),
+                alias="",
+            )
+            return
+        if child.type == "namespace_import":
+            alias_node = child.child_by_field_name("name")
+            self._emit_import_dependency_fact(
+                child,
+                module_scope,
+                emit_scope,
+                module=module,
+                alias=self.adapter._node_text(alias_node) if alias_node else "",
+            )
+            return
+        if child.type != "named_imports":
+            return
+        for spec in child.named_children:
+            self._emit_named_import_specifier(
+                spec,
+                module=module,
+                module_scope=module_scope,
+                emit_scope=emit_scope,
+            )
+
+    def _emit_import_facts(self, node, source: str, module_scope, emit_scope) -> None:
+        module = self._import_module_from_statement(node)
         clause = next((c for c in node.children if c.type == "import_clause"), None)
         if clause is None:
-            emit_scope(
-                module_scope,
+            self._emit_import_dependency_fact(
                 node,
-                "struct",
-                "import_dependency",
-                payload={"module": module, "alias": ""},
+                module_scope,
+                emit_scope,
+                module=module,
+                alias="",
             )
             return
         for child in clause.named_children:
-            if child.type == "identifier":
-                emit_scope(
-                    module_scope,
-                    child,
-                    "struct",
-                    "import_dependency",
-                    payload={"module": module, "name": self.adapter._node_text(child), "alias": ""},
-                )
-            elif child.type == "namespace_import":
-                alias = child.child_by_field_name("name")
-                emit_scope(
-                    module_scope,
-                    child,
-                    "struct",
-                    "import_dependency",
-                    payload={
-                        "module": module,
-                        "alias": self.adapter._node_text(alias) if alias else "",
-                    },
-                )
-            elif child.type == "named_imports":
-                for spec in child.named_children:
-                    if spec.type != "import_specifier":
-                        continue
-                    name = spec.child_by_field_name("name")
-                    alias = spec.child_by_field_name("alias")
-                    imported = self.adapter._node_text(name) if name else ""
-                    local = self.adapter._node_text(alias) if alias else imported
-                    emit_scope(
-                        module_scope,
-                        spec,
-                        "struct",
-                        "import_dependency",
-                        payload={"module": module, "name": imported, "alias": local},
-                    )
+            self._emit_import_clause_child(
+                child,
+                module=module,
+                module_scope=module_scope,
+                emit_scope=emit_scope,
+            )
 
     def _emit_class_def_facts(self, node, source: str, file_path: str, emit) -> None:
         name_node = node.child_by_field_name("name")
