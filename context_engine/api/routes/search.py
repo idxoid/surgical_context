@@ -140,7 +140,7 @@ def search(
     x_user_id: UserIdHeader = None,
     authorization: AuthHeader = None,
     x_workspace: WorkspaceHeader = None,
-    request: Request | None = None,
+    request: Request = None,
 ):
     main = require_main(request)
     main._resolve_request_user(x_user_id, authorization)
@@ -157,7 +157,7 @@ def unified_search(
     authorization: AuthHeader = None,
     x_workspace: WorkspaceHeader = None,
     x_trace_id: TraceIdHeader = None,
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Blend doc vectors, symbol vectors, and optional graph neighbors into one ranked list."""
     main = require_main(request)

@@ -36,7 +36,7 @@ def ask(
     authorization: AuthHeader = None,
     x_workspace: WorkspaceHeader = None,
     x_trace_id: TraceIdHeader = None,
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Ask about a symbol (with multi-user audit logging)."""
     main = require_main(request)
@@ -75,7 +75,7 @@ def ask_axis(
     authorization: AuthHeader = None,
     x_workspace: WorkspaceHeader = None,
     x_trace_id: TraceIdHeader = None,
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Axis-pipeline answer: intent → roles → ranked candidates → context."""
     main = require_main(request)
@@ -113,7 +113,7 @@ def intent(
     authorization: AuthHeader = None,
     x_workspace: WorkspaceHeader = None,
     x_trace_id: TraceIdHeader = None,
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Classify-only intent preview: question → ranked role matches.
 
@@ -148,7 +148,7 @@ def ask_stream(
     authorization: AuthHeader = None,
     x_workspace: WorkspaceHeader = None,
     x_trace_id: TraceIdHeader = None,
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Streaming version of /ask endpoint (SSE)."""
     main = require_main(request)

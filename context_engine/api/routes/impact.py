@@ -18,9 +18,9 @@ router = APIRouter(tags=["impact"])
 
 MaxDepthQuery = Annotated[
     int,
-    Query(default=3, ge=IMPACT_DEPTH_MIN, le=IMPACT_DEPTH_MAX),
+    Query(ge=IMPACT_DEPTH_MIN, le=IMPACT_DEPTH_MAX),
 ]
-FilePathQuery = Annotated[str | None, Query(default=None)]
+FilePathQuery = Annotated[str | None, Query()]
 
 
 def _symbol_in_local_file(file_path: str, symbol: str) -> bool:
@@ -187,7 +187,7 @@ def impact(
     x_user_id: UserIdHeader = None,
     authorization: AuthHeader = None,
     x_workspace: WorkspaceHeader = None,
-    request: Request | None = None,
+    request: Request = None,
 ):
     """Return downstream dependents affected by a change to the given symbol.
 
