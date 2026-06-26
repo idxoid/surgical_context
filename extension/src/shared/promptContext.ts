@@ -14,6 +14,10 @@ export interface ContextSymbol {
   scores?: Record<string, number | null>;
   provenance?: string[];
   is_dirty?: boolean;
+  line?: number;
+  lineno?: number;
+  start_line?: number;
+  range?: number[];
   code?: string;
 }
 

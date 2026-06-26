@@ -31,6 +31,46 @@ function renderTable(headers: string[], bodyRows: string, tableClass = ''): stri
   `;
 }
 
+function lineFromContextSymbol(item: PromptContextPayload['graph_context'][number]): number {
+  const explicit = item.line ?? item.start_line ?? item.lineno;
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) {
+    return Math.max(1, explicit);
+  }
+  if (Array.isArray(item.range) && typeof item.range[0] === 'number') {
+    return Math.max(1, item.range[0]);
+  }
+  return 1;
+}
+
+function isOpenableFilePath(filePath: string): boolean {
+  return Boolean(filePath && filePath !== 'unknown' && !filePath.startsWith('<'));
+}
+
+function renderOpenFileButton(
+  label: string,
+  filePath: string,
+  line: number,
+  className: string,
+  title: string,
+): string {
+  if (!isOpenableFilePath(filePath)) {
+    return `<span class="${className}">${escapeHtml(label)}</span>`;
+  }
+
+  return `
+    <button
+      type="button"
+      class="${className} inspector-open-file"
+      data-action="openFile"
+      data-file-path="${escapeHtml(filePath)}"
+      data-line="${line}"
+      title="${escapeHtml(title)}"
+    >
+      ${escapeHtml(label)}
+    </button>
+  `;
+}
+
 function renderJsonViewer(
   jsonStr: string,
   copyAction: string,
@@ -116,16 +156,26 @@ export function renderGraphContextTab(context: PromptContextPayload): string {
   }
 
   const rows = graphItems
-    .map(item => `
-      <tr class="context-row" data-file-path="${escapeHtml(item.file_path)}">
-        <td class="symbol-col">${escapeHtml(item.symbol)}</td>
+    .map(item => {
+      const filePath = item.file_path || 'unknown';
+      const symbol = item.symbol || 'unknown';
+      const line = lineFromContextSymbol(item);
+
+      return `
+      <tr class="context-row">
+        <td class="symbol-col">
+          ${renderOpenFileButton(symbol, filePath, line, 'graph-symbol-link', `Open ${symbol}`)}
+        </td>
         <td class="relation-col">${escapeHtml(item.relation || '')}</td>
         <td class="depth-col">${item.depth || 0}</td>
         <td class="score-col">${(item.relevance_score || 0).toFixed(2)}</td>
         <td class="dirty-col">${item.is_dirty ? '🔴' : '✓'}</td>
-        <td class="file-col">${escapeHtml(item.file_path)}</td>
+        <td class="file-col">
+          ${renderOpenFileButton(filePath, filePath, line, 'graph-file-link', `Open ${filePath}`)}
+        </td>
       </tr>
-    `)
+    `;
+    })
     .join('');
 
   return `

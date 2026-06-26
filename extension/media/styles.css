@@ -1714,6 +1714,34 @@ button {
   font-weight: 600;
 }
 
+.inspector-open-file {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline;
+  font: inherit;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.inspector-open-file:hover,
+.inspector-open-file:focus-visible {
+  color: var(--sc-link);
+  text-decoration: underline;
+}
+
+.inspector-open-file:focus-visible {
+  outline: 1px solid var(--sc-link);
+  outline-offset: 2px;
+}
+
+.graph-symbol-link {
+  font-weight: 600;
+}
+
 .relation-col,
 .depth-col,
 .score-col,
